@@ -15,7 +15,7 @@ jobs:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v7
         with:
-          go-version-file: go.mod
+          go-version: '1.27.0'
           cache: true
       - name: Verify formatting
         run: test -z "$(gofmt -l cmd internal)"
@@ -27,3 +27,15 @@ jobs:
         run: ./scripts/smoke-direct.sh
       - name: Outbound-only relay smoke test
         run: ./scripts/smoke-relay.sh
+
+  windows-agent:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Build native Windows agent
+        run: go build -trimpath -o wd-agent.exe ./cmd/wd-agent

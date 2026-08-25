@@ -12,11 +12,6 @@ import (
 	"unsafe"
 )
 
-type PTY struct {
-	Master *os.File
-	Cmd    *exec.Cmd
-}
-
 type winsize struct {
 	Row    uint16
 	Col    uint16
@@ -51,21 +46,19 @@ func Start(shell string, cols, rows uint16, term string) (*PTY, error) {
 		master.Close()
 		return nil, fmt.Errorf("start shell: %w", err)
 	}
-	return &PTY{Master: master, Cmd: cmd}, nil
-}
 
-func (p *PTY) Resize(cols, rows uint16) error {
-	return setWinsize(p.Master.Fd(), cols, rows)
-}
-
-func (p *PTY) Close() error {
-	if p.Cmd != nil && p.Cmd.Process != nil {
-		_ = p.Cmd.Process.Signal(syscall.SIGHUP)
-	}
-	if p.Master != nil {
-		return p.Master.Close()
-	}
-	return nil
+	return &PTY{
+		reader: master,
+		writer: master,
+		resize: func(cols, rows uint16) error { return setWinsize(master.Fd(), cols, rows) },
+		wait:   cmd.Wait,
+		close: func() error {
+			if cmd.Process != nil {
+				_ = cmd.Process.Signal(syscall.SIGHUP)
+			}
+			return master.Close()
+		},
+	}, nil
 }
 
 func openPTY() (*os.File, *os.File, error) {

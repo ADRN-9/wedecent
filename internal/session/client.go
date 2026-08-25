@@ -7,9 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"os/signal"
 	"sync"
-	"syscall"
 	"time"
 
 	"wedecent.com/wedecent/internal/identity"
@@ -144,19 +142,15 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 	}()
 
 	if isTTY {
-		resizeCh := make(chan os.Signal, 1)
-		signal.Notify(resizeCh, syscall.SIGWINCH)
-		defer signal.Stop(resizeCh)
-		go func() {
-			for range resizeCh {
-				c2, r2, err := terminal.Size(in)
-				if err != nil {
-					continue
-				}
-				payload, _ := protocol.JSON(protocol.Resize{Cols: c2, Rows: r2})
-				_ = writeFrame(protocol.Frame{Type: protocol.TypeResize, Payload: payload})
+		stopResize := watchResize(func() {
+			c2, r2, err := terminal.Size(in)
+			if err != nil {
+				return
 			}
-		}()
+			payload, _ := protocol.JSON(protocol.Resize{Cols: c2, Rows: r2})
+			_ = writeFrame(protocol.Frame{Type: protocol.TypeResize, Payload: payload})
+		})
+		defer stopResize()
 	}
 
 	for {

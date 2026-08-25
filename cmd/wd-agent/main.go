@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"syscall"
 	"time"
@@ -286,6 +287,13 @@ func hostname() string {
 }
 
 func defaultShell() string {
+	if runtime.GOOS == "windows" {
+		root := os.Getenv("SystemRoot")
+		if root == "" {
+			root = `C:\Windows`
+		}
+		return filepath.Join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+	}
 	if shell := os.Getenv("SHELL"); shell != "" && len(shell) > 0 && shell[0] == '/' {
 		return shell
 	}
