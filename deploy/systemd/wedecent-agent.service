@@ -1,0 +1,17 @@
+[Unit]
+Description=WeDecent terminal agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wedecent
+Group=wedecent
+StateDirectory=wedecent
+UMask=0077
+ExecStart=/usr/local/bin/wd-agent serve --state /var/lib/wedecent --listen "" --relay relay.wedecent.com:443 --relay-slots 4 --shell /bin/bash
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

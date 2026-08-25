@@ -1,0 +1,20 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "wedecent-relay",
+  "main": "src/index.js",
+  "compatibility_date": "2026-08-23",
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "DEVICE_RELAY",
+        "class_name": "DeviceRelay"
+      }
+    ]
+  },
+  "exports": {
+    "DeviceRelay": {
+      "type": "durable-object",
+      "storage": "sqlite"
+    }
+  }
+}

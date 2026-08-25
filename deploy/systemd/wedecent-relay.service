@@ -1,0 +1,16 @@
+[Unit]
+Description=WeDecent relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=wedecent-relay
+Group=wedecent-relay
+UMask=0077
+ExecStart=/usr/local/bin/wd-relay --listen :8443 --cert /etc/wedecent/relay/fullchain.pem --key /etc/wedecent/relay/privkey.pem
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

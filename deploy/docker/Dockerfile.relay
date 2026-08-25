@@ -1,0 +1,9 @@
+FROM golang:1.27.0 AS build
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/wd-relay ./cmd/wd-relay
+
+FROM scratch
+COPY --from=build /out/wd-relay /wd-relay
+USER 65532:65532
+ENTRYPOINT ["/wd-relay"]

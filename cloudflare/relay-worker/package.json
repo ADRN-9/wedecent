@@ -1,0 +1,13 @@
+{
+  "name": "@wedecent/relay-worker",
+  "private": true,
+  "version": "0.2.2",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail"
+  },
+  "devDependencies": {
+    "wrangler": "4.125.0"
+  }
+}
