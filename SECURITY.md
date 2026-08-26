@@ -31,8 +31,12 @@ This repository is an early MVP and should receive an independent security revie
 - No file-transfer path validation because file transfer is not implemented yet
 - No fuzzing corpus/continuous fuzz infrastructure yet
 - Windows service mode still requires a dedicated account to be provisioned separately and granted the `Log on as a service` right
-- Worker v5 still accepts the legacy shared relay token on stream upgrades during migration; remove that fallback after all endpoints are upgraded
+- Worker v6 still accepts the legacy shared relay token on stream upgrades during migration; remove that fallback after all endpoints are upgraded
 
 ## Threat model note
 
 The public relay is not trusted with terminal plaintext. It necessarily observes some metadata: requested device ID, connection timing, remote IP addresses and byte-flow characteristics. The inner pinned TLS session protects terminal content and client credentials from the relay.
+
+## Account-control-plane boundary
+
+The Supabase account-authorization migration enables RLS on every exposed control-plane table and removes anonymous table privileges. Endpoint identity enrollment and short-lived connection-grant writes are intentionally server-only: accepting those writes directly from a browser would let an authenticated user claim cryptographic device identities without proving possession of their Ed25519 private keys. See `docs/ACCOUNT_AUTHORIZATION.md`.

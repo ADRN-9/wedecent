@@ -31,3 +31,9 @@ The control-plane phase should add a second, server-issued grant for client conn
 - unique session/grant ID for audit and revocation.
 
 The relay should then require both the endpoint identity proof and the server-issued authorization grant before attaching a client to an agent slot. Agent self-authentication can continue to use the device's Ed25519 proof, with device ownership/registration enforced by the control plane.
+
+## Implemented foundation
+
+The first account-authorization schema now lives in `supabase/migrations/20260826160000_account_authorization_foundation.sql`. It defines organizations, memberships, enrolled endpoint identities, explicit terminal access, enrollment challenge state, and short-lived connection-grant audit records. See `docs/ACCOUNT_AUTHORIZATION.md` for the security boundary and enrollment flow.
+
+The migration deliberately does not allow browser-authenticated users to write `devices`, enrollment challenges, or connection grants. Those operations require trusted server code because database RLS cannot by itself verify possession of an endpoint Ed25519 private key.

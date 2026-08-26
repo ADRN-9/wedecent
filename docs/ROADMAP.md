@@ -63,6 +63,7 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
 
 ## Phase 5 — team control plane
 
+- [x] Supabase account-authorization schema + RLS foundation
 - [ ] `app.wedecent.com`
 - [ ] OIDC/SAML SSO
 - [ ] Organizations/users/devices
