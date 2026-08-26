@@ -51,9 +51,12 @@ func TestWebRelayCredentialPrefersTicketSource(t *testing.T) {
 	}
 	var gotTarget, gotRole string
 	var gotSlot int
-	credential, err := webRelayCredential(u, WebRelayOptions{
+	credential, err := webRelayCredential(context.Background(), u, WebRelayOptions{
 		Token: "legacy-token",
-		TicketSource: func(targetDeviceID, role string, slot int) (string, error) {
+		TicketSource: func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error) {
+			if relayBaseURL != "https://relay.wedecent.com" {
+				t.Fatalf("unexpected relay base URL %q", relayBaseURL)
+			}
 			gotTarget, gotRole, gotSlot = targetDeviceID, role, slot
 			return "wdt2.test.signature", nil
 		},
@@ -74,7 +77,7 @@ func TestWebRelayCredentialLegacyFallback(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	credential, err := webRelayCredential(u, WebRelayOptions{Token: "legacy-token"})
+	credential, err := webRelayCredential(context.Background(), u, WebRelayOptions{Token: "legacy-token"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +167,10 @@ func TestDialWebSocketUsesTicketSource(t *testing.T) {
 	defer cancel()
 	conn, err := dialWebSocket(ctx, u, WebRelayOptions{
 		Timeout: 5 * time.Second,
-		TicketSource: func(targetDeviceID, role string, slot int) (string, error) {
+		TicketSource: func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error) {
+			if relayBaseURL != server.URL {
+				t.Fatalf("unexpected relay base URL %q, want %q", relayBaseURL, server.URL)
+			}
 			if targetDeviceID != "wd_4ksk5edkttwsxqx4" || role != "client" || slot != 0 {
 				t.Fatalf("unexpected ticket scope: target=%q role=%q slot=%d", targetDeviceID, role, slot)
 			}

@@ -29,7 +29,7 @@ const (
 type WebRelayOptions struct {
 	// TicketSource is the v2 proof-of-possession credential source. When set,
 	// it takes precedence over Token and is called for every WebSocket upgrade.
-	TicketSource      func(targetDeviceID, role string, slot int) (string, error)
+	TicketSource      func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error)
 	Token             string // Legacy v1 shared relay token; retained for migration only.
 	Timeout           time.Duration
 	KeepAliveInterval time.Duration
@@ -118,7 +118,7 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 		timeout = 15 * time.Second
 	}
 
-	credential, err := webRelayCredential(u, opts)
+	credential, err := webRelayCredential(ctx, u, opts)
 	if err != nil {
 		return nil, err
 	}
@@ -174,7 +174,7 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 	return conn, nil
 }
 
-func webRelayCredential(u *url.URL, opts WebRelayOptions) (string, error) {
+func webRelayCredential(ctx context.Context, u *url.URL, opts WebRelayOptions) (string, error) {
 	if opts.TicketSource == nil {
 		return strings.TrimSpace(opts.Token), nil
 	}
@@ -202,7 +202,11 @@ func webRelayCredential(u *url.URL, opts WebRelayOptions) (string, error) {
 	default:
 		return "", errors.New("invalid web relay role")
 	}
-	ticket, err := opts.TicketSource(targetDeviceID, role, slot)
+	relayBaseURL, err := webRelayOriginURL(u)
+	if err != nil {
+		return "", err
+	}
+	ticket, err := opts.TicketSource(ctx, relayBaseURL, targetDeviceID, role, slot)
 	if err != nil {
 		return "", fmt.Errorf("issue web relay ticket: %w", err)
 	}
@@ -210,6 +214,23 @@ func webRelayCredential(u *url.URL, opts WebRelayOptions) (string, error) {
 		return "", errors.New("web relay ticket source returned an empty ticket")
 	}
 	return strings.TrimSpace(ticket), nil
+}
+
+func webRelayOriginURL(u *url.URL) (string, error) {
+	if u == nil || u.Host == "" {
+		return "", errors.New("invalid web relay URL")
+	}
+	scheme := u.Scheme
+	switch scheme {
+	case "wss":
+		scheme = "https"
+	case "ws":
+		scheme = "http"
+	case "https", "http":
+	default:
+		return "", errors.New("unsupported web relay URL scheme")
+	}
+	return (&url.URL{Scheme: scheme, Host: u.Host}).String(), nil
 }
 
 func websocketClientHandshake(raw net.Conn, u *url.URL, token string) (*wsNetConn, error) {

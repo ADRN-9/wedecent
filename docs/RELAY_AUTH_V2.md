@@ -32,6 +32,14 @@ A ticket contains:
 
 Tickets live for 90 seconds. The Worker rejects tickets with a lifetime over 120 seconds and allows at most 30 seconds of clock skew.
 
+## Relay-relative time
+
+Short ticket lifetimes should not require a perfectly synchronized endpoint wall clock. Before issuing each v2 ticket, upgraded endpoints fetch `GET /v1/time` from the same relay origin and derive the ticket timestamp from that HTTPS-authenticated relay clock. The response is explicitly non-cacheable.
+
+The endpoint bounds the accepted correction to 24 hours and the time request to a 5-second round trip. Larger disagreement fails closed instead of silently widening the ticket replay window. Plain HTTP/WS remains available only for local development; production relay time must come from the HTTPS/WSS relay origin.
+
+Worker v6 adds `/v1/time`; v2 endpoints using relay-relative time therefore require a v6-or-newer Worker.
+
 ## Worker verification
 
 Before upgrading a stream, the Worker:
@@ -55,16 +63,16 @@ This means a malicious identity can still attempt availability abuse against a k
 
 ## Migration
 
-Worker v5 accepts either:
+Worker v6 accepts either:
 
 - a `wdt2` ticket; or
 - the legacy `RELAY_ACCESS_TOKEN` on stream upgrades.
 
-Normal v0.3 clients and agents use `wdt2` tickets and do not load the legacy token. Worker v5 keeps token acceptance only so older binaries can remain online during a Worker-first migration. Upgrade the Worker before upgrading endpoints.
+Normal v0.3 clients and agents use `wdt2` tickets and do not load the legacy token. Worker v6 keeps token acceptance only so older binaries can remain online during a Worker-first migration. Upgrade the Worker before upgrading endpoints.
 
 `/v1/status/<device-id>` remains an operator diagnostic and still requires `RELAY_ACCESS_TOKEN`. Do not distribute that token to normal endpoints once all stream clients use v2 tickets.
 
-After all deployed endpoints have moved to v2, remove legacy stream-token acceptance and rotate the remaining admin/status token. Upgraded v0.3 endpoints intentionally require a v5-or-newer relay.
+After all deployed endpoints have moved to v2, remove legacy stream-token acceptance and rotate the remaining admin/status token. Upgraded v0.3 endpoints intentionally require a v6-or-newer relay.
 
 ## Control-plane upgrade path
 

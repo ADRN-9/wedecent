@@ -1,12 +1,16 @@
 package relayauth
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -14,11 +18,14 @@ import (
 )
 
 const (
-	TicketPrefix   = "wdt2"
-	TicketAudience = "wedecent-relay"
-	TicketTTL      = 90 * time.Second
-	signingContext = "wedecent-relay-ticket-v2\n"
-	maxAgentSlots  = 32
+	TicketPrefix        = "wdt2"
+	TicketAudience      = "wedecent-relay"
+	TicketTTL           = 90 * time.Second
+	signingContext      = "wedecent-relay-ticket-v2\n"
+	maxAgentSlots       = 32
+	relayTimeTimeout    = 5 * time.Second
+	maxRelayClockOffset = 24 * time.Hour
+	maxRelayTimeBody    = 1024
 )
 
 type Claims struct {
@@ -35,12 +42,17 @@ type Claims struct {
 }
 
 // TicketSource returns fresh, short-lived proof-of-possession relay tickets.
+// relayBaseURL identifies the authenticated relay whose clock scopes the ticket.
 // The identity private key never leaves the local machine.
-type TicketSource func(targetDeviceID, role string, slot int) (string, error)
+type TicketSource func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error)
 
 func NewTicketSource(id *identity.Identity) TicketSource {
-	return func(targetDeviceID, role string, slot int) (string, error) {
-		return Issue(id, targetDeviceID, role, slot, time.Now().UTC())
+	return func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error) {
+		now, err := relayNow(ctx, relayBaseURL)
+		if err != nil {
+			return "", fmt.Errorf("synchronize relay time: %w", err)
+		}
+		return Issue(id, targetDeviceID, role, slot, now)
 	}
 }
 
@@ -102,6 +114,93 @@ func issue(id *identity.Identity, targetDeviceID, role string, slot int, now tim
 	message := []byte(signingContext + payloadPart)
 	signature := ed25519.Sign(id.PrivateKey, message)
 	return TicketPrefix + "." + payloadPart + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+type relayTimeResponse struct {
+	UnixMillis int64 `json:"unix_ms"`
+}
+
+func relayNow(ctx context.Context, relayBaseURL string) (time.Time, error) {
+	timeURL, err := relayTimeURL(relayBaseURL)
+	if err != nil {
+		return time.Time{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, timeURL, nil)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("build relay time request: %w", err)
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Cache-Control", "no-store")
+
+	client := &http.Client{
+		Timeout: relayTimeTimeout,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	started := time.Now()
+	resp, err := client.Do(req)
+	finished := time.Now()
+	if err != nil {
+		return time.Time{}, fmt.Errorf("fetch relay time: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxRelayTimeBody))
+		msg := strings.TrimSpace(string(body))
+		if msg == "" {
+			msg = resp.Status
+		}
+		return time.Time{}, fmt.Errorf("relay time endpoint rejected request: %s", msg)
+	}
+
+	limited := io.LimitReader(resp.Body, maxRelayTimeBody+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("read relay time response: %w", err)
+	}
+	if len(body) == 0 || len(body) > maxRelayTimeBody {
+		return time.Time{}, errors.New("invalid relay time response length")
+	}
+	var payload relayTimeResponse
+	if err := json.Unmarshal(body, &payload); err != nil || payload.UnixMillis <= 0 {
+		return time.Time{}, errors.New("invalid relay time response")
+	}
+
+	roundTrip := finished.Sub(started)
+	if roundTrip < 0 || roundTrip > relayTimeTimeout {
+		return time.Time{}, errors.New("relay time request exceeded acceptable round-trip time")
+	}
+	serverTime := time.UnixMilli(payload.UnixMillis).UTC()
+	localMidpoint := started.Add(roundTrip / 2)
+	offset := serverTime.Sub(localMidpoint)
+	if offset > maxRelayClockOffset || offset < -maxRelayClockOffset {
+		return time.Time{}, fmt.Errorf("relay clock offset %s exceeds 24h safety bound", offset.Round(time.Second))
+	}
+	return finished.Add(offset).UTC(), nil
+}
+
+func relayTimeURL(relayBaseURL string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(relayBaseURL))
+	if err != nil || u.Host == "" {
+		return "", errors.New("relay time source must be a valid URL")
+	}
+	switch u.Scheme {
+	case "https":
+	case "wss":
+		u.Scheme = "https"
+	case "http":
+	case "ws":
+		u.Scheme = "http"
+	default:
+		return "", errors.New("relay time source must use https, http, wss, or ws")
+	}
+	u.User = nil
+	u.Path = "/v1/time"
+	u.RawPath = ""
+	u.RawQuery = ""
+	u.Fragment = ""
+	return u.String(), nil
 }
 
 func validDeviceID(s string) bool {

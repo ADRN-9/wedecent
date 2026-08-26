@@ -4,6 +4,7 @@ import { verifyRelayTicket } from "./relay-auth.js";
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const STREAM_PREFIX = "/v1/stream/";
 const STATUS_PREFIX = "/v1/status/";
+const TIME_PATH = "/v1/time";
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
 
 export default {
@@ -11,7 +12,17 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/healthz") {
-      return Response.json({ service: "wedecent-relay", status: "ok", version: 5 });
+      return Response.json({ service: "wedecent-relay", status: "ok", version: 6 });
+    }
+
+    if (url.pathname === TIME_PATH) {
+      if (request.method !== "GET") {
+        return new Response("Method not allowed", { status: 405 });
+      }
+      return Response.json(
+        { unix_ms: Date.now() },
+        { headers: { "Cache-Control": "no-store, no-cache, must-revalidate", Pragma: "no-cache" } },
+      );
     }
 
     if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
