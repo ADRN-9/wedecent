@@ -193,7 +193,7 @@ func newPseudoConsoleAttributeList(hpc uintptr) (*attributeList, error) {
 		uintptr(unsafe.Pointer(ptr)),
 		0,
 		procThreadAttributePseudoConsole,
-		uintptr(unsafe.Pointer(&hpc)),
+		hpc,
 		unsafe.Sizeof(hpc),
 		0,
 		0,
