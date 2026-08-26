@@ -17,6 +17,7 @@ import (
 	"strings"
 	"time"
 
+	"wedecent.com/wedecent/internal/account"
 	"wedecent.com/wedecent/internal/appdirs"
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/enrollment"
@@ -40,6 +41,8 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "identity":
 		err = runIdentity(os.Args[2:])
+	case "account":
+		err = runAccount(os.Args[2:])
 	case "enrollment-proof":
 		err = runEnrollmentProof(os.Args[2:])
 	case "discover":
@@ -103,6 +106,200 @@ func runIdentity(args []string) error {
 	fp, _ := identity.FingerprintPublicKey(id.PublicKey)
 	fmt.Printf("%s\t%s\t%s\n", id.ID, id.Name, fp)
 	return nil
+}
+
+func runAccount(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: wd account <login|status|logout> [options]")
+	}
+	switch args[0] {
+	case "login":
+		return runAccountLogin(args[1:])
+	case "status":
+		return runAccountStatus(args[1:])
+	case "logout":
+		return runAccountLogout(args[1:])
+	default:
+		return fmt.Errorf("unknown account command %q; use login, status, or logout", args[0])
+	}
+}
+
+func runAccountLogin(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account login", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	supabaseURL := fs.String("supabase-url", strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_URL")), "Supabase project URL (or WEDECENT_SUPABASE_URL)")
+	publishableKey := fs.String("publishable-key", strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_PUBLISHABLE_KEY")), "Supabase publishable key (or WEDECENT_SUPABASE_PUBLISHABLE_KEY)")
+	email := fs.String("email", strings.TrimSpace(os.Getenv("WEDECENT_ACCOUNT_EMAIL")), "account email (or WEDECENT_ACCOUNT_EMAIL)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account login [--email address]")
+	}
+	if strings.TrimSpace(*supabaseURL) == "" {
+		return errors.New("Supabase URL is required; set WEDECENT_SUPABASE_URL or use --supabase-url")
+	}
+	if strings.TrimSpace(*publishableKey) == "" {
+		return errors.New("Supabase publishable key is required; set WEDECENT_SUPABASE_PUBLISHABLE_KEY or use --publishable-key")
+	}
+	if strings.TrimSpace(*email) == "" {
+		return errors.New("account email is required; set WEDECENT_ACCOUNT_EMAIL or use --email")
+	}
+
+	password, err := readAccountPassword()
+	if err != nil {
+		return err
+	}
+	defer func() { password = "" }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	session, err := accountClient.Login(ctx, *supabaseURL, *publishableKey, *email, password)
+	if err != nil {
+		return err
+	}
+	if err := account.Save(account.SessionPath(*stateDir), session); err != nil {
+		return err
+	}
+	fmt.Printf("Signed in as %s (%s)\n", session.Email, session.UserID)
+	return nil
+}
+
+func runAccountStatus(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account status", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account status")
+	}
+
+	path := account.SessionPath(*stateDir)
+	session, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		fmt.Println("Signed in: no")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	session, refreshed, err := accountClient.EnsureFresh(ctx, session, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if refreshed {
+		if err := account.Save(path, session); err != nil {
+			return err
+		}
+	}
+	user, err := accountClient.VerifyUser(ctx, session)
+	if err != nil {
+		return err
+	}
+	if session.UserID != "" && user.ID != session.UserID {
+		return errors.New("Supabase session user does not match the stored account")
+	}
+	if user.Email != "" && user.Email != session.Email {
+		session.Email = user.Email
+		if err := account.Save(path, session); err != nil {
+			return err
+		}
+	}
+
+	fmt.Println("Signed in: yes")
+	fmt.Printf("Email: %s\n", session.Email)
+	fmt.Printf("User ID: %s\n", user.ID)
+	fmt.Printf("Access token expires: %s\n", time.Unix(session.ExpiresAt, 0).UTC().Format(time.RFC3339))
+	return nil
+}
+
+func runAccountLogout(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account logout", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account logout")
+	}
+
+	path := account.SessionPath(*stateDir)
+	session, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		fmt.Println("Signed in: no")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	fresh, _, refreshErr := accountClient.EnsureFresh(ctx, session, 0)
+	var remoteErr error
+	if refreshErr != nil {
+		remoteErr = refreshErr
+	} else {
+		remoteErr = accountClient.Logout(ctx, fresh)
+	}
+	if err := account.Delete(path); err != nil {
+		return err
+	}
+	if remoteErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: local account session removed, but remote logout failed: %v\n", remoteErr)
+	} else {
+		fmt.Println("Signed out")
+	}
+	return nil
+}
+
+func readAccountPassword() (string, error) {
+	fmt.Fprint(os.Stderr, "Supabase password: ")
+	tty, err := openPasswordTTY()
+	if err != nil {
+		return "", err
+	}
+	password, readErr := terminal.ReadPassword(tty)
+	closeErr := tty.Close()
+	fmt.Fprintln(os.Stderr)
+	if readErr != nil {
+		return "", readErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if password == "" {
+		return "", errors.New("account password is empty")
+	}
+	return password, nil
+}
+
+func openPasswordTTY() (*os.File, error) {
+	for _, path := range []string{"/dev/tty", "CONIN$"} {
+		if tty, err := os.OpenFile(path, os.O_RDWR, 0); err == nil {
+			return tty, nil
+		}
+	}
+	return nil, errors.New("no interactive terminal is available for secure password entry")
 }
 
 func runEnrollmentProof(args []string) error {
@@ -479,6 +676,7 @@ func usage() {
 Commands:
   init       Create this client's identity
   identity   Print client ID and fingerprint
+  account    Sign in, inspect, or sign out of the WeDecent account session
   enrollment-proof  Prove possession of this client identity for account enrollment
   discover   Find signed WeDecent LAN advertisements
   devices    List paired devices

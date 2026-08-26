@@ -18,20 +18,23 @@ This repository is an early MVP and should receive an independent security revie
 - Native Windows service mode refuses built-in LocalSystem/LocalService/NetworkService accounts
 - Short-lived Ed25519 proof-of-possession tickets bind relay stream upgrades to endpoint identity, target device, role and agent slot
 - Windows service does not require or load a shared relay secret for relay-auth-v2 streams
+- Supabase RLS, organization roles, explicit device access, and cryptographic device enrollment authorize account-to-device access
+- Relay admission requires a matching short-lived signed `terminal.connect` grant for clients, and Durable Object state prevents grant `jti` replay
+- Client account access/refresh tokens are stored in a mode-0600 session file on Unix-like systems and are never accepted as command-line arguments
+- Windows console password entry disables echo for account and pairing secret prompts
 
 ## Known gaps before production
 
-- No account-level RBAC or central revocation; relay-auth-v2 client tickets prove key possession, not user/device permission
 - No persistent security audit store
 - No relay IP/device rate limiter or abuse detection
 - A client that knows a device ID can intentionally consume parked relay slots; inner authentication protects shell access, but targeted availability controls are still required
 - No TPM/Secure Enclave/Windows CNG key storage
+- Windows client account sessions are not yet stored in DPAPI/Credential Manager; filesystem permissions are only the first storage layer
 - No automatic relay certificate issuance/rotation
 - No sandbox around the spawned shell; shell privilege equals the agent OS account
 - No file-transfer path validation because file transfer is not implemented yet
 - No fuzzing corpus/continuous fuzz infrastructure yet
 - Windows service mode still requires a dedicated account to be provisioned separately and granted the `Log on as a service` right
-- Worker v6 still accepts the legacy shared relay token on stream upgrades during migration; remove that fallback after all endpoints are upgraded
 
 ## Threat model note
 
