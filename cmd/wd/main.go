@@ -110,17 +110,19 @@ func runIdentity(args []string) error {
 
 func runAccount(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wd account <login|status|logout> [options]")
+		return errors.New("usage: wd account <login|status|enroll|logout> [options]")
 	}
 	switch args[0] {
 	case "login":
 		return runAccountLogin(args[1:])
 	case "status":
 		return runAccountStatus(args[1:])
+	case "enroll":
+		return runAccountEnroll(args[1:])
 	case "logout":
 		return runAccountLogout(args[1:])
 	default:
-		return fmt.Errorf("unknown account command %q; use login, status, or logout", args[0])
+		return fmt.Errorf("unknown account command %q; use login, status, enroll, or logout", args[0])
 	}
 }
 
@@ -224,6 +226,91 @@ func runAccountStatus(args []string) error {
 	fmt.Printf("Email: %s\n", session.Email)
 	fmt.Printf("User ID: %s\n", user.ID)
 	fmt.Printf("Access token expires: %s\n", time.Unix(session.ExpiresAt, 0).UTC().Format(time.RFC3339))
+	return nil
+}
+
+func runAccountEnroll(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account enroll", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	name := fs.String("name", hostname(), "client display name")
+	organizationID := fs.String("organization-id", strings.TrimSpace(os.Getenv("WEDECENT_ORGANIZATION_ID")), "optional organization UUID (or WEDECENT_ORGANIZATION_ID)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account enroll [--organization-id uuid]")
+	}
+
+	path := account.SessionPath(*stateDir)
+	accountSession, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		return errors.New("WeDecent account sign-in is required; run 'wd account login'")
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	fresh, refreshed, err := accountClient.EnsureFresh(ctx, accountSession, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if refreshed {
+		if err := account.Save(path, fresh); err != nil {
+			return err
+		}
+	}
+
+	id, err := identity.Ensure(*stateDir, *name)
+	if err != nil {
+		return err
+	}
+	publicKey := base64.RawURLEncoding.EncodeToString(id.PublicKey)
+	challenge, err := accountClient.RequestClientEnrollmentChallenge(ctx, fresh, id.ID, publicKey, id.Name, *organizationID)
+	if err != nil {
+		return err
+	}
+
+	message, err := enrollment.Message(enrollment.ProofFields{
+		ChallengeID:    challenge.ChallengeID,
+		Challenge:      challenge.Challenge,
+		UserID:         challenge.UserID,
+		DeviceID:       id.ID,
+		PublicKey:      publicKey,
+		Kind:           "client",
+		OrganizationID: challenge.OrganizationID,
+		ExpiresUnixMS:  challenge.ExpiresUnixMS,
+	})
+	if err != nil {
+		return fmt.Errorf("build device enrollment proof: %w", err)
+	}
+	signature := base64.RawURLEncoding.EncodeToString(ed25519.Sign(id.PrivateKey, message))
+	device, err := accountClient.CompleteClientEnrollment(ctx, fresh, account.DeviceEnrollmentProof{
+		ChallengeID:    challenge.ChallengeID,
+		Challenge:      challenge.Challenge,
+		DeviceID:       id.ID,
+		PublicKey:      publicKey,
+		Kind:           "client",
+		Name:           id.Name,
+		OrganizationID: challenge.OrganizationID,
+		ExpiresUnixMS:  challenge.ExpiresUnixMS,
+		Signature:      signature,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Enrolled %s as client", device.DeviceID)
+	if device.OrganizationID != "" {
+		fmt.Printf(" in organization %s", device.OrganizationID)
+	}
+	fmt.Println()
 	return nil
 }
 
