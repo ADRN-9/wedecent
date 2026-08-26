@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(14);
+select plan(16);
 
 select ok(
     (select c.relrowsecurity from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'organizations'),
@@ -67,14 +67,40 @@ select is(
               'can_manage_organization',
               'is_organization_owner',
               'organization_has_other_owner',
-              'can_bootstrap_organization',
+              'bootstrap_organization_owner',
               'can_manage_device',
               'can_view_device',
               'can_connect_device'
           )
     ),
     9::bigint,
-    'all RLS authorization helpers are SECURITY DEFINER'
+    'expected authorization and bootstrap functions are SECURITY DEFINER'
+);
+
+select ok(
+    exists (
+        select 1
+        from pg_catalog.pg_trigger t
+        join pg_catalog.pg_class c on c.oid = t.tgrelid
+        join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+        where n.nspname = 'public'
+          and c.relname = 'organizations'
+          and t.tgname = 'organizations_bootstrap_owner'
+          and not t.tgisinternal
+          and t.tgenabled <> 'D'
+    ),
+    'organization owner bootstrap trigger is installed and enabled'
+);
+
+select ok(
+    not exists (
+        select 1
+        from pg_catalog.pg_proc p
+        join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'wedecent_private'
+          and p.proname = 'can_bootstrap_organization'
+    ),
+    'obsolete client bootstrap helper is removed'
 );
 
 select is(

@@ -6,7 +6,7 @@ The account-authorization layer keeps those decisions separate.
 
 ## Foundation schema
 
-The first migration is `supabase/migrations/20260826160000_account_authorization_foundation.sql`.
+The foundation starts with `supabase/migrations/20260826160000_account_authorization_foundation.sql`. The follow-up migration `20260826180000_bootstrap_organization_owner_trigger.sql` makes first-owner creation atomic with organization creation.
 
 It creates:
 
@@ -61,7 +61,7 @@ The relay will require **both** the existing `wdt2` endpoint proof and this serv
 
 ## RLS notes
 
-Organization creators can insert an organization and bootstrap their own first `owner` membership. Owner/admin membership management is RLS-controlled, and a trigger prevents removal or demotion of the final organization owner.
+Organization creators can insert an organization only for themselves. A locked-down `SECURITY DEFINER` `AFTER INSERT` trigger atomically creates the creator's first `owner` membership; browser-authenticated code does not bootstrap that row directly. Owner/admin membership management remains RLS-controlled, and the existing final-owner guard prevents removal or demotion of the final organization owner.
 
 Device identity rows, enrollment challenges, and connection-grant writes remain server-only. This is intentional: RLS is not a substitute for Ed25519 proof-of-possession verification.
 
