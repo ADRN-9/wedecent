@@ -168,6 +168,10 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 		case protocol.TypeClose:
 			var closeMsg protocol.Close
 			_ = protocol.ParseJSON(frame.Payload, &closeMsg)
+			// Acknowledge the application-level close before tearing down the
+			// underlying relay connection. This gives relays time to deliver the
+			// server's final frame instead of racing the WebSocket close.
+			_ = writeFrame(protocol.Frame{Type: protocol.TypeClose})
 			return closeMsg.ExitCode, nil
 		case protocol.TypeError:
 			return 255, protocolError(frame.Payload)

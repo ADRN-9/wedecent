@@ -200,7 +200,13 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {
 	for {
 		select {
 		case code := <-exitCh:
-			_ = writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: code})})
+			if err := writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: code})}); err != nil {
+				return
+			}
+			// Do not immediately close the outer relay after sending the final
+			// application frame. Wait until the client acknowledges it (new
+			// clients) or closes its side after receiving it (older clients).
+			waitForPeerClose(frameCh, readErrCh, 2*time.Second)
 			return
 		case err := <-readErrCh:
 			if !errors.Is(err, io.EOF) {
@@ -228,6 +234,24 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {
 		case <-ptyReadDone:
 			// Wait for Cmd.Wait() to provide the authoritative exit code.
 			ptyReadDone = nil
+		}
+	}
+}
+
+func waitForPeerClose(frameCh <-chan protocol.Frame, readErrCh <-chan error, timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case frame := <-frameCh:
+			if frame.Type == protocol.TypeClose {
+				return
+			}
+		case <-readErrCh:
+			return
+		case <-timer.C:
+			return
 		}
 	}
 }
