@@ -36,16 +36,26 @@ account-session.json
 With the default application-directory behavior this lives beside the client
 identity and trust store. `WEDECENT_HOME` continues to override the state root.
 
-The session file contains the Supabase access token and refresh token and must be
-treated as a credential. On Unix-like systems the client creates the state
-directory with mode `0700`, creates the session file with mode `0600`, and refuses
-to load a session file that is readable or writable by group/other users. Writes
-use a protected temporary file and rename so a partially written credential file
-is not installed.
+The session file contains a reusable Supabase refresh token and must be treated as
+a credential. On Unix-like systems the client creates the state directory with
+mode `0700`, creates the session file with mode `0600`, and refuses to load a
+session file that is readable or writable by group/other users. Writes use a
+protected temporary file and rename so a partially written credential file is
+not installed.
 
-Windows builds now disable console echo while reading passwords. Windows ACL- or
-credential-vault-backed storage remains a separate hardening milestone; POSIX
-mode bits alone are not a complete Windows secret-storage design.
+On Windows, the access token, refresh token, and an authoritative copy of the
+session metadata are sealed with Windows Data Protection API (DPAPI) using the
+current-user scope. The JSON envelope keeps non-secret metadata visible, but load
+requires that it exactly match the DPAPI-protected copy; changing the Supabase URL
+or other envelope metadata therefore cannot redirect a valid token to another
+endpoint. `CRYPTPROTECT_LOCAL_MACHINE` is deliberately not used, so another local
+Windows user is not granted decryption merely because it is on the same computer.
+DPAPI calls are non-interactive.
+
+Legacy plaintext Windows account-session files are rejected instead of silently
+continuing to use them. A user with such a file must run `wd account login` again
+to create DPAPI-protected storage. Windows builds also disable console echo while
+reading passwords.
 
 ## Refresh behavior
 

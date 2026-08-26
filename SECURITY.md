@@ -20,7 +20,7 @@ This repository is an early MVP and should receive an independent security revie
 - Windows service does not require or load a shared relay secret for relay-auth-v2 streams
 - Supabase RLS, organization roles, explicit device access, and cryptographic device enrollment authorize account-to-device access
 - Relay admission requires a matching short-lived signed `terminal.connect` grant for clients, and Durable Object state prevents grant `jti` replay
-- Client account access/refresh tokens are stored in a mode-0600 session file on Unix-like systems and are never accepted as command-line arguments
+- Client account access/refresh tokens are stored in a mode-0600 session file on Unix-like systems; Windows seals the session with CurrentUser DPAPI, and account tokens are never accepted as command-line arguments
 - WebSocket relay terminal connections acquire short-lived account grants in memory from the authenticated control-plane session; grant JWTs are not persisted by the normal connect path
 - Windows console password entry disables echo for account and pairing secret prompts
 
@@ -30,7 +30,7 @@ This repository is an early MVP and should receive an independent security revie
 - No relay IP/device rate limiter or abuse detection
 - A client that knows a device ID can intentionally consume parked relay slots; inner authentication protects shell access, but targeted availability controls are still required
 - No TPM/Secure Enclave/Windows CNG key storage
-- Windows client account sessions are not yet stored in DPAPI/Credential Manager; filesystem permissions are only the first storage layer
+- Windows account sessions use CurrentUser DPAPI but are not yet backed by TPM/CNG or a dedicated Credential Manager integration
 - No automatic relay certificate issuance/rotation
 - No sandbox around the spawned shell; shell privilege equals the agent OS account
 - No file-transfer path validation because file transfer is not implemented yet

@@ -12,7 +12,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 )
@@ -84,19 +83,14 @@ func Load(path string) (*Session, error) {
 	if len(data) == 0 || len(data) > maxSessionSize {
 		return nil, errors.New("account session file has an invalid size")
 	}
-	if runtime.GOOS != "windows" {
-		if info.Mode().Perm()&0o077 != 0 {
-			return nil, fmt.Errorf("account session permissions are too broad: %o (want 600)", info.Mode().Perm())
-		}
-	}
-	var session Session
-	if err := json.Unmarshal(data, &session); err != nil {
-		return nil, fmt.Errorf("decode account session: %w", err)
+	session, err := decodeSessionStorage(info, data)
+	if err != nil {
+		return nil, err
 	}
 	if err := session.validate(); err != nil {
 		return nil, fmt.Errorf("invalid account session: %w", err)
 	}
-	return &session, nil
+	return session, nil
 }
 
 func Save(path string, session *Session) error {
@@ -113,11 +107,10 @@ func Save(path string, session *Session) error {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		return fmt.Errorf("protect account session directory: %w", err)
 	}
-	data, err := json.MarshalIndent(session, "", "  ")
+	data, err := encodeSessionStorage(session)
 	if err != nil {
-		return fmt.Errorf("encode account session: %w", err)
+		return err
 	}
-	data = append(data, '\n')
 
 	tmp, err := os.CreateTemp(dir, ".account-session-*")
 	if err != nil {
