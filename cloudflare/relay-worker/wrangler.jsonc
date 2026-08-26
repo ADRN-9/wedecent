@@ -3,6 +3,13 @@
   "name": "wedecent-relay",
   "main": "src/index.js",
   "compatibility_date": "2026-08-23",
+  "workers_dev": false,
+  "routes": [
+    {
+      "pattern": "relay.wedecent.com",
+      "custom_domain": true
+    }
+  ],
   "durable_objects": {
     "bindings": [
       {
