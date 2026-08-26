@@ -3,13 +3,14 @@ import { DurableObject } from "cloudflare:workers";
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const STREAM_PREFIX = "/v1/stream/";
 const STATUS_PREFIX = "/v1/status/";
+const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
 
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/healthz") {
-      return Response.json({ service: "wedecent-relay", status: "ok", version: 3 });
+      return Response.json({ service: "wedecent-relay", status: "ok", version: 4 });
     }
 
     if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
@@ -49,6 +50,14 @@ export default {
       return new Response("Invalid relay role", { status: 400 });
     }
 
+    const slot = url.searchParams.get("slot");
+    if (role === "agent" && slot !== null && !AGENT_SLOT.test(slot)) {
+      return new Response("Invalid agent relay slot", { status: 400 });
+    }
+    if (role === "client" && slot !== null) {
+      return new Response("Clients must not specify a relay slot", { status: 400 });
+    }
+
     const objectId = env.DEVICE_RELAY.idFromName(deviceId);
     return env.DEVICE_RELAY.get(objectId).fetch(request);
   },
@@ -64,7 +73,7 @@ export class DeviceRelay extends DurableObject {
 
     const role = url.searchParams.get("role");
     if (role === "agent") {
-      return this.#acceptAgent();
+      return this.#acceptAgent(url);
     }
     if (role === "client") {
       return this.#acceptClient();
@@ -72,15 +81,49 @@ export class DeviceRelay extends DurableObject {
     return new Response("Invalid relay role", { status: 400 });
   }
 
-  #acceptAgent() {
+  #acceptAgent(url) {
+    const slotParam = url.searchParams.get("slot");
+    const slot = slotParam === null ? null : Number.parseInt(slotParam, 10);
+
+    // v4 agents identify each parked outbound connection by a stable logical
+    // slot number. Retire free sockets from older generations before accepting
+    // the replacement. This prevents hibernated/stale Durable Object sockets
+    // from accumulating across agent restarts and being selected by clients.
+    if (slot !== null) {
+      this.#retireSupersededFreeAgents(slot);
+    }
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const id = crypto.randomUUID();
+    const tags = ["agent"];
+    if (slot !== null) {
+      tags.push(`agent-slot-${slot}`);
+    }
 
-    server.serializeAttachment({ id, role: "agent", peerId: null });
-    this.ctx.acceptWebSocket(server, ["agent"]);
+    server.serializeAttachment({ id, role: "agent", peerId: null, slot });
+    this.ctx.acceptWebSocket(server, tags);
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  #retireSupersededFreeAgents(slot) {
+    for (const socket of this.ctx.getWebSockets("agent")) {
+      if (socket.readyState !== WebSocket.OPEN) {
+        continue;
+      }
+
+      const attachment = socket.deserializeAttachment();
+      if (attachment?.role !== "agent" || attachment.peerId) {
+        continue;
+      }
+
+      const legacy = !Number.isInteger(attachment.slot);
+      const duplicateSlot = attachment.slot === slot;
+      if (legacy || duplicateSlot) {
+        socket.close(1000, legacy ? "Replaced legacy relay slot" : "Superseded relay slot");
+      }
+    }
   }
 
   #acceptClient() {

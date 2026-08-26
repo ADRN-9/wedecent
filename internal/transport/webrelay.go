@@ -39,22 +39,22 @@ type WebRelayDialer struct {
 }
 
 func (d WebRelayDialer) Dial(ctx context.Context) (Conn, error) {
-	u, err := webRelayURL(d.BaseURL, d.TargetDeviceID, "client")
+	u, err := webRelayURL(d.BaseURL, d.TargetDeviceID, "client", 0)
 	if err != nil {
 		return nil, err
 	}
 	return dialWebSocket(ctx, u, d.Options)
 }
 
-func WaitWebRelaySession(ctx context.Context, baseURL string, opts WebRelayOptions, deviceID string) (net.Conn, error) {
-	u, err := webRelayURL(baseURL, deviceID, "agent")
+func WaitWebRelaySession(ctx context.Context, baseURL string, opts WebRelayOptions, deviceID string, slot int) (net.Conn, error) {
+	u, err := webRelayURL(baseURL, deviceID, "agent", slot)
 	if err != nil {
 		return nil, err
 	}
 	return dialWebSocket(ctx, u, opts)
 }
 
-func webRelayURL(baseURL, deviceID, role string) (string, error) {
+func webRelayURL(baseURL, deviceID, role string, slot int) (string, error) {
 	if !validDeviceID(deviceID) {
 		return "", errors.New("invalid WeDecent device ID")
 	}
@@ -73,7 +73,21 @@ func webRelayURL(baseURL, deviceID, role string) (string, error) {
 	}
 	u.Path = "/v1/stream/" + deviceID
 	q := u.Query()
-	q.Set("role", role)
+	switch role {
+	case "agent":
+		if slot < 1 || slot > 32 {
+			return "", errors.New("web relay agent slot must be between 1 and 32")
+		}
+		q.Set("role", role)
+		q.Set("slot", strconv.Itoa(slot))
+	case "client":
+		if slot != 0 {
+			return "", errors.New("web relay client must not specify an agent slot")
+		}
+		q.Set("role", role)
+	default:
+		return "", errors.New("invalid web relay role")
+	}
 	u.RawQuery = q.Encode()
 	u.Fragment = ""
 	return u.String(), nil

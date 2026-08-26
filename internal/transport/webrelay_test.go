@@ -16,13 +16,30 @@ import (
 )
 
 func TestWebRelayURL(t *testing.T) {
-	got, err := webRelayURL("https://relay.wedecent.com", "wd_4ksk5edkttwsxqx4", "agent")
+	got, err := webRelayURL("https://relay.wedecent.com", "wd_4ksk5edkttwsxqx4", "agent", 4)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=agent"
+	want := "wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=agent&slot=4"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestWebRelayClientURLHasNoSlot(t *testing.T) {
+	got, err := webRelayURL("https://relay.wedecent.com", "wd_4ksk5edkttwsxqx4", "client", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=client"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestWebRelayRejectsInvalidAgentSlot(t *testing.T) {
+	if _, err := webRelayURL("https://relay.wedecent.com", "wd_4ksk5edkttwsxqx4", "agent", 0); err == nil {
+		t.Fatal("expected invalid agent slot to fail")
 	}
 }
 

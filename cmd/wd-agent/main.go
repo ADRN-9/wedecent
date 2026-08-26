@@ -271,7 +271,7 @@ func relayAccessToken(stateDir string) (string, error) {
 func webRelayLoop(ctx context.Context, slot int, baseURL string, opts transport.WebRelayOptions, id *identity.Identity, server *session.Server) {
 	backoff := time.Second
 	for ctx.Err() == nil {
-		conn, err := transport.WaitWebRelaySession(ctx, baseURL, opts, id.ID)
+		conn, err := transport.WaitWebRelaySession(ctx, baseURL, opts, id.ID, slot)
 		if err != nil {
 			if ctx.Err() != nil {
 				return
