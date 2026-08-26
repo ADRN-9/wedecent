@@ -47,7 +47,7 @@ A user may connect to a target device when one of these is true:
 
 Ordinary organization `member` status lets a user discover/read organization device metadata but does not implicitly grant terminal access.
 
-The future grant issuer will evaluate this policy on the trusted server, then issue a short-lived signed authorization grant bound to at least:
+The `connection-grant` Edge Function evaluates this policy through a service-role-only database RPC, then issues a short-lived Ed25519-signed authorization grant bound to:
 
 - Supabase `user_id`;
 - organization ID when applicable;
@@ -70,8 +70,6 @@ Device identity rows, enrollment challenges, and connection-grant writes remain 
 This foundation does not yet:
 
 - configure a Supabase project or Auth providers;
-- implement the enrollment Edge Function;
-- issue or sign account authorization grants;
 - make Cloudflare require account grants;
 - synchronize device `last_seen_at`;
 - replace the operator credential used by `/v1/status/...`.

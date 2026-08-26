@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(19);
+select plan(22);
 
 select ok(
     (select c.relrowsecurity from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'organizations'),
@@ -131,6 +131,36 @@ select ok(
         'EXECUTE'
     ),
     'service role can execute device enrollment completion RPC'
+);
+
+select ok(
+    exists (
+        select 1
+        from pg_catalog.pg_proc p
+        join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public'
+          and p.proname = 'issue_connection_grant'
+          and p.prosecdef
+    ),
+    'connection grant issuance RPC is SECURITY DEFINER'
+);
+
+select ok(
+    not pg_catalog.has_function_privilege(
+        'authenticated',
+        'public.issue_connection_grant(uuid,text,text)',
+        'EXECUTE'
+    ),
+    'authenticated users cannot execute connection grant issuance RPC directly'
+);
+
+select ok(
+    pg_catalog.has_function_privilege(
+        'service_role',
+        'public.issue_connection_grant(uuid,text,text)',
+        'EXECUTE'
+    ),
+    'service role can execute connection grant issuance RPC'
 );
 
 select is(

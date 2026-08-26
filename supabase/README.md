@@ -8,4 +8,4 @@ The account-authorization foundation intentionally gives browser-authenticated u
 
 ## Edge Functions
 
-`functions/device-enrollment/index.ts` is the trusted proof-of-possession enrollment endpoint. Hosted deployments must keep JWT verification enabled and must never expose the project secret/service-role key to browsers or endpoint processes.
+`functions/device-enrollment/index.ts` is the trusted proof-of-possession enrollment endpoint. `functions/connection-grant/index.ts` is the trusted short-lived terminal authorization issuer. Hosted deployments must keep JWT verification enabled and must never expose the project secret/service-role key or connection-grant signing private key to browsers or endpoint processes.
