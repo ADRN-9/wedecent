@@ -72,8 +72,21 @@ The publishable key is intentionally client-safe. The following values are not:
 None of those secret credentials should be committed, logged, copied into issue
 reports, or supplied as normal command-line arguments.
 
-This milestone intentionally does **not** make `wd connect` acquire a connection
-grant automatically. The next client-account-grants change should load and
-refresh this session, call the existing `connection-grant` Edge Function, keep
-the returned 90-second grant in memory only, and pass it to the existing WebSocket
-relay dialer.
+## Automatic relay grants
+
+When `wd connect` selects a `wsrelay://` locator and no diagnostic
+`--connection-grant-file` override is supplied, the client now loads the local
+account session, refreshes it when necessary, persists any rotated refresh token,
+and calls `/functions/v1/connection-grant` with this client's cryptographic
+device ID and the requested target device ID.
+
+The returned `terminal.connect` grant is kept only in process memory and is
+passed directly to the WebSocket relay transport. It is not written to disk,
+printed, or passed through a command-line argument. The existing
+`--connection-grant-file` option remains an explicit diagnostic override for
+relay authorization tests.
+
+Direct TCP and legacy TCP-relay locators do not load the account session or
+request a Supabase connection grant. If a WebSocket relay connection is selected
+without a local account session, `wd` fails before dialing and instructs the user
+to run `wd account login`.

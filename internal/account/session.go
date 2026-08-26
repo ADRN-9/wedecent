@@ -45,6 +45,15 @@ type Client struct {
 	Now  func() time.Time
 }
 
+type connectionGrantResponse struct {
+	Grant  string `json:"grant"`
+	Claims struct {
+		ClientDeviceID string `json:"client_device_id"`
+		TargetDeviceID string `json:"target_device_id"`
+		Permission     string `json:"permission"`
+	} `json:"claims"`
+}
+
 type authResponse struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
@@ -257,6 +266,43 @@ func (c Client) VerifyUser(ctx context.Context, session *Session) (User, error) 
 		return User{}, errors.New("Supabase user response is missing an ID")
 	}
 	return user, nil
+}
+
+func (c Client) IssueConnectionGrant(ctx context.Context, session *Session, clientDeviceID, targetDeviceID string) (string, error) {
+	if session == nil {
+		return "", errors.New("account session is nil")
+	}
+	if err := session.validate(); err != nil {
+		return "", fmt.Errorf("invalid account session: %w", err)
+	}
+	clientDeviceID = strings.TrimSpace(clientDeviceID)
+	targetDeviceID = strings.TrimSpace(targetDeviceID)
+	if clientDeviceID == "" || targetDeviceID == "" {
+		return "", errors.New("client and target device IDs are required")
+	}
+	if clientDeviceID == targetDeviceID {
+		return "", errors.New("client and target device IDs must differ")
+	}
+
+	var response connectionGrantResponse
+	if err := c.doJSON(ctx, http.MethodPost, session.SupabaseURL+"/functions/v1/connection-grant", session.PublishableKey, session.AccessToken, map[string]string{
+		"client_device_id": clientDeviceID,
+		"target_device_id": targetDeviceID,
+	}, &response); err != nil {
+		return "", fmt.Errorf("issue connection grant: %w", err)
+	}
+	grant := strings.TrimSpace(response.Grant)
+	if grant == "" || strings.ContainsAny(grant, "\r\n\t ") {
+		return "", errors.New("connection grant service returned an invalid JWT")
+	}
+	parts := strings.Split(grant, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", errors.New("connection grant service returned an invalid JWT")
+	}
+	if response.Claims.ClientDeviceID != clientDeviceID || response.Claims.TargetDeviceID != targetDeviceID || response.Claims.Permission != "terminal.connect" {
+		return "", errors.New("connection grant service returned mismatched claims")
+	}
+	return grant, nil
 }
 
 func (c Client) Logout(ctx context.Context, session *Session) error {

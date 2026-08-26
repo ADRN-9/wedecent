@@ -223,3 +223,64 @@ func writeJSON(t *testing.T, w http.ResponseWriter, v any) {
 		t.Fatal(err)
 	}
 }
+
+func TestIssueConnectionGrant(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/functions/v1/connection-grant" {
+			http.Error(w, "unexpected request", http.StatusNotFound)
+			return
+		}
+		if got := r.Header.Get("apikey"); got != "publishable-test" {
+			t.Fatalf("apikey = %q", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer access" {
+			t.Fatalf("authorization = %q", got)
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if body["client_device_id"] != "wd_aaaaaaaaaaaaaaaa" || body["target_device_id"] != "wd_bbbbbbbbbbbbbbbb" {
+			t.Fatalf("body = %#v", body)
+		}
+		writeJSON(t, w, map[string]any{
+			"grant": "header.payload.signature",
+			"claims": map[string]any{
+				"client_device_id": "wd_aaaaaaaaaaaaaaaa",
+				"target_device_id": "wd_bbbbbbbbbbbbbbbb",
+				"permission":       "terminal.connect",
+			},
+		})
+	}))
+	defer server.Close()
+
+	session := validSession(server.URL, time.Now().Add(time.Hour).Unix())
+	client := Client{HTTP: server.Client()}
+	grant, err := client.IssueConnectionGrant(context.Background(), session, "wd_aaaaaaaaaaaaaaaa", "wd_bbbbbbbbbbbbbbbb")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant != "header.payload.signature" {
+		t.Fatalf("grant = %q", grant)
+	}
+}
+
+func TestIssueConnectionGrantRejectsMismatchedClaims(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, map[string]any{
+			"grant": "header.payload.signature",
+			"claims": map[string]any{
+				"client_device_id": "wd_cccccccccccccccc",
+				"target_device_id": "wd_bbbbbbbbbbbbbbbb",
+				"permission":       "terminal.connect",
+			},
+		})
+	}))
+	defer server.Close()
+
+	session := validSession(server.URL, time.Now().Add(time.Hour).Unix())
+	client := Client{HTTP: server.Client()}
+	if _, err := client.IssueConnectionGrant(context.Background(), session, "wd_aaaaaaaaaaaaaaaa", "wd_bbbbbbbbbbbbbbbb"); err == nil || !strings.Contains(err.Error(), "mismatched claims") {
+		t.Fatalf("error = %v", err)
+	}
+}

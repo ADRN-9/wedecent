@@ -575,11 +575,42 @@ func runConnect(args []string) (int, error) {
 		return 0, errors.New("--connection-grant-file is only valid for a WebSocket relay connection")
 	}
 	if isWebRelay && connectionGrant == "" {
-		return 0, errors.New("--connection-grant-file is required for a WebSocket relay terminal connection")
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		connectionGrant, err = automaticConnectionGrant(ctx, *stateDir, id.ID, deviceID, account.Client{})
+		if err != nil {
+			return 0, err
+		}
 	}
 	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, connectionGrant)}
 	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
+}
+
+func automaticConnectionGrant(ctx context.Context, stateDir, clientDeviceID, targetDeviceID string, accountClient account.Client) (string, error) {
+	path := account.SessionPath(stateDir)
+	accountSession, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		return "", errors.New("WeDecent account sign-in is required for relay connections; run 'wd account login'")
+	}
+	if err != nil {
+		return "", err
+	}
+
+	fresh, refreshed, err := accountClient.EnsureFresh(ctx, accountSession, 2*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	if refreshed {
+		if err := account.Save(path, fresh); err != nil {
+			return "", err
+		}
+	}
+	grant, err := accountClient.IssueConnectionGrant(ctx, fresh, clientDeviceID, targetDeviceID)
+	if err != nil {
+		return "", err
+	}
+	return grant, nil
 }
 
 func clientWebRelayOptions(id *identity.Identity) transport.WebRelayOptions {

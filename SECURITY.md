@@ -21,6 +21,7 @@ This repository is an early MVP and should receive an independent security revie
 - Supabase RLS, organization roles, explicit device access, and cryptographic device enrollment authorize account-to-device access
 - Relay admission requires a matching short-lived signed `terminal.connect` grant for clients, and Durable Object state prevents grant `jti` replay
 - Client account access/refresh tokens are stored in a mode-0600 session file on Unix-like systems and are never accepted as command-line arguments
+- WebSocket relay terminal connections acquire short-lived account grants in memory from the authenticated control-plane session; grant JWTs are not persisted by the normal connect path
 - Windows console password entry disables echo for account and pairing secret prompts
 
 ## Known gaps before production
