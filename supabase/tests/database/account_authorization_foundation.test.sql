@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(16);
+select plan(19);
 
 select ok(
     (select c.relrowsecurity from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'organizations'),
@@ -101,6 +101,36 @@ select ok(
           and p.proname = 'can_bootstrap_organization'
     ),
     'obsolete client bootstrap helper is removed'
+);
+
+select ok(
+    exists (
+        select 1
+        from pg_catalog.pg_proc p
+        join pg_catalog.pg_namespace n on n.oid = p.pronamespace
+        where n.nspname = 'public'
+          and p.proname = 'complete_device_enrollment'
+          and p.prosecdef
+    ),
+    'device enrollment completion RPC is SECURITY DEFINER'
+);
+
+select ok(
+    not pg_catalog.has_function_privilege(
+        'authenticated',
+        'public.complete_device_enrollment(uuid,uuid,text,text,public.device_kind,text,uuid,text)',
+        'EXECUTE'
+    ),
+    'authenticated users cannot execute device enrollment completion RPC'
+);
+
+select ok(
+    pg_catalog.has_function_privilege(
+        'service_role',
+        'public.complete_device_enrollment(uuid,uuid,text,text,public.device_kind,text,uuid,text)',
+        'EXECUTE'
+    ),
+    'service role can execute device enrollment completion RPC'
 );
 
 select is(

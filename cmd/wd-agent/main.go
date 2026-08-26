@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +20,7 @@ import (
 
 	"wedecent.com/wedecent/internal/appdirs"
 	"wedecent.com/wedecent/internal/discovery"
+	"wedecent.com/wedecent/internal/enrollment"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/relayauth"
 	"wedecent.com/wedecent/internal/session"
@@ -39,6 +43,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "identity":
 		err = runIdentity(os.Args[2:])
+	case "enrollment-proof":
+		err = runEnrollmentProof(os.Args[2:])
 	case "service":
 		err = runServiceCommand(os.Args[2:])
 	default:
@@ -109,6 +115,78 @@ func runIdentity(args []string) error {
 	fp, _ := identity.FingerprintPublicKey(id.PublicKey)
 	fmt.Printf("%s\t%s\t%s\n", id.ID, id.Name, fp)
 	return nil
+}
+
+func runEnrollmentProof(args []string) error {
+	state, _ := appdirs.Agent()
+	fs := flag.NewFlagSet("enrollment-proof", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "agent state directory")
+	name := fs.String("name", hostname(), "device display name")
+	request := fs.Bool("request", false, "print an enrollment challenge request instead of signing a challenge")
+	kind := fs.String("kind", "agent", "device kind: client, agent, or hybrid")
+	organizationID := fs.String("organization-id", "", "optional organization UUID")
+	challengeID := fs.String("challenge-id", "", "challenge UUID returned by the enrollment service")
+	challenge := fs.String("challenge", "", "base64url enrollment challenge")
+	userID := fs.String("user-id", "", "Supabase Auth user UUID returned by the enrollment service")
+	expiresUnixMS := fs.Int64("expires-unix-ms", 0, "challenge expiry in Unix milliseconds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	id, err := identity.Ensure(*stateDir, *name)
+	if err != nil {
+		return err
+	}
+	pub := base64.RawURLEncoding.EncodeToString(id.PublicKey)
+
+	if *request {
+		payload := map[string]any{
+			"action":     "challenge",
+			"device_id":  id.ID,
+			"public_key": pub,
+			"kind":       *kind,
+			"name":       id.Name,
+		}
+		if *organizationID != "" {
+			payload["organization_id"] = *organizationID
+		}
+		return writeJSON(payload)
+	}
+
+	msg, err := enrollment.Message(enrollment.ProofFields{
+		ChallengeID:    *challengeID,
+		Challenge:      *challenge,
+		UserID:         *userID,
+		DeviceID:       id.ID,
+		PublicKey:      pub,
+		Kind:           *kind,
+		OrganizationID: *organizationID,
+		ExpiresUnixMS:  *expiresUnixMS,
+	})
+	if err != nil {
+		return err
+	}
+	sig := ed25519.Sign(id.PrivateKey, msg)
+	payload := map[string]any{
+		"action":          "complete",
+		"challenge_id":    *challengeID,
+		"challenge":       *challenge,
+		"device_id":       id.ID,
+		"public_key":      pub,
+		"kind":            *kind,
+		"name":            id.Name,
+		"expires_unix_ms": *expiresUnixMS,
+		"signature":       base64.RawURLEncoding.EncodeToString(sig),
+	}
+	if *organizationID != "" {
+		payload["organization_id"] = *organizationID
+	}
+	return writeJSON(payload)
+}
+
+func writeJSON(value any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(value)
 }
 
 type serveConfig struct {
@@ -338,6 +416,7 @@ func usage() {
 Commands:
   init             Create identity and one-time pairing secret
   identity         Print device ID and fingerprint
+  enrollment-proof Print or sign a cryptographic device-enrollment request
   pairing-secret   Rotate and print a one-time pairing secret
   serve            Run the terminal agent (direct, relay, or both)
   service          Install and manage the native Windows service`)
