@@ -27,7 +27,10 @@ const (
 )
 
 type WebRelayOptions struct {
-	Token             string
+	// TicketSource is the v2 proof-of-possession credential source. When set,
+	// it takes precedence over Token and is called for every WebSocket upgrade.
+	TicketSource      func(targetDeviceID, role string, slot int) (string, error)
+	Token             string // Legacy v1 shared relay token; retained for migration only.
 	Timeout           time.Duration
 	KeepAliveInterval time.Duration
 }
@@ -115,6 +118,11 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 		timeout = 15 * time.Second
 	}
 
+	credential, err := webRelayCredential(u, opts)
+	if err != nil {
+		return nil, err
+	}
+
 	host := u.Hostname()
 	port := u.Port()
 	if port == "" {
@@ -141,7 +149,7 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 
 	deadline := time.Now().Add(timeout)
 	_ = raw.SetDeadline(deadline)
-	conn, err := websocketClientHandshake(raw, u, opts.Token)
+	conn, err := websocketClientHandshake(raw, u, credential)
 	if err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -164,6 +172,44 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 		}
 	}()
 	return conn, nil
+}
+
+func webRelayCredential(u *url.URL, opts WebRelayOptions) (string, error) {
+	if opts.TicketSource == nil {
+		return strings.TrimSpace(opts.Token), nil
+	}
+	const prefix = "/v1/stream/"
+	if !strings.HasPrefix(u.Path, prefix) {
+		return "", errors.New("invalid web relay stream path")
+	}
+	targetDeviceID := strings.TrimPrefix(u.Path, prefix)
+	if !validDeviceID(targetDeviceID) {
+		return "", errors.New("invalid web relay target device ID")
+	}
+	role := u.Query().Get("role")
+	slot := 0
+	switch role {
+	case "agent":
+		parsed, err := strconv.Atoi(u.Query().Get("slot"))
+		if err != nil || parsed < 1 || parsed > 32 {
+			return "", errors.New("invalid web relay agent slot")
+		}
+		slot = parsed
+	case "client":
+		if u.Query().Has("slot") {
+			return "", errors.New("web relay client must not specify an agent slot")
+		}
+	default:
+		return "", errors.New("invalid web relay role")
+	}
+	ticket, err := opts.TicketSource(targetDeviceID, role, slot)
+	if err != nil {
+		return "", fmt.Errorf("issue web relay ticket: %w", err)
+	}
+	if strings.TrimSpace(ticket) == "" {
+		return "", errors.New("web relay ticket source returned an empty ticket")
+	}
+	return strings.TrimSpace(ticket), nil
 }
 
 func websocketClientHandshake(raw net.Conn, u *url.URL, token string) (*wsNetConn, error) {

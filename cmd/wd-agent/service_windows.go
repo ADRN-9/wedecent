@@ -16,7 +16,6 @@ import (
 	"unsafe"
 
 	"wedecent.com/wedecent/internal/identity"
-	"wedecent.com/wedecent/internal/securestore"
 	"wedecent.com/wedecent/internal/trust"
 	"wedecent.com/wedecent/internal/winservice"
 )
@@ -47,8 +46,6 @@ func runServiceCommand(args []string) error {
 		return runServiceStatus(args[1:])
 	case "uninstall":
 		return runServiceUninstall(args[1:])
-	case "credential":
-		return runServiceCredential(args[1:])
 	default:
 		serviceUsage()
 		return fmt.Errorf("unknown service subcommand %q", args[0])
@@ -99,15 +96,6 @@ func runServiceInstall(args []string) error {
 		return err
 	}
 
-	if *webRelay != "" {
-		token, err := readHiddenLine("Relay token: ")
-		if err != nil {
-			return err
-		}
-		if err := securestore.StoreRelayToken(*stateDir, token); err != nil {
-			return err
-		}
-	}
 	if err := winservice.RestrictDirectory(*stateDir, *account); err != nil {
 		return err
 	}
@@ -232,34 +220,6 @@ func runServiceUninstall(args []string) error {
 	return winservice.Uninstall(name)
 }
 
-func runServiceCredential(args []string) error {
-	if len(args) == 0 || args[0] != "set" {
-		return errors.New("usage: wd-agent service credential set --account <account> [--state <dir>]")
-	}
-	fs := flag.NewFlagSet("service credential set", flag.ContinueOnError)
-	stateDir := fs.String("state", defaultServiceStateDir(), "machine-wide agent state directory")
-	account := fs.String("account", "", "service account that may read the protected credential")
-	if err := fs.Parse(args[1:]); err != nil {
-		return err
-	}
-	if strings.TrimSpace(*account) == "" {
-		return errors.New("--account is required")
-	}
-	token, err := readHiddenLine("Relay token: ")
-	if err != nil {
-		return err
-	}
-	if err := securestore.StoreRelayToken(*stateDir, token); err != nil {
-		return err
-	}
-	if err := winservice.RestrictDirectory(*stateDir, *account); err != nil {
-		return err
-	}
-	fmt.Printf("Protected relay credential updated: %s\n", securestore.RelayTokenPath(*stateDir))
-	fmt.Println("Restart the Windows service to load the new credential.")
-	return nil
-}
-
 func serviceNameOnlyFlags(name string, args []string) (string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	serviceName := fs.String("service-name", defaultWindowsServiceName, "Windows service name")
@@ -356,6 +316,5 @@ Commands:
   stop         Stop the Windows service
   status       Show Windows service status
   uninstall    Stop and remove the Windows service
-  credential   Manage DPAPI-protected relay credentials
   run          Internal SCM entrypoint; do not invoke manually`)
 }

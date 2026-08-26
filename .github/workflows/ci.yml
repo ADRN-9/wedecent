@@ -41,3 +41,20 @@ jobs:
         run: go test ./...
       - name: Build native Windows agent
         run: go build -trimpath -o wd-agent.exe ./cmd/wd-agent
+
+  relay-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Check Worker syntax
+        working-directory: cloudflare/relay-worker
+        run: |
+          node --check src/index.js
+          node --check src/relay-auth.js
+      - name: Test relay authentication
+        working-directory: cloudflare/relay-worker
+        run: npm test

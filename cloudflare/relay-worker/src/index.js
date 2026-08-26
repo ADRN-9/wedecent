@@ -1,4 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
+import { verifyRelayTicket } from "./relay-auth.js";
 
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const STREAM_PREFIX = "/v1/stream/";
@@ -10,21 +11,19 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/healthz") {
-      return Response.json({ service: "wedecent-relay", status: "ok", version: 4 });
+      return Response.json({ service: "wedecent-relay", status: "ok", version: 5 });
     }
 
     if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
       return new Response("Not found", { status: 404 });
     }
 
-    if (!env.RELAY_ACCESS_TOKEN) {
-      return new Response("Relay access token is not configured", { status: 503 });
-    }
-    if (request.headers.get("Authorization") !== `Bearer ${env.RELAY_ACCESS_TOKEN}`) {
-      return new Response("Unauthorized", { status: 401 });
-    }
-
     if (url.pathname.startsWith(STATUS_PREFIX)) {
+      if (!legacyAuthorized(request, env)) {
+        return new Response(env.RELAY_ACCESS_TOKEN ? "Unauthorized" : "Relay admin token is not configured", {
+          status: env.RELAY_ACCESS_TOKEN ? 401 : 503,
+        });
+      }
       if (request.method !== "GET") {
         return new Response("Method not allowed", { status: 405 });
       }
@@ -58,10 +57,45 @@ export default {
       return new Response("Clients must not specify a relay slot", { status: 400 });
     }
 
+    if (!(await streamAuthorized(request, env, { deviceId, role, slot: role === "agent" ? Number.parseInt(slot, 10) : null }))) {
+      return new Response("Unauthorized", { status: 401 });
+    }
+
     const objectId = env.DEVICE_RELAY.idFromName(deviceId);
     return env.DEVICE_RELAY.get(objectId).fetch(request);
   },
 };
+
+
+async function streamAuthorized(request, env, expected) {
+  const token = bearerToken(request);
+  if (!token) {
+    return false;
+  }
+  if (token.startsWith("wdt2.")) {
+    try {
+      await verifyRelayTicket(token, expected);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return Boolean(env.RELAY_ACCESS_TOKEN) && token === env.RELAY_ACCESS_TOKEN;
+}
+
+function legacyAuthorized(request, env) {
+  const token = bearerToken(request);
+  return Boolean(env.RELAY_ACCESS_TOKEN) && token === env.RELAY_ACCESS_TOKEN;
+}
+
+function bearerToken(request) {
+  const value = request.headers.get("Authorization");
+  if (!value) {
+    return "";
+  }
+  const match = /^Bearer ([^\s]+)$/.exec(value);
+  return match ? match[1] : "";
+}
 
 export class DeviceRelay extends DurableObject {
   async fetch(request) {

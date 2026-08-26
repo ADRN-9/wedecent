@@ -1,23 +1,23 @@
 # WeDecent MVP
 
-> **v0.2.1 serverless relay:** the preferred Internet path is now Cloudflare Workers + Durable Objects over secure WebSockets. No VPS and no `cloudflared` daemon are required on either endpoint. See [`docs/CLOUDFLARE_SERVERLESS.md`](docs/CLOUDFLARE_SERVERLESS.md).
+> **v0.3 relay-auth-v2:** the preferred Internet path is Cloudflare Workers + Durable Objects over secure WebSockets. Normal streams use short-lived Ed25519 proof-of-possession tickets instead of a global relay bearer secret. See [`docs/RELAY_AUTH_V2.md`](docs/RELAY_AUTH_V2.md) and [`docs/CLOUDFLARE_SERVERLESS.md`](docs/CLOUDFLARE_SERVERLESS.md).
 
 ## Serverless Internet quick start
 
-Deploy `cloudflare/relay-worker`, add `relay.wedecent.com` as its Custom Domain, and configure the Worker secret `RELAY_ACCESS_TOKEN`. Then on the remote machine:
+Deploy `cloudflare/relay-worker` with the configured `relay.wedecent.com` Custom Domain. Then on the remote machine:
 
 ```bash
-export WEDECENT_RELAY_TOKEN='YOUR_PRIVATE_TOKEN'
 ./bin/wd-agent serve --listen '' --web-relay https://relay.wedecent.com --shell /bin/bash
 ```
 
 On the client:
 
 ```bash
-export WEDECENT_RELAY_TOKEN='YOUR_PRIVATE_TOKEN'
 ./bin/wd pair --web-relay https://relay.wedecent.com --device-id wd_xxxxxxxxxxxxxxxx --fingerprint 'SHA256:...'
 ./bin/wd connect wd_xxxxxxxxxxxxxxxx
 ```
+
+No shared relay token is required or read by upgraded stream endpoints. `RELAY_ACCESS_TOKEN` remains temporarily on the Worker for older binaries and the operator-only status diagnostic.
 
 The Cloudflare Worker only forwards the **inner TLS 1.3 ciphertext**. Device/client certificate pinning and the one-time pairing flow remain end-to-end between the endpoints.
 
@@ -39,7 +39,8 @@ WeDecent is a transport-independent secure remote terminal prototype. A device i
 - Serverless WSS relay via Cloudflare Workers + Durable Objects (`wsrelay://`)
 - Relay registration signed by the device key, preventing another key from claiming the same device ID
 - Terminal resize and remote exit-code propagation
-- Native Windows service foundation with SCM lifecycle and DPAPI-protected relay credentials (feature branch)
+- Native Windows service mode with SCM lifecycle, dedicated standard-account execution and boot persistence
+- Short-lived Ed25519 relay-auth-v2 tickets for normal WSS stream upgrades
 - Transport locators (`tcp://...`, `relay://...`, `wsrelay://...`) designed for additional transports
 
 ## Not implemented yet
@@ -184,4 +185,4 @@ The relay can see routing metadata (device ID, connection timing and byte counts
 - Signed LAN discovery proves that an advertisement owns the advertised key; it does **not** make an unpaired key trusted.
 - A normal USB-C cable between two PCs usually connects two USB hosts and is not itself a serial link. USB terminal transport requires USB gadget/device support, a USB networking mode, or an appropriate adapter.
 
-See `docs/PROTOCOL.md`, `docs/ARCHITECTURE.md`, `docs/DOMAIN.md`, `docs/WINDOWS_CONPTY.md`, `docs/WINDOWS_SERVICE.md`, and `docs/ROADMAP.md`.
+See `docs/PROTOCOL.md`, `docs/ARCHITECTURE.md`, `docs/DOMAIN.md`, `docs/RELAY_AUTH_V2.md`, `docs/WINDOWS_CONPTY.md`, `docs/WINDOWS_SERVICE.md`, and `docs/ROADMAP.md`.

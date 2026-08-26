@@ -17,6 +17,7 @@ import (
 	"wedecent.com/wedecent/internal/appdirs"
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/relayauth"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/terminal"
 	"wedecent.com/wedecent/internal/transport"
@@ -230,7 +231,7 @@ func runPair(args []string) error {
 	if err != nil {
 		return err
 	}
-	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: transport.WebRelayOptions{Token: os.Getenv("WEDECENT_RELAY_TOKEN"), Timeout: 15 * time.Second}}
+	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptions(id)}
 	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -303,9 +304,16 @@ func runConnect(args []string) (int, error) {
 	if peer.Endpoint == "" {
 		return 0, errors.New("device has no connection locator")
 	}
-	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: transport.WebRelayOptions{Token: os.Getenv("WEDECENT_RELAY_TOKEN"), Timeout: 15 * time.Second}}
+	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptions(id)}
 	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
+}
+
+func clientWebRelayOptions(id *identity.Identity) transport.WebRelayOptions {
+	return transport.WebRelayOptions{
+		TicketSource: relayauth.NewTicketSource(id),
+		Timeout:      15 * time.Second,
+	}
 }
 
 func directLocator(endpoint string) (string, error) {

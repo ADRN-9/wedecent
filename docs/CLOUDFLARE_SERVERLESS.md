@@ -9,45 +9,16 @@ wd client  --WSS-->  Cloudflare Worker / Durable Object  <--WSS--  wd-agent
 
 The Cloudflare relay sees encrypted TLS records and routing metadata only. The agent does not open an inbound Internet port.
 
-## 1. Deploy the Worker once
+## 1. Deploy the Worker
 
-The Durable Object namespace is declared in `cloudflare/relay-worker/wrangler.jsonc`. Cloudflare provisions the SQLite-backed namespace during deployment.
+The Durable Object namespace and custom domain are declared in `cloudflare/relay-worker/wrangler.jsonc`.
 
 ```bash
 cd cloudflare/relay-worker
 npm install
-npx wrangler login
+npm test
 npx wrangler deploy
 ```
-
-## 2. Set the relay access secret in the dashboard
-
-Generate a high-entropy token locally:
-
-```bash
-openssl rand -base64 32
-```
-
-In Cloudflare Dashboard:
-
-1. **Workers & Pages** -> **wedecent-relay**.
-2. **Settings** -> **Variables and Secrets**.
-3. Add encrypted secret `RELAY_ACCESS_TOKEN`.
-4. Paste the generated value and save/deploy.
-
-Do not commit or paste this token into chat, logs, screenshots, or source files.
-
-## 3. Add the custom domain in the dashboard
-
-In Cloudflare Dashboard:
-
-1. **Workers & Pages** -> **wedecent-relay**.
-2. **Domains** (or **Settings -> Domains & Routes**).
-3. **Add** -> **Custom Domain**.
-4. Enter `relay.wedecent.com`.
-5. Save.
-
-Cloudflare creates the DNS record and certificate automatically.
 
 Verify:
 
@@ -55,18 +26,35 @@ Verify:
 curl https://relay.wedecent.com/healthz
 ```
 
-Expected:
+Expected for relay-auth-v2:
 
 ```json
-{"service":"wedecent-relay","status":"ok","version":2}
+{"service":"wedecent-relay","status":"ok","version":5}
 ```
+
+## 2. Relay authentication v2
+
+Normal v0.3 `wd` and `wd-agent` processes do **not** need a shared relay token. Every WebSocket upgrade carries a fresh 90-second `wdt2` proof-of-possession ticket signed by the endpoint's existing Ed25519 identity key.
+
+The Worker verifies the ticket with Web Crypto and binds it to the requested device, relay role, and agent slot. See [`RELAY_AUTH_V2.md`](RELAY_AUTH_V2.md).
+
+The inner pinned TLS session remains the terminal authorization boundary. A client relay ticket proves possession of a client identity key; it does not by itself authorize that identity to open a terminal on a target agent.
+
+## 3. Legacy/admin relay token
+
+During migration, Worker v5 still accepts the existing `RELAY_ACCESS_TOKEN` from old stream binaries. The same secret also protects the operator-only `/v1/status/<device-id>` diagnostic endpoint.
+
+Deploy Worker v5 first. Keep the secret configured in Cloudflare while older binaries exist, but do not distribute or configure it on upgraded v0.3 clients or agents.
+
+If needed, configure it with Wrangler or the Cloudflare Dashboard as an encrypted Worker secret. Never commit or paste it into logs, screenshots, source files, or chat.
+
+After all stream endpoints use relay-auth-v2, remove legacy stream-token acceptance and rotate the remaining admin/status credential.
 
 ## 4. Start the remote agent
 
-Set the same secret in the agent's environment. Prefer an OS secret/service environment file instead of shell history for production.
+No relay secret is required:
 
 ```bash
-export WEDECENT_RELAY_TOKEN='YOUR_PRIVATE_TOKEN'
 ./bin/wd-agent serve \
   --listen '' \
   --web-relay https://relay.wedecent.com \
@@ -79,7 +67,6 @@ export WEDECENT_RELAY_TOKEN='YOUR_PRIVATE_TOKEN'
 ## 5. Pair from the client
 
 ```bash
-export WEDECENT_RELAY_TOKEN='YOUR_PRIVATE_TOKEN'
 ./bin/wd init --name system-1
 ./bin/wd pair \
   --web-relay https://relay.wedecent.com \
@@ -91,25 +78,26 @@ Enter the one-time pairing secret from the agent when prompted.
 
 ## 6. Connect
 
-The paired device stores its `wsrelay://` locator, so subsequent connections only need:
+The paired device stores its `wsrelay://` locator:
 
 ```bash
-export WEDECENT_RELAY_TOKEN='YOUR_PRIVATE_TOKEN'
 ./bin/wd connect wd_xxxxxxxxxxxxxxxx
 ```
 
+No shared relay token is required for the stream.
+
 ## Security notes
 
-- The shared relay access token is an MVP anti-abuse gate, not the long-term authorization design.
-- End-to-end TLS between `wd` and `wd-agent` still authenticates the paired device/client independently of Cloudflare.
+- `wdt2` tickets are short-lived and signed with endpoint Ed25519 identity keys.
+- Agent tickets are self-bound to the agent device ID and a specific parked slot.
+- Client tickets are target-bound, but account-level permission is still enforced by the target agent's paired-client trust store, not by Cloudflare.
 - The Worker cannot decrypt terminal contents.
-- Device/user authorization will move to short-lived Supabase-issued credentials in a later control-plane phase.
-- Rotate `RELAY_ACCESS_TOKEN` if it is exposed.
-
+- Production still needs per-IP/identity/device rate limiting and server-issued account/RBAC grants.
+- Rotate any legacy `RELAY_ACCESS_TOKEN` that has ever been distributed to endpoints once migration is complete.
 
 ## Relay status diagnostic
 
-The v0.2.2 Worker exposes an authenticated per-device status endpoint:
+The status endpoint remains operator-only during this phase:
 
 ```bash
 curl -sS \
@@ -118,5 +106,3 @@ curl -sS \
 ```
 
 It returns counts for total/open/free agent slots and clients. The endpoint never returns terminal data or secrets.
-
-The v0.2.2 Go WebSocket transport also sends RFC 6455 ping control frames every 30 seconds to keep restrictive NAT/proxy paths alive while agent slots are parked.

@@ -28,7 +28,6 @@ Initialize:
 Run outbound-only:
 
 ```powershell
-$env:WEDECENT_RELAY_TOKEN = Read-Host "Relay token"
 .\bin\wd-agent.exe serve --listen "" --web-relay https://relay.wedecent.com --relay-slots 4
 ```
 
@@ -36,4 +35,4 @@ The default remote shell is Windows PowerShell through ConPTY.
 
 ## Security notes
 
-Do not run the agent as LocalSystem during development. Use a dedicated standard user. Production service mode must define an explicit account, ACL the state directory, and store relay credentials using Windows credential protection rather than environment variables. The `feature/windows-service` branch implements that foundation; see `WINDOWS_SERVICE.md`.
+Do not run the agent as LocalSystem during development. Use a dedicated standard user. Production service mode must define an explicit account and ACL the state directory. Relay-auth-v2 uses the machine Ed25519 identity for short-lived relay tickets, so no shared relay secret is required. See `WINDOWS_SERVICE.md`.

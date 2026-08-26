@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -40,6 +41,45 @@ func TestWebRelayClientURLHasNoSlot(t *testing.T) {
 func TestWebRelayRejectsInvalidAgentSlot(t *testing.T) {
 	if _, err := webRelayURL("https://relay.wedecent.com", "wd_4ksk5edkttwsxqx4", "agent", 0); err == nil {
 		t.Fatal("expected invalid agent slot to fail")
+	}
+}
+
+func TestWebRelayCredentialPrefersTicketSource(t *testing.T) {
+	u, err := url.Parse("wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=agent&slot=3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotTarget, gotRole string
+	var gotSlot int
+	credential, err := webRelayCredential(u, WebRelayOptions{
+		Token: "legacy-token",
+		TicketSource: func(targetDeviceID, role string, slot int) (string, error) {
+			gotTarget, gotRole, gotSlot = targetDeviceID, role, slot
+			return "wdt2.test.signature", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential != "wdt2.test.signature" {
+		t.Fatalf("unexpected credential %q", credential)
+	}
+	if gotTarget != "wd_4ksk5edkttwsxqx4" || gotRole != "agent" || gotSlot != 3 {
+		t.Fatalf("unexpected ticket scope: target=%q role=%q slot=%d", gotTarget, gotRole, gotSlot)
+	}
+}
+
+func TestWebRelayCredentialLegacyFallback(t *testing.T) {
+	u, err := url.Parse("wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	credential, err := webRelayCredential(u, WebRelayOptions{Token: "legacy-token"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if credential != "legacy-token" {
+		t.Fatalf("unexpected legacy credential %q", credential)
 	}
 }
 
@@ -92,6 +132,49 @@ func TestWSNetConnWritesMaskedBinaryFrame(t *testing.T) {
 	if err := <-errCh; err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestDialWebSocketUsesTicketSource(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer wdt2.test.signature" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.URL.Query().Get("role") != "client" {
+			http.Error(w, "wrong role", http.StatusBadRequest)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("server does not support hijacking")
+		}
+		raw, rw, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer raw.Close()
+		accept := websocketAccept(r.Header.Get("Sec-WebSocket-Key"))
+		fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
+		_ = rw.Flush()
+	}))
+	defer server.Close()
+
+	u := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/stream/wd_4ksk5edkttwsxqx4?role=client"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := dialWebSocket(ctx, u, WebRelayOptions{
+		Timeout: 5 * time.Second,
+		TicketSource: func(targetDeviceID, role string, slot int) (string, error) {
+			if targetDeviceID != "wd_4ksk5edkttwsxqx4" || role != "client" || slot != 0 {
+				t.Fatalf("unexpected ticket scope: target=%q role=%q slot=%d", targetDeviceID, role, slot)
+			}
+			return "wdt2.test.signature", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
 }
 
 func TestDialWebSocketRoundTrip(t *testing.T) {

@@ -16,11 +16,12 @@ This repository is an early MVP and should receive an independent security revie
 - Relay per-device parked-slot cap and slot expiration
 - Identity private-key files created with mode `0600`
 - Native Windows service mode refuses built-in LocalSystem/LocalService/NetworkService accounts
-- Windows service relay token stored as a DPAPI-protected blob instead of a service command-line argument or environment variable
+- Short-lived Ed25519 proof-of-possession tickets bind relay stream upgrades to endpoint identity, target device, role and agent slot
+- Windows service does not require or load a shared relay secret for relay-auth-v2 streams
 
 ## Known gaps before production
 
-- No account-level RBAC or central revocation
+- No account-level RBAC or central revocation; relay-auth-v2 client tickets prove key possession, not user/device permission
 - No persistent security audit store
 - No relay IP/device rate limiter or abuse detection
 - A client that knows a device ID can intentionally consume parked relay slots; inner authentication protects shell access, but targeted availability controls are still required
@@ -30,7 +31,7 @@ This repository is an early MVP and should receive an independent security revie
 - No file-transfer path validation because file transfer is not implemented yet
 - No fuzzing corpus/continuous fuzz infrastructure yet
 - Windows service mode still requires a dedicated account to be provisioned separately and granted the `Log on as a service` right
-- Windows relay credentials use machine-scope DPAPI plus a restricted filesystem ACL; TPM/CNG-backed secret storage is not implemented yet
+- Worker v5 still accepts the legacy shared relay token on stream upgrades during migration; remove that fallback after all endpoints are upgraded
 
 ## Threat model note
 

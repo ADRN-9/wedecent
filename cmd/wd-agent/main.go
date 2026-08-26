@@ -12,14 +12,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
 
 	"wedecent.com/wedecent/internal/appdirs"
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/identity"
-	"wedecent.com/wedecent/internal/securestore"
+	"wedecent.com/wedecent/internal/relayauth"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/transport"
 	"wedecent.com/wedecent/internal/trust"
@@ -193,11 +192,11 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	}
 
 	if cfg.WebRelay != "" {
-		token, err := relayAccessToken(cfg.StateDir)
-		if err != nil {
-			return err
+		webOpts := transport.WebRelayOptions{
+			TicketSource:      relayauth.NewTicketSource(id),
+			Timeout:           15 * time.Second,
+			KeepAliveInterval: 30 * time.Second,
 		}
-		webOpts := transport.WebRelayOptions{Token: token, Timeout: 15 * time.Second, KeepAliveInterval: 30 * time.Second}
 		fmt.Printf("Web relay:   %s (%d outbound WSS slots)\n", cfg.WebRelay, cfg.RelaySlots)
 		for i := 0; i < cfg.RelaySlots; i++ {
 			go webRelayLoop(ctx, i+1, cfg.WebRelay, webOpts, id, server)
@@ -252,20 +251,6 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 			slog.Warn("connection limit reached", "remote", conn.RemoteAddr())
 		}
 	}
-}
-
-func relayAccessToken(stateDir string) (string, error) {
-	if token := strings.TrimSpace(os.Getenv("WEDECENT_RELAY_TOKEN")); token != "" {
-		return token, nil
-	}
-	token, err := securestore.LoadRelayToken(stateDir)
-	if err != nil {
-		return "", fmt.Errorf("web relay token unavailable: set WEDECENT_RELAY_TOKEN or configure protected service credentials: %w", err)
-	}
-	if strings.TrimSpace(token) == "" {
-		return "", errors.New("web relay token is empty")
-	}
-	return token, nil
 }
 
 func webRelayLoop(ctx context.Context, slot int, baseURL string, opts transport.WebRelayOptions, id *identity.Identity, server *session.Server) {
