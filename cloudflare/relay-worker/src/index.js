@@ -1,5 +1,14 @@
 import { DurableObject } from "cloudflare:workers";
-import { authorizeStream } from "./stream-auth.js";
+import { authorizeStream, CONNECTION_GRANT_HEADER } from "./stream-auth.js";
+import {
+  cleanupExpiredConnectionGrants,
+  consumeConnectionGrant,
+  INTERNAL_GRANT_EXP_HEADER,
+  INTERNAL_GRANT_JTI_HEADER,
+  prepareDeviceRelayRequest,
+  replayMetadataFromRequest,
+  scheduleReplayCleanup,
+} from "./grant-replay.js";
 
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const STREAM_PREFIX = "/v1/stream/";
@@ -12,7 +21,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/healthz") {
-      return Response.json({ service: "wedecent-relay", status: "ok", version: 7 });
+      return Response.json({ service: "wedecent-relay", status: "ok", version: 8 });
     }
 
     if (url.pathname === TIME_PATH) {
@@ -78,7 +87,9 @@ export default {
     }
 
     const objectId = env.DEVICE_RELAY.idFromName(deviceId);
-    return env.DEVICE_RELAY.get(objectId).fetch(request);
+    return env.DEVICE_RELAY.get(objectId).fetch(
+      prepareDeviceRelayRequest(request, authorization.replay, CONNECTION_GRANT_HEADER),
+    );
   },
 };
 
@@ -98,6 +109,8 @@ function bearerToken(request) {
 }
 
 export class DeviceRelay extends DurableObject {
+  #clientAdmission = Promise.resolve();
+
   async fetch(request) {
     const url = new URL(request.url);
 
@@ -110,7 +123,7 @@ export class DeviceRelay extends DurableObject {
       return this.#acceptAgent(url);
     }
     if (role === "client") {
-      return this.#acceptClient();
+      return this.#acceptClient(request);
     }
     return new Response("Invalid relay role", { status: 400 });
   }
@@ -160,7 +173,21 @@ export class DeviceRelay extends DurableObject {
     }
   }
 
-  #acceptClient() {
+  async #acceptClient(request) {
+    let release;
+    const previous = this.#clientAdmission;
+    this.#clientAdmission = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.#acceptClientExclusive(request);
+    } finally {
+      release();
+    }
+  }
+
+  async #acceptClientExclusive(request) {
     const agent = this.ctx.getWebSockets("agent").find((socket) => {
       if (socket.readyState !== WebSocket.OPEN) {
         return false;
@@ -176,6 +203,17 @@ export class DeviceRelay extends DurableObject {
       });
     }
 
+    const replay = replayMetadataFromRequest(request);
+    if (!replay) {
+      return new Response("Connection grant replay metadata missing", { status: 403 });
+    }
+
+    const consumption = await consumeConnectionGrant(this.ctx.storage, replay.jti, replay.exp);
+    if (!consumption.accepted) {
+      return new Response("Connection grant already used", { status: 409 });
+    }
+    await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
+
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const clientId = crypto.randomUUID();
@@ -186,6 +224,10 @@ export class DeviceRelay extends DurableObject {
     this.ctx.acceptWebSocket(server, ["client"]);
 
     return new Response(null, { status: 101, webSocket: client });
+  }
+
+  async alarm() {
+    await cleanupExpiredConnectionGrants(this.ctx.storage);
   }
 
   #status() {

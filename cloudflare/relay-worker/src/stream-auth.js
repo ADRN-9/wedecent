@@ -29,7 +29,7 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
       return { ok: false, status: 503, message: "Connection grant verifier is not configured" };
     }
     try {
-      await verifyConnectionGrant(
+      const grantClaims = await verifyConnectionGrant(
         grant,
         {
           clientDeviceID: relayClaims.iss,
@@ -39,7 +39,7 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
         env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64,
         nowSeconds,
       );
-      return { ok: true };
+      return { ok: true, replay: { jti: grantClaims.jti, exp: grantClaims.exp } };
     } catch {
       return { ok: false, status: 403, message: "Connection grant rejected" };
     }
