@@ -1,6 +1,6 @@
 # Windows ConPTY development
 
-The v0.3 development branch adds a native Windows terminal backend using the Windows Pseudoconsole (ConPTY) API.
+The v0.3 development branch adds a native Windows terminal backend using the Windows Pseudoconsole (ConPTY) API. Native ConPTY + Windows PowerShell has been validated end to end through the serverless relay.
 
 ## Target
 
@@ -36,4 +36,4 @@ The default remote shell is Windows PowerShell through ConPTY.
 
 ## Security notes
 
-Do not run the agent as LocalSystem during development. Use a dedicated standard user. Production service mode must define an explicit account, ACL the state directory, and store relay credentials using Windows credential protection rather than environment variables.
+Do not run the agent as LocalSystem during development. Use a dedicated standard user. Production service mode must define an explicit account, ACL the state directory, and store relay credentials using Windows credential protection rather than environment variables. The `feature/windows-service` branch implements that foundation; see `WINDOWS_SERVICE.md`.

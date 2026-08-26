@@ -12,12 +12,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"wedecent.com/wedecent/internal/appdirs"
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/securestore"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/transport"
 	"wedecent.com/wedecent/internal/trust"
@@ -38,6 +40,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "identity":
 		err = runIdentity(os.Args[2:])
+	case "service":
+		err = runServiceCommand(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -108,75 +112,104 @@ func runIdentity(args []string) error {
 	return nil
 }
 
-func runServe(args []string) error {
+type serveConfig struct {
+	StateDir        string
+	Name            string
+	ListenAddr      string
+	Shell           string
+	Discover        bool
+	MaxConnections  int
+	RelayAddr       string
+	WebRelay        string
+	RelaySlots      int
+	RelayCA         string
+	RelayServerName string
+}
+
+func parseServeConfig(args []string) (serveConfig, error) {
 	state, _ := appdirs.Agent()
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
-	stateDir := fs.String("state", state, "agent state directory")
-	name := fs.String("name", hostname(), "device display name")
-	listenAddr := fs.String("listen", "127.0.0.1:7443", "TCP listen address; empty disables inbound TCP")
-	shell := fs.String("shell", defaultShell(), "absolute shell path")
-	discover := fs.Bool("discover", false, "advertise on the local IPv4 multicast network")
-	maxConnections := fs.Int("max-connections", 32, "maximum concurrent direct client connections")
-	relayAddr := fs.String("relay", "", "legacy outbound TCP relay address, e.g. relay.wedecent.com:443")
-	webRelay := fs.String("web-relay", "", "serverless WebSocket relay URL, e.g. https://relay.wedecent.com")
-	relaySlots := fs.Int("relay-slots", 4, "number of parked outbound relay connections")
-	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
-	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
+	cfg := serveConfig{}
+	fs.StringVar(&cfg.StateDir, "state", state, "agent state directory")
+	fs.StringVar(&cfg.Name, "name", hostname(), "device display name")
+	fs.StringVar(&cfg.ListenAddr, "listen", "127.0.0.1:7443", "TCP listen address; empty disables inbound TCP")
+	fs.StringVar(&cfg.Shell, "shell", defaultShell(), "absolute shell path")
+	fs.BoolVar(&cfg.Discover, "discover", false, "advertise on the local IPv4 multicast network")
+	fs.IntVar(&cfg.MaxConnections, "max-connections", 32, "maximum concurrent direct client connections")
+	fs.StringVar(&cfg.RelayAddr, "relay", "", "legacy outbound TCP relay address, e.g. relay.wedecent.com:443")
+	fs.StringVar(&cfg.WebRelay, "web-relay", "", "serverless WebSocket relay URL, e.g. https://relay.wedecent.com")
+	fs.IntVar(&cfg.RelaySlots, "relay-slots", 4, "number of parked outbound relay connections")
+	fs.StringVar(&cfg.RelayCA, "relay-ca", "", "optional PEM CA bundle for a private/dev relay")
+	fs.StringVar(&cfg.RelayServerName, "relay-server-name", "", "optional TLS server-name override for the relay")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return serveConfig{}, err
 	}
-	if *maxConnections < 1 || *maxConnections > 1024 {
-		return errors.New("max-connections must be between 1 and 1024")
+	if cfg.MaxConnections < 1 || cfg.MaxConnections > 1024 {
+		return serveConfig{}, errors.New("max-connections must be between 1 and 1024")
 	}
-	if *relaySlots < 1 || *relaySlots > 32 {
-		return errors.New("relay-slots must be between 1 and 32")
+	if cfg.RelaySlots < 1 || cfg.RelaySlots > 32 {
+		return serveConfig{}, errors.New("relay-slots must be between 1 and 32")
 	}
-	if *listenAddr == "" && *relayAddr == "" && *webRelay == "" {
-		return errors.New("at least one of --listen, --relay, or --web-relay must be configured")
+	if cfg.ListenAddr == "" && cfg.RelayAddr == "" && cfg.WebRelay == "" {
+		return serveConfig{}, errors.New("at least one of --listen, --relay, or --web-relay must be configured")
 	}
-	if *discover && *listenAddr == "" {
-		return errors.New("--discover requires a direct --listen address")
+	if cfg.Discover && cfg.ListenAddr == "" {
+		return serveConfig{}, errors.New("--discover requires a direct --listen address")
 	}
+	return cfg, nil
+}
 
-	id, err := identity.Ensure(*stateDir, *name)
+func runServe(args []string) error {
+	cfg, err := parseServeConfig(args)
 	if err != nil {
 		return err
 	}
-	store, err := trust.Open(filepath.Join(*stateDir, "trusted-clients.json"))
-	if err != nil {
-		return err
-	}
-	server := &session.Server{Identity: id, Trust: store, StateDir: *stateDir, Shell: *shell, Logger: slog.Default()}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	return runAgent(ctx, cfg)
+}
+
+func runAgent(ctx context.Context, cfg serveConfig) error {
+	id, err := identity.Ensure(cfg.StateDir, cfg.Name)
+	if err != nil {
+		return err
+	}
+	store, err := trust.Open(filepath.Join(cfg.StateDir, "trusted-clients.json"))
+	if err != nil {
+		return err
+	}
+	server := &session.Server{Identity: id, Trust: store, StateDir: cfg.StateDir, Shell: cfg.Shell, Logger: slog.Default()}
 
 	fp, _ := identity.FingerprintPublicKey(id.PublicKey)
 	fmt.Printf("WeDecent agent %s (%s)\n", id.Name, id.ID)
 	fmt.Printf("Fingerprint: %s\n", fp)
 
-	if *relayAddr != "" {
-		relayOpts := transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}
-		fmt.Printf("Relay:       %s (%d outbound slots)\n", *relayAddr, *relaySlots)
-		for i := 0; i < *relaySlots; i++ {
-			go relayLoop(ctx, i+1, *relayAddr, relayOpts, id, server)
+	if cfg.RelayAddr != "" {
+		relayOpts := transport.RelayOptions{CAFile: cfg.RelayCA, ServerName: cfg.RelayServerName, Timeout: 10 * time.Second}
+		fmt.Printf("Relay:       %s (%d outbound slots)\n", cfg.RelayAddr, cfg.RelaySlots)
+		for i := 0; i < cfg.RelaySlots; i++ {
+			go relayLoop(ctx, i+1, cfg.RelayAddr, relayOpts, id, server)
 		}
 	}
 
-	if *webRelay != "" {
-		webOpts := transport.WebRelayOptions{Token: os.Getenv("WEDECENT_RELAY_TOKEN"), Timeout: 15 * time.Second, KeepAliveInterval: 30 * time.Second}
-		fmt.Printf("Web relay:   %s (%d outbound WSS slots)\n", *webRelay, *relaySlots)
-		for i := 0; i < *relaySlots; i++ {
-			go webRelayLoop(ctx, i+1, *webRelay, webOpts, id, server)
+	if cfg.WebRelay != "" {
+		token, err := relayAccessToken(cfg.StateDir)
+		if err != nil {
+			return err
+		}
+		webOpts := transport.WebRelayOptions{Token: token, Timeout: 15 * time.Second, KeepAliveInterval: 30 * time.Second}
+		fmt.Printf("Web relay:   %s (%d outbound WSS slots)\n", cfg.WebRelay, cfg.RelaySlots)
+		for i := 0; i < cfg.RelaySlots; i++ {
+			go webRelayLoop(ctx, i+1, cfg.WebRelay, webOpts, id, server)
 		}
 	}
 
-	if *listenAddr == "" {
+	if cfg.ListenAddr == "" {
 		<-ctx.Done()
 		return nil
 	}
 
-	ln, err := net.Listen("tcp", *listenAddr)
+	ln, err := net.Listen("tcp", cfg.ListenAddr)
 	if err != nil {
 		return err
 	}
@@ -187,7 +220,7 @@ func runServe(args []string) error {
 	}()
 	fmt.Printf("Listening:   %s\n", ln.Addr())
 
-	if *discover {
+	if cfg.Discover {
 		port, err := listenerPort(ln.Addr())
 		if err != nil {
 			return err
@@ -199,7 +232,7 @@ func runServe(args []string) error {
 		}()
 	}
 
-	sem := make(chan struct{}, *maxConnections)
+	sem := make(chan struct{}, cfg.MaxConnections)
 	for {
 		conn, err := ln.Accept()
 		if err != nil {
@@ -219,6 +252,20 @@ func runServe(args []string) error {
 			slog.Warn("connection limit reached", "remote", conn.RemoteAddr())
 		}
 	}
+}
+
+func relayAccessToken(stateDir string) (string, error) {
+	if token := strings.TrimSpace(os.Getenv("WEDECENT_RELAY_TOKEN")); token != "" {
+		return token, nil
+	}
+	token, err := securestore.LoadRelayToken(stateDir)
+	if err != nil {
+		return "", fmt.Errorf("web relay token unavailable: set WEDECENT_RELAY_TOKEN or configure protected service credentials: %w", err)
+	}
+	if strings.TrimSpace(token) == "" {
+		return "", errors.New("web relay token is empty")
+	}
+	return token, nil
 }
 
 func webRelayLoop(ctx context.Context, slot int, baseURL string, opts transport.WebRelayOptions, id *identity.Identity, server *session.Server) {
@@ -307,5 +354,6 @@ Commands:
   init             Create identity and one-time pairing secret
   identity         Print device ID and fingerprint
   pairing-secret   Rotate and print a one-time pairing secret
-  serve            Run the terminal agent (direct, relay, or both)`)
+  serve            Run the terminal agent (direct, relay, or both)
+  service          Install and manage the native Windows service`)
 }

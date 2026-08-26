@@ -28,6 +28,7 @@ WeDecent is a transport-independent secure remote terminal prototype. A device i
 ## What works now
 
 - Linux PTY terminal sessions (`/bin/sh`, `bash`, `zsh`, etc.)
+- Native Windows ConPTY sessions with Windows PowerShell (v0.3 development branch)
 - Direct TCP/LAN connections
 - Signed IPv4 multicast LAN discovery
 - TLS 1.3 end-to-end encryption with Ed25519 device identities
@@ -38,11 +39,12 @@ WeDecent is a transport-independent secure remote terminal prototype. A device i
 - Serverless WSS relay via Cloudflare Workers + Durable Objects (`wsrelay://`)
 - Relay registration signed by the device key, preventing another key from claiming the same device ID
 - Terminal resize and remote exit-code propagation
+- Native Windows service foundation with SCM lifecycle and DPAPI-protected relay credentials (feature branch)
 - Transport locators (`tcp://...`, `relay://...`, `wsrelay://...`) designed for additional transports
 
 ## Not implemented yet
 
-- Windows ConPTY agent
+- Windows service installer/package hardening
 - Bluetooth RFCOMM/L2CAP adapter
 - USB CDC-ACM / USB gadget adapter
 - Desktop GUI/Tauri terminal
@@ -182,4 +184,4 @@ The relay can see routing metadata (device ID, connection timing and byte counts
 - Signed LAN discovery proves that an advertisement owns the advertised key; it does **not** make an unpaired key trusted.
 - A normal USB-C cable between two PCs usually connects two USB hosts and is not itself a serial link. USB terminal transport requires USB gadget/device support, a USB networking mode, or an appropriate adapter.
 
-See `docs/PROTOCOL.md`, `docs/ARCHITECTURE.md`, `docs/DOMAIN.md`, and `docs/ROADMAP.md`.
+See `docs/PROTOCOL.md`, `docs/ARCHITECTURE.md`, `docs/DOMAIN.md`, `docs/WINDOWS_CONPTY.md`, `docs/WINDOWS_SERVICE.md`, and `docs/ROADMAP.md`.

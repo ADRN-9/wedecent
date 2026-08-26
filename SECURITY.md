@@ -15,6 +15,8 @@ This repository is an early MVP and should receive an independent security revie
 - Relay registration challenge signatures
 - Relay per-device parked-slot cap and slot expiration
 - Identity private-key files created with mode `0600`
+- Native Windows service mode refuses built-in LocalSystem/LocalService/NetworkService accounts
+- Windows service relay token stored as a DPAPI-protected blob instead of a service command-line argument or environment variable
 
 ## Known gaps before production
 
@@ -27,7 +29,8 @@ This repository is an early MVP and should receive an independent security revie
 - No sandbox around the spawned shell; shell privilege equals the agent OS account
 - No file-transfer path validation because file transfer is not implemented yet
 - No fuzzing corpus/continuous fuzz infrastructure yet
-- Linux-only PTY implementation
+- Windows service mode still requires a dedicated account to be provisioned separately and granted the `Log on as a service` right
+- Windows relay credentials use machine-scope DPAPI plus a restricted filesystem ACL; TPM/CNG-backed secret storage is not implemented yet
 
 ## Threat model note
 
