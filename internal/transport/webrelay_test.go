@@ -137,6 +137,60 @@ func TestWSNetConnWritesMaskedBinaryFrame(t *testing.T) {
 	}
 }
 
+func TestDialWebSocketSendsConnectionGrant(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer wdt2.test.signature" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		if r.Header.Get("X-WeDecent-Connection-Grant") != "header.payload.signature" {
+			http.Error(w, "missing connection grant", http.StatusForbidden)
+			return
+		}
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("server does not support hijacking")
+		}
+		raw, rw, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer raw.Close()
+		accept := websocketAccept(r.Header.Get("Sec-WebSocket-Key"))
+		fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
+		_ = rw.Flush()
+	}))
+	defer server.Close()
+
+	u := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/stream/wd_4ksk5edkttwsxqx4?role=client"
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := dialWebSocket(ctx, u, WebRelayOptions{
+		Timeout:         5 * time.Second,
+		ConnectionGrant: "header.payload.signature",
+		TicketSource: func(context.Context, string, string, string, int) (string, error) {
+			return "wdt2.test.signature", nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.Close()
+}
+
+func TestWebSocketHandshakeRejectsConnectionGrantHeaderInjection(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	u, err := url.Parse("ws://relay.test/v1/stream/wd_4ksk5edkttwsxqx4?role=client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := websocketClientHandshake(client, u, "token", "good\r\nInjected: value"); err == nil {
+		t.Fatal("expected connection grant header injection to fail")
+	}
+}
+
 func TestDialWebSocketUsesTicketSource(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "Bearer wdt2.test.signature" {

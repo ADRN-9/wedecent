@@ -315,6 +315,7 @@ func runConnect(args []string) (int, error) {
 	endpoint := fs.String("endpoint", "", "override with a direct host:port")
 	relayAddr := fs.String("relay", "", "override with a legacy relay host:port")
 	webRelay := fs.String("web-relay", "", "override with a serverless WebSocket relay URL")
+	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT for WebSocket relay access")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
 	if err := fs.Parse(args); err != nil {
@@ -368,16 +369,55 @@ func runConnect(args []string) (int, error) {
 	if peer.Endpoint == "" {
 		return 0, errors.New("device has no connection locator")
 	}
-	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptions(id)}
+	connectionGrant, err := readConnectionGrantFile(*connectionGrantFile)
+	if err != nil {
+		return 0, err
+	}
+	isWebRelay := strings.HasPrefix(peer.Endpoint, "wsrelay://")
+	if connectionGrant != "" && !isWebRelay {
+		return 0, errors.New("--connection-grant-file is only valid for a WebSocket relay connection")
+	}
+	if isWebRelay && connectionGrant == "" {
+		return 0, errors.New("--connection-grant-file is required for a WebSocket relay terminal connection")
+	}
+	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, connectionGrant)}
 	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
 }
 
 func clientWebRelayOptions(id *identity.Identity) transport.WebRelayOptions {
+	return clientWebRelayOptionsWithGrant(id, "")
+}
+
+func clientWebRelayOptionsWithGrant(id *identity.Identity, connectionGrant string) transport.WebRelayOptions {
 	return transport.WebRelayOptions{
-		TicketSource: relayauth.NewTicketSource(id),
-		Timeout:      15 * time.Second,
+		TicketSource:    relayauth.NewTicketSource(id),
+		ConnectionGrant: connectionGrant,
+		Timeout:         15 * time.Second,
 	}
+}
+
+func readConnectionGrantFile(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read connection grant file: %w", err)
+	}
+	if len(data) == 0 || len(data) > 16*1024 {
+		return "", errors.New("connection grant file has an invalid size")
+	}
+	grant := strings.TrimSpace(string(data))
+	if grant == "" || strings.ContainsAny(grant, "\r\n\t ") {
+		return "", errors.New("connection grant file must contain exactly one JWT without embedded whitespace")
+	}
+	parts := strings.Split(grant, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", errors.New("connection grant file does not contain a JWT")
+	}
+	return grant, nil
 }
 
 func directLocator(endpoint string) (string, error) {

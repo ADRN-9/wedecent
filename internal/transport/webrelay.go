@@ -31,6 +31,7 @@ type WebRelayOptions struct {
 	// it takes precedence over Token and is called for every WebSocket upgrade.
 	TicketSource      func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error)
 	Token             string // Legacy v1 shared relay token; retained for migration only.
+	ConnectionGrant   string // Short-lived account authorization JWT for client terminal connections.
 	Timeout           time.Duration
 	KeepAliveInterval time.Duration
 }
@@ -149,7 +150,7 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 
 	deadline := time.Now().Add(timeout)
 	_ = raw.SetDeadline(deadline)
-	conn, err := websocketClientHandshake(raw, u, credential)
+	conn, err := websocketClientHandshake(raw, u, credential, strings.TrimSpace(opts.ConnectionGrant))
 	if err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -233,7 +234,7 @@ func webRelayOriginURL(u *url.URL) (string, error) {
 	return (&url.URL{Scheme: scheme, Host: u.Host}).String(), nil
 }
 
-func websocketClientHandshake(raw net.Conn, u *url.URL, token string) (*wsNetConn, error) {
+func websocketClientHandshake(raw net.Conn, u *url.URL, token, connectionGrant string) (*wsNetConn, error) {
 	keyBytes := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, keyBytes); err != nil {
 		return nil, err
@@ -257,6 +258,12 @@ func websocketClientHandshake(raw net.Conn, u *url.URL, token string) (*wsNetCon
 	b.WriteString("User-Agent: WeDecent/2\r\n")
 	if token != "" {
 		fmt.Fprintf(&b, "Authorization: Bearer %s\r\n", token)
+	}
+	if connectionGrant != "" {
+		if strings.ContainsAny(connectionGrant, "\r\n") {
+			return nil, errors.New("connection grant contains invalid whitespace")
+		}
+		fmt.Fprintf(&b, "X-WeDecent-Connection-Grant: %s\r\n", connectionGrant)
 	}
 	b.WriteString("\r\n")
 	if _, err := io.WriteString(raw, b.String()); err != nil {

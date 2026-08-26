@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import { verifyRelayTicket } from "./relay-auth.js";
+import { authorizeStream } from "./stream-auth.js";
 
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const STREAM_PREFIX = "/v1/stream/";
@@ -12,7 +12,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/healthz") {
-      return Response.json({ service: "wedecent-relay", status: "ok", version: 6 });
+      return Response.json({ service: "wedecent-relay", status: "ok", version: 7 });
     }
 
     if (url.pathname === TIME_PATH) {
@@ -68,8 +68,13 @@ export default {
       return new Response("Clients must not specify a relay slot", { status: 400 });
     }
 
-    if (!(await streamAuthorized(request, env, { deviceId, role, slot: role === "agent" ? Number.parseInt(slot, 10) : null }))) {
-      return new Response("Unauthorized", { status: 401 });
+    const authorization = await authorizeStream(request, env, {
+      deviceId,
+      role,
+      slot: role === "agent" ? Number.parseInt(slot, 10) : null,
+    });
+    if (!authorization.ok) {
+      return new Response(authorization.message, { status: authorization.status });
     }
 
     const objectId = env.DEVICE_RELAY.idFromName(deviceId);
@@ -77,22 +82,6 @@ export default {
   },
 };
 
-
-async function streamAuthorized(request, env, expected) {
-  const token = bearerToken(request);
-  if (!token) {
-    return false;
-  }
-  if (token.startsWith("wdt2.")) {
-    try {
-      await verifyRelayTicket(token, expected);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  return Boolean(env.RELAY_ACCESS_TOKEN) && token === env.RELAY_ACCESS_TOKEN;
-}
 
 function legacyAuthorized(request, env) {
   const token = bearerToken(request);
