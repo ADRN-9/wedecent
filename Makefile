@@ -1,7 +1,7 @@
 GO ?= go
 BIN_DIR ?= bin
 
-.PHONY: all build test vet smoke smoke-direct smoke-relay clean
+.PHONY: all build test vet smoke smoke-direct smoke-relay release-windows verify-release-windows clean
 
 all: test build
 
@@ -25,5 +25,11 @@ smoke-direct:
 smoke-relay:
 	./scripts/smoke-relay.sh
 
+release-windows:
+	./scripts/build-windows-release.sh
+
+verify-release-windows:
+	./scripts/verify-windows-release-repro.sh
+
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) dist

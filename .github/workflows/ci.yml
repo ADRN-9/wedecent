@@ -39,8 +39,33 @@ jobs:
           cache: true
       - name: Test native Windows agent
         run: go test ./...
-      - name: Build native Windows agent
-        run: go build -trimpath -o wd-agent.exe ./cmd/wd-agent
+      - name: Build native Windows binaries
+        run: |
+          go build -trimpath -buildvcs=false -o wd.exe ./cmd/wd
+          go build -trimpath -buildvcs=false -o wd-agent.exe ./cmd/wd-agent
+      - name: Verify native version commands
+        shell: pwsh
+        run: |
+          .\wd.exe version
+          .\wd-agent.exe version
+
+  windows-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Verify reproducible Windows release bundle
+        run: ./scripts/verify-windows-release-repro.sh
+      - name: Build Windows release bundle
+        run: ./scripts/build-windows-release.sh
+      - name: Verify release checksums
+        run: |
+          cd dist/wedecent-windows-amd64
+          sha256sum -c SHA256SUMS.txt
 
   relay-worker:
     runs-on: ubuntu-latest

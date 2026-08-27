@@ -19,6 +19,7 @@ import (
 
 	"wedecent.com/wedecent/internal/account"
 	"wedecent.com/wedecent/internal/appdirs"
+	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/enrollment"
 	"wedecent.com/wedecent/internal/identity"
@@ -41,6 +42,8 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "identity":
 		err = runIdentity(os.Args[2:])
+	case "version":
+		err = buildinfo.Write(os.Stdout, "wd")
 	case "account":
 		err = runAccount(os.Args[2:])
 	case "enrollment-proof":
@@ -821,6 +824,7 @@ func usage() {
 Commands:
   init       Create this client's identity
   identity   Print client ID and fingerprint
+  version    Print build and release metadata
   account    Sign in, inspect, or sign out of the WeDecent account session
   enrollment-proof  Prove possession of this client identity for account enrollment
   discover   Find signed WeDecent LAN advertisements

@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"wedecent.com/wedecent/internal/appdirs"
+	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/enrollment"
 	"wedecent.com/wedecent/internal/identity"
@@ -43,6 +44,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "identity":
 		err = runIdentity(os.Args[2:])
+	case "version":
+		err = buildinfo.Write(os.Stdout, "wd-agent")
 	case "enrollment-proof":
 		err = runEnrollmentProof(os.Args[2:])
 	case "service":
@@ -416,6 +419,7 @@ func usage() {
 Commands:
   init             Create identity and one-time pairing secret
   identity         Print device ID and fingerprint
+  version          Print build and release metadata
   enrollment-proof Print or sign a cryptographic device-enrollment request
   pairing-secret   Rotate and print a one-time pairing secret
   serve            Run the terminal agent (direct, relay, or both)
