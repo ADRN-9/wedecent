@@ -553,22 +553,9 @@ func runPair(args []string) error {
 		return err
 	}
 
-	secret := os.Getenv("WEDECENT_PAIRING_SECRET")
-	if secret == "" {
-		fmt.Fprint(os.Stderr, "Pairing secret: ")
-		tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-		if err != nil {
-			return errors.New("no TTY available; set WEDECENT_PAIRING_SECRET")
-		}
-		secret, err = terminal.ReadPassword(tty)
-		_ = tty.Close()
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return err
-		}
-	}
-	if len(secret) < 20 {
-		return errors.New("pairing secret is too short")
+	secret, err := readPairingSecret()
+	if err != nil {
+		return err
 	}
 
 	id, err := identity.Ensure(*stateDir, *name)
@@ -579,16 +566,56 @@ func runPair(args []string) error {
 	if err != nil {
 		return err
 	}
-	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptions(id)}
-	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	pairingGrant, err := automaticPairingRelayGrant(ctx, *stateDir, id.ID, *deviceID, locator, account.Client{})
+	if err != nil {
+		return err
+	}
+	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, pairingGrant)}
+	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	peer, err := client.Pair(ctx, locator, fp, secret)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Paired %s (%s) via %s\n", peer.Name, peer.ID, peer.Endpoint)
 	return nil
+}
+
+func readPairingSecret() (string, error) {
+	secret := strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_SECRET"))
+	if secret == "" {
+		fmt.Fprint(os.Stderr, "Pairing secret: ")
+		tty, err := openPasswordTTY()
+		if err != nil {
+			return "", errors.New("no interactive terminal is available for secure pairing-secret entry; set WEDECENT_PAIRING_SECRET only for controlled automation")
+		}
+		readSecret, readErr := terminal.ReadPassword(tty)
+		closeErr := tty.Close()
+		secret = readSecret
+		fmt.Fprintln(os.Stderr)
+		if readErr != nil {
+			return "", readErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+	}
+	if len(secret) < 20 {
+		return "", errors.New("pairing secret is too short")
+	}
+	return secret, nil
+}
+
+func automaticPairingRelayGrant(ctx context.Context, stateDir, clientDeviceID, targetDeviceID, locator string, accountClient account.Client) (string, error) {
+	if !strings.HasPrefix(locator, "wsrelay://") {
+		return "", nil
+	}
+	grant, err := automaticConnectionGrant(ctx, stateDir, clientDeviceID, targetDeviceID, accountClient)
+	if err != nil {
+		return "", fmt.Errorf("authorize relay pairing: %w", err)
+	}
+	return grant, nil
 }
 
 func runConnect(args []string) (int, error) {

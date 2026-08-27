@@ -23,6 +23,7 @@ This repository is an early MVP and should receive an independent security revie
 - Client account access/refresh tokens are stored in a mode-0600 session file on Unix-like systems; Windows seals the session with CurrentUser DPAPI, and account tokens are never accepted as command-line arguments
 - WebSocket relay terminal connections acquire short-lived account grants in memory from the authenticated control-plane session; grant JWTs are not persisted by the normal connect path
 - Windows console password entry disables echo for account and pairing secret prompts
+- Relay-based pairing requires an authenticated short-lived account grant in addition to the independent fingerprint and single-use pairing secret checks
 
 ## Known gaps before production
 

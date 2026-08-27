@@ -41,4 +41,4 @@ Do not pass the JWT directly on a command line. The grant is a short-lived beare
 
 ## Pairing behavior
 
-Once this relay version is deployed, all `role=client` WebSocket streams require a terminal connection grant. Existing relay-based pairing therefore no longer passes relay admission. This is intentional for this enforcement milestone: device enrollment/account authorization is the trusted control-plane path, while direct/LAN pairing can remain available during migration. A future dedicated pairing capability can be introduced without weakening terminal grant enforcement.
+All `role=client` WebSocket streams require a short-lived account connection grant. Relay-based pairing now acquires a fresh grant automatically from the authenticated client account session before opening the relay stream. The grant only satisfies relay admission; the inner pairing protocol still requires the expected device fingerprint and a high-entropy single-use pairing secret before either endpoint writes trust state.
