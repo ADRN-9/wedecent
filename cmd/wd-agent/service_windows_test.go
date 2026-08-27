@@ -18,12 +18,12 @@ func TestExtractServiceName(t *testing.T) {
 }
 
 func TestBuiltInServiceAccountsRejected(t *testing.T) {
-	for _, account := range []string{"LocalSystem", `NT AUTHORITY\\SYSTEM`, `NT AUTHORITY\\LocalService`, `NT AUTHORITY\\NetworkService`} {
+	for _, account := range []string{"LocalSystem", `NT AUTHORITY\SYSTEM`, `NT AUTHORITY\LocalService`, `NT AUTHORITY\NetworkService`} {
 		if !isBuiltInServiceAccount(account) {
 			t.Errorf("expected %q to be rejected", account)
 		}
 	}
-	if isBuiltInServiceAccount(`.\\WeDecentSvc`) {
+	if isBuiltInServiceAccount(`.\WeDecentSvc`) {
 		t.Fatal("dedicated local account should be accepted")
 	}
 }
