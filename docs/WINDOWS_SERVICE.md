@@ -94,10 +94,14 @@ The existing interactive command also uses relay-auth-v2 and needs no relay secr
 
 The upgraded service does not read `WEDECENT_RELAY_TOKEN`.
 
+## Package installer
+
+The release package now includes `Install-WeDecent.ps1`, `Uninstall-WeDecent.ps1`, and `Test-WeDecentInstall.ps1`. The package installer creates the dedicated local account on a fresh machine, grants **Log on as a service**, verifies release checksums, and delegates identity/ACL/SCM setup to this command. Automated installation passes the generated password over standard input with `--account-password-stdin`; the password is not placed in the command line, environment, or a temporary file.
+
+The low-level `wd-agent service install` command intentionally still does not create accounts or grant user rights itself. Without `--account-password-stdin` it retains the existing hidden interactive password prompt.
+
 ## Current limitations
 
-- The installer does not create the Windows user account.
-- The installer does not grant the **Log on as a service** right automatically.
 - Identity private keys are filesystem-protected and are not TPM/CNG-backed yet.
 - The service log is a local text file rather than Windows Event Log.
-- Code signing and MSI packaging are not implemented yet.
+- Authenticode signing and MSI/WiX packaging are not implemented yet.

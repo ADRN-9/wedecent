@@ -49,3 +49,9 @@ signtool verify /pa /all /v wd-agent.exe
 ```
 
 The final checksum manifest must be regenerated after these commands because Authenticode modifies the PE files.
+
+## Installer package
+
+After building or signing the release bundle and refreshing its executable checksums, run `scripts/build-windows-installer-package.sh` (or `make installer-windows`). The separate `dist/wedecent-windows-installer/` package contains the exact release executables plus the PowerShell install, validation, and uninstall scripts. Its `PACKAGE_SHA256SUMS.txt` covers every packaged file.
+
+The installer layer does not change the reproducible executable build. Sign the final PowerShell scripts and executables before production distribution.
