@@ -10,6 +10,15 @@ import (
 
 const enrollmentKindClient = "client"
 
+type DeviceEnrollmentRequest struct {
+	Action         string `json:"action"`
+	DeviceID       string `json:"device_id"`
+	PublicKey      string `json:"public_key"`
+	Kind           string `json:"kind"`
+	Name           string `json:"name"`
+	OrganizationID string `json:"organization_id,omitempty"`
+}
+
 type EnrollmentChallenge struct {
 	Action         string `json:"action"`
 	ChallengeID    string `json:"challenge_id"`
@@ -24,15 +33,15 @@ type EnrollmentChallenge struct {
 }
 
 type DeviceEnrollmentProof struct {
-	ChallengeID    string
-	Challenge      string
-	DeviceID       string
-	PublicKey      string
-	Kind           string
-	Name           string
-	OrganizationID string
-	ExpiresUnixMS  int64
-	Signature      string
+	ChallengeID    string `json:"challenge_id"`
+	Challenge      string `json:"challenge"`
+	DeviceID       string `json:"device_id"`
+	PublicKey      string `json:"public_key"`
+	Kind           string `json:"kind"`
+	Name           string `json:"name"`
+	OrganizationID string `json:"organization_id,omitempty"`
+	ExpiresUnixMS  int64  `json:"expires_unix_ms"`
+	Signature      string `json:"signature"`
 }
 
 type EnrolledDevice struct {
@@ -49,7 +58,7 @@ type enrollmentCompleteResponse struct {
 	Device EnrolledDevice `json:"device"`
 }
 
-func (c Client) RequestClientEnrollmentChallenge(ctx context.Context, session *Session, deviceID, publicKey, name, organizationID string) (EnrollmentChallenge, error) {
+func (c Client) RequestDeviceEnrollmentChallenge(ctx context.Context, session *Session, device DeviceEnrollmentRequest) (EnrollmentChallenge, error) {
 	if session == nil {
 		return EnrollmentChallenge{}, errors.New("account session is nil")
 	}
@@ -60,36 +69,55 @@ func (c Client) RequestClientEnrollmentChallenge(ctx context.Context, session *S
 		return EnrollmentChallenge{}, errors.New("account session user ID is missing")
 	}
 
-	deviceID = strings.TrimSpace(deviceID)
-	publicKey = strings.TrimSpace(publicKey)
-	name = strings.TrimSpace(name)
-	organizationID = strings.TrimSpace(organizationID)
-	if err := validateEnrollmentIdentity(deviceID, publicKey, name); err != nil {
+	device.Action = strings.TrimSpace(device.Action)
+	device.DeviceID = strings.TrimSpace(device.DeviceID)
+	device.PublicKey = strings.TrimSpace(device.PublicKey)
+	device.Kind = strings.TrimSpace(device.Kind)
+	device.Name = strings.TrimSpace(device.Name)
+	device.OrganizationID = strings.TrimSpace(device.OrganizationID)
+	if device.Action != "" && device.Action != "challenge" {
+		return EnrollmentChallenge{}, errors.New("device enrollment request action must be challenge")
+	}
+	if err := validateEnrollmentKind(device.Kind); err != nil {
+		return EnrollmentChallenge{}, err
+	}
+	if err := validateEnrollmentIdentity(device.DeviceID, device.PublicKey, device.Name); err != nil {
 		return EnrollmentChallenge{}, err
 	}
 
 	request := map[string]any{
 		"action":     "challenge",
-		"device_id":  deviceID,
-		"public_key": publicKey,
-		"kind":       enrollmentKindClient,
-		"name":       name,
+		"device_id":  device.DeviceID,
+		"public_key": device.PublicKey,
+		"kind":       device.Kind,
+		"name":       device.Name,
 	}
-	if organizationID != "" {
-		request["organization_id"] = organizationID
+	if device.OrganizationID != "" {
+		request["organization_id"] = device.OrganizationID
 	}
 
 	var response EnrollmentChallenge
 	if err := c.doJSON(ctx, "POST", session.SupabaseURL+"/functions/v1/device-enrollment", session.PublishableKey, session.AccessToken, request, &response); err != nil {
 		return EnrollmentChallenge{}, fmt.Errorf("request device enrollment challenge: %w", err)
 	}
-	if err := c.validateEnrollmentChallenge(session, response, deviceID, publicKey, name, organizationID); err != nil {
+	if err := c.validateEnrollmentChallenge(session, response, device.DeviceID, device.PublicKey, device.Kind, device.Name, device.OrganizationID); err != nil {
 		return EnrollmentChallenge{}, err
 	}
 	return response, nil
 }
 
-func (c Client) CompleteClientEnrollment(ctx context.Context, session *Session, proof DeviceEnrollmentProof) (EnrolledDevice, error) {
+func (c Client) RequestClientEnrollmentChallenge(ctx context.Context, session *Session, deviceID, publicKey, name, organizationID string) (EnrollmentChallenge, error) {
+	return c.RequestDeviceEnrollmentChallenge(ctx, session, DeviceEnrollmentRequest{
+		Action:         "challenge",
+		DeviceID:       deviceID,
+		PublicKey:      publicKey,
+		Kind:           enrollmentKindClient,
+		Name:           name,
+		OrganizationID: organizationID,
+	})
+}
+
+func (c Client) CompleteDeviceEnrollment(ctx context.Context, session *Session, proof DeviceEnrollmentProof) (EnrolledDevice, error) {
 	if session == nil {
 		return EnrolledDevice{}, errors.New("account session is nil")
 	}
@@ -109,8 +137,8 @@ func (c Client) CompleteClientEnrollment(ctx context.Context, session *Session, 
 	proof.OrganizationID = strings.TrimSpace(proof.OrganizationID)
 	proof.Signature = strings.TrimSpace(proof.Signature)
 
-	if proof.Kind != enrollmentKindClient {
-		return EnrolledDevice{}, errors.New("wd client enrollment kind must be client")
+	if err := validateEnrollmentKind(proof.Kind); err != nil {
+		return EnrolledDevice{}, err
 	}
 	if err := validateEnrollmentIdentity(proof.DeviceID, proof.PublicKey, proof.Name); err != nil {
 		return EnrolledDevice{}, err
@@ -133,7 +161,7 @@ func (c Client) CompleteClientEnrollment(ctx context.Context, session *Session, 
 		"challenge":       proof.Challenge,
 		"device_id":       proof.DeviceID,
 		"public_key":      proof.PublicKey,
-		"kind":            enrollmentKindClient,
+		"kind":            proof.Kind,
 		"name":            proof.Name,
 		"expires_unix_ms": proof.ExpiresUnixMS,
 		"signature":       proof.Signature,
@@ -149,7 +177,7 @@ func (c Client) CompleteClientEnrollment(ctx context.Context, session *Session, 
 	if response.Action != "complete" {
 		return EnrolledDevice{}, errors.New("device enrollment service returned an unexpected action")
 	}
-	if response.Device.DeviceID != proof.DeviceID || response.Device.PublicKey != proof.PublicKey || response.Device.Kind != enrollmentKindClient || response.Device.Name != proof.Name {
+	if response.Device.DeviceID != proof.DeviceID || response.Device.PublicKey != proof.PublicKey || response.Device.Kind != proof.Kind || response.Device.Name != proof.Name {
 		return EnrolledDevice{}, errors.New("device enrollment service returned a mismatched device identity")
 	}
 	if response.Device.OwnerUserID != session.UserID {
@@ -161,7 +189,14 @@ func (c Client) CompleteClientEnrollment(ctx context.Context, session *Session, 
 	return response.Device, nil
 }
 
-func (c Client) validateEnrollmentChallenge(session *Session, response EnrollmentChallenge, deviceID, publicKey, name, organizationID string) error {
+func (c Client) CompleteClientEnrollment(ctx context.Context, session *Session, proof DeviceEnrollmentProof) (EnrolledDevice, error) {
+	if strings.TrimSpace(proof.Kind) != enrollmentKindClient {
+		return EnrolledDevice{}, errors.New("wd client enrollment kind must be client")
+	}
+	return c.CompleteDeviceEnrollment(ctx, session, proof)
+}
+
+func (c Client) validateEnrollmentChallenge(session *Session, response EnrollmentChallenge, deviceID, publicKey, kind, name, organizationID string) error {
 	if response.Action != "challenge" {
 		return errors.New("device enrollment service returned an unexpected action")
 	}
@@ -175,17 +210,25 @@ func (c Client) validateEnrollmentChallenge(session *Session, response Enrollmen
 	if response.UserID != session.UserID {
 		return errors.New("device enrollment service returned a mismatched user")
 	}
-	if response.DeviceID != deviceID || response.PublicKey != publicKey || response.Kind != enrollmentKindClient || response.Name != name {
+	if response.DeviceID != deviceID || response.PublicKey != publicKey || response.Kind != kind || response.Name != name {
 		return errors.New("device enrollment service returned a mismatched device challenge")
 	}
 	if response.OrganizationID != organizationID {
 		return errors.New("device enrollment service returned a mismatched organization")
 	}
-
 	if response.ExpiresUnixMS <= 0 {
 		return errors.New("device enrollment service returned an invalid challenge expiry")
 	}
 	return nil
+}
+
+func validateEnrollmentKind(kind string) error {
+	switch strings.TrimSpace(kind) {
+	case "client", "agent", "hybrid":
+		return nil
+	default:
+		return errors.New("device kind must be client, agent, or hybrid")
+	}
 }
 
 func validateEnrollmentIdentity(deviceID, publicKey, name string) error {

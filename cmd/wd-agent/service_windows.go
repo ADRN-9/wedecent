@@ -57,6 +57,7 @@ func runServiceInstall(args []string) error {
 	serviceName := fs.String("service-name", defaultWindowsServiceName, "Windows service name")
 	displayName := fs.String("display-name", "WeDecent Agent", "Windows service display name")
 	account := fs.String("account", "", `dedicated standard service account, e.g. .\WeDecentSvc`)
+	accountPasswordStdin := fs.Bool("account-password-stdin", false, "read the service account password from standard input")
 	stateDir := fs.String("state", defaultServiceStateDir(), "machine-wide agent state directory")
 	deviceName := fs.String("name", hostname(), "device display name")
 	listenAddr := fs.String("listen", "", "TCP listen address; empty disables inbound TCP")
@@ -102,7 +103,11 @@ func runServiceInstall(args []string) error {
 
 	password := ""
 	if !strings.HasSuffix(strings.TrimSpace(*account), "$") {
-		password, err = readHiddenLine("Service account password: ")
+		if *accountPasswordStdin {
+			password, err = readServicePassword(os.Stdin)
+		} else {
+			password, err = readHiddenLine("Service account password: ")
+		}
 		if err != nil {
 			return err
 		}
