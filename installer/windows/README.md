@@ -75,3 +75,11 @@ Never use the purge form for a normal upgrade or temporary uninstall. Deleting t
 A default fresh install is non-interactive: the installer generates the dedicated account password internally. An upgrade is also non-interactive. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
 
 The PowerShell scripts themselves are not Authenticode-signed yet. Production packaging should sign the scripts and binaries before distribution; do not weaken execution policy or Defender to run an untrusted package.
+
+## Account enrollment before relay pairing
+
+A newly created agent identity must be enrolled in the WeDecent account before relay
+pairing can obtain a connection grant. Use the challenge/proof bridge documented in
+`docs/WINDOWS_INSTALLER.md`: the authenticated `wd` client requests/completes the
+challenge, while `wd-agent enrollment-proof` signs it on the agent machine. The account
+session stays on the client and the agent private key stays on the agent.

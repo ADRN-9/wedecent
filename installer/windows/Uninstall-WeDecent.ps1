@@ -211,6 +211,17 @@ if ($serviceInfo) {
     }
 }
 
+function Remove-EmptyDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    $child = Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop |
+        Select-Object -First 1
+    if (-not $child) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    }
+}
+
 $action = if ($Purge) { 'Uninstall WeDecent and purge device identity/state' } else { 'Uninstall WeDecent and preserve device identity/state' }
 if ($RemoveServiceAccount) { $action += ' and remove the installer-managed service account' }
 if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", $action)) { return }
@@ -243,6 +254,10 @@ if ($RemoveServiceAccount) {
         Remove-LocalUser -Name $accountToRemove.Name
     }
     Remove-Item -LiteralPath $metadataPath -Force -ErrorAction SilentlyContinue
+}
+
+if ($Purge) {
+    Remove-EmptyDirectory -Path (Split-Path -Parent $StateDir)
 }
 
 Write-Host 'WeDecent binaries and service removed.'

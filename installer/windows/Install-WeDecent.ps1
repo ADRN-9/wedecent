@@ -509,6 +509,17 @@ function Add-MachinePathEntry {
     [Environment]::SetEnvironmentVariable('Path', (($parts + $PathEntry) -join ';'), 'Machine')
 }
 
+function Remove-EmptyDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return }
+    $child = Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop |
+        Select-Object -First 1
+    if (-not $child) {
+        Remove-Item -LiteralPath $Path -Force -ErrorAction Stop
+    }
+}
+
 function Invoke-RollbackStep {
     param(
         [Parameter(Mandatory = $true)][string]$Description,
@@ -588,6 +599,12 @@ if ($service) {
     if ($localUser) { Assert-StandardLocalAccount $localUser }
 
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Install WeDecent $version")) { return }
+
+    $installDirExisted = Test-Path -LiteralPath $InstallDir -PathType Container
+
+    $stateParent = Split-Path -Parent $StateDir
+
+    $stateParentExisted = Test-Path -LiteralPath $stateParent -PathType Container
 
     $stateExisted = Test-Path -LiteralPath $StateDir -PathType Container
     $createdAccount = $false
@@ -674,6 +691,16 @@ if ($service) {
         if (-not $stateExisted) {
             Invoke-RollbackStep 'remove installer-created state directory' {
                 Remove-Item -LiteralPath $StateDir -Recurse -Force -ErrorAction Stop
+            }
+            if (-not $stateParentExisted) {
+                Invoke-RollbackStep 'remove empty installer-created state parent' {
+                    Remove-EmptyDirectory -Path $stateParent
+                }
+            }
+        }
+        if (-not $installDirExisted) {
+            Invoke-RollbackStep 'remove empty installer-created install directory' {
+                Remove-EmptyDirectory -Path $InstallDir
             }
         }
         if ($localUser -and -not $hadLogonRight) {

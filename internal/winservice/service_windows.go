@@ -494,6 +494,36 @@ func (r *serviceRunner) finish(err error) {
 	}
 }
 
+func qualifyAccountForLookup(account, computerName string) string {
+	account = strings.TrimSpace(account)
+	if strings.HasPrefix(account, `.\`) {
+		return computerName + `\` + strings.TrimPrefix(account, `.\`)
+	}
+	return account
+}
+
+func accountSIDPrincipal(account string) (string, error) {
+	account = strings.TrimSpace(account)
+	lookupAccount := account
+	if strings.HasPrefix(account, `.\`) {
+		computerName, err := syscall.ComputerName()
+		if err != nil {
+			return "", fmt.Errorf("resolve computer name for service account %q: %w", account, err)
+		}
+		lookupAccount = qualifyAccountForLookup(account, computerName)
+	}
+
+	sid, _, _, err := syscall.LookupSID("", lookupAccount)
+	if err != nil {
+		return "", fmt.Errorf("resolve service account %q to SID: %w", account, err)
+	}
+	sidText, err := sid.String()
+	if err != nil {
+		return "", fmt.Errorf("format SID for service account %q: %w", account, err)
+	}
+	return "*" + sidText, nil
+}
+
 // RestrictDirectory removes inherited ACL entries and grants full control only
 // to the configured service account, LocalSystem, and local Administrators.
 // The caller must be elevated and the directory must already exist.
@@ -505,6 +535,10 @@ func RestrictDirectory(path, account string) error {
 		return errors.New("service account is required")
 	}
 	clean := filepath.Clean(path)
+	principal, err := accountSIDPrincipal(account)
+	if err != nil {
+		return err
+	}
 
 	// Protect the state-directory root and make the allowed principals
 	// inheritable. Do not apply /inheritance:r recursively: doing so removes
@@ -515,7 +549,7 @@ func RestrictDirectory(path, account string) error {
 		clean,
 		"/inheritance:r",
 		"/grant:r",
-		account+":(OI)(CI)F",
+		principal+":(OI)(CI)F",
 		"*S-1-5-18:(OI)(CI)F",
 		"*S-1-5-32-544:(OI)(CI)F",
 	)

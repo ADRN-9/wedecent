@@ -113,7 +113,7 @@ func runIdentity(args []string) error {
 
 func runAccount(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: wd account <login|status|enroll|logout> [options]")
+		return errors.New("usage: wd account <login|status|enroll|enroll-device|logout> [options]")
 	}
 	switch args[0] {
 	case "login":
@@ -122,10 +122,12 @@ func runAccount(args []string) error {
 		return runAccountStatus(args[1:])
 	case "enroll":
 		return runAccountEnroll(args[1:])
+	case "enroll-device":
+		return runAccountEnrollDevice(args[1:])
 	case "logout":
 		return runAccountLogout(args[1:])
 	default:
-		return fmt.Errorf("unknown account command %q; use login, status, enroll, or logout", args[0])
+		return fmt.Errorf("unknown account command %q; use login, status, enroll, enroll-device, or logout", args[0])
 	}
 }
 
@@ -314,6 +316,100 @@ func runAccountEnroll(args []string) error {
 		fmt.Printf(" in organization %s", device.OrganizationID)
 	}
 	fmt.Println()
+	return nil
+}
+
+func runAccountEnrollDevice(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account enroll-device", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	requestFile := fs.String("request-file", "", "agent enrollment request JSON file")
+	proofFile := fs.String("proof-file", "", "agent enrollment proof JSON file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account enroll-device (--request-file path | --proof-file path)")
+	}
+	requestPath := strings.TrimSpace(*requestFile)
+	proofPath := strings.TrimSpace(*proofFile)
+	if (requestPath == "") == (proofPath == "") {
+		return errors.New("specify exactly one of --request-file or --proof-file")
+	}
+
+	path := account.SessionPath(*stateDir)
+	accountSession, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		return errors.New("WeDecent account sign-in is required; run 'wd account login'")
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	fresh, refreshed, err := accountClient.EnsureFresh(ctx, accountSession, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if refreshed {
+		if err := account.Save(path, fresh); err != nil {
+			return err
+		}
+	}
+
+	if requestPath != "" {
+		var request account.DeviceEnrollmentRequest
+		if err := readSmallJSONFile(requestPath, &request); err != nil {
+			return fmt.Errorf("read device enrollment request: %w", err)
+		}
+		challenge, err := accountClient.RequestDeviceEnrollmentChallenge(ctx, fresh, request)
+		if err != nil {
+			return err
+		}
+		return writeJSON(challenge)
+	}
+
+	var proof account.DeviceEnrollmentProof
+	if err := readSmallJSONFile(proofPath, &proof); err != nil {
+		return fmt.Errorf("read device enrollment proof: %w", err)
+	}
+	device, err := accountClient.CompleteDeviceEnrollment(ctx, fresh, proof)
+	if err != nil {
+		return err
+	}
+	return writeJSON(map[string]any{
+		"action": "complete",
+		"device": device,
+	})
+}
+
+func readSmallJSONFile(path string, value any) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("JSON file path is required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return errors.New("JSON path is a directory")
+	}
+	if info.Size() <= 0 || info.Size() > 64*1024 {
+		return errors.New("JSON file must contain between 1 byte and 64 KiB")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, value); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
 	return nil
 }
 

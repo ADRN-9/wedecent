@@ -15,9 +15,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
+	"wedecent.com/wedecent/internal/account"
 	"wedecent.com/wedecent/internal/appdirs"
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/discovery"
@@ -126,6 +128,7 @@ func runEnrollmentProof(args []string) error {
 	stateDir := fs.String("state", state, "agent state directory")
 	name := fs.String("name", hostname(), "device display name")
 	request := fs.Bool("request", false, "print an enrollment challenge request instead of signing a challenge")
+	challengeFile := fs.String("challenge-file", "", "enrollment challenge JSON file to sign")
 	kind := fs.String("kind", "agent", "device kind: client, agent, or hybrid")
 	organizationID := fs.String("organization-id", "", "optional organization UUID")
 	challengeID := fs.String("challenge-id", "", "challenge UUID returned by the enrollment service")
@@ -135,6 +138,13 @@ func runEnrollmentProof(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd-agent enrollment-proof [--request | --challenge-file path | challenge flags]")
+	}
+	if *request && strings.TrimSpace(*challengeFile) != "" {
+		return errors.New("--request and --challenge-file are mutually exclusive")
+	}
+
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
 		return err
@@ -153,6 +163,53 @@ func runEnrollmentProof(args []string) error {
 			payload["organization_id"] = *organizationID
 		}
 		return writeJSON(payload)
+	}
+
+	if challengePath := strings.TrimSpace(*challengeFile); challengePath != "" {
+		if strings.TrimSpace(*challengeID) != "" || strings.TrimSpace(*challenge) != "" || strings.TrimSpace(*userID) != "" || *expiresUnixMS != 0 {
+			return errors.New("--challenge-file cannot be combined with manual challenge fields")
+		}
+		info, err := os.Stat(challengePath)
+		if err != nil {
+			return fmt.Errorf("stat enrollment challenge file: %w", err)
+		}
+		if info.IsDir() {
+			return errors.New("enrollment challenge path is a directory")
+		}
+		if info.Size() <= 0 || info.Size() > 64*1024 {
+			return errors.New("enrollment challenge file must contain between 1 byte and 64 KiB")
+		}
+		data, err := os.ReadFile(challengePath)
+		if err != nil {
+			return fmt.Errorf("read enrollment challenge file: %w", err)
+		}
+		var received account.EnrollmentChallenge
+		if err := json.Unmarshal(data, &received); err != nil {
+			return fmt.Errorf("decode enrollment challenge file: %w", err)
+		}
+		if received.Action != "challenge" {
+			return errors.New("enrollment challenge file has an invalid action")
+		}
+		if received.DeviceID != id.ID || received.PublicKey != pub || received.Name != id.Name {
+			return errors.New("enrollment challenge does not match this agent identity")
+		}
+		switch received.Kind {
+		case "client", "agent", "hybrid":
+		default:
+			return errors.New("enrollment challenge has an invalid device kind")
+		}
+		if received.Kind != strings.TrimSpace(*kind) {
+			return errors.New("enrollment challenge kind does not match the requested device kind")
+		}
+		if received.ChallengeID == "" || received.Challenge == "" || received.UserID == "" || received.ExpiresUnixMS <= 0 {
+			return errors.New("enrollment challenge is missing required metadata")
+		}
+		*kind = received.Kind
+		*organizationID = received.OrganizationID
+		*challengeID = received.ChallengeID
+		*challenge = received.Challenge
+		*userID = received.UserID
+		*expiresUnixMS = received.ExpiresUnixMS
 	}
 
 	msg, err := enrollment.Message(enrollment.ProofFields{
