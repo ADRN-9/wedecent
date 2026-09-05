@@ -1,13 +1,15 @@
 {
   "name": "@wedecent/relay-worker",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.3.0",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "tail": "wrangler tail"
+    "tail": "wrangler tail",
+    "test": "node --test test/*.test.mjs"
   },
   "devDependencies": {
     "wrangler": "4.125.0"
-  }
+  },
+  "type": "module"
 }

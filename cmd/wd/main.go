@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -14,9 +17,13 @@ import (
 	"strings"
 	"time"
 
+	"wedecent.com/wedecent/internal/account"
 	"wedecent.com/wedecent/internal/appdirs"
+	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/discovery"
+	"wedecent.com/wedecent/internal/enrollment"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/relayauth"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/terminal"
 	"wedecent.com/wedecent/internal/transport"
@@ -35,6 +42,12 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "identity":
 		err = runIdentity(os.Args[2:])
+	case "version":
+		err = buildinfo.Write(os.Stdout, "wd")
+	case "account":
+		err = runAccount(os.Args[2:])
+	case "enrollment-proof":
+		err = runEnrollmentProof(os.Args[2:])
 	case "discover":
 		err = runDiscover(os.Args[2:])
 	case "devices":
@@ -96,6 +109,441 @@ func runIdentity(args []string) error {
 	fp, _ := identity.FingerprintPublicKey(id.PublicKey)
 	fmt.Printf("%s\t%s\t%s\n", id.ID, id.Name, fp)
 	return nil
+}
+
+func runAccount(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: wd account <login|status|enroll|enroll-device|logout> [options]")
+	}
+	switch args[0] {
+	case "login":
+		return runAccountLogin(args[1:])
+	case "status":
+		return runAccountStatus(args[1:])
+	case "enroll":
+		return runAccountEnroll(args[1:])
+	case "enroll-device":
+		return runAccountEnrollDevice(args[1:])
+	case "logout":
+		return runAccountLogout(args[1:])
+	default:
+		return fmt.Errorf("unknown account command %q; use login, status, enroll, enroll-device, or logout", args[0])
+	}
+}
+
+func runAccountLogin(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account login", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	supabaseURL := fs.String("supabase-url", strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_URL")), "Supabase project URL (or WEDECENT_SUPABASE_URL)")
+	publishableKey := fs.String("publishable-key", strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_PUBLISHABLE_KEY")), "Supabase publishable key (or WEDECENT_SUPABASE_PUBLISHABLE_KEY)")
+	email := fs.String("email", strings.TrimSpace(os.Getenv("WEDECENT_ACCOUNT_EMAIL")), "account email (or WEDECENT_ACCOUNT_EMAIL)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account login [--email address]")
+	}
+	if strings.TrimSpace(*supabaseURL) == "" {
+		return errors.New("Supabase URL is required; set WEDECENT_SUPABASE_URL or use --supabase-url")
+	}
+	if strings.TrimSpace(*publishableKey) == "" {
+		return errors.New("Supabase publishable key is required; set WEDECENT_SUPABASE_PUBLISHABLE_KEY or use --publishable-key")
+	}
+	if strings.TrimSpace(*email) == "" {
+		return errors.New("account email is required; set WEDECENT_ACCOUNT_EMAIL or use --email")
+	}
+
+	password, err := readAccountPassword()
+	if err != nil {
+		return err
+	}
+	defer func() { password = "" }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	session, err := accountClient.Login(ctx, *supabaseURL, *publishableKey, *email, password)
+	if err != nil {
+		return err
+	}
+	if err := account.Save(account.SessionPath(*stateDir), session); err != nil {
+		return err
+	}
+	fmt.Printf("Signed in as %s (%s)\n", session.Email, session.UserID)
+	return nil
+}
+
+func runAccountStatus(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account status", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account status")
+	}
+
+	path := account.SessionPath(*stateDir)
+	session, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		fmt.Println("Signed in: no")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	session, refreshed, err := accountClient.EnsureFresh(ctx, session, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if refreshed {
+		if err := account.Save(path, session); err != nil {
+			return err
+		}
+	}
+	user, err := accountClient.VerifyUser(ctx, session)
+	if err != nil {
+		return err
+	}
+	if session.UserID != "" && user.ID != session.UserID {
+		return errors.New("Supabase session user does not match the stored account")
+	}
+	if user.Email != "" && user.Email != session.Email {
+		session.Email = user.Email
+		if err := account.Save(path, session); err != nil {
+			return err
+		}
+	}
+
+	fmt.Println("Signed in: yes")
+	fmt.Printf("Email: %s\n", session.Email)
+	fmt.Printf("User ID: %s\n", user.ID)
+	fmt.Printf("Access token expires: %s\n", time.Unix(session.ExpiresAt, 0).UTC().Format(time.RFC3339))
+	return nil
+}
+
+func runAccountEnroll(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account enroll", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	name := fs.String("name", hostname(), "client display name")
+	organizationID := fs.String("organization-id", strings.TrimSpace(os.Getenv("WEDECENT_ORGANIZATION_ID")), "optional organization UUID (or WEDECENT_ORGANIZATION_ID)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account enroll [--organization-id uuid]")
+	}
+
+	path := account.SessionPath(*stateDir)
+	accountSession, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		return errors.New("WeDecent account sign-in is required; run 'wd account login'")
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	fresh, refreshed, err := accountClient.EnsureFresh(ctx, accountSession, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if refreshed {
+		if err := account.Save(path, fresh); err != nil {
+			return err
+		}
+	}
+
+	id, err := identity.Ensure(*stateDir, *name)
+	if err != nil {
+		return err
+	}
+	publicKey := base64.RawURLEncoding.EncodeToString(id.PublicKey)
+	challenge, err := accountClient.RequestClientEnrollmentChallenge(ctx, fresh, id.ID, publicKey, id.Name, *organizationID)
+	if err != nil {
+		return err
+	}
+
+	message, err := enrollment.Message(enrollment.ProofFields{
+		ChallengeID:    challenge.ChallengeID,
+		Challenge:      challenge.Challenge,
+		UserID:         challenge.UserID,
+		DeviceID:       id.ID,
+		PublicKey:      publicKey,
+		Kind:           "client",
+		OrganizationID: challenge.OrganizationID,
+		ExpiresUnixMS:  challenge.ExpiresUnixMS,
+	})
+	if err != nil {
+		return fmt.Errorf("build device enrollment proof: %w", err)
+	}
+	signature := base64.RawURLEncoding.EncodeToString(ed25519.Sign(id.PrivateKey, message))
+	device, err := accountClient.CompleteClientEnrollment(ctx, fresh, account.DeviceEnrollmentProof{
+		ChallengeID:    challenge.ChallengeID,
+		Challenge:      challenge.Challenge,
+		DeviceID:       id.ID,
+		PublicKey:      publicKey,
+		Kind:           "client",
+		Name:           id.Name,
+		OrganizationID: challenge.OrganizationID,
+		ExpiresUnixMS:  challenge.ExpiresUnixMS,
+		Signature:      signature,
+	})
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("Enrolled %s as client", device.DeviceID)
+	if device.OrganizationID != "" {
+		fmt.Printf(" in organization %s", device.OrganizationID)
+	}
+	fmt.Println()
+	return nil
+}
+
+func runAccountEnrollDevice(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account enroll-device", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	requestFile := fs.String("request-file", "", "agent enrollment request JSON file")
+	proofFile := fs.String("proof-file", "", "agent enrollment proof JSON file")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account enroll-device (--request-file path | --proof-file path)")
+	}
+	requestPath := strings.TrimSpace(*requestFile)
+	proofPath := strings.TrimSpace(*proofFile)
+	if (requestPath == "") == (proofPath == "") {
+		return errors.New("specify exactly one of --request-file or --proof-file")
+	}
+
+	path := account.SessionPath(*stateDir)
+	accountSession, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		return errors.New("WeDecent account sign-in is required; run 'wd account login'")
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	fresh, refreshed, err := accountClient.EnsureFresh(ctx, accountSession, 2*time.Minute)
+	if err != nil {
+		return err
+	}
+	if refreshed {
+		if err := account.Save(path, fresh); err != nil {
+			return err
+		}
+	}
+
+	if requestPath != "" {
+		var request account.DeviceEnrollmentRequest
+		if err := readSmallJSONFile(requestPath, &request); err != nil {
+			return fmt.Errorf("read device enrollment request: %w", err)
+		}
+		challenge, err := accountClient.RequestDeviceEnrollmentChallenge(ctx, fresh, request)
+		if err != nil {
+			return err
+		}
+		return writeJSON(challenge)
+	}
+
+	var proof account.DeviceEnrollmentProof
+	if err := readSmallJSONFile(proofPath, &proof); err != nil {
+		return fmt.Errorf("read device enrollment proof: %w", err)
+	}
+	device, err := accountClient.CompleteDeviceEnrollment(ctx, fresh, proof)
+	if err != nil {
+		return err
+	}
+	return writeJSON(map[string]any{
+		"action": "complete",
+		"device": device,
+	})
+}
+
+func readSmallJSONFile(path string, value any) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return errors.New("JSON file path is required")
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return errors.New("JSON path is a directory")
+	}
+	if info.Size() <= 0 || info.Size() > 64*1024 {
+		return errors.New("JSON file must contain between 1 byte and 64 KiB")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if err := json.Unmarshal(data, value); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+	return nil
+}
+
+func runAccountLogout(args []string) error {
+	state, err := appdirs.Client()
+	if err != nil {
+		return err
+	}
+	fs := flag.NewFlagSet("account logout", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("usage: wd account logout")
+	}
+
+	path := account.SessionPath(*stateDir)
+	session, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		fmt.Println("Signed in: no")
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	accountClient := account.Client{}
+	fresh, _, refreshErr := accountClient.EnsureFresh(ctx, session, 0)
+	var remoteErr error
+	if refreshErr != nil {
+		remoteErr = refreshErr
+	} else {
+		remoteErr = accountClient.Logout(ctx, fresh)
+	}
+	if err := account.Delete(path); err != nil {
+		return err
+	}
+	if remoteErr != nil {
+		fmt.Fprintf(os.Stderr, "Warning: local account session removed, but remote logout failed: %v\n", remoteErr)
+	} else {
+		fmt.Println("Signed out")
+	}
+	return nil
+}
+
+func readAccountPassword() (string, error) {
+	fmt.Fprint(os.Stderr, "Supabase password: ")
+	tty, err := openPasswordTTY()
+	if err != nil {
+		return "", err
+	}
+	password, readErr := terminal.ReadPassword(tty)
+	closeErr := tty.Close()
+	fmt.Fprintln(os.Stderr)
+	if readErr != nil {
+		return "", readErr
+	}
+	if closeErr != nil {
+		return "", closeErr
+	}
+	if password == "" {
+		return "", errors.New("account password is empty")
+	}
+	return password, nil
+}
+
+func openPasswordTTY() (*os.File, error) {
+	for _, path := range []string{"/dev/tty", "CONIN$"} {
+		if tty, err := os.OpenFile(path, os.O_RDWR, 0); err == nil {
+			return tty, nil
+		}
+	}
+	return nil, errors.New("no interactive terminal is available for secure password entry")
+}
+
+func runEnrollmentProof(args []string) error {
+	state, _ := appdirs.Client()
+	fs := flag.NewFlagSet("enrollment-proof", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "client state directory")
+	name := fs.String("name", hostname(), "client display name")
+	request := fs.Bool("request", false, "print an enrollment challenge request instead of signing a challenge")
+	kind := fs.String("kind", "client", "device kind: client, agent, or hybrid")
+	organizationID := fs.String("organization-id", "", "optional organization UUID")
+	challengeID := fs.String("challenge-id", "", "challenge UUID returned by the enrollment service")
+	challenge := fs.String("challenge", "", "base64url enrollment challenge")
+	userID := fs.String("user-id", "", "Supabase Auth user UUID returned by the enrollment service")
+	expiresUnixMS := fs.Int64("expires-unix-ms", 0, "challenge expiry in Unix milliseconds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	id, err := identity.Ensure(*stateDir, *name)
+	if err != nil {
+		return err
+	}
+	pub := base64.RawURLEncoding.EncodeToString(id.PublicKey)
+
+	if *request {
+		payload := map[string]any{
+			"action": "challenge", "device_id": id.ID, "public_key": pub,
+			"kind": *kind, "name": id.Name,
+		}
+		if *organizationID != "" {
+			payload["organization_id"] = *organizationID
+		}
+		return writeJSON(payload)
+	}
+
+	msg, err := enrollment.Message(enrollment.ProofFields{
+		ChallengeID: *challengeID, Challenge: *challenge, UserID: *userID,
+		DeviceID: id.ID, PublicKey: pub, Kind: *kind,
+		OrganizationID: *organizationID, ExpiresUnixMS: *expiresUnixMS,
+	})
+	if err != nil {
+		return err
+	}
+	payload := map[string]any{
+		"action": "complete", "challenge_id": *challengeID, "challenge": *challenge,
+		"device_id": id.ID, "public_key": pub, "kind": *kind, "name": id.Name,
+		"expires_unix_ms": *expiresUnixMS,
+		"signature":       base64.RawURLEncoding.EncodeToString(ed25519.Sign(id.PrivateKey, msg)),
+	}
+	if *organizationID != "" {
+		payload["organization_id"] = *organizationID
+	}
+	return writeJSON(payload)
+}
+
+func writeJSON(v any) error {
+	enc := json.NewEncoder(os.Stdout)
+	enc.SetIndent("", "  ")
+	return enc.Encode(v)
 }
 
 func runDiscover(args []string) error {
@@ -204,22 +652,9 @@ func runPair(args []string) error {
 		return err
 	}
 
-	secret := os.Getenv("WEDECENT_PAIRING_SECRET")
-	if secret == "" {
-		fmt.Fprint(os.Stderr, "Pairing secret: ")
-		tty, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
-		if err != nil {
-			return errors.New("no TTY available; set WEDECENT_PAIRING_SECRET")
-		}
-		secret, err = terminal.ReadPassword(tty)
-		_ = tty.Close()
-		fmt.Fprintln(os.Stderr)
-		if err != nil {
-			return err
-		}
-	}
-	if len(secret) < 20 {
-		return errors.New("pairing secret is too short")
+	secret, err := readPairingSecret()
+	if err != nil {
+		return err
 	}
 
 	id, err := identity.Ensure(*stateDir, *name)
@@ -230,16 +665,56 @@ func runPair(args []string) error {
 	if err != nil {
 		return err
 	}
-	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: transport.WebRelayOptions{Token: os.Getenv("WEDECENT_RELAY_TOKEN"), Timeout: 15 * time.Second}}
-	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	pairingGrant, err := automaticPairingRelayGrant(ctx, *stateDir, id.ID, *deviceID, locator, account.Client{})
+	if err != nil {
+		return err
+	}
+	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, pairingGrant)}
+	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	peer, err := client.Pair(ctx, locator, fp, secret)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("Paired %s (%s) via %s\n", peer.Name, peer.ID, peer.Endpoint)
 	return nil
+}
+
+func readPairingSecret() (string, error) {
+	secret := strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_SECRET"))
+	if secret == "" {
+		fmt.Fprint(os.Stderr, "Pairing secret: ")
+		tty, err := openPasswordTTY()
+		if err != nil {
+			return "", errors.New("no interactive terminal is available for secure pairing-secret entry; set WEDECENT_PAIRING_SECRET only for controlled automation")
+		}
+		readSecret, readErr := terminal.ReadPassword(tty)
+		closeErr := tty.Close()
+		secret = readSecret
+		fmt.Fprintln(os.Stderr)
+		if readErr != nil {
+			return "", readErr
+		}
+		if closeErr != nil {
+			return "", closeErr
+		}
+	}
+	if len(secret) < 20 {
+		return "", errors.New("pairing secret is too short")
+	}
+	return secret, nil
+}
+
+func automaticPairingRelayGrant(ctx context.Context, stateDir, clientDeviceID, targetDeviceID, locator string, accountClient account.Client) (string, error) {
+	if !strings.HasPrefix(locator, "wsrelay://") {
+		return "", nil
+	}
+	grant, err := automaticConnectionGrant(ctx, stateDir, clientDeviceID, targetDeviceID, accountClient)
+	if err != nil {
+		return "", fmt.Errorf("authorize relay pairing: %w", err)
+	}
+	return grant, nil
 }
 
 func runConnect(args []string) (int, error) {
@@ -250,6 +725,7 @@ func runConnect(args []string) (int, error) {
 	endpoint := fs.String("endpoint", "", "override with a direct host:port")
 	relayAddr := fs.String("relay", "", "override with a legacy relay host:port")
 	webRelay := fs.String("web-relay", "", "override with a serverless WebSocket relay URL")
+	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT for WebSocket relay access")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
 	if err := fs.Parse(args); err != nil {
@@ -303,9 +779,86 @@ func runConnect(args []string) (int, error) {
 	if peer.Endpoint == "" {
 		return 0, errors.New("device has no connection locator")
 	}
-	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: transport.WebRelayOptions{Token: os.Getenv("WEDECENT_RELAY_TOKEN"), Timeout: 15 * time.Second}}
+	connectionGrant, err := readConnectionGrantFile(*connectionGrantFile)
+	if err != nil {
+		return 0, err
+	}
+	isWebRelay := strings.HasPrefix(peer.Endpoint, "wsrelay://")
+	if connectionGrant != "" && !isWebRelay {
+		return 0, errors.New("--connection-grant-file is only valid for a WebSocket relay connection")
+	}
+	if isWebRelay && connectionGrant == "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		connectionGrant, err = automaticConnectionGrant(ctx, *stateDir, id.ID, deviceID, account.Client{})
+		if err != nil {
+			return 0, err
+		}
+	}
+	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, connectionGrant)}
 	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
+}
+
+func automaticConnectionGrant(ctx context.Context, stateDir, clientDeviceID, targetDeviceID string, accountClient account.Client) (string, error) {
+	path := account.SessionPath(stateDir)
+	accountSession, err := account.Load(path)
+	if errors.Is(err, account.ErrNoSession) {
+		return "", errors.New("WeDecent account sign-in is required for relay connections; run 'wd account login'")
+	}
+	if err != nil {
+		return "", err
+	}
+
+	fresh, refreshed, err := accountClient.EnsureFresh(ctx, accountSession, 2*time.Minute)
+	if err != nil {
+		return "", err
+	}
+	if refreshed {
+		if err := account.Save(path, fresh); err != nil {
+			return "", err
+		}
+	}
+	grant, err := accountClient.IssueConnectionGrant(ctx, fresh, clientDeviceID, targetDeviceID)
+	if err != nil {
+		return "", err
+	}
+	return grant, nil
+}
+
+func clientWebRelayOptions(id *identity.Identity) transport.WebRelayOptions {
+	return clientWebRelayOptionsWithGrant(id, "")
+}
+
+func clientWebRelayOptionsWithGrant(id *identity.Identity, connectionGrant string) transport.WebRelayOptions {
+	return transport.WebRelayOptions{
+		TicketSource:    relayauth.NewTicketSource(id),
+		ConnectionGrant: connectionGrant,
+		Timeout:         15 * time.Second,
+	}
+}
+
+func readConnectionGrantFile(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read connection grant file: %w", err)
+	}
+	if len(data) == 0 || len(data) > 16*1024 {
+		return "", errors.New("connection grant file has an invalid size")
+	}
+	grant := strings.TrimSpace(string(data))
+	if grant == "" || strings.ContainsAny(grant, "\r\n\t ") {
+		return "", errors.New("connection grant file must contain exactly one JWT without embedded whitespace")
+	}
+	parts := strings.Split(grant, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return "", errors.New("connection grant file does not contain a JWT")
+	}
+	return grant, nil
 }
 
 func directLocator(endpoint string) (string, error) {
@@ -367,6 +920,9 @@ func usage() {
 Commands:
   init       Create this client's identity
   identity   Print client ID and fingerprint
+  version    Print build and release metadata
+  account    Sign in, inspect, or sign out of the WeDecent account session
+  enrollment-proof  Prove possession of this client identity for account enrollment
   discover   Find signed WeDecent LAN advertisements
   devices    List paired devices
   pair       Pair directly or through a relay

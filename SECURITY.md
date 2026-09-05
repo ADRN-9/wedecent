@@ -15,20 +15,33 @@ This repository is an early MVP and should receive an independent security revie
 - Relay registration challenge signatures
 - Relay per-device parked-slot cap and slot expiration
 - Identity private-key files created with mode `0600`
+- Native Windows service mode refuses built-in LocalSystem/LocalService/NetworkService accounts
+- Short-lived Ed25519 proof-of-possession tickets bind relay stream upgrades to endpoint identity, target device, role and agent slot
+- Windows service does not require or load a shared relay secret for relay-auth-v2 streams
+- Supabase RLS, organization roles, explicit device access, and cryptographic device enrollment authorize account-to-device access
+- Relay admission requires a matching short-lived signed `terminal.connect` grant for clients, and Durable Object state prevents grant `jti` replay
+- Client account access/refresh tokens are stored in a mode-0600 session file on Unix-like systems; Windows seals the session with CurrentUser DPAPI, and account tokens are never accepted as command-line arguments
+- WebSocket relay terminal connections acquire short-lived account grants in memory from the authenticated control-plane session; grant JWTs are not persisted by the normal connect path
+- Windows console password entry disables echo for account and pairing secret prompts
+- Relay-based pairing requires an authenticated short-lived account grant in addition to the independent fingerprint and single-use pairing secret checks
 
 ## Known gaps before production
 
-- No account-level RBAC or central revocation
 - No persistent security audit store
 - No relay IP/device rate limiter or abuse detection
 - A client that knows a device ID can intentionally consume parked relay slots; inner authentication protects shell access, but targeted availability controls are still required
 - No TPM/Secure Enclave/Windows CNG key storage
+- Windows account sessions use CurrentUser DPAPI but are not yet backed by TPM/CNG or a dedicated Credential Manager integration
 - No automatic relay certificate issuance/rotation
 - No sandbox around the spawned shell; shell privilege equals the agent OS account
 - No file-transfer path validation because file transfer is not implemented yet
 - No fuzzing corpus/continuous fuzz infrastructure yet
-- Linux-only PTY implementation
+- Windows service mode still requires a dedicated account to be provisioned separately and granted the `Log on as a service` right
 
 ## Threat model note
 
 The public relay is not trusted with terminal plaintext. It necessarily observes some metadata: requested device ID, connection timing, remote IP addresses and byte-flow characteristics. The inner pinned TLS session protects terminal content and client credentials from the relay.
+
+## Account-control-plane boundary
+
+The Supabase account-authorization migration enables RLS on every exposed control-plane table and removes anonymous table privileges. Endpoint identity enrollment and short-lived connection-grant writes are intentionally server-only: accepting those writes directly from a browser would let an authenticated user claim cryptographic device identities without proving possession of their Ed25519 private keys. See `docs/ACCOUNT_AUTHORIZATION.md`.

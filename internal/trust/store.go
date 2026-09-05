@@ -21,6 +21,8 @@ type Peer struct {
 	TrustedAt   time.Time `json:"trusted_at"`
 }
 
+const maxStoreSize = 1 << 20
+
 type Store struct {
 	mu    sync.Mutex
 	path  string
@@ -29,10 +31,20 @@ type Store struct {
 
 func Open(path string) (*Store, error) {
 	s := &Store{path: path, Peers: map[string]Peer{}}
-	data, err := os.ReadFile(path)
+	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return s, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return nil, errors.New("trust store must not be a symbolic link")
+	}
+	if info.Size() <= 0 || info.Size() > maxStoreSize {
+		return nil, errors.New("trust store has an invalid size")
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -87,21 +99,47 @@ func (s *Store) List() []Peer {
 }
 
 func (s *Store) saveLocked() error {
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	if len(data) == 0 || len(data) > maxStoreSize {
+		return errors.New("trust store has an invalid size")
+	}
+	tmp, err := os.CreateTemp(dir, ".trusted-devices-*")
+	if err != nil {
 		return err
 	}
-	if err := os.Chmod(tmp, 0o600); err != nil {
+	tmpPath := tmp.Name()
+	cleanup := func() {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		cleanup()
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if _, err := tmp.Write(data); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Sync(); err != nil {
+		cleanup()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := replaceStoreFile(tmpPath, s.path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return os.Chmod(s.path, 0o600)
 }
 
 func HashSecret(secret string) string {

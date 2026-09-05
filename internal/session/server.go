@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net"
-	"os/exec"
 	"strings"
 	"sync"
 	"time"
@@ -160,7 +159,7 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {
 		defer close(ptyReadDone)
 		buf := make([]byte, 32<<10)
 		for {
-			n, err := pty.Master.Read(buf)
+			n, err := pty.Read(buf)
 			if n > 0 {
 				data := append([]byte(nil), buf[:n]...)
 				if werr := writeFrame(protocol.Frame{Type: protocol.TypeData, StreamID: terminalStreamID, Payload: data}); werr != nil {
@@ -174,7 +173,7 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {
 	}()
 
 	exitCh := make(chan int, 1)
-	go func() { exitCh <- exitCode(pty.Cmd.Wait()) }()
+	go func() { exitCh <- exitCode(pty.Wait()) }()
 
 	done := make(chan struct{})
 	defer close(done)
@@ -201,7 +200,13 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {
 	for {
 		select {
 		case code := <-exitCh:
-			_ = writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: code})})
+			if err := writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: code})}); err != nil {
+				return
+			}
+			// Do not immediately close the outer relay after sending the final
+			// application frame. Wait until the client acknowledges it (new
+			// clients) or closes its side after receiving it (older clients).
+			waitForPeerClose(frameCh, readErrCh, 2*time.Second)
 			return
 		case err := <-readErrCh:
 			if !errors.Is(err, io.EOF) {
@@ -212,7 +217,7 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {
 			switch frame.Type {
 			case protocol.TypeData:
 				if frame.StreamID == terminalStreamID {
-					if _, err := pty.Master.Write(frame.Payload); err != nil {
+					if _, err := pty.Write(frame.Payload); err != nil {
 						return
 					}
 				}
@@ -233,6 +238,24 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {
 	}
 }
 
+func waitForPeerClose(frameCh <-chan protocol.Frame, readErrCh <-chan error, timeout time.Duration) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	for {
+		select {
+		case frame := <-frameCh:
+			if frame.Type == protocol.TypeClose {
+				return
+			}
+		case <-readErrCh:
+			return
+		case <-timer.C:
+			return
+		}
+	}
+}
+
 func (s *Server) log() *slog.Logger {
 	if s.Logger != nil {
 		return s.Logger
@@ -244,9 +267,9 @@ func exitCode(err error) int {
 	if err == nil {
 		return 0
 	}
-	var ee *exec.ExitError
-	if errors.As(err, &ee) {
-		return ee.ExitCode()
+	var ec interface{ ExitCode() int }
+	if errors.As(err, &ec) {
+		return ec.ExitCode()
 	}
 	return 255
 }

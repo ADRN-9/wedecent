@@ -1,15 +1,12 @@
-//go:build !linux
+//go:build !linux && !windows
 
 package terminal
 
 import (
-	"bufio"
+	"errors"
 	"os"
-	"strings"
 )
 
-// ReadPassword falls back to echoed input until native console handling lands.
 func ReadPassword(f *os.File) (string, error) {
-	line, err := bufio.NewReader(f).ReadString('\n')
-	return strings.TrimSpace(line), err
+	return "", errors.New("secure terminal password input is not implemented on this platform")
 }
