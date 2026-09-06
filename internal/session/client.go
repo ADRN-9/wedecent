@@ -23,6 +23,20 @@ type Client struct {
 	Dialer   transport.Dialer
 }
 
+// Probe verifies that peer.Endpoint is reachable and presents the already
+// trusted WeDecent identity. It does not open an application session.
+func (c *Client) Probe(ctx context.Context, peer trust.Peer) error {
+	raw, err := c.dial(ctx, peer.Endpoint)
+	if err != nil {
+		return err
+	}
+	defer raw.Close()
+	if _, err := tlsClientContext(ctx, raw, c.Identity, peer.Fingerprint); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (c *Client) Pair(ctx context.Context, endpoint, expectedFingerprint, secret string) (trust.Peer, error) {
 	raw, err := c.dial(ctx, endpoint)
 	if err != nil {
@@ -194,9 +208,17 @@ func (c *Client) dial(ctx context.Context, endpoint string) (transport.Conn, err
 }
 
 func tlsClient(raw transport.Conn, id *identity.Identity, fp string) (*tls.Conn, error) {
+	return tlsClientContext(context.Background(), raw, id, fp)
+}
+
+func tlsClientContext(ctx context.Context, raw transport.Conn, id *identity.Identity, fp string) (*tls.Conn, error) {
 	conn := tls.Client(raw, identity.ClientTLS(id, fp))
-	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
-	if err := conn.Handshake(); err != nil {
+	deadline := time.Now().Add(15 * time.Second)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	if err := conn.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("TLS handshake: %w", err)
 	}
 	_ = conn.SetDeadline(time.Time{})

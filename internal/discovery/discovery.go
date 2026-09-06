@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"wedecent.com/wedecent/internal/identity"
@@ -33,6 +35,65 @@ type Result struct {
 	Fingerprint string
 }
 
+var ErrTrustedIdentityMismatch = errors.New("discovery: trusted device identity mismatch")
+
+// FindTrusted waits for a signed LAN advertisement for deviceID whose full
+// public-key fingerprint matches the already-trusted fingerprint. Other
+// devices are ignored. A matching device ID with a different fingerprint is
+// treated as a hard identity error rather than a routing hint.
+func FindTrusted(ctx context.Context, deviceID, expectedFingerprint string) (Result, bool, error) {
+	expectedFingerprint, err := identity.ParseFingerprint(expectedFingerprint)
+	if err != nil {
+		return Result{}, false, fmt.Errorf("%w: trusted fingerprint is invalid", ErrTrustedIdentityMismatch)
+	}
+	if strings.TrimSpace(deviceID) == "" {
+		return Result{}, false, errors.New("discovery: trusted device ID is required")
+	}
+
+	results, errs := Discover(ctx)
+	for results != nil || errs != nil {
+		select {
+		case <-ctx.Done():
+			return Result{}, false, nil
+		case result, ok := <-results:
+			if !ok {
+				results = nil
+				continue
+			}
+			match, err := matchTrustedResult(result, deviceID, expectedFingerprint)
+			if err != nil {
+				return Result{}, false, err
+			}
+			if match {
+				return result, true, nil
+			}
+		case err, ok := <-errs:
+			if !ok {
+				errs = nil
+				continue
+			}
+			if err != nil {
+				return Result{}, false, err
+			}
+		}
+	}
+	return Result{}, false, nil
+}
+
+func matchTrustedResult(result Result, deviceID, expectedFingerprint string) (bool, error) {
+	if result.DeviceID != deviceID {
+		return false, nil
+	}
+	got, err := identity.ParseFingerprint(result.Fingerprint)
+	if err != nil {
+		return false, fmt.Errorf("%w: discovered fingerprint is invalid", ErrTrustedIdentityMismatch)
+	}
+	if got != expectedFingerprint {
+		return false, fmt.Errorf("%w for %s", ErrTrustedIdentityMismatch, deviceID)
+	}
+	return true, nil
+}
+
 func Advertise(ctx context.Context, id *identity.Identity, port int) error {
 	addr, err := net.ResolveUDPAddr("udp4", multicastAddr)
 	if err != nil {
@@ -43,7 +104,7 @@ func Advertise(ctx context.Context, id *identity.Identity, port int) error {
 		return err
 	}
 	defer conn.Close()
-	ticker := time.NewTicker(2 * time.Second)
+	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
 	for {
 		if err := sendAnnouncement(conn, id, port); err != nil {

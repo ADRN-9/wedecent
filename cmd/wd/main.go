@@ -725,6 +725,7 @@ func runConnect(args []string) (int, error) {
 	endpoint := fs.String("endpoint", "", "override with a direct host:port")
 	relayAddr := fs.String("relay", "", "override with a legacy relay host:port")
 	webRelay := fs.String("web-relay", "", "override with a serverless WebSocket relay URL")
+	lanTimeout := fs.Duration("lan-timeout", 1500*time.Millisecond, "trusted LAN discovery window; 0 disables automatic LAN selection")
 	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT for WebSocket relay access")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
@@ -732,7 +733,10 @@ func runConnect(args []string) (int, error) {
 		return 0, err
 	}
 	if fs.NArg() != 1 {
-		return 0, errors.New("usage: wd connect [--endpoint host:port | --relay host:port] <device-id>")
+		return 0, errors.New("usage: wd connect [--endpoint host:port | --relay host:port | --web-relay URL] [--lan-timeout duration] <device-id>")
+	}
+	if *lanTimeout < 0 || *lanTimeout > 10*time.Second {
+		return 0, errors.New("--lan-timeout must be between 0 and 10s")
 	}
 	selected := 0
 	if *endpoint != "" {
@@ -774,6 +778,32 @@ func runConnect(args []string) (int, error) {
 		peer.Endpoint, err = webRelayLocator(*webRelay, deviceID)
 		if err != nil {
 			return 0, err
+		}
+	} else if *lanTimeout > 0 && strings.TrimSpace(*connectionGrantFile) == "" && (peer.Endpoint == "" || strings.HasPrefix(peer.Endpoint, "relay://") || strings.HasPrefix(peer.Endpoint, "wsrelay://")) {
+		fallbackEndpoint := peer.Endpoint
+		lanCtx, lanCancel := context.WithTimeout(context.Background(), *lanTimeout)
+		result, found, discoverErr := discovery.FindTrusted(lanCtx, deviceID, peer.Fingerprint)
+		lanCancel()
+		if discoverErr != nil && errors.Is(discoverErr, discovery.ErrTrustedIdentityMismatch) {
+			return 0, discoverErr
+		}
+		if found {
+			directEndpoint, directErr := directLocator(result.Endpoint)
+			if directErr == nil {
+				directPeer := peer
+				directPeer.Endpoint = directEndpoint
+				probeDialer := transport.MultiDialer{Relay: transport.RelayOptions{Timeout: 2 * time.Second}}
+				probeClient := &session.Client{Identity: id, Trust: store, Dialer: probeDialer}
+				probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				probeErr := probeClient.Probe(probeCtx, directPeer)
+				probeCancel()
+				if probeErr == nil {
+					peer = directPeer
+					fmt.Fprintf(os.Stderr, "WeDecent: using trusted LAN path %s\n", result.Endpoint)
+				} else {
+					peer.Endpoint = fallbackEndpoint
+				}
+			}
 		}
 	}
 	if peer.Endpoint == "" {
