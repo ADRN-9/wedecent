@@ -28,11 +28,15 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
     if (!env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64) {
       return { ok: false, status: 503, message: "Connection grant verifier is not configured" };
     }
+    const clientDeviceID = expected.role === "authorize" ? expected.clientDeviceID : relayClaims.iss;
+    if (expected.role === "authorize" && (typeof clientDeviceID !== "string" || clientDeviceID.length === 0)) {
+      return { ok: false, status: 403, message: "Connection grant rejected" };
+    }
     try {
       const grantClaims = await verifyConnectionGrant(
         grant,
         {
-          clientDeviceID: relayClaims.iss,
+          clientDeviceID,
           targetDeviceID: expected.deviceId,
           permission: "terminal.connect",
         },

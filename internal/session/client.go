@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,9 +19,10 @@ import (
 )
 
 type Client struct {
-	Identity *identity.Identity
-	Trust    *trust.Store
-	Dialer   transport.Dialer
+	Identity        *identity.Identity
+	Trust           *trust.Store
+	Dialer          transport.Dialer
+	ConnectionGrant string
 }
 
 // Probe verifies that peer.Endpoint is reachable and presents the already
@@ -82,6 +84,14 @@ func (c *Client) Pair(ctx context.Context, endpoint, expectedFingerprint, secret
 }
 
 func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.File, out io.Writer) (int, error) {
+	inBandAuthorization := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(peer.Endpoint)), "wsrelay://")
+	if inBandAuthorization {
+		grant := strings.TrimSpace(c.ConnectionGrant)
+		if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
+			return 0, errors.New("a valid connection grant is required for this transport")
+		}
+	}
+
 	raw, err := c.dial(ctx, peer.Endpoint)
 	if err != nil {
 		return 0, err
@@ -100,9 +110,17 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 			cols, rows = c2, r2
 		}
 	}
-	open := protocol.OpenSession{Cols: cols, Rows: rows, Term: os.Getenv("TERM")}
-	payload, _ := protocol.JSON(open)
-	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}); err != nil {
+	frameType := protocol.TypeOpenSession
+	var payload []byte
+	if inBandAuthorization {
+		frameType = protocol.TypeOpenAuthorizedSession
+		payload, _ = protocol.JSON(protocol.OpenAuthorizedSession{
+			Cols: cols, Rows: rows, Term: os.Getenv("TERM"), ConnectionGrant: strings.TrimSpace(c.ConnectionGrant),
+		})
+	} else {
+		payload, _ = protocol.JSON(protocol.OpenSession{Cols: cols, Rows: rows, Term: os.Getenv("TERM")})
+	}
+	if err := protocol.WriteFrame(conn, protocol.Frame{Type: frameType, Payload: payload}); err != nil {
 		return 0, err
 	}
 	first, err := protocol.ReadFrame(conn)

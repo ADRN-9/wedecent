@@ -726,7 +726,7 @@ func runConnect(args []string) (int, error) {
 	relayAddr := fs.String("relay", "", "override with a legacy relay host:port")
 	webRelay := fs.String("web-relay", "", "override with a serverless WebSocket relay URL")
 	lanTimeout := fs.Duration("lan-timeout", 1500*time.Millisecond, "trusted LAN discovery window; 0 disables automatic LAN selection")
-	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT for WebSocket relay access")
+	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
 	if err := fs.Parse(args); err != nil {
@@ -779,7 +779,7 @@ func runConnect(args []string) (int, error) {
 		if err != nil {
 			return 0, err
 		}
-	} else if *lanTimeout > 0 && strings.TrimSpace(*connectionGrantFile) == "" && (peer.Endpoint == "" || strings.HasPrefix(peer.Endpoint, "relay://") || strings.HasPrefix(peer.Endpoint, "wsrelay://")) {
+	} else if *lanTimeout > 0 && (peer.Endpoint == "" || strings.HasPrefix(peer.Endpoint, "relay://") || strings.HasPrefix(peer.Endpoint, "wsrelay://")) {
 		fallbackEndpoint := peer.Endpoint
 		lanCtx, lanCancel := context.WithTimeout(context.Background(), *lanTimeout)
 		result, found, discoverErr := discovery.FindTrusted(lanCtx, deviceID, peer.Fingerprint)
@@ -814,10 +814,7 @@ func runConnect(args []string) (int, error) {
 		return 0, err
 	}
 	isWebRelay := strings.HasPrefix(peer.Endpoint, "wsrelay://")
-	if connectionGrant != "" && !isWebRelay {
-		return 0, errors.New("--connection-grant-file is only valid for a WebSocket relay connection")
-	}
-	if isWebRelay && connectionGrant == "" {
+	if connectionGrant == "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		connectionGrant, err = automaticConnectionGrant(ctx, *stateDir, id.ID, deviceID, account.Client{})
@@ -825,8 +822,12 @@ func runConnect(args []string) (int, error) {
 			return 0, err
 		}
 	}
-	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, connectionGrant)}
-	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
+	webRelayGrant := ""
+	if isWebRelay {
+		webRelayGrant = connectionGrant
+	}
+	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, webRelayGrant)}
+	client := &session.Client{Identity: id, Trust: store, Dialer: dialer, ConnectionGrant: connectionGrant}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
 }
 
@@ -834,7 +835,7 @@ func automaticConnectionGrant(ctx context.Context, stateDir, clientDeviceID, tar
 	path := account.SessionPath(stateDir)
 	accountSession, err := account.Load(path)
 	if errors.Is(err, account.ErrNoSession) {
-		return "", errors.New("WeDecent account sign-in is required for relay connections; run 'wd account login'")
+		return "", errors.New("WeDecent account sign-in is required for terminal connections; run 'wd account login'")
 	}
 	if err != nil {
 		return "", err

@@ -14,6 +14,7 @@ const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const STREAM_PREFIX = "/v1/stream/";
 const STATUS_PREFIX = "/v1/status/";
 const TIME_PATH = "/v1/time";
+const DIRECT_AUTHORIZE_PREFIX = "/v1/direct-authorize/";
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
 
 export default {
@@ -21,7 +22,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/healthz") {
-      return Response.json({ service: "wedecent-relay", status: "ok", version: 8 });
+      return Response.json({ service: "wedecent-relay", status: "ok", version: 9 });
     }
 
     if (url.pathname === TIME_PATH) {
@@ -32,6 +33,10 @@ export default {
         { unix_ms: Date.now() },
         { headers: { "Cache-Control": "no-store, no-cache, must-revalidate", Pragma: "no-cache" } },
       );
+    }
+
+    if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
+      return authorizeDirectRequest(request, env, url);
     }
 
     if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
@@ -94,6 +99,49 @@ export default {
 };
 
 
+async function authorizeDirectRequest(request, env, url) {
+  if (request.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+  const targetDeviceID = decodeURIComponent(url.pathname.slice(DIRECT_AUTHORIZE_PREFIX.length));
+  if (!DEVICE_ID.test(targetDeviceID)) {
+    return new Response("Invalid device ID", { status: 400 });
+  }
+
+  let payload;
+  try {
+    const text = await request.text();
+    if (text.length === 0 || text.length > 1024) {
+      return new Response("Invalid authorization request", { status: 400 });
+    }
+    payload = JSON.parse(text);
+  } catch {
+    return new Response("Invalid authorization request", { status: 400 });
+  }
+  const clientDeviceID = typeof payload?.client_device_id === "string" ? payload.client_device_id : "";
+  if (!DEVICE_ID.test(clientDeviceID)) {
+    return new Response("Invalid client device ID", { status: 400 });
+  }
+
+  const authorization = await authorizeStream(request, env, {
+    deviceId: targetDeviceID,
+    role: "authorize",
+    slot: null,
+    clientDeviceID,
+  });
+  if (!authorization.ok) {
+    return new Response(authorization.message, { status: authorization.status });
+  }
+
+  const headers = new Headers();
+  headers.set(INTERNAL_GRANT_JTI_HEADER, authorization.replay.jti);
+  headers.set(INTERNAL_GRANT_EXP_HEADER, String(authorization.replay.exp));
+  const objectId = env.DEVICE_RELAY.idFromName(targetDeviceID);
+  return env.DEVICE_RELAY.get(objectId).fetch(
+    new Request("https://wedecent.internal/authorize", { method: "POST", headers }),
+  );
+}
+
 function legacyAuthorized(request, env) {
   const token = bearerToken(request);
   return Boolean(env.RELAY_ACCESS_TOKEN) && token === env.RELAY_ACCESS_TOKEN;
@@ -117,6 +165,9 @@ export class DeviceRelay extends DurableObject {
     if (url.pathname === "/status") {
       return this.#status();
     }
+    if (url.pathname === "/authorize") {
+      return this.#authorizeDirect(request);
+    }
 
     const role = url.searchParams.get("role");
     if (role === "agent") {
@@ -126,6 +177,22 @@ export class DeviceRelay extends DurableObject {
       return this.#acceptClient(request);
     }
     return new Response("Invalid relay role", { status: 400 });
+  }
+
+  async #authorizeDirect(request) {
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+    const replay = replayMetadataFromRequest(request);
+    if (!replay) {
+      return new Response("Connection grant replay metadata missing", { status: 403 });
+    }
+    const consumption = await consumeConnectionGrant(this.ctx.storage, replay.jti, replay.exp);
+    if (!consumption.accepted) {
+      return new Response("Connection grant already used", { status: 409 });
+    }
+    await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
+    return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
   }
 
   #acceptAgent(url) {

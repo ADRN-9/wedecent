@@ -250,17 +250,18 @@ func writeJSON(value any) error {
 }
 
 type serveConfig struct {
-	StateDir        string
-	Name            string
-	ListenAddr      string
-	Shell           string
-	Discover        bool
-	MaxConnections  int
-	RelayAddr       string
-	WebRelay        string
-	RelaySlots      int
-	RelayCA         string
-	RelayServerName string
+	StateDir         string
+	Name             string
+	ListenAddr       string
+	Shell            string
+	Discover         bool
+	MaxConnections   int
+	RelayAddr        string
+	WebRelay         string
+	RelaySlots       int
+	RelayCA          string
+	RelayServerName  string
+	AuthorizationURL string
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
@@ -278,6 +279,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	fs.IntVar(&cfg.RelaySlots, "relay-slots", 4, "number of parked outbound relay connections")
 	fs.StringVar(&cfg.RelayCA, "relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	fs.StringVar(&cfg.RelayServerName, "relay-server-name", "", "optional TLS server-name override for the relay")
+	fs.StringVar(&cfg.AuthorizationURL, "authorization-url", "", "authorization service URL; defaults to --web-relay when configured")
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
@@ -292,6 +294,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	}
 	if cfg.Discover && cfg.ListenAddr == "" {
 		return serveConfig{}, errors.New("--discover requires a direct --listen address")
+	}
+	if strings.TrimSpace(cfg.AuthorizationURL) == "" {
+		cfg.AuthorizationURL = strings.TrimSpace(cfg.WebRelay)
 	}
 	return cfg, nil
 }
@@ -315,7 +320,17 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	if err != nil {
 		return err
 	}
-	server := &session.Server{Identity: id, Trust: store, StateDir: cfg.StateDir, Shell: cfg.Shell, Logger: slog.Default()}
+	var directAuthorizer session.DirectAuthorizer
+	if strings.TrimSpace(cfg.AuthorizationURL) != "" {
+		directAuthorizer = session.RelayDirectAuthorizer{BaseURL: cfg.AuthorizationURL, Identity: id}
+	}
+	server := &session.Server{
+		Identity: id, Trust: store, StateDir: cfg.StateDir, Shell: cfg.Shell,
+		Logger: slog.Default(), DirectAuthorizer: directAuthorizer,
+	}
+	if cfg.ListenAddr != "" && directAuthorizer == nil {
+		slog.Warn("direct terminal authorization is unavailable; configure --authorization-url or --web-relay to enable direct terminal sessions")
+	}
 
 	fp, _ := identity.FingerprintPublicKey(id.PublicKey)
 	fmt.Printf("WeDecent agent %s (%s)\n", id.Name, id.ID)

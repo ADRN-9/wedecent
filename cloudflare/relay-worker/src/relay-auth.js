@@ -47,6 +47,10 @@ export async function verifyRelayTicket(token, expected, nowSeconds = Math.floor
     if (claims.slot !== undefined || expected.slot !== null) {
       throw new Error("invalid client relay ticket scope");
     }
+  } else if (claims.role === "authorize") {
+    if (claims.iss !== claims.sub || claims.slot !== undefined || expected.slot !== null) {
+      throw new Error("invalid authorization ticket scope");
+    }
   } else {
     throw new Error("invalid relay ticket role");
   }
