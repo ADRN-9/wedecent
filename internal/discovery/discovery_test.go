@@ -117,3 +117,49 @@ func TestAnnouncementBytesRoundTrip(t *testing.T) {
 		t.Fatalf("verifyAnnouncement() = %+v", res)
 	}
 }
+
+func TestMulticastWriterIPAllowed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name     string
+		listenIP net.IP
+		writerIP net.IP
+		want     bool
+	}{
+		{
+			name:     "specific listener matching interface",
+			listenIP: net.ParseIP("192.168.56.101"),
+			writerIP: net.ParseIP("192.168.56.101"),
+			want:     true,
+		},
+		{
+			name:     "specific listener excludes unrelated interface",
+			listenIP: net.ParseIP("192.168.56.101"),
+			writerIP: net.ParseIP("10.255.177.99"),
+			want:     false,
+		},
+		{
+			name:     "IPv4 wildcard listener allows all interfaces",
+			listenIP: net.IPv4zero,
+			writerIP: net.ParseIP("10.255.177.99"),
+			want:     true,
+		},
+		{
+			name:     "IPv6 wildcard listener allows IPv4 discovery",
+			listenIP: net.IPv6unspecified,
+			writerIP: net.ParseIP("192.168.56.101"),
+			want:     true,
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := multicastWriterIPAllowed(tc.listenIP, tc.writerIP); got != tc.want {
+				t.Fatalf("multicastWriterIPAllowed(%s, %s) = %v, want %v", tc.listenIP, tc.writerIP, got, tc.want)
+			}
+		})
+	}
+}

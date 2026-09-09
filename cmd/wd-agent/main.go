@@ -377,8 +377,12 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		if err != nil {
 			return err
 		}
+		tcpAddr, ok := ln.Addr().(*net.TCPAddr)
+		if !ok {
+			return errors.New("LAN discovery requires a TCP listener address")
+		}
 		go func() {
-			if err := discovery.Advertise(ctx, id, port); err != nil && ctx.Err() == nil {
+			if err := discovery.Advertise(ctx, id, tcpAddr.IP, port); err != nil && ctx.Err() == nil {
 				slog.Error("LAN discovery stopped", "error", err)
 			}
 		}()

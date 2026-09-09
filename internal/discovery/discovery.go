@@ -94,13 +94,13 @@ func matchTrustedResult(result Result, deviceID, expectedFingerprint string) (bo
 	return true, nil
 }
 
-func Advertise(ctx context.Context, id *identity.Identity, port int) error {
+func Advertise(ctx context.Context, id *identity.Identity, listenIP net.IP, port int) error {
 	addr, err := net.ResolveUDPAddr("udp4", multicastAddr)
 	if err != nil {
 		return err
 	}
 
-	writers, err := openMulticastWriters(addr)
+	writers, err := openMulticastWriters(addr, listenIP)
 	if err != nil {
 		return err
 	}
@@ -120,7 +120,7 @@ func Advertise(ctx context.Context, id *identity.Identity, port int) error {
 			return nil
 		case <-ticker.C:
 		case <-refresh.C:
-			updated, err := openMulticastWriters(addr)
+			updated, err := openMulticastWriters(addr, listenIP)
 			if err != nil {
 				continue
 			}
@@ -217,7 +217,7 @@ func Discover(ctx context.Context) (<-chan Result, <-chan error) {
 	return out, errCh
 }
 
-func openMulticastWriters(addr *net.UDPAddr) ([]*net.UDPConn, error) {
+func openMulticastWriters(addr *net.UDPAddr, listenIP net.IP) ([]*net.UDPConn, error) {
 	ifaces, err := multicastIPv4Interfaces()
 	if err != nil {
 		return nil, err
@@ -232,6 +232,9 @@ func openMulticastWriters(addr *net.UDPAddr) ([]*net.UDPConn, error) {
 			continue
 		}
 		for _, ip := range ips {
+			if !multicastWriterIPAllowed(listenIP, ip) {
+				continue
+			}
 			conn, err := net.DialUDP("udp4", &net.UDPAddr{IP: ip}, addr)
 			if err != nil {
 				openErrs = append(openErrs, fmt.Errorf("%s/%s: %w", ifaces[i].Name, ip, err))
@@ -253,6 +256,19 @@ func openMulticastWriters(addr *net.UDPAddr) ([]*net.UDPConn, error) {
 		return nil, errors.New("discovery: no usable IPv4 multicast writers")
 	}
 	return nil, errors.Join(openErrs...)
+}
+
+// multicastWriterIPAllowed keeps discovery advertisements consistent with the
+// TCP listener. A concrete listener address may advertise only from that same
+// IPv4 address; an unspecified listener is reachable on every eligible
+// interface and may advertise from all of them.
+func multicastWriterIPAllowed(listenIP, writerIP net.IP) bool {
+	if listenIP == nil || listenIP.IsUnspecified() {
+		return true
+	}
+	listenV4 := listenIP.To4()
+	writerV4 := writerIP.To4()
+	return listenV4 != nil && writerV4 != nil && listenV4.Equal(writerV4)
 }
 
 func openMulticastListeners(addr *net.UDPAddr) ([]*net.UDPConn, error) {
