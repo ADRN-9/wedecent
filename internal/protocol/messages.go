@@ -19,6 +19,13 @@ type OpenSession struct {
 	Term string `json:"term"`
 }
 
+type OpenAuthorizedSession struct {
+	Cols            uint16 `json:"cols"`
+	Rows            uint16 `json:"rows"`
+	Term            string `json:"term"`
+	ConnectionGrant string `json:"connection_grant"`
+}
+
 type Resize struct {
 	Cols uint16 `json:"cols"`
 	Rows uint16 `json:"rows"`

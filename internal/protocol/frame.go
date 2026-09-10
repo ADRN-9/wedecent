@@ -28,6 +28,7 @@ const (
 	TypeError
 	TypePing
 	TypePong
+	TypeOpenAuthorizedSession
 )
 
 type Frame struct {

@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
@@ -19,16 +20,21 @@ import (
 
 const terminalStreamID = 1
 
+type DirectAuthorizer interface {
+	Authorize(context.Context, string, string, string) error
+}
+
 type Server struct {
-	Identity *identity.Identity
-	Trust    *trust.Store
-	StateDir string
-	Shell    string
-	Logger   *slog.Logger
+	Identity         *identity.Identity
+	Trust            *trust.Store
+	StateDir         string
+	Shell            string
+	Logger           *slog.Logger
+	DirectAuthorizer DirectAuthorizer
 }
 
 func (s *Server) ServeConn(raw net.Conn) {
-	s.serveConn(raw, 15*time.Second)
+	s.serveConn(raw, 15*time.Second, true)
 }
 
 // ServeParkedRelayConn serves a relay connection that may sit idle until a
@@ -36,10 +42,10 @@ func (s *Server) ServeConn(raw net.Conn) {
 // responsible for parking the connection; the inner TLS handshake starts only
 // when a client arrives, so there is intentionally no pre-client deadline.
 func (s *Server) ServeParkedRelayConn(raw net.Conn) {
-	s.serveConn(raw, 0)
+	s.serveConn(raw, 0, false)
 }
 
-func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration) {
+func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, requireInBandAuthorization bool) {
 	defer raw.Close()
 	tlsConn := tls.Server(raw, identity.ServerTLS(s.Identity))
 	if handshakeTimeout > 0 {
@@ -58,7 +64,17 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration) {
 	case protocol.TypePairRequest:
 		s.handlePair(tlsConn, first)
 	case protocol.TypeOpenSession:
+		if requireInBandAuthorization {
+			_ = sendError(tlsConn, "authorization_required", "this transport requires an authorized session request")
+			return
+		}
 		s.handleTerminal(tlsConn, first)
+	case protocol.TypeOpenAuthorizedSession:
+		if !requireInBandAuthorization {
+			_ = sendError(tlsConn, "unexpected_message", "authorized session requests are not valid on this transport")
+			return
+		}
+		s.handleAuthorizedTerminal(tlsConn, first)
 	default:
 		_ = sendError(tlsConn, "unexpected_message", "expected pairing or session request")
 	}
@@ -107,6 +123,54 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame) {
 		return
 	}
 	s.log().Info("paired client", "client_id", clientID, "client_name", name)
+}
+
+func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame) {
+	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
+	if err != nil {
+		_ = sendError(conn, "unauthorized", "client certificate required")
+		return
+	}
+	fp, err := identity.FingerprintPublicKey(peerCert.PublicKey)
+	if err != nil {
+		_ = sendError(conn, "unauthorized", "invalid client certificate")
+		return
+	}
+	peer, ok := s.Trust.FindByFingerprint(fp)
+	if !ok {
+		_ = sendError(conn, "unauthorized", "client is not paired")
+		return
+	}
+	clientID := identity.CertificateDeviceID(peerCert)
+	if clientID == "" || peer.ID != clientID {
+		_ = sendError(conn, "unauthorized", "client identity mismatch")
+		return
+	}
+
+	var req protocol.OpenAuthorizedSession
+	if err := protocol.ParseJSON(first.Payload, &req); err != nil {
+		_ = sendError(conn, "bad_request", "invalid authorized session request")
+		return
+	}
+	grant := strings.TrimSpace(req.ConnectionGrant)
+	if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
+		_ = sendError(conn, "authorization_denied", "connection authorization failed")
+		return
+	}
+	if s.DirectAuthorizer == nil {
+		_ = sendError(conn, "authorization_unavailable", "direct connection authorization is not configured")
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.DirectAuthorizer.Authorize(ctx, clientID, s.Identity.ID, grant); err != nil {
+		s.log().Warn("direct session authorization rejected", "client_id", clientID, "error", err)
+		_ = sendError(conn, "authorization_denied", "connection authorization failed")
+		return
+	}
+
+	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term})
+	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload})
 }
 
 func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {

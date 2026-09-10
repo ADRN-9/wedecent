@@ -6,6 +6,7 @@ TMP=$(mktemp -d)
 cleanup() {
   if [ -n "${AGENT_PID:-}" ]; then kill "$AGENT_PID" 2>/dev/null || true; fi
   if [ -n "${RELAY_PID:-}" ]; then kill "$RELAY_PID" 2>/dev/null || true; fi
+  if [ -n "${AUTH_PID:-}" ]; then kill "$AUTH_PID" 2>/dev/null || true; fi
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
@@ -14,6 +15,12 @@ mkdir -p "$TMP/bin"
 go build -o "$TMP/bin/wd" "$ROOT/cmd/wd"
 go build -o "$TMP/bin/wd-agent" "$ROOT/cmd/wd-agent"
 go build -o "$TMP/bin/wd-relay" "$ROOT/cmd/wd-relay"
+go build -o "$TMP/bin/auth-server" "$ROOT/scripts/smoke-auth-server.go"
+
+"$TMP/bin/auth-server" --listen 127.0.0.1:18444 >"$TMP/auth.log" 2>&1 &
+AUTH_PID=$!
+sleep 1
+kill -0 "$AUTH_PID"
 
 sh "$ROOT/scripts/dev-relay-cert.sh" "$TMP/certs" >/dev/null 2>&1
 "$TMP/bin/wd-relay" \
@@ -35,6 +42,7 @@ DEVICE=$(printf '%s\n' "$INIT" | awk -F'  +' '/Device ID:/ {print $2}')
   --relay-ca "$TMP/certs/ca.crt" \
   --relay-server-name localhost \
   --relay-slots 2 \
+  --authorization-url http://127.0.0.1:18444 \
   --shell /bin/sh >"$TMP/agent.log" 2>&1 &
 AGENT_PID=$!
 
@@ -50,12 +58,14 @@ WEDECENT_PAIRING_SECRET=$SECRET "$TMP/bin/wd" pair \
   --device-id "$DEVICE" \
   --fingerprint "$FP"
 
+printf '%s\n' 'header.payload.signature' >"$TMP/grant.jwt"
 set +e
 printf 'printf "WEDECENT_RELAY_OK\\n"\nexit 23\n' | "$TMP/bin/wd" connect \
   --state "$TMP/client" \
   --relay 127.0.0.1:18443 \
   --relay-ca "$TMP/certs/ca.crt" \
   --relay-server-name localhost \
+  --connection-grant-file "$TMP/grant.jwt" \
   "$DEVICE" >"$TMP/out"
 STATUS=$?
 set -e
