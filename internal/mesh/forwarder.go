@@ -11,11 +11,14 @@ import (
 	"time"
 )
 
+const routeControlIOTimeout = 15 * time.Second
+
 var (
 	ErrRoutingDisabled              = errors.New("mesh: routing is disabled")
 	ErrForwardAuthorizationRequired = errors.New("mesh: forwarding authorization is required")
 	ErrForwardDenied                = errors.New("mesh: forwarding denied")
 	ErrForwardDialerRequired        = errors.New("mesh: forwarding dialer is required")
+	ErrInvalidRoute                 = errors.New("mesh: invalid route")
 	ErrRouteNotOneHop               = errors.New("mesh: route is not a one-hop routed path")
 	ErrRouterMismatch               = errors.New("mesh: route does not traverse this router")
 	ErrLinkIdentityMismatch         = errors.New("mesh: authenticated link identity does not match route")
@@ -51,9 +54,9 @@ type ForwardResult struct {
 
 // Forwarder forwards an authorized A -> B -> C route.
 //
-// Policy and configuration must not be mutated while Forward is running.
-// The incoming and outgoing Links are owned by Forward for the duration of
-// the routed session and are closed when forwarding ends.
+// Policy and configuration must not be mutated while Forward or ServeRouteOpen
+// is running. Incoming and outgoing links are owned for the duration of the
+// routed operation and are closed when it ends.
 type Forwarder struct {
 	LocalID    DeviceID
 	Policy     RouterPolicy
@@ -68,6 +71,13 @@ type Forwarder struct {
 	active int
 }
 
+type preparedForward struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	outgoing Link
+	release  func()
+}
+
 // Forward validates and authorizes an exact A -> B -> C route, then copies
 // opaque protected bytes between the authenticated neighboring links.
 func (f *Forwarder) Forward(ctx context.Context, route Route, incoming Link) (ForwardResult, error) {
@@ -76,85 +86,289 @@ func (f *Forwarder) Forward(ctx context.Context, route Route, incoming Link) (Fo
 	}
 	defer incoming.Close()
 
-	if err := ctx.Err(); err != nil {
+	prepared, err := f.prepareForward(ctx, route, incoming)
+	if err != nil {
 		return ForwardResult{}, err
+	}
+	defer prepared.close()
+
+	return copyOpaque(prepared.ctx, incoming, prepared.outgoing)
+}
+
+// ServeRouteOpen handles the outer A -> B route-control handshake.
+//
+// The incoming link must already authenticate A as its remote peer. The method
+// consumes exactly one route-open request. It sends Accepted only after route
+// validation, authorization, capacity acquisition, destination dialing, and
+// authenticated B -> C link verification have all succeeded.
+//
+// After Accepted, no route-control or terminal frames are parsed by B. The same
+// incoming link becomes an opaque byte tunnel for the inner A <-> C protected
+// session.
+func (f *Forwarder) ServeRouteOpen(ctx context.Context, incoming Link) (ForwardResult, error) {
+	if incoming == nil {
+		return ForwardResult{}, ErrLinkIdentityMismatch
+	}
+	defer incoming.Close()
+
+	req, err := readRouteOpenRequestWithContext(ctx, incoming)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ForwardResult{}, ctxErr
+		}
+
+		// The peer receives only a stable non-sensitive result code. Parser
+		// details remain local.
+		_ = writeRouteOpenResponseWithContext(ctx, incoming, RouteOpenResponse{
+			Accepted: false,
+			Code:     RouteOpenCodeInvalidRequest,
+		})
+		return ForwardResult{}, err
+	}
+
+	prepared, err := f.prepareForward(ctx, req.Route, incoming)
+	if err != nil {
+		code := routeOpenCodeForForwardError(err)
+
+		if writeErr := writeRouteOpenResponseWithContext(ctx, incoming, RouteOpenResponse{
+			Accepted: false,
+			Code:     code,
+		}); writeErr != nil {
+			return ForwardResult{}, errors.Join(
+				err,
+				fmt.Errorf("mesh: write route-open rejection: %w", writeErr),
+			)
+		}
+
+		return ForwardResult{}, err
+	}
+	defer prepared.close()
+
+	// Acceptance is part of the route setup itself. If the route expires while
+	// the peer is not reading the response, close the link rather than letting
+	// a stale route remain stuck in the control phase.
+	if err := writeRouteOpenResponseWithContext(
+		prepared.ctx,
+		incoming,
+		RouteOpenResponse{Accepted: true},
+	); err != nil {
+		return ForwardResult{}, fmt.Errorf("mesh: write route-open acceptance: %w", err)
+	}
+
+	return copyOpaque(prepared.ctx, incoming, prepared.outgoing)
+}
+
+func readRouteOpenRequestWithContext(
+	ctx context.Context,
+	incoming Link,
+) (RouteOpenRequest, error) {
+	readCtx, cancel := context.WithTimeout(ctx, routeControlIOTimeout)
+	defer cancel()
+
+	closeDone := make(chan struct{})
+	stopClose := context.AfterFunc(readCtx, func() {
+		defer close(closeDone)
+		_ = incoming.Close()
+	})
+
+	req, err := ReadRouteOpenRequest(incoming)
+
+	// If cancellation already started the close callback, wait for it to finish
+	// before inspecting the context or returning. This prevents a successful
+	// control read racing with a late callback that closes the tunnel afterward.
+	if !stopClose() {
+		<-closeDone
+	}
+
+	if ctxErr := readCtx.Err(); ctxErr != nil {
+		return RouteOpenRequest{}, ctxErr
+	}
+	return req, err
+}
+
+func writeRouteOpenResponseWithContext(
+	ctx context.Context,
+	link Link,
+	resp RouteOpenResponse,
+) error {
+	writeCtx, cancel := context.WithTimeout(ctx, routeControlIOTimeout)
+	defer cancel()
+
+	closeDone := make(chan struct{})
+	stopClose := context.AfterFunc(writeCtx, func() {
+		defer close(closeDone)
+		_ = link.Close()
+	})
+
+	err := WriteRouteOpenResponse(link, resp)
+
+	// As with the read path, do not return while a context-triggered close is
+	// still running against the same authenticated link.
+	if !stopClose() {
+		<-closeDone
+	}
+
+	if ctxErr := writeCtx.Err(); ctxErr != nil {
+		return ctxErr
+	}
+	return err
+}
+
+func (f *Forwarder) prepareForward(
+	ctx context.Context,
+	route Route,
+	incoming Link,
+) (*preparedForward, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	if strings.TrimSpace(string(f.LocalID)) == "" {
-		return ForwardResult{}, errors.New("mesh: router device ID is required")
+		return nil, errors.New("mesh: router device ID is required")
 	}
 	if err := f.Policy.Validate(); err != nil {
-		return ForwardResult{}, err
+		return nil, err
 	}
 	if !f.Policy.Enabled {
-		return ForwardResult{}, ErrRoutingDisabled
+		return nil, ErrRoutingDisabled
 	}
 	if f.Authorizer == nil {
-		return ForwardResult{}, ErrForwardAuthorizationRequired
+		return nil, ErrForwardAuthorizationRequired
 	}
 	if f.DialNext == nil {
-		return ForwardResult{}, ErrForwardDialerRequired
+		return nil, ErrForwardDialerRequired
 	}
+	if incoming == nil {
+		return nil, ErrLinkIdentityMismatch
+	}
+
 	now := time.Now().UTC()
 	if f.Now != nil {
 		now = f.Now()
 	}
+
 	if err := route.Validate(now); err != nil {
-		return ForwardResult{}, err
+		return nil, fmt.Errorf("%w: %w", ErrInvalidRoute, err)
 	}
 	if len(route.Hops) != 2 {
-		return ForwardResult{}, ErrRouteNotOneHop
+		return nil, ErrRouteNotOneHop
 	}
 
 	first := route.Hops[0]
 	second := route.Hops[1]
 
 	if first.To != f.LocalID || second.From != f.LocalID {
-		return ForwardResult{}, ErrRouterMismatch
+		return nil, ErrRouterMismatch
 	}
+
 	if incoming.Local() != f.LocalID ||
 		incoming.Remote() != route.Source ||
 		incoming.Transport() != first.Transport {
-		return ForwardResult{}, ErrLinkIdentityMismatch
+		return nil, ErrLinkIdentityMismatch
 	}
+
 	if f.Policy.LANOnly &&
 		(first.Transport != TransportLAN || second.Transport != TransportLAN) {
-		return ForwardResult{}, ErrRouteNotAllowed
+		return nil, ErrRouteNotAllowed
 	}
 
 	if !f.acquireSession() {
-		return ForwardResult{}, ErrRouterBusy
+		return nil, ErrRouterBusy
 	}
-	defer f.releaseSession()
 
 	routeCtx, cancel := context.WithDeadline(ctx, route.ExpiresAt)
-	defer cancel()
+
+	release := func() {
+		cancel()
+		f.releaseSession()
+	}
 
 	authRoute := route
 	authRoute.Hops = append([]RouteHop(nil), route.Hops...)
+
 	if err := f.Authorizer.AuthorizeForward(routeCtx, ForwardRequest{
 		Router: f.LocalID,
 		Route:  authRoute,
 		Policy: f.Policy,
 	}); err != nil {
-		return ForwardResult{}, ErrForwardDenied
+		ctxErr := routeCtx.Err()
+		release()
+
+		if ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, ErrForwardDenied
+	}
+
+	if err := routeCtx.Err(); err != nil {
+		release()
+		return nil, err
 	}
 
 	outgoing, err := f.DialNext(routeCtx, second)
 	if err != nil {
-		return ForwardResult{}, fmt.Errorf("mesh: dial routed destination: %w", err)
+		ctxErr := routeCtx.Err()
+		release()
+
+		if ctxErr != nil {
+			return nil, ctxErr
+		}
+		return nil, fmt.Errorf("mesh: dial routed destination: %w", err)
 	}
+
 	if outgoing == nil {
-		return ForwardResult{}, ErrLinkIdentityMismatch
+		release()
+		return nil, ErrLinkIdentityMismatch
 	}
-	defer outgoing.Close()
 
 	if outgoing.Local() != f.LocalID ||
 		outgoing.Remote() != route.Destination ||
 		outgoing.Transport() != second.Transport {
-		return ForwardResult{}, ErrLinkIdentityMismatch
+		_ = outgoing.Close()
+		release()
+		return nil, ErrLinkIdentityMismatch
 	}
 
-	return copyOpaque(routeCtx, incoming, outgoing)
+	if err := routeCtx.Err(); err != nil {
+		_ = outgoing.Close()
+		release()
+		return nil, err
+	}
+
+	return &preparedForward{
+		ctx:      routeCtx,
+		cancel:   cancel,
+		outgoing: outgoing,
+		release:  f.releaseSession,
+	}, nil
+}
+
+func (p *preparedForward) close() {
+	p.cancel()
+	_ = p.outgoing.Close()
+	p.release()
+}
+
+func routeOpenCodeForForwardError(err error) RouteOpenCode {
+	switch {
+	case errors.Is(err, ErrRouterBusy):
+		return RouteOpenCodeBusy
+
+	case errors.Is(err, ErrInvalidRoute),
+		errors.Is(err, ErrRouteNotOneHop),
+		errors.Is(err, ErrRouterMismatch):
+		return RouteOpenCodeInvalidRequest
+
+	case errors.Is(err, ErrRoutingDisabled),
+		errors.Is(err, ErrForwardDenied),
+		errors.Is(err, ErrRouteNotAllowed),
+		errors.Is(err, ErrLinkIdentityMismatch):
+		return RouteOpenCodeDenied
+
+	default:
+		// Configuration failures, expiry/cancellation, and destination dialing
+		// failures intentionally collapse to a generic availability result.
+		return RouteOpenCodeUnavailable
+	}
 }
 
 func (f *Forwarder) acquireSession() bool {
@@ -164,6 +378,7 @@ func (f *Forwarder) acquireSession() bool {
 	if f.Policy.MaxSessions > 0 && f.active >= f.Policy.MaxSessions {
 		return false
 	}
+
 	f.active++
 	return true
 }
@@ -185,11 +400,20 @@ func copyOpaque(ctx context.Context, incoming, outgoing Link) (ForwardResult, er
 
 	go func() {
 		n, err := io.Copy(outgoing, incoming)
-		results <- copyOutcome{toDestination: true, bytes: n, err: err}
+		results <- copyOutcome{
+			toDestination: true,
+			bytes:         n,
+			err:           err,
+		}
 	}()
+
 	go func() {
 		n, err := io.Copy(incoming, outgoing)
-		results <- copyOutcome{toDestination: false, bytes: n, err: err}
+		results <- copyOutcome{
+			toDestination: false,
+			bytes:         n,
+			err:           err,
+		}
 	}()
 
 	var (
@@ -242,6 +466,7 @@ func copyOpaque(ctx context.Context, incoming, outgoing Link) (ForwardResult, er
 	if firstErr != nil {
 		return result, fmt.Errorf("mesh: forwarding stream: %w", firstErr)
 	}
+
 	return result, nil
 }
 
