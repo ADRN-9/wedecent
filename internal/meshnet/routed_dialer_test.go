@@ -101,7 +101,7 @@ func TestRoutedDialerAcceptedRouteBecomesOpaqueTunnel(t *testing.T) {
 
 	serverDone := make(chan error, 1)
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -109,7 +109,7 @@ func TestRoutedDialerAcceptedRouteBecomesOpaqueTunnel(t *testing.T) {
 			mesh.TransportLAN,
 		)
 		if err != nil {
-			serverDone <- fmt.Errorf("AcceptTrustedLink: %w", err)
+			serverDone <- fmt.Errorf("AcceptRouteControlLink: %w", err)
 			return
 		}
 		defer link.Close()
@@ -230,7 +230,7 @@ func TestRoutedDialerReturnsStableRouteRejection(t *testing.T) {
 
 	serverDone := make(chan error, 1)
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -459,7 +459,7 @@ func TestRoutedDialerCancellationInterruptsRouteOpenRead(t *testing.T) {
 	serverDone := make(chan error, 1)
 
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			context.Background(),
 			routerRaw,
 			routerID,

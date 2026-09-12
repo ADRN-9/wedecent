@@ -141,14 +141,14 @@ func (d RoutedDialer) Dial(
 		return nil, fmt.Errorf("meshnet: dial trusted router: %w", err)
 	}
 
-	link, err := DialTrustedLink(
+	link, err := DialRouteControlLink(
 		ctx,
 		raw,
 		d.Identity,
 		peer,
 	)
 	if err != nil {
-		// DialTrustedLink owns and closes raw on failure.
+		// DialRouteControlLink owns and closes raw on failure.
 		return nil, err
 	}
 

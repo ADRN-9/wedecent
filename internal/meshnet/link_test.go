@@ -117,7 +117,7 @@ func TestTLSLinkAuthenticatesTrustedNeighbors(t *testing.T) {
 	}, 1)
 
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -130,7 +130,7 @@ func TestTLSLinkAuthenticatesTrustedNeighbors(t *testing.T) {
 		}{link: link, err: err}
 	}()
 
-	clientLink, err := DialTrustedLink(
+	clientLink, err := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -141,13 +141,13 @@ func TestTLSLinkAuthenticatesTrustedNeighbors(t *testing.T) {
 		},
 	)
 	if err != nil {
-		t.Fatalf("DialTrustedLink() error: %v", err)
+		t.Fatalf("DialRouteControlLink() error: %v", err)
 	}
 	defer clientLink.Close()
 
 	serverResult := <-serverCh
 	if serverResult.err != nil {
-		t.Fatalf("AcceptTrustedLink() error: %v", serverResult.err)
+		t.Fatalf("AcceptRouteControlLink() error: %v", serverResult.err)
 	}
 	defer serverResult.link.Close()
 
@@ -207,7 +207,7 @@ func TestDialTrustedLinkRejectsFingerprintMismatch(t *testing.T) {
 
 	serverDone := make(chan error, 1)
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -220,7 +220,7 @@ func TestDialTrustedLinkRejectsFingerprintMismatch(t *testing.T) {
 		serverDone <- err
 	}()
 
-	link, err := DialTrustedLink(
+	link, err := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -235,7 +235,7 @@ func TestDialTrustedLinkRejectsFingerprintMismatch(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNeighborIdentityMismatch) {
 		t.Fatalf(
-			"DialTrustedLink() error = %v, want ErrNeighborIdentityMismatch",
+			"DialRouteControlLink() error = %v, want ErrNeighborIdentityMismatch",
 			err,
 		)
 	}
@@ -258,7 +258,7 @@ func TestDialTrustedLinkRejectsDeviceIDMismatch(t *testing.T) {
 
 	serverDone := make(chan error, 1)
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -271,7 +271,7 @@ func TestDialTrustedLinkRejectsDeviceIDMismatch(t *testing.T) {
 		serverDone <- err
 	}()
 
-	link, err := DialTrustedLink(
+	link, err := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -286,7 +286,7 @@ func TestDialTrustedLinkRejectsDeviceIDMismatch(t *testing.T) {
 	}
 	if !errors.Is(err, ErrNeighborIdentityMismatch) {
 		t.Fatalf(
-			"DialTrustedLink() error = %v, want ErrNeighborIdentityMismatch",
+			"DialRouteControlLink() error = %v, want ErrNeighborIdentityMismatch",
 			err,
 		)
 	}
@@ -308,7 +308,7 @@ func TestAcceptTrustedLinkRejectsUnknownNeighbor(t *testing.T) {
 
 	serverDone := make(chan error, 1)
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -321,7 +321,7 @@ func TestAcceptTrustedLinkRejectsUnknownNeighbor(t *testing.T) {
 		serverDone <- err
 	}()
 
-	link, _ := DialTrustedLink(
+	link, _ := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -338,7 +338,7 @@ func TestAcceptTrustedLinkRejectsUnknownNeighbor(t *testing.T) {
 	err := <-serverDone
 	if !errors.Is(err, ErrNeighborUntrusted) {
 		t.Fatalf(
-			"AcceptTrustedLink() error = %v, want ErrNeighborUntrusted",
+			"AcceptRouteControlLink() error = %v, want ErrNeighborUntrusted",
 			err,
 		)
 	}
@@ -369,7 +369,7 @@ func TestAcceptTrustedLinkRejectsPinnedFingerprintMismatch(t *testing.T) {
 
 	serverDone := make(chan error, 1)
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -382,7 +382,7 @@ func TestAcceptTrustedLinkRejectsPinnedFingerprintMismatch(t *testing.T) {
 		serverDone <- err
 	}()
 
-	link, _ := DialTrustedLink(
+	link, _ := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -399,7 +399,7 @@ func TestAcceptTrustedLinkRejectsPinnedFingerprintMismatch(t *testing.T) {
 	err = <-serverDone
 	if !errors.Is(err, ErrNeighborIdentityMismatch) {
 		t.Fatalf(
-			"AcceptTrustedLink() error = %v, want ErrNeighborIdentityMismatch",
+			"AcceptRouteControlLink() error = %v, want ErrNeighborIdentityMismatch",
 			err,
 		)
 	}
@@ -424,7 +424,7 @@ func TestMeshALPNDoesNotNegotiateEndpointSessionProtocol(t *testing.T) {
 		serverDone <- err
 	}()
 
-	link, err := DialTrustedLink(
+	link, err := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -456,7 +456,7 @@ func TestDialTrustedLinkHonorsCanceledContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	link, err := DialTrustedLink(
+	link, err := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -470,7 +470,7 @@ func TestDialTrustedLinkHonorsCanceledContext(t *testing.T) {
 		_ = link.Close()
 	}
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("DialTrustedLink() error = %v, want context.Canceled", err)
+		t.Fatalf("DialRouteControlLink() error = %v, want context.Canceled", err)
 	}
 }
 
@@ -493,7 +493,7 @@ func TestServerTrustRejectionStaysLocal(t *testing.T) {
 	serverDone := make(chan serverResult, 1)
 
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -503,7 +503,7 @@ func TestServerTrustRejectionStaysLocal(t *testing.T) {
 		serverDone <- serverResult{link: link, err: err}
 	}()
 
-	clientLink, clientErr := DialTrustedLink(
+	clientLink, clientErr := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -563,7 +563,7 @@ func TestServerFingerprintRejectionStaysLocal(t *testing.T) {
 	serverDone := make(chan serverResult, 1)
 
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -573,7 +573,7 @@ func TestServerFingerprintRejectionStaysLocal(t *testing.T) {
 		serverDone <- serverResult{link: link, err: err}
 	}()
 
-	clientLink, clientErr := DialTrustedLink(
+	clientLink, clientErr := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -668,7 +668,7 @@ func TestClientPinningRejectionStaysLocal(t *testing.T) {
 
 	serverDone := make(chan error, 1)
 	go func() {
-		link, err := AcceptTrustedLink(
+		link, err := AcceptRouteControlLink(
 			ctx,
 			routerRaw,
 			routerID,
@@ -681,7 +681,7 @@ func TestClientPinningRejectionStaysLocal(t *testing.T) {
 		serverDone <- err
 	}()
 
-	clientLink, clientErr := DialTrustedLink(
+	clientLink, clientErr := DialRouteControlLink(
 		ctx,
 		clientRaw,
 		clientID,
@@ -712,5 +712,203 @@ func TestClientPinningRejectionStaysLocal(t *testing.T) {
 			"remote server received client-local identity sentinel: %v",
 			serverErr,
 		)
+	}
+}
+
+func TestRouteTunnelLinkAuthenticatesTrustedNeighbors(t *testing.T) {
+	t.Parallel()
+
+	routerID := testIdentity(t, "router")
+	destinationID := testIdentity(t, "destination")
+	destinationTrust := testNeighborStore(t, routerID)
+
+	routerRaw, destinationRaw := testTCPPair(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	type acceptResult struct {
+		link *TLSLink
+		err  error
+	}
+	accepted := make(chan acceptResult, 1)
+
+	go func() {
+		link, err := AcceptRouteTunnelLink(
+			ctx,
+			destinationRaw,
+			destinationID,
+			destinationTrust,
+			mesh.TransportInternet,
+		)
+		accepted <- acceptResult{link: link, err: err}
+	}()
+
+	routerLink, err := DialRouteTunnelLink(
+		ctx,
+		routerRaw,
+		routerID,
+		ResolvedPeer{
+			ID:          mesh.DeviceID(destinationID.ID),
+			Fingerprint: fingerprintForIdentity(t, destinationID),
+			Transport:   mesh.TransportInternet,
+		},
+	)
+	if err != nil {
+		t.Fatalf("DialRouteTunnelLink() error: %v", err)
+	}
+	defer routerLink.Close()
+
+	result := <-accepted
+	if result.err != nil {
+		t.Fatalf("AcceptRouteTunnelLink() error: %v", result.err)
+	}
+	defer result.link.Close()
+
+	if routerLink.Remote() != mesh.DeviceID(destinationID.ID) {
+		t.Fatalf(
+			"router remote = %q, want %q",
+			routerLink.Remote(),
+			destinationID.ID,
+		)
+	}
+	if result.link.Remote() != mesh.DeviceID(routerID.ID) {
+		t.Fatalf(
+			"destination remote = %q, want %q",
+			result.link.Remote(),
+			routerID.ID,
+		)
+	}
+
+	want := []byte("opaque-inner-endpoint-tls")
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := routerLink.Write(want)
+		writeDone <- err
+	}()
+
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(result.link, got); err != nil {
+		t.Fatalf("ReadFull() error: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Fatalf("payload = %q, want %q", got, want)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+}
+
+func TestMeshRouteRolesDoNotCrossNegotiate(t *testing.T) {
+	t.Parallel()
+
+	sourceID := testIdentity(t, "source")
+	routerID := testIdentity(t, "router")
+	routerTrust := testNeighborStore(t, sourceID)
+
+	sourceRaw, routerRaw := testTCPPair(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	type acceptResult struct {
+		link *TLSLink
+		err  error
+	}
+	accepted := make(chan acceptResult, 1)
+
+	go func() {
+		link, err := AcceptRouteTunnelLink(
+			ctx,
+			routerRaw,
+			routerID,
+			routerTrust,
+			mesh.TransportLAN,
+		)
+		accepted <- acceptResult{link: link, err: err}
+	}()
+
+	sourceLink, sourceErr := DialRouteControlLink(
+		ctx,
+		sourceRaw,
+		sourceID,
+		ResolvedPeer{
+			ID:          mesh.DeviceID(routerID.ID),
+			Fingerprint: fingerprintForIdentity(t, routerID),
+			Transport:   mesh.TransportLAN,
+		},
+	)
+	if sourceLink != nil {
+		_ = sourceLink.Close()
+		t.Fatal("route-control peer negotiated destination-tunnel role")
+	}
+	if sourceErr == nil {
+		t.Fatal("route-control/tunnel ALPN mismatch unexpectedly succeeded")
+	}
+
+	result := <-accepted
+	if result.link != nil {
+		_ = result.link.Close()
+		t.Fatal("tunnel listener accepted route-control role")
+	}
+	if result.err == nil {
+		t.Fatal("tunnel listener accepted mismatched ALPN")
+	}
+}
+
+func TestMeshRouteRolesDoNotCrossNegotiateReverse(t *testing.T) {
+	t.Parallel()
+
+	routerID := testIdentity(t, "router")
+	destinationID := testIdentity(t, "destination")
+	routerTrust := testNeighborStore(t, destinationID)
+
+	routerRaw, destinationRaw := testTCPPair(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	type acceptResult struct {
+		link *TLSLink
+		err  error
+	}
+	accepted := make(chan acceptResult, 1)
+
+	go func() {
+		link, err := AcceptRouteControlLink(
+			ctx,
+			routerRaw,
+			routerID,
+			routerTrust,
+			mesh.TransportInternet,
+		)
+		accepted <- acceptResult{link: link, err: err}
+	}()
+
+	destinationLink, destinationErr := DialRouteTunnelLink(
+		ctx,
+		destinationRaw,
+		destinationID,
+		ResolvedPeer{
+			ID:          mesh.DeviceID(routerID.ID),
+			Fingerprint: fingerprintForIdentity(t, routerID),
+			Transport:   mesh.TransportInternet,
+		},
+	)
+	if destinationLink != nil {
+		_ = destinationLink.Close()
+		t.Fatal("tunnel peer negotiated route-control role")
+	}
+	if destinationErr == nil {
+		t.Fatal("tunnel/route-control ALPN mismatch unexpectedly succeeded")
+	}
+
+	result := <-accepted
+	if result.link != nil {
+		_ = result.link.Close()
+		t.Fatal("route-control listener accepted tunnel role")
+	}
+	if result.err == nil {
+		t.Fatal("route-control listener accepted mismatched ALPN")
 	}
 }

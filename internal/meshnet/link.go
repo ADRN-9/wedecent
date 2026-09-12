@@ -16,7 +16,8 @@ import (
 )
 
 const (
-	MeshALPN             = "wedecent-mesh/1"
+	MeshRouteControlALPN = "wedecent-mesh-route/1"
+	MeshRouteTunnelALPN  = "wedecent-mesh-tunnel/1"
 	meshHandshakeTimeout = 15 * time.Second
 )
 
@@ -82,18 +83,56 @@ func (l *TLSLink) SetWriteDeadline(t time.Time) error {
 	return l.conn.SetWriteDeadline(t)
 }
 
-// DialTrustedLink authenticates an already-open stream to the expected
+// dialTrustedLink authenticates an already-open stream to the expected
 // neighboring device.
 //
 // Ownership of raw transfers to this function. On success the returned link
 // owns it; on failure it is closed.
-func DialTrustedLink(
+// DialRouteControlLink authenticates an outbound neighboring link used to
+// request routing through the remote device.
+func DialRouteControlLink(
 	ctx context.Context,
 	raw net.Conn,
 	localIdentity *identity.Identity,
 	peer ResolvedPeer,
 ) (*TLSLink, error) {
-	if raw == nil || localIdentity == nil {
+	return dialTrustedLink(
+		ctx,
+		raw,
+		localIdentity,
+		peer,
+		MeshRouteControlALPN,
+	)
+}
+
+// DialRouteTunnelLink authenticates an outbound neighboring link whose
+// decrypted payload is an opaque endpoint tunnel terminating at the remote
+// device. It cannot negotiate with the route-control role.
+func DialRouteTunnelLink(
+	ctx context.Context,
+	raw net.Conn,
+	localIdentity *identity.Identity,
+	peer ResolvedPeer,
+) (*TLSLink, error) {
+	return dialTrustedLink(
+		ctx,
+		raw,
+		localIdentity,
+		peer,
+		MeshRouteTunnelALPN,
+	)
+}
+
+func dialTrustedLink(
+	ctx context.Context,
+	raw net.Conn,
+	localIdentity *identity.Identity,
+	peer ResolvedPeer,
+	alpn string,
+) (*TLSLink, error) {
+	if raw == nil ||
+		localIdentity == nil ||
+		strings.TrimSpace(alpn) == "" {
 		if raw != nil {
 			_ = raw.Close()
 		}
@@ -118,9 +157,9 @@ func DialTrustedLink(
 		MinVersion:         tls.VersionTLS13,
 		Certificates:       []tls.Certificate{localIdentity.Certificate},
 		InsecureSkipVerify: true, // Verified exclusively by VerifyConnection.
-		NextProtos:         []string{MeshALPN},
+		NextProtos:         []string{alpn},
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			if cs.NegotiatedProtocol != MeshALPN {
+			if cs.NegotiatedProtocol != alpn {
 				return ErrNeighborIdentityMismatch
 			}
 
@@ -157,7 +196,7 @@ func DialTrustedLink(
 	}, nil
 }
 
-// AcceptTrustedLink authenticates an already-accepted stream from a neighboring
+// acceptTrustedLink authenticates an already-accepted stream from a neighboring
 // device against router-owned trust.
 //
 // The inbound client certificate is mandatory. Successful authentication is
@@ -165,17 +204,59 @@ func DialTrustedLink(
 // public-key fingerprint.
 //
 // Ownership of raw transfers to this function.
-func AcceptTrustedLink(
+// AcceptRouteControlLink authenticates an inbound neighboring link that may
+// carry route-control requests. Trust alone does not make it a destination
+// tunnel.
+func AcceptRouteControlLink(
 	ctx context.Context,
 	raw net.Conn,
 	localIdentity *identity.Identity,
 	peers *trust.Store,
 	transportName mesh.TransportName,
 ) (*TLSLink, error) {
+	return acceptTrustedLink(
+		ctx,
+		raw,
+		localIdentity,
+		peers,
+		transportName,
+		MeshRouteControlALPN,
+	)
+}
+
+// AcceptRouteTunnelLink authenticates an inbound neighboring link whose
+// decrypted bytes terminate at this device. Only this role may later be
+// handed to endpoint session TLS as a routed destination stream.
+func AcceptRouteTunnelLink(
+	ctx context.Context,
+	raw net.Conn,
+	localIdentity *identity.Identity,
+	peers *trust.Store,
+	transportName mesh.TransportName,
+) (*TLSLink, error) {
+	return acceptTrustedLink(
+		ctx,
+		raw,
+		localIdentity,
+		peers,
+		transportName,
+		MeshRouteTunnelALPN,
+	)
+}
+
+func acceptTrustedLink(
+	ctx context.Context,
+	raw net.Conn,
+	localIdentity *identity.Identity,
+	peers *trust.Store,
+	transportName mesh.TransportName,
+	alpn string,
+) (*TLSLink, error) {
 	if raw == nil ||
 		localIdentity == nil ||
 		peers == nil ||
-		strings.TrimSpace(string(transportName)) == "" {
+		strings.TrimSpace(string(transportName)) == "" ||
+		strings.TrimSpace(alpn) == "" {
 		if raw != nil {
 			_ = raw.Close()
 		}
@@ -188,9 +269,9 @@ func AcceptTrustedLink(
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{localIdentity.Certificate},
 		ClientAuth:   tls.RequireAnyClientCert,
-		NextProtos:   []string{MeshALPN},
+		NextProtos:   []string{alpn},
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			if cs.NegotiatedProtocol != MeshALPN {
+			if cs.NegotiatedProtocol != alpn {
 				return ErrNeighborIdentityMismatch
 			}
 
