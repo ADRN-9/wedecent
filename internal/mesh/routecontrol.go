@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	RouteControlVersion    = 1
+	RouteControlVersion    = 2
 	MaxRouteControlPayload = 64 << 10 // 64 KiB
 
 	routeControlHeaderSize = 12
@@ -30,7 +30,8 @@ const (
 // After an accepted response, the same link stops carrying route-control
 // messages and becomes the opaque endpoint-to-endpoint byte tunnel.
 type RouteOpenRequest struct {
-	Route Route `json:"route"`
+	Route         Route              `json:"route"`
+	Authorization RouteAuthorization `json:"authorization"`
 }
 
 // RouteOpenCode is a stable, non-sensitive route-open result code.

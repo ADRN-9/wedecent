@@ -31,9 +31,10 @@ var (
 // Authorization is intentionally independent from structural route validation.
 // Implementations are expected to enforce trust, organization and account policy.
 type ForwardRequest struct {
-	Router DeviceID
-	Route  Route
-	Policy RouterPolicy
+	Router        DeviceID
+	Route         Route
+	Authorization RouteAuthorization
+	Policy        RouterPolicy
 }
 
 // ForwardAuthorizer decides whether a structurally valid route may be forwarded.
@@ -86,7 +87,12 @@ func (f *Forwarder) Forward(ctx context.Context, route Route, incoming Link) (Fo
 	}
 	defer incoming.Close()
 
-	prepared, err := f.prepareForward(ctx, route, incoming)
+	prepared, err := f.prepareForward(
+		ctx,
+		route,
+		RouteAuthorization{},
+		incoming,
+	)
 	if err != nil {
 		return ForwardResult{}, err
 	}
@@ -126,7 +132,12 @@ func (f *Forwarder) ServeRouteOpen(ctx context.Context, incoming Link) (ForwardR
 		return ForwardResult{}, err
 	}
 
-	prepared, err := f.prepareForward(ctx, req.Route, incoming)
+	prepared, err := f.prepareForward(
+		ctx,
+		req.Route,
+		req.Authorization,
+		incoming,
+	)
 	if err != nil {
 		code := routeOpenCodeForForwardError(err)
 
@@ -217,6 +228,7 @@ func writeRouteOpenResponseWithContext(
 func (f *Forwarder) prepareForward(
 	ctx context.Context,
 	route Route,
+	authorization RouteAuthorization,
 	incoming Link,
 ) (*preparedForward, error) {
 	if err := ctx.Err(); err != nil {
@@ -282,13 +294,14 @@ func (f *Forwarder) prepareForward(
 		f.releaseSession()
 	}
 
-	authRoute := route
-	authRoute.Hops = append([]RouteHop(nil), route.Hops...)
+	authRoute := cloneAuthorizationRoute(route)
+	authAuthorization := cloneRouteAuthorization(authorization)
 
 	if err := f.Authorizer.AuthorizeForward(routeCtx, ForwardRequest{
-		Router: f.LocalID,
-		Route:  authRoute,
-		Policy: f.Policy,
+		Router:        f.LocalID,
+		Route:         authRoute,
+		Authorization: authAuthorization,
+		Policy:        f.Policy,
 	}); err != nil {
 		ctxErr := routeCtx.Err()
 		release()

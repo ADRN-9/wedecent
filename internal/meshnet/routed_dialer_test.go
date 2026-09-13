@@ -72,6 +72,10 @@ func TestRoutedDialerAcceptedRouteBecomesOpaqueTunnel(t *testing.T) {
 	clientRaw, routerRaw := testTCPPair(t)
 
 	route := testOneHopRoute(clientID, routerID, destinationID)
+	authorization := mesh.RouteAuthorization{
+		KeyID:     "control-key-routed-dialer",
+		Signature: "opaque-signed-capability",
+	}
 
 	resolver := &staticPeerResolver{
 		peer: ResolvedPeer{
@@ -84,9 +88,10 @@ func TestRoutedDialerAcceptedRouteBecomesOpaqueTunnel(t *testing.T) {
 
 	dialedAddress := ""
 	dialer := RoutedDialer{
-		Identity: clientID,
-		Resolver: resolver,
-		Route:    route,
+		Identity:      clientID,
+		Resolver:      resolver,
+		Route:         route,
+		Authorization: authorization,
 		DialTCP: func(
 			_ context.Context,
 			address string,
@@ -117,6 +122,15 @@ func TestRoutedDialerAcceptedRouteBecomesOpaqueTunnel(t *testing.T) {
 		req, err := mesh.ReadRouteOpenRequest(link)
 		if err != nil {
 			serverDone <- fmt.Errorf("ReadRouteOpenRequest: %w", err)
+			return
+		}
+
+		if req.Authorization.KeyID != authorization.KeyID ||
+			req.Authorization.Signature != authorization.Signature {
+			serverDone <- fmt.Errorf(
+				"unexpected route authorization: %+v",
+				req.Authorization,
+			)
 			return
 		}
 

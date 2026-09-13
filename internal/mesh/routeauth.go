@@ -295,6 +295,53 @@ func (v RouteAuthorizationVerifier) VerifyAndConsume(
 	return nil
 }
 
+// RouteAuthorizationForwardAuthorizer adapts signed single-use route
+// capabilities to the ForwardAuthorizer seam.
+//
+// Forwarder supplies defensive copies of both Route and Authorization. A valid
+// capability is atomically consumed before Forwarder can proceed to DialNext.
+type RouteAuthorizationForwardAuthorizer struct {
+	// LocalAuthorizer preserves router-owned trust, organization and
+	// account policy. A signed capability never overrides local policy.
+	LocalAuthorizer ForwardAuthorizer
+	Verifier        RouteAuthorizationVerifier
+}
+
+// AuthorizeForward implements ForwardAuthorizer.
+//
+// Local authorization deliberately runs before consuming the single-use
+// signed capability. Independent defensive copies prevent the local policy
+// implementation from mutating what the cryptographic verifier receives.
+func (a RouteAuthorizationForwardAuthorizer) AuthorizeForward(
+	ctx context.Context,
+	request ForwardRequest,
+) error {
+	if a.LocalAuthorizer == nil {
+		return ErrForwardAuthorizationRequired
+	}
+
+	localRequest := request
+	localRequest.Route = cloneAuthorizationRoute(request.Route)
+	localRequest.Authorization =
+		cloneRouteAuthorization(request.Authorization)
+
+	if err := a.LocalAuthorizer.AuthorizeForward(
+		ctx,
+		localRequest,
+	); err != nil {
+		return err
+	}
+
+	return a.Verifier.VerifyAndConsume(
+		ctx,
+		cloneRouteAuthorization(request.Authorization),
+		cloneAuthorizationRoute(request.Route),
+		request.Router,
+	)
+}
+
+var _ ForwardAuthorizer = RouteAuthorizationForwardAuthorizer{}
+
 func validateRouteAuthorizationSyntax(auth RouteAuthorization) error {
 	if strings.TrimSpace(auth.KeyID) == "" ||
 		len(auth.KeyID) > 128 ||

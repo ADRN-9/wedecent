@@ -60,9 +60,10 @@ func (e *RouteRejectedError) Unwrap() error {
 // After Dial succeeds, session.Client wraps the returned transport.Conn in its
 // existing endpoint-pinned A<->C TLS connection.
 type RoutedDialer struct {
-	Identity *identity.Identity
-	Resolver PeerResolver
-	Route    mesh.Route
+	Identity      *identity.Identity
+	Resolver      PeerResolver
+	Route         mesh.Route
+	Authorization mesh.RouteAuthorization
 
 	// DialTCP exists for deterministic tests. Production callers normally leave
 	// it nil and use the standard direct TCP dial below.
@@ -152,7 +153,12 @@ func (d RoutedDialer) Dial(
 		return nil, err
 	}
 
-	if err := openRoutedTunnel(ctx, link, route); err != nil {
+	if err := openRoutedTunnel(
+		ctx,
+		link,
+		route,
+		d.Authorization,
+	); err != nil {
 		_ = link.Close()
 		return nil, err
 	}
@@ -164,6 +170,7 @@ func openRoutedTunnel(
 	ctx context.Context,
 	link *TLSLink,
 	route mesh.Route,
+	authorization mesh.RouteAuthorization,
 ) error {
 	if link == nil {
 		return ErrRoutedDialerConfig
@@ -192,7 +199,10 @@ func openRoutedTunnel(
 
 	err := mesh.WriteRouteOpenRequest(
 		link,
-		mesh.RouteOpenRequest{Route: route},
+		mesh.RouteOpenRequest{
+			Route:         route,
+			Authorization: authorization,
+		},
 	)
 
 	var response mesh.RouteOpenResponse
