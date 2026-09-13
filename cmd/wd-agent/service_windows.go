@@ -53,110 +53,341 @@ func runServiceCommand(args []string) error {
 }
 
 func runServiceInstall(args []string) error {
-	fs := flag.NewFlagSet("service install", flag.ContinueOnError)
-	serviceName := fs.String("service-name", defaultWindowsServiceName, "Windows service name")
-	displayName := fs.String("display-name", "WeDecent Agent", "Windows service display name")
-	account := fs.String("account", "", `dedicated standard service account, e.g. .\WeDecentSvc`)
-	accountPasswordStdin := fs.Bool("account-password-stdin", false, "read the service account password from standard input")
-	stateDir := fs.String("state", defaultServiceStateDir(), "machine-wide agent state directory")
-	deviceName := fs.String("name", hostname(), "device display name")
-	listenAddr := fs.String("listen", "", "TCP listen address; empty disables inbound TCP")
-	webRelay := fs.String("web-relay", "https://relay.wedecent.com", "serverless WebSocket relay URL")
-	relaySlots := fs.Int("relay-slots", 4, "number of parked outbound relay connections")
-	shell := fs.String("shell", defaultShell(), "absolute shell path")
-	automatic := fs.Bool("automatic", true, "start the service automatically at boot")
-	startNow := fs.Bool("start", true, "start the service after installation")
+	fs := flag.NewFlagSet(
+		"service install",
+		flag.ContinueOnError,
+	)
+
+	serviceName := fs.String(
+		"service-name",
+		defaultWindowsServiceName,
+		"Windows service name",
+	)
+	displayName := fs.String(
+		"display-name",
+		"WeDecent Agent",
+		"Windows service display name",
+	)
+	account := fs.String(
+		"account",
+		"",
+		`dedicated standard service account, e.g. .\WeDecentSvc`,
+	)
+	accountPasswordStdin := fs.Bool(
+		"account-password-stdin",
+		false,
+		"read the service account password from standard input",
+	)
+	stateDir := fs.String(
+		"state",
+		defaultServiceStateDir(),
+		"machine-wide agent state directory",
+	)
+	deviceName := fs.String(
+		"name",
+		hostname(),
+		"device display name",
+	)
+	listenAddr := fs.String(
+		"listen",
+		"",
+		"TCP listen address; empty disables inbound TCP",
+	)
+
+	routeControlListen := fs.String(
+		"route-control-listen",
+		"",
+		"mesh A -> B route-control TCP listen address",
+	)
+	routeControlTransport := fs.String(
+		"route-control-transport",
+		"internet",
+		"route-control transport: lan or internet",
+	)
+	routeTunnelListen := fs.String(
+		"route-tunnel-listen",
+		"",
+		"mesh B -> C route-tunnel TCP listen address",
+	)
+	routeTunnelTransport := fs.String(
+		"route-tunnel-transport",
+		"internet",
+		"route-tunnel transport: lan or internet",
+	)
+	routeMaxConnections := fs.Int(
+		"route-max-connections",
+		defaultRouteMaxConnections,
+		"maximum concurrent accepted connections per routing listener",
+	)
+
+	webRelay := fs.String(
+		"web-relay",
+		"https://relay.wedecent.com",
+		"serverless WebSocket relay URL",
+	)
+	relaySlots := fs.Int(
+		"relay-slots",
+		4,
+		"number of parked outbound relay connections",
+	)
+	shell := fs.String(
+		"shell",
+		defaultShell(),
+		"absolute shell path",
+	)
+	automatic := fs.Bool(
+		"automatic",
+		true,
+		"start the service automatically at boot",
+	)
+	startNow := fs.Bool(
+		"start",
+		true,
+		"start the service after installation",
+	)
+
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	*routeControlListen = strings.TrimSpace(
+		*routeControlListen,
+	)
+	*routeTunnelListen = strings.TrimSpace(
+		*routeTunnelListen,
+	)
+
+	controlTransport, err := parseRoutingTransport(
+		*routeControlTransport,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"--route-control-transport: %w",
+			err,
+		)
+	}
+	*routeControlTransport = string(
+		controlTransport,
+	)
+
+	tunnelTransport, err := parseRoutingTransport(
+		*routeTunnelTransport,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"--route-tunnel-transport: %w",
+			err,
+		)
+	}
+	*routeTunnelTransport = string(
+		tunnelTransport,
+	)
+
 	if strings.TrimSpace(*account) == "" {
-		return errors.New("--account is required; use a dedicated standard Windows account")
+		return errors.New(
+			"--account is required; use a dedicated standard Windows account",
+		)
 	}
+
 	if isBuiltInServiceAccount(*account) {
-		return errors.New("refusing built-in service account; use a dedicated standard Windows account")
-	}
-	if *relaySlots < 1 || *relaySlots > 32 {
-		return errors.New("relay-slots must be between 1 and 32")
-	}
-	if *listenAddr == "" && *webRelay == "" {
-		return errors.New("at least one of --listen or --web-relay must be configured")
-	}
-	if err := os.MkdirAll(*stateDir, 0o700); err != nil {
-		return fmt.Errorf("create state directory: %w", err)
+		return errors.New(
+			"refusing built-in service account; use a dedicated standard Windows account",
+		)
 	}
 
-	id, err := identity.Ensure(*stateDir, *deviceName)
+	if *relaySlots < 1 ||
+		*relaySlots > 32 {
+		return errors.New(
+			"relay-slots must be between 1 and 32",
+		)
+	}
+
+	if *routeMaxConnections < 1 ||
+		*routeMaxConnections > 1024 {
+		return errors.New(
+			"route-max-connections must be between 1 and 1024",
+		)
+	}
+
+	if *listenAddr == "" &&
+		*webRelay == "" &&
+		*routeControlListen == "" &&
+		*routeTunnelListen == "" {
+		return errors.New(
+			"at least one terminal, relay, or routing listener transport must be configured",
+		)
+	}
+
+	if err := os.MkdirAll(
+		*stateDir,
+		0o700,
+	); err != nil {
+		return fmt.Errorf(
+			"create state directory: %w",
+			err,
+		)
+	}
+
+	id, err := identity.Ensure(
+		*stateDir,
+		*deviceName,
+	)
 	if err != nil {
 		return err
 	}
-	if _, err := trust.Open(filepath.Join(*stateDir, "trusted-clients.json")); err != nil {
+
+	if _, err := trust.Open(
+		filepath.Join(
+			*stateDir,
+			"trusted-clients.json",
+		),
+	); err != nil {
 		return err
 	}
-	pairSecret, err := trust.RotatePairingSecret(*stateDir)
+
+	pairSecret, err := trust.RotatePairingSecret(
+		*stateDir,
+	)
 	if err != nil {
 		return err
 	}
 
-	if err := winservice.RestrictDirectory(*stateDir, *account); err != nil {
+	if err := winservice.RestrictDirectory(
+		*stateDir,
+		*account,
+	); err != nil {
 		return err
 	}
 
 	password := ""
-	if !strings.HasSuffix(strings.TrimSpace(*account), "$") {
+
+	if !strings.HasSuffix(
+		strings.TrimSpace(*account),
+		"$",
+	) {
 		if *accountPasswordStdin {
-			password, err = readServicePassword(os.Stdin)
+			password, err = readServicePassword(
+				os.Stdin,
+			)
 		} else {
-			password, err = readHiddenLine("Service account password: ")
+			password, err = readHiddenLine(
+				"Service account password: ",
+			)
 		}
+
 		if err != nil {
 			return err
 		}
+
 		if password == "" {
-			return errors.New("service account password cannot be empty")
+			return errors.New(
+				"service account password cannot be empty",
+			)
 		}
 	}
 
 	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("resolve wd-agent executable: %w", err)
+		return fmt.Errorf(
+			"resolve wd-agent executable: %w",
+			err,
+		)
 	}
+
 	serviceArgs := []string{
-		"service", "run",
+		"service",
+		"run",
 		"--service-name=" + *serviceName,
 		"--state=" + *stateDir,
 		"--name=" + *deviceName,
 		"--listen=" + *listenAddr,
+
+		"--route-control-listen=" +
+			*routeControlListen,
+		"--route-control-transport=" +
+			*routeControlTransport,
+		"--route-tunnel-listen=" +
+			*routeTunnelListen,
+		"--route-tunnel-transport=" +
+			*routeTunnelTransport,
+		fmt.Sprintf(
+			"--route-max-connections=%d",
+			*routeMaxConnections,
+		),
+
 		"--web-relay=" + *webRelay,
-		fmt.Sprintf("--relay-slots=%d", *relaySlots),
+		fmt.Sprintf(
+			"--relay-slots=%d",
+			*relaySlots,
+		),
 		"--shell=" + *shell,
 	}
-	if err := winservice.Install(winservice.InstallOptions{
-		Name:        *serviceName,
-		DisplayName: *displayName,
-		Description: "WeDecent outbound-only remote terminal agent",
-		Account:     *account,
-		Password:    password,
-		Executable:  executable,
-		Arguments:   serviceArgs,
-		Automatic:   *automatic,
-	}); err != nil {
+
+	if err := winservice.Install(
+		winservice.InstallOptions{
+			Name:        *serviceName,
+			DisplayName: *displayName,
+			Description: "WeDecent outbound-only remote terminal agent",
+			Account:     *account,
+			Password:    password,
+			Executable:  executable,
+			Arguments:   serviceArgs,
+			Automatic:   *automatic,
+		},
+	); err != nil {
 		return err
 	}
 
-	fp, _ := identity.FingerprintPublicKey(id.PublicKey)
-	fmt.Printf("Service installed: %s\n", *serviceName)
-	fmt.Printf("Service account:   %s\n", *account)
-	fmt.Printf("State directory:   %s\n", *stateDir)
-	fmt.Printf("Device ID:         %s\n", id.ID)
-	fmt.Printf("Fingerprint:       %s\n", fp)
-	fmt.Printf("Pair secret:       %s\n", pairSecret)
-	fmt.Println("\nThe pair secret is single-use. Keep it private.")
+	fp, _ := identity.FingerprintPublicKey(
+		id.PublicKey,
+	)
+
+	fmt.Printf(
+		"Service installed: %s\n",
+		*serviceName,
+	)
+	fmt.Printf(
+		"Service account:   %s\n",
+		*account,
+	)
+	fmt.Printf(
+		"State directory:   %s\n",
+		*stateDir,
+	)
+	fmt.Printf(
+		"Device ID:         %s\n",
+		id.ID,
+	)
+	fmt.Printf(
+		"Fingerprint:       %s\n",
+		fp,
+	)
+	fmt.Printf(
+		"Pair secret:       %s\n",
+		pairSecret,
+	)
+
+	fmt.Println(
+		"\nThe pair secret is single-use. Keep it private.",
+	)
+
 	if *startNow {
-		if err := winservice.Start(*serviceName); err != nil {
-			return fmt.Errorf("service installed but failed to start: %w; inspect %s for runtime error details", err, filepath.Join(*stateDir, "service.log"))
+		if err := winservice.Start(
+			*serviceName,
+		); err != nil {
+			return fmt.Errorf(
+				"service installed but failed to start: %w; inspect %s for runtime error details",
+				err,
+				filepath.Join(
+					*stateDir,
+					"service.log",
+				),
+			)
 		}
+
 		fmt.Println("Service started.")
 	}
+
 	return nil
 }
 
