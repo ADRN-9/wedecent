@@ -83,3 +83,16 @@ jobs:
       - name: Test relay authentication
         working-directory: cloudflare/relay-worker
         run: npm test
+
+  control-plane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Check route authorization encoder syntax
+        run: node --check supabase/functions/_shared/route-authorization.mjs
+      - name: Test Go-compatible route authorization signing
+        run: node --test supabase/functions/_shared/route-authorization.test.mjs
