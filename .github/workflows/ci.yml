@@ -92,7 +92,25 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
       - name: Check route authorization encoder syntax
         run: node --check supabase/functions/_shared/route-authorization.mjs
       - name: Test Go-compatible route authorization signing
         run: node --test supabase/functions/_shared/route-authorization.test.mjs
+      - name: Type-check route authorization Edge Function
+        run: deno check supabase/functions/route-authorization/index.ts
+
+  supabase-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.117.0
+      - name: Start disposable local Supabase database
+        run: supabase db start
+      - name: Run database pgTAP tests
+        run: supabase test db

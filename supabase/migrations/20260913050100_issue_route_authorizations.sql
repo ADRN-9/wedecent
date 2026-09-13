@@ -130,7 +130,9 @@ begin
             using errcode = '22023';
     end if;
 
-    if p_first_transport not in ('lan', 'internet')
+    if p_first_transport is null
+       or p_second_transport is null
+       or p_first_transport not in ('lan', 'internet')
        or p_second_transport not in ('lan', 'internet') then
         raise exception 'unsupported routing transport'
             using errcode = '22023';
