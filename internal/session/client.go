@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,9 +19,24 @@ import (
 )
 
 type Client struct {
-	Identity *identity.Identity
-	Trust    *trust.Store
-	Dialer   transport.Dialer
+	Identity        *identity.Identity
+	Trust           *trust.Store
+	Dialer          transport.Dialer
+	ConnectionGrant string
+}
+
+// Probe verifies that peer.Endpoint is reachable and presents the already
+// trusted WeDecent identity. It does not open an application session.
+func (c *Client) Probe(ctx context.Context, peer trust.Peer) error {
+	raw, err := c.dial(ctx, peer.Endpoint)
+	if err != nil {
+		return err
+	}
+	defer raw.Close()
+	if _, err := tlsClientContext(ctx, raw, c.Identity, peer.Fingerprint); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Client) Pair(ctx context.Context, endpoint, expectedFingerprint, secret string) (trust.Peer, error) {
@@ -68,6 +84,14 @@ func (c *Client) Pair(ctx context.Context, endpoint, expectedFingerprint, secret
 }
 
 func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.File, out io.Writer) (int, error) {
+	inBandAuthorization := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(peer.Endpoint)), "wsrelay://")
+	if inBandAuthorization {
+		grant := strings.TrimSpace(c.ConnectionGrant)
+		if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
+			return 0, errors.New("a valid connection grant is required for this transport")
+		}
+	}
+
 	raw, err := c.dial(ctx, peer.Endpoint)
 	if err != nil {
 		return 0, err
@@ -86,9 +110,17 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 			cols, rows = c2, r2
 		}
 	}
-	open := protocol.OpenSession{Cols: cols, Rows: rows, Term: os.Getenv("TERM")}
-	payload, _ := protocol.JSON(open)
-	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}); err != nil {
+	frameType := protocol.TypeOpenSession
+	var payload []byte
+	if inBandAuthorization {
+		frameType = protocol.TypeOpenAuthorizedSession
+		payload, _ = protocol.JSON(protocol.OpenAuthorizedSession{
+			Cols: cols, Rows: rows, Term: os.Getenv("TERM"), ConnectionGrant: strings.TrimSpace(c.ConnectionGrant),
+		})
+	} else {
+		payload, _ = protocol.JSON(protocol.OpenSession{Cols: cols, Rows: rows, Term: os.Getenv("TERM")})
+	}
+	if err := protocol.WriteFrame(conn, protocol.Frame{Type: frameType, Payload: payload}); err != nil {
 		return 0, err
 	}
 	first, err := protocol.ReadFrame(conn)
@@ -194,9 +226,17 @@ func (c *Client) dial(ctx context.Context, endpoint string) (transport.Conn, err
 }
 
 func tlsClient(raw transport.Conn, id *identity.Identity, fp string) (*tls.Conn, error) {
+	return tlsClientContext(context.Background(), raw, id, fp)
+}
+
+func tlsClientContext(ctx context.Context, raw transport.Conn, id *identity.Identity, fp string) (*tls.Conn, error) {
 	conn := tls.Client(raw, identity.ClientTLS(id, fp))
-	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
-	if err := conn.Handshake(); err != nil {
+	deadline := time.Now().Add(15 * time.Second)
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+		deadline = ctxDeadline
+	}
+	_ = conn.SetDeadline(deadline)
+	if err := conn.HandshakeContext(ctx); err != nil {
 		return nil, fmt.Errorf("TLS handshake: %w", err)
 	}
 	_ = conn.SetDeadline(time.Time{})

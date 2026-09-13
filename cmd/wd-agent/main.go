@@ -250,49 +250,211 @@ func writeJSON(value any) error {
 }
 
 type serveConfig struct {
-	StateDir        string
-	Name            string
-	ListenAddr      string
-	Shell           string
-	Discover        bool
-	MaxConnections  int
-	RelayAddr       string
-	WebRelay        string
-	RelaySlots      int
-	RelayCA         string
-	RelayServerName string
+	StateDir               string
+	Name                   string
+	ListenAddr             string
+	Shell                  string
+	Discover               bool
+	MaxConnections         int
+	RelayAddr              string
+	WebRelay               string
+	RelaySlots             int
+	RelayCA                string
+	RelayServerName        string
+	AuthorizationURL       string
+	RouteControlListenAddr string
+	RouteControlTransport  string
+	RouteTunnelListenAddr  string
+	RouteTunnelTransport   string
+	RouteMaxConnections    int
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
 	state, _ := appdirs.Agent()
+
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	cfg := serveConfig{}
-	fs.StringVar(&cfg.StateDir, "state", state, "agent state directory")
-	fs.StringVar(&cfg.Name, "name", hostname(), "device display name")
-	fs.StringVar(&cfg.ListenAddr, "listen", "127.0.0.1:7443", "TCP listen address; empty disables inbound TCP")
-	fs.StringVar(&cfg.Shell, "shell", defaultShell(), "absolute shell path")
-	fs.BoolVar(&cfg.Discover, "discover", false, "advertise on the local IPv4 multicast network")
-	fs.IntVar(&cfg.MaxConnections, "max-connections", 32, "maximum concurrent direct client connections")
-	fs.StringVar(&cfg.RelayAddr, "relay", "", "legacy outbound TCP relay address, e.g. relay.wedecent.com:443")
-	fs.StringVar(&cfg.WebRelay, "web-relay", "", "serverless WebSocket relay URL, e.g. https://relay.wedecent.com")
-	fs.IntVar(&cfg.RelaySlots, "relay-slots", 4, "number of parked outbound relay connections")
-	fs.StringVar(&cfg.RelayCA, "relay-ca", "", "optional PEM CA bundle for a private/dev relay")
-	fs.StringVar(&cfg.RelayServerName, "relay-server-name", "", "optional TLS server-name override for the relay")
+
+	fs.StringVar(
+		&cfg.StateDir,
+		"state",
+		state,
+		"agent state directory",
+	)
+	fs.StringVar(
+		&cfg.Name,
+		"name",
+		hostname(),
+		"device display name",
+	)
+	fs.StringVar(
+		&cfg.ListenAddr,
+		"listen",
+		"127.0.0.1:7443",
+		"TCP listen address; empty disables inbound TCP",
+	)
+	fs.StringVar(
+		&cfg.Shell,
+		"shell",
+		defaultShell(),
+		"absolute shell path",
+	)
+	fs.BoolVar(
+		&cfg.Discover,
+		"discover",
+		false,
+		"advertise on the local IPv4 multicast network",
+	)
+	fs.IntVar(
+		&cfg.MaxConnections,
+		"max-connections",
+		32,
+		"maximum concurrent direct client connections",
+	)
+	fs.StringVar(
+		&cfg.RelayAddr,
+		"relay",
+		"",
+		"legacy outbound TCP relay address, e.g. relay.wedecent.com:443",
+	)
+	fs.StringVar(
+		&cfg.WebRelay,
+		"web-relay",
+		"",
+		"serverless WebSocket relay URL, e.g. https://relay.wedecent.com",
+	)
+	fs.IntVar(
+		&cfg.RelaySlots,
+		"relay-slots",
+		4,
+		"number of parked outbound relay connections",
+	)
+	fs.StringVar(
+		&cfg.RelayCA,
+		"relay-ca",
+		"",
+		"optional PEM CA bundle for a private/dev relay",
+	)
+	fs.StringVar(
+		&cfg.RelayServerName,
+		"relay-server-name",
+		"",
+		"optional TLS server-name override for the relay",
+	)
+	fs.StringVar(
+		&cfg.AuthorizationURL,
+		"authorization-url",
+		"",
+		"authorization service URL; defaults to --web-relay when configured",
+	)
+
+	fs.StringVar(
+		&cfg.RouteControlListenAddr,
+		"route-control-listen",
+		"",
+		"mesh A -> B route-control TCP listen address; empty disables router ingress",
+	)
+	fs.StringVar(
+		&cfg.RouteControlTransport,
+		"route-control-transport",
+		"internet",
+		"route-control transport: lan or internet",
+	)
+	fs.StringVar(
+		&cfg.RouteTunnelListenAddr,
+		"route-tunnel-listen",
+		"",
+		"mesh B -> C route-tunnel TCP listen address; empty disables destination ingress",
+	)
+	fs.StringVar(
+		&cfg.RouteTunnelTransport,
+		"route-tunnel-transport",
+		"internet",
+		"route-tunnel transport: lan or internet",
+	)
+	fs.IntVar(
+		&cfg.RouteMaxConnections,
+		"route-max-connections",
+		defaultRouteMaxConnections,
+		"maximum concurrent accepted connections per routing listener",
+	)
+
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
-	if cfg.MaxConnections < 1 || cfg.MaxConnections > 1024 {
-		return serveConfig{}, errors.New("max-connections must be between 1 and 1024")
+
+	cfg.RouteControlListenAddr = strings.TrimSpace(
+		cfg.RouteControlListenAddr,
+	)
+	cfg.RouteTunnelListenAddr = strings.TrimSpace(
+		cfg.RouteTunnelListenAddr,
+	)
+
+	controlTransport, err := parseRoutingTransport(
+		cfg.RouteControlTransport,
+	)
+	if err != nil {
+		return serveConfig{}, fmt.Errorf(
+			"--route-control-transport: %w",
+			err,
+		)
 	}
-	if cfg.RelaySlots < 1 || cfg.RelaySlots > 32 {
-		return serveConfig{}, errors.New("relay-slots must be between 1 and 32")
+	cfg.RouteControlTransport = string(controlTransport)
+
+	tunnelTransport, err := parseRoutingTransport(
+		cfg.RouteTunnelTransport,
+	)
+	if err != nil {
+		return serveConfig{}, fmt.Errorf(
+			"--route-tunnel-transport: %w",
+			err,
+		)
 	}
-	if cfg.ListenAddr == "" && cfg.RelayAddr == "" && cfg.WebRelay == "" {
-		return serveConfig{}, errors.New("at least one of --listen, --relay, or --web-relay must be configured")
+	cfg.RouteTunnelTransport = string(tunnelTransport)
+
+	if cfg.MaxConnections < 1 ||
+		cfg.MaxConnections > 1024 {
+		return serveConfig{}, errors.New(
+			"max-connections must be between 1 and 1024",
+		)
 	}
+
+	if cfg.RelaySlots < 1 ||
+		cfg.RelaySlots > 32 {
+		return serveConfig{}, errors.New(
+			"relay-slots must be between 1 and 32",
+		)
+	}
+
+	if cfg.RouteMaxConnections < 1 ||
+		cfg.RouteMaxConnections > 1024 {
+		return serveConfig{}, errors.New(
+			"route-max-connections must be between 1 and 1024",
+		)
+	}
+
+	if cfg.ListenAddr == "" &&
+		cfg.RelayAddr == "" &&
+		cfg.WebRelay == "" &&
+		cfg.RouteControlListenAddr == "" &&
+		cfg.RouteTunnelListenAddr == "" {
+		return serveConfig{}, errors.New(
+			"at least one terminal, relay, or routing listener transport must be configured",
+		)
+	}
+
 	if cfg.Discover && cfg.ListenAddr == "" {
-		return serveConfig{}, errors.New("--discover requires a direct --listen address")
+		return serveConfig{}, errors.New(
+			"--discover requires a direct --listen address",
+		)
 	}
+
+	if strings.TrimSpace(cfg.AuthorizationURL) == "" {
+		cfg.AuthorizationURL = strings.TrimSpace(
+			cfg.WebRelay,
+		)
+	}
+
 	return cfg, nil
 }
 
@@ -307,88 +469,180 @@ func runServe(args []string) error {
 }
 
 func runAgent(ctx context.Context, cfg serveConfig) error {
-	id, err := identity.Ensure(cfg.StateDir, cfg.Name)
+	id, err := identity.Ensure(
+		cfg.StateDir,
+		cfg.Name,
+	)
 	if err != nil {
 		return err
 	}
-	store, err := trust.Open(filepath.Join(cfg.StateDir, "trusted-clients.json"))
-	if err != nil {
-		return err
-	}
-	server := &session.Server{Identity: id, Trust: store, StateDir: cfg.StateDir, Shell: cfg.Shell, Logger: slog.Default()}
 
-	fp, _ := identity.FingerprintPublicKey(id.PublicKey)
-	fmt.Printf("WeDecent agent %s (%s)\n", id.Name, id.ID)
-	fmt.Printf("Fingerprint: %s\n", fp)
+	store, err := trust.Open(
+		filepath.Join(
+			cfg.StateDir,
+			"trusted-clients.json",
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	var directAuthorizer session.DirectAuthorizer
+
+	if strings.TrimSpace(cfg.AuthorizationURL) != "" {
+		directAuthorizer = session.RelayDirectAuthorizer{
+			BaseURL:  cfg.AuthorizationURL,
+			Identity: id,
+		}
+	}
+
+	server := &session.Server{
+		Identity:         id,
+		Trust:            store,
+		StateDir:         cfg.StateDir,
+		Shell:            cfg.Shell,
+		Logger:           slog.Default(),
+		DirectAuthorizer: directAuthorizer,
+	}
+
+	// Routing authority/trust/replay state is not loaded unless an operator
+	// explicitly configures at least one routing listener.
+	routing, err := openAgentRoutingRuntime(
+		cfg,
+		id,
+		server,
+	)
+	if err != nil {
+		return err
+	}
+
+	// Bind all configured local sockets before any outbound relay workers are
+	// started. Startup therefore cannot report failure while leaving another
+	// local role partially active.
+	listeners, err := openAgentListeners(
+		cfg,
+		server,
+		routing,
+	)
+	if err != nil {
+		return err
+	}
+	defer listeners.close()
+
+	if cfg.ListenAddr != "" &&
+		directAuthorizer == nil {
+		slog.Warn(
+			"direct terminal authorization is unavailable; configure --authorization-url or --web-relay to enable direct terminal sessions",
+		)
+	}
+
+	fp, _ := identity.FingerprintPublicKey(
+		id.PublicKey,
+	)
+
+	fmt.Printf(
+		"WeDecent agent %s (%s)\n",
+		id.Name,
+		id.ID,
+	)
+	fmt.Printf(
+		"Fingerprint: %s\n",
+		fp,
+	)
+
+	listeners.printAddresses()
+
+	if cfg.Discover {
+		if listeners.direct == nil {
+			return errors.New(
+				"LAN discovery requires a direct TCP listener",
+			)
+		}
+
+		port, err := listenerPort(
+			listeners.direct.Addr(),
+		)
+		if err != nil {
+			return err
+		}
+
+		tcpAddr, ok := listeners.direct.Addr().(*net.TCPAddr)
+		if !ok {
+			return errors.New(
+				"LAN discovery requires a TCP listener address",
+			)
+		}
+
+		go func() {
+			if err := discovery.Advertise(
+				ctx,
+				id,
+				tcpAddr.IP,
+				port,
+			); err != nil &&
+				ctx.Err() == nil {
+				slog.Error(
+					"LAN discovery stopped",
+					"error",
+					err,
+				)
+			}
+		}()
+	}
 
 	if cfg.RelayAddr != "" {
-		relayOpts := transport.RelayOptions{CAFile: cfg.RelayCA, ServerName: cfg.RelayServerName, Timeout: 10 * time.Second}
-		fmt.Printf("Relay:       %s (%d outbound slots)\n", cfg.RelayAddr, cfg.RelaySlots)
+		relayOpts := transport.RelayOptions{
+			CAFile:     cfg.RelayCA,
+			ServerName: cfg.RelayServerName,
+			Timeout:    10 * time.Second,
+		}
+
+		fmt.Printf(
+			"Relay:         %s (%d outbound slots)\n",
+			cfg.RelayAddr,
+			cfg.RelaySlots,
+		)
+
 		for i := 0; i < cfg.RelaySlots; i++ {
-			go relayLoop(ctx, i+1, cfg.RelayAddr, relayOpts, id, server)
+			go relayLoop(
+				ctx,
+				i+1,
+				cfg.RelayAddr,
+				relayOpts,
+				id,
+				server,
+			)
 		}
 	}
 
 	if cfg.WebRelay != "" {
 		webOpts := transport.WebRelayOptions{
-			TicketSource:      relayauth.NewTicketSource(id),
+			TicketSource: relayauth.NewTicketSource(
+				id,
+			),
 			Timeout:           15 * time.Second,
 			KeepAliveInterval: 30 * time.Second,
 		}
-		fmt.Printf("Web relay:   %s (%d outbound WSS slots)\n", cfg.WebRelay, cfg.RelaySlots)
+
+		fmt.Printf(
+			"Web relay:     %s (%d outbound WSS slots)\n",
+			cfg.WebRelay,
+			cfg.RelaySlots,
+		)
+
 		for i := 0; i < cfg.RelaySlots; i++ {
-			go webRelayLoop(ctx, i+1, cfg.WebRelay, webOpts, id, server)
+			go webRelayLoop(
+				ctx,
+				i+1,
+				cfg.WebRelay,
+				webOpts,
+				id,
+				server,
+			)
 		}
 	}
 
-	if cfg.ListenAddr == "" {
-		<-ctx.Done()
-		return nil
-	}
-
-	ln, err := net.Listen("tcp", cfg.ListenAddr)
-	if err != nil {
-		return err
-	}
-	defer ln.Close()
-	go func() {
-		<-ctx.Done()
-		_ = ln.Close()
-	}()
-	fmt.Printf("Listening:   %s\n", ln.Addr())
-
-	if cfg.Discover {
-		port, err := listenerPort(ln.Addr())
-		if err != nil {
-			return err
-		}
-		go func() {
-			if err := discovery.Advertise(ctx, id, port); err != nil && ctx.Err() == nil {
-				slog.Error("LAN discovery stopped", "error", err)
-			}
-		}()
-	}
-
-	sem := make(chan struct{}, cfg.MaxConnections)
-	for {
-		conn, err := ln.Accept()
-		if err != nil {
-			if ctx.Err() != nil {
-				return nil
-			}
-			return err
-		}
-		select {
-		case sem <- struct{}{}:
-			go func() {
-				defer func() { <-sem }()
-				server.ServeConn(conn)
-			}()
-		default:
-			_ = conn.Close()
-			slog.Warn("connection limit reached", "remote", conn.RemoteAddr())
-		}
-	}
+	return listeners.serve(ctx)
 }
 
 func webRelayLoop(ctx context.Context, slot int, baseURL string, opts transport.WebRelayOptions, id *identity.Identity, server *session.Server) {

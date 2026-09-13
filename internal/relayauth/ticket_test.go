@@ -74,6 +74,19 @@ func TestAgentTicketMustBeSelfBound(t *testing.T) {
 	}
 }
 
+func TestAuthorizeTicketMustBeSelfBound(t *testing.T) {
+	id := testIdentity()
+	if _, err := Issue(id, "wd_4ksk5edkttwsxqx4", "authorize", 0, time.Now()); err == nil {
+		t.Fatal("expected cross-device authorization ticket to fail")
+	}
+	if _, err := Issue(id, id.ID, "authorize", 1, time.Now()); err == nil {
+		t.Fatal("expected authorization ticket with slot to fail")
+	}
+	if _, err := Issue(id, id.ID, "authorize", 0, time.Now()); err != nil {
+		t.Fatalf("expected self-bound authorization ticket to succeed: %v", err)
+	}
+}
+
 func TestClientTicketRejectsAgentSlot(t *testing.T) {
 	id := testIdentity()
 	if _, err := Issue(id, "wd_4ksk5edkttwsxqx4", "client", 1, time.Now()); err == nil {

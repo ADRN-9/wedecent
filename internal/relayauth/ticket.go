@@ -86,6 +86,13 @@ func issue(id *identity.Identity, targetDeviceID, role string, slot int, now tim
 		if slot != 0 {
 			return "", errors.New("client relay ticket must not contain an agent slot")
 		}
+	case "authorize":
+		if targetDeviceID != id.ID {
+			return "", errors.New("authorization ticket must target its own device ID")
+		}
+		if slot != 0 {
+			return "", errors.New("authorization ticket must not contain an agent slot")
+		}
 	default:
 		return "", errors.New("invalid relay ticket role")
 	}
