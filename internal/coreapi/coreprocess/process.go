@@ -33,6 +33,12 @@ func Open(cfg Config) (*ipc.Server, error) {
 	if stateDir == "" {
 		return nil, errors.New("core process: client state directory is required")
 	}
+	supabaseURL := strings.TrimSpace(cfg.SupabaseURL)
+	publishableKey := strings.TrimSpace(cfg.PublishableKey)
+	if (supabaseURL == "") != (publishableKey == "") {
+		return nil, errors.New("core process: Supabase URL and publishable key must be configured together")
+	}
+
 	id, err := identity.Load(stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("core process: load identity: %w", err)
@@ -55,11 +61,6 @@ func Open(cfg Config) (*ipc.Server, error) {
 		return nil, fmt.Errorf("core process: compose read service: %w", err)
 	}
 
-	supabaseURL := strings.TrimSpace(cfg.SupabaseURL)
-	publishableKey := strings.TrimSpace(cfg.PublishableKey)
-	if (supabaseURL == "") != (publishableKey == "") {
-		return nil, errors.New("core process: Supabase URL and publishable key must be configured together")
-	}
 	if supabaseURL == "" && session != nil {
 		supabaseURL = session.SupabaseURL
 		publishableKey = session.PublishableKey
