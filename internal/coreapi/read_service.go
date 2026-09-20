@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 
 	"wedecent.com/wedecent/internal/account"
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
@@ -17,10 +18,12 @@ var ErrDeviceNotFound = errors.New("device not found")
 type ReadService struct {
 	deviceID   string
 	deviceName string
-	signedIn   bool
-	userID     string
-	email      string
 	devices    *trust.Store
+
+	accountMu sync.RWMutex
+	signedIn  bool
+	userID    string
+	email     string
 }
 
 func NewReadService(id *identity.Identity, session *account.Session, devices *trust.Store) (*ReadService, error) {
@@ -39,14 +42,8 @@ func NewReadService(id *identity.Identity, session *account.Session, devices *tr
 		deviceName: id.Name,
 		devices:    devices,
 	}
-	if session != nil {
-		userID := strings.TrimSpace(session.UserID)
-		if userID == "" {
-			return nil, errors.New("account session user ID is required")
-		}
-		s.signedIn = true
-		s.userID = userID
-		s.email = strings.TrimSpace(session.Email)
+	if err := s.SetAccountSession(session); err != nil {
+		return nil, err
 	}
 	return s, nil
 }
@@ -56,15 +53,40 @@ var (
 	_ v1.DeviceService = (*ReadService)(nil)
 )
 
+// SetAccountSession updates only the non-secret account identity exposed by
+// GetStatus. Tokens are never retained by ReadService.
+func (s *ReadService) SetAccountSession(session *account.Session) error {
+	var signedIn bool
+	var userID, email string
+	if session != nil {
+		userID = strings.TrimSpace(session.UserID)
+		if userID == "" {
+			return errors.New("account session user ID is required")
+		}
+		signedIn = true
+		email = strings.TrimSpace(session.Email)
+	}
+
+	s.accountMu.Lock()
+	s.signedIn = signedIn
+	s.userID = userID
+	s.email = email
+	s.accountMu.Unlock()
+	return nil
+}
+
 func (s *ReadService) GetStatus(ctx context.Context) (v1.Status, error) {
 	if err := ctx.Err(); err != nil {
 		return v1.Status{}, err
 	}
+	s.accountMu.RLock()
+	signedIn, userID, email := s.signedIn, s.userID, s.email
+	s.accountMu.RUnlock()
 	return v1.Status{
 		APIVersion: v1.Version,
-		SignedIn:   s.signedIn,
-		UserID:     s.userID,
-		Email:      s.email,
+		SignedIn:   signedIn,
+		UserID:     userID,
+		Email:      email,
 		DeviceID:   s.deviceID,
 		DeviceName: s.deviceName,
 	}, nil
