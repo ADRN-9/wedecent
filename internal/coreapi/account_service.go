@@ -16,12 +16,12 @@ var (
 	ErrAccountOperation     = errors.New("account operation failed")
 )
 
-type accountLoginClient interface {
+type AccountLoginClient interface {
 	Login(context.Context, string, string, string, string) (*account.Session, error)
 }
 
 type AccountServiceConfig struct {
-	Client         accountLoginClient
+	Client         AccountLoginClient
 	SupabaseURL    string
 	PublishableKey string
 	SessionPath    string
@@ -31,7 +31,7 @@ type AccountServiceConfig struct {
 
 type AccountService struct {
 	mu             sync.Mutex
-	client         accountLoginClient
+	client         AccountLoginClient
 	supabaseURL    string
 	publishableKey string
 	sessionPath    string
