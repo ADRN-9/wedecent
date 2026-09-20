@@ -61,8 +61,7 @@ func TestOpenReadOnlyMissingIdentityFailsWithoutCreatingIt(t *testing.T) {
 }
 
 func TestRunLocalRejectsNilServerBeforeListening(t *testing.T) {
-	err := RunLocal(context.Background(), nil)
-	if err == nil || !errors.Is(err, errors.New("core process: IPC server is required")) && err.Error() != "core process: IPC server is required" {
-		t.Fatalf("RunLocal(nil) error = %v", err)
+	if err := RunLocal(context.Background(), nil); !errors.Is(err, ErrServerRequired) {
+		t.Fatalf("RunLocal(nil) error = %v, want ErrServerRequired", err)
 	}
 }
