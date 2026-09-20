@@ -4,7 +4,7 @@
 
 This document defines the v0.4.4 Local Core API.
 
-The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, a read-only core service for status and trusted-device inspection, a transport-neutral bounded IPC protocol for those read operations, protected per-user local IPC endpoint factories, and a bounded server lifecycle around those endpoints. It does not install or autostart a daemon, expose a network port, or change the existing `wd` connection path.
+The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, a read-only core service for status and trusted-device inspection, a transport-neutral bounded IPC protocol for those read operations, protected per-user local IPC endpoint factories, a bounded server lifecycle around those endpoints, and a manually-started `wd-core` process that composes them. It does not install or autostart a daemon, expose a network port, or change the existing `wd` connection path.
 
 ## Purpose
 
@@ -85,6 +85,18 @@ The lifecycle is intentionally bounded:
 
 This layer remains reusable library code. It does not install, autostart, or background a Local Core process, and it does not add credential-bearing methods.
 
+## Read-only Local Core process
+
+`cmd/wd-core` is the first manually-started per-user Local Core process. It composes the existing read-only service, protected `localipc` endpoint, IPC dispatcher, and `localserver` lifecycle.
+
+Startup is intentionally non-creating for identity state. `identity.Load` requires an existing key and certificate, rejects symlinked identity files, verifies that the certificate and private key match, and does not create or renew identity material. Starting the UI-facing core therefore cannot silently create or rotate a device identity.
+
+The process may read an existing account session to report non-secret account status, but it does not refresh, rewrite, log, or return access/refresh tokens. A missing account session is treated as signed out. The trusted-device store is opened from the existing client state and is only exposed through read operations in this slice.
+
+`wd-core` uses `localserver.DefaultConfig`, so connections inherit the shared concurrency bound, request timeout, panic isolation, active-connection shutdown, and one-request-per-connection behavior. Interrupt cancellation closes the protected listener and drains active requests through the shared lifecycle.
+
+This slice still exposes read-only methods only. It does not install or autostart `wd-core`, and credential-bearing methods remain disabled.
+
 ## Security boundary
 
 The Local Core API must never return:
@@ -99,7 +111,7 @@ The Local Core API must never return:
 
 The API may return non-secret identifiers such as device IDs, public-key fingerprints, route hops, selected path type, and account email/user ID.
 
-Credential-bearing sign-in is deliberately excluded until the protected platform IPC adapter is exercised by a real per-user Local Core process. Before adding it, the process boundary must also define secret redaction, logging rules, and shutdown behavior.
+Credential-bearing sign-in is deliberately excluded until its secret-handling behavior is explicitly tested over the protected process boundary. Before adding it, the API must define password lifetime, token persistence, redaction, logging behavior, cancellation, and failure semantics.
 
 ## Connection semantics
 
@@ -120,10 +132,10 @@ The API exposes a stable copy of router policy fields rather than leaking intern
 
 ## Next slices
 
-1. add a small manually-started per-user `wd-core` executable that composes the existing identity/account/trust state, protected local endpoint, bounded IPC server, and graceful signal shutdown;
-2. add credential-bearing sign-in/out with explicit secret-redaction and logging tests;
-3. add transport and route-status readers backed by the existing transport/mesh state;
-4. implement connection lifecycle behind the existing session and route-authorization code paths;
+1. add credential-bearing sign-in/out with explicit secret-redaction, password-lifetime, persistence, cancellation, and failure tests;
+2. add transport and route-status readers backed by the existing transport/mesh state;
+3. implement connection lifecycle behind the existing session and route-authorization code paths;
+4. add router policy/statistics service implementations;
 5. wire the Windows GUI prototype to the same `v1` service contract.
 
 The existing CLI and staging-tested routed-terminal path remain the compatibility baseline throughout this work.
