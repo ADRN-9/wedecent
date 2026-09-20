@@ -1,0 +1,137 @@
+// Package v1 defines the stable, transport-neutral contract exposed by the
+// WeDecent core to local user interfaces.
+package v1
+
+import (
+	"context"
+	"time"
+)
+
+const Version = "v1"
+
+type ConnectionPath string
+
+const (
+	ConnectionPathDirect ConnectionPath = "direct"
+	ConnectionPathLAN    ConnectionPath = "lan"
+	ConnectionPathRouted ConnectionPath = "routed"
+	ConnectionPathRelay  ConnectionPath = "relay"
+)
+
+type ConnectionState string
+
+const (
+	ConnectionStateConnecting ConnectionState = "connecting"
+	ConnectionStateConnected  ConnectionState = "connected"
+	ConnectionStateClosed     ConnectionState = "closed"
+)
+
+type TransportName string
+
+const (
+	TransportLAN       TransportName = "lan"
+	TransportInternet  TransportName = "internet"
+	TransportBluetooth TransportName = "bluetooth"
+)
+
+type Status struct {
+	APIVersion string `json:"api_version"`
+	SignedIn   bool   `json:"signed_in"`
+	UserID     string `json:"user_id,omitempty"`
+	Email      string `json:"email,omitempty"`
+	DeviceID   string `json:"device_id"`
+	DeviceName string `json:"device_name"`
+}
+
+type Device struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Fingerprint string `json:"fingerprint"`
+	Endpoint    string `json:"endpoint,omitempty"`
+}
+
+type TransportStatus struct {
+	Name      TransportName `json:"name"`
+	Available bool          `json:"available"`
+	Detail    string        `json:"detail,omitempty"`
+}
+
+type Connection struct {
+	ID        string          `json:"id"`
+	DeviceID  string          `json:"device_id"`
+	State     ConnectionState `json:"state"`
+	Path      ConnectionPath  `json:"path"`
+	StartedAt time.Time       `json:"started_at"`
+}
+
+type RouteHop struct {
+	From      string        `json:"from"`
+	To        string        `json:"to"`
+	Transport TransportName `json:"transport"`
+	Cost      uint64        `json:"cost"`
+}
+
+type RouteStatus struct {
+	ConnectionID  string         `json:"connection_id"`
+	DestinationID string         `json:"destination_id"`
+	Path          ConnectionPath `json:"path"`
+	RouterID      string         `json:"router_id,omitempty"`
+	Hops          []RouteHop     `json:"hops,omitempty"`
+	ExpiresAt     *time.Time     `json:"expires_at,omitempty"`
+}
+
+type RouterPolicy struct {
+	Enabled                   bool  `json:"enabled"`
+	TrustedDevicesOnly        bool  `json:"trusted_devices_only"`
+	OrganizationOnly          bool  `json:"organization_only"`
+	PublicRouting             bool  `json:"public_routing"`
+	MaxSessions               int   `json:"max_sessions"`
+	MaxBandwidthBytesPerSec   int64 `json:"max_bandwidth_bytes_per_sec"`
+	AllowOnBattery            bool  `json:"allow_on_battery"`
+	AllowMetered              bool  `json:"allow_metered"`
+	LANOnly                   bool  `json:"lan_only"`
+}
+
+type RouterStats struct {
+	ActiveSessions    int    `json:"active_sessions"`
+	BytesForwarded    uint64 `json:"bytes_forwarded"`
+	SessionsForwarded uint64 `json:"sessions_forwarded"`
+}
+
+type GetDeviceRequest struct {
+	DeviceID string `json:"device_id"`
+}
+
+type ConnectRequest struct {
+	DeviceID string `json:"device_id"`
+}
+
+type DisconnectRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
+type GetRouteStatusRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
+type SetRouterPolicyRequest struct {
+	Policy RouterPolicy `json:"policy"`
+}
+
+// Service is the UI-facing boundary of the local core. Implementations own
+// identity, authorization, route selection, transport choice, and session crypto.
+// Credential-bearing account operations are intentionally not part of this first
+// contract slice; they require a protected local transport with explicit
+// secret-handling semantics.
+type Service interface {
+	GetStatus(context.Context) (Status, error)
+	ListDevices(context.Context) ([]Device, error)
+	GetDevice(context.Context, GetDeviceRequest) (Device, error)
+	Connect(context.Context, ConnectRequest) (Connection, error)
+	Disconnect(context.Context, DisconnectRequest) error
+	GetTransportStatus(context.Context) ([]TransportStatus, error)
+	GetRouteStatus(context.Context, GetRouteStatusRequest) (RouteStatus, error)
+	GetRouterPolicy(context.Context) (RouterPolicy, error)
+	SetRouterPolicy(context.Context, SetRouterPolicyRequest) (RouterPolicy, error)
+	GetRouterStats(context.Context) (RouterStats, error)
+}
