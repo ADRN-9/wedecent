@@ -57,13 +57,12 @@ func Open(cfg Config) (*ipc.Server, error) {
 
 	supabaseURL := strings.TrimSpace(cfg.SupabaseURL)
 	publishableKey := strings.TrimSpace(cfg.PublishableKey)
-	if session != nil {
-		if supabaseURL == "" {
-			supabaseURL = session.SupabaseURL
-		}
-		if publishableKey == "" {
-			publishableKey = session.PublishableKey
-		}
+	if (supabaseURL == "") != (publishableKey == "") {
+		return nil, errors.New("core process: Supabase URL and publishable key must be configured together")
+	}
+	if supabaseURL == "" && session != nil {
+		supabaseURL = session.SupabaseURL
+		publishableKey = session.PublishableKey
 	}
 	accountClient := cfg.AccountClient
 	if accountClient == nil {
