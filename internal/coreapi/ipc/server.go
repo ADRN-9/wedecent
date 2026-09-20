@@ -11,11 +11,11 @@ import (
 )
 
 const (
-	ErrorInvalidParams    = "invalid_params"
-	ErrorMethodNotFound   = "method_not_found"
-	ErrorDeviceNotFound   = "device_not_found"
-	ErrorRequestCanceled  = "request_canceled"
-	ErrorInternal         = "internal_error"
+	ErrorInvalidParams   = "invalid_params"
+	ErrorMethodNotFound  = "method_not_found"
+	ErrorDeviceNotFound  = "device_not_found"
+	ErrorRequestCanceled = "request_canceled"
+	ErrorInternal        = "internal_error"
 )
 
 type Server struct {
@@ -46,7 +46,18 @@ func (s *Server) ServeOne(ctx context.Context, rw io.ReadWriter) error {
 		return err
 	}
 	response := s.handle(ctx, req)
-	return WriteResponse(rw, response)
+	if err := WriteResponse(rw, response); err != nil {
+		if !errors.Is(err, ErrFrameTooLarge) {
+			return err
+		}
+		fallback := errorResponse(
+			Response{Version: v1.Version, ID: req.ID},
+			ErrorInternal,
+			"internal error",
+		)
+		return WriteResponse(rw, fallback)
+	}
+	return nil
 }
 
 func (s *Server) handle(ctx context.Context, req Request) Response {
