@@ -48,8 +48,12 @@ func TestReadRequestRejectsOversizedFrameBeforeReadingPayload(t *testing.T) {
 func TestReadRequestRejectsUnknownAndTrailingJSON(t *testing.T) {
 	for _, payload := range [][]byte{
 		[]byte(`{"version":"v1","id":"1","method":"status.get","unknown":true}`),
-		[]byte(`{"version":"v1","id":"1","method":"status.get"}{}`),
+		[]byte(`{"version":"v1","id":"1","method":"status.get"} {}`),
 	} {
+		// Convert the source literals to valid JSON. The backslash-free payloads
+		// ensure these cases fail for the intended unknown/trailing-value rules,
+		// not because the first JSON token is malformed.
+		payload = bytes.ReplaceAll(payload, []byte(`\"`), []byte(`"`))
 		_, err := ReadRequest(bytes.NewReader(frame(payload)))
 		if !errors.Is(err, ErrInvalidMessage) {
 			t.Fatalf("payload %q error = %v", payload, err)
@@ -71,6 +75,7 @@ func TestRequestIdentifiersRejectControlCharacters(t *testing.T) {
 
 func TestResponseRequiresExactlyOneResultOrError(t *testing.T) {
 	result := json.RawMessage(`{"ok":true}`)
+	result = bytes.ReplaceAll(result, []byte(`\"`), []byte(`"`))
 	cases := []Response{
 		{Version: v1.Version, ID: "1"},
 		{
