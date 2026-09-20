@@ -94,6 +94,9 @@ func (s *AccountService) SignIn(ctx context.Context, req v1.SignInRequest) (v1.S
 	if err != nil {
 		return v1.Status{}, fmt.Errorf("%w: login failed", ErrAccountOperation)
 	}
+	if session == nil || strings.TrimSpace(session.UserID) == "" {
+		return v1.Status{}, fmt.Errorf("%w: invalid login session", ErrAccountOperation)
+	}
 	if err := ctx.Err(); err != nil {
 		return v1.Status{}, err
 	}
