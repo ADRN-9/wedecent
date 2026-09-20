@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,12 +34,8 @@ func (f *fakeProcessAccountClient) EnsureFresh(_ context.Context, session *accou
 
 func (f *fakeProcessAccountClient) Logout(context.Context, *account.Session) error { return nil }
 
-func TestOpenWiresAccountSignInWithoutExposingTokens(t *testing.T) {
-	dir := t.TempDir()
-	if _, err := identity.Ensure(dir, "core-test"); err != nil {
-		t.Fatal(err)
-	}
-	fake := &fakeProcessAccountClient{session: &account.Session{
+func processAccountSession() *account.Session {
+	return &account.Session{
 		Version:        account.SessionVersion,
 		SupabaseURL:    "https://example.supabase.co",
 		PublishableKey: "publishable-test-key",
@@ -47,7 +44,15 @@ func TestOpenWiresAccountSignInWithoutExposingTokens(t *testing.T) {
 		AccessToken:    "access-token-secret",
 		RefreshToken:   "refresh-token-secret",
 		ExpiresAt:      time.Now().Add(time.Hour).Unix(),
-	}}
+	}
+}
+
+func TestOpenWiresAccountSignInWithoutExposingTokens(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := identity.Ensure(dir, "core-test"); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeProcessAccountClient{session: processAccountSession()}
 	server, err := Open(Config{
 		ClientStateDir: dir,
 		SupabaseURL:    "https://example.supabase.co",
@@ -103,20 +108,29 @@ func TestOpenWiresAccountSignInWithoutExposingTokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(encoded)
-	if containsAny(text, "access-token-secret", "refresh-token-secret", "test-password") {
-		t.Fatalf("IPC response leaked credential material: %s", text)
+	for _, secret := range []string{"access-token-secret", "refresh-token-secret", "test-password"} {
+		if strings.Contains(text, secret) {
+			t.Fatalf("IPC response leaked credential material: %s", text)
+		}
 	}
 }
 
-func containsAny(value string, needles ...string) bool {
-	for _, needle := range needles {
-		if len(needle) > 0 && len(value) >= len(needle) {
-			for i := 0; i+len(needle) <= len(value); i++ {
-				if value[i:i+len(needle)] == needle {
-					return true
-				}
-			}
+func TestOpenRejectsPartialSupabaseConfiguration(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := identity.Ensure(dir, "core-test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := account.Save(account.SessionPath(dir), processAccountSession()); err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []Config{
+		{ClientStateDir: dir, SupabaseURL: "https://other.supabase.co"},
+		{ClientStateDir: dir, PublishableKey: "other-publishable-key"},
+	}
+	for _, cfg := range cases {
+		if _, err := Open(cfg); err == nil || !strings.Contains(err.Error(), "configured together") {
+			t.Fatalf("Open(%+v) error = %v, want paired-configuration rejection", cfg, err)
 		}
 	}
-	return false
 }
