@@ -22,7 +22,7 @@ type Config struct {
 	ClientStateDir string
 	SupabaseURL    string
 	PublishableKey string
-	AccountClient  coreapi.AccountLoginClient
+	AccountClient  coreapi.AccountClient
 }
 
 // Open composes the Local Core API from existing client state. Identity state is
@@ -65,12 +65,12 @@ func Open(cfg Config) (*ipc.Server, error) {
 			publishableKey = session.PublishableKey
 		}
 	}
-	loginClient := cfg.AccountClient
-	if loginClient == nil {
-		loginClient = account.Client{}
+	accountClient := cfg.AccountClient
+	if accountClient == nil {
+		accountClient = account.Client{}
 	}
 	accountService, err := coreapi.NewAccountService(coreapi.AccountServiceConfig{
-		Client:         loginClient,
+		Client:         accountClient,
 		SupabaseURL:    supabaseURL,
 		PublishableKey: publishableKey,
 		SessionPath:    sessionPath,
