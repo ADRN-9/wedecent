@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"wedecent.com/wedecent/internal/account"
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
@@ -16,12 +17,14 @@ var (
 	ErrAccountOperation     = errors.New("account operation failed")
 )
 
-type AccountLoginClient interface {
+type AccountClient interface {
 	Login(context.Context, string, string, string, string) (*account.Session, error)
+	EnsureFresh(context.Context, *account.Session, time.Duration) (*account.Session, bool, error)
+	Logout(context.Context, *account.Session) error
 }
 
 type AccountServiceConfig struct {
-	Client         AccountLoginClient
+	Client         AccountClient
 	SupabaseURL    string
 	PublishableKey string
 	SessionPath    string
@@ -31,7 +34,7 @@ type AccountServiceConfig struct {
 
 type AccountService struct {
 	mu             sync.Mutex
-	client         AccountLoginClient
+	client         AccountClient
 	supabaseURL    string
 	publishableKey string
 	sessionPath    string
@@ -89,17 +92,17 @@ func (s *AccountService) SignIn(ctx context.Context, req v1.SignInRequest) (v1.S
 	session, err := s.client.Login(ctx, s.supabaseURL, s.publishableKey, email, password)
 	password = ""
 	if err != nil {
-		return v1.Status{}, fmt.Errorf("%w: %v", ErrAccountOperation, err)
+		return v1.Status{}, fmt.Errorf("%w: login failed", ErrAccountOperation)
 	}
 	if err := ctx.Err(); err != nil {
 		return v1.Status{}, err
 	}
 	if err := account.Save(s.sessionPath, session); err != nil {
-		return v1.Status{}, fmt.Errorf("%w: persist session: %v", ErrAccountOperation, err)
+		return v1.Status{}, fmt.Errorf("%w: persist session", ErrAccountOperation)
 	}
 	if err := s.status.SetAccountSession(session); err != nil {
 		_ = account.Delete(s.sessionPath)
-		return v1.Status{}, fmt.Errorf("%w: publish account status: %v", ErrAccountOperation, err)
+		return v1.Status{}, fmt.Errorf("%w: publish account status", ErrAccountOperation)
 	}
 	s.session = session
 	return s.status.GetStatus(ctx)
@@ -114,11 +117,22 @@ func (s *AccountService) SignOut(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+
+	// Remote logout is best-effort, matching the CLI: losing network access must
+	// not prevent removal of the protected local session. The remote error is not
+	// returned because local sign-out is the user-visible security boundary here.
+	if s.session != nil {
+		fresh, _, err := s.client.EnsureFresh(ctx, s.session, 0)
+		if err == nil {
+			_ = s.client.Logout(ctx, fresh)
+		}
+	}
+
 	if err := account.Delete(s.sessionPath); err != nil {
-		return fmt.Errorf("%w: delete session: %v", ErrAccountOperation, err)
+		return fmt.Errorf("%w: delete session", ErrAccountOperation)
 	}
 	if err := s.status.SetAccountSession(nil); err != nil {
-		return fmt.Errorf("%w: clear account status: %v", ErrAccountOperation, err)
+		return fmt.Errorf("%w: clear account status", ErrAccountOperation)
 	}
 	s.session = nil
 	return nil
