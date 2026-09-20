@@ -44,6 +44,7 @@ func ReadRequest(r io.Reader) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
+	defer wipe(payload)
 
 	var req Request
 	if err := decodeStrict(payload, &req); err != nil {
