@@ -32,7 +32,7 @@ printf 'WEDECENT_BRANCH=%s\n' "$branch"
 printf 'WEDECENT_HEAD=%s\n' "$head"
 printf 'WEDECENT_DIRTY_ENTRIES=%s\n' "$dirty"
 
-focused_regex='Test(AutomaticRouteAuthorization|BuildRoutedConnectRequest|OpenRoutedSourceRouterTrust|BuildRoutedDialer|PrepareRoutedDialer|RunConnectRejects|RunConnectRouted)'
+focused_regex='Test(AutomaticRouteAuthorization|BuildRoutedConnectRequest|OpenRoutedSourceRouterTrust|BuildRoutedDialer|PrepareRoutedDialer|RunConnectRejects|RunConnectRouted|RouteTrust)'
 
 run_fast() {
   printf '\n== Focused route-capability-client tests ==\n'
