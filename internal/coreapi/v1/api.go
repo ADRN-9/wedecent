@@ -118,20 +118,44 @@ type SetRouterPolicyRequest struct {
 	Policy RouterPolicy `json:"policy"`
 }
 
+type StatusService interface {
+	GetStatus(context.Context) (Status, error)
+}
+
+type DeviceService interface {
+	ListDevices(context.Context) ([]Device, error)
+	GetDevice(context.Context, GetDeviceRequest) (Device, error)
+}
+
+type ConnectionService interface {
+	Connect(context.Context, ConnectRequest) (Connection, error)
+	Disconnect(context.Context, DisconnectRequest) error
+}
+
+type TransportService interface {
+	GetTransportStatus(context.Context) ([]TransportStatus, error)
+}
+
+type RouteService interface {
+	GetRouteStatus(context.Context, GetRouteStatusRequest) (RouteStatus, error)
+}
+
+type RouterService interface {
+	GetRouterPolicy(context.Context) (RouterPolicy, error)
+	SetRouterPolicy(context.Context, SetRouterPolicyRequest) (RouterPolicy, error)
+	GetRouterStats(context.Context) (RouterStats, error)
+}
+
 // Service is the UI-facing boundary of the local core. Implementations own
 // identity, authorization, route selection, transport choice, and session crypto.
 // Credential-bearing account operations are intentionally not part of this first
 // contract slice; they require a protected local transport with explicit
 // secret-handling semantics.
 type Service interface {
-	GetStatus(context.Context) (Status, error)
-	ListDevices(context.Context) ([]Device, error)
-	GetDevice(context.Context, GetDeviceRequest) (Device, error)
-	Connect(context.Context, ConnectRequest) (Connection, error)
-	Disconnect(context.Context, DisconnectRequest) error
-	GetTransportStatus(context.Context) ([]TransportStatus, error)
-	GetRouteStatus(context.Context, GetRouteStatusRequest) (RouteStatus, error)
-	GetRouterPolicy(context.Context) (RouterPolicy, error)
-	SetRouterPolicy(context.Context, SetRouterPolicyRequest) (RouterPolicy, error)
-	GetRouterStats(context.Context) (RouterStats, error)
+	StatusService
+	DeviceService
+	ConnectionService
+	TransportService
+	RouteService
+	RouterService
 }
