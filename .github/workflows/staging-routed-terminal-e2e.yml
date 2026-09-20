@@ -53,14 +53,35 @@ jobs:
             fi
           done
 
-          if ! jq -e --arg kid "$expected_kid" '
-            .version == 1 and
-            .key_id == $kid and
-            (.public_key | type == "string" and length > 0)
-          ' <<<"$WEDECENT_STAGING_ROUTE_AUTHORITY_JSON" >/dev/null; then
-            echo 'staging route authority JSON is invalid or has the wrong key id' >&2
+          if ! command -v python3 >/dev/null 2>&1; then
+            echo 'python3 is required on the self-hosted staging runner' >&2
             exit 1
           fi
+
+          EXPECTED_KID="$expected_kid" python3 - <<'PY'
+          import json
+          import os
+          import sys
+
+          try:
+              authority = json.loads(os.environ["WEDECENT_STAGING_ROUTE_AUTHORITY_JSON"])
+          except (KeyError, json.JSONDecodeError):
+              print("staging route authority JSON is invalid", file=sys.stderr)
+              raise SystemExit(1)
+
+          valid = (
+              authority.get("version") == 1
+              and authority.get("key_id") == os.environ["EXPECTED_KID"]
+              and isinstance(authority.get("public_key"), str)
+              and bool(authority["public_key"].strip())
+          )
+          if not valid:
+              print(
+                  "staging route authority JSON is invalid or has the wrong key id",
+                  file=sys.stderr,
+              )
+              raise SystemExit(1)
+          PY
 
           echo 'WEDECENT_STAGING_ROUTED_TERMINAL_TARGET_GUARD_OK'
 
