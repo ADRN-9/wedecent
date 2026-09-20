@@ -71,6 +71,13 @@ func TestUnixListenDialRoundTripAndPermissions(t *testing.T) {
 	}
 }
 
+func TestUnixEndpointRejectsRelativeCoreHome(t *testing.T) {
+	t.Setenv("WEDECENT_HOME", "relative-state")
+	if _, err := Endpoint(); !errors.Is(err, ErrUnsafeEndpoint) {
+		t.Fatalf("Endpoint() error = %v, want ErrUnsafeEndpoint", err)
+	}
+}
+
 func TestUnixListenRejectsUnsafeExistingEndpoint(t *testing.T) {
 	base := t.TempDir()
 	t.Setenv("WEDECENT_HOME", base)
