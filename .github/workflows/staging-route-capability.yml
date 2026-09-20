@@ -1,0 +1,205 @@
+name: Staging Route Capability
+
+on:
+  workflow_dispatch:
+    inputs:
+      first_transport:
+        description: Source-to-router transport
+        required: true
+        default: internet
+        type: choice
+        options:
+          - internet
+          - lan
+      second_transport:
+        description: Router-to-destination transport
+        required: true
+        default: internet
+        type: choice
+        options:
+          - internet
+          - lan
+      first_cost:
+        description: Source-to-router route cost
+        required: true
+        default: '10'
+        type: string
+      second_cost:
+        description: Router-to-destination route cost
+        required: true
+        default: '20'
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  staging-route-capability:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: wedecent-staging
+    env:
+      WEDECENT_STAGING_SUPABASE_URL: ${{ secrets.WEDECENT_STAGING_SUPABASE_URL }}
+      WEDECENT_STAGING_PUBLISHABLE_KEY: ${{ secrets.WEDECENT_STAGING_PUBLISHABLE_KEY }}
+      WEDECENT_STAGING_ACCOUNT_EMAIL: ${{ secrets.WEDECENT_STAGING_ACCOUNT_EMAIL }}
+      WEDECENT_STAGING_ACCOUNT_PASSWORD: ${{ secrets.WEDECENT_STAGING_ACCOUNT_PASSWORD }}
+      WEDECENT_STAGING_SOURCE_DEVICE_ID: ${{ secrets.WEDECENT_STAGING_SOURCE_DEVICE_ID }}
+      WEDECENT_STAGING_ROUTER_DEVICE_ID: ${{ secrets.WEDECENT_STAGING_ROUTER_DEVICE_ID }}
+      WEDECENT_STAGING_DESTINATION_DEVICE_ID: ${{ secrets.WEDECENT_STAGING_DESTINATION_DEVICE_ID }}
+      FIRST_TRANSPORT: ${{ inputs.first_transport }}
+      SECOND_TRANSPORT: ${{ inputs.second_transport }}
+      FIRST_COST: ${{ inputs.first_cost }}
+      SECOND_COST: ${{ inputs.second_cost }}
+    steps:
+      - name: Refuse non-staging targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_staging='https://kefwiuqipnkbcqpxwqha.supabase.co'
+          production='https://hopraknkfzxpdijhcjzv.supabase.co'
+
+          if [[ -z "${WEDECENT_STAGING_SUPABASE_URL:-}" ]]; then
+            echo 'staging Supabase URL secret is not configured' >&2
+            exit 1
+          fi
+          if [[ "$WEDECENT_STAGING_SUPABASE_URL" == "$production" ]]; then
+            echo 'refusing production Supabase project' >&2
+            exit 1
+          fi
+          if [[ "$WEDECENT_STAGING_SUPABASE_URL" != "$expected_staging" ]]; then
+            echo 'refusing unknown Supabase project; expected WeDecent Staging' >&2
+            exit 1
+          fi
+
+          for name in \
+            WEDECENT_STAGING_PUBLISHABLE_KEY \
+            WEDECENT_STAGING_ACCOUNT_EMAIL \
+            WEDECENT_STAGING_ACCOUNT_PASSWORD \
+            WEDECENT_STAGING_SOURCE_DEVICE_ID \
+            WEDECENT_STAGING_ROUTER_DEVICE_ID \
+            WEDECENT_STAGING_DESTINATION_DEVICE_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "$name is not configured" >&2
+              exit 1
+            fi
+          done
+
+          device_id_re='^wd_[a-z2-7]{16}$'
+          for id in \
+            "$WEDECENT_STAGING_SOURCE_DEVICE_ID" \
+            "$WEDECENT_STAGING_ROUTER_DEVICE_ID" \
+            "$WEDECENT_STAGING_DESTINATION_DEVICE_ID"; do
+            if [[ ! "$id" =~ $device_id_re ]]; then
+              echo 'invalid staging device ID configuration' >&2
+              exit 1
+            fi
+          done
+          if [[ "$WEDECENT_STAGING_SOURCE_DEVICE_ID" == "$WEDECENT_STAGING_ROUTER_DEVICE_ID" || \
+                "$WEDECENT_STAGING_SOURCE_DEVICE_ID" == "$WEDECENT_STAGING_DESTINATION_DEVICE_ID" || \
+                "$WEDECENT_STAGING_ROUTER_DEVICE_ID" == "$WEDECENT_STAGING_DESTINATION_DEVICE_ID" ]]; then
+            echo 'staging source, router, and destination must differ' >&2
+            exit 1
+          fi
+
+          cost_re='^[0-9]+$'
+          for cost in "$FIRST_COST" "$SECOND_COST"; do
+            if [[ ! "$cost" =~ $cost_re ]] || (( 10#$cost > 1000000000 )); then
+              echo 'route cost must be an integer from 0 through 1000000000' >&2
+              exit 1
+            fi
+          done
+
+          echo 'WEDECENT_STAGING_TARGET_GUARD_OK'
+
+      - name: Issue and validate staging route capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          work="$(mktemp -d)"
+          trap 'rm -rf "$work"' EXIT
+
+          login_body="$(jq -nc \
+            --arg email "$WEDECENT_STAGING_ACCOUNT_EMAIL" \
+            --arg password "$WEDECENT_STAGING_ACCOUNT_PASSWORD" \
+            '{email:$email,password:$password}')"
+
+          login_status="$(curl --silent --show-error \
+            --output "$work/login.json" \
+            --write-out '%{http_code}' \
+            --request POST \
+            "$WEDECENT_STAGING_SUPABASE_URL/auth/v1/token?grant_type=password" \
+            --header "apikey: $WEDECENT_STAGING_PUBLISHABLE_KEY" \
+            --header 'Content-Type: application/json' \
+            --data "$login_body")"
+
+          if [[ "$login_status" != '200' ]]; then
+            echo "staging login failed with HTTP $login_status" >&2
+            exit 1
+          fi
+
+          access_token="$(jq -er '.access_token | select(type == "string" and length > 0)' "$work/login.json")"
+          echo "::add-mask::$access_token"
+
+          request_body="$(jq -nc \
+            --arg source "$WEDECENT_STAGING_SOURCE_DEVICE_ID" \
+            --arg router "$WEDECENT_STAGING_ROUTER_DEVICE_ID" \
+            --arg destination "$WEDECENT_STAGING_DESTINATION_DEVICE_ID" \
+            --arg first_transport "$FIRST_TRANSPORT" \
+            --arg second_transport "$SECOND_TRANSPORT" \
+            --argjson first_cost "$FIRST_COST" \
+            --argjson second_cost "$SECOND_COST" \
+            '{
+              source_device_id:$source,
+              router_device_id:$router,
+              destination_device_id:$destination,
+              first_transport:$first_transport,
+              second_transport:$second_transport,
+              first_cost:$first_cost,
+              second_cost:$second_cost
+            }')"
+
+          route_status="$(curl --silent --show-error \
+            --output "$work/route.json" \
+            --write-out '%{http_code}' \
+            --request POST \
+            "$WEDECENT_STAGING_SUPABASE_URL/functions/v1/route-authorization" \
+            --header "apikey: $WEDECENT_STAGING_PUBLISHABLE_KEY" \
+            --header "Authorization: Bearer $access_token" \
+            --header 'Content-Type: application/json' \
+            --data "$request_body")"
+
+          if [[ "$route_status" != '200' ]]; then
+            echo "staging route authorization failed with HTTP $route_status" >&2
+            exit 1
+          fi
+
+          jq -e \
+            --arg source "$WEDECENT_STAGING_SOURCE_DEVICE_ID" \
+            --arg router "$WEDECENT_STAGING_ROUTER_DEVICE_ID" \
+            --arg destination "$WEDECENT_STAGING_DESTINATION_DEVICE_ID" \
+            --arg first_transport "$FIRST_TRANSPORT" \
+            --arg second_transport "$SECOND_TRANSPORT" \
+            --argjson first_cost "$FIRST_COST" \
+            --argjson second_cost "$SECOND_COST" \
+            '
+              .route.Source == $source and
+              .route.Destination == $destination and
+              (.route.Hops | length) == 2 and
+              .route.Hops[0].From == $source and
+              .route.Hops[0].To == $router and
+              .route.Hops[0].Transport == $first_transport and
+              .route.Hops[0].Cost == $first_cost and
+              .route.Hops[1].From == $router and
+              .route.Hops[1].To == $destination and
+              .route.Hops[1].Transport == $second_transport and
+              .route.Hops[1].Cost == $second_cost and
+              .authorization.claims.permission == "mesh.forward" and
+              .authorization.claims.router == $router and
+              .authorization.claims.route == .route and
+              (.authorization.claims.jti | test("^[A-Za-z0-9_-]{22}$")) and
+              (.authorization.kid | type == "string" and length > 0) and
+              (.authorization.signature | test("^[A-Za-z0-9_-]{86}$")) and
+              (.authorization.claims.exp_unix_ms - .authorization.claims.iat_unix_ms) == 60000
+            ' "$work/route.json" >/dev/null
+
+          echo 'WEDECENT_STAGING_ROUTE_CAPABILITY_OK'
