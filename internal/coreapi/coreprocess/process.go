@@ -15,6 +15,8 @@ import (
 	"wedecent.com/wedecent/internal/trust"
 )
 
+var ErrServerRequired = errors.New("core process: IPC server is required")
+
 // OpenReadOnly composes the current read-only Local Core API from existing
 // client state. It never creates or renews device identity material and it does
 // not refresh or persist account credentials.
@@ -50,7 +52,7 @@ func OpenReadOnly(clientStateDir string) (*ipc.Server, error) {
 // transport using the shared bounded server lifecycle. No IP listener is opened.
 func RunLocal(ctx context.Context, server *ipc.Server) error {
 	if server == nil {
-		return errors.New("core process: IPC server is required")
+		return ErrServerRequired
 	}
 	listener, err := localipc.Listen()
 	if err != nil {
