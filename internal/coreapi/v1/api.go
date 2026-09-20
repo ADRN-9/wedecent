@@ -81,15 +81,15 @@ type RouteStatus struct {
 }
 
 type RouterPolicy struct {
-	Enabled                   bool  `json:"enabled"`
-	TrustedDevicesOnly        bool  `json:"trusted_devices_only"`
-	OrganizationOnly          bool  `json:"organization_only"`
-	PublicRouting             bool  `json:"public_routing"`
-	MaxSessions               int   `json:"max_sessions"`
-	MaxBandwidthBytesPerSec   int64 `json:"max_bandwidth_bytes_per_sec"`
-	AllowOnBattery            bool  `json:"allow_on_battery"`
-	AllowMetered              bool  `json:"allow_metered"`
-	LANOnly                   bool  `json:"lan_only"`
+	Enabled                 bool  `json:"enabled"`
+	TrustedDevicesOnly      bool  `json:"trusted_devices_only"`
+	OrganizationOnly        bool  `json:"organization_only"`
+	PublicRouting           bool  `json:"public_routing"`
+	MaxSessions             int   `json:"max_sessions"`
+	MaxBandwidthBytesPerSec int64 `json:"max_bandwidth_bytes_per_sec"`
+	AllowOnBattery          bool  `json:"allow_on_battery"`
+	AllowMetered            bool  `json:"allow_metered"`
+	LANOnly                 bool  `json:"lan_only"`
 }
 
 type RouterStats struct {
