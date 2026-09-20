@@ -172,6 +172,25 @@ func TestServerMapsCanceledServiceRequest(t *testing.T) {
 	}
 }
 
+func TestServerFallsBackWhenResponseExceedsFrameLimit(t *testing.T) {
+	service := &fakeReadService{devices: []v1.Device{{
+		ID:   "wd_aaaaaaaaaaaaaaaa",
+		Name: string(bytes.Repeat([]byte("x"), MaxFrameBytes)),
+	}}}
+	server, err := NewServer(service, service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serve(t, server, Request{
+		Version: v1.Version,
+		ID:      "request-8",
+		Method:  v1.MethodDevicesList,
+	})
+	if response.Error == nil || response.Error.Code != ErrorInternal {
+		t.Fatalf("response = %#v", response)
+	}
+}
+
 func TestNewServerRequiresCapabilities(t *testing.T) {
 	service := &fakeReadService{}
 	if _, err := NewServer(nil, service); err == nil {
