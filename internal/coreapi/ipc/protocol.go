@@ -131,6 +131,7 @@ func writeJSONFrame(w io.Writer, value any) error {
 	if err != nil {
 		return err
 	}
+	defer wipe(payload)
 	if len(payload) == 0 {
 		return fmt.Errorf("%w: empty frame", ErrInvalidMessage)
 	}
