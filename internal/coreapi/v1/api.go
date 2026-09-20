@@ -10,9 +10,11 @@ import (
 const Version = "v1"
 
 const (
-	MethodStatusGet   = "status.get"
-	MethodDevicesList = "devices.list"
-	MethodDeviceGet   = "device.get"
+	MethodStatusGet      = "status.get"
+	MethodDevicesList    = "devices.list"
+	MethodDeviceGet      = "device.get"
+	MethodAccountSignIn  = "account.sign_in"
+	MethodAccountSignOut = "account.sign_out"
 )
 
 type ConnectionPath string
@@ -104,6 +106,11 @@ type RouterStats struct {
 	SessionsForwarded uint64 `json:"sessions_forwarded"`
 }
 
+type SignInRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
 type GetDeviceRequest struct {
 	DeviceID string `json:"device_id"`
 }
@@ -126,6 +133,11 @@ type SetRouterPolicyRequest struct {
 
 type StatusService interface {
 	GetStatus(context.Context) (Status, error)
+}
+
+type AccountService interface {
+	SignIn(context.Context, SignInRequest) (Status, error)
+	SignOut(context.Context) error
 }
 
 type DeviceService interface {
@@ -154,11 +166,11 @@ type RouterService interface {
 
 // Service is the UI-facing boundary of the local core. Implementations own
 // identity, authorization, route selection, transport choice, and session crypto.
-// Credential-bearing account operations are intentionally not part of this first
-// contract slice; they require a protected local transport with explicit
-// secret-handling semantics.
+// Account credentials are accepted only as request data over the protected local
+// transport; access and refresh tokens are never response fields.
 type Service interface {
 	StatusService
+	AccountService
 	DeviceService
 	ConnectionService
 	TransportService
