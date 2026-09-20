@@ -14,11 +14,11 @@ import (
 )
 
 type fakeAccountClient struct {
-	loginSession *account.Session
-	loginErr     error
+	loginSession  *account.Session
+	loginErr      error
 	ensureSession *account.Session
-	ensureErr    error
-	logoutErr    error
+	ensureErr     error
+	logoutErr     error
 
 	loginCalls  int
 	ensureCalls int
@@ -236,9 +236,9 @@ func TestAccountServiceSignInRequiresConfigurationWithoutCallingNetwork(t *testi
 
 func TestAccountServiceSignOutIsLocallyAuthoritative(t *testing.T) {
 	for _, tc := range []struct {
-		name      string
-		ensureErr error
-		logoutErr error
+		name            string
+		ensureErr       error
+		logoutErr       error
 		wantLogoutCalls int
 	}{
 		{name: "refresh failure", ensureErr: errors.New("network unavailable"), wantLogoutCalls: 0},
