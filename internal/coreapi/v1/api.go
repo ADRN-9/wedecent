@@ -9,6 +9,12 @@ import (
 
 const Version = "v1"
 
+const (
+	MethodStatusGet   = "status.get"
+	MethodDevicesList = "devices.list"
+	MethodDeviceGet   = "device.get"
+)
+
 type ConnectionPath string
 
 const (
