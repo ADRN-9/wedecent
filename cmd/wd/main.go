@@ -729,11 +729,20 @@ func runConnect(args []string) (int, error) {
 	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
+	routeRouter := fs.String("route-router", "", "explicit one-hop router device ID")
+	routeFirstTransport := fs.String("route-first-transport", "", "source-to-router transport: lan or internet")
+	routeSecondTransport := fs.String("route-second-transport", "", "router-to-destination transport: lan or internet")
+	routeFirstCost := fs.Uint64("route-first-cost", 0, "source-to-router route cost")
+	routeSecondCost := fs.Uint64("route-second-cost", 0, "router-to-destination route cost")
 	if err := fs.Parse(args); err != nil {
 		return 0, err
 	}
 	if fs.NArg() != 1 {
-		return 0, errors.New("usage: wd connect [--endpoint host:port | --relay host:port | --web-relay URL] [--lan-timeout duration] <device-id>")
+		return 0, errors.New(
+			"usage: wd connect [--endpoint host:port | --relay host:port | --web-relay URL | " +
+				"--route-router device-id --route-first-transport lan|internet --route-second-transport lan|internet " +
+				"[--route-first-cost n] [--route-second-cost n]] [--lan-timeout duration] <device-id>",
+		)
 	}
 	if *lanTimeout < 0 || *lanTimeout > 10*time.Second {
 		return 0, errors.New("--lan-timeout must be between 0 and 10s")
@@ -752,6 +761,21 @@ func runConnect(args []string) (int, error) {
 		return 0, errors.New("--endpoint, --relay, and --web-relay are mutually exclusive")
 	}
 	deviceID := fs.Arg(0)
+	routeConfig := routedConnectConfig{
+		RouterDeviceID:  *routeRouter,
+		FirstTransport:  *routeFirstTransport,
+		SecondTransport: *routeSecondTransport,
+		FirstCost:       *routeFirstCost,
+		SecondCost:      *routeSecondCost,
+	}
+	_, routed, err := buildRoutedConnectRequest("", deviceID, routeConfig)
+	if err != nil {
+		return 0, err
+	}
+	if routed && selected != 0 {
+		return 0, errors.New("routed connections cannot be combined with --endpoint, --relay, or --web-relay")
+	}
+
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
 		return 0, err
@@ -764,50 +788,57 @@ func runConnect(args []string) (int, error) {
 	if !ok {
 		return 0, fmt.Errorf("device %s is not paired", deviceID)
 	}
-	if *endpoint != "" {
-		peer.Endpoint, err = directLocator(*endpoint)
-		if err != nil {
+	if routed {
+		if _, err := openRoutedSourceRouterTrust(*stateDir, routeConfig.RouterDeviceID); err != nil {
 			return 0, err
 		}
-	} else if *relayAddr != "" {
-		peer.Endpoint, err = relayLocator(*relayAddr, deviceID)
-		if err != nil {
-			return 0, err
-		}
-	} else if *webRelay != "" {
-		peer.Endpoint, err = webRelayLocator(*webRelay, deviceID)
-		if err != nil {
-			return 0, err
-		}
-	} else if *lanTimeout > 0 && (peer.Endpoint == "" || strings.HasPrefix(peer.Endpoint, "relay://") || strings.HasPrefix(peer.Endpoint, "wsrelay://")) {
-		fallbackEndpoint := peer.Endpoint
-		lanCtx, lanCancel := context.WithTimeout(context.Background(), *lanTimeout)
-		result, found, discoverErr := discovery.FindTrusted(lanCtx, deviceID, peer.Fingerprint)
-		lanCancel()
-		if discoverErr != nil && errors.Is(discoverErr, discovery.ErrTrustedIdentityMismatch) {
-			return 0, discoverErr
-		}
-		if found {
-			directEndpoint, directErr := directLocator(result.Endpoint)
-			if directErr == nil {
-				directPeer := peer
-				directPeer.Endpoint = directEndpoint
-				probeDialer := transport.MultiDialer{Relay: transport.RelayOptions{Timeout: 2 * time.Second}}
-				probeClient := &session.Client{Identity: id, Trust: store, Dialer: probeDialer}
-				probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
-				probeErr := probeClient.Probe(probeCtx, directPeer)
-				probeCancel()
-				if probeErr == nil {
-					peer = directPeer
-					fmt.Fprintf(os.Stderr, "WeDecent: using trusted LAN path %s\n", result.Endpoint)
-				} else {
-					peer.Endpoint = fallbackEndpoint
+	}
+	if !routed {
+		if *endpoint != "" {
+			peer.Endpoint, err = directLocator(*endpoint)
+			if err != nil {
+				return 0, err
+			}
+		} else if *relayAddr != "" {
+			peer.Endpoint, err = relayLocator(*relayAddr, deviceID)
+			if err != nil {
+				return 0, err
+			}
+		} else if *webRelay != "" {
+			peer.Endpoint, err = webRelayLocator(*webRelay, deviceID)
+			if err != nil {
+				return 0, err
+			}
+		} else if *lanTimeout > 0 && (peer.Endpoint == "" || strings.HasPrefix(peer.Endpoint, "relay://") || strings.HasPrefix(peer.Endpoint, "wsrelay://")) {
+			fallbackEndpoint := peer.Endpoint
+			lanCtx, lanCancel := context.WithTimeout(context.Background(), *lanTimeout)
+			result, found, discoverErr := discovery.FindTrusted(lanCtx, deviceID, peer.Fingerprint)
+			lanCancel()
+			if discoverErr != nil && errors.Is(discoverErr, discovery.ErrTrustedIdentityMismatch) {
+				return 0, discoverErr
+			}
+			if found {
+				directEndpoint, directErr := directLocator(result.Endpoint)
+				if directErr == nil {
+					directPeer := peer
+					directPeer.Endpoint = directEndpoint
+					probeDialer := transport.MultiDialer{Relay: transport.RelayOptions{Timeout: 2 * time.Second}}
+					probeClient := &session.Client{Identity: id, Trust: store, Dialer: probeDialer}
+					probeCtx, probeCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					probeErr := probeClient.Probe(probeCtx, directPeer)
+					probeCancel()
+					if probeErr == nil {
+						peer = directPeer
+						fmt.Fprintf(os.Stderr, "WeDecent: using trusted LAN path %s\n", result.Endpoint)
+					} else {
+						peer.Endpoint = fallbackEndpoint
+					}
 				}
 			}
 		}
-	}
-	if peer.Endpoint == "" {
-		return 0, errors.New("device has no connection locator")
+		if peer.Endpoint == "" {
+			return 0, errors.New("device has no connection locator")
+		}
 	}
 	connectionGrant, err := readConnectionGrantFile(*connectionGrantFile)
 	if err != nil {
@@ -822,6 +853,34 @@ func runConnect(args []string) (int, error) {
 			return 0, err
 		}
 	}
+
+	if routed {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		routedDialer, enabled, err := prepareRoutedDialer(
+			ctx,
+			*stateDir,
+			id,
+			deviceID,
+			routeConfig,
+			*lanTimeout,
+			account.Client{},
+		)
+		if err != nil {
+			return 0, err
+		}
+		if !enabled {
+			return 0, errors.New("routed connection configuration unexpectedly disabled")
+		}
+		client := &session.Client{
+			Identity:        id,
+			Trust:           store,
+			Dialer:          routedDialer,
+			ConnectionGrant: connectionGrant,
+		}
+		return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
+	}
+
 	webRelayGrant := ""
 	if isWebRelay {
 		webRelayGrant = connectionGrant
