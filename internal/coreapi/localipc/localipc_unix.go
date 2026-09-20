@@ -24,8 +24,8 @@ func Endpoint() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if dir == "" {
-		return "", fmt.Errorf("%w: empty core directory", ErrUnsafeEndpoint)
+	if dir == "" || !filepath.IsAbs(dir) {
+		return "", fmt.Errorf("%w: core directory must be absolute", ErrUnsafeEndpoint)
 	}
 	return filepath.Join(dir, unixSocketName), nil
 }
