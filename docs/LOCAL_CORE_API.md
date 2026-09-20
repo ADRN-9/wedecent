@@ -4,7 +4,7 @@
 
 This document defines the v0.4.4 Local Core API.
 
-The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, a read-only core service for status and trusted-device inspection, a transport-neutral bounded IPC protocol for those read operations, and protected per-user local IPC endpoint factories. It does not start a long-lived daemon, expose a network port, or change the existing `wd` connection path.
+The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, a read-only core service for status and trusted-device inspection, a transport-neutral bounded IPC protocol for those read operations, protected per-user local IPC endpoint factories, and a bounded server lifecycle around those endpoints. It does not install or autostart a daemon, expose a network port, or change the existing `wd` connection path.
 
 ## Purpose
 
@@ -64,11 +64,26 @@ Backend errors are mapped to stable public error codes instead of returning raw 
 
 On Windows, the endpoint is a named pipe. Its name contains a truncated SHA-256 digest of the current user's SID rather than the raw SID. The pipe DACL grants access only to that SID, and the named-pipe implementation rejects remote clients. The Local Core endpoint is intentionally separate from `wd-agent`: the existing Windows agent runs under a dedicated service account, while GUI-facing Local Core IPC belongs to the interactive user's security boundary.
 
-On Unix-like systems, the endpoint is `core-v1.sock` under the per-user core state directory. The directory must be owned by the effective user and mode `0700`; the socket must be owned by the effective user and mode `0600`. Symlinked or otherwise unsafe endpoint state is rejected. An owned stale socket may be removed only after it refuses a local connection; a live endpoint is never replaced.
-
-The transport package is currently a library boundary only. No long-lived Local Core process is started by this milestone, and credential-bearing methods remain disabled until server lifecycle, logging, and secret-handling behavior are explicitly tested over this boundary.
+On Unix-like systems, the endpoint is `core-v1.sock` under the per-user core state directory. The directory must be absolute, owned by the effective user, and mode `0700`; the socket must be owned by the effective user and mode `0600`. Symlinked or otherwise unsafe endpoint state is rejected. An owned stale socket may be removed only after it refuses a local connection; a live endpoint is never replaced.
 
 A generic localhost TCP listener is not an acceptable credential transport.
+
+## Server lifecycle
+
+`internal/coreapi/localserver` owns the lifecycle around an already-created protected local listener. It does not choose or open the transport itself.
+
+The lifecycle is intentionally bounded:
+
+- the caller supplies explicit concurrency and per-request timeout limits;
+- configuration with zero or excessive limits is rejected instead of becoming unbounded;
+- a concurrency slot is reserved before `Accept`, which prevents an unlimited queue of accepted connections inside the process;
+- each accepted connection receives an I/O deadline and a request context deadline;
+- each connection serves exactly one request/response exchange and is then closed;
+- malformed requests, protocol errors, backend errors, and handler panics are isolated to the affected connection;
+- request bodies and raw handler errors are not logged by the lifecycle layer;
+- cancellation closes the listener and all active connections, unblocking pending I/O before shutdown waits for request goroutines.
+
+This layer remains reusable library code. It does not install, autostart, or background a Local Core process, and it does not add credential-bearing methods.
 
 ## Security boundary
 
@@ -105,7 +120,7 @@ The API exposes a stable copy of router policy fields rather than leaking intern
 
 ## Next slices
 
-1. add a small per-user Local Core process that accepts the protected platform endpoint and serves bounded read-only IPC requests;
+1. add a small manually-started per-user `wd-core` executable that composes the existing identity/account/trust state, protected local endpoint, bounded IPC server, and graceful signal shutdown;
 2. add credential-bearing sign-in/out with explicit secret-redaction and logging tests;
 3. add transport and route-status readers backed by the existing transport/mesh state;
 4. implement connection lifecycle behind the existing session and route-authorization code paths;
