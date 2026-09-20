@@ -8,6 +8,7 @@ import (
 
 func Client() (string, error) { return roleDir("client") }
 func Agent() (string, error)  { return roleDir("agent") }
+func Core() (string, error)   { return roleDir("core") }
 
 func roleDir(role string) (string, error) {
 	if base := os.Getenv("WEDECENT_HOME"); base != "" {
