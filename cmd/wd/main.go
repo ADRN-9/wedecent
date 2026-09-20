@@ -54,6 +54,8 @@ func main() {
 		err = runDevices(os.Args[2:])
 	case "pair":
 		err = runPair(os.Args[2:])
+	case "route-trust":
+		err = runRouteTrust(os.Args[2:])
 	case "connect":
 		code, err = runConnect(os.Args[2:])
 	default:
@@ -1016,5 +1018,6 @@ Commands:
   discover   Find signed WeDecent LAN advertisements
   devices    List paired devices
   pair       Pair directly or through a relay
-  connect    Open an interactive terminal directly or through a relay`)
+  route-trust  Manage dedicated source-to-router routing trust
+  connect    Open an interactive terminal directly, through a relay, or via one trusted router`)
 }
