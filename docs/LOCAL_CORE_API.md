@@ -2,15 +2,15 @@
 
 ## Status
 
-This document defines the first contract slice for the v0.4.4 Local Core API.
+This document defines the v0.4.4 Local Core API.
 
-The initial implementation is intentionally transport-neutral. It adds versioned Go request/response types and a `Service` interface under `internal/coreapi/v1`; it does not start a listener, expose a network port, or change the existing `wd` connection path.
+The current implementation is intentionally transport-neutral. It provides versioned Go request/response types under `internal/coreapi/v1` plus a read-only core service for status and trusted-device inspection. It does not start a listener, expose a network port, or change the existing `wd` connection path.
 
 ## Purpose
 
 Desktop and mobile interfaces must call the WeDecent core rather than reimplementing identity, authorization, route selection, relay protocols, or cryptography.
 
-The first contract covers:
+The `v1` contract covers:
 
 - core/account status without bearer credentials
 - device listing and device details
@@ -32,6 +32,16 @@ internal/coreapi/v1
 
 Wire names are explicit JSON tags so a later IPC adapter can preserve the contract across UI implementations. Additive fields may be introduced within `v1`; incompatible semantic or wire changes require a new API version.
 
+The aggregate `Service` interface is split into capability interfaces so implementations can be built and tested incrementally without adding placeholder operations.
+
+## Read-only service
+
+`internal/coreapi.ReadService` implements the `StatusService` and `DeviceService` capabilities using the existing identity, account-session, and trust-store types.
+
+It snapshots only the public identity/account fields required by the UI. It does not retain the device identity object or account session object, so private keys and bearer tokens are not kept in the UI-facing service.
+
+Device lists are sorted by device ID before being returned, giving UI clients deterministic results even though the trust store is map-backed.
+
 ## Security boundary
 
 The Local Core API must never return:
@@ -46,7 +56,7 @@ The Local Core API must never return:
 
 The API may return non-secret identifiers such as device IDs, public-key fingerprints, route hops, selected path type, and account email/user ID.
 
-Credential-bearing sign-in is deliberately excluded from this first contract slice. Before adding it, the local transport must define same-user access control, request-size limits, secret redaction, logging rules, and platform-specific endpoint permissions. No generic TCP listener should be introduced merely to carry credentials locally.
+Credential-bearing sign-in is deliberately excluded from the current contract slice. Before adding it, the local transport must define same-user access control, request-size limits, secret redaction, logging rules, and platform-specific endpoint permissions. No generic TCP listener should be introduced merely to carry credentials locally.
 
 ## Connection semantics
 
@@ -67,11 +77,10 @@ The API exposes a stable copy of router policy fields rather than leaking intern
 
 ## Next slices
 
-After the contract is reviewed and CI is green:
-
-1. implement a core service backed by the existing account, trust, transport, mesh, and session packages;
-2. define a protected local IPC transport (Windows named pipe and Unix-domain socket are preferred candidates);
-3. add credential-bearing sign-in/out with explicit secret-handling tests;
-4. wire the Windows GUI prototype to the same `v1` service contract.
+1. add transport and route-status readers backed by the existing transport/mesh state;
+2. implement connection lifecycle behind the existing session and route-authorization code paths;
+3. define a protected local IPC transport (Windows named pipe and Unix-domain socket are preferred candidates);
+4. add credential-bearing sign-in/out with explicit secret-handling tests;
+5. wire the Windows GUI prototype to the same `v1` service contract.
 
 The existing CLI and staging-tested routed-terminal path remain the compatibility baseline throughout this work.
