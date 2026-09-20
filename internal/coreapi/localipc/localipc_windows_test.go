@@ -12,7 +12,13 @@ import (
 )
 
 func TestWindowsSIDDerivedEndpointAndDescriptor(t *testing.T) {
-	const sid = "S-1-5-21-111-222-333-1001"
+	const (
+		sid            = "S-1-5-21-111-222-333-1001"
+		expectedPrefix = `\\.\pipe\WeDecent.Core.v1.`
+	)
+	if windowsPipePrefix != expectedPrefix {
+		t.Fatalf("pipe prefix = %q, want %q", windowsPipePrefix, expectedPrefix)
+	}
 
 	first, err := pipeNameForSID(sid)
 	if err != nil {
@@ -25,8 +31,8 @@ func TestWindowsSIDDerivedEndpointAndDescriptor(t *testing.T) {
 	if first != second {
 		t.Fatalf("pipe names differ: %q != %q", first, second)
 	}
-	if !strings.HasPrefix(first, windowsPipePrefix) {
-		t.Fatalf("pipe name = %q, missing prefix", first)
+	if !strings.HasPrefix(first, expectedPrefix) {
+		t.Fatalf("pipe name = %q, missing canonical prefix", first)
 	}
 	if strings.Contains(first, sid) {
 		t.Fatalf("pipe name exposes raw SID: %q", first)
