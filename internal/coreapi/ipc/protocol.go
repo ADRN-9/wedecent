@@ -44,6 +44,7 @@ func ReadRequest(r io.Reader) (Request, error) {
 	if err != nil {
 		return Request{}, err
 	}
+	defer wipe(payload)
 
 	var req Request
 	if err := decodeStrict(payload, &req); err != nil {
@@ -130,6 +131,7 @@ func writeJSONFrame(w io.Writer, value any) error {
 	if err != nil {
 		return err
 	}
+	defer wipe(payload)
 	if len(payload) == 0 {
 		return fmt.Errorf("%w: empty frame", ErrInvalidMessage)
 	}
