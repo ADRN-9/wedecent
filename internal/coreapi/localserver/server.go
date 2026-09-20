@@ -18,7 +18,7 @@ const (
 	DefaultRequestTimeout        = 5 * time.Second
 
 	maxConcurrentRequests = 128
-	maxRequestTimeout      = time.Minute
+	maxRequestTimeout     = time.Minute
 )
 
 var ErrConfig = errors.New("core local server: invalid configuration")
