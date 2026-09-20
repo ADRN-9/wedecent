@@ -98,6 +98,22 @@ func (s *Store) List() []Peer {
 	return out
 }
 
+func (s *Store) Delete(id string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	peer, ok := s.Peers[id]
+	if !ok {
+		return false, nil
+	}
+	delete(s.Peers, id)
+	if err := s.saveLocked(); err != nil {
+		s.Peers[id] = peer
+		return false, err
+	}
+	return true, nil
+}
+
 func (s *Store) saveLocked() error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

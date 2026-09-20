@@ -8,7 +8,35 @@ permissions:
   contents: read
 
 jobs:
+  route-capability-client:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Run routed client regression gate
+        run: |
+          go test ./cmd/wd -run 'Test(AutomaticRouteAuthorization|BuildRoutedConnectRequest|OpenRoutedSourceRouterTrust|BuildRoutedDialer|PrepareRoutedDialer|RunConnectRejects|RunConnectRouted|RouteTrust)' -count=1
+          go test ./cmd/wd -count=1
+
+  route-e2e:
+    needs: route-capability-client
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Run deterministic A-B-C routed terminal e2e
+        run: go test ./internal/meshruntime -run '^TestRoutedTerminalE2E$' -count=1 -v
+
   linux:
+    needs: [route-capability-client, route-e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
