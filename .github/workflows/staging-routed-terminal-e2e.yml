@@ -1,0 +1,92 @@
+name: Staging Routed Terminal E2E
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wedecent-staging-routed-terminal-e2e
+  cancel-in-progress: false
+
+jobs:
+  staging-routed-terminal-e2e:
+    runs-on:
+      - self-hosted
+      - linux
+      - wedecent-staging-e2e
+    timeout-minutes: 10
+    environment: wedecent-staging
+    env:
+      WEDECENT_STAGING_SUPABASE_URL: ${{ secrets.WEDECENT_STAGING_SUPABASE_URL }}
+      WEDECENT_STAGING_PUBLISHABLE_KEY: ${{ secrets.WEDECENT_STAGING_PUBLISHABLE_KEY }}
+      WEDECENT_STAGING_ACCOUNT_EMAIL: ${{ secrets.WEDECENT_STAGING_ACCOUNT_EMAIL }}
+      WEDECENT_STAGING_ACCOUNT_PASSWORD: ${{ secrets.WEDECENT_STAGING_ACCOUNT_PASSWORD }}
+      WEDECENT_STAGING_ROUTE_AUTHORITY_JSON: ${{ secrets.WEDECENT_STAGING_ROUTE_AUTHORITY_JSON }}
+    steps:
+      - name: Refuse non-staging targets
+        shell: bash
+        run: |
+          set -euo pipefail
+          expected_staging='https://kefwiuqipnkbcqpxwqha.supabase.co'
+          production='https://hopraknkfzxpdijhcjzv.supabase.co'
+          expected_kid='TWxSlC-My5Z9h-lD9mrTmeKx7amqhfVEvRsMK6kpUdc'
+
+          if [[ "${WEDECENT_STAGING_SUPABASE_URL:-}" == "$production" ]]; then
+            echo 'refusing production Supabase project' >&2
+            exit 1
+          fi
+          if [[ "${WEDECENT_STAGING_SUPABASE_URL:-}" != "$expected_staging" ]]; then
+            echo 'refusing unknown Supabase project; expected WeDecent Staging' >&2
+            exit 1
+          fi
+
+          for name in \
+            WEDECENT_STAGING_PUBLISHABLE_KEY \
+            WEDECENT_STAGING_ACCOUNT_EMAIL \
+            WEDECENT_STAGING_ACCOUNT_PASSWORD \
+            WEDECENT_STAGING_ROUTE_AUTHORITY_JSON; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "$name is not configured" >&2
+              exit 1
+            fi
+          done
+
+          if ! jq -e --arg kid "$expected_kid" '
+            .version == 1 and
+            .key_id == $kid and
+            (.public_key | type == "string" and length > 0)
+          ' <<<"$WEDECENT_STAGING_ROUTE_AUTHORITY_JSON" >/dev/null; then
+            echo 'staging route authority JSON is invalid or has the wrong key id' >&2
+            exit 1
+          fi
+
+          echo 'WEDECENT_STAGING_ROUTED_TERMINAL_TARGET_GUARD_OK'
+
+      - name: Check out WeDecent
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+
+      - name: Run live staging routed terminal E2E
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          state_dir="$HOME/.local/share/wedecent-staging-routed-terminal-e2e"
+          install -d -m 700 "$state_dir"
+
+          export WEDECENT_STAGING_E2E_STATE_DIR="$state_dir"
+          export WEDECENT_STAGING_ROUTED_TERMINAL_E2E=1
+
+          go test ./internal/meshruntime \
+            -run '^TestStagingRoutedTerminalE2E$' \
+            -count=1 \
+            -v
+
+          echo 'WEDECENT_STAGING_ROUTED_TERMINAL_E2E_WORKFLOW_OK'
