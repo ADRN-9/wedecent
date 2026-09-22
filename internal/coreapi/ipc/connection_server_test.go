@@ -143,6 +143,22 @@ func TestServerMapsConnectionErrorsWithoutLeakingBackendDetails(t *testing.T) {
 			}
 		})
 	}
+
+	connections.connectErr = nil
+	connections.disconnectErr = coreapi.ErrConnectionNotFound
+	disconnectParams, err := json.Marshal(v1.DisconnectRequest{ConnectionID: "conn_missing"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := serve(t, server, Request{
+		Version: v1.Version,
+		ID:      "disconnect-missing",
+		Method:  v1.MethodConnectionDisconnect,
+		Params:  disconnectParams,
+	})
+	if response.Error == nil || response.Error.Code != ErrorConnectionNotFound {
+		t.Fatalf("disconnect response = %#v", response)
+	}
 }
 
 func TestServerConnectionMethodsAreUnavailableWithoutService(t *testing.T) {
