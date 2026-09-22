@@ -2,9 +2,6 @@ name: Staging Routed Terminal E2E
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - feature/staging-adversarial-destination-router-trust
 
 permissions:
   contents: read
