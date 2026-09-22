@@ -244,6 +244,15 @@ func TestStagingRoutedTerminalAdversarialRouterSourceTrust(t *testing.T) {
 	}
 	isolatedVerifier := signedAuthorizer.Verifier
 	isolatedVerifier.Replay = mesh.NewMemoryRouteAuthorizationReplay()
+	// This diagnostic isolates signature and exact-route binding from staging
+	// host clock skew. The actual routed retry below still uses the production
+	// verifier's real wall clock and therefore preserves fail-closed freshness.
+	isolatedVerificationTime := time.UnixMilli(
+		authorization.Claims.IssuedAtUnixMS,
+	).UTC()
+	isolatedVerifier.Now = func() time.Time {
+		return isolatedVerificationTime
+	}
 	if err := isolatedVerifier.VerifyAndConsume(
 		ctx,
 		authorization,
