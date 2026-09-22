@@ -214,12 +214,43 @@ func TestStagingRoutedTerminalAdversarialRouterSourceTrust(t *testing.T) {
 		t.Fatal("router unexpectedly accepted untrusted source")
 	}
 
+	replayPath := filepath.Join(bState, meshruntime.RouteAuthorizationReplayFile)
+	if _, err := os.Stat(replayPath); err == nil {
+		t.Fatal("untrusted route-control handshake consumed route capability replay state")
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("inspect route replay state after trust rejection: %v", err)
+	}
+
 	if err := bRuntime.RouterSources.Put(trust.Peer{
 		ID:          aID.ID,
 		Name:        aID.Name,
 		Fingerprint: aFP,
 	}); err != nil {
 		t.Fatal(err)
+	}
+
+	signedAuthorizer, ok := bRuntime.Router.Authorizer.(mesh.RouteAuthorizationForwardAuthorizer)
+	if !ok {
+		t.Fatalf("router authorizer type = %T", bRuntime.Router.Authorizer)
+	}
+	request := mesh.ForwardRequest{
+		Router:        mesh.DeviceID(bID.ID),
+		Route:         route,
+		Authorization: authorization,
+		Policy:        policy,
+	}
+	if err := signedAuthorizer.LocalAuthorizer.AuthorizeForward(ctx, request); err != nil {
+		t.Fatalf("router local authorizer rejected source after explicit trust: %v", err)
+	}
+	isolatedVerifier := signedAuthorizer.Verifier
+	isolatedVerifier.Replay = mesh.NewMemoryRouteAuthorizationReplay()
+	if err := isolatedVerifier.VerifyAndConsume(
+		ctx,
+		authorization,
+		route,
+		mesh.DeviceID(bID.ID),
+	); err != nil {
+		t.Fatalf("isolated route capability verification failed: %v", err)
 	}
 
 	destinationErr := serveOneRouteTunnel(ctx, cListener, cRuntime)
