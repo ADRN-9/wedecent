@@ -178,10 +178,51 @@ func TestPolicyRouteSourceSelectsLowestCostTrustedCandidate(t *testing.T) {
 	}
 }
 
-func TestPolicyRouteSourceRejectsMalformedPolicy(t *testing.T) {
+func TestPolicyRouteSourceSkipsCheaperUntrustedRouter(t *testing.T) {
+	stateDir := t.TempDir()
+	writeRouteSelectionPolicy(t, stateDir, routeSelectionPolicy{
+		Version:        routeSelectionPolicyVersion,
+		Enabled:        true,
+		SourceDeviceID: testRouteSourceID,
+		Candidates: []RouteSelectionCandidate{
+			{
+				DestinationDeviceID: testRouteDestinationID,
+				RouterDeviceID:      testRouteRouterOneID,
+				FirstTransport:      mesh.TransportInternet,
+				SecondTransport:     mesh.TransportInternet,
+				FirstCost:           1,
+				SecondCost:          1,
+			},
+			{
+				DestinationDeviceID: testRouteDestinationID,
+				RouterDeviceID:      testRouteRouterTwoID,
+				FirstTransport:      mesh.TransportInternet,
+				SecondTransport:     mesh.TransportInternet,
+				FirstCost:           50,
+				SecondCost:          50,
+			},
+		},
+	})
+	trustRouteRouter(t, stateDir, testRouteRouterTwoID)
+
+	source, err := NewPolicyRouteSource(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, routed, err := source.RouteRequest(context.Background(), testRouteSourceID, testRouteDestinationID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !routed || request.RouterDeviceID != testRouteRouterTwoID {
+		t.Fatalf("request=%#v routed=%v", request, routed)
+	}
+}
+
+func TestPolicyRouteSourceRejectsUnknownPolicyField(t *testing.T) {
 	stateDir := t.TempDir()
 	path := filepath.Join(stateDir, RouteSelectionPolicyFile)
-	if err := os.WriteFile(path, []byte(`{"version":1,"enabled":true,"source_device_id":"wd_aaaaaaaaaaaaaaaa","candidates":[],"unexpected":true}`), 0o600); err != nil {
+	data := []byte(`{"version":1,"enabled":true,"source_device_id":"wd_aaaaaaaaaaaaaaaa","candidates":[],"unexpected":true}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	source, err := NewPolicyRouteSource(stateDir)
@@ -189,7 +230,7 @@ func TestPolicyRouteSourceRejectsMalformedPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, _, err := source.RouteRequest(context.Background(), testRouteSourceID, testRouteDestinationID); err == nil {
-		t.Fatal("malformed policy unexpectedly accepted")
+		t.Fatal("policy with unknown field unexpectedly accepted")
 	}
 }
 
