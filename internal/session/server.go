@@ -75,8 +75,20 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 			return
 		}
 		s.handleAuthorizedTerminal(tlsConn, first)
+	case protocol.TypeOpenConnection:
+		if requireInBandAuthorization {
+			_ = sendError(tlsConn, "authorization_required", "this transport requires an authorized connection request")
+			return
+		}
+		s.handleConnection(tlsConn, first)
+	case protocol.TypeOpenAuthorizedConnection:
+		if !requireInBandAuthorization {
+			_ = sendError(tlsConn, "unexpected_message", "authorized connection requests are not valid on this transport")
+			return
+		}
+		s.handleAuthorizedConnection(tlsConn, first)
 	default:
-		_ = sendError(tlsConn, "unexpected_message", "expected pairing or session request")
+		_ = sendError(tlsConn, "unexpected_message", "expected pairing, terminal session, or connection request")
 	}
 }
 
