@@ -330,7 +330,7 @@ func validateRouteAuthorizationResponse(
 
 	jti, err :=
 		base64.RawURLEncoding.DecodeString(
-			authorization.Claims.JTI,
+			claims.JTI,
 		)
 
 	if err != nil || len(jti) != 16 {
