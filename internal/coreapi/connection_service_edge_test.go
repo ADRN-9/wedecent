@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -16,6 +17,19 @@ type observableFakeConnectionHandle struct {
 }
 
 func (h *observableFakeConnectionHandle) Done() <-chan struct{} { return h.done }
+
+type observableRetryConnectionHandle struct {
+	fakeConnectionHandle
+	done     chan struct{}
+	doneOnce sync.Once
+}
+
+func (h *observableRetryConnectionHandle) Done() <-chan struct{} { return h.done }
+
+func (h *observableRetryConnectionHandle) Close() error {
+	h.doneOnce.Do(func() { close(h.done) })
+	return h.fakeConnectionHandle.Close()
+}
 
 func TestConnectionServicePreservesRequestCancellationFromBackendOpen(t *testing.T) {
 	backend := &blockingConnectionBackend{
@@ -111,6 +125,40 @@ func TestConnectionServiceRemoteCloseRemovesPublishedPath(t *testing.T) {
 	}
 	if err := service.Disconnect(context.Background(), v1.DisconnectRequest{ConnectionID: connection.ID}); !errors.Is(err, ErrConnectionNotFound) {
 		t.Fatalf("Disconnect after remote close = %v, want ErrConnectionNotFound", err)
+	}
+}
+
+func TestConnectionServiceRemoteCloseDuringFailedDisconnectRemainsRetryable(t *testing.T) {
+	handle := &observableRetryConnectionHandle{
+		fakeConnectionHandle: fakeConnectionHandle{closeErr: errors.New("temporary close failure")},
+		done:                 make(chan struct{}),
+	}
+	network := newConnectionTestNetwork(t)
+	service, err := NewConnectionService(ConnectionServiceConfig{
+		Backend: &fakeConnectionBackend{opened: OpenedConnection{Path: v1.ConnectionPathRelay, Handle: handle}},
+		Network: network,
+		Random:  bytes.NewReader(bytes.Repeat([]byte{0x34}, 18)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection, err := service.Connect(context.Background(), v1.ConnectRequest{DeviceID: "wd_dest0000000000"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := service.Disconnect(context.Background(), v1.DisconnectRequest{ConnectionID: connection.ID}); !errors.Is(err, ErrConnectionOperation) {
+		t.Fatalf("first Disconnect error = %v, want ErrConnectionOperation", err)
+	}
+	// Close signaled Done while the local disconnect was in progress. Give the
+	// observer time to process that signal; it must not steal retry ownership.
+	time.Sleep(20 * time.Millisecond)
+	handle.closeErr = nil
+	if err := service.Disconnect(context.Background(), v1.DisconnectRequest{ConnectionID: connection.ID}); err != nil {
+		t.Fatalf("retry Disconnect = %v", err)
+	}
+	if handle.closeCount() != 2 {
+		t.Fatalf("close count = %d, want 2", handle.closeCount())
 	}
 }
 
