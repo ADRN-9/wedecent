@@ -302,7 +302,7 @@ func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{
 
 	s.mu.Lock()
 	current, ok := s.active[connectionID]
-	if ok && current.token == token {
+	if ok && current.token == token && !current.closing {
 		delete(s.active, connectionID)
 	} else {
 		ok = false
