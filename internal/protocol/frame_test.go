@@ -27,3 +27,12 @@ func TestFrameRejectsOversize(t *testing.T) {
 		t.Fatal("expected oversize payload error")
 	}
 }
+
+func TestConnectionFrameTypesAppendWithoutRenumberingExistingProtocol(t *testing.T) {
+	if TypeOpenAuthorizedSession != 11 {
+		t.Fatalf("TypeOpenAuthorizedSession = %d, want stable value 11", TypeOpenAuthorizedSession)
+	}
+	if TypeOpenConnection != 12 || TypeConnectionAccepted != 13 || TypeOpenAuthorizedConnection != 14 {
+		t.Fatalf("connection frame values = %d/%d/%d, want 12/13/14", TypeOpenConnection, TypeConnectionAccepted, TypeOpenAuthorizedConnection)
+	}
+}
