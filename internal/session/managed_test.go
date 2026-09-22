@@ -208,32 +208,23 @@ func TestOpenManagedTerminalRejectsMissingDirectGrantBeforeDial(t *testing.T) {
 
 func waitManagedDoneAndServer(t *testing.T, managed *ManagedTerminal, serverErr <-chan error) {
 	t.Helper()
-	serverComplete := false
-	select {
-	case <-managed.Done():
-	case err := <-serverErr:
-		serverComplete = true
-		if err != nil {
-			t.Fatalf("test server failed before managed session ended: %v", err)
-		}
+	doneCh := managed.Done()
+	errCh := serverErr
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+
+	for doneCh != nil || errCh != nil {
 		select {
-		case <-managed.Done():
-		case <-time.After(2 * time.Second):
-			t.Fatal("managed terminal did not observe server completion")
+		case <-doneCh:
+			doneCh = nil
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("managed terminal test server failed: %v", err)
+			}
+			errCh = nil
+		case <-timer.C:
+			t.Fatalf("managed terminal lifecycle incomplete: done=%t server=%t", doneCh == nil, errCh == nil)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("managed terminal did not observe remote close")
-	}
-	if serverComplete {
-		return
-	}
-	select {
-	case err := <-serverErr:
-		if err != nil {
-			t.Fatal(err)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("test server did not complete after managed session ended")
 	}
 }
 
