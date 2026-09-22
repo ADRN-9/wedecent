@@ -47,6 +47,12 @@ func (b *fakeConnectionBackend) Open(context.Context, string) (OpenedConnection,
 	return b.opened, b.err
 }
 
+func (b *fakeConnectionBackend) callCount() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.calls
+}
+
 type blockingConnectionBackend struct {
 	started chan struct{}
 	release chan struct{}
@@ -246,8 +252,9 @@ func TestConnectionServiceBackendAndRandomFailuresDoNotLeakHandles(t *testing.T)
 	}
 
 	handle := &fakeConnectionHandle{}
+	randomFailureBackend := &fakeConnectionBackend{opened: OpenedConnection{Path: v1.ConnectionPathRelay, Handle: handle}}
 	service, err = NewConnectionService(ConnectionServiceConfig{
-		Backend: &fakeConnectionBackend{opened: OpenedConnection{Path: v1.ConnectionPathRelay, Handle: handle}},
+		Backend: randomFailureBackend,
 		Network: newConnectionTestNetwork(t),
 		Random:  errReader{},
 	})
@@ -257,8 +264,11 @@ func TestConnectionServiceBackendAndRandomFailuresDoNotLeakHandles(t *testing.T)
 	if _, err := service.Connect(context.Background(), v1.ConnectRequest{DeviceID: "wd_dest0000000000"}); !errors.Is(err, ErrConnectionOperation) {
 		t.Fatalf("random failure = %v", err)
 	}
-	if handle.closeCount() != 1 {
-		t.Fatalf("close count = %d, want 1", handle.closeCount())
+	if randomFailureBackend.callCount() != 0 {
+		t.Fatalf("backend calls = %d, want 0", randomFailureBackend.callCount())
+	}
+	if handle.closeCount() != 0 {
+		t.Fatalf("close count = %d, want 0 because no handle was opened", handle.closeCount())
 	}
 }
 
