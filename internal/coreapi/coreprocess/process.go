@@ -113,12 +113,19 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 
 	connectionBackend := cfg.ConnectionBackend
 	if connectionBackend == nil {
+		routeSource := cfg.RouteSource
+		if routeSource == nil {
+			routeSource, err = coreconnect.NewPolicyRouteSource(stateDir)
+			if err != nil {
+				return nil, fmt.Errorf("core process: compose route selection source: %w", err)
+			}
+		}
 		connectionBackend, err = coreconnect.New(coreconnect.Config{
 			StateDir:    stateDir,
 			Identity:    id,
 			Trust:       devices,
 			Authorizer:  accountService,
-			RouteSource: cfg.RouteSource,
+			RouteSource: routeSource,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("core process: compose connection backend: %w", err)
