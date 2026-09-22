@@ -26,6 +26,10 @@ type OpenAuthorizedSession struct {
 	ConnectionGrant string `json:"connection_grant"`
 }
 
+type OpenAuthorizedConnection struct {
+	ConnectionGrant string `json:"connection_grant"`
+}
+
 type Resize struct {
 	Cols uint16 `json:"cols"`
 	Rows uint16 `json:"rows"`
