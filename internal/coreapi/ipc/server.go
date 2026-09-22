@@ -14,27 +14,48 @@ const (
 	ErrorInvalidParams      = "invalid_params"
 	ErrorMethodNotFound     = "method_not_found"
 	ErrorDeviceNotFound     = "device_not_found"
+	ErrorRouteNotFound      = "route_not_found"
 	ErrorRequestCanceled    = "request_canceled"
 	ErrorAccountUnavailable = "account_unavailable"
 	ErrorAccountFailed      = "account_operation_failed"
 	ErrorInternal           = "internal_error"
 )
 
+type Services struct {
+	Status     v1.StatusService
+	Devices    v1.DeviceService
+	Account    v1.AccountService
+	Transports v1.TransportService
+	Routes     v1.RouteService
+}
+
 type Server struct {
-	status  v1.StatusService
-	devices v1.DeviceService
-	account v1.AccountService
+	status     v1.StatusService
+	devices    v1.DeviceService
+	account    v1.AccountService
+	transports v1.TransportService
+	routes     v1.RouteService
 }
 
 func NewServer(status v1.StatusService, devices v1.DeviceService) (*Server, error) {
-	return NewServerWithAccount(status, devices, nil)
+	return NewServerWithServices(Services{Status: status, Devices: devices})
 }
 
 func NewServerWithAccount(status v1.StatusService, devices v1.DeviceService, accountService v1.AccountService) (*Server, error) {
-	if status == nil || devices == nil {
+	return NewServerWithServices(Services{Status: status, Devices: devices, Account: accountService})
+}
+
+func NewServerWithServices(services Services) (*Server, error) {
+	if services.Status == nil || services.Devices == nil {
 		return nil, errors.New("coreapi ipc: status and device services are required")
 	}
-	return &Server{status: status, devices: devices, account: accountService}, nil
+	return &Server{
+		status:     services.Status,
+		devices:    services.Devices,
+		account:    services.Account,
+		transports: services.Transports,
+		routes:     services.Routes,
+	}, nil
 }
 
 // ServeOne handles exactly one framed request and writes exactly one framed
@@ -113,6 +134,23 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		}
 		result, err = s.devices.GetDevice(ctx, params)
+	case v1.MethodTransportsList:
+		if s.transports == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		if !validEmptyParams(req.Params) {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		result, err = s.transports.GetTransportStatus(ctx)
+	case v1.MethodRouteGet:
+		if s.routes == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		var params v1.GetRouteStatusRequest
+		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		result, err = s.routes.GetRouteStatus(ctx, params)
 	default:
 		return errorResponse(response, ErrorMethodNotFound, "method not found")
 	}
@@ -123,6 +161,10 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorRequestCanceled, "request canceled")
 		case errors.Is(err, coreapi.ErrDeviceNotFound):
 			return errorResponse(response, ErrorDeviceNotFound, "device not found")
+		case errors.Is(err, coreapi.ErrInvalidRouteRequest):
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		case errors.Is(err, coreapi.ErrRouteNotFound):
+			return errorResponse(response, ErrorRouteNotFound, "route not found")
 		case errors.Is(err, coreapi.ErrAccountNotConfigured):
 			return errorResponse(response, ErrorAccountUnavailable, "account sign-in is unavailable")
 		case errors.Is(err, coreapi.ErrAccountOperation):
