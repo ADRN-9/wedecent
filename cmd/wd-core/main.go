@@ -45,7 +45,7 @@ func run(args []string) error {
 		return errors.New("usage: wd-core [--state directory] [--supabase-url URL] [--publishable-key key]")
 	}
 
-	server, err := coreprocess.Open(coreprocess.Config{
+	runtime, err := coreprocess.OpenRuntime(coreprocess.Config{
 		ClientStateDir: *clientStateDir,
 		SupabaseURL:    *supabaseURL,
 		PublishableKey: *publishableKey,
@@ -56,5 +56,5 @@ func run(args []string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
-	return coreprocess.RunLocal(ctx, server)
+	return coreprocess.RunLocalRuntime(ctx, runtime)
 }
