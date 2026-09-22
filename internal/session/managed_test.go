@@ -146,10 +146,7 @@ func TestOpenManagedTerminalAuthorizationAndRemoteClose(t *testing.T) {
 			}
 			close(proceed)
 
-			waitManagedDoneOrServerError(t, managed, serverErr)
-			if err := <-serverErr; err != nil {
-				t.Fatal(err)
-			}
+			waitManagedDoneAndServer(t, managed, serverErr)
 		})
 	}
 }
@@ -197,10 +194,7 @@ func TestManagedTerminalUnexpectedFrameFailsClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	close(proceed)
-	waitManagedDoneOrServerError(t, managed, serverErr)
-	if err := <-serverErr; err != nil {
-		t.Fatal(err)
-	}
+	waitManagedDoneAndServer(t, managed, serverErr)
 }
 
 func TestOpenManagedTerminalRejectsMissingDirectGrantBeforeDial(t *testing.T) {
@@ -212,23 +206,34 @@ func TestOpenManagedTerminalRejectsMissingDirectGrantBeforeDial(t *testing.T) {
 	}
 }
 
-func waitManagedDoneOrServerError(t *testing.T, managed *ManagedTerminal, serverErr <-chan error) {
+func waitManagedDoneAndServer(t *testing.T, managed *ManagedTerminal, serverErr <-chan error) {
 	t.Helper()
+	serverComplete := false
 	select {
 	case <-managed.Done():
-		return
 	case err := <-serverErr:
+		serverComplete = true
 		if err != nil {
 			t.Fatalf("test server failed before managed session ended: %v", err)
 		}
 		select {
 		case <-managed.Done():
-			return
 		case <-time.After(2 * time.Second):
 			t.Fatal("managed terminal did not observe server completion")
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("managed terminal did not observe remote close")
+	}
+	if serverComplete {
+		return
+	}
+	select {
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("test server did not complete after managed session ended")
 	}
 }
 
