@@ -62,10 +62,11 @@ type ConnectionServiceConfig struct {
 }
 
 type activeConnection struct {
-	public  v1.Connection
-	handle  ConnectionHandle
-	closing bool
-	token   *struct{}
+	public       v1.Connection
+	handle       ConnectionHandle
+	closing      bool
+	suppressDone bool
+	token        *struct{}
 }
 
 type ConnectionService struct {
@@ -250,9 +251,15 @@ func (s *ConnectionService) Disconnect(ctx context.Context, req v1.DisconnectReq
 	// concurrent UI read can never report a connection after disconnect begins.
 	s.network.RemoveConnectionPath(req.ConnectionID)
 	if err := active.handle.Close(); err != nil {
+		doneClosed := observableHandleDoneClosed(active.handle)
 		s.mu.Lock()
 		if current, stillActive := s.active[req.ConnectionID]; stillActive && current.token == active.token {
 			current.closing = false
+			// If this failed local close itself caused the one-shot Done signal,
+			// suppress that signal so the existing retryable-close contract wins.
+			// A Done signal that arrives later, after this point, is still treated
+			// as a natural remote close and removes the entry.
+			current.suppressDone = doneClosed
 			s.active[req.ConnectionID] = current
 		}
 		s.mu.Unlock()
@@ -302,8 +309,17 @@ func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{
 
 	s.mu.Lock()
 	current, ok := s.active[connectionID]
-	if ok && current.token == token && !current.closing {
-		delete(s.active, connectionID)
+	if ok && current.token == token {
+		switch {
+		case current.closing:
+			ok = false
+		case current.suppressDone:
+			current.suppressDone = false
+			s.active[connectionID] = current
+			ok = false
+		default:
+			delete(s.active, connectionID)
+		}
 	} else {
 		ok = false
 	}
@@ -311,6 +327,23 @@ func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{
 
 	if ok {
 		s.network.RemoveConnectionPath(connectionID)
+	}
+}
+
+func observableHandleDoneClosed(handle ConnectionHandle) bool {
+	observable, ok := handle.(ObservableConnectionHandle)
+	if !ok {
+		return false
+	}
+	done := observable.Done()
+	if done == nil {
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
 	}
 }
 
