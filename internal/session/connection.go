@@ -97,9 +97,10 @@ func (c *Connection) Done() <-chan struct{} {
 	return c.done
 }
 
-// Close is idempotent. It best-effort sends the application close frame before
-// closing the TLS connection; a peer that has already gone away is treated as
-// already closed rather than as a teardown failure.
+// Close is idempotent. It closes at the application boundary first, allowing
+// the peer to acknowledge and end the TLS stream cleanly. If the peer does not
+// finish promptly, the local TLS connection is force-closed. A peer that has
+// already gone away is treated as already closed.
 func (c *Connection) Close() error {
 	if c == nil {
 		return nil
@@ -110,15 +111,25 @@ func (c *Connection) Close() error {
 	default:
 	}
 
-	var closeErr error
 	c.closeOnce.Do(func() {
 		c.writeMu.Lock()
-		_ = protocol.WriteFrame(c.conn, protocol.Frame{Type: protocol.TypeClose})
+		writeErr := protocol.WriteFrame(c.conn, protocol.Frame{Type: protocol.TypeClose})
 		c.writeMu.Unlock()
-		closeErr = c.conn.Close()
-		c.finish()
+		if writeErr != nil {
+			c.finish()
+			return
+		}
+
+		timer := time.NewTimer(2 * time.Second)
+		defer timer.Stop()
+		select {
+		case <-c.done:
+			return
+		case <-timer.C:
+			c.finish()
+		}
 	})
-	return closeErr
+	return nil
 }
 
 func (c *Connection) readLoop() {
