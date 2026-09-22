@@ -4,7 +4,7 @@
 
 This document defines the v0.4.4 Local Core API.
 
-The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, status and trusted-device inspection, credential-bearing account sign-in/sign-out, transport capability and ephemeral route/path inspection, a bounded connection-lifecycle manager, a concrete authenticated connection backend, a bounded IPC protocol, protected per-user local IPC endpoints, a bounded server lifecycle, and a manually-started `wd-core` process that composes the currently enabled capabilities. It does not install or autostart a daemon or expose a network port.
+The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, status and trusted-device inspection, credential-bearing account sign-in/sign-out, transport capability and ephemeral route/path inspection, a bounded connection-lifecycle manager, a concrete authenticated connection backend, source-bound policy-backed one-hop route selection, a bounded IPC protocol, protected per-user local IPC endpoints, a bounded server lifecycle, and a manually-started `wd-core` process that composes the currently enabled capabilities. It does not install or autostart a daemon or expose a network port.
 
 ## Purpose
 
@@ -96,7 +96,7 @@ This lifecycle remains reusable library code. It does not install, autostart, or
 
 ## Local Core process
 
-`cmd/wd-core` is the manually-started per-user Local Core process. It composes the existing status/device service, network read service, protected `localipc` endpoint, IPC dispatcher, account service, authenticated connection backend, connection manager, and `localserver` lifecycle.
+`cmd/wd-core` is the manually-started per-user Local Core process. It composes the existing status/device service, network read service, protected `localipc` endpoint, IPC dispatcher, account service, authenticated connection backend, policy-backed route source, connection manager, and `localserver` lifecycle.
 
 Startup is intentionally non-creating for identity state. `identity.Load` requires an existing key and certificate, rejects symlinked identity files, verifies that the certificate and private key match, and does not create or renew identity material. Starting the UI-facing core therefore cannot silently create or rotate a device identity.
 
@@ -156,7 +156,11 @@ A `Connect` request names only the destination device. The UI does not choose cr
 
 For ordinary connections the backend preserves the existing path behavior. A trusted LAN advertisement may replace a relay locator only when its full fingerprint matches the paired identity and an endpoint-pinned TLS probe succeeds. Otherwise the paired direct/relay locator remains the fallback. Direct and legacy-relay sessions carry the short-lived terminal grant in-band. Serverless WebSocket relay sessions carry that same grant in the outer relay request and open the existing inner session without duplicating it in-band.
 
-Routed authorization remains distinct from terminal authorization. The backend accepts only an internal `RouteRequestSource`; UI requests cannot provide routers or hops. When an internal policy source selects a route, the backend obtains the terminal grant first, requires the dedicated source-to-router trust store, requests the separate `mesh.forward` route authorization, validates its exact binding, and then uses the existing `meshnet.RoutedDialer`. The default `wd-core` composition does not invent route candidates or infer routing from terminal trust, so automatic routed path selection remains disabled until a route-planning source is explicitly composed.
+Routed authorization remains distinct from terminal authorization. The backend accepts only an internal `RouteRequestSource`; UI requests cannot provide routers or hops. When an internal policy source selects a route, the backend obtains the terminal grant first, requires the dedicated source-to-router trust store, requests the separate `mesh.forward` route authorization, validates its exact binding, and then uses the existing `meshnet.RoutedDialer`.
+
+The default `wd-core` composition now supplies `internal/coreconnect.PolicyRouteSource`. It reads the optional source-bound `route-selection.json` policy from the client state directory for each connection attempt. The policy never grants trust: a candidate router must independently exist in `trusted-route-routers.json`, terminal trust is not consulted for routing eligibility, and B/C continue to enforce their own directional route trust stores. If the file is absent, disabled, or has no eligible candidate for the requested destination, the existing non-routed LAN/direct/relay selection remains unchanged. A malformed enabled policy fails as a configuration error rather than being silently ignored.
+
+For eligible candidates, the source chooses the lowest total configured one-hop cost using only `lan` or `internet`. Once an explicit policy selects a route, later route-authorization, resolver, trust, or network failure is returned instead of silently changing that operator decision into another path. The detailed file schema and failure semantics are defined in `docs/LOCAL_ROUTE_SELECTION.md`.
 
 `session.ManagedTerminal` establishes the same authorized terminal application session as the existing CLI but is lifecycle-only. It drains terminal output rather than retaining or exposing it, handles protocol ping/close frames, and exposes a close signal to the connection manager. A future terminal-stream API must add an explicit bounded stream instead of leaking terminal bytes through status-oriented methods.
 
@@ -190,10 +194,9 @@ The API exposes a stable copy of router policy fields rather than leaking intern
 
 ## Next slices
 
-1. compose a policy-backed route candidate source so Local Core can automatically consider trusted one-hop routes without UI-supplied routing data;
-2. add router policy/statistics service implementations;
-3. add an explicit bounded terminal-stream API before the GUI consumes terminal bytes;
-4. wire the Windows GUI prototype to the same `v1` service contract;
-5. decide installation/autostart behavior only after process lifecycle and upgrade behavior are explicitly designed and tested.
+1. add router policy/statistics service implementations;
+2. add an explicit bounded terminal-stream API before the GUI consumes terminal bytes;
+3. wire the Windows GUI prototype to the same `v1` service contract;
+4. decide installation/autostart behavior only after process lifecycle and upgrade behavior are explicitly designed and tested.
 
 The existing CLI and staging-tested routed-terminal path remain the compatibility baseline throughout this work.
