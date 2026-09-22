@@ -4,7 +4,7 @@
 
 This document defines the v0.4.4 Local Core API.
 
-The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, status and trusted-device inspection, credential-bearing account sign-in/sign-out, a bounded IPC protocol, protected per-user local IPC endpoints, a bounded server lifecycle, and a manually-started `wd-core` process that composes them. It does not install or autostart a daemon, expose a network port, or change the existing `wd` connection path.
+The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, status and trusted-device inspection, credential-bearing account sign-in/sign-out, transport capability and ephemeral route/path inspection, a bounded IPC protocol, protected per-user local IPC endpoints, a bounded server lifecycle, and a manually-started `wd-core` process that composes them. It does not install or autostart a daemon, expose a network port, or change the existing `wd` connection path.
 
 ## Purpose
 
@@ -57,9 +57,11 @@ account.sign_in
 account.sign_out
 devices.list
 device.get
+transports.list
+route.get
 ```
 
-Backend errors are mapped to stable public error codes instead of returning raw error strings. Unexpected failures therefore do not expose tokens, passwords, paths, database details, or other internal data.
+Backend errors are mapped to stable public error codes instead of returning raw error strings. Unexpected failures therefore do not expose tokens, passwords, paths, database details, or other internal data. A missing or expired route is reported as the stable `route_not_found` error rather than leaking internal route state.
 
 After a framed request is strictly decoded, the raw frame buffer is overwritten before `ReadRequest` returns. For `account.sign_in`, the copied raw `params` buffer is also overwritten immediately after strict parameter decoding. The decoded password is cleared from local variables as soon as practical. This is best-effort memory hygiene, not a guarantee of cryptographic zeroization: Go strings are immutable values managed by the runtime, and copies may exist until garbage collection.
 
@@ -92,7 +94,7 @@ This lifecycle remains reusable library code. It does not install, autostart, or
 
 ## Local Core process
 
-`cmd/wd-core` is the manually-started per-user Local Core process. It composes the existing status/device service, protected `localipc` endpoint, IPC dispatcher, account service, and `localserver` lifecycle.
+`cmd/wd-core` is the manually-started per-user Local Core process. It composes the existing status/device service, network read service, protected `localipc` endpoint, IPC dispatcher, account service, and `localserver` lifecycle.
 
 Startup is intentionally non-creating for identity state. `identity.Load` requires an existing key and certificate, rejects symlinked identity files, verifies that the certificate and private key match, and does not create or renew identity material. Starting the UI-facing core therefore cannot silently create or rotate a device identity.
 
@@ -111,6 +113,20 @@ The account session remains inside the core and existing account-session storage
 `account.sign_out` treats local session removal as authoritative. The core attempts session refresh and remote Supabase logout on a best-effort basis, then removes the local protected session and clears observable signed-in status. A network outage or remote logout failure therefore does not trap the user in a locally signed-in state. A request that is already canceled before sign-out begins does not mutate the local session.
 
 No account IPC response contains an access token, refresh token, password, or other credential. Successful sign-in/sign-out responses use the ordinary non-secret `Status` shape.
+
+## Transport and route status
+
+`internal/coreapi.NetworkReadService` implements the `TransportService` and `RouteService` read capabilities. It performs no discovery, dialing, reachability probing, grant issuance, route authorization, or route selection.
+
+`transports.list` returns transport classes in deterministic order. In this API, `available` means that the transport class is implemented by the current core build and can be used by core networking logic; it does **not** mean that the Internet is reachable, that LAN discovery currently finds a peer, or that a specific destination can be contacted. The current build reports LAN and Internet support and reports Bluetooth as unavailable because Bluetooth transport is not implemented yet.
+
+`route.get` accepts a Local Core connection ID and returns only non-secret path metadata. Path state is process-local and ephemeral; it is not written to disk. The service is designed to be updated by the connection-lifecycle layer after that layer has selected and authenticated a path.
+
+For routed connections, UI-visible hops are derived from the existing validated `mesh.Route` structure. The route must match the local source and requested destination and must still be unexpired before it can be published. Returned hop slices are copied so callers cannot mutate core state. When a route reaches its expiry, the stored status is removed and subsequent reads fail closed with `route_not_found`.
+
+Non-routed `direct`, `lan`, and `relay` path snapshots contain no mesh-route hops, router ID, or route expiry. A non-routed snapshot that attempts to attach a mesh route is rejected.
+
+The Local Core does not yet implement the general `Connect`/`Disconnect` lifecycle in this slice, so a newly started `wd-core` has no active route/path records and `route.get` returns `route_not_found` until a future connection-lifecycle implementation records one. The existing CLI and staging-tested connection paths are unchanged.
 
 ## Security boundary
 
@@ -147,10 +163,9 @@ The API exposes a stable copy of router policy fields rather than leaking intern
 
 ## Next slices
 
-1. add transport and route-status readers backed by the existing transport/mesh state;
-2. implement connection lifecycle behind the existing session and route-authorization code paths;
-3. add router policy/statistics service implementations;
-4. wire the Windows GUI prototype to the same `v1` service contract;
-5. decide installation/autostart behavior only after process lifecycle and upgrade behavior are explicitly designed and tested.
+1. implement connection lifecycle behind the existing session and route-authorization code paths and feed authenticated path state into `NetworkReadService`;
+2. add router policy/statistics service implementations;
+3. wire the Windows GUI prototype to the same `v1` service contract;
+4. decide installation/autostart behavior only after process lifecycle and upgrade behavior are explicitly designed and tested.
 
 The existing CLI and staging-tested routed-terminal path remain the compatibility baseline throughout this work.

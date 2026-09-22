@@ -15,6 +15,8 @@ const (
 	MethodDeviceGet      = "device.get"
 	MethodAccountSignIn  = "account.sign_in"
 	MethodAccountSignOut = "account.sign_out"
+	MethodTransportsList = "transports.list"
+	MethodRouteGet       = "route.get"
 )
 
 type ConnectionPath string

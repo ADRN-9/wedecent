@@ -60,6 +60,10 @@ func Open(cfg Config) (*ipc.Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose read service: %w", err)
 	}
+	networkService, err := coreapi.NewNetworkReadService(id.ID, coreapi.DefaultTransportStatuses())
+	if err != nil {
+		return nil, fmt.Errorf("core process: compose network read service: %w", err)
+	}
 
 	if supabaseURL == "" && session != nil {
 		supabaseURL = session.SupabaseURL
@@ -81,15 +85,22 @@ func Open(cfg Config) (*ipc.Server, error) {
 		return nil, fmt.Errorf("core process: compose account service: %w", err)
 	}
 
-	server, err := ipc.NewServerWithAccount(readService, readService, accountService)
+	server, err := ipc.NewServerWithServices(ipc.Services{
+		Status:     readService,
+		Devices:    readService,
+		Account:    accountService,
+		Transports: networkService,
+		Routes:     networkService,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose IPC server: %w", err)
 	}
 	return server, nil
 }
 
-// OpenReadOnly preserves the previous read-only composition for callers that do
-// not want credential-bearing account methods.
+// OpenReadOnly preserves a credential-free composition for callers that do not
+// want account mutations. It still exposes non-secret status, device, transport,
+// and route readers.
 func OpenReadOnly(clientStateDir string) (*ipc.Server, error) {
 	id, err := identity.Load(clientStateDir)
 	if err != nil {
@@ -109,7 +120,16 @@ func OpenReadOnly(clientStateDir string) (*ipc.Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose read service: %w", err)
 	}
-	server, err := ipc.NewServer(service, service)
+	networkService, err := coreapi.NewNetworkReadService(id.ID, coreapi.DefaultTransportStatuses())
+	if err != nil {
+		return nil, fmt.Errorf("core process: compose network read service: %w", err)
+	}
+	server, err := ipc.NewServerWithServices(ipc.Services{
+		Status:     service,
+		Devices:    service,
+		Transports: networkService,
+		Routes:     networkService,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose IPC server: %w", err)
 	}
