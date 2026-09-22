@@ -221,7 +221,16 @@ func TestPolicyRouteSourceSkipsCheaperUntrustedRouter(t *testing.T) {
 func TestPolicyRouteSourceRejectsUnknownPolicyField(t *testing.T) {
 	stateDir := t.TempDir()
 	path := filepath.Join(stateDir, RouteSelectionPolicyFile)
-	data := []byte(`{"version":1,"enabled":true,"source_device_id":"wd_aaaaaaaaaaaaaaaa","candidates":[],"unexpected":true}`)
+	data, err := json.Marshal(map[string]any{
+		"version":          1,
+		"enabled":          true,
+		"source_device_id": testRouteSourceID,
+		"candidates":       []any{},
+		"unexpected":       true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(path, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
