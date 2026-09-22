@@ -77,10 +77,10 @@ func (c Client) IssueRouteAuthorization(
 			"source_device_id":      request.SourceDeviceID,
 			"router_device_id":      request.RouterDeviceID,
 			"destination_device_id": request.DestinationDeviceID,
-			"first_transport":      string(request.FirstTransport),
-			"second_transport":     string(request.SecondTransport),
-			"first_cost":           request.FirstCost,
-			"second_cost":          request.SecondCost,
+			"first_transport":       string(request.FirstTransport),
+			"second_transport":      string(request.SecondTransport),
+			"first_cost":            request.FirstCost,
+			"second_cost":           request.SecondCost,
 		},
 		&response,
 	); err != nil {
@@ -330,7 +330,7 @@ func validateRouteAuthorizationResponse(
 
 	jti, err :=
 		base64.RawURLEncoding.DecodeString(
-			claims.JTI,
+			authorization.Claims.JTI,
 		)
 
 	if err != nil || len(jti) != 16 {
