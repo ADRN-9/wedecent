@@ -22,7 +22,10 @@ var (
 	ErrConnectionServiceClosed  = errors.New("connection service is closed")
 )
 
-const DefaultMaxCoreConnections = 32
+const (
+	DefaultMaxCoreConnections = 32
+	maxConnectionIDAttempts   = 8
+)
 
 type ConnectionHandle interface {
 	Close() error
@@ -51,8 +54,9 @@ type ConnectionServiceConfig struct {
 }
 
 type activeConnection struct {
-	public v1.Connection
-	handle ConnectionHandle
+	public  v1.Connection
+	handle  ConnectionHandle
+	closing bool
 }
 
 type ConnectionService struct {
@@ -62,10 +66,11 @@ type ConnectionService struct {
 	random  io.Reader
 	now     func() time.Time
 
-	mu      sync.Mutex
-	opening int
-	active  map[string]activeConnection
-	closed  bool
+	mu       sync.Mutex
+	opening  int
+	active   map[string]activeConnection
+	reserved map[string]struct{}
+	closed   bool
 }
 
 var _ v1.ConnectionService = (*ConnectionService)(nil)
@@ -93,12 +98,13 @@ func NewConnectionService(cfg ConnectionServiceConfig) (*ConnectionService, erro
 		now = time.Now
 	}
 	return &ConnectionService{
-		backend: cfg.Backend,
-		network: cfg.Network,
-		max:     maxActive,
-		random:  random,
-		now:     now,
-		active:  make(map[string]activeConnection),
+		backend:  cfg.Backend,
+		network:  cfg.Network,
+		max:      maxActive,
+		random:   random,
+		now:      now,
+		active:   make(map[string]activeConnection),
+		reserved: make(map[string]struct{}),
 	}, nil
 }
 
@@ -112,15 +118,30 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 	if err := s.reserveOpening(); err != nil {
 		return v1.Connection{}, err
 	}
+
+	connectionID, err := s.reserveConnectionID()
+	if err != nil {
+		s.releaseOpening()
+		if errors.Is(err, ErrConnectionServiceClosed) {
+			return v1.Connection{}, err
+		}
+		return v1.Connection{}, fmt.Errorf("%w: generate connection ID", ErrConnectionOperation)
+	}
 	reserved := true
 	defer func() {
 		if reserved {
-			s.releaseOpening()
+			s.releaseOpeningAndID(connectionID)
 		}
 	}()
 
 	opened, err := s.backend.Open(ctx, req.DeviceID)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return v1.Connection{}, ctxErr
+		}
+		if s.isClosed() {
+			return v1.Connection{}, ErrConnectionServiceClosed
+		}
 		return v1.Connection{}, fmt.Errorf("%w: open backend", ErrConnectionOperation)
 	}
 	if opened.Handle == nil || !validConnectionPath(opened.Path) {
@@ -134,11 +155,6 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 		return v1.Connection{}, err
 	}
 
-	connectionID, err := s.newConnectionID()
-	if err != nil {
-		_ = opened.Handle.Close()
-		return v1.Connection{}, fmt.Errorf("%w: generate connection ID", ErrConnectionOperation)
-	}
 	startedAt := s.now().UTC()
 	public := v1.Connection{
 		ID:        connectionID,
@@ -159,14 +175,18 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 
 	s.mu.Lock()
 	if s.closed {
+		s.opening--
+		delete(s.reserved, connectionID)
 		s.mu.Unlock()
+		reserved = false
 		s.network.RemoveConnectionPath(connectionID)
 		_ = opened.Handle.Close()
 		return v1.Connection{}, ErrConnectionServiceClosed
 	}
 	s.opening--
-	reserved = false
+	delete(s.reserved, connectionID)
 	s.active[connectionID] = activeConnection{public: public, handle: opened.Handle}
+	reserved = false
 	s.mu.Unlock()
 	return public, nil
 }
@@ -181,20 +201,30 @@ func (s *ConnectionService) Disconnect(ctx context.Context, req v1.DisconnectReq
 
 	s.mu.Lock()
 	active, ok := s.active[req.ConnectionID]
-	if ok {
-		delete(s.active, req.ConnectionID)
-	}
-	s.mu.Unlock()
-	if !ok {
+	if !ok || active.closing {
+		s.mu.Unlock()
 		return ErrConnectionNotFound
 	}
+	active.closing = true
+	s.active[req.ConnectionID] = active
+	s.mu.Unlock()
 
 	// Observable path state is removed before closing the underlying handle so a
 	// concurrent UI read can never report a connection after disconnect begins.
 	s.network.RemoveConnectionPath(req.ConnectionID)
 	if err := active.handle.Close(); err != nil {
+		s.mu.Lock()
+		if current, stillActive := s.active[req.ConnectionID]; stillActive {
+			current.closing = false
+			s.active[req.ConnectionID] = current
+		}
+		s.mu.Unlock()
 		return fmt.Errorf("%w: close backend", ErrConnectionOperation)
 	}
+
+	s.mu.Lock()
+	delete(s.active, req.ConnectionID)
+	s.mu.Unlock()
 	return nil
 }
 
@@ -244,6 +274,46 @@ func (s *ConnectionService) releaseOpening() {
 		s.opening--
 	}
 	s.mu.Unlock()
+}
+
+func (s *ConnectionService) releaseOpeningAndID(connectionID string) {
+	s.mu.Lock()
+	if s.opening > 0 {
+		s.opening--
+	}
+	delete(s.reserved, connectionID)
+	s.mu.Unlock()
+}
+
+func (s *ConnectionService) reserveConnectionID() (string, error) {
+	for attempt := 0; attempt < maxConnectionIDAttempts; attempt++ {
+		connectionID, err := s.newConnectionID()
+		if err != nil {
+			return "", err
+		}
+
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return "", ErrConnectionServiceClosed
+		}
+		_, active := s.active[connectionID]
+		_, reserved := s.reserved[connectionID]
+		if !active && !reserved {
+			s.reserved[connectionID] = struct{}{}
+			s.mu.Unlock()
+			return connectionID, nil
+		}
+		s.mu.Unlock()
+	}
+	return "", errors.New("connection ID collision limit reached")
+}
+
+func (s *ConnectionService) isClosed() bool {
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	return closed
 }
 
 func (s *ConnectionService) newConnectionID() (string, error) {
