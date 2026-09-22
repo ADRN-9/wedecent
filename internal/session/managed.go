@@ -12,6 +12,8 @@ import (
 	"wedecent.com/wedecent/internal/trust"
 )
 
+const managedTerminalCloseTimeout = time.Second
+
 // ManagedTerminal is a lifecycle-only terminal session used by the Local Core
 // connection manager. It establishes the same authorized application session as
 // ConnectTerminal, drains terminal output so the remote PTY cannot block, and
@@ -165,8 +167,12 @@ func (s *ManagedTerminal) writeFrame(frame protocol.Frame) error {
 func (s *ManagedTerminal) finish() error {
 	var closeErr error
 	s.endOnce.Do(func() {
-		closeErr = s.conn.Close()
+		// Lifecycle completion is authoritative as soon as the application
+		// protocol ends. Do not make observers wait for TLS close_notify, which
+		// can block when both peers are tearing down simultaneously.
 		close(s.done)
+		_ = s.conn.SetDeadline(time.Now().Add(managedTerminalCloseTimeout))
+		closeErr = s.conn.Close()
 	})
 	return closeErr
 }
