@@ -29,6 +29,9 @@ const (
 	TypePing
 	TypePong
 	TypeOpenAuthorizedSession
+	TypeOpenConnection
+	TypeConnectionAccepted
+	TypeOpenAuthorizedConnection
 )
 
 type Frame struct {
