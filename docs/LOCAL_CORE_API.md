@@ -4,7 +4,7 @@
 
 This document defines the v0.4.4 Local Core API.
 
-The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, status and trusted-device inspection, credential-bearing account sign-in/sign-out, transport capability and ephemeral route/path inspection, a bounded connection-lifecycle manager boundary, a bounded IPC protocol, protected per-user local IPC endpoints, a bounded server lifecycle, and a manually-started `wd-core` process that composes the currently enabled capabilities. It does not install or autostart a daemon, expose a network port, or change the existing `wd` connection path.
+The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, status and trusted-device inspection, credential-bearing account sign-in/sign-out, transport capability and ephemeral route/path inspection, a bounded connection-lifecycle manager, a concrete authenticated connection backend, a bounded IPC protocol, protected per-user local IPC endpoints, a bounded server lifecycle, and a manually-started `wd-core` process that composes the currently enabled capabilities. It does not install or autostart a daemon or expose a network port.
 
 ## Purpose
 
@@ -96,15 +96,15 @@ This lifecycle remains reusable library code. It does not install, autostart, or
 
 ## Local Core process
 
-`cmd/wd-core` is the manually-started per-user Local Core process. It composes the existing status/device service, network read service, protected `localipc` endpoint, IPC dispatcher, account service, and `localserver` lifecycle.
+`cmd/wd-core` is the manually-started per-user Local Core process. It composes the existing status/device service, network read service, protected `localipc` endpoint, IPC dispatcher, account service, authenticated connection backend, connection manager, and `localserver` lifecycle.
 
 Startup is intentionally non-creating for identity state. `identity.Load` requires an existing key and certificate, rejects symlinked identity files, verifies that the certificate and private key match, and does not create or renew identity material. Starting the UI-facing core therefore cannot silently create or rotate a device identity.
 
 An existing account session is loaded to initialize non-secret account status and the account service. If no account session exists, the process starts signed out. Supabase URL and publishable-key configuration can be supplied to `wd-core` through the existing flags/environment variables; when an existing session is present, its project URL and publishable key are used as defaults if explicit configuration is absent. The UI does not send project configuration over the account IPC methods.
 
-`wd-core` uses `localserver.DefaultConfig`, so connections inherit the shared concurrency bound, request timeout, panic isolation, active-connection shutdown, and one-request-per-connection behavior. Interrupt cancellation closes the protected listener and drains active requests through the shared lifecycle.
+The account service is also the credential-free authorization boundary used by the connection backend. It refreshes and persists the protected account session under its existing lock and returns only a short-lived connection grant or route authorization to networking code; access and refresh tokens remain inside the account service/session store.
 
-The connection-manager capability exists as reusable core code, but `wd-core` does not yet compose a concrete authenticated `ConnectionBackend`. Therefore `connection.connect` and `connection.disconnect` currently fail closed as unavailable methods in the shipped process composition rather than silently falling back to an unaudited path. The existing CLI and staging-tested connection paths remain unchanged.
+`wd-core` uses `localserver.DefaultConfig`, so IPC connections inherit the shared concurrency bound, request timeout, panic isolation, active-request shutdown, and one-request-per-connection behavior. Interrupt cancellation closes the protected listener and drains active IPC requests. The process runtime then closes the connection service, which cancels any in-flight backend opens and tears down active authenticated sessions.
 
 `wd-core` is still manually started in this milestone. It is not installed or autostarted.
 
@@ -124,13 +124,13 @@ No account IPC response contains an access token, refresh token, password, or ot
 
 `transports.list` returns transport classes in deterministic order. In this API, `available` means that the transport class is implemented by the current core build and can be used by core networking logic; it does **not** mean that the Internet is reachable, that LAN discovery currently finds a peer, or that a specific destination can be contacted. The current build reports LAN and Internet support and reports Bluetooth as unavailable because Bluetooth transport is not implemented yet.
 
-`route.get` accepts a Local Core connection ID and returns only non-secret path metadata. Path state is process-local and ephemeral; it is not written to disk. The connection manager publishes this state only after a backend reports that an authenticated connection has been established.
+`route.get` accepts a Local Core connection ID and returns only non-secret path metadata. Path state is process-local and ephemeral; it is not written to disk. The connection manager publishes this state only after a backend reports that an authenticated application session has been established.
 
 For routed connections, UI-visible hops are derived from the existing validated `mesh.Route` structure. The route must match the local source and requested destination and must still be unexpired before it can be published. Returned hop slices are copied so callers cannot mutate core state. When a route reaches its expiry, the stored status is removed and subsequent reads fail closed with `route_not_found`.
 
 Non-routed `direct`, `lan`, and `relay` path snapshots contain no mesh-route hops, router ID, or route expiry. A non-routed snapshot that attempts to attach a mesh route is rejected.
 
-Because the current `wd-core` composition does not yet include a concrete connection backend, a newly started process still has no active path records and `route.get` returns `route_not_found` unless another composed caller records one. This is intentional until the existing authenticated networking paths are extracted behind the audited backend boundary.
+Natural backend close is observable: when the authenticated session ends remotely, the connection manager removes the corresponding path snapshot and subsequent route/disconnect lookups fail closed as not found.
 
 ## Security boundary
 
@@ -152,16 +152,24 @@ Credential-bearing account input is accepted only over the protected per-user IP
 
 A `Connect` request names only the destination device. The UI does not choose cryptographic grants, transport locators, routers, route costs, or authorization material.
 
-`internal/coreapi.ConnectionService` is a bounded lifecycle manager around a `ConnectionBackend`. The backend is the security-sensitive boundary responsible for reusing the existing grant acquisition, path selection, dialing, TLS identity verification, route authorization, and application-session establishment logic. The manager does not duplicate or weaken those decisions.
+`internal/coreapi.ConnectionService` is a bounded lifecycle manager around a `ConnectionBackend`. `internal/coreconnect.Backend` is the concrete security-sensitive implementation. It reuses the existing paired trust store, trusted LAN discovery and TLS probe, connection-grant issuance, relay proof-of-possession tickets, endpoint-pinned session TLS, and one-hop route authorization/dialer primitives.
 
-The manager owns lifecycle concerns after that boundary:
+For ordinary connections the backend preserves the existing path behavior. A trusted LAN advertisement may replace a relay locator only when its full fingerprint matches the paired identity and an endpoint-pinned TLS probe succeeds. Otherwise the paired direct/relay locator remains the fallback. Direct and legacy-relay sessions carry the short-lived terminal grant in-band. Serverless WebSocket relay sessions carry that same grant in the outer relay request and open the existing inner session without duplicating it in-band.
+
+Routed authorization remains distinct from terminal authorization. The backend accepts only an internal `RouteRequestSource`; UI requests cannot provide routers or hops. When an internal policy source selects a route, the backend obtains the terminal grant first, requires the dedicated source-to-router trust store, requests the separate `mesh.forward` route authorization, validates its exact binding, and then uses the existing `meshnet.RoutedDialer`. The default `wd-core` composition does not invent route candidates or infer routing from terminal trust, so automatic routed path selection remains disabled until a route-planning source is explicitly composed.
+
+`session.ManagedTerminal` establishes the same authorized terminal application session as the existing CLI but is lifecycle-only. It drains terminal output rather than retaining or exposing it, handles protocol ping/close frames, and exposes a close signal to the connection manager. A future terminal-stream API must add an explicit bounded stream instead of leaking terminal bytes through status-oriented methods.
+
+The manager owns lifecycle concerns after the backend boundary:
 
 - it reserves capacity before an open begins so concurrent opens cannot bypass the active-connection limit;
 - it creates opaque random connection IDs before opening network state and retries ID collisions rather than overwriting an existing connection;
 - request cancellation remains observable as cancellation rather than being converted into a generic backend failure;
+- process shutdown actively cancels in-flight backend opens;
 - only successfully authenticated backend results can publish UI-visible path state;
 - invalid backend results fail closed and any returned handle is closed;
 - disconnect removes UI-visible path state before closing the underlying handle, so a UI cannot observe stale connected routing state once teardown begins;
+- natural remote close removes the active connection and path state without exposing transport error detail;
 - if a handle close fails, the connection remains internally retryable but its path state is not re-published;
 - manager shutdown prevents new connects, removes all path state, closes active handles, and returns only sanitized aggregate failure information.
 
@@ -174,7 +182,7 @@ routed
 relay
 ```
 
-Active connection-manager state is process-local and is not persisted to disk. Natural remote-close observation is intentionally deferred until the concrete backend exposes a lifecycle signal suitable for the manager to consume.
+Active connection-manager state is process-local and is not persisted to disk.
 
 ## Router policy
 
@@ -182,9 +190,10 @@ The API exposes a stable copy of router policy fields rather than leaking intern
 
 ## Next slices
 
-1. implement and compose a concrete Local Core connection backend by extracting/reusing the existing session, grant, transport-selection, and route-authorization paths without changing their authorization semantics; include natural remote-close observation and shutdown cancellation;
+1. compose a policy-backed route candidate source so Local Core can automatically consider trusted one-hop routes without UI-supplied routing data;
 2. add router policy/statistics service implementations;
-3. wire the Windows GUI prototype to the same `v1` service contract;
-4. decide installation/autostart behavior only after process lifecycle and upgrade behavior are explicitly designed and tested.
+3. add an explicit bounded terminal-stream API before the GUI consumes terminal bytes;
+4. wire the Windows GUI prototype to the same `v1` service contract;
+5. decide installation/autostart behavior only after process lifecycle and upgrade behavior are explicitly designed and tested.
 
 The existing CLI and staging-tested routed-terminal path remain the compatibility baseline throughout this work.
