@@ -58,12 +58,13 @@ func TestOpenManagedTerminalAuthorizationAndRemoteClose(t *testing.T) {
 			clientSide, serverSide := net.Pipe()
 			dialer := &managedTestDialer{conn: clientSide}
 			firstFrame := make(chan protocol.Frame, 1)
+			proceed := make(chan struct{})
 			serverErr := make(chan error, 1)
 
 			go func() {
 				conn := tls.Server(serverSide, identity.ServerTLS(serverID))
 				defer conn.Close()
-				_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+				_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 				if err := conn.HandshakeContext(context.Background()); err != nil {
 					serverErr <- err
 					return
@@ -78,6 +79,7 @@ func TestOpenManagedTerminalAuthorizationAndRemoteClose(t *testing.T) {
 					serverErr <- err
 					return
 				}
+				<-proceed
 				if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypePing}); err != nil {
 					serverErr <- err
 					return
@@ -142,12 +144,9 @@ func TestOpenManagedTerminalAuthorizationAndRemoteClose(t *testing.T) {
 					t.Fatalf("open = %#v", open)
 				}
 			}
+			close(proceed)
 
-			select {
-			case <-managed.Done():
-			case <-time.After(5 * time.Second):
-				t.Fatal("managed terminal did not observe remote close")
-			}
+			waitManagedDoneOrServerError(t, managed, serverErr)
 			if err := <-serverErr; err != nil {
 				t.Fatal(err)
 			}
@@ -159,12 +158,13 @@ func TestManagedTerminalUnexpectedFrameFailsClosed(t *testing.T) {
 	clientID, serverID, peer := managedSessionTestIdentities(t, "tcp://ignored.test:7443")
 	clientSide, serverSide := net.Pipe()
 	dialer := &managedTestDialer{conn: clientSide}
+	proceed := make(chan struct{})
 	serverErr := make(chan error, 1)
 
 	go func() {
 		conn := tls.Server(serverSide, identity.ServerTLS(serverID))
 		defer conn.Close()
-		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
 		if err := conn.HandshakeContext(context.Background()); err != nil {
 			serverErr <- err
 			return
@@ -177,6 +177,7 @@ func TestManagedTerminalUnexpectedFrameFailsClosed(t *testing.T) {
 			serverErr <- err
 			return
 		}
+		<-proceed
 		if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.Type(250)}); err != nil {
 			serverErr <- err
 			return
@@ -195,11 +196,8 @@ func TestManagedTerminalUnexpectedFrameFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case <-managed.Done():
-	case <-time.After(5 * time.Second):
-		t.Fatal("managed terminal accepted an unexpected protocol frame")
-	}
+	close(proceed)
+	waitManagedDoneOrServerError(t, managed, serverErr)
 	if err := <-serverErr; err != nil {
 		t.Fatal(err)
 	}
@@ -211,6 +209,26 @@ func TestOpenManagedTerminalRejectsMissingDirectGrantBeforeDial(t *testing.T) {
 	client := &Client{Identity: clientID, Dialer: dialer}
 	if _, err := client.OpenManagedTerminal(context.Background(), peer, 80, 24, "xterm"); err == nil {
 		t.Fatal("OpenManagedTerminal accepted a direct connection without a grant")
+	}
+}
+
+func waitManagedDoneOrServerError(t *testing.T, managed *ManagedTerminal, serverErr <-chan error) {
+	t.Helper()
+	select {
+	case <-managed.Done():
+		return
+	case err := <-serverErr:
+		if err != nil {
+			t.Fatalf("test server failed before managed session ended: %v", err)
+		}
+		select {
+		case <-managed.Done():
+			return
+		case <-time.After(2 * time.Second):
+			t.Fatal("managed terminal did not observe server completion")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("managed terminal did not observe remote close")
 	}
 }
 
