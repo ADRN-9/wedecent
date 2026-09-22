@@ -92,8 +92,9 @@ func (c Client) IssueRouteAuthorization(
 			)
 	}
 
+	now := c.now().UTC()
 	if err := validateRouteAuthorizationResponse(
-		c.now().UTC(),
+		now,
 		request,
 		response,
 	); err != nil {
@@ -102,9 +103,55 @@ func (c Client) IssueRouteAuthorization(
 			err
 	}
 
+	// The router treats IssuedAtUnixMS as a fail-closed not-before boundary.
+	// A source may receive a freshly issued capability while its local clock is
+	// slightly behind the control plane. Do not hand that capability to the
+	// transport until the source has reached the signed issuance instant. This
+	// is structural source-side handling only: signature verification and JTI
+	// consumption remain exclusively at the router.
+	if err := waitForRouteAuthorizationIssuedAt(
+		ctx,
+		now,
+		response.Authorization.Claims.IssuedAtUnixMS,
+	); err != nil {
+		return mesh.Route{},
+			mesh.RouteAuthorization{},
+			fmt.Errorf(
+				"wait for route authorization issuance: %w",
+				err,
+			)
+	}
+
 	return response.Route,
 		response.Authorization,
 		nil
+}
+
+func waitForRouteAuthorizationIssuedAt(
+	ctx context.Context,
+	now time.Time,
+	issuedAtUnixMS int64,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	wait := time.UnixMilli(issuedAtUnixMS).
+		UTC().
+		Sub(now.UTC())
+	if wait <= 0 {
+		return nil
+	}
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func normalizeRouteAuthorizationRequest(
