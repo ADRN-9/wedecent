@@ -199,8 +199,8 @@ func (s *ConnectionService) Disconnect(ctx context.Context, req v1.DisconnectReq
 }
 
 // Close tears down every active connection and prevents future connects. It is
-// intended for Local Core process shutdown. Individual close failures are
-// collected after all handles have been given a chance to close.
+// intended for Local Core process shutdown. Raw handle errors are not included
+// in the returned error so transport details cannot escape into generic logs.
 func (s *ConnectionService) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -212,15 +212,15 @@ func (s *ConnectionService) Close() error {
 	s.active = make(map[string]activeConnection)
 	s.mu.Unlock()
 
-	var closeErrs []error
+	failed := 0
 	for id, connection := range active {
 		s.network.RemoveConnectionPath(id)
 		if err := connection.handle.Close(); err != nil {
-			closeErrs = append(closeErrs, err)
+			failed++
 		}
 	}
-	if len(closeErrs) != 0 {
-		return fmt.Errorf("%w: %v", ErrConnectionOperation, errors.Join(closeErrs...))
+	if failed != 0 {
+		return fmt.Errorf("%w: %d connection(s) failed to close", ErrConnectionOperation, failed)
 	}
 	return nil
 }
