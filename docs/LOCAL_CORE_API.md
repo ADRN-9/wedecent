@@ -4,7 +4,7 @@
 
 This document defines the v0.4.4 Local Core API.
 
-The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, status and trusted-device inspection, credential-bearing account sign-in/sign-out, transport capability and ephemeral route/path inspection, a bounded IPC protocol, protected per-user local IPC endpoints, a bounded server lifecycle, and a manually-started `wd-core` process that composes them. It does not install or autostart a daemon, expose a network port, or change the existing `wd` connection path.
+The current implementation provides versioned Go request/response types under `internal/coreapi/v1`, status and trusted-device inspection, credential-bearing account sign-in/sign-out, transport capability and ephemeral route/path inspection, a bounded connection-lifecycle manager boundary, a bounded IPC protocol, protected per-user local IPC endpoints, a bounded server lifecycle, and a manually-started `wd-core` process that composes the currently enabled capabilities. It does not install or autostart a daemon, expose a network port, or change the existing `wd` connection path.
 
 ## Purpose
 
@@ -49,7 +49,7 @@ Device lists are sorted by device ID before being returned, giving UI clients de
 
 Each message is a four-byte big-endian length followed by one JSON object. Frames are capped at 64 KiB before allocation. Request envelopes require an exact API version, bounded request ID, bounded method name, and strictly decoded parameters. Unknown JSON fields and multiple JSON values are rejected.
 
-The implemented wire methods are:
+The dispatcher recognizes these wire methods when their corresponding capabilities are composed:
 
 ```text
 status.get
@@ -59,9 +59,11 @@ devices.list
 device.get
 transports.list
 route.get
+connection.connect
+connection.disconnect
 ```
 
-Backend errors are mapped to stable public error codes instead of returning raw error strings. Unexpected failures therefore do not expose tokens, passwords, paths, database details, or other internal data. A missing or expired route is reported as the stable `route_not_found` error rather than leaking internal route state.
+Backend errors are mapped to stable public error codes instead of returning raw error strings. Unexpected failures therefore do not expose tokens, passwords, paths, database details, transport internals, or other private implementation data. Missing or expired routes and missing connections use stable public not-found errors. Connection-capacity, unavailable-service, and connection-operation failures are also represented by stable public codes.
 
 After a framed request is strictly decoded, the raw frame buffer is overwritten before `ReadRequest` returns. For `account.sign_in`, the copied raw `params` buffer is also overwritten immediately after strict parameter decoding. The decoded password is cleared from local variables as soon as practical. This is best-effort memory hygiene, not a guarantee of cryptographic zeroization: Go strings are immutable values managed by the runtime, and copies may exist until garbage collection.
 
@@ -102,6 +104,8 @@ An existing account session is loaded to initialize non-secret account status an
 
 `wd-core` uses `localserver.DefaultConfig`, so connections inherit the shared concurrency bound, request timeout, panic isolation, active-connection shutdown, and one-request-per-connection behavior. Interrupt cancellation closes the protected listener and drains active requests through the shared lifecycle.
 
+The connection-manager capability exists as reusable core code, but `wd-core` does not yet compose a concrete authenticated `ConnectionBackend`. Therefore `connection.connect` and `connection.disconnect` currently fail closed as unavailable methods in the shipped process composition rather than silently falling back to an unaudited path. The existing CLI and staging-tested connection paths remain unchanged.
+
 `wd-core` is still manually started in this milestone. It is not installed or autostarted.
 
 ## Account authentication
@@ -120,13 +124,13 @@ No account IPC response contains an access token, refresh token, password, or ot
 
 `transports.list` returns transport classes in deterministic order. In this API, `available` means that the transport class is implemented by the current core build and can be used by core networking logic; it does **not** mean that the Internet is reachable, that LAN discovery currently finds a peer, or that a specific destination can be contacted. The current build reports LAN and Internet support and reports Bluetooth as unavailable because Bluetooth transport is not implemented yet.
 
-`route.get` accepts a Local Core connection ID and returns only non-secret path metadata. Path state is process-local and ephemeral; it is not written to disk. The service is designed to be updated by the connection-lifecycle layer after that layer has selected and authenticated a path.
+`route.get` accepts a Local Core connection ID and returns only non-secret path metadata. Path state is process-local and ephemeral; it is not written to disk. The connection manager publishes this state only after a backend reports that an authenticated connection has been established.
 
 For routed connections, UI-visible hops are derived from the existing validated `mesh.Route` structure. The route must match the local source and requested destination and must still be unexpired before it can be published. Returned hop slices are copied so callers cannot mutate core state. When a route reaches its expiry, the stored status is removed and subsequent reads fail closed with `route_not_found`.
 
 Non-routed `direct`, `lan`, and `relay` path snapshots contain no mesh-route hops, router ID, or route expiry. A non-routed snapshot that attempts to attach a mesh route is rejected.
 
-The Local Core does not yet implement the general `Connect`/`Disconnect` lifecycle in this slice, so a newly started `wd-core` has no active route/path records and `route.get` returns `route_not_found` until a future connection-lifecycle implementation records one. The existing CLI and staging-tested connection paths are unchanged.
+Because the current `wd-core` composition does not yet include a concrete connection backend, a newly started process still has no active path records and `route.get` returns `route_not_found` unless another composed caller records one. This is intentional until the existing authenticated networking paths are extracted behind the audited backend boundary.
 
 ## Security boundary
 
@@ -146,7 +150,22 @@ Credential-bearing account input is accepted only over the protected per-user IP
 
 ## Connection semantics
 
-A `Connect` request names the destination device. The UI does not choose cryptographic grants or construct routes. The core owns path selection and can report the resulting path as one of:
+A `Connect` request names only the destination device. The UI does not choose cryptographic grants, transport locators, routers, route costs, or authorization material.
+
+`internal/coreapi.ConnectionService` is a bounded lifecycle manager around a `ConnectionBackend`. The backend is the security-sensitive boundary responsible for reusing the existing grant acquisition, path selection, dialing, TLS identity verification, route authorization, and application-session establishment logic. The manager does not duplicate or weaken those decisions.
+
+The manager owns lifecycle concerns after that boundary:
+
+- it reserves capacity before an open begins so concurrent opens cannot bypass the active-connection limit;
+- it creates opaque random connection IDs before opening network state and retries ID collisions rather than overwriting an existing connection;
+- request cancellation remains observable as cancellation rather than being converted into a generic backend failure;
+- only successfully authenticated backend results can publish UI-visible path state;
+- invalid backend results fail closed and any returned handle is closed;
+- disconnect removes UI-visible path state before closing the underlying handle, so a UI cannot observe stale connected routing state once teardown begins;
+- if a handle close fails, the connection remains internally retryable but its path state is not re-published;
+- manager shutdown prevents new connects, removes all path state, closes active handles, and returns only sanitized aggregate failure information.
+
+The selected public path remains one of:
 
 ```text
 direct
@@ -155,7 +174,7 @@ routed
 relay
 ```
 
-This keeps UI behavior independent of transport details and allows the core to preserve the existing fail-closed authorization and fallback behavior.
+Active connection-manager state is process-local and is not persisted to disk. Natural remote-close observation is intentionally deferred until the concrete backend exposes a lifecycle signal suitable for the manager to consume.
 
 ## Router policy
 
@@ -163,7 +182,7 @@ The API exposes a stable copy of router policy fields rather than leaking intern
 
 ## Next slices
 
-1. implement connection lifecycle behind the existing session and route-authorization code paths and feed authenticated path state into `NetworkReadService`;
+1. implement and compose a concrete Local Core connection backend by extracting/reusing the existing session, grant, transport-selection, and route-authorization paths without changing their authorization semantics; include natural remote-close observation and shutdown cancellation;
 2. add router policy/statistics service implementations;
 3. wire the Windows GUI prototype to the same `v1` service contract;
 4. decide installation/autostart behavior only after process lifecycle and upgrade behavior are explicitly designed and tested.
