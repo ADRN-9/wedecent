@@ -46,12 +46,7 @@ jobs:
           go-version: '1.27.0'
           cache: true
       - name: Verify formatting
-        run: |
-          formatting_diff="$(gofmt -d cmd internal || true)"
-          if [ -n "$formatting_diff" ]; then
-            printf '%s\n' "$formatting_diff"
-            exit 1
-          fi
+        run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
         run: go vet ./...
       - name: Test with race detector
