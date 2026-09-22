@@ -149,3 +149,22 @@ jobs:
             -v
 
           echo 'WEDECENT_STAGING_ROUTED_TERMINAL_ADVERSARIAL_SOURCE_ROUTER_TRUST_WORKFLOW_OK'
+
+      - name: Run adversarial router-destination trust check
+        shell: bash
+        run: |
+          set -euo pipefail
+          umask 077
+
+          state_dir="$HOME/.local/share/wedecent-staging-routed-terminal-e2e"
+          install -d -m 700 "$state_dir"
+
+          export WEDECENT_STAGING_E2E_STATE_DIR="$state_dir"
+          export WEDECENT_STAGING_ROUTED_TERMINAL_E2E=1
+
+          go test ./internal/meshruntime \
+            -run '^TestStagingRoutedTerminalAdversarialRouterDestinationTrust$' \
+            -count=1 \
+            -v
+
+          echo 'WEDECENT_STAGING_ROUTED_TERMINAL_ADVERSARIAL_ROUTER_DESTINATION_TRUST_WORKFLOW_OK'
