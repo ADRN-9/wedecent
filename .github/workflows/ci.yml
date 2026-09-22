@@ -47,7 +47,7 @@ jobs:
           cache: true
       - name: Verify formatting
         run: |
-          formatting_diff="$(gofmt -d cmd internal)"
+          formatting_diff="$(gofmt -d cmd internal || true)"
           if [ -n "$formatting_diff" ]; then
             printf '%s\n' "$formatting_diff"
             exit 1
