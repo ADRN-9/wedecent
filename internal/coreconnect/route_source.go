@@ -26,7 +26,7 @@ const (
 	routeSelectionPolicyVersion = 1
 	maxRouteSelectionPolicySize = 1 << 20
 	maxRouteSelectionCandidates = 256
-	maxRouteSelectionCost        = uint64(1_000_000_000)
+	maxRouteSelectionCost       = uint64(1_000_000_000)
 )
 
 var routeSelectionDeviceIDPattern = regexp.MustCompile(`^wd_[a-z2-7]{16}$`)
