@@ -20,12 +20,12 @@ import (
 var ErrServerRequired = errors.New("core process: IPC server is required")
 
 type Config struct {
-	ClientStateDir   string
-	SupabaseURL      string
-	PublishableKey   string
-	AccountClient    coreapi.AccountClient
+	ClientStateDir    string
+	SupabaseURL       string
+	PublishableKey    string
+	AccountClient     coreapi.AccountClient
 	ConnectionBackend coreapi.ConnectionBackend
-	RouteSource      coreconnect.RouteRequestSource
+	RouteSource       coreconnect.RouteRequestSource
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection
