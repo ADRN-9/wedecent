@@ -51,7 +51,7 @@ func TestNetworkReadServiceRejectsDuplicateAndUnsafeTransportStatus(t *testing.T
 			{Name: v1.TransportLAN, Available: true},
 			{Name: v1.TransportLAN, Available: false},
 		},
-		"unknown": {{Name: "usb", Available: true}},
+		"unknown":        {{Name: "usb", Available: true}},
 		"control detail": {{Name: v1.TransportLAN, Detail: "line\nbreak"}},
 	} {
 		t.Run(name, func(t *testing.T) {
