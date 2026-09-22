@@ -148,8 +148,10 @@ func (s *ManagedTerminal) monitor() {
 			// Lifecycle-only sessions deliberately drain application frames. This
 			// keeps the remote PTY from blocking without retaining terminal data.
 		default:
-			// Unknown post-accept frames are ignored here rather than reflected or
-			// surfaced across the Local Core API boundary.
+			// The lifecycle-only core endpoint has no reason to accept protocol
+			// extensions implicitly. Unexpected frames terminate the session.
+			_ = s.finish()
+			return
 		}
 	}
 }
