@@ -176,13 +176,13 @@ func loadRouteSelectionPolicy(stateDir string) (routeSelectionPolicy, bool, erro
 		}
 		return routeSelectionPolicy{}, false, fmt.Errorf("core route selection: parse trailing policy data: %w", err)
 	}
-	if err := validateRouteSelectionPolicy(policy); err != nil {
+	if err := validateRouteSelectionPolicy(&policy); err != nil {
 		return routeSelectionPolicy{}, false, err
 	}
 	return policy, true, nil
 }
 
-func validateRouteSelectionPolicy(policy routeSelectionPolicy) error {
+func validateRouteSelectionPolicy(policy *routeSelectionPolicy) error {
 	if policy.Version != routeSelectionPolicyVersion {
 		return errors.New("core route selection: unsupported policy version")
 	}
@@ -194,7 +194,8 @@ func validateRouteSelectionPolicy(policy routeSelectionPolicy) error {
 		return errors.New("core route selection: policy has too many candidates")
 	}
 
-	for index, candidate := range policy.Candidates {
+	for index := range policy.Candidates {
+		candidate := policy.Candidates[index]
 		candidate.DestinationDeviceID = strings.TrimSpace(candidate.DestinationDeviceID)
 		candidate.RouterDeviceID = strings.TrimSpace(candidate.RouterDeviceID)
 		candidate.FirstTransport = mesh.TransportName(strings.ToLower(strings.TrimSpace(string(candidate.FirstTransport))))
