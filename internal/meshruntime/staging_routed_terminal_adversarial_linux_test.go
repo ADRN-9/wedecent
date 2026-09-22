@@ -196,9 +196,9 @@ func TestStagingRoutedTerminalAdversarialRouterSourceTrust(t *testing.T) {
 	}
 
 	dialer := meshnet.RoutedDialer{
-		Identity: aID,
-		Resolver: meshnet.TrustedPeerResolver{Store: aRouterTrust},
-		Route:    route,
+		Identity:      aID,
+		Resolver:      meshnet.TrustedPeerResolver{Store: aRouterTrust},
+		Route:         route,
 		Authorization: authorization,
 	}
 
@@ -210,7 +210,7 @@ func TestStagingRoutedTerminalAdversarialRouterSourceTrust(t *testing.T) {
 	if err == nil {
 		t.Fatal("routed dial unexpectedly succeeded without router->source trust")
 	}
-	if err := waitStagingRuntime(ctx, "router rejection", firstRouterErr); err == nil {
+	if err := waitStagingRuntime(ctx, firstRouterErr); err == nil {
 		t.Fatal("router unexpectedly accepted untrusted source")
 	}
 
@@ -231,10 +231,10 @@ func TestStagingRoutedTerminalAdversarialRouterSourceTrust(t *testing.T) {
 	if err := conn.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := waitStagingRuntime(ctx, "router success", secondRouterErr); err != nil {
+	if err := waitStagingRuntime(ctx, secondRouterErr); err != nil {
 		t.Fatalf("router runtime after trusted retry: %v", err)
 	}
-	if err := waitStagingRuntime(ctx, "destination success", destinationErr); err != nil {
+	if err := waitStagingRuntime(ctx, destinationErr); err != nil {
 		t.Fatalf("destination runtime after trusted retry: %v", err)
 	}
 
@@ -276,11 +276,11 @@ func serveOneRouteTunnel(
 	return result
 }
 
-func waitStagingRuntime(ctx context.Context, name string, result <-chan error) error {
+func waitStagingRuntime(ctx context.Context, result <-chan error) error {
 	select {
 	case err := <-result:
 		return err
 	case <-ctx.Done():
-		return context.DeadlineExceeded
+		return ctx.Err()
 	}
 }
