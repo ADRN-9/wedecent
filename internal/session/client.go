@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strings"
 	"sync"
 	"time"
 
@@ -84,12 +83,9 @@ func (c *Client) Pair(ctx context.Context, endpoint, expectedFingerprint, secret
 }
 
 func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.File, out io.Writer) (int, error) {
-	inBandAuthorization := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(peer.Endpoint)), "wsrelay://")
-	if inBandAuthorization {
-		grant := strings.TrimSpace(c.ConnectionGrant)
-		if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
-			return 0, errors.New("a valid connection grant is required for this transport")
-		}
+	inBandAuthorization, grant, err := connectionAuthorization(peer, c.ConnectionGrant)
+	if err != nil {
+		return 0, err
 	}
 
 	raw, err := c.dial(ctx, peer.Endpoint)
@@ -115,7 +111,7 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 	if inBandAuthorization {
 		frameType = protocol.TypeOpenAuthorizedSession
 		payload, _ = protocol.JSON(protocol.OpenAuthorizedSession{
-			Cols: cols, Rows: rows, Term: os.Getenv("TERM"), ConnectionGrant: strings.TrimSpace(c.ConnectionGrant),
+			Cols: cols, Rows: rows, Term: os.Getenv("TERM"), ConnectionGrant: grant,
 		})
 	} else {
 		payload, _ = protocol.JSON(protocol.OpenSession{Cols: cols, Rows: rows, Term: os.Getenv("TERM")})
