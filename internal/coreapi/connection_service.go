@@ -31,6 +31,14 @@ type ConnectionHandle interface {
 	Close() error
 }
 
+// ObservableConnectionHandle lets a backend report that its underlying
+// authenticated session ended independently of a local disconnect request.
+// Done must be closed exactly once and must never carry secret/error detail.
+type ObservableConnectionHandle interface {
+	ConnectionHandle
+	Done() <-chan struct{}
+}
+
 type OpenedConnection struct {
 	Path   v1.ConnectionPath
 	Route  *mesh.Route
@@ -54,9 +62,11 @@ type ConnectionServiceConfig struct {
 }
 
 type activeConnection struct {
-	public  v1.Connection
-	handle  ConnectionHandle
-	closing bool
+	public       v1.Connection
+	handle       ConnectionHandle
+	closing      bool
+	suppressDone bool
+	token        *struct{}
 }
 
 type ConnectionService struct {
@@ -65,6 +75,9 @@ type ConnectionService struct {
 	max     int
 	random  io.Reader
 	now     func() time.Time
+
+	shutdownCtx context.Context
+	shutdown    context.CancelFunc
 
 	mu       sync.Mutex
 	opening  int
@@ -97,14 +110,17 @@ func NewConnectionService(cfg ConnectionServiceConfig) (*ConnectionService, erro
 	if now == nil {
 		now = time.Now
 	}
+	shutdownCtx, shutdown := context.WithCancel(context.Background())
 	return &ConnectionService{
-		backend:  cfg.Backend,
-		network:  cfg.Network,
-		max:      maxActive,
-		random:   random,
-		now:      now,
-		active:   make(map[string]activeConnection),
-		reserved: make(map[string]struct{}),
+		backend:     cfg.Backend,
+		network:     cfg.Network,
+		max:         maxActive,
+		random:      random,
+		now:         now,
+		shutdownCtx: shutdownCtx,
+		shutdown:    shutdown,
+		active:      make(map[string]activeConnection),
+		reserved:    make(map[string]struct{}),
 	}, nil
 }
 
@@ -134,13 +150,24 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 		}
 	}()
 
-	opened, err := s.backend.Open(ctx, req.DeviceID)
+	requestCtx := ctx
+	openCtx, cancelOpen := context.WithCancel(requestCtx)
+	stopShutdownCancel := context.AfterFunc(s.shutdownCtx, cancelOpen)
+	defer func() {
+		stopShutdownCancel()
+		cancelOpen()
+	}()
+
+	opened, err := s.backend.Open(openCtx, req.DeviceID)
 	if err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return v1.Connection{}, ctxErr
+		if requestErr := requestCtx.Err(); requestErr != nil {
+			return v1.Connection{}, requestErr
 		}
 		if s.isClosed() {
 			return v1.Connection{}, ErrConnectionServiceClosed
+		}
+		if openErr := openCtx.Err(); openErr != nil {
+			return v1.Connection{}, openErr
 		}
 		return v1.Connection{}, fmt.Errorf("%w: open backend", ErrConnectionOperation)
 	}
@@ -150,9 +177,13 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 		}
 		return v1.Connection{}, fmt.Errorf("%w: backend returned invalid connection", ErrConnectionOperation)
 	}
-	if err := ctx.Err(); err != nil {
+	if err := requestCtx.Err(); err != nil {
 		_ = opened.Handle.Close()
 		return v1.Connection{}, err
+	}
+	if s.isClosed() {
+		_ = opened.Handle.Close()
+		return v1.Connection{}, ErrConnectionServiceClosed
 	}
 
 	startedAt := s.now().UTC()
@@ -173,6 +204,7 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 		return v1.Connection{}, fmt.Errorf("%w: publish path state", ErrConnectionOperation)
 	}
 
+	token := &struct{}{}
 	s.mu.Lock()
 	if s.closed {
 		s.opening--
@@ -185,9 +217,15 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 	}
 	s.opening--
 	delete(s.reserved, connectionID)
-	s.active[connectionID] = activeConnection{public: public, handle: opened.Handle}
+	s.active[connectionID] = activeConnection{public: public, handle: opened.Handle, token: token}
 	reserved = false
 	s.mu.Unlock()
+
+	if observable, ok := opened.Handle.(ObservableConnectionHandle); ok {
+		if done := observable.Done(); done != nil {
+			go s.watchRemoteClose(connectionID, token, done)
+		}
+	}
 	return public, nil
 }
 
@@ -213,9 +251,15 @@ func (s *ConnectionService) Disconnect(ctx context.Context, req v1.DisconnectReq
 	// concurrent UI read can never report a connection after disconnect begins.
 	s.network.RemoveConnectionPath(req.ConnectionID)
 	if err := active.handle.Close(); err != nil {
+		doneClosed := observableHandleDoneClosed(active.handle)
 		s.mu.Lock()
-		if current, stillActive := s.active[req.ConnectionID]; stillActive {
+		if current, stillActive := s.active[req.ConnectionID]; stillActive && current.token == active.token {
 			current.closing = false
+			// If this failed local close itself caused the one-shot Done signal,
+			// suppress that signal so the existing retryable-close contract wins.
+			// A Done signal that arrives later, after this point, is still treated
+			// as a natural remote close and removes the entry.
+			current.suppressDone = doneClosed
 			s.active[req.ConnectionID] = current
 		}
 		s.mu.Unlock()
@@ -223,14 +267,17 @@ func (s *ConnectionService) Disconnect(ctx context.Context, req v1.DisconnectReq
 	}
 
 	s.mu.Lock()
-	delete(s.active, req.ConnectionID)
+	if current, stillActive := s.active[req.ConnectionID]; stillActive && current.token == active.token {
+		delete(s.active, req.ConnectionID)
+	}
 	s.mu.Unlock()
 	return nil
 }
 
-// Close tears down every active connection and prevents future connects. It is
-// intended for Local Core process shutdown. Raw handle errors are not included
-// in the returned error so transport details cannot escape into generic logs.
+// Close tears down every active connection, cancels in-flight backend opens,
+// and prevents future connects. It is intended for Local Core process shutdown.
+// Raw handle errors are not included in the returned error so transport details
+// cannot escape into generic logs.
 func (s *ConnectionService) Close() error {
 	s.mu.Lock()
 	if s.closed {
@@ -241,6 +288,8 @@ func (s *ConnectionService) Close() error {
 	active := s.active
 	s.active = make(map[string]activeConnection)
 	s.mu.Unlock()
+
+	s.shutdown()
 
 	failed := 0
 	for id, connection := range active {
@@ -253,6 +302,49 @@ func (s *ConnectionService) Close() error {
 		return fmt.Errorf("%w: %d connection(s) failed to close", ErrConnectionOperation, failed)
 	}
 	return nil
+}
+
+func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{}, done <-chan struct{}) {
+	<-done
+
+	s.mu.Lock()
+	current, ok := s.active[connectionID]
+	if ok && current.token == token {
+		switch {
+		case current.closing:
+			ok = false
+		case current.suppressDone:
+			current.suppressDone = false
+			s.active[connectionID] = current
+			ok = false
+		default:
+			delete(s.active, connectionID)
+		}
+	} else {
+		ok = false
+	}
+	s.mu.Unlock()
+
+	if ok {
+		s.network.RemoveConnectionPath(connectionID)
+	}
+}
+
+func observableHandleDoneClosed(handle ConnectionHandle) bool {
+	observable, ok := handle.(ObservableConnectionHandle)
+	if !ok {
+		return false
+	}
+	done := observable.Done()
+	if done == nil {
+		return false
+	}
+	select {
+	case <-done:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *ConnectionService) reserveOpening() error {

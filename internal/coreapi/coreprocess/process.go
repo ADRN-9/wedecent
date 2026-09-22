@@ -12,6 +12,7 @@ import (
 	"wedecent.com/wedecent/internal/coreapi/ipc"
 	"wedecent.com/wedecent/internal/coreapi/localipc"
 	"wedecent.com/wedecent/internal/coreapi/localserver"
+	"wedecent.com/wedecent/internal/coreconnect"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/trust"
 )
@@ -19,16 +20,41 @@ import (
 var ErrServerRequired = errors.New("core process: IPC server is required")
 
 type Config struct {
-	ClientStateDir string
-	SupabaseURL    string
-	PublishableKey string
-	AccountClient  coreapi.AccountClient
+	ClientStateDir    string
+	SupabaseURL       string
+	PublishableKey    string
+	AccountClient     coreapi.AccountClient
+	ConnectionBackend coreapi.ConnectionBackend
+	RouteSource       coreconnect.RouteRequestSource
+}
+
+// Runtime owns the Local Core IPC server plus process-scoped connection
+// lifecycle. Closing it cancels in-flight opens and tears down active sessions.
+type Runtime struct {
+	Server      *ipc.Server
+	Connections *coreapi.ConnectionService
+}
+
+func (r *Runtime) Close() error {
+	if r == nil || r.Connections == nil {
+		return nil
+	}
+	return r.Connections.Close()
 }
 
 // Open composes the Local Core API from existing client state. Identity state is
 // never created or renewed. Account credentials are accepted only by the account
 // service and returned auth tokens remain inside the core/session store.
 func Open(cfg Config) (*ipc.Server, error) {
+	runtime, err := OpenRuntime(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return runtime.Server, nil
+}
+
+// OpenRuntime composes the process-owned networking lifecycle used by wd-core.
+func OpenRuntime(cfg Config) (*Runtime, error) {
 	stateDir := strings.TrimSpace(cfg.ClientStateDir)
 	if stateDir == "" {
 		return nil, errors.New("core process: client state directory is required")
@@ -45,9 +71,9 @@ func Open(cfg Config) (*ipc.Server, error) {
 	}
 
 	sessionPath := account.SessionPath(stateDir)
-	session, err := account.Load(sessionPath)
+	accountSession, err := account.Load(sessionPath)
 	if errors.Is(err, account.ErrNoSession) {
-		session = nil
+		accountSession = nil
 	} else if err != nil {
 		return nil, fmt.Errorf("core process: load account session: %w", err)
 	}
@@ -56,7 +82,7 @@ func Open(cfg Config) (*ipc.Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core process: open device trust: %w", err)
 	}
-	readService, err := coreapi.NewReadService(id, session, devices)
+	readService, err := coreapi.NewReadService(id, accountSession, devices)
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose read service: %w", err)
 	}
@@ -65,9 +91,9 @@ func Open(cfg Config) (*ipc.Server, error) {
 		return nil, fmt.Errorf("core process: compose network read service: %w", err)
 	}
 
-	if supabaseURL == "" && session != nil {
-		supabaseURL = session.SupabaseURL
-		publishableKey = session.PublishableKey
+	if supabaseURL == "" && accountSession != nil {
+		supabaseURL = accountSession.SupabaseURL
+		publishableKey = accountSession.PublishableKey
 	}
 	accountClient := cfg.AccountClient
 	if accountClient == nil {
@@ -79,23 +105,46 @@ func Open(cfg Config) (*ipc.Server, error) {
 		PublishableKey: publishableKey,
 		SessionPath:    sessionPath,
 		Status:         readService,
-		InitialSession: session,
+		InitialSession: accountSession,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose account service: %w", err)
 	}
 
-	server, err := ipc.NewServerWithServices(ipc.Services{
-		Status:     readService,
-		Devices:    readService,
-		Account:    accountService,
-		Transports: networkService,
-		Routes:     networkService,
+	connectionBackend := cfg.ConnectionBackend
+	if connectionBackend == nil {
+		connectionBackend, err = coreconnect.New(coreconnect.Config{
+			StateDir:    stateDir,
+			Identity:    id,
+			Trust:       devices,
+			Authorizer:  accountService,
+			RouteSource: cfg.RouteSource,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("core process: compose connection backend: %w", err)
+		}
+	}
+	connectionService, err := coreapi.NewConnectionService(coreapi.ConnectionServiceConfig{
+		Backend: connectionBackend,
+		Network: networkService,
 	})
 	if err != nil {
+		return nil, fmt.Errorf("core process: compose connection service: %w", err)
+	}
+
+	server, err := ipc.NewServerWithServices(ipc.Services{
+		Status:      readService,
+		Devices:     readService,
+		Account:     accountService,
+		Connections: connectionService,
+		Transports:  networkService,
+		Routes:      networkService,
+	})
+	if err != nil {
+		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose IPC server: %w", err)
 	}
-	return server, nil
+	return &Runtime{Server: server, Connections: connectionService}, nil
 }
 
 // OpenReadOnly preserves a credential-free composition for callers that do not
@@ -147,4 +196,22 @@ func RunLocal(ctx context.Context, server *ipc.Server) error {
 		return fmt.Errorf("core process: listen: %w", err)
 	}
 	return localserver.Serve(ctx, listener, server.ServeOne, localserver.DefaultConfig())
+}
+
+// RunLocalRuntime is the process entry point used by wd-core. It closes the
+// connection service after the bounded local server has drained request
+// handlers, ensuring active sessions and any in-flight opens are torn down.
+func RunLocalRuntime(ctx context.Context, runtime *Runtime) error {
+	if runtime == nil || runtime.Server == nil {
+		return ErrServerRequired
+	}
+	serveErr := RunLocal(ctx, runtime.Server)
+	closeErr := runtime.Close()
+	if serveErr != nil {
+		if closeErr != nil {
+			return errors.Join(serveErr, closeErr)
+		}
+		return serveErr
+	}
+	return closeErr
 }
