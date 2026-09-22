@@ -11,30 +11,36 @@ import (
 )
 
 const (
-	ErrorInvalidParams      = "invalid_params"
-	ErrorMethodNotFound     = "method_not_found"
-	ErrorDeviceNotFound     = "device_not_found"
-	ErrorRouteNotFound      = "route_not_found"
-	ErrorRequestCanceled    = "request_canceled"
-	ErrorAccountUnavailable = "account_unavailable"
-	ErrorAccountFailed      = "account_operation_failed"
-	ErrorInternal           = "internal_error"
+	ErrorInvalidParams         = "invalid_params"
+	ErrorMethodNotFound        = "method_not_found"
+	ErrorDeviceNotFound        = "device_not_found"
+	ErrorRouteNotFound         = "route_not_found"
+	ErrorConnectionNotFound    = "connection_not_found"
+	ErrorConnectionLimit       = "connection_limit"
+	ErrorConnectionUnavailable = "connection_unavailable"
+	ErrorConnectionFailed      = "connection_failed"
+	ErrorRequestCanceled       = "request_canceled"
+	ErrorAccountUnavailable    = "account_unavailable"
+	ErrorAccountFailed         = "account_operation_failed"
+	ErrorInternal              = "internal_error"
 )
 
 type Services struct {
-	Status     v1.StatusService
-	Devices    v1.DeviceService
-	Account    v1.AccountService
-	Transports v1.TransportService
-	Routes     v1.RouteService
+	Status      v1.StatusService
+	Devices     v1.DeviceService
+	Account     v1.AccountService
+	Connections v1.ConnectionService
+	Transports  v1.TransportService
+	Routes      v1.RouteService
 }
 
 type Server struct {
-	status     v1.StatusService
-	devices    v1.DeviceService
-	account    v1.AccountService
-	transports v1.TransportService
-	routes     v1.RouteService
+	status      v1.StatusService
+	devices     v1.DeviceService
+	account     v1.AccountService
+	connections v1.ConnectionService
+	transports  v1.TransportService
+	routes      v1.RouteService
 }
 
 func NewServer(status v1.StatusService, devices v1.DeviceService) (*Server, error) {
@@ -50,11 +56,12 @@ func NewServerWithServices(services Services) (*Server, error) {
 		return nil, errors.New("coreapi ipc: status and device services are required")
 	}
 	return &Server{
-		status:     services.Status,
-		devices:    services.Devices,
-		account:    services.Account,
-		transports: services.Transports,
-		routes:     services.Routes,
+		status:      services.Status,
+		devices:     services.Devices,
+		account:     services.Account,
+		connections: services.Connections,
+		transports:  services.Transports,
+		routes:      services.Routes,
 	}, nil
 }
 
@@ -134,6 +141,24 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		}
 		result, err = s.devices.GetDevice(ctx, params)
+	case v1.MethodConnectionConnect:
+		if s.connections == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		var params v1.ConnectRequest
+		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		result, err = s.connections.Connect(ctx, params)
+	case v1.MethodConnectionDisconnect:
+		if s.connections == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		var params v1.DisconnectRequest
+		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		err = s.connections.Disconnect(ctx, params)
 	case v1.MethodTransportsList:
 		if s.transports == nil {
 			return errorResponse(response, ErrorMethodNotFound, "method not found")
@@ -161,10 +186,18 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorRequestCanceled, "request canceled")
 		case errors.Is(err, coreapi.ErrDeviceNotFound):
 			return errorResponse(response, ErrorDeviceNotFound, "device not found")
-		case errors.Is(err, coreapi.ErrInvalidRouteRequest):
+		case errors.Is(err, coreapi.ErrInvalidRouteRequest), errors.Is(err, coreapi.ErrInvalidConnectionRequest):
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		case errors.Is(err, coreapi.ErrRouteNotFound):
 			return errorResponse(response, ErrorRouteNotFound, "route not found")
+		case errors.Is(err, coreapi.ErrConnectionNotFound):
+			return errorResponse(response, ErrorConnectionNotFound, "connection not found")
+		case errors.Is(err, coreapi.ErrConnectionLimit):
+			return errorResponse(response, ErrorConnectionLimit, "connection limit reached")
+		case errors.Is(err, coreapi.ErrConnectionServiceClosed):
+			return errorResponse(response, ErrorConnectionUnavailable, "connection service is unavailable")
+		case errors.Is(err, coreapi.ErrConnectionOperation):
+			return errorResponse(response, ErrorConnectionFailed, "connection operation failed")
 		case errors.Is(err, coreapi.ErrAccountNotConfigured):
 			return errorResponse(response, ErrorAccountUnavailable, "account sign-in is unavailable")
 		case errors.Is(err, coreapi.ErrAccountOperation):

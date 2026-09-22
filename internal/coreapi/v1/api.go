@@ -10,13 +10,15 @@ import (
 const Version = "v1"
 
 const (
-	MethodStatusGet      = "status.get"
-	MethodDevicesList    = "devices.list"
-	MethodDeviceGet      = "device.get"
-	MethodAccountSignIn  = "account.sign_in"
-	MethodAccountSignOut = "account.sign_out"
-	MethodTransportsList = "transports.list"
-	MethodRouteGet       = "route.get"
+	MethodStatusGet            = "status.get"
+	MethodDevicesList          = "devices.list"
+	MethodDeviceGet            = "device.get"
+	MethodAccountSignIn        = "account.sign_in"
+	MethodAccountSignOut       = "account.sign_out"
+	MethodConnectionConnect    = "connection.connect"
+	MethodConnectionDisconnect = "connection.disconnect"
+	MethodTransportsList       = "transports.list"
+	MethodRouteGet             = "route.get"
 )
 
 type ConnectionPath string
