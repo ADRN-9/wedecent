@@ -47,7 +47,7 @@ type Config struct {
 	LANTimeout   time.Duration
 	RelayOptions transport.RelayOptions
 
-	FindTrusted findTrustedFunc
+	FindTrusted  findTrustedFunc
 	OpenTerminal terminalOpenerFunc
 	Now          func() time.Time
 }
