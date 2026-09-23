@@ -10,6 +10,11 @@ import (
 	"wedecent.com/wedecent/internal/guiapp"
 )
 
+var (
+	ErrConnectOutcomeUnknown       = errors.New("wd-ui: connection outcome is unknown")
+	ErrTerminalWriteOutcomeUnknown = errors.New("wd-ui: terminal write outcome is unknown")
+)
+
 type coreRecoverFunc func(context.Context) error
 
 type coreRecoveryCall struct {
@@ -20,9 +25,10 @@ type coreRecoveryCall struct {
 // recoveringCore adds bounded process recovery around the existing typed Core
 // client without changing Local Core protocol or session semantics.
 //
-// Only replay-safe methods are retried after recovery. Connect and terminal
-// writes may have reached Core before a transport failure, so replaying them
-// could create a duplicate connection or duplicate terminal input.
+// Read-only and idempotent operations may replay after recovery. Connect and
+// terminal writes replay only when the typed transport stage proves request
+// transmission had not started. Once a write may have begun, their result is
+// reported as unknown instead of risking duplicate side effects.
 type recoveringCore struct {
 	inner   guiapp.Core
 	recover coreRecoverFunc
@@ -80,11 +86,24 @@ func (c *recoveringCore) GetDevice(ctx context.Context, req v1.GetDeviceRequest)
 func (c *recoveringCore) Connect(ctx context.Context, req v1.ConnectRequest) (v1.Connection, error) {
 	generation := c.recoveryGeneration()
 	out, err := c.inner.Connect(ctx, req)
-	if c.shouldRecover(err) {
-		// Do not replay: a lost response cannot prove the first connect failed.
-		_ = c.recoverOnce(ctx, generation)
+	if !c.shouldRecover(err) {
+		return out, err
 	}
-	return out, err
+
+	mayHaveReached := coreclient.RequestMayHaveReachedCore(err)
+	recoveryErr := c.recoverOnce(ctx, generation)
+	if mayHaveReached {
+		return out, unknownMutationError(ErrConnectOutcomeUnknown, err, recoveryErr)
+	}
+	if recoveryErr != nil {
+		return out, recoveryErr
+	}
+
+	retryOut, retryErr := c.inner.Connect(ctx, req)
+	if c.shouldRecover(retryErr) && coreclient.RequestMayHaveReachedCore(retryErr) {
+		return retryOut, unknownMutationError(ErrConnectOutcomeUnknown, retryErr, nil)
+	}
+	return retryOut, retryErr
 }
 
 func (c *recoveringCore) Disconnect(ctx context.Context, req v1.DisconnectRequest) error {
@@ -117,11 +136,24 @@ func (c *recoveringCore) ReadTerminal(ctx context.Context, req v1.TerminalReadRe
 func (c *recoveringCore) WriteTerminal(ctx context.Context, req v1.TerminalWriteRequest) error {
 	generation := c.recoveryGeneration()
 	err := c.inner.WriteTerminal(ctx, req)
-	if c.shouldRecover(err) {
-		// Do not replay: a lost response cannot prove the bytes were not written.
-		_ = c.recoverOnce(ctx, generation)
+	if !c.shouldRecover(err) {
+		return err
 	}
-	return err
+
+	mayHaveReached := coreclient.RequestMayHaveReachedCore(err)
+	recoveryErr := c.recoverOnce(ctx, generation)
+	if mayHaveReached {
+		return unknownMutationError(ErrTerminalWriteOutcomeUnknown, err, recoveryErr)
+	}
+	if recoveryErr != nil {
+		return recoveryErr
+	}
+
+	retryErr := c.inner.WriteTerminal(ctx, req)
+	if c.shouldRecover(retryErr) && coreclient.RequestMayHaveReachedCore(retryErr) {
+		return unknownMutationError(ErrTerminalWriteOutcomeUnknown, retryErr, nil)
+	}
+	return retryErr
 }
 
 func (c *recoveringCore) ResizeTerminal(ctx context.Context, req v1.TerminalResizeRequest) error {
@@ -138,6 +170,13 @@ func (c *recoveringCore) ResizeTerminal(ctx context.Context, req v1.TerminalResi
 
 func (c *recoveringCore) shouldRecover(err error) bool {
 	return errors.Is(err, coreclient.ErrUnavailable)
+}
+
+func unknownMutationError(kind, transportErr, recoveryErr error) error {
+	if recoveryErr != nil {
+		return errors.Join(kind, transportErr, recoveryErr)
+	}
+	return errors.Join(kind, transportErr)
 }
 
 func (c *recoveringCore) recoveryGeneration() uint64 {

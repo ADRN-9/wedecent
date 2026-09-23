@@ -875,6 +875,12 @@ func publicError(err error) string {
 	if err == nil {
 		return ""
 	}
+	if errors.Is(err, ErrConnectOutcomeUnknown) {
+		return "Connection result is uncertain because Local Core lost the response. A connection may have been created; restart Local Core before trying to connect again."
+	}
+	if errors.Is(err, ErrTerminalWriteOutcomeUnknown) {
+		return "Terminal input delivery is uncertain because Local Core lost the response. The input may already have been sent; check terminal output before sending it again."
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return "Local Core request timed out."
 	}
@@ -897,7 +903,7 @@ func publicError(err error) string {
 	if errors.As(err, &remote) {
 		return remote.Message
 	}
-	return "Local Core is unavailable. Start wd-core for this user and try again."
+	return "Local Core is unavailable. Recovery did not complete; try again."
 }
 
 func clamp(value, min, max int) int {
