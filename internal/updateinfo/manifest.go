@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"net/url"
 	"regexp"
 	"strings"
 	"time"
@@ -267,10 +266,8 @@ func validateSHA256(value, field string) error {
 }
 
 func validateDownloadURL(raw, expectedPath, field string) error {
-	parsed, err := url.Parse(raw)
-	if err != nil || parsed.Scheme != "https" || parsed.Host != DownloadHost ||
-		parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Opaque != "" || parsed.RawPath != "" || parsed.Path != expectedPath {
+	expected := "https://" + DownloadHost + expectedPath
+	if raw != expected {
 		return fmt.Errorf("%w: %s is not the canonical immutable download URL", ErrInvalidManifest, field)
 	}
 	return nil
