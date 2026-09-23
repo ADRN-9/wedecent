@@ -16,7 +16,7 @@
 ## Phase 1.1 — production hardening
 
 - [ ] Persistent structured audit events
-- [ ] Client/device trust removal and revocation commands
+- [x] Client/device trust removal and revocation commands
 - [ ] Relay per-IP/device connection rate limits
 - [ ] Relay metrics, health endpoints and tracing
 - [ ] Session idle/max-duration policy

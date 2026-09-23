@@ -18,3 +18,11 @@ The pairing secret is prompted without echo on Windows through `CONIN$`; putting
 ## Windows trust-store persistence
 
 `trusted-devices.json` is written to a synced temporary file first. Windows then tries the standard-library rename path and, when the destination already exists, falls back to removing the old regular file before installing the replacement. This avoids custom Win32 syscall/unsafe glue while still allowing repeated trust-store updates. A crash in the narrow remove-and-rename window can require re-pairing, but the trust store contains identity pins and locators rather than bearer credentials. The loader also rejects symbolic links and unreasonably large trust-store files.
+
+Trust-store mutations also take an OS-backed exclusive lock on a dedicated `.lock` file, so pairing and revocation from separate processes reload the latest file before writing and cannot silently overwrite one another.
+
+## Revocation
+
+Use `wd unpair <device-id>` to remove a remote device from this Windows user's local terminal trust. On the device, use `wd-agent clients list` and `wd-agent clients revoke <client-id>` to inspect and remove terminal-client authorization. A running agent reloads this trust for each new session, so new sessions from a revoked client are denied without restarting the service; an already-established terminal session is not forcibly terminated.
+
+Client/device terminal trust, route trust, and router-admin controller trust are separate authorization domains. See `docs/TRUST_REVOCATION.md` for the complete trust-removal model and bidirectional revocation procedure.
