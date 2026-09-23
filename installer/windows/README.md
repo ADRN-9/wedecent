@@ -2,7 +2,7 @@
 
 This package carries the reproducible Windows release binaries and the installer scripts without introducing a third-party installer runtime. Run the installer scripts from an elevated 64-bit Windows PowerShell session.
 
-The package payload contains:
+The package and installed program directory contain:
 
 ```text
 wd.exe
@@ -12,20 +12,26 @@ wd-core.exe
 wd-ui.exe
 ```
 
-`SHA256SUMS.txt` covers all five release binaries, and `PACKAGE_SHA256SUMS.txt` covers the complete installer-package payload.
+`SHA256SUMS.txt` covers all five release binaries, and `PACKAGE_SHA256SUMS.txt` covers the complete installer-package payload. `Install-WeDecent.ps1` verifies the release hashes before mutation, pins those verified values, rechecks each source immediately before replacement, and verifies the installed copies against the pinned values before completing installation or restarting the service.
 
-The current installer still installs only `wd.exe` and `wd-agent.exe`. `wd-core.exe`, `wd-ui.exe`, and `wd-routerctl.exe` are distributed for explicit/manual use in this milestone; they are not registered for autostart, copied into the installed program directory, or granted service privileges by `Install-WeDecent.ps1`.
+Only `wd-agent.exe` is registered with the Windows Service Control Manager. `wd-core.exe` and `wd-ui.exe` remain same-user processes for explicit/manual launch in this milestone; the installer does not register them as services, startup tasks, Run-key entries, or other autostart mechanisms. `wd-routerctl.exe` is also installed as a manual administrative utility and gains no service privilege merely by being present in Program Files.
 
 ## Security properties
 
 - `SHA256SUMS.txt` is verified before installation/package creation, and the installer package contains every binary referenced by that manifest.
+- Every installed binary is checksum-verified after copy and before the installation transaction is committed.
 - Fresh installs create a dedicated standard local account named `WeDecentSvc` by default.
 - The service-account password is cryptographically random and is never written to disk, an environment variable, or a process command line. It is sent to `wd-agent.exe service install --account-password-stdin` through an inherited anonymous pipe.
 - The installer rejects service accounts that are members of the local Administrators group and grants `SeServiceLogonRight` when needed.
 - `wd-agent.exe` performs the existing identity initialization, state-directory ACL restriction, SCM registration, and service startup.
-- Upgrades stop the existing service, replace only the installed binaries, preserve identity/state/account configuration, and roll back the binaries if the upgraded service does not restart.
+- Upgrades stop the existing agent service, replace the verified binary set as one rollback unit, preserve identity/state/account configuration, and restore prior binaries if the upgraded service does not restart.
+- Rollback tracks whether each destination existed before the transaction so a pre-copy failure cannot delete an untouched older binary.
 - Installer metadata is written atomically with an Administrators/SYSTEM-only ACL before it can authorize managed-account deletion.
-- Normal uninstall preserves cryptographic agent state and the service account. Permanent identity deletion requires explicit purge flags; `-WhatIf` is a real dry run.
+- Normal uninstall removes the installed program directory, including all five binaries, while preserving cryptographic agent state and the service account. Permanent identity deletion requires explicit purge flags; `-WhatIf` is a real dry run.
+
+If a manually launched `wd-core.exe`, `wd-ui.exe`, or other installed executable is holding its image open during an upgrade, Windows may refuse the replacement. The installer fails the transaction rather than killing an interactive process or silently leaving mixed binary versions; close the process and rerun the installer.
+
+The package hash manifests provide integrity relative to the package contents; they are not a substitute for code signing. The PowerShell scripts and binaries are not Authenticode-signed yet, so production packaging should sign them before distribution. Do not weaken execution policy or Defender to run an untrusted package.
 
 ## Install or upgrade
 
@@ -87,8 +93,6 @@ Never use the purge form for a normal upgrade or temporary uninstall. Deleting t
 ## Silent use
 
 A default fresh install is non-interactive: the installer generates the dedicated account password internally. An upgrade is also non-interactive. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
-
-The PowerShell scripts themselves are not Authenticode-signed yet. Production packaging should sign the scripts and binaries before distribution; do not weaken execution policy or Defender to run an untrusted package.
 
 ## Account enrollment before relay pairing
 
