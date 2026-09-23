@@ -10,12 +10,19 @@ import (
 	"syscall"
 
 	coreclient "wedecent.com/wedecent/internal/coreapi/client"
+	"wedecent.com/wedecent/internal/guiapp"
 )
 
 const createNoWindow = 0x08000000
 
-func prepareLocalCore(ctx context.Context, core *coreclient.Client) error {
-	return ensureLocalCore(ctx, core, launchSiblingCore, defaultCoreBootstrapConfig)
+func prepareLocalCore(ctx context.Context, core *coreclient.Client) (guiapp.Core, error) {
+	if err := ensureLocalCore(ctx, core, launchSiblingCore, defaultCoreBootstrapConfig); err != nil {
+		return nil, err
+	}
+	recover := func(recoveryCtx context.Context) error {
+		return ensureLocalCore(recoveryCtx, core, launchSiblingCore, defaultCoreBootstrapConfig)
+	}
+	return newRecoveringCore(core, recover), nil
 }
 
 func launchSiblingCore() (<-chan error, error) {

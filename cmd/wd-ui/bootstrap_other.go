@@ -6,8 +6,9 @@ import (
 	"context"
 
 	coreclient "wedecent.com/wedecent/internal/coreapi/client"
+	"wedecent.com/wedecent/internal/guiapp"
 )
 
-func prepareLocalCore(context.Context, *coreclient.Client) error {
-	return nil
+func prepareLocalCore(_ context.Context, core *coreclient.Client) (guiapp.Core, error) {
+	return core, nil
 }
