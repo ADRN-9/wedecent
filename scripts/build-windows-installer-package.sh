@@ -22,7 +22,8 @@ if [[ "$OUT_DIR" == "$RELEASE_DIR" || "$RELEASE_DIR" == "$OUT_DIR"/* || "$OUT_DI
   fail "OUT_DIR and RELEASE_DIR must not be equal or nested: OUT_DIR=$OUT_DIR RELEASE_DIR=$RELEASE_DIR"
 fi
 
-for name in wd.exe wd-agent.exe VERSION.txt SHA256SUMS.txt; do
+binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
+for name in "${binaries[@]}" VERSION.txt SHA256SUMS.txt; do
   [[ -f "$RELEASE_DIR/$name" ]] || fail "release bundle is missing $name; run scripts/build-windows-release.sh first"
 done
 
@@ -34,8 +35,9 @@ done
 rm -rf -- "$OUT_DIR"
 mkdir -p -- "$OUT_DIR"
 
-cp -- "$RELEASE_DIR/wd.exe" "$OUT_DIR/wd.exe"
-cp -- "$RELEASE_DIR/wd-agent.exe" "$OUT_DIR/wd-agent.exe"
+for name in "${binaries[@]}"; do
+  cp -- "$RELEASE_DIR/$name" "$OUT_DIR/$name"
+done
 cp -- "$RELEASE_DIR/VERSION.txt" "$OUT_DIR/VERSION.txt"
 cp -- "$RELEASE_DIR/SHA256SUMS.txt" "$OUT_DIR/SHA256SUMS.txt"
 cp -- "$ROOT/installer/windows/Install-WeDecent.ps1" "$OUT_DIR/Install-WeDecent.ps1"
@@ -46,10 +48,11 @@ cp -- "$ROOT/installer/windows/README.md" "$OUT_DIR/README.md"
 (
   cd "$OUT_DIR"
   sha256sum \
-    wd.exe wd-agent.exe VERSION.txt SHA256SUMS.txt \
+    "${binaries[@]}" VERSION.txt SHA256SUMS.txt \
     Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 README.md \
     | LC_ALL=C sort -k2 > PACKAGE_SHA256SUMS.txt
   sha256sum -c PACKAGE_SHA256SUMS.txt
+  sha256sum -c SHA256SUMS.txt
 )
 
 printf 'Built WeDecent Windows installer package:\n  %s\n' "$OUT_DIR"

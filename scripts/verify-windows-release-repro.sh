@@ -13,7 +13,7 @@ export SOURCE_DATE_EPOCH
 OUT_DIR="$TMP/one" "$ROOT/scripts/build-windows-release.sh" >/dev/null
 OUT_DIR="$TMP/two" "$ROOT/scripts/build-windows-release.sh" >/dev/null
 
-for name in wd.exe wd-agent.exe wd-routerctl.exe VERSION.txt SHA256SUMS.txt; do
+for name in wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe VERSION.txt SHA256SUMS.txt; do
   if ! cmp -s "$TMP/one/$name" "$TMP/two/$name"; then
     printf 'reproducibility failure: %s differs between builds\n' "$name" >&2
     exit 1

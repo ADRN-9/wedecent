@@ -1,15 +1,29 @@
 # WeDecent Windows installer foundation
 
-This package installs the reproducible `wd.exe` and `wd-agent.exe` release binaries without introducing a third-party installer runtime. Run the scripts from an elevated 64-bit Windows PowerShell session.
+This package carries the reproducible Windows release binaries and the installer scripts without introducing a third-party installer runtime. Run the installer scripts from an elevated 64-bit Windows PowerShell session.
+
+The package payload contains:
+
+```text
+wd.exe
+wd-agent.exe
+wd-routerctl.exe
+wd-core.exe
+wd-ui.exe
+```
+
+`SHA256SUMS.txt` covers all five release binaries, and `PACKAGE_SHA256SUMS.txt` covers the complete installer-package payload.
+
+The current installer still installs only `wd.exe` and `wd-agent.exe`. `wd-core.exe`, `wd-ui.exe`, and `wd-routerctl.exe` are distributed for explicit/manual use in this milestone; they are not registered for autostart, copied into the installed program directory, or granted service privileges by `Install-WeDecent.ps1`.
 
 ## Security properties
 
-- `SHA256SUMS.txt` is verified before installation.
+- `SHA256SUMS.txt` is verified before installation/package creation, and the installer package contains every binary referenced by that manifest.
 - Fresh installs create a dedicated standard local account named `WeDecentSvc` by default.
 - The service-account password is cryptographically random and is never written to disk, an environment variable, or a process command line. It is sent to `wd-agent.exe service install --account-password-stdin` through an inherited anonymous pipe.
 - The installer rejects service accounts that are members of the local Administrators group and grants `SeServiceLogonRight` when needed.
 - `wd-agent.exe` performs the existing identity initialization, state-directory ACL restriction, SCM registration, and service startup.
-- Upgrades stop the existing service, replace only the binaries, preserve identity/state/account configuration, and roll back the binaries if the upgraded service does not restart.
+- Upgrades stop the existing service, replace only the installed binaries, preserve identity/state/account configuration, and roll back the binaries if the upgraded service does not restart.
 - Installer metadata is written atomically with an Administrators/SYSTEM-only ACL before it can authorize managed-account deletion.
 - Normal uninstall preserves cryptographic agent state and the service account. Permanent identity deletion requires explicit purge flags; `-WhatIf` is a real dry run.
 
