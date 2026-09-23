@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build !windows && !linux
 
 package routercontrol
 
@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestLocalRouterAdminEndpointFailsClosedOffWindows(t *testing.T) {
+func TestLocalRouterAdminEndpointFailsClosedWhenUnsupported(t *testing.T) {
 	if listener, err := ListenLocal(); listener != nil || !errors.Is(err, ErrLocalEndpointUnsupported) {
 		t.Fatalf("ListenLocal() = %v, %v", listener, err)
 	}

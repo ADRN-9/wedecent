@@ -24,23 +24,39 @@ It does not expose routing trust stores, terminal trust, route capabilities, cap
 
 The channel uses the existing bounded v1 framing but accepts only the three router methods. Each operation uses one authenticated stream and one response. Reads, writes, and the TLS handshake are independently bounded. A client that opens a connection and then stops sending cannot hold an agent handler indefinitely.
 
-## Windows machine-local transport
+## Machine-local transports
 
-On Windows, a route-control-enabled `wd-agent` automatically binds the fixed named pipe:
+A route-control-enabled `wd-agent` binds a dedicated router-admin endpoint only on platforms with an implemented machine-local transport. No router-admin TCP listener is opened.
+
+### Windows
+
+Windows uses the fixed named pipe:
 
 ```text
 \\.\pipe\WeDecent.RouterAdmin.v1
 ```
 
-No router-admin TCP listener is opened. `go-winio` supplies the named-pipe transport and rejects remote named-pipe clients. The pipe ACL grants local access to SYSTEM, Administrators, and authenticated users so an interactive `wd-core` can reach an agent running under a service identity.
+`go-winio` supplies the named-pipe transport and rejects remote named-pipe clients. The pipe ACL grants local access to SYSTEM, Administrators, and authenticated users so an interactive `wd-core` can reach an agent running under a service identity.
 
-Opening the pipe is not authorization. Every administrative request must still complete the dedicated mutual-TLS authentication described below. The agent also limits concurrent router-admin connections separately from routed-session limits.
+### Linux
 
-Non-Windows builds currently fail closed with `routercontrol.ErrLocalEndpointUnsupported`; there is no silent TCP fallback. A Unix-domain-socket binding can be added later without changing the authority or protocol model.
+Linux uses the fixed abstract Unix-domain socket:
+
+```text
+@wedecent-router-admin-v1
+```
+
+The leading `@` is Go's representation of the Linux abstract Unix-socket namespace. No filesystem socket is created, so the transport does not depend on a shared writable directory between an agent service identity and an interactive Local Core user and is not exposed to filesystem symlink or stale-socket replacement races.
+
+The abstract namespace is machine-local but does not provide filesystem ACL authorization. Any local process can attempt to open the byte stream, and another local process could occupy the fixed socket name before `wd-agent` starts, causing startup to fail rather than falling back to another transport. This is a local denial-of-service possibility, not an authorization path: every administrative request must still complete the dedicated mutual-TLS authentication described below.
+
+On both Windows and Linux, opening the local endpoint is not authorization. The agent limits concurrent router-admin connections separately from routed-session limits, and mTLS plus dedicated controller trust gates every request before router methods are parsed.
+
+Other platforms currently fail closed with `routercontrol.ErrLocalEndpointUnsupported`; there is no silent TCP fallback.
 
 ## Authentication and trust separation
 
-The router administration channel is protected independently of the platform endpoint ACL with mutual TLS 1.3 and the dedicated ALPN `wedecent-router-admin/1`.
+The router administration channel is protected independently of the platform endpoint with mutual TLS 1.3 and the dedicated ALPN `wedecent-router-admin/1`.
 
 The Local Core controller pins both the exact agent device ID and the agent's full public-key fingerprint. The agent derives the controller device ID from the presented certificate and requires that exact identity and full fingerprint in the dedicated `trusted-router-controllers.json` trust domain.
 
@@ -56,24 +72,26 @@ The controller trust file is reloaded for each new administrative TLS connection
 
 ## Controller provisioning
 
-The Windows release bundle includes `wd-routerctl.exe` for explicit controller authorization. It mutates only the dedicated router-controller trust file; operators should not hand-edit that file or reuse terminal/route trust.
+The Windows release bundle includes `wd-routerctl.exe` for explicit controller authorization. The same `wd-routerctl` command can be built and used on Linux. It mutates only the dedicated router-controller trust file; operators should not hand-edit that file or reuse terminal/route trust.
 
 Trust a Local Core identity in the same agent state directory used by `wd-agent`:
 
 ```text
-wd-routerctl.exe trust --state <agent-state> --id <core-device-id> --fingerprint <core-SHA256-fingerprint> --name "Local Core"
+wd-routerctl trust --state <agent-state> --id <core-device-id> --fingerprint <core-SHA256-fingerprint> --name "Local Core"
 ```
+
+On Windows, use `wd-routerctl.exe` in place of `wd-routerctl`.
 
 List trusted controllers:
 
 ```text
-wd-routerctl.exe list --state <agent-state>
+wd-routerctl list --state <agent-state>
 ```
 
 Revoke one:
 
 ```text
-wd-routerctl.exe revoke --state <agent-state> --id <core-device-id>
+wd-routerctl revoke --state <agent-state> --id <core-device-id>
 ```
 
 If the same controller device ID is intentionally rotated to a new public key, `trust` requires `--replace`; an accidental fingerprint change is rejected. The utility also refuses to assign one fingerprint to two different controller IDs. When `wd-agent` runs under a service account, provisioning may require sufficient permission to access that service's state directory.
@@ -88,7 +106,7 @@ The v1 contract exposes:
 
 The Local Core dispatcher implements those methods only when a `v1.RouterService` is injected. A missing router service remains `method_not_found`, preserving fail-closed behavior for installations that have not explicitly configured router administration.
 
-On Windows, `wd-core` composes the authenticated router client only when both of these are supplied:
+On Windows and Linux, `wd-core` composes the authenticated router client only when both of these are supplied:
 
 ```text
 --router-agent-id <agent-device-id>
@@ -102,7 +120,7 @@ WEDECENT_ROUTER_AGENT_ID
 WEDECENT_ROUTER_AGENT_FINGERPRINT
 ```
 
-Both values are required together. There is no trust-on-first-use path. The Local Core loads its existing client identity, dials the machine-local admin pipe, authenticates itself to the agent, and pins the configured agent identity before exposing router methods through the Local Core API.
+Both values are required together. There is no trust-on-first-use path. The Local Core loads its existing client identity, dials the machine-local admin endpoint, authenticates itself to the agent, and pins the configured agent identity before exposing router methods through the Local Core API.
 
 `internal/routercontrol.RuntimeService` adapts the authoritative `meshruntime.Runtime` to the v1 service. `internal/routercontrol.Client` implements the same interface over the bounded authenticated protocol, so `wd-core` is a proxy rather than a policy authority.
 
@@ -121,7 +139,7 @@ The current Stage 3 implementation supports mutation of:
 
 Organization routing, public routing, bandwidth enforcement, battery-aware routing, and metered-network policy remain unsupported. Requests that set those fields fail closed and leave the authoritative policy unchanged instead of reporting controls that are not actually enforced.
 
-`Enabled` controls admission in the live forwarder. It does not create or remove the route-control listener. Listener creation remains explicit `wd-agent` configuration, preserving router opt-in. Because the router-admin pipe exists only alongside a configured route-control listener, re-enabling policy cannot silently create a new network ingress surface.
+`Enabled` controls admission in the live forwarder. It does not create or remove the route-control listener. Listener creation remains explicit `wd-agent` configuration, preserving router opt-in. Because the router-admin endpoint exists only alongside a configured route-control listener, re-enabling policy cannot silently create a new network ingress surface.
 
 ## Runtime observability
 
@@ -138,13 +156,13 @@ The byte and session counters are process-local and are not persisted. Byte acco
 
 ## Operational sequence
 
-For a Windows router managed by Local Core, the intended sequence is:
+For a Windows or Linux router managed by Local Core, the intended sequence is:
 
-1. Configure `wd-agent` with a route-control listener. This is the router opt-in and causes the machine-local router-admin pipe to be bound.
+1. Configure `wd-agent` with a route-control listener. This is the router opt-in and causes the platform's machine-local router-admin endpoint to be bound.
 2. Obtain the Local Core/client device ID and full public-key fingerprint through the normal identity provisioning flow.
-3. Run `wd-routerctl.exe trust` against the agent state directory to authorize that controller identity.
+3. Run `wd-routerctl trust` against the agent state directory to authorize that controller identity (`wd-routerctl.exe` on Windows).
 4. Configure `wd-core` with the exact agent device ID and full fingerprint using the two router-agent flags or environment variables.
 5. Start `wd-core`. Its v1 router methods now proxy to the live `wd-agent` forwarder.
-6. Use `wd-routerctl.exe revoke` to remove controller authority when needed; new admin connections will be denied without requiring an agent restart.
+6. Use `wd-routerctl revoke` to remove controller authority when needed; new admin connections will be denied without requiring an agent restart.
 
 This model keeps network routing ownership, listener lifecycle, policy enforcement, and statistics in one process while still allowing the per-user Local Core to administer that runtime through a least-privilege, separately authenticated local boundary.
