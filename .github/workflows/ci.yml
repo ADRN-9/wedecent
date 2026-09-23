@@ -126,6 +126,8 @@ jobs:
         run: ./scripts/test-windows-signed-publication.sh
       - name: Test public Windows archive verifier
         run: ./scripts/test-windows-public-verifier.sh
+      - name: Test public Windows installer package
+        run: ./scripts/test-windows-public-installer.sh
       - name: Verify reproducible Windows release bundle
         run: ./scripts/verify-windows-release-repro.sh
       - name: Build Windows release bundle
