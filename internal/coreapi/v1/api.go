@@ -28,9 +28,11 @@ const (
 )
 
 const (
-	MaxTerminalChunkBytes        = 32 << 10
-	MaxConnectOperationIDBytes   = 64
-	ConnectOperationReplayWindow = 5 * time.Minute
+	MaxTerminalChunkBytes            = 32 << 10
+	MaxConnectOperationIDBytes       = 64
+	MaxTerminalWriteOperationIDBytes = 64
+	ConnectOperationReplayWindow     = 5 * time.Minute
+	TerminalWriteReplayWindow        = 5 * time.Minute
 )
 
 type ConnectionPath string
@@ -153,6 +155,7 @@ type TerminalReadRequest struct {
 type TerminalWriteRequest struct {
 	ConnectionID string `json:"connection_id"`
 	Data         []byte `json:"data"`
+	OperationID  string `json:"operation_id,omitempty"`
 }
 
 type TerminalResizeRequest struct {

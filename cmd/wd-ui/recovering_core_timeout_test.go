@@ -48,10 +48,16 @@ func TestRecoveringCoreConnectTimeoutAfterWriteReconciles(t *testing.T) {
 	}
 }
 
-func TestRecoveringCoreTerminalWriteCanceledAfterWriteIsOutcomeUnknown(t *testing.T) {
+func TestRecoveringCoreTerminalWriteCanceledAfterWriteRemainsOutcomeUnknown(t *testing.T) {
 	var writeCalls int
-	inner := &fakeUICore{writeTerminal: func(context.Context, v1.TerminalWriteRequest) error {
+	var operationID string
+	inner := &fakeUICore{writeTerminal: func(_ context.Context, req v1.TerminalWriteRequest) error {
 		writeCalls++
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if req.OperationID != operationID {
+			t.Fatalf("operation ID changed across retry: %q != %q", req.OperationID, operationID)
+		}
 		return errors.Join(
 			context.Canceled,
 			&coreclient.UnavailableError{Stage: coreclient.UnavailableStageWriteRequest},
@@ -70,7 +76,7 @@ func TestRecoveringCoreTerminalWriteCanceledAfterWriteIsOutcomeUnknown(t *testin
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("WriteTerminal() error = %v; want cancellation cause preserved", err)
 	}
-	if writeCalls != 1 || recoverCalls != 1 {
-		t.Fatalf("write calls = %d, recovery calls = %d; want 1, 1", writeCalls, recoverCalls)
+	if writeCalls != 2 || recoverCalls != 1 {
+		t.Fatalf("write calls = %d, recovery calls = %d; want 2, 1", writeCalls, recoverCalls)
 	}
 }

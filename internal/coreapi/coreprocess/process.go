@@ -145,13 +145,18 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose connect idempotency service: %w", err)
 	}
+	idempotentTerminal, err := coreapi.NewTerminalWriteIdempotencyService(connectionService)
+	if err != nil {
+		_ = connectionService.Close()
+		return nil, fmt.Errorf("core process: compose terminal write idempotency service: %w", err)
+	}
 
 	server, err := ipc.NewServerWithServices(ipc.Services{
 		Status:      readService,
 		Devices:     readService,
 		Account:     accountService,
 		Connections: idempotentConnections,
-		Terminal:    connectionService,
+		Terminal:    idempotentTerminal,
 		Transports:  networkService,
 		Routes:      networkService,
 		Router:      cfg.RouterService,
