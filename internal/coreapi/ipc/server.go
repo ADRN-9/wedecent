@@ -22,6 +22,8 @@ const (
 	ErrorRequestCanceled       = "request_canceled"
 	ErrorAccountUnavailable    = "account_unavailable"
 	ErrorAccountFailed         = "account_operation_failed"
+	ErrorRouterUnavailable     = "router_unavailable"
+	ErrorRouterFailed          = "router_operation_failed"
 	ErrorInternal              = "internal_error"
 )
 
@@ -32,6 +34,7 @@ type Services struct {
 	Connections v1.ConnectionService
 	Transports  v1.TransportService
 	Routes      v1.RouteService
+	Router      v1.RouterService
 }
 
 type Server struct {
@@ -41,6 +44,7 @@ type Server struct {
 	connections v1.ConnectionService
 	transports  v1.TransportService
 	routes      v1.RouteService
+	router      v1.RouterService
 }
 
 func NewServer(status v1.StatusService, devices v1.DeviceService) (*Server, error) {
@@ -62,6 +66,7 @@ func NewServerWithServices(services Services) (*Server, error) {
 		connections: services.Connections,
 		transports:  services.Transports,
 		routes:      services.Routes,
+		router:      services.Router,
 	}, nil
 }
 
@@ -176,6 +181,31 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		}
 		result, err = s.routes.GetRouteStatus(ctx, params)
+	case v1.MethodRouterPolicyGet:
+		if s.router == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		if !validEmptyParams(req.Params) {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		result, err = s.router.GetRouterPolicy(ctx)
+	case v1.MethodRouterPolicySet:
+		if s.router == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		var params v1.SetRouterPolicyRequest
+		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		result, err = s.router.SetRouterPolicy(ctx, params)
+	case v1.MethodRouterStatsGet:
+		if s.router == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		if !validEmptyParams(req.Params) {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		result, err = s.router.GetRouterStats(ctx)
 	default:
 		return errorResponse(response, ErrorMethodNotFound, "method not found")
 	}
@@ -186,7 +216,7 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorRequestCanceled, "request canceled")
 		case errors.Is(err, coreapi.ErrDeviceNotFound):
 			return errorResponse(response, ErrorDeviceNotFound, "device not found")
-		case errors.Is(err, coreapi.ErrInvalidRouteRequest), errors.Is(err, coreapi.ErrInvalidConnectionRequest):
+		case errors.Is(err, coreapi.ErrInvalidRouteRequest), errors.Is(err, coreapi.ErrInvalidConnectionRequest), errors.Is(err, coreapi.ErrInvalidRouterPolicy):
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		case errors.Is(err, coreapi.ErrRouteNotFound):
 			return errorResponse(response, ErrorRouteNotFound, "route not found")
@@ -202,6 +232,10 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorAccountUnavailable, "account sign-in is unavailable")
 		case errors.Is(err, coreapi.ErrAccountOperation):
 			return errorResponse(response, ErrorAccountFailed, "account operation failed")
+		case errors.Is(err, coreapi.ErrRouterUnavailable):
+			return errorResponse(response, ErrorRouterUnavailable, "router service is unavailable")
+		case errors.Is(err, coreapi.ErrRouterOperation):
+			return errorResponse(response, ErrorRouterFailed, "router operation failed")
 		default:
 			return errorResponse(response, ErrorInternal, "internal error")
 		}

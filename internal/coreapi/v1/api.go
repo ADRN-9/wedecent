@@ -19,6 +19,9 @@ const (
 	MethodConnectionDisconnect = "connection.disconnect"
 	MethodTransportsList       = "transports.list"
 	MethodRouteGet             = "route.get"
+	MethodRouterPolicyGet      = "router.policy.get"
+	MethodRouterPolicySet      = "router.policy.set"
+	MethodRouterStatsGet       = "router.stats.get"
 )
 
 type ConnectionPath string

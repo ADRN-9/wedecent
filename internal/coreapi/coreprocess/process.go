@@ -12,6 +12,7 @@ import (
 	"wedecent.com/wedecent/internal/coreapi/ipc"
 	"wedecent.com/wedecent/internal/coreapi/localipc"
 	"wedecent.com/wedecent/internal/coreapi/localserver"
+	v1 "wedecent.com/wedecent/internal/coreapi/v1"
 	"wedecent.com/wedecent/internal/coreconnect"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/trust"
@@ -26,6 +27,7 @@ type Config struct {
 	AccountClient     coreapi.AccountClient
 	ConnectionBackend coreapi.ConnectionBackend
 	RouteSource       coreconnect.RouteRequestSource
+	RouterService     v1.RouterService
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection
@@ -146,6 +148,7 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		Connections: connectionService,
 		Transports:  networkService,
 		Routes:      networkService,
+		Router:      cfg.RouterService,
 	})
 	if err != nil {
 		_ = connectionService.Close()

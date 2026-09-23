@@ -3,6 +3,8 @@ package meshruntime
 import (
 	"errors"
 	"testing"
+
+	"wedecent.com/wedecent/internal/mesh"
 )
 
 func TestRouterStateUsesAuthoritativeForwarderSnapshot(t *testing.T) {
@@ -28,6 +30,79 @@ func TestRouterStateUsesAuthoritativeForwarderSnapshot(t *testing.T) {
 	}
 }
 
+func TestSetRouterPolicyUpdatesAuthoritativeForwarder(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	id := testIdentity(t, stateDir, "router")
+	provisionAuthority(t, stateDir)
+	runtime := openTestRuntime(t, stateDir, id)
+
+	policy := mesh.RouterPolicy{
+		Enabled:            false,
+		TrustedDevicesOnly: true,
+		MaxSessions:        2,
+		LANOnly:            true,
+	}
+	state, err := runtime.SetRouterPolicy(policy)
+	if err != nil {
+		t.Fatalf("SetRouterPolicy() error: %v", err)
+	}
+	if state.Policy != policy {
+		t.Fatalf("returned policy = %+v, want %+v", state.Policy, policy)
+	}
+	if got := runtime.Router.Snapshot().Policy; got != policy {
+		t.Fatalf("forwarder policy = %+v, want %+v", got, policy)
+	}
+}
+
+func TestSetRouterPolicyRejectsUnsupportedFieldsWithoutMutation(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	id := testIdentity(t, stateDir, "router")
+	provisionAuthority(t, stateDir)
+	runtime := openTestRuntime(t, stateDir, id)
+	before := runtime.Router.Snapshot().Policy
+
+	unsupported := []mesh.RouterPolicy{
+		{
+			Enabled:            true,
+			TrustedDevicesOnly: true,
+			OrganizationOnly:   true,
+		},
+		{
+			Enabled:            true,
+			TrustedDevicesOnly: true,
+			PublicRouting:      true,
+		},
+		{
+			Enabled:                 true,
+			TrustedDevicesOnly:      true,
+			MaxBandwidthBytesPerSec: 1024,
+		},
+		{
+			Enabled:            true,
+			TrustedDevicesOnly: true,
+			AllowOnBattery:     true,
+		},
+		{
+			Enabled:            true,
+			TrustedDevicesOnly: true,
+			AllowMetered:       true,
+		},
+	}
+
+	for _, policy := range unsupported {
+		if _, err := runtime.SetRouterPolicy(policy); !errors.Is(err, ErrUnsupportedPolicy) {
+			t.Fatalf("SetRouterPolicy(%+v) error = %v, want ErrUnsupportedPolicy", policy, err)
+		}
+		if got := runtime.Router.Snapshot().Policy; got != before {
+			t.Fatalf("unsupported policy changed forwarder: %+v", got)
+		}
+	}
+}
+
 func TestRouterStateFailsClosedWithoutRouter(t *testing.T) {
 	t.Parallel()
 
@@ -35,5 +110,8 @@ func TestRouterStateFailsClosedWithoutRouter(t *testing.T) {
 	_, err := runtime.RouterState()
 	if !errors.Is(err, ErrConfig) {
 		t.Fatalf("RouterState() error = %v, want ErrConfig", err)
+	}
+	if _, err := runtime.SetRouterPolicy(mesh.DisabledRouterPolicy()); !errors.Is(err, ErrConfig) {
+		t.Fatalf("SetRouterPolicy() error = %v, want ErrConfig", err)
 	}
 }

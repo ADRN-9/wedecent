@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"runtime"
 	"strings"
 	"time"
 
@@ -13,16 +14,19 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 	"wedecent.com/wedecent/internal/meshnet"
 	"wedecent.com/wedecent/internal/meshruntime"
+	"wedecent.com/wedecent/internal/routercontrol"
 	"wedecent.com/wedecent/internal/session"
 )
 
 const (
 	defaultRouteMaxConnections      = 16
+	defaultRouteAdminMaxConnections = 8
 	defaultRouteLANDiscoveryTimeout = 3 * time.Second
 
 	listenerRoleDirect       = "direct-terminal"
 	listenerRoleRouteControl = "route-control"
 	listenerRoleRouteTunnel  = "route-tunnel"
+	listenerRoleRouterAdmin  = "router-admin"
 )
 
 var errAgentRoutingConfig = errors.New(
@@ -168,7 +172,33 @@ func openAgentListeners(
 
 	set := &agentListenerSet{}
 
-	add := func(
+	addListener := func(
+		role string,
+		listener net.Listener,
+		maxConnections int,
+		handler func(context.Context, net.Conn) error,
+	) error {
+		if listener == nil {
+			return errors.New("wd-agent: listener is unavailable")
+		}
+		if maxConnections < 1 {
+			_ = listener.Close()
+			return fmt.Errorf(
+				"%w: %s connection limit is invalid",
+				errAgentRoutingConfig,
+				role,
+			)
+		}
+		set.listeners = append(set.listeners, agentListener{
+			role:           role,
+			listener:       listener,
+			maxConnections: maxConnections,
+			handler:        handler,
+		})
+		return nil
+	}
+
+	addTCP := func(
 		role string,
 		address string,
 		maxConnections int,
@@ -185,7 +215,7 @@ func openAgentListeners(
 			)
 		}
 
-		ln, err := net.Listen("tcp", address)
+		listener, err := net.Listen("tcp", address)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"wd-agent: listen %s on %s: %w",
@@ -194,18 +224,13 @@ func openAgentListeners(
 				err,
 			)
 		}
-
-		set.listeners = append(set.listeners, agentListener{
-			role:           role,
-			listener:       ln,
-			maxConnections: maxConnections,
-			handler:        handler,
-		})
-
-		return ln, nil
+		if err := addListener(role, listener, maxConnections, handler); err != nil {
+			return nil, err
+		}
+		return listener, nil
 	}
 
-	direct, err := add(
+	direct, err := addTCP(
 		listenerRoleDirect,
 		cfg.ListenAddr,
 		cfg.MaxConnections,
@@ -221,7 +246,7 @@ func openAgentListeners(
 	set.direct = direct
 
 	if strings.TrimSpace(cfg.RouteControlListenAddr) != "" {
-		_, err = add(
+		_, err = addTCP(
 			listenerRoleRouteControl,
 			cfg.RouteControlListenAddr,
 			cfg.RouteMaxConnections,
@@ -238,10 +263,43 @@ func openAgentListeners(
 			set.close()
 			return nil, err
 		}
+
+		// Windows Local Core runs as the interactive user while wd-agent may run
+		// as a service account. Bind a separate machine-local admin pipe only for
+		// real routers. Its pipe ACL supplies locality; mTLS and the dedicated
+		// controller trust source supply router-admin authorization. The trust
+		// source reloads its file for each new connection so revoke takes effect
+		// without recycling the routing runtime.
+		if runtime.GOOS == "windows" {
+			controllers, err := routercontrol.NewFileControllerTrust(cfg.StateDir)
+			if err != nil {
+				set.close()
+				return nil, err
+			}
+			adminServer, err := routercontrol.NewRuntimeServer(routing.runtime, controllers)
+			if err != nil {
+				set.close()
+				return nil, err
+			}
+			adminListener, err := routercontrol.ListenLocal()
+			if err != nil {
+				set.close()
+				return nil, err
+			}
+			if err := addListener(
+				listenerRoleRouterAdmin,
+				adminListener,
+				defaultRouteAdminMaxConnections,
+				adminServer.ServeOne,
+			); err != nil {
+				set.close()
+				return nil, err
+			}
+		}
 	}
 
 	if strings.TrimSpace(cfg.RouteTunnelListenAddr) != "" {
-		_, err = add(
+		_, err = addTCP(
 			listenerRoleRouteTunnel,
 			cfg.RouteTunnelListenAddr,
 			cfg.RouteMaxConnections,
@@ -280,6 +338,12 @@ func (s *agentListenerSet) printAddresses() {
 		case listenerRoleRouteTunnel:
 			fmt.Printf(
 				"Route tunnel:  %s\n",
+				listener.listener.Addr(),
+			)
+
+		case listenerRoleRouterAdmin:
+			fmt.Printf(
+				"Router admin:  %s\n",
 				listener.listener.Addr(),
 			)
 		}

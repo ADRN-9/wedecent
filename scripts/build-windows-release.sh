@@ -61,6 +61,7 @@ build_one() {
 
 build_one ./cmd/wd wd.exe
 build_one ./cmd/wd-agent wd-agent.exe
+build_one ./cmd/wd-routerctl wd-routerctl.exe
 
 cat > "$OUT_DIR/VERSION.txt" <<EOF_VERSION
 version=$VERSION
@@ -72,7 +73,7 @@ EOF_VERSION
 
 (
   cd "$OUT_DIR"
-  sha256sum wd.exe wd-agent.exe | LC_ALL=C sort -k2 > SHA256SUMS.txt
+  sha256sum wd.exe wd-agent.exe wd-routerctl.exe | LC_ALL=C sort -k2 > SHA256SUMS.txt
   sha256sum -c SHA256SUMS.txt
 )
 
