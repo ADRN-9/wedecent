@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -24,6 +25,10 @@ func main() {
 
 	core, err := coreclient.New(coreclient.Config{})
 	if err != nil {
+		showFatal(err)
+		os.Exit(1)
+	}
+	if err := prepareLocalCore(context.Background(), core); err != nil {
 		showFatal(err)
 		os.Exit(1)
 	}
