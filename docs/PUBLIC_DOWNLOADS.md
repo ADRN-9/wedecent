@@ -39,7 +39,8 @@ versioned URLs remain the canonical release locations.
 
 ## RC3 reference
 
-`v0.3.0-rc.3` was published with:
+`v0.3.0-rc.3` was published before the signed-publication pipeline described below. Its
+historical reference hashes are retained for auditability:
 
 ```text
 ZIP SHA-256:
@@ -53,49 +54,146 @@ wd-agent.exe SHA-256:
 ```
 
 The public RC3 ZIP was downloaded from `downloads.wedecent.com` on an unauthenticated
-Windows machine and matched the expected ZIP SHA-256.
+Windows machine and matched the expected ZIP SHA-256. Do not treat that historical RC
+procedure as the production signing policy for new releases.
+
+## Signed release prerequisite
+
+New public Windows releases must originate from the finalized signed release tree, not
+from an arbitrary pre-built ZIP. Complete the reproducible unsigned build, installer
+package, and Authenticode finalization documented in `docs/WINDOWS_RELEASE.md` first.
+
+The signed release directory must contain exactly:
+
+```text
+wd.exe
+wd-agent.exe
+wd-routerctl.exe
+wd-core.exe
+wd-ui.exe
+VERSION.txt
+SHA256SUMS.txt
+```
+
+`SHA256SUMS.txt` must be a canonical five-entry manifest for those executable files and
+must validate all five bytes. The operator-supplied
+`WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER` must accept all five binaries under the
+production publisher/certificate-chain/timestamp policy before public archive creation
+or any network publication check occurs.
+
+## Preparing the canonical public ZIP
+
+For inspection or a local publication rehearsal, build the canonical ZIP directly from
+the signed release:
+
+```bash
+WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER=/absolute/path/to/verifier \
+  scripts/prepare-windows-public-download.sh \
+    --version v0.4.0 \
+    --signed-release dist/wedecent-windows-signed/release \
+    --out-dir dist/wedecent-v0.4.0-public
+```
+
+The preparer verifies the exact file set, canonical signed-release checksum manifest,
+requested version, and all five Authenticode-verifier results. It snapshots the signed
+release into a private temporary tree, verifies that snapshot, then writes a
+deterministic stored ZIP containing the seven signed-release files plus a public
+`SHA256SUMS.txt` covering that ZIP. The signed release input is never modified, and an
+existing output directory is never overwritten.
+
+This preparation command is useful for inspection, but the network publisher does not
+trust an externally supplied archive. It repeats the preparation internally from the
+signed release tree.
+
+## Atomic create-only uploader
+
+A preflight HTTP check is not sufficient to guarantee immutable publication: another
+publisher could create the same version key after the check but before an unconditional
+upload. Therefore the publication script never performs an unconditional object write.
+
+When an object is missing, configure:
+
+```text
+WEDECENT_R2_CREATE_ONLY_UPLOADER=/absolute/path/to/create-only-uploader
+```
+
+The path must be an absolute, regular, executable, non-symlink file. The publisher
+invokes it as:
+
+```text
+uploader BUCKET KEY FILE CONTENT_TYPE CONTENT_DISPOSITION CACHE_CONTROL
+```
+
+The uploader is an operator-owned credential boundary. It **must** perform an atomic
+create-only write and return nonzero if `KEY` already exists. For Cloudflare R2, use a
+conditional PutObject equivalent to `If-None-Match: *`. Do not implement the hook as a
+separate existence check followed by an unconditional put; that recreates the race this
+boundary is intended to close.
+
+The repository does not store R2 credentials or API tokens, and the publisher never
+passes them as command-line arguments. The uploader may use an organization-approved
+secret store, workload identity, or authenticated profile, but should have only the
+permissions needed to create release objects. There is deliberately no unconditional
+Wrangler fallback because `wrangler r2 object put` does not provide the create-only
+condition required by this immutability contract.
 
 ## Publishing
 
-`scripts/publish-windows-downloads.sh` publishes an already-built ZIP. It does not
-rebuild or modify release binaries.
-
-The script validates the version and archive filename, computes the ZIP SHA-256,
-generates the public checksum manifest, refuses to replace an existing public object
-with different bytes, uploads missing objects with Wrangler, applies immutable cache
-metadata, and verifies the public URL after upload.
+`scripts/publish-windows-downloads.sh` accepts the signed release directory, invokes the
+canonical preparation step itself, and only then checks or creates immutable public
+objects. There is no `--archive` bypass.
 
 Example:
 
 ```bash
-scripts/publish-windows-downloads.sh   --version v0.3.0-rc.3   --archive /path/to/wedecent-v0.3.0-rc.3-windows-amd64.zip
+WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER=/absolute/path/to/verifier \
+WEDECENT_R2_CREATE_ONLY_UPLOADER=/absolute/path/to/create-only-uploader \
+  scripts/publish-windows-downloads.sh \
+    --version v0.4.0 \
+    --signed-release dist/wedecent-windows-signed/release
 ```
 
 Preview without uploading:
 
 ```bash
-scripts/publish-windows-downloads.sh   --version v0.3.0-rc.3   --archive /path/to/wedecent-v0.3.0-rc.3-windows-amd64.zip   --dry-run
+WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER=/absolute/path/to/verifier \
+  scripts/publish-windows-downloads.sh \
+    --version v0.4.0 \
+    --signed-release dist/wedecent-windows-signed/release \
+    --dry-run
 ```
 
-The publisher expects an authenticated `wrangler` executable when an upload is needed.
-Do not pass Cloudflare credentials as command-line flags and do not store API tokens in
-the repository. Use Wrangler's authenticated profile or secret-backed CI credentials
-with only the permissions required to write release objects.
+A dry run still verifies the signed release, builds the canonical archive, and probes
+remote object state. Invalid signatures, checksum mismatches, version mismatches, or
+unexpected release files fail before a network request. HTTP 200 means an object is
+present and its bytes are verified; HTTP 404 means missing. Transport errors or any
+other HTTP status are ambiguous and fail closed rather than being treated as absence.
+
+If a public object already exists with identical bytes, the uploader is not required and
+is not invoked. If an existing object differs, publication aborts. If an object is
+missing, the create-only uploader is required; any uploader failure aborts immediately.
+A concurrent publisher that wins the create race therefore causes the losing create-only
+operation to fail instead of overwriting the winning object. After creation, the script
+downloads the public archive and checksum manifest again and verifies their exact bytes.
 
 ## Verification
 
 Anyone can verify a published version without Cloudflare or GitHub credentials:
 
 ```bash
-scripts/verify-public-windows-download.sh --version v0.3.0-rc.3
+scripts/verify-public-windows-download.sh --version v0.4.0
 ```
 
 The verifier downloads the checksum manifest and hashes the public ZIP stream. A
 successful result proves the bytes at the public URL match the public manifest.
 
 SHA-256 checksums provide corruption/integrity detection; a checksum served from the
-same origin is not an independent authenticity proof. Stable Windows distribution
-should additionally use the project's code-signing/release-signing policy.
+same origin is not an independent authenticity proof. For authenticity, extract the ZIP
+and verify the Authenticode signatures on all five executable files against the expected
+WeDecent publisher/certificate policy. The publication pipeline's verifier gate prevents
+new releases from being uploaded unless those signatures pass the operator's production
+policy, but consumers should still verify signatures when their threat model requires
+independent publisher authentication.
 
 ## Cloudflare configuration
 

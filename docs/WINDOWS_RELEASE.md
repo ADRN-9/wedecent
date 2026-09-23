@@ -69,8 +69,16 @@ The production verifier is the release-policy boundary. It must reject signature
 
 Real production signing should use SHA-256 Authenticode and an approved RFC 3161 timestamp service. Scan the final signed binaries with Microsoft Defender and any other release malware-scanning service after signing; do not infer safety from pre-signing scans.
 
-## Publication boundary
+## Public-download preparation and publication
 
-Only finalized signed artifacts should be used to construct a public Windows download. The unsigned reproducible tree is a build-verification baseline, not a distribution source.
+Only finalized signed artifacts may be used to construct a new public Windows download. The unsigned reproducible tree is a build-verification baseline, not a distribution source.
 
-Checksums provide integrity for the exact signed bytes, but a checksum served from the same download origin is not an independent authenticity proof. Public-release tooling should preserve the Authenticode-verification boundary before upload, and the public download should remain immutable once published.
+`scripts/prepare-windows-public-download.sh` consumes the finalized signed `release/` directory. It requires the same production Authenticode verifier, checks the exact seven-file release shape, validates the canonical five-entry checksum manifest before following any manifest paths, snapshots the signed release into a private temporary tree, verifies all five executable signatures and checksums, checks that `VERSION.txt` matches the requested public version, and creates the canonical ZIP plus its public checksum manifest without modifying the signed release. The ZIP uses a fixed file order and metadata so identical signed inputs produce identical archive bytes.
+
+`scripts/publish-windows-downloads.sh` does not accept a caller-supplied archive. It accepts the signed release directory, invokes the preparation step internally before any network request, and fails closed on ambiguous remote state. Existing public objects must match the prepared bytes exactly. Missing objects may be created only through the operator-supplied `WEDECENT_R2_CREATE_ONLY_UPLOADER`, whose contract requires an atomic create-only write and failure if the key already exists. This closes the race between a preflight existence check and object creation; there is no unconditional upload fallback.
+
+For Cloudflare R2, the uploader should use a conditional PutObject equivalent to `If-None-Match: *`. Credential/provider policy remains outside the repository, just like the Authenticode signer/verifier adapters.
+
+See `docs/PUBLIC_DOWNLOADS.md` for the uploader contract, operator commands, and public URL contract.
+
+Checksums provide integrity for the exact signed bytes, but a checksum served from the same download origin is not an independent authenticity proof. Consumers with an authenticity requirement should also verify the Authenticode signatures against the expected WeDecent publisher policy.
