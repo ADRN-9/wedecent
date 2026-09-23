@@ -71,12 +71,16 @@ jobs:
         run: |
           go build -trimpath -buildvcs=false -o wd.exe ./cmd/wd
           go build -trimpath -buildvcs=false -o wd-agent.exe ./cmd/wd-agent
+          go build -trimpath -buildvcs=false -o wd-routerctl.exe ./cmd/wd-routerctl
+          go build -trimpath -buildvcs=false -o wd-core.exe ./cmd/wd-core
           go build -trimpath -buildvcs=false -o wd-ui.exe ./cmd/wd-ui
       - name: Verify native version commands
         shell: pwsh
         run: |
           .\wd.exe version
           .\wd-agent.exe version
+          .\wd-routerctl.exe version
+          .\wd-core.exe version
           .\wd-ui.exe version
 
   windows-release:
@@ -96,6 +100,13 @@ jobs:
         run: |
           cd dist/wedecent-windows-amd64
           sha256sum -c SHA256SUMS.txt
+      - name: Build complete Windows installer package payload
+        run: ./scripts/build-windows-installer-package.sh
+      - name: Verify installer package checksums
+        run: |
+          cd dist/wedecent-windows-installer
+          sha256sum -c SHA256SUMS.txt
+          sha256sum -c PACKAGE_SHA256SUMS.txt
 
   relay-worker:
     runs-on: ubuntu-latest
