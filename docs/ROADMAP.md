@@ -24,14 +24,16 @@
 - [ ] OS keychain/TPM-backed private keys where available
 - [ ] Fuzz tests for frame and relay-control decoders
 - [ ] Protocol negotiation/version compatibility tests
-- [ ] Signed release/update mechanism
+- [x] Signed Windows release and immutable public-download mechanism
+- [ ] Authenticated update discovery and application
 
 ## Phase 2 — platform coverage
 
-- [ ] Windows ConPTY agent
+- [x] Windows ConPTY agent
 - [ ] macOS PTY implementation
 - [ ] Native terminal/raw-mode handling on Windows/macOS clients
-- [ ] systemd/launchd/Windows Service packaging
+- [ ] systemd/launchd packaging
+- [x] Windows Service packaging
 
 ## Phase 3 — physical/offline transports
 
