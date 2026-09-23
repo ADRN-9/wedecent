@@ -68,8 +68,10 @@ type Forwarder struct {
 	// leave it nil so UTC wall-clock time is used.
 	Now func() time.Time
 
-	mu     sync.Mutex
-	active int
+	mu                sync.Mutex
+	active            int
+	bytesForwarded    uint64
+	sessionsForwarded uint64
 }
 
 type preparedForward struct {
@@ -98,7 +100,10 @@ func (f *Forwarder) Forward(ctx context.Context, route Route, incoming Link) (Fo
 	}
 	defer prepared.close()
 
-	return copyOpaque(prepared.ctx, incoming, prepared.outgoing)
+	f.beginForwarding()
+	result, err := copyOpaque(prepared.ctx, incoming, prepared.outgoing)
+	f.recordForwardResult(result)
+	return result, err
 }
 
 // ServeRouteOpen handles the outer A -> B route-control handshake.
@@ -166,7 +171,10 @@ func (f *Forwarder) ServeRouteOpen(ctx context.Context, incoming Link) (ForwardR
 		return ForwardResult{}, fmt.Errorf("mesh: write route-open acceptance: %w", err)
 	}
 
-	return copyOpaque(prepared.ctx, incoming, prepared.outgoing)
+	f.beginForwarding()
+	result, err := copyOpaque(prepared.ctx, incoming, prepared.outgoing)
+	f.recordForwardResult(result)
+	return result, err
 }
 
 func readRouteOpenRequestWithContext(
@@ -400,6 +408,36 @@ func (f *Forwarder) releaseSession() {
 	f.mu.Lock()
 	f.active--
 	f.mu.Unlock()
+}
+
+func (f *Forwarder) beginForwarding() {
+	f.mu.Lock()
+	if f.sessionsForwarded != ^uint64(0) {
+		f.sessionsForwarded++
+	}
+	f.mu.Unlock()
+}
+
+func (f *Forwarder) recordForwardResult(result ForwardResult) {
+	var bytes uint64
+	if result.BytesToDestination > 0 {
+		bytes = uint64(result.BytesToDestination)
+	}
+	if result.BytesToSource > 0 {
+		bytes = saturatingAddUint64(bytes, uint64(result.BytesToSource))
+	}
+
+	f.mu.Lock()
+	f.bytesForwarded = saturatingAddUint64(f.bytesForwarded, bytes)
+	f.mu.Unlock()
+}
+
+func saturatingAddUint64(left, right uint64) uint64 {
+	const maxUint64 = ^uint64(0)
+	if maxUint64-left < right {
+		return maxUint64
+	}
+	return left + right
 }
 
 type copyOutcome struct {
