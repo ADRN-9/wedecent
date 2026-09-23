@@ -71,11 +71,13 @@ jobs:
         run: |
           go build -trimpath -buildvcs=false -o wd.exe ./cmd/wd
           go build -trimpath -buildvcs=false -o wd-agent.exe ./cmd/wd-agent
+          go build -trimpath -buildvcs=false -o wd-ui.exe ./cmd/wd-ui
       - name: Verify native version commands
         shell: pwsh
         run: |
           .\wd.exe version
           .\wd-agent.exe version
+          .\wd-ui.exe version
 
   windows-release:
     runs-on: ubuntu-latest
