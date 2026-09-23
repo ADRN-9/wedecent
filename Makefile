@@ -1,7 +1,7 @@
 GO ?= go
 BIN_DIR ?= bin
 
-.PHONY: all build test vet smoke smoke-direct smoke-relay release-windows verify-release-windows installer-windows clean
+.PHONY: all build test vet smoke smoke-direct smoke-relay release-windows verify-release-windows installer-windows finalize-windows-signed clean
 
 all: test build
 
@@ -33,6 +33,9 @@ verify-release-windows:
 
 installer-windows:
 	./scripts/build-windows-installer-package.sh
+
+finalize-windows-signed:
+	./scripts/finalize-windows-signed-artifacts.sh
 
 clean:
 	rm -rf $(BIN_DIR) dist
