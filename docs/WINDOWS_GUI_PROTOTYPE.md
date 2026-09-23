@@ -22,7 +22,7 @@ All device discovery/status, connection establishment, path selection, authoriza
 
 The typed client uses `localipc.Dial`, so Windows connects to the existing current-user named pipe rather than opening localhost TCP. Each call has a bounded deadline. Context cancellation forces the local IPC connection deadline forward so a stalled response read is unblocked. Response IDs must exactly match the request ID.
 
-Local Core protocol errors are already sanitized by the server and may be shown using their public message. Local dial, named-pipe, OS, and other internal errors are collapsed in the GUI to a generic Local Core unavailable message; raw transport details are not displayed.
+Local Core protocol errors are already sanitized by the server and may be shown using their public message. Local dial, named-pipe, OS, and other transport failures are classified as retryable unavailability without retaining their raw error text in GUI-layer errors.
 
 Terminal input is copied before crossing the controller boundary. Encoded IPC request buffers, decoded raw response frames, and copied response-result buffers are overwritten on a best-effort basis after use. As elsewhere in the Go codebase, this is memory hygiene rather than a guarantee of cryptographic zeroization.
 
@@ -42,6 +42,10 @@ Only one interactive connection is represented by the prototype at a time. The p
 
 Natural terminal closure is observed through the terminal stream and clears the controller's active UI session after final buffered output is returned. Idle `terminal.read` calls rely on the Local Core's bounded long-poll behavior and simply issue the next one-request/one-response read when an empty still-open result arrives.
 
+Transient Local Core outages are retried by the controller with bounded exponential backoff from 250 ms to 2 seconds. A missing pipe, temporary IPC read/write failure, or `connection_unavailable` response therefore does not erase the GUI's active opaque connection ID. If Local Core comes back with the same in-memory session still available, terminal reads resume.
+
+A Local Core process restart necessarily loses its process-local connection table. Once the restarted core authoritatively returns `connection_not_found` for the old opaque connection ID, the controller clears that stale GUI session and returns `ErrSessionLost`; a fresh `connection.connect` can then proceed. `connection_not_found` during an explicit disconnect is treated as completed teardown because there is no remaining core-side session to close.
+
 Terminal output remains bounded after it leaves Local Core. The reader permits only one terminal-data event to wait for the Win32 message loop at a time; it does not request another chunk until the UI acknowledges the previous event. The plain-text output control is capped at about 1 MiB of displayed text and resets to a visible truncation marker before additional output is appended.
 
 ## Deliberate limitations
@@ -50,4 +54,4 @@ This is not a full terminal emulator. The output control is a plain-text Win32 e
 
 The prototype does not yet provide account sign-in/sign-out, router policy controls, route visualization, multiple simultaneous terminal tabs, clipboard policy, terminal scrollback persistence, or accessibility-specific terminal semantics.
 
-The prototype also does not decide Windows installation, startup, process supervision, upgrade, or crash-restart behavior. Those remain separate lifecycle work. The existing installer is intentionally unchanged by this slice.
+The prototype still does not decide Windows installation, startup, process supervision, automatic core launch, upgrade orchestration, or crash-restart supervision. The existing installer is intentionally unchanged by this slice; the lifecycle behavior here only defines how an already-running GUI reacts when its separately managed Local Core endpoint is temporarily unavailable or restarted.

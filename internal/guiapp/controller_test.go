@@ -6,8 +6,15 @@ import (
 	"sync"
 	"testing"
 
+	coreclient "wedecent.com/wedecent/internal/coreapi/client"
+	"wedecent.com/wedecent/internal/coreapi/ipc"
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
 )
+
+type terminalReadStep struct {
+	result v1.TerminalReadResult
+	err    error
+}
 
 type fakeCore struct {
 	mu sync.Mutex
@@ -19,6 +26,8 @@ type fakeCore struct {
 	disconnectErr error
 	readResult    v1.TerminalReadResult
 	readErr       error
+	readSteps     []terminalReadStep
+	readCalls     int
 	writeErr      error
 	resizeErr     error
 
@@ -87,6 +96,12 @@ func (f *fakeCore) ReadTerminal(_ context.Context, req v1.TerminalReadRequest) (
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.lastReadID = req.ConnectionID
+	if f.readCalls < len(f.readSteps) {
+		step := f.readSteps[f.readCalls]
+		f.readCalls++
+		return step.result, step.err
+	}
+	f.readCalls++
 	return f.readResult, f.readErr
 }
 
@@ -232,5 +247,91 @@ func TestControllerDisconnectFailureKeepsRetryableSession(t *testing.T) {
 	connection, ok := controller.ActiveConnection()
 	if !ok || connection.ID != "conn_retry" {
 		t.Fatalf("active after failed disconnect = %#v, %v", connection, ok)
+	}
+}
+
+func TestControllerRetriesTransientCoreOutage(t *testing.T) {
+	core := &fakeCore{
+		connection: v1.Connection{ID: "conn_retry", DeviceID: "wd_peer0000000000", State: v1.ConnectionStateConnected},
+		readSteps: []terminalReadStep{
+			{err: coreclient.ErrUnavailable},
+			{result: v1.TerminalReadResult{Data: []byte("resumed")}},
+		},
+	}
+	controller, err := New(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Connect(context.Background(), "wd_peer0000000000"); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := controller.ReadTerminal(context.Background(), 1024)
+	if err != nil {
+		t.Fatalf("read after transient outage: %v", err)
+	}
+	if string(result.Data) != "resumed" {
+		t.Fatalf("read result = %#v", result)
+	}
+	if connection, ok := controller.ActiveConnection(); !ok || connection.ID != "conn_retry" {
+		t.Fatalf("transient outage cleared active connection: %#v, %v", connection, ok)
+	}
+	core.mu.Lock()
+	defer core.mu.Unlock()
+	if core.readCalls != 2 {
+		t.Fatalf("read calls = %d, want 2", core.readCalls)
+	}
+}
+
+func TestControllerConnectionNotFoundClearsStaleSession(t *testing.T) {
+	gone := &coreclient.RemoteError{Code: ipc.ErrorConnectionNotFound, Message: "connection not found"}
+	core := &fakeCore{
+		connection: v1.Connection{ID: "conn_stale", DeviceID: "wd_peer0000000000", State: v1.ConnectionStateConnected},
+		readErr:    gone,
+	}
+	controller, err := New(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Connect(context.Background(), "wd_peer0000000000"); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := controller.ReadTerminal(context.Background(), 1024); !errors.Is(err, ErrSessionLost) {
+		t.Fatalf("read error = %v, want session lost", err)
+	}
+	if _, ok := controller.ActiveConnection(); ok {
+		t.Fatal("connection_not_found left stale GUI connection active")
+	}
+
+	core.mu.Lock()
+	core.readErr = nil
+	core.connection = v1.Connection{ID: "conn_fresh", DeviceID: "wd_peer0000000000", State: v1.ConnectionStateConnected}
+	core.mu.Unlock()
+	if connection, err := controller.Connect(context.Background(), "wd_peer0000000000"); err != nil || connection.ID != "conn_fresh" {
+		t.Fatalf("reconnect = %#v, %v", connection, err)
+	}
+}
+
+func TestControllerDisconnectTreatsMissingConnectionAsComplete(t *testing.T) {
+	core := &fakeCore{
+		connection: v1.Connection{ID: "conn_stale", DeviceID: "wd_peer0000000000", State: v1.ConnectionStateConnected},
+		disconnectErr: &coreclient.RemoteError{
+			Code:    ipc.ErrorConnectionNotFound,
+			Message: "connection not found",
+		},
+	}
+	controller, err := New(core)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := controller.Connect(context.Background(), "wd_peer0000000000"); err != nil {
+		t.Fatal(err)
+	}
+	if err := controller.Disconnect(context.Background()); err != nil {
+		t.Fatalf("disconnect stale session: %v", err)
+	}
+	if _, ok := controller.ActiveConnection(); ok {
+		t.Fatal("stale disconnect left active connection")
 	}
 }

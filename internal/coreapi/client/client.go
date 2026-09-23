@@ -196,13 +196,13 @@ func (c *Client) call(parent context.Context, method string, params any, out any
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("core client: dial: %w", err)
+		return unavailableError("dial")
 	}
 	defer conn.Close()
 
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := conn.SetDeadline(deadline); err != nil {
-			return fmt.Errorf("core client: set deadline: %w", err)
+			return unavailableError("set deadline")
 		}
 	}
 	stopCancel := context.AfterFunc(ctx, func() {
@@ -215,7 +215,10 @@ func (c *Client) call(parent context.Context, method string, params any, out any
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("core client: write request: %w", err)
+		if errors.Is(err, ipc.ErrInvalidMessage) || errors.Is(err, ipc.ErrFrameTooLarge) {
+			return fmt.Errorf("core client: write request: %w", err)
+		}
+		return unavailableError("write request")
 	}
 
 	response, err := ipc.ReadResponse(conn)
@@ -223,7 +226,10 @@ func (c *Client) call(parent context.Context, method string, params any, out any
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return ctxErr
 		}
-		return fmt.Errorf("core client: read response: %w", err)
+		if errors.Is(err, ipc.ErrInvalidMessage) || errors.Is(err, ipc.ErrFrameTooLarge) {
+			return fmt.Errorf("core client: read response: %w", err)
+		}
+		return unavailableError("read response")
 	}
 	defer wipe(response.Result)
 	if response.ID != requestID {

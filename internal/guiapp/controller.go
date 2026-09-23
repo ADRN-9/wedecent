@@ -5,10 +5,18 @@ package guiapp
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
+	"time"
 
+	coreclient "wedecent.com/wedecent/internal/coreapi/client"
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
+)
+
+const (
+	terminalRetryMin = 250 * time.Millisecond
+	terminalRetryMax = 2 * time.Second
 )
 
 var (
@@ -16,6 +24,7 @@ var (
 	ErrInvalidDeviceID = errors.New("gui app: invalid device id")
 	ErrSessionActive   = errors.New("gui app: a session is already active")
 	ErrNoSession       = errors.New("gui app: no active session")
+	ErrSessionLost     = errors.New("gui app: Local Core session was lost")
 )
 
 type Core interface {
@@ -104,10 +113,13 @@ func (c *Controller) Disconnect(ctx context.Context) error {
 
 	c.mu.Lock()
 	c.closing = false
-	if err == nil && c.active != nil && c.active.ID == connectionID {
+	if (err == nil || coreclient.IsConnectionGone(err)) && c.active != nil && c.active.ID == connectionID {
 		c.active = nil
 	}
 	c.mu.Unlock()
+	if coreclient.IsConnectionGone(err) {
+		return nil
+	}
 	return err
 }
 
@@ -116,14 +128,32 @@ func (c *Controller) ReadTerminal(ctx context.Context, maxBytes int) (v1.Termina
 	if err != nil {
 		return v1.TerminalReadResult{}, err
 	}
-	result, err := c.core.ReadTerminal(ctx, v1.TerminalReadRequest{ConnectionID: connectionID, MaxBytes: maxBytes})
-	if err != nil {
-		return v1.TerminalReadResult{}, err
+
+	backoff := terminalRetryMin
+	for {
+		result, readErr := c.core.ReadTerminal(ctx, v1.TerminalReadRequest{ConnectionID: connectionID, MaxBytes: maxBytes})
+		if readErr == nil {
+			if result.Closed {
+				c.clearActive(connectionID)
+			}
+			return result, nil
+		}
+		if sessionErr := c.sessionError(connectionID, readErr); !errors.Is(sessionErr, readErr) {
+			return v1.TerminalReadResult{}, sessionErr
+		}
+		if !retryableCoreOutage(ctx, readErr) {
+			return v1.TerminalReadResult{}, readErr
+		}
+		if err := waitForRetry(ctx, backoff); err != nil {
+			return v1.TerminalReadResult{}, err
+		}
+		if backoff < terminalRetryMax {
+			backoff *= 2
+			if backoff > terminalRetryMax {
+				backoff = terminalRetryMax
+			}
+		}
 	}
-	if result.Closed {
-		c.clearActive(connectionID)
-	}
-	return result, nil
 }
 
 func (c *Controller) WriteTerminal(ctx context.Context, data []byte) error {
@@ -131,10 +161,11 @@ func (c *Controller) WriteTerminal(ctx context.Context, data []byte) error {
 	if err != nil {
 		return err
 	}
-	return c.core.WriteTerminal(ctx, v1.TerminalWriteRequest{
+	err = c.core.WriteTerminal(ctx, v1.TerminalWriteRequest{
 		ConnectionID: connectionID,
 		Data:         append([]byte(nil), data...),
 	})
+	return c.sessionError(connectionID, err)
 }
 
 func (c *Controller) ResizeTerminal(ctx context.Context, cols, rows uint16) error {
@@ -142,7 +173,8 @@ func (c *Controller) ResizeTerminal(ctx context.Context, cols, rows uint16) erro
 	if err != nil {
 		return err
 	}
-	return c.core.ResizeTerminal(ctx, v1.TerminalResizeRequest{ConnectionID: connectionID, Cols: cols, Rows: rows})
+	err = c.core.ResizeTerminal(ctx, v1.TerminalResizeRequest{ConnectionID: connectionID, Cols: cols, Rows: rows})
+	return c.sessionError(connectionID, err)
 }
 
 func (c *Controller) ActiveConnection() (v1.Connection, bool) {
@@ -161,6 +193,35 @@ func (c *Controller) activeConnectionID() (string, error) {
 		return "", ErrNoSession
 	}
 	return c.active.ID, nil
+}
+
+func (c *Controller) sessionError(connectionID string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if coreclient.IsConnectionGone(err) {
+		c.clearActive(connectionID)
+		return fmt.Errorf("%w: %v", ErrSessionLost, err)
+	}
+	return err
+}
+
+func retryableCoreOutage(ctx context.Context, err error) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	return coreclient.IsUnavailable(err) || errors.Is(err, context.DeadlineExceeded)
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func (c *Controller) clearActive(connectionID string) {
