@@ -20,6 +20,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:BinaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
+$script:VerifiedBinaryHashes = @{}
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -28,7 +30,6 @@ function Assert-Administrator {
         throw 'Install-WeDecent.ps1 must be run from an elevated PowerShell session.'
     }
 }
-
 
 function Assert-SafeChildPath {
     param(
@@ -224,7 +225,7 @@ function Get-Sha256FileHash {
 }
 
 function Assert-ReleaseBundle {
-    $required = @('wd.exe', 'wd-agent.exe', 'VERSION.txt', 'SHA256SUMS.txt')
+    $required = @($script:BinaryNames + @('VERSION.txt', 'SHA256SUMS.txt'))
     foreach ($name in $required) {
         $path = Join-Path $BundlePath $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
@@ -233,7 +234,8 @@ function Assert-ReleaseBundle {
     }
 
     $hashes = Get-ManifestHashes (Join-Path $BundlePath 'SHA256SUMS.txt')
-    foreach ($name in @('wd.exe', 'wd-agent.exe')) {
+    $verifiedHashes = @{}
+    foreach ($name in $script:BinaryNames) {
         if (-not $hashes.ContainsKey($name)) {
             throw "SHA256SUMS.txt has no entry for $name"
         }
@@ -241,7 +243,9 @@ function Assert-ReleaseBundle {
         if ($actual -ne $hashes[$name]) {
             throw "Checksum mismatch for $name"
         }
+        $verifiedHashes[$name] = $hashes[$name]
     }
+    $script:VerifiedBinaryHashes = $verifiedHashes
 
     $versionLine = Get-Content -LiteralPath (Join-Path $BundlePath 'VERSION.txt') |
         Where-Object { $_ -like 'version=*' } |
@@ -301,7 +305,6 @@ function ConvertFrom-SecureStringTransient {
         [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
     }
 }
-
 
 function Resolve-AccountSid {
     param([Parameter(Mandatory = $true)][string]$Account)
@@ -475,22 +478,16 @@ function Install-Binary {
     Move-Item -LiteralPath $newPath -Destination $Destination -Force
 }
 
-function Restore-BinaryBackup {
-    param([string]$Destination)
-    $backupPath = "$Destination.bak"
-    if (Test-Path -LiteralPath $backupPath) {
-        Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
-        Move-Item -LiteralPath $backupPath -Destination $Destination -Force
-    }
-}
-
 function Rollback-Binary {
-    param([string]$Destination)
+    param(
+        [string]$Destination,
+        [bool]$HadOriginal
+    )
     $backupPath = "$Destination.bak"
     if (Test-Path -LiteralPath $backupPath) {
         Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
         Move-Item -LiteralPath $backupPath -Destination $Destination -Force
-    } else {
+    } elseif (-not $HadOriginal) {
         Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
     }
     Remove-Item -LiteralPath "$Destination.new" -Force -ErrorAction SilentlyContinue
@@ -499,6 +496,75 @@ function Rollback-Binary {
 function Remove-BinaryBackup {
     param([string]$Destination)
     Remove-Item -LiteralPath "$Destination.bak" -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath "$Destination.new" -Force -ErrorAction SilentlyContinue
+}
+
+function Get-BinaryDestinations {
+    param([Parameter(Mandatory = $true)][string]$Directory)
+    $destinations = @{}
+    foreach ($name in $script:BinaryNames) {
+        $destinations[$name] = Join-Path $Directory $name
+    }
+    return $destinations
+}
+
+function Install-Binaries {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceDirectory,
+        [Parameter(Mandatory = $true)][hashtable]$Destinations,
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$AttemptedNames,
+        [Parameter(Mandatory = $true)][hashtable]$OriginalState
+    )
+    foreach ($name in $script:BinaryNames) {
+        if (-not $script:VerifiedBinaryHashes.ContainsKey($name)) {
+            throw "No pinned verified hash for $name"
+        }
+        $source = Join-Path $SourceDirectory $name
+        $sourceHash = Get-Sha256FileHash $source
+        if ($sourceHash -ne $script:VerifiedBinaryHashes[$name]) {
+            throw "Release bundle changed after verification: $name"
+        }
+        $destination = $Destinations[$name]
+        $OriginalState[$name] = Test-Path -LiteralPath $destination -PathType Leaf
+        $AttemptedNames.Add($name)
+        Install-Binary $source $destination
+    }
+}
+
+function Assert-InstalledBinaries {
+    param([Parameter(Mandatory = $true)][hashtable]$Destinations)
+    foreach ($name in $script:BinaryNames) {
+        if (-not $script:VerifiedBinaryHashes.ContainsKey($name)) {
+            throw "No pinned verified hash for $name"
+        }
+        $destination = $Destinations[$name]
+        if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
+            throw "Installed binary is missing: $destination"
+        }
+        $actual = Get-Sha256FileHash $destination
+        if ($actual -ne $script:VerifiedBinaryHashes[$name]) {
+            throw "Installed checksum mismatch for $name"
+        }
+    }
+}
+
+function Rollback-Binaries {
+    param(
+        [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$AttemptedNames,
+        [Parameter(Mandatory = $true)][hashtable]$OriginalState,
+        [Parameter(Mandatory = $true)][hashtable]$Destinations
+    )
+    for ($i = $AttemptedNames.Count - 1; $i -ge 0; $i--) {
+        $name = $AttemptedNames[$i]
+        Rollback-Binary -Destination $Destinations[$name] -HadOriginal ([bool]$OriginalState[$name])
+    }
+}
+
+function Remove-BinaryBackups {
+    param([Parameter(Mandatory = $true)][hashtable]$Destinations)
+    foreach ($name in $script:BinaryNames) {
+        Remove-BinaryBackup $Destinations[$name]
+    }
 }
 
 function Add-MachinePathEntry {
@@ -549,8 +615,9 @@ if ($metadata) {
     }
 }
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
-$wdDestination = Join-Path $InstallDir 'wd.exe'
-$agentDestination = Join-Path $InstallDir 'wd-agent.exe'
+$binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
+$wdDestination = $binaryDestinations['wd.exe']
+$agentDestination = $binaryDestinations['wd-agent.exe']
 
 if ($service) {
     if ($service.StartName -match '^(LocalSystem|LocalService|NetworkService|NT AUTHORITY\\(SYSTEM|LocalService|NetworkService))$') {
@@ -578,21 +645,27 @@ if ($service) {
         Stop-Service -Name $ServiceName -Force
         (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
+    $attemptedBinaryNames = [System.Collections.Generic.List[string]]::new()
+    $binaryOriginalState = @{}
     try {
-        Install-Binary (Join-Path $BundlePath 'wd.exe') $wdDestination
-        Install-Binary (Join-Path $BundlePath 'wd-agent.exe') $agentDestination
+        Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
+        Assert-InstalledBinaries -Destinations $binaryDestinations
         Start-Service -Name $ServiceName
         (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         Write-WeDecentMetadata -AccountSid $accountSid -ManagedAccount $managed -AccountName $localName -Version $version
     } catch {
+        $failed = $_
         Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        Restore-BinaryBackup $wdDestination
-        Restore-BinaryBackup $agentDestination
-        Start-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        throw "Upgrade failed; previous binaries were restored: $($_.Exception.Message)"
+        Invoke-RollbackStep 'restore installed binaries' {
+            Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
+        }
+        Invoke-RollbackStep 'restart previous agent service' {
+            Start-Service -Name $ServiceName
+            (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        }
+        throw "Upgrade failed; rollback was attempted: $($failed.Exception.Message)"
     }
-    Remove-BinaryBackup $wdDestination
-    Remove-BinaryBackup $agentDestination
+    Remove-BinaryBackups -Destinations $binaryDestinations
 } else {
     Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction Stop
     $localUser = Get-LocalUser -Name $ServiceAccountName -ErrorAction SilentlyContinue
@@ -601,17 +674,16 @@ if ($service) {
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Install WeDecent $version")) { return }
 
     $installDirExisted = Test-Path -LiteralPath $InstallDir -PathType Container
-
     $stateParent = Split-Path -Parent $StateDir
-
     $stateParentExisted = Test-Path -LiteralPath $stateParent -PathType Container
-
     $stateExisted = Test-Path -LiteralPath $StateDir -PathType Container
     $createdAccount = $false
     $hadLogonRight = $false
     $originalMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
     $managed = $false
     $password = $null
+    $attemptedBinaryNames = [System.Collections.Generic.List[string]]::new()
+    $binaryOriginalState = @{}
 
     try {
         New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
@@ -654,8 +726,8 @@ if ($service) {
         $hadLogonRight = Test-ServiceLogonRight -Sid $localUser.SID.Value
         if (-not $hadLogonRight) { Set-ServiceLogonRight -Sid $localUser.SID.Value -Present $true }
 
-        Install-Binary (Join-Path $BundlePath 'wd.exe') $wdDestination
-        Install-Binary (Join-Path $BundlePath 'wd-agent.exe') $agentDestination
+        Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
+        Assert-InstalledBinaries -Destinations $binaryDestinations
         Invoke-AgentServiceInstall -AgentPath $agentDestination -Password $password
 
         $finalService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
@@ -669,8 +741,7 @@ if ($service) {
 
         if ($AddToMachinePath) { Add-MachinePathEntry $InstallDir }
         Write-WeDecentMetadata -AccountSid $localUser.SID.Value -ManagedAccount $managed -AccountName $ServiceAccountName -Version $version
-        Remove-BinaryBackup $wdDestination
-        Remove-BinaryBackup $agentDestination
+        Remove-BinaryBackups -Destinations $binaryDestinations
     } catch {
         $failed = $_
         Invoke-RollbackStep 'remove partially created service' {
@@ -681,8 +752,9 @@ if ($service) {
                 if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
             }
         }
-        Invoke-RollbackStep 'restore wd.exe' { Rollback-Binary $wdDestination }
-        Invoke-RollbackStep 'restore wd-agent.exe' { Rollback-Binary $agentDestination }
+        Invoke-RollbackStep 'restore installed binaries' {
+            Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
+        }
         if ($AddToMachinePath) {
             Invoke-RollbackStep 'restore machine PATH' {
                 [Environment]::SetEnvironmentVariable('Path', $originalMachinePath, 'Machine')
@@ -723,7 +795,11 @@ $finalService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
 if (-not $finalService -or $finalService.State -ne 'Running') { throw "$ServiceName is not running after installation" }
 
 Write-Host "WeDecent $version installed successfully."
-Write-Host "Client:  $wdDestination"
-Write-Host "Agent:   $agentDestination"
-Write-Host "State:   $StateDir"
-Write-Host "Service: $ServiceName ($($finalService.StartName))"
+Write-Host "Client:    $wdDestination"
+Write-Host "Agent:     $agentDestination"
+Write-Host "RouterCtl: $($binaryDestinations['wd-routerctl.exe'])"
+Write-Host "Core:      $($binaryDestinations['wd-core.exe'])"
+Write-Host "UI:        $($binaryDestinations['wd-ui.exe'])"
+Write-Host "State:     $StateDir"
+Write-Host "Service:   $ServiceName ($($finalService.StartName))"
+Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user manual launch; they are not registered as services or autostart entries.'

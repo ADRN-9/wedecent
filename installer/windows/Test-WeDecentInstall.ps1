@@ -10,6 +10,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$binaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
 
 function Assert-True([bool]$Condition, [string]$Message) {
     if (-not $Condition) { throw $Message }
@@ -86,21 +87,26 @@ function Test-ServiceLogonRight {
 }
 
 Assert-Administrator
-$wd = Join-Path $InstallDir 'wd.exe'
-$agent = Join-Path $InstallDir 'wd-agent.exe'
+$binaryPaths = @{}
+foreach ($name in $binaryNames) {
+    $path = Join-Path $InstallDir $name
+    $binaryPaths[$name] = $path
+    Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing $path"
+}
+$wd = $binaryPaths['wd.exe']
+$agent = $binaryPaths['wd-agent.exe']
 $metadataPath = Join-Path (Join-Path $env:ProgramData 'WeDecent') 'installer.json'
-Assert-True (Test-Path -LiteralPath $wd -PathType Leaf) "Missing $wd"
-Assert-True (Test-Path -LiteralPath $agent -PathType Leaf) "Missing $agent"
 Assert-True (Test-Path -LiteralPath $StateDir -PathType Container) "Missing state directory $StateDir"
 Assert-True (Test-Path -LiteralPath $metadataPath -PathType Leaf) "Missing installer metadata $metadataPath"
 Assert-True (Test-MetadataTrusted $metadataPath) 'Installer metadata ACL/owner is not trusted'
 
-& $wd version
-if ($LASTEXITCODE -ne 0) { throw 'wd.exe version failed' }
-& $agent version
-if ($LASTEXITCODE -ne 0) { throw 'wd-agent.exe version failed' }
+foreach ($name in $binaryNames) {
+    & $binaryPaths[$name] version
+    if ($LASTEXITCODE -ne 0) { throw "$name version failed" }
+}
 
-$service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+$services = @(Get-CimInstance Win32_Service)
+$service = $services | Where-Object { $_.Name -ceq $ServiceName } | Select-Object -First 1
 Assert-True ($null -ne $service) "Service $ServiceName is missing"
 Assert-True ($service.State -eq 'Running') "Service $ServiceName is not running"
 Assert-True ($service.StartMode -eq 'Auto') "Service $ServiceName is not automatic"
@@ -109,6 +115,12 @@ $expectedAgent = '^(?:"' + [Regex]::Escape($agent) + '"|' + [Regex]::Escape($age
 Assert-True ($service.PathName -match $expectedAgent) 'Service binary path does not point at the installed wd-agent.exe'
 Assert-True ($service.PathName -match [Regex]::Escape('--listen=')) 'Service is missing explicit outbound-only --listen= configuration'
 Assert-True ($service.PathName -match [Regex]::Escape("--web-relay=$WebRelay")) "Service is not configured for expected web relay $WebRelay"
+
+foreach ($name in @('wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')) {
+    $pathPattern = '^(?:"' + [Regex]::Escape($binaryPaths[$name]) + '"|' + [Regex]::Escape($binaryPaths[$name]) + ')(?:\s|$)'
+    $unexpected = @($services | Where-Object { $_.PathName -match $pathPattern })
+    Assert-True ($unexpected.Count -eq 0) "$name must not be registered as a Windows service"
+}
 
 $localName = Get-LocalAccountName $service.StartName
 Assert-True (-not [string]::IsNullOrWhiteSpace($localName)) 'Service does not run as a dedicated local account'

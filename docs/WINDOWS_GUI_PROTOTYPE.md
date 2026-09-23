@@ -4,7 +4,7 @@
 
 This v0.4.4 development slice adds a native Windows prototype over the Local Core `v1` contract. It is intentionally a UI client, not a networking implementation.
 
-The prototype is not installed or autostarted. `wd-core` must already be running as the same interactive user before `wd-ui` can connect to its protected Local Core endpoint.
+The Windows installer copies `wd-core.exe` and `wd-ui.exe` into the protected Program Files install directory alongside the other release binaries, but it does not autostart or supervise either process. `wd-core` must already be running as the same interactive user before `wd-ui` can connect to its protected Local Core endpoint.
 
 ## Components
 
@@ -56,4 +56,4 @@ This is not a full terminal emulator. The output control is a plain-text Win32 e
 
 The prototype does not yet provide account sign-in/sign-out, router policy controls, route visualization, multiple simultaneous terminal tabs, clipboard policy, terminal scrollback persistence, or accessibility-specific terminal semantics.
 
-The prototype still does not decide Windows installation, startup, process supervision, automatic core launch, upgrade orchestration, or crash-restart supervision. The existing installer is intentionally unchanged by this slice; the lifecycle behavior here only defines how an already-running GUI reacts when its separately managed Local Core endpoint is temporarily unavailable or restarted.
+The installer now handles binary distribution and rollback, but it still does not decide per-user startup, process supervision, automatic core launch, or crash-restart supervision. This lifecycle behavior only defines how an already-running GUI reacts when its separately managed Local Core endpoint is temporarily unavailable or restarted.
