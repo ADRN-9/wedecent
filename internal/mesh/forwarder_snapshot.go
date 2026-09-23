@@ -1,5 +1,9 @@
 package mesh
 
+import "errors"
+
+var ErrForwarderUnavailable = errors.New("mesh: forwarding runtime is unavailable")
+
 // ForwarderStats is a process-local snapshot of one forwarding runtime.
 //
 // SessionsForwarded counts sessions that reached opaque byte forwarding after
@@ -12,12 +16,38 @@ type ForwarderStats struct {
 	SessionsForwarded uint64
 }
 
-// ForwarderSnapshot copies the immutable router policy together with current
-// process-local forwarding counters. Forwarder policy remains construction-time
-// state in the current runtime and must not be mutated concurrently.
+// ForwarderSnapshot copies the current router policy together with current
+// process-local forwarding counters.
 type ForwarderSnapshot struct {
 	Policy RouterPolicy
 	Stats  ForwarderStats
+}
+
+// SetPolicy validates and atomically replaces the policy used by future routed
+// operations. Existing active tunnels keep the policy snapshot under which they
+// were admitted and are not terminated by this method.
+func (f *Forwarder) SetPolicy(policy RouterPolicy) error {
+	if f == nil {
+		return ErrForwarderUnavailable
+	}
+	if err := policy.Validate(); err != nil {
+		return err
+	}
+
+	f.mu.Lock()
+	f.Policy = policy
+	f.mu.Unlock()
+	return nil
+}
+
+func (f *Forwarder) policySnapshot() RouterPolicy {
+	if f == nil {
+		return RouterPolicy{}
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.Policy
 }
 
 // Snapshot returns a defensive value copy of the forwarding runtime state.

@@ -55,9 +55,12 @@ type ForwardResult struct {
 
 // Forwarder forwards an authorized A -> B -> C route.
 //
-// Policy and configuration must not be mutated while Forward or ServeRouteOpen
-// is running. Incoming and outgoing links are owned for the duration of the
-// routed operation and are closed when it ends.
+// Policy may be changed after construction only through SetPolicy. Each new
+// routed operation snapshots one policy value and uses it for its full setup;
+// active tunnels are not retroactively re-authorized when policy changes.
+// Other configuration must not be mutated while Forward or ServeRouteOpen is
+// running. Incoming and outgoing links are owned for the duration of the routed
+// operation and are closed when it ends.
 type Forwarder struct {
 	LocalID    DeviceID
 	Policy     RouterPolicy
@@ -245,10 +248,12 @@ func (f *Forwarder) prepareForward(
 	if strings.TrimSpace(string(f.LocalID)) == "" {
 		return nil, errors.New("mesh: router device ID is required")
 	}
-	if err := f.Policy.Validate(); err != nil {
+
+	policy := f.policySnapshot()
+	if err := policy.Validate(); err != nil {
 		return nil, err
 	}
-	if !f.Policy.Enabled {
+	if !policy.Enabled {
 		return nil, ErrRoutingDisabled
 	}
 	if f.Authorizer == nil {
@@ -286,12 +291,12 @@ func (f *Forwarder) prepareForward(
 		return nil, ErrLinkIdentityMismatch
 	}
 
-	if f.Policy.LANOnly &&
+	if policy.LANOnly &&
 		(first.Transport != TransportLAN || second.Transport != TransportLAN) {
 		return nil, ErrRouteNotAllowed
 	}
 
-	if !f.acquireSession() {
+	if !f.acquireSession(policy.MaxSessions) {
 		return nil, ErrRouterBusy
 	}
 
@@ -309,7 +314,7 @@ func (f *Forwarder) prepareForward(
 		Router:        f.LocalID,
 		Route:         authRoute,
 		Authorization: authAuthorization,
-		Policy:        f.Policy,
+		Policy:        policy,
 	}); err != nil {
 		ctxErr := routeCtx.Err()
 		release()
@@ -392,11 +397,11 @@ func routeOpenCodeForForwardError(err error) RouteOpenCode {
 	}
 }
 
-func (f *Forwarder) acquireSession() bool {
+func (f *Forwarder) acquireSession(maxSessions int) bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if f.Policy.MaxSessions > 0 && f.active >= f.Policy.MaxSessions {
+	if maxSessions > 0 && f.active >= maxSessions {
 		return false
 	}
 

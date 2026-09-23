@@ -264,6 +264,21 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame) {
 	for {
 		select {
 		case code := <-exitCh:
+			// Cmd.Wait may return before the PTY reader has forwarded the final
+			// bytes written by the shell. Close is the protocol's terminal frame,
+			// so do not send it until PTY output has drained. A disconnected peer
+			// still aborts promptly instead of waiting on the PTY indefinitely.
+			if ptyReadDone != nil {
+				select {
+				case <-ptyReadDone:
+					ptyReadDone = nil
+				case err := <-readErrCh:
+					if !errors.Is(err, io.EOF) {
+						s.log().Debug("session read ended", "error", err)
+					}
+					return
+				}
+			}
 			if err := writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: code})}); err != nil {
 				return
 			}

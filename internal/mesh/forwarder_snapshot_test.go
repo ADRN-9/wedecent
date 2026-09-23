@@ -182,6 +182,118 @@ func TestForwarderSnapshotDoesNotCountRejectedRoute(t *testing.T) {
 	}
 }
 
+func TestForwarderSetPolicyValidatesAndSnapshots(t *testing.T) {
+	t.Parallel()
+
+	forwarder := &Forwarder{Policy: DisabledRouterPolicy()}
+
+	invalid := RouterPolicy{
+		Enabled:                 true,
+		TrustedDevicesOnly:      true,
+		MaxBandwidthBytesPerSec: -1,
+	}
+	if err := forwarder.SetPolicy(invalid); err == nil {
+		t.Fatal("SetPolicy() accepted invalid policy")
+	}
+	if got := forwarder.Snapshot().Policy; got != DisabledRouterPolicy() {
+		t.Fatalf("invalid update changed policy: %+v", got)
+	}
+
+	policy := RouterPolicy{
+		Enabled:            true,
+		TrustedDevicesOnly: true,
+		MaxSessions:        3,
+		LANOnly:            true,
+	}
+	if err := forwarder.SetPolicy(policy); err != nil {
+		t.Fatalf("SetPolicy() error: %v", err)
+	}
+	if got := forwarder.Snapshot().Policy; got != policy {
+		t.Fatalf("snapshot policy = %+v, want %+v", got, policy)
+	}
+}
+
+func TestForwarderPolicyChangeDoesNotTerminateActiveTunnel(t *testing.T) {
+	t.Parallel()
+
+	clientSide, routerIncoming := net.Pipe()
+	routerOutgoing, targetSide := net.Pipe()
+	defer targetSide.Close()
+
+	forwarder := &Forwarder{
+		LocalID: "wd_b",
+		Policy: RouterPolicy{
+			Enabled:            true,
+			TrustedDevicesOnly: true,
+			MaxSessions:        1,
+		},
+		Authorizer: forwardAuthorizerFunc(func(context.Context, ForwardRequest) error {
+			return nil
+		}),
+		DialNext: func(context.Context, RouteHop) (Link, error) {
+			return &testMeshLink{
+				Conn:      routerOutgoing,
+				local:     "wd_b",
+				remote:    "wd_c",
+				transport: TransportInternet,
+			}, nil
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := forwarder.Forward(
+			context.Background(),
+			oneHopTestRoute(time.Now().Add(time.Minute)),
+			&testMeshLink{
+				Conn:      routerIncoming,
+				local:     "wd_b",
+				remote:    "wd_a",
+				transport: TransportLAN,
+			},
+		)
+		done <- err
+	}()
+
+	waitForForwarderSnapshot(t, forwarder, func(snapshot ForwarderSnapshot) bool {
+		return snapshot.Stats.ActiveSessions == 1
+	})
+
+	if err := forwarder.SetPolicy(DisabledRouterPolicy()); err != nil {
+		t.Fatalf("SetPolicy(disabled) error: %v", err)
+	}
+	if got := forwarder.Snapshot(); got.Stats.ActiveSessions != 1 || got.Policy.Enabled {
+		t.Fatalf("snapshot after disable = %+v", got)
+	}
+
+	const payload = "still-forwarding"
+	targetDone := make(chan error, 1)
+	go func() {
+		buf := make([]byte, len(payload))
+		_, err := io.ReadFull(targetSide, buf)
+		if err == nil && string(buf) != payload {
+			err = errors.New("target received altered bytes")
+		}
+		targetDone <- err
+	}()
+	if _, err := clientSide.Write([]byte(payload)); err != nil {
+		t.Fatalf("write after disable: %v", err)
+	}
+	if err := <-targetDone; err != nil {
+		t.Fatalf("active tunnel after disable: %v", err)
+	}
+
+	_ = clientSide.Close()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Forward() after disable: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Forward() did not finish after close")
+	}
+}
+
 func TestSaturatingAddUint64(t *testing.T) {
 	t.Parallel()
 

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"runtime"
 	"testing"
 
 	"wedecent.com/wedecent/internal/identity"
@@ -229,10 +230,21 @@ func TestOpenAgentListenersBindsSeparateRoutingSockets(
 	}
 	defer listeners.close()
 
-	if len(listeners.listeners) != 3 {
+	wantListenerCount := 3
+	wantRoles := []string{
+		listenerRoleDirect,
+		listenerRoleRouteControl,
+		listenerRoleRouteTunnel,
+	}
+	if runtime.GOOS == "windows" {
+		wantListenerCount++
+		wantRoles = append(wantRoles, listenerRoleRouterAdmin)
+	}
+	if len(listeners.listeners) != wantListenerCount {
 		t.Fatalf(
-			"listener count = %d, want 3",
+			"listener count = %d, want %d",
 			len(listeners.listeners),
+			wantListenerCount,
 		)
 	}
 
@@ -256,11 +268,7 @@ func TestOpenAgentListenersBindsSeparateRoutingSockets(
 		roles[listener.role] = true
 	}
 
-	for _, role := range []string{
-		listenerRoleDirect,
-		listenerRoleRouteControl,
-		listenerRoleRouteTunnel,
-	} {
+	for _, role := range wantRoles {
 		if !roles[role] {
 			t.Fatalf("missing listener role %q", role)
 		}
