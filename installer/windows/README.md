@@ -14,7 +14,7 @@ wd-ui.exe
 
 `SHA256SUMS.txt` covers all five release binaries, and `PACKAGE_SHA256SUMS.txt` covers the complete installer-package payload. `Install-WeDecent.ps1` verifies the release hashes before mutation, pins those verified values, rechecks each source immediately before replacement, and verifies the installed copies against the pinned values before completing installation or restarting the service.
 
-Only `wd-agent.exe` is registered with the Windows Service Control Manager. `wd-core.exe` and `wd-ui.exe` remain same-user processes for explicit/manual launch in this milestone; the installer does not register them as services, startup tasks, Run-key entries, or other autostart mechanisms. `wd-routerctl.exe` is also installed as a manual administrative utility and gains no service privilege merely by being present in Program Files.
+Only `wd-agent.exe` is registered with the Windows Service Control Manager. The installer does not register `wd-core.exe` or `wd-ui.exe` as services, startup tasks, Run-key entries, or other autostart mechanisms. `wd-ui.exe` remains an explicitly launched same-user application; when it starts and the protected Local Core transport is absent, the UI may launch only the exact sibling `wd-core.exe` as that same user. `wd-routerctl.exe` is installed as a manual administrative utility and gains no service privilege merely by being present in Program Files.
 
 ## Security properties
 
@@ -29,7 +29,7 @@ Only `wd-agent.exe` is registered with the Windows Service Control Manager. `wd-
 - Installer metadata is written atomically with an Administrators/SYSTEM-only ACL before it can authorize managed-account deletion.
 - Normal uninstall removes the installed program directory, including all five binaries, while preserving cryptographic agent state and the service account. Permanent identity deletion requires explicit purge flags; `-WhatIf` is a real dry run.
 
-If a manually launched `wd-core.exe`, `wd-ui.exe`, or other installed executable is holding its image open during an upgrade, Windows may refuse the replacement. The installer fails the transaction rather than killing an interactive process or silently leaving mixed binary versions; close the process and rerun the installer.
+If `wd-core.exe`, `wd-ui.exe`, or another installed executable is running and Windows refuses to replace its image during an upgrade, the installer fails the transaction rather than killing an interactive process or silently leaving mixed binary versions. Close the process and rerun the installer.
 
 The package hash manifests provide integrity relative to the package contents; they are not a substitute for code signing. The PowerShell scripts and binaries are not Authenticode-signed yet, so production packaging should sign them before distribution. Do not weaken execution policy or Defender to run an untrusted package.
 
