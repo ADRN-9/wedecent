@@ -178,22 +178,36 @@ downloads the public archive and checksum manifest again and verifies their exac
 
 ## Verification
 
-Anyone can verify a published version without Cloudflare or GitHub credentials:
+Anyone can perform integrity and package-shape verification without Cloudflare or GitHub
+credentials:
 
 ```bash
 scripts/verify-public-windows-download.sh --version v0.4.0
 ```
 
-The verifier downloads the checksum manifest and hashes the public ZIP stream. A
-successful result proves the bytes at the public URL match the public manifest.
+The verifier downloads the public checksum manifest and ZIP exactly once each. It
+requires the public manifest to contain exactly one entry for the expected versioned
+archive, verifies the ZIP SHA-256, rejects duplicate/unexpected/path-bearing archive
+members, requires exactly the seven signed-release files, checks `VERSION.txt`, and
+verifies that the internal `SHA256SUMS.txt` contains exactly one correct SHA-256 entry
+for each of the five Windows binaries.
 
-SHA-256 checksums provide corruption/integrity detection; a checksum served from the
-same origin is not an independent authenticity proof. For authenticity, extract the ZIP
-and verify the Authenticode signatures on all five executable files against the expected
-WeDecent publisher/certificate policy. The publication pipeline's verifier gate prevents
-new releases from being uploaded unless those signatures pass the operator's production
-policy, but consumers should still verify signatures when their threat model requires
-independent publisher authentication.
+For independent publisher authentication, supply the same kind of external Authenticode
+policy verifier used by the release pipeline:
+
+```bash
+WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER=/absolute/path/to/verifier \
+  scripts/verify-public-windows-download.sh --version v0.4.0
+```
+
+When that variable is set, the path must be an absolute non-symlink executable and all
+five extracted binaries must pass it. The verifier adapter is responsible for enforcing
+the expected WeDecent publisher identity, certificate chain, signature validity, and
+timestamp policy.
+
+SHA-256 checksums provide integrity for the exact public bytes but are not an independent
+authenticity proof when the checksum is served from the same origin. Use the
+Authenticode-verifier mode when independent publisher authentication is required.
 
 ## Cloudflare configuration
 
