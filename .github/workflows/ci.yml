@@ -95,7 +95,7 @@ jobs:
           go build -trimpath -buildvcs=false -o wd-routerctl.exe ./cmd/wd-routerctl
           go build -trimpath -buildvcs=false -o wd-core.exe ./cmd/wd-core
           go build -trimpath -buildvcs=false -o wd-ui.exe ./cmd/wd-ui
-      - name: Verify native version commands
+      - name: Verify native version and UI autostart status commands
         shell: pwsh
         run: |
           .\wd.exe version
@@ -103,6 +103,7 @@ jobs:
           .\wd-routerctl.exe version
           .\wd-core.exe version
           .\wd-ui.exe version
+          .\wd-ui.exe autostart status
 
   windows-release:
     runs-on: ubuntu-latest

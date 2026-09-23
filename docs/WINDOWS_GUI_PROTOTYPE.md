@@ -2,9 +2,9 @@
 
 ## Status
 
-This v0.4.4 development slice adds a native Windows prototype over the Local Core `v1` contract. It is intentionally a UI client, not a networking implementation.
+This v0.4.4 development slice provides a native Windows prototype over the Local Core `v1` contract. It is intentionally a UI client, not a networking implementation.
 
-The Windows installer copies `wd-core.exe` and `wd-ui.exe` into the protected Program Files install directory alongside the other release binaries. The installer itself does not create a Local Core service, startup task, Run-key entry, or other per-user autostart mechanism. When `wd-ui` starts, it probes the protected Local Core endpoint and, only when the local transport is unavailable, starts the exact sibling `wd-core.exe` as the same interactive user before opening the UI. While the UI remains active, transport-only Core loss can trigger the same bounded launch path again; this is request-driven recovery, not a machine service or independent watchdog.
+The Windows installer copies `wd-core.exe` and `wd-ui.exe` into the protected Program Files install directory alongside the other release binaries. The installer does not create a Local Core service, scheduled task, machine startup entry, or automatic per-user startup setting. An interactive user may explicitly opt `wd-ui.exe` into their own Windows logon startup with `wd-ui autostart enable`; only the UI is registered. When `wd-ui` starts, it probes the protected Local Core endpoint and, only when the local transport is unavailable, starts the exact sibling `wd-core.exe` as the same interactive user. While the UI remains active, transport-only Core loss can trigger the same bounded launch path again; this is request-driven recovery, not a machine service or independent watchdog.
 
 ## Components
 
@@ -14,7 +14,7 @@ The Windows installer copies `wd-core.exe` and `wd-ui.exe` into the protected Pr
 - `internal/guiapp` owns platform-neutral GUI session state. It stores only the public `v1.Connection` returned by Local Core, keeps only device ID/name for the device picker, and addresses terminal operations by the opaque connection ID.
 - `cmd/wd-ui` is the native Windows shell. It uses Win32 controls directly and adds no third-party GUI framework or CGO dependency.
 
-The Windows CI job builds `wd-ui.exe` and exercises its `version` command so Windows-only code is compiled on every pull request.
+The Windows CI job builds `wd-ui.exe`, exercises its `version` command, and performs a read-only `autostart status` call so Windows-only code is compiled and linked on every pull request without modifying the runner's startup state.
 
 ## Security boundary
 
@@ -24,14 +24,14 @@ All device discovery/status, connection establishment, path selection, authoriza
 
 The typed client uses `localipc.Dial`, so Windows connects to the existing current-user named pipe rather than opening localhost TCP. The pipe name is derived from the current user's SID and the server DACL grants access only to that SID. Each API call has a bounded deadline. Context cancellation forces the local IPC connection deadline forward so a stalled response read is unblocked. Response IDs must exactly match the request ID.
 
-Local Core protocol errors are already sanitized by the server and may be shown using their public message. Local dial, named-pipe, OS, and other transport failures are classified as retryable unavailability without retaining their raw error text in GUI-layer errors. The client additionally records only a stable local transport stage (`dial`, `set_deadline`, `write_request`, or `read_response`) so recovery can distinguish a request that definitely was not written from one that may already have reached Core. Raw OS, path, pipe, and syscall errors are still not exposed to the UI.
+Local Core protocol errors are sanitized by the server and may be shown using their public message. Local dial, named-pipe, OS, and other transport failures are classified as retryable unavailability without retaining raw error text in GUI-layer errors. The client additionally records only a stable local transport stage (`dial`, `set_deadline`, `write_request`, or `read_response`) so recovery can distinguish a request that definitely was not written from one that may already have reached Core. Raw OS, path, pipe, and syscall errors are not exposed to the UI.
 
 Core launch and recovery remain narrower than general process supervision:
 
 - `wd-ui` first probes `status.get` over the protected Local Core client.
 - A sibling core is started only for the local transport `ErrUnavailable` sentinel. An application-level/protocol error from an already-running core never causes another process launch.
 - The launcher resolves the running `wd-ui` executable, follows that image's symlink target, selects only `wd-core.exe` in the same resolved directory, and rejects a sibling that is not a regular file. It never searches `PATH`, invokes `cmd.exe`, uses a shell verb, or requests elevation.
-- The child inherits the current user's token and environment. This preserves the existing optional environment-based Core configuration without placing secrets or configuration values on a new command line.
+- The child inherits the current user's token and environment. This preserves optional environment-based Core configuration without placing secrets or configuration values on a new command line.
 - The child is started without a console window. `wd-ui` waits only for the protected endpoint to become healthy; raw process-start/path/OS failures are not surfaced to the GUI.
 - Bootstrap and later recovery use the same bounded eight-second health window with short status probes and bounded retry backoff.
 - Concurrent recovery attempts are coalesced so one UI process does not start multiple sibling cores for the same outage. Concurrent GUI processes may still race to launch; the local pipe listener's create-only first handle allows only one core to own the per-user endpoint, and endpoint health wins if another process wins that race.
@@ -44,11 +44,27 @@ Core launch and recovery remain narrower than general process supervision:
 - Before hashing or forwarding an idempotent terminal write, Local Core copies the bounded payload so caller mutation cannot make the replay digest describe different bytes than the terminal handle receives. That temporary copy is overwritten on a best-effort basis after the call.
 - A Core restart clears both replay caches and the process-local connection table. Replaying a Connect operation after restart is safe because the old connection cannot still exist. Replaying a terminal write against an old connection ID cannot reach a new terminal session; the restarted Core authoritatively returns `connection_not_found`.
 - `terminal.read` remains retried by the existing controller so session-loss handling stays in one place.
-- `wd-ui` does not terminate the core when the window exits. The Local Core remains an independent same-user process and can serve other local clients.
+- `wd-ui` does not terminate Core when the window exits. Local Core remains an independent same-user process and can serve other local clients.
 
-Terminal input is bounded before it reaches Local Core. The Win32 edit control retains at most `MaxTerminalChunkBytes - 1` UTF-16 code units, leaving room for the carriage return added by the Send action for ordinary ASCII input. The Send path then checks the actual UTF-8 byte length and rejects any payload above the 32 KiB v1 terminal-write limit; the platform-neutral controller repeats the same byte-length check before copying input into a request. Multibyte text therefore cannot bypass the wire-level bound.
+Terminal input is bounded before it reaches Local Core. The Win32 edit control retains at most `MaxTerminalChunkBytes - 1` UTF-16 code units, leaving room for the carriage return added by the Send action for ordinary ASCII input. The Send path checks the actual UTF-8 byte length and rejects any payload above the 32 KiB v1 terminal-write limit; the platform-neutral controller repeats the same byte-length check before copying input into a request. Multibyte text therefore cannot bypass the wire-level bound.
 
 Terminal input is copied before crossing the controller boundary. Encoded IPC request buffers, decoded raw response frames, copied response-result buffers, and the idempotency layer's temporary terminal-write copy are overwritten on a best-effort basis after use. As elsewhere in the Go codebase, this is memory hygiene rather than a guarantee of cryptographic zeroization.
+
+## Per-user autostart
+
+Autostart is opt-in and owned by the interactive user rather than the elevated installer. The supported commands are:
+
+```text
+wd-ui autostart enable
+wd-ui autostart status
+wd-ui autostart disable
+```
+
+On Windows, `enable` writes one `REG_SZ` value named `WeDecent` under the current user's `HKCU\Software\Microsoft\Windows\CurrentVersion\Run`. The value is only the exact, fully resolved, quoted `wd-ui.exe` path. The command rejects unsafe executable text and requires the resolved image to be a regular file. It never registers `wd-core.exe`, uses HKLM, creates a scheduled task, invokes a shell, requests elevation, or adds arguments/secrets to the startup command.
+
+`status` reports `enabled`, `disabled`, or `stale`. `stale` means the dedicated entry exists but does not exactly match the currently resolved UI image. `disable` removes only the dedicated WeDecent value and is idempotent.
+
+The elevated installer/uninstaller deliberately does not guess which interactive user's HKCU hive should be modified. Users who enabled autostart should disable it before uninstalling when possible; otherwise a stale per-user Run value may remain after the installed image is removed. Full policy and lifecycle details are in `docs/WINDOWS_UI_AUTOSTART.md`.
 
 ## Prototype behavior
 
@@ -66,7 +82,7 @@ The window can:
 
 Only one interactive connection is represented by the prototype at a time. The platform-neutral controller reserves the local UI session while a connect is in flight so repeated button presses cannot create overlapping GUI sessions.
 
-Natural terminal closure is observed through the terminal stream and clears the controller's active UI session after final buffered output is returned. Idle `terminal.read` calls rely on the Local Core's bounded long-poll behavior and simply issue the next one-request/one-response read when an empty still-open result arrives.
+Natural terminal closure is observed through the terminal stream and clears the controller's active UI session after final buffered output is returned. Idle `terminal.read` calls rely on Local Core's bounded long-poll behavior and issue the next one-request/one-response read when an empty still-open result arrives.
 
 Transient terminal-read outages are retried by the controller with bounded exponential backoff from 250 ms to 2 seconds. On Windows, a local transport `ErrUnavailable` first runs the bounded single-flight Core recovery path; the wrapper then returns the original unavailable result so the controller retains ownership of retry timing and session-loss detection. A sanitized remote `connection_unavailable` response is still treated as a transient application-level condition, but it does not authorize a process launch.
 
@@ -75,9 +91,9 @@ Mutation recovery is method-specific:
 - Connect is idempotent within the Local Core replay window. The UI uses the same operation ID before and after recovery regardless of whether the original transport failed before write, during write, or while waiting for the response. If Core processed the first request, the retry receives the same cached `v1.Connection`; if Core restarted, the old process-local connection no longer exists and the retry opens a new one safely.
 - If recovery itself fails after an ambiguous Connect, `wd-ui` keeps the operation ID pending. A later Connect for the same device in the same UI process reuses that ID and can reconcile with the still-running Core. A different-device Connect is blocked while that pending outcome remains unresolved.
 - A terminal write is likewise idempotent within its replay window. After any local transport-stage failure, `wd-ui` recovers Core and retries the same connection/payload with the same operation ID. If the original Core completed the write, the retry returns the cached outcome instead of writing the bytes again. If Core restarted, the old connection ID is gone and the controller transitions the UI session to lost rather than writing into another session.
-- If recovery fails after a terminal write that may have reached Core, `wd-ui` retains only the connection ID, SHA-256 payload digest, replay key, and expiry. Retrying the unchanged input on that same connection within five minutes reuses the replay key. Editing the input while that outcome remains unresolved is blocked rather than assigned a fresh key that could duplicate terminal input.
+- If recovery fails after a terminal write that may have reached Core, `wd-ui` retains only the connection ID, SHA-256 payload digest, replay key, and expiry. Retrying unchanged input on that same connection within five minutes reuses the replay key. Editing the input while that outcome remains unresolved is blocked instead of assigning a fresh key that could duplicate terminal input.
 - A successful/authoritative disconnect or `connection_not_found` clears pending terminal-write metadata for that connection. If the replay window expires first, terminal-write reconciliation fails closed.
-- Completed terminal-write errors can still represent an outcome the terminal handle could not classify. In that case the stable replay key prevents automatic duplicate delivery, but the UI continues to report the outcome as uncertain instead of silently assigning a new key.
+- Completed terminal-write errors can still represent an outcome the terminal handle could not classify. In that case the stable replay key prevents automatic duplicate delivery, while the UI continues to report the outcome as uncertain instead of silently assigning a new key.
 - Pending operation IDs and payload digests are UI-process memory only. If the UI process itself is restarted after an unresolved Connect or terminal write, the new UI no longer has that replay key. Do not blindly repeat the mutation; restart/disconnect Local Core/session state before treating it as a fresh operation.
 
 A Local Core process restart necessarily loses its process-local connection table. Once the restarted core authoritatively returns `connection_not_found` for an old opaque connection ID, the controller clears that stale GUI session and returns `ErrSessionLost`; a fresh `connection.connect` can then proceed. `connection_not_found` during an explicit disconnect is treated as completed teardown because there is no remaining core-side session to close.
@@ -90,4 +106,4 @@ This is not a full terminal emulator. The output control is a plain-text Win32 e
 
 The prototype does not yet provide account sign-in/sign-out, router policy controls, route visualization, multiple simultaneous terminal tabs, clipboard policy, terminal scrollback persistence, or accessibility-specific terminal semantics.
 
-Recovery is request-driven rather than a permanent watchdog: if no UI call observes the outage, `wd-ui` does not poll solely to keep Core alive. There is still no logon autostart mechanism, installer-owned per-user scheduled task, machine service for Core, or upgrade coordinator that shuts down a running per-user Core before binary replacement. Mutation replay metadata is intentionally process-local and time-bounded rather than durable state. A UI process restart therefore cannot reconcile an operation key that existed only in the previous UI process; unresolved mutations must fail closed rather than assume they were not delivered.
+Recovery is request-driven rather than a permanent watchdog: if no UI call observes the outage, `wd-ui` does not poll solely to keep Core alive. Per-user UI logon autostart is available only as an explicit user opt-in; the installer still does not create a scheduled task, machine Core service, or automatic startup setting, and there is no upgrade coordinator that shuts down a running per-user Core before binary replacement. Mutation replay metadata is intentionally process-local and time-bounded rather than durable state. A UI process restart therefore cannot reconcile an operation key that existed only in the previous UI process; unresolved mutations must fail closed rather than assume they were not delivered.

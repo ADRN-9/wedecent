@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -10,17 +11,31 @@ import (
 	"wedecent.com/wedecent/internal/guiapp"
 )
 
+var errUIUsage = errors.New("usage: wd-ui [version|autostart <enable|disable|status>]")
+
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "version" {
-		if err := buildinfo.Write(os.Stdout, "wd-ui"); err != nil {
-			showFatal(fmt.Errorf("version: %w", err))
-			os.Exit(1)
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "version":
+			if len(os.Args) != 2 {
+				exitCLI(errUIUsage, 2)
+			}
+			if err := buildinfo.Write(os.Stdout, "wd-ui"); err != nil {
+				exitCLI(fmt.Errorf("version: %w", err), 1)
+			}
+			return
+		case "autostart":
+			if err := runAutostartCommand(os.Args[2:], os.Stdout); err != nil {
+				code := 1
+				if errors.Is(err, ErrAutostartUsage) {
+					code = 2
+				}
+				exitCLI(err, code)
+			}
+			return
+		default:
+			exitCLI(errUIUsage, 2)
 		}
-		return
-	}
-	if len(os.Args) != 1 {
-		showFatal(fmt.Errorf("usage: wd-ui"))
-		os.Exit(2)
 	}
 
 	core, err := coreclient.New(coreclient.Config{})
@@ -42,4 +57,9 @@ func main() {
 		showFatal(err)
 		os.Exit(1)
 	}
+}
+
+func exitCLI(err error, code int) {
+	fmt.Fprintln(os.Stderr, "wd-ui:", err)
+	os.Exit(code)
 }
