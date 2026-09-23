@@ -42,6 +42,8 @@ func main() {
 		err = runInit(os.Args[2:])
 	case "pairing-secret":
 		err = runPairingSecret(os.Args[2:])
+	case "clients":
+		err = runClients(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
 	case "identity":
@@ -733,6 +735,7 @@ Commands:
   version          Print build and release metadata
   enrollment-proof Print or sign a cryptographic device-enrollment request
   pairing-secret   Rotate and print a one-time pairing secret
+  clients          List or revoke paired terminal clients
   serve            Run the terminal agent (direct, relay, or both)
   service          Install and manage the native Windows service`)
 }

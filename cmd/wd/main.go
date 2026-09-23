@@ -52,6 +52,8 @@ func main() {
 		err = runDiscover(os.Args[2:])
 	case "devices":
 		err = runDevices(os.Args[2:])
+	case "unpair":
+		err = runUnpair(os.Args[2:])
 	case "pair":
 		err = runPair(os.Args[2:])
 	case "route-trust":
@@ -777,7 +779,6 @@ func runConnect(args []string) (int, error) {
 	if routed && selected != 0 {
 		return 0, errors.New("routed connections cannot be combined with --endpoint, --relay, or --web-relay")
 	}
-
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
 		return 0, err
@@ -1017,6 +1018,7 @@ Commands:
   enrollment-proof  Prove possession of this client identity for account enrollment
   discover   Find signed WeDecent LAN advertisements
   devices    List paired devices
+  unpair     Remove local trust for one paired device
   pair       Pair directly or through a relay
   route-trust  Manage dedicated source-to-router routing trust
   connect    Open an interactive terminal directly, through a relay, or via one trusted router`)
