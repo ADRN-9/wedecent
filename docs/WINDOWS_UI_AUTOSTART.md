@@ -58,7 +58,7 @@ Raw registry/path/OS errors are CLI-local failures and are not part of the Local
 
 The Windows installer continues to install `wd-ui.exe` and `wd-core.exe` into the protected Program Files directory but does not automatically opt any user into autostart. This avoids incorrectly assigning per-user startup state when installation is performed by another administrator through UAC or another elevated session.
 
-An enabled Run entry points at the installed `wd-ui.exe`. Normal in-place upgrades keep the same path, so the entry remains valid when the image is replaced successfully. Existing installer behavior still fails closed if a running UI/Core image prevents replacement; close the user-side processes and retry the upgrade.
+An enabled Run entry points at the installed `wd-ui.exe`. Normal in-place upgrades keep the same path, so the entry remains valid when the image is replaced successfully. Before stopping the agent service or replacing binaries, the installer now checks for running installed `wd-ui.exe`/`wd-core.exe` images. If either is active, the install/upgrade fails early with instructions to close the user-side processes; the installer never kills them. This is especially important with autostart because an open UI can relaunch Core in response to a later Local Core request.
 
 Before uninstalling, an opted-in user should run:
 

@@ -508,6 +508,44 @@ function Get-BinaryDestinations {
     return $destinations
 }
 
+function Assert-InstalledUserBinariesStopped {
+    param([Parameter(Mandatory = $true)][hashtable]$Destinations)
+
+    $targetNames = @('wd-core.exe', 'wd-ui.exe')
+    $targets = @{}
+    foreach ($name in $targetNames) {
+        $path = [IO.Path]::GetFullPath([string]$Destinations[$name])
+        $targets[$name] = $path
+    }
+
+    $conflicts = New-Object System.Collections.Generic.List[string]
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='wd-core.exe' OR Name='wd-ui.exe'" -ErrorAction Stop)
+    foreach ($process in $processes) {
+        $name = [string]$process.Name
+        if ($targetNames -notcontains $name) { continue }
+        $pidText = [string]$process.ProcessId
+        $image = [string]$process.ExecutablePath
+        if ([string]::IsNullOrWhiteSpace($image)) {
+            $conflicts.Add("$name (PID $pidText; executable path unavailable)")
+            continue
+        }
+        try {
+            $fullImage = [IO.Path]::GetFullPath($image)
+        } catch {
+            $conflicts.Add("$name (PID $pidText; executable path invalid)")
+            continue
+        }
+        if ($fullImage.Equals($targets[$name], [StringComparison]::OrdinalIgnoreCase)) {
+            $conflicts.Add("$name (PID $pidText)")
+        }
+    }
+
+    if ($conflicts.Count -ne 0) {
+        $running = ($conflicts | Sort-Object -Unique) -join ', '
+        throw "Close installed WeDecent user processes before install/upgrade and retry. The installer will not terminate interactive processes. Running: $running"
+    }
+}
+
 function Install-Binaries {
     param(
         [Parameter(Mandatory = $true)][string]$SourceDirectory,
@@ -616,6 +654,7 @@ if ($metadata) {
 }
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
 $binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
+Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
 $wdDestination = $binaryDestinations['wd.exe']
 $agentDestination = $binaryDestinations['wd-agent.exe']
 
@@ -802,4 +841,4 @@ Write-Host "Core:      $($binaryDestinations['wd-core.exe'])"
 Write-Host "UI:        $($binaryDestinations['wd-ui.exe'])"
 Write-Host "State:     $StateDir"
 Write-Host "Service:   $ServiceName ($($finalService.StartName))"
-Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user manual launch; they are not registered as services or autostart entries.'
+Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the installer does not register them as services or autostart entries.'
