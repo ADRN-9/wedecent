@@ -135,8 +135,14 @@ func TestRecoveringCorePendingConnectBlocksDifferentDevice(t *testing.T) {
 
 func TestRecoveringCoreRetriesTerminalWriteBeforeRequestWrite(t *testing.T) {
 	var writeCalls int
-	inner := &fakeUICore{writeTerminal: func(context.Context, v1.TerminalWriteRequest) error {
+	var operationID string
+	inner := &fakeUICore{writeTerminal: func(_ context.Context, req v1.TerminalWriteRequest) error {
 		writeCalls++
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if operationID != req.OperationID {
+			t.Fatalf("terminal operation ID changed: %q != %q", req.OperationID, operationID)
+		}
 		if writeCalls == 1 {
 			return unavailableStage(coreclient.UnavailableStageSetDeadline)
 		}
@@ -156,11 +162,20 @@ func TestRecoveringCoreRetriesTerminalWriteBeforeRequestWrite(t *testing.T) {
 	}
 }
 
-func TestRecoveringCoreMarksTerminalWriteUnknownAfterRequestWrite(t *testing.T) {
+func TestRecoveringCoreReplaysTerminalWriteAfterRequestWrite(t *testing.T) {
 	var writeCalls int
-	inner := &fakeUICore{writeTerminal: func(context.Context, v1.TerminalWriteRequest) error {
+	var operationID string
+	inner := &fakeUICore{writeTerminal: func(_ context.Context, req v1.TerminalWriteRequest) error {
 		writeCalls++
-		return unavailableStage(coreclient.UnavailableStageWriteRequest)
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if operationID != req.OperationID {
+			t.Fatalf("terminal operation ID changed: %q != %q", req.OperationID, operationID)
+		}
+		if writeCalls == 1 {
+			return unavailableStage(coreclient.UnavailableStageWriteRequest)
+		}
+		return nil
 	}}
 	var recoverCalls int
 	core := newRecoveringCore(inner, func(context.Context) error {
@@ -169,14 +184,11 @@ func TestRecoveringCoreMarksTerminalWriteUnknownAfterRequestWrite(t *testing.T) 
 	})
 
 	err := core.WriteTerminal(context.Background(), v1.TerminalWriteRequest{ConnectionID: "c", Data: []byte("x")})
-	if !errors.Is(err, ErrTerminalWriteOutcomeUnknown) {
-		t.Fatalf("WriteTerminal() error = %v; want ErrTerminalWriteOutcomeUnknown", err)
+	if err != nil {
+		t.Fatalf("WriteTerminal() error = %v", err)
 	}
-	if !errors.Is(err, coreclient.ErrUnavailable) {
-		t.Fatalf("WriteTerminal() error = %v; want wrapped ErrUnavailable", err)
-	}
-	if writeCalls != 1 || recoverCalls != 1 {
-		t.Fatalf("write calls = %d, recovery calls = %d; want 1, 1", writeCalls, recoverCalls)
+	if writeCalls != 2 || recoverCalls != 1 {
+		t.Fatalf("write calls = %d, recovery calls = %d; want 2, 1", writeCalls, recoverCalls)
 	}
 }
 

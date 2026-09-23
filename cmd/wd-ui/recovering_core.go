@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -19,7 +20,10 @@ var (
 	ErrTerminalWriteOutcomeUnknown = errors.New("wd-ui: terminal write outcome is unknown")
 )
 
-var connectOperationCounter atomic.Uint64
+var (
+	connectOperationCounter       atomic.Uint64
+	terminalWriteOperationCounter atomic.Uint64
+)
 
 type coreRecoverFunc func(context.Context) error
 
@@ -28,12 +32,15 @@ type coreRecoveryCall struct {
 	err  error
 }
 
+type pendingTerminalWrite struct {
+	dataDigest  [sha256.Size]byte
+	operationID string
+	expiresAt   time.Time
+}
+
 // recoveringCore adds bounded process recovery around the existing typed Core
-// client without changing networking, trust, or session ownership.
-//
-// Connect is replayable because this wrapper supplies a stable operation ID and
-// Local Core deduplicates that ID. Terminal writes remain stage-aware because
-// they do not yet have protocol-level idempotency.
+// client without changing networking, trust, or session ownership. Connect and
+// terminal writes carry stable operation IDs so Core can deduplicate replay.
 type recoveringCore struct {
 	inner   guiapp.Core
 	recover coreRecoverFunc
@@ -44,6 +51,7 @@ type recoveringCore struct {
 	pendingConnectDevice      string
 	pendingConnectOperationID string
 	pendingConnectExpiresAt   time.Time
+	pendingTerminalWrites     map[string]pendingTerminalWrite
 }
 
 var _ guiapp.Core = (*recoveringCore)(nil)
@@ -52,7 +60,11 @@ func newRecoveringCore(inner guiapp.Core, recover coreRecoverFunc) guiapp.Core {
 	if inner == nil || recover == nil {
 		return inner
 	}
-	return &recoveringCore{inner: inner, recover: recover}
+	return &recoveringCore{
+		inner:                 inner,
+		recover:               recover,
+		pendingTerminalWrites: make(map[string]pendingTerminalWrite),
+	}
 }
 
 func (c *recoveringCore) GetStatus(ctx context.Context) (v1.Status, error) {
@@ -108,25 +120,18 @@ func (c *recoveringCore) Connect(ctx context.Context, req v1.ConnectRequest) (v1
 	recoveryErr := c.recoverOnce(ctx, generation)
 	if recoveryErr != nil {
 		if firstMayHaveReached {
-			// Keep the operation ID pending. A later Connect for the same device
-			// in this UI process can reuse it while the Core replay window lasts.
 			return out, unknownMutationError(ErrConnectOutcomeUnknown, err, recoveryErr)
 		}
 		c.clearPendingConnect(prepared)
 		return out, recoveryErr
 	}
 
-	// Any transport stage is safe to replay with the same operation ID. If the
-	// original Core is still alive it deduplicates the request; if Core restarted,
-	// the old process-local connection cannot still exist.
 	retryOut, retryErr := c.inner.Connect(ctx, prepared)
 	if !c.shouldRecover(retryErr) {
 		c.clearPendingConnect(prepared)
 		return retryOut, retryErr
 	}
 	if firstMayHaveReached || coreclient.RequestMayHaveReachedCore(retryErr) {
-		// Even a pre-write retry failure cannot erase uncertainty from an earlier
-		// post-write attempt. Retain the key for later same-device reconciliation.
 		return retryOut, unknownMutationError(ErrConnectOutcomeUnknown, retryErr, nil)
 	}
 	c.clearPendingConnect(prepared)
@@ -137,49 +142,87 @@ func (c *recoveringCore) Disconnect(ctx context.Context, req v1.DisconnectReques
 	generation := c.recoveryGeneration()
 	err := c.inner.Disconnect(ctx, req)
 	if !c.shouldRecover(err) {
+		if err == nil || coreclient.IsConnectionGone(err) {
+			c.clearPendingTerminalWrite(req.ConnectionID)
+		}
 		return err
 	}
 	if err := c.recoverOnce(ctx, generation); err != nil {
 		return err
 	}
-	return c.inner.Disconnect(ctx, req)
+	err = c.inner.Disconnect(ctx, req)
+	if err == nil || coreclient.IsConnectionGone(err) {
+		c.clearPendingTerminalWrite(req.ConnectionID)
+	}
+	return err
 }
 
 func (c *recoveringCore) ReadTerminal(ctx context.Context, req v1.TerminalReadRequest) (v1.TerminalReadResult, error) {
 	generation := c.recoveryGeneration()
 	out, err := c.inner.ReadTerminal(ctx, req)
 	if !c.shouldRecover(err) {
+		if (err == nil && out.Closed) || coreclient.IsConnectionGone(err) {
+			c.clearPendingTerminalWrite(req.ConnectionID)
+		}
 		return out, err
 	}
 	if recoverErr := c.recoverOnce(ctx, generation); recoverErr != nil {
 		return v1.TerminalReadResult{}, recoverErr
 	}
-	// The controller already owns terminal-read retries and session-loss
-	// detection. Returning the original unavailable error preserves that flow
-	// and avoids hiding a potentially consumed read response.
 	return out, err
 }
 
 func (c *recoveringCore) WriteTerminal(ctx context.Context, req v1.TerminalWriteRequest) error {
-	generation := c.recoveryGeneration()
-	err := c.inner.WriteTerminal(ctx, req)
-	if !c.shouldRecover(err) {
+	prepared, err := c.prepareTerminalWriteRequest(req)
+	if err != nil {
 		return err
 	}
 
-	mayHaveReached := coreclient.RequestMayHaveReachedCore(err)
-	recoveryErr := c.recoverOnce(ctx, generation)
-	if mayHaveReached {
-		return unknownMutationError(ErrTerminalWriteOutcomeUnknown, err, recoveryErr)
+	generation := c.recoveryGeneration()
+	err = c.inner.WriteTerminal(ctx, prepared)
+	if !c.shouldRecover(err) {
+		if err == nil || terminalWriteDefinitelyNotDelivered(err) {
+			c.clearPendingTerminalWriteRequest(prepared)
+			return err
+		}
+		return unknownMutationError(ErrTerminalWriteOutcomeUnknown, err, nil)
 	}
+
+	firstMayHaveReached := coreclient.RequestMayHaveReachedCore(err)
+	recoveryErr := c.recoverOnce(ctx, generation)
 	if recoveryErr != nil {
+		if firstMayHaveReached {
+			return unknownMutationError(ErrTerminalWriteOutcomeUnknown, err, recoveryErr)
+		}
+		c.clearPendingTerminalWriteRequest(prepared)
 		return recoveryErr
 	}
 
-	retryErr := c.inner.WriteTerminal(ctx, req)
-	if c.shouldRecover(retryErr) && coreclient.RequestMayHaveReachedCore(retryErr) {
+	retryErr := c.inner.WriteTerminal(ctx, prepared)
+	if !c.shouldRecover(retryErr) {
+		if retryErr == nil {
+			c.clearPendingTerminalWriteRequest(prepared)
+			return nil
+		}
+		if firstMayHaveReached {
+			// The first attempt may have delivered bytes to an older Core. Even
+			// an authoritative no-delivery result from the recovered Core cannot
+			// prove what happened before that recovery boundary.
+			if coreclient.IsConnectionGone(retryErr) {
+				c.clearPendingTerminalWriteRequest(prepared)
+			}
+			return unknownMutationError(ErrTerminalWriteOutcomeUnknown, retryErr, nil)
+		}
+		if terminalWriteDefinitelyNotDelivered(retryErr) {
+			c.clearPendingTerminalWriteRequest(prepared)
+			return retryErr
+		}
 		return unknownMutationError(ErrTerminalWriteOutcomeUnknown, retryErr, nil)
 	}
+	if firstMayHaveReached || coreclient.RequestMayHaveReachedCore(retryErr) {
+		return unknownMutationError(ErrTerminalWriteOutcomeUnknown, retryErr, nil)
+	}
+	c.clearPendingTerminalWriteRequest(prepared)
 	return retryErr
 }
 
@@ -187,12 +230,19 @@ func (c *recoveringCore) ResizeTerminal(ctx context.Context, req v1.TerminalResi
 	generation := c.recoveryGeneration()
 	err := c.inner.ResizeTerminal(ctx, req)
 	if !c.shouldRecover(err) {
+		if coreclient.IsConnectionGone(err) {
+			c.clearPendingTerminalWrite(req.ConnectionID)
+		}
 		return err
 	}
 	if err := c.recoverOnce(ctx, generation); err != nil {
 		return err
 	}
-	return c.inner.ResizeTerminal(ctx, req)
+	err = c.inner.ResizeTerminal(ctx, req)
+	if coreclient.IsConnectionGone(err) {
+		c.clearPendingTerminalWrite(req.ConnectionID)
+	}
+	return err
 }
 
 func (c *recoveringCore) shouldRecover(err error) bool {
@@ -233,19 +283,93 @@ func (c *recoveringCore) clearPendingConnect(req v1.ConnectRequest) {
 	c.mu.Unlock()
 }
 
+func (c *recoveringCore) prepareTerminalWriteRequest(req v1.TerminalWriteRequest) (v1.TerminalWriteRequest, error) {
+	if req.OperationID != "" {
+		return req, nil
+	}
+	if req.ConnectionID == "" || len(req.Data) < 1 || len(req.Data) > v1.MaxTerminalChunkBytes {
+		return req, nil
+	}
+
+	digest := sha256.Sum256(req.Data)
+	now := time.Now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if pending, ok := c.pendingTerminalWrites[req.ConnectionID]; ok {
+		if now.After(pending.expiresAt) || pending.dataDigest != digest {
+			return v1.TerminalWriteRequest{}, ErrTerminalWriteOutcomeUnknown
+		}
+		req.OperationID = pending.operationID
+		return req, nil
+	}
+	req.OperationID = nextTerminalWriteOperationID()
+	c.pendingTerminalWrites[req.ConnectionID] = pendingTerminalWrite{
+		dataDigest:  digest,
+		operationID: req.OperationID,
+		expiresAt:   now.Add(v1.TerminalWriteReplayWindow),
+	}
+	return req, nil
+}
+
+func (c *recoveringCore) clearPendingTerminalWriteRequest(req v1.TerminalWriteRequest) {
+	if req.OperationID == "" {
+		return
+	}
+	c.mu.Lock()
+	if pending, ok := c.pendingTerminalWrites[req.ConnectionID]; ok && pending.operationID == req.OperationID {
+		delete(c.pendingTerminalWrites, req.ConnectionID)
+	}
+	c.mu.Unlock()
+}
+
+func (c *recoveringCore) clearPendingTerminalWrite(connectionID string) {
+	c.mu.Lock()
+	delete(c.pendingTerminalWrites, connectionID)
+	c.mu.Unlock()
+}
+
 func nextConnectOperationID() string {
-	// The operation ID is a collision-resistant replay key, not a secret. PID,
-	// wall-clock nanoseconds and a process-local atomic counter avoid dependence
-	// on a second credential/randomness source while remaining unique across UI
-	// processes and retries.
 	return fmt.Sprintf("op_%x_%x_%x", uint64(os.Getpid()), uint64(time.Now().UnixNano()), connectOperationCounter.Add(1))
 }
 
-func unknownMutationError(kind, transportErr, recoveryErr error) error {
-	if recoveryErr != nil {
-		return errors.Join(kind, transportErr, recoveryErr)
+func nextTerminalWriteOperationID() string {
+	return fmt.Sprintf("tw_%x_%x_%x", uint64(os.Getpid()), uint64(time.Now().UnixNano()), terminalWriteOperationCounter.Add(1))
+}
+
+type mutationOutcomeUnknownError struct {
+	kind        error
+	operation   error
+	recoveryErr error
+}
+
+func (e *mutationOutcomeUnknownError) Error() string {
+	return errors.Join(e.kind, e.operation, e.recoveryErr).Error()
+}
+
+func (e *mutationOutcomeUnknownError) Unwrap() []error {
+	out := make([]error, 0, 3)
+	if e.kind != nil {
+		out = append(out, e.kind)
 	}
-	return errors.Join(kind, transportErr)
+	if e.operation != nil {
+		out = append(out, e.operation)
+	}
+	if e.recoveryErr != nil {
+		out = append(out, e.recoveryErr)
+	}
+	return out
+}
+
+func (e *mutationOutcomeUnknownError) MutationOutcomeUnknown() bool {
+	return e != nil
+}
+
+func unknownMutationError(kind, operationErr, recoveryErr error) error {
+	return &mutationOutcomeUnknownError{
+		kind:        kind,
+		operation:   operationErr,
+		recoveryErr: recoveryErr,
+	}
 }
 
 func (c *recoveringCore) recoveryGeneration() uint64 {
@@ -254,12 +378,6 @@ func (c *recoveringCore) recoveryGeneration() uint64 {
 	return c.generation
 }
 
-// recoverOnce coalesces concurrent recovery attempts. The generation observed
-// before the failed API call prevents a stale ErrUnavailable from starting a
-// second recovery after another caller has already restored Core. Waiting
-// callers remain cancelable. If the leader's own context is canceled, another
-// still-live caller may become the next leader because failed recoveries do not
-// advance the generation.
 func (c *recoveringCore) recoverOnce(ctx context.Context, observedGeneration uint64) error {
 	if ctx == nil {
 		return context.Canceled

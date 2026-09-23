@@ -199,9 +199,27 @@ func (c *Controller) activeConnectionID() (string, error) {
 	return c.active.ID, nil
 }
 
+type mutationOutcomeUnknown interface {
+	MutationOutcomeUnknown() bool
+}
+
+func isMutationOutcomeUnknown(err error) bool {
+	var marked mutationOutcomeUnknown
+	return errors.As(err, &marked) && marked.MutationOutcomeUnknown()
+}
+
 func (c *Controller) sessionError(connectionID string, err error) error {
 	if err == nil {
 		return nil
+	}
+	if isMutationOutcomeUnknown(err) {
+		// Session loss and mutation uncertainty are independent facts. Clear a
+		// stale connection if Core says it is gone, but preserve the original
+		// marked error so the UI does not imply the mutation was never delivered.
+		if coreclient.IsConnectionGone(err) {
+			c.clearActive(connectionID)
+		}
+		return err
 	}
 	if coreclient.IsConnectionGone(err) {
 		c.clearActive(connectionID)

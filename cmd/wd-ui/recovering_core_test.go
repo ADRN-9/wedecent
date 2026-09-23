@@ -141,10 +141,19 @@ func TestRecoveringCoreReplaysIdempotentConnect(t *testing.T) {
 	}
 }
 
-func TestRecoveringCoreDoesNotReplayTerminalWrite(t *testing.T) {
+func TestRecoveringCoreReplaysIdempotentTerminalWrite(t *testing.T) {
 	var writeCalls int
-	inner := &fakeUICore{writeTerminal: func(context.Context, v1.TerminalWriteRequest) error {
+	var operationID string
+	inner := &fakeUICore{writeTerminal: func(_ context.Context, req v1.TerminalWriteRequest) error {
 		writeCalls++
+		if req.OperationID == "" {
+			t.Fatal("terminal write did not include an operation ID")
+		}
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if req.OperationID != operationID {
+			t.Fatalf("operation ID changed across retry: %q != %q", req.OperationID, operationID)
+		}
 		return unavailableForTest()
 	}}
 	var recoverCalls int
@@ -154,11 +163,11 @@ func TestRecoveringCoreDoesNotReplayTerminalWrite(t *testing.T) {
 	})
 
 	err := core.WriteTerminal(context.Background(), v1.TerminalWriteRequest{ConnectionID: "c", Data: []byte("x")})
-	if !errors.Is(err, coreclient.ErrUnavailable) {
-		t.Fatalf("WriteTerminal() error = %v; want ErrUnavailable", err)
+	if !errors.Is(err, ErrTerminalWriteOutcomeUnknown) || !errors.Is(err, coreclient.ErrUnavailable) {
+		t.Fatalf("WriteTerminal() error = %v; want unknown outcome wrapping ErrUnavailable", err)
 	}
-	if writeCalls != 1 || recoverCalls != 1 {
-		t.Fatalf("write calls = %d, recovery calls = %d; want 1, 1", writeCalls, recoverCalls)
+	if writeCalls != 2 || recoverCalls != 1 {
+		t.Fatalf("write calls = %d, recovery calls = %d; want 2, 1", writeCalls, recoverCalls)
 	}
 }
 
