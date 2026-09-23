@@ -118,6 +118,8 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Test Windows signing finalizer
+        run: ./scripts/test-windows-signing-finalizer.sh
       - name: Verify reproducible Windows release bundle
         run: ./scripts/verify-windows-release-repro.sh
       - name: Build Windows release bundle

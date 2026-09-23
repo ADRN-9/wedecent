@@ -45,7 +45,43 @@ The process preflight compares the running image path with the exact installed `
 
 Before uninstalling, a user who enabled UI autostart should run `wd-ui.exe autostart disable` in that same user context. The elevated uninstaller intentionally does not enumerate arbitrary users' HKCU Run entries; uninstalling without disabling may leave a harmless stale per-user startup value pointing to the removed image.
 
-The package hash manifests provide integrity relative to the package contents; they are not a substitute for code signing. The PowerShell scripts and binaries are not Authenticode-signed yet, so production packaging should sign them before distribution. Do not weaken execution policy or Defender to run an untrusted package.
+## Signed production packages
+
+The ordinary release/package build remains unsigned so reproducibility can be checked before signatures introduce certificate and timestamp data. Production signing is performed afterward with `scripts/finalize-windows-signed-artifacts.sh`.
+
+The finalizer requires two absolute executable hooks supplied by the release environment:
+
+```text
+WEDECENT_WINDOWS_AUTHENTICODE_SIGNER
+WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER
+```
+
+The signer receives exactly one absolute artifact path and must sign that file in place. The verifier receives exactly one absolute artifact path and must return success only for an Authenticode signature acceptable under the release policy. The finalizer never evaluates a shell command string, searches `PATH`, stores certificate material, or passes signing credentials as command-line arguments. Certificate/HSM/key-vault access and timestamp configuration belong to the wrapper and release environment.
+
+After building and verifying the unsigned inputs:
+
+```bash
+make verify-release-windows
+make release-windows
+make installer-windows
+export WEDECENT_WINDOWS_AUTHENTICODE_SIGNER=/absolute/path/to/wedecent-sign-wrapper
+export WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER=/absolute/path/to/wedecent-verify-wrapper
+make finalize-windows-signed
+```
+
+The finalizer signs the five executables and the three packaged PowerShell scripts in a temporary copy, verifies every signed artifact, regenerates both checksum manifests from the signed bytes, and publishes only after all checks succeed. It does not mutate the unsigned release/package directories.
+
+The default publishable tree is:
+
+```text
+dist/wedecent-windows-signed/
+  release/
+  installer/
+```
+
+Use the signed `installer/` payload for production distribution. The finalizer refuses to overwrite an existing signed output directory, so retries are explicit. Canonical CI uses fake signer/verifier fixtures only; it contains no production certificate or signing secret.
+
+Do not weaken execution policy or Defender to run unsigned, invalidly signed, or untrusted packages.
 
 ## Install or upgrade
 
