@@ -14,7 +14,17 @@ wd-ui.exe
 
 `SHA256SUMS.txt` covers all five release binaries, and `PACKAGE_SHA256SUMS.txt` covers the complete installer-package payload. `Install-WeDecent.ps1` verifies the release hashes before mutation, pins those verified values, rechecks each source immediately before replacement, and verifies the installed copies against the pinned values before completing installation or restarting the service.
 
-Only `wd-agent.exe` is registered with the Windows Service Control Manager. The installer does not register `wd-core.exe` or `wd-ui.exe` as services, startup tasks, Run-key entries, or other autostart mechanisms. `wd-ui.exe` remains an explicitly launched same-user application; when it starts and the protected Local Core transport is absent, or when a later UI request observes transport-only Core loss, the UI may launch only the exact sibling `wd-core.exe` as that same user. `wd-routerctl.exe` is installed as a manual administrative utility and gains no service privilege merely by being present in Program Files.
+Only `wd-agent.exe` is registered with the Windows Service Control Manager. The installer does not register `wd-core.exe` or `wd-ui.exe` as services, startup tasks, Run-key entries, or other automatic startup mechanisms. `wd-ui.exe` remains a same-user application; when it starts and the protected Local Core transport is absent, or when a later UI request observes transport-only Core loss, the UI may launch only the exact sibling `wd-core.exe` as that same user. `wd-routerctl.exe` is installed as a manual administrative utility and gains no service privilege merely by being present in Program Files.
+
+After installation, an interactive user may explicitly opt their own `wd-ui.exe` into logon startup:
+
+```powershell
+& 'C:\Program Files\WeDecent\wd-ui.exe' autostart enable
+& 'C:\Program Files\WeDecent\wd-ui.exe' autostart status
+& 'C:\Program Files\WeDecent\wd-ui.exe' autostart disable
+```
+
+This current-user setting is owned by `wd-ui`, not by the elevated installer. Only `wd-ui.exe` is registered; Core remains bootstrapped by the UI in the same user context. The detailed ownership and uninstall semantics are documented in `docs/WINDOWS_UI_AUTOSTART.md`.
 
 ## Security properties
 
@@ -28,8 +38,11 @@ Only `wd-agent.exe` is registered with the Windows Service Control Manager. The 
 - Rollback tracks whether each destination existed before the transaction so a pre-copy failure cannot delete an untouched older binary.
 - Installer metadata is written atomically with an Administrators/SYSTEM-only ACL before it can authorize managed-account deletion.
 - Normal uninstall removes the installed program directory, including all five binaries, while preserving cryptographic agent state and the service account. Permanent identity deletion requires explicit purge flags; `-WhatIf` is a real dry run.
+- The elevated installer and uninstaller do not guess which interactive user's HKCU hive should own startup state. UI autostart is explicit, per-user, and managed by `wd-ui.exe` itself.
 
 If `wd-core.exe`, `wd-ui.exe`, or another installed executable is running and Windows refuses to replace its image during an upgrade, the installer fails the transaction rather than killing an interactive process or silently leaving mixed binary versions. Close `wd-ui.exe` and any manually running WeDecent user-side processes, then rerun the installer; an open UI may otherwise relaunch Core in response to a later API request.
+
+Before uninstalling, a user who enabled UI autostart should run `wd-ui.exe autostart disable` in that same user context. The elevated uninstaller intentionally does not enumerate arbitrary users' HKCU Run entries; uninstalling without disabling may leave a harmless stale per-user startup value pointing to the removed image.
 
 The package hash manifests provide integrity relative to the package contents; they are not a substitute for code signing. The PowerShell scripts and binaries are not Authenticode-signed yet, so production packaging should sign them before distribution. Do not weaken execution policy or Defender to run an untrusted package.
 
@@ -70,6 +83,12 @@ $credential = Get-Credential '.\WeDecentSvc'
 
 ## Uninstall
 
+If UI autostart was enabled for the current user, disable it before removing the installed image:
+
+```powershell
+& 'C:\Program Files\WeDecent\wd-ui.exe' autostart disable
+```
+
 Preserve device identity and account:
 
 ```powershell
@@ -93,6 +112,8 @@ Never use the purge form for a normal upgrade or temporary uninstall. Deleting t
 ## Silent use
 
 A default fresh install is non-interactive: the installer generates the dedicated account password internally. An upgrade is also non-interactive. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
+
+The installer does not silently opt an interactive user into UI autostart. That choice must be made from the target user's context with `wd-ui.exe autostart enable`.
 
 ## Account enrollment before relay pairing
 
