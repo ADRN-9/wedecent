@@ -15,11 +15,14 @@ cleanup() { rm -rf -- "$WORK"; }
 trap cleanup EXIT
 
 RELEASE="$WORK/release"
+INSTALLER="$WORK/installer"
 BIN="$WORK/bin"
 REMOTE="$WORK/remote"
-mkdir -p -- "$RELEASE" "$BIN" "$REMOTE"
+mkdir -p -- "$RELEASE" "$INSTALLER" "$BIN" "$REMOTE"
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
-ARCHIVE='wedecent-v0.3.0-rc.9-windows-amd64.zip'
+scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
+RELEASE_ARCHIVE='wedecent-v0.3.0-rc.9-windows-amd64.zip'
+INSTALLER_ARCHIVE='wedecent-v0.3.0-rc.9-windows-installer.zip'
 for name in "${binaries[@]}"; do
   printf 'signed fixture: %s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" > "$RELEASE/$name"
 done
@@ -34,6 +37,26 @@ EOF_VERSION
   cd "$RELEASE"
   sha256sum "${binaries[@]}" | LC_ALL=C sort -k2 > SHA256SUMS.txt
 )
+
+refresh_installer() {
+  rm -rf -- "$INSTALLER"
+  mkdir -p -- "$INSTALLER"
+  for name in "${binaries[@]}" VERSION.txt SHA256SUMS.txt; do
+    cp -- "$RELEASE/$name" "$INSTALLER/$name"
+  done
+  for name in "${scripts[@]}"; do
+    printf 'signed installer fixture: %s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" > "$INSTALLER/$name"
+  done
+  printf 'WeDecent signed installer fixture.\n' > "$INSTALLER/README.md"
+  (
+    cd "$INSTALLER"
+    sha256sum \
+      "${binaries[@]}" VERSION.txt SHA256SUMS.txt \
+      "${scripts[@]}" README.md \
+      | LC_ALL=C sort -k2 > PACKAGE_SHA256SUMS.txt
+  )
+}
+refresh_installer
 
 VERIFIER="$WORK/verifier"
 cat > "$VERIFIER" <<'EOF_VERIFIER'
@@ -81,8 +104,10 @@ while (($#)); do
 done
 [[ -n "$url" ]] || exit 64
 case "$url" in
-  */"$WEDECENT_FAKE_ARCHIVE") remote="$WEDECENT_FAKE_REMOTE_DIR/$WEDECENT_FAKE_ARCHIVE" ;;
+  */"$WEDECENT_FAKE_RELEASE_ARCHIVE") remote="$WEDECENT_FAKE_REMOTE_DIR/$WEDECENT_FAKE_RELEASE_ARCHIVE" ;;
   */SHA256SUMS.txt) remote="$WEDECENT_FAKE_REMOTE_DIR/SHA256SUMS.txt" ;;
+  */"$WEDECENT_FAKE_INSTALLER_ARCHIVE") remote="$WEDECENT_FAKE_REMOTE_DIR/$WEDECENT_FAKE_INSTALLER_ARCHIVE" ;;
+  */INSTALLER_SHA256SUMS.txt) remote="$WEDECENT_FAKE_REMOTE_DIR/INSTALLER_SHA256SUMS.txt" ;;
   *) exit 22 ;;
 esac
 if ((head_request)); then
@@ -121,8 +146,10 @@ cache_control="$6"
 [[ -n "$bucket" && -n "$key" && -f "$file" ]] || exit 65
 printf '%s\t%s\t%s\t%s\t%s\n' "$bucket" "$key" "$content_type" "$content_disposition" "$cache_control" >> "$WEDECENT_FAKE_UPLOAD_LOG"
 case "$key" in
-  */"$WEDECENT_FAKE_ARCHIVE") dest="$WEDECENT_FAKE_REMOTE_DIR/$WEDECENT_FAKE_ARCHIVE" ;;
+  */"$WEDECENT_FAKE_RELEASE_ARCHIVE") dest="$WEDECENT_FAKE_REMOTE_DIR/$WEDECENT_FAKE_RELEASE_ARCHIVE" ;;
   */SHA256SUMS.txt) dest="$WEDECENT_FAKE_REMOTE_DIR/SHA256SUMS.txt" ;;
+  */"$WEDECENT_FAKE_INSTALLER_ARCHIVE") dest="$WEDECENT_FAKE_REMOTE_DIR/$WEDECENT_FAKE_INSTALLER_ARCHIVE" ;;
+  */INSTALLER_SHA256SUMS.txt) dest="$WEDECENT_FAKE_REMOTE_DIR/INSTALLER_SHA256SUMS.txt" ;;
   *) exit 66 ;;
 esac
 if [[ "${WEDECENT_FAKE_UPLOAD_MODE:-normal}" == 'conflict' ]]; then
@@ -138,7 +165,8 @@ common_env=(
   "PATH=$BIN:$PATH"
   "WEDECENT_FAKE_CURL_LOG=$CURL_LOG"
   "WEDECENT_FAKE_REMOTE_DIR=$REMOTE"
-  "WEDECENT_FAKE_ARCHIVE=$ARCHIVE"
+  "WEDECENT_FAKE_RELEASE_ARCHIVE=$RELEASE_ARCHIVE"
+  "WEDECENT_FAKE_INSTALLER_ARCHIVE=$INSTALLER_ARCHIVE"
   "WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER=$VERIFIER"
 )
 
@@ -151,6 +179,7 @@ run_publish() {
   env "${common_env[@]}" "${extra_env[@]}" "$PUBLISH" \
     --version v0.3.0-rc.9 \
     --signed-release "$RELEASE" \
+    --signed-installer "$INSTALLER" \
     --base-url https://example.invalid \
     "$@"
 }
@@ -158,10 +187,10 @@ run_publish() {
 OUTPUT="$WORK/output.txt"
 : > "$CURL_LOG"
 run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run > "$OUTPUT"
-grep -Fq 'Dry run: signed release verified; no upload performed.' "$OUTPUT" ||
+grep -Fq 'Dry run: signed release and installer verified; no upload performed.' "$OUTPUT" ||
   fail 'publisher did not report signed dry-run success'
-[[ "$(wc -l < "$CURL_LOG" | tr -d '[:space:]')" == '2' ]] ||
-  fail 'absent-object dry-run should perform exactly two remote-state probes'
+[[ "$(wc -l < "$CURL_LOG" | tr -d '[:space:]')" == '4' ]] ||
+  fail 'absent-object dry-run should perform exactly four remote-state probes'
 
 for failure_mode in http500 transport-error; do
   : > "$CURL_LOG"
@@ -186,12 +215,29 @@ printf 'not signed\n' > "$RELEASE/wd-ui.exe"
 if run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run >/dev/null 2>&1; then
   fail 'publisher accepted a release with an invalid signature'
 fi
-[[ ! -s "$CURL_LOG" ]] || fail 'publisher performed a network check before rejecting invalid signatures'
+[[ ! -s "$CURL_LOG" ]] || fail 'publisher performed a network check before rejecting invalid release signatures'
 mv -- "$WORK/wd-ui.good" "$RELEASE/wd-ui.exe"
 (
   cd "$RELEASE"
   sha256sum "${binaries[@]}" | LC_ALL=C sort -k2 > SHA256SUMS.txt
 )
+refresh_installer
+
+: > "$CURL_LOG"
+printf 'mismatched but signed bytes\n' | cat - "$INSTALLER/wd-core.exe" > "$WORK/wd-core.mismatch"
+mv -- "$WORK/wd-core.mismatch" "$INSTALLER/wd-core.exe"
+(
+  cd "$INSTALLER"
+  sha256sum \
+    "${binaries[@]}" VERSION.txt SHA256SUMS.txt \
+    "${scripts[@]}" README.md \
+    | LC_ALL=C sort -k2 > PACKAGE_SHA256SUMS.txt
+)
+if run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run >/dev/null 2>&1; then
+  fail 'publisher accepted an installer whose release payload differs from the signed release'
+fi
+[[ ! -s "$CURL_LOG" ]] || fail 'mismatched installer performed network requests before rejection'
+refresh_installer
 
 rm -f -- "$REMOTE"/* "$UPLOAD_LOG"
 : > "$CURL_LOG"
@@ -199,7 +245,7 @@ if run_publish WEDECENT_FAKE_CURL_MODE=normal >/dev/null 2>&1; then
   fail 'missing public objects unexpectedly published without create-only uploader'
 fi
 [[ ! -s "$UPLOAD_LOG" ]] || fail 'missing-uploader failure invoked an uploader'
-[[ ! -e "$REMOTE/$ARCHIVE" && ! -e "$REMOTE/SHA256SUMS.txt" ]] || fail 'missing-uploader failure changed remote fixtures'
+[[ -z "$(find "$REMOTE" -mindepth 1 -maxdepth 1 -print -quit)" ]] || fail 'missing-uploader failure changed remote fixtures'
 
 for bad_uploader in relative-uploader "$UPLOADER_LINK"; do
   rm -f -- "$REMOTE"/* "$UPLOAD_LOG"
@@ -207,7 +253,7 @@ for bad_uploader in relative-uploader "$UPLOADER_LINK"; do
     fail "invalid create-only uploader unexpectedly succeeded: $bad_uploader"
   fi
   [[ ! -s "$UPLOAD_LOG" ]] || fail 'invalid uploader path invoked uploader'
-  [[ ! -e "$REMOTE/$ARCHIVE" && ! -e "$REMOTE/SHA256SUMS.txt" ]] || fail 'invalid uploader path changed remote fixtures'
+  [[ -z "$(find "$REMOTE" -mindepth 1 -maxdepth 1 -print -quit)" ]] || fail 'invalid uploader path changed remote fixtures'
 done
 
 rm -f -- "$REMOTE"/* "$UPLOAD_LOG"
@@ -216,16 +262,21 @@ run_publish \
   WEDECENT_FAKE_CURL_MODE=normal \
   WEDECENT_R2_CREATE_ONLY_UPLOADER="$UPLOADER" \
   WEDECENT_FAKE_UPLOAD_LOG="$UPLOAD_LOG" >/dev/null
-[[ "$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')" == '2' ]] || fail 'publisher did not create exactly two missing public objects'
-[[ -f "$REMOTE/$ARCHIVE" && -f "$REMOTE/SHA256SUMS.txt" ]] || fail 'create-only publication did not produce both public objects'
+[[ "$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')" == '4' ]] || fail 'publisher did not create exactly four missing public objects'
+for name in "$RELEASE_ARCHIVE" SHA256SUMS.txt "$INSTALLER_ARCHIVE" INSTALLER_SHA256SUMS.txt; do
+  [[ -f "$REMOTE/$name" ]] || fail "create-only publication did not produce $name"
+done
 (
   cd "$REMOTE"
   sha256sum -c SHA256SUMS.txt >/dev/null
-) || fail 'published remote fixtures do not match public checksum manifest'
-grep -Fq $'application/zip\tattachment; filename="'"$ARCHIVE"$'"\tpublic, max-age=31536000, immutable' "$UPLOAD_LOG" ||
-  fail 'archive upload metadata was not passed to create-only uploader'
-grep -Fq $'text/plain; charset=utf-8\t\tpublic, max-age=31536000, immutable' "$UPLOAD_LOG" ||
-  fail 'checksum upload metadata was not passed to create-only uploader'
+  sha256sum -c INSTALLER_SHA256SUMS.txt >/dev/null
+) || fail 'published remote fixtures do not match public checksum manifests'
+grep -Fq $'application/zip\tattachment; filename="'"$RELEASE_ARCHIVE"$'"\tpublic, max-age=31536000, immutable' "$UPLOAD_LOG" ||
+  fail 'release archive upload metadata was not passed to create-only uploader'
+grep -Fq $'application/zip\tattachment; filename="'"$INSTALLER_ARCHIVE"$'"\tpublic, max-age=31536000, immutable' "$UPLOAD_LOG" ||
+  fail 'installer archive upload metadata was not passed to create-only uploader'
+[[ "$(grep -Fc $'text/plain; charset=utf-8\t\tpublic, max-age=31536000, immutable' "$UPLOAD_LOG")" == '2' ]] ||
+  fail 'checksum upload metadata was not passed for both manifests'
 
 upload_count="$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')"
 run_publish WEDECENT_FAKE_CURL_MODE=normal >/dev/null
@@ -240,7 +291,8 @@ if run_publish \
   fail 'concurrent create-only conflict unexpectedly succeeded'
 fi
 [[ "$(wc -l < "$UPLOAD_LOG" | tr -d '[:space:]')" == '1' ]] || fail 'concurrent conflict should stop after first uploader failure'
-[[ "$(cat "$REMOTE/$ARCHIVE")" == 'concurrent different bytes' ]] || fail 'publisher overwrote concurrent object after create-only conflict'
-[[ ! -e "$REMOTE/SHA256SUMS.txt" ]] || fail 'publisher continued after create-only archive conflict'
+[[ "$(cat "$REMOTE/$RELEASE_ARCHIVE")" == 'concurrent different bytes' ]] || fail 'publisher overwrote concurrent object after create-only conflict'
+[[ ! -e "$REMOTE/SHA256SUMS.txt" && ! -e "$REMOTE/$INSTALLER_ARCHIVE" && ! -e "$REMOTE/INSTALLER_SHA256SUMS.txt" ]] ||
+  fail 'publisher continued after create-only release archive conflict'
 
 printf 'Windows signed-publication boundary verified.\n'
