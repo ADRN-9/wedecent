@@ -20,11 +20,12 @@ const (
 )
 
 var (
-	ErrCoreRequired    = errors.New("gui app: core service is required")
-	ErrInvalidDeviceID = errors.New("gui app: invalid device id")
-	ErrSessionActive   = errors.New("gui app: a session is already active")
-	ErrNoSession       = errors.New("gui app: no active session")
-	ErrSessionLost     = errors.New("gui app: Local Core session was lost")
+	ErrCoreRequired          = errors.New("gui app: core service is required")
+	ErrInvalidDeviceID       = errors.New("gui app: invalid device id")
+	ErrSessionActive         = errors.New("gui app: a session is already active")
+	ErrNoSession             = errors.New("gui app: no active session")
+	ErrSessionLost           = errors.New("gui app: Local Core session was lost")
+	ErrTerminalInputTooLarge = errors.New("gui app: terminal input exceeds maximum chunk size")
 )
 
 type Core interface {
@@ -138,8 +139,8 @@ func (c *Controller) ReadTerminal(ctx context.Context, maxBytes int) (v1.Termina
 			}
 			return result, nil
 		}
-		if sessionErr := c.sessionError(connectionID, readErr); !errors.Is(sessionErr, readErr) {
-			return v1.TerminalReadResult{}, sessionErr
+		if coreclient.IsConnectionGone(readErr) {
+			return v1.TerminalReadResult{}, c.sessionError(connectionID, readErr)
 		}
 		if !retryableCoreOutage(ctx, readErr) {
 			return v1.TerminalReadResult{}, readErr
@@ -157,6 +158,9 @@ func (c *Controller) ReadTerminal(ctx context.Context, maxBytes int) (v1.Termina
 }
 
 func (c *Controller) WriteTerminal(ctx context.Context, data []byte) error {
+	if len(data) > v1.MaxTerminalChunkBytes {
+		return ErrTerminalInputTooLarge
+	}
 	connectionID, err := c.activeConnectionID()
 	if err != nil {
 		return err

@@ -49,8 +49,9 @@ const (
 	wmExitSizeMove = 0x0232
 	wmApp          = 0x8000
 
-	emSetSel     = 0x00B1
-	emReplaceSel = 0x00C2
+	emSetSel       = 0x00B1
+	emReplaceSel   = 0x00C2
+	emSetLimitText = 0x00C5
 
 	lbAddString    = 0x0180
 	lbResetContent = 0x0184
@@ -70,6 +71,7 @@ const (
 	wmAppEvent = wmApp + 1
 
 	maxTerminalDisplayChars = 1 << 20
+	maxTerminalInputChars   = v1.MaxTerminalChunkBytes - 1
 )
 
 const windowClassName = "WeDecentLocalCoreWindow"
@@ -339,6 +341,7 @@ func (a *winApp) createControls() error {
 	if a.input, err = createControl("EDIT", "", wsChild|wsVisible|wsBorder|wsTabStop|esAutoHScroll, 0, idInput, 0, 0, 400, 28, a.hwnd); err != nil {
 		return err
 	}
+	procSendMessageW.Call(a.input, emSetLimitText, uintptr(maxTerminalInputChars), 0)
 	if a.send, err = createControl("BUTTON", "Send", wsChild|wsVisible|wsTabStop, 0, idSend, 0, 0, 80, 28, a.hwnd); err != nil {
 		return err
 	}
@@ -517,6 +520,13 @@ func (a *winApp) sendAsync() {
 		return
 	}
 	data := []byte(text + "\r")
+	if len(data) > v1.MaxTerminalChunkBytes {
+		for i := range data {
+			data[i] = 0
+		}
+		a.setStatus("Terminal input is limited to 32 KiB.")
+		return
+	}
 	a.busySend = true
 	a.updateControls()
 	go func() {
@@ -879,6 +889,9 @@ func publicError(err error) string {
 	}
 	if errors.Is(err, guiapp.ErrInvalidDeviceID) {
 		return "The selected device is invalid."
+	}
+	if errors.Is(err, guiapp.ErrTerminalInputTooLarge) {
+		return "Terminal input is limited to 32 KiB."
 	}
 	var remote *coreclient.RemoteError
 	if errors.As(err, &remote) {
