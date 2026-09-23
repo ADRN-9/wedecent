@@ -36,14 +36,14 @@ var (
 // artifacts. The mutable channel object is a discovery hint; artifact
 // authenticity still remains independently protected by Authenticode.
 type Manifest struct {
-	Schema           int    `json:"schema"`
-	Channel          string `json:"channel"`
-	Sequence         uint64 `json:"sequence"`
-	Version          string `json:"version"`
-	PublishedAt      string `json:"published_at"`
-	ReleaseURL       string `json:"release_url"`
-	ReleaseSHA256    string `json:"release_sha256"`
-	InstallerURL     string `json:"installer_url"`
+	Schema          int    `json:"schema"`
+	Channel         string `json:"channel"`
+	Sequence        uint64 `json:"sequence"`
+	Version         string `json:"version"`
+	PublishedAt     string `json:"published_at"`
+	ReleaseURL      string `json:"release_url"`
+	ReleaseSHA256   string `json:"release_sha256"`
+	InstallerURL    string `json:"installer_url"`
 	InstallerSHA256 string `json:"installer_sha256"`
 }
 
