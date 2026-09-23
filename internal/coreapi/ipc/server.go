@@ -19,6 +19,8 @@ const (
 	ErrorConnectionLimit       = "connection_limit"
 	ErrorConnectionUnavailable = "connection_unavailable"
 	ErrorConnectionFailed      = "connection_failed"
+	ErrorTerminalUnavailable   = "terminal_unavailable"
+	ErrorTerminalFailed        = "terminal_operation_failed"
 	ErrorRequestCanceled       = "request_canceled"
 	ErrorAccountUnavailable    = "account_unavailable"
 	ErrorAccountFailed         = "account_operation_failed"
@@ -32,6 +34,7 @@ type Services struct {
 	Devices     v1.DeviceService
 	Account     v1.AccountService
 	Connections v1.ConnectionService
+	Terminal    v1.TerminalService
 	Transports  v1.TransportService
 	Routes      v1.RouteService
 	Router      v1.RouterService
@@ -42,6 +45,7 @@ type Server struct {
 	devices     v1.DeviceService
 	account     v1.AccountService
 	connections v1.ConnectionService
+	terminal    v1.TerminalService
 	transports  v1.TransportService
 	routes      v1.RouteService
 	router      v1.RouterService
@@ -64,6 +68,7 @@ func NewServerWithServices(services Services) (*Server, error) {
 		devices:     services.Devices,
 		account:     services.Account,
 		connections: services.Connections,
+		terminal:    services.Terminal,
 		transports:  services.Transports,
 		routes:      services.Routes,
 		router:      services.Router,
@@ -164,6 +169,37 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		}
 		err = s.connections.Disconnect(ctx, params)
+	case v1.MethodTerminalRead:
+		if s.terminal == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		var params v1.TerminalReadRequest
+		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		result, err = s.terminal.ReadTerminal(ctx, params)
+	case v1.MethodTerminalWrite:
+		if s.terminal == nil {
+			wipe(req.Params)
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		var params v1.TerminalWriteRequest
+		decodeErr := DecodeParams(req.Params, &params)
+		wipe(req.Params)
+		if decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		err = s.terminal.WriteTerminal(ctx, params)
+		wipe(params.Data)
+	case v1.MethodTerminalResize:
+		if s.terminal == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		var params v1.TerminalResizeRequest
+		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		err = s.terminal.ResizeTerminal(ctx, params)
 	case v1.MethodTransportsList:
 		if s.transports == nil {
 			return errorResponse(response, ErrorMethodNotFound, "method not found")
@@ -216,7 +252,7 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorRequestCanceled, "request canceled")
 		case errors.Is(err, coreapi.ErrDeviceNotFound):
 			return errorResponse(response, ErrorDeviceNotFound, "device not found")
-		case errors.Is(err, coreapi.ErrInvalidRouteRequest), errors.Is(err, coreapi.ErrInvalidConnectionRequest), errors.Is(err, coreapi.ErrInvalidRouterPolicy):
+		case errors.Is(err, coreapi.ErrInvalidRouteRequest), errors.Is(err, coreapi.ErrInvalidConnectionRequest), errors.Is(err, coreapi.ErrInvalidRouterPolicy), errors.Is(err, coreapi.ErrInvalidTerminalRequest):
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		case errors.Is(err, coreapi.ErrRouteNotFound):
 			return errorResponse(response, ErrorRouteNotFound, "route not found")
@@ -228,6 +264,10 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorConnectionUnavailable, "connection service is unavailable")
 		case errors.Is(err, coreapi.ErrConnectionOperation):
 			return errorResponse(response, ErrorConnectionFailed, "connection operation failed")
+		case errors.Is(err, coreapi.ErrTerminalUnavailable):
+			return errorResponse(response, ErrorTerminalUnavailable, "terminal stream is unavailable")
+		case errors.Is(err, coreapi.ErrTerminalOperation):
+			return errorResponse(response, ErrorTerminalFailed, "terminal operation failed")
 		case errors.Is(err, coreapi.ErrAccountNotConfigured):
 			return errorResponse(response, ErrorAccountUnavailable, "account sign-in is unavailable")
 		case errors.Is(err, coreapi.ErrAccountOperation):

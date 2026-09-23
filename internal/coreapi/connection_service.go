@@ -20,11 +20,16 @@ var (
 	ErrConnectionLimit          = errors.New("connection limit reached")
 	ErrConnectionOperation      = errors.New("connection operation failed")
 	ErrConnectionServiceClosed  = errors.New("connection service is closed")
+	ErrInvalidTerminalRequest   = errors.New("invalid terminal request")
+	ErrTerminalUnavailable      = errors.New("terminal stream is unavailable")
+	ErrTerminalOperation        = errors.New("terminal operation failed")
 )
 
 const (
-	DefaultMaxCoreConnections = 32
-	maxConnectionIDAttempts   = 8
+	DefaultMaxCoreConnections   = 32
+	maxConnectionIDAttempts     = 8
+	terminalStreamRetention     = 30 * time.Second
+	retainedTerminalStreamScale = 2
 )
 
 type ConnectionHandle interface {
@@ -37,6 +42,16 @@ type ConnectionHandle interface {
 type ObservableConnectionHandle interface {
 	ConnectionHandle
 	Done() <-chan struct{}
+}
+
+// TerminalConnectionHandle is the narrow terminal I/O surface retained by the
+// Local Core connection manager. Implementations must bound their own buffered
+// output and must not expose transport or authorization material.
+type TerminalConnectionHandle interface {
+	ConnectionHandle
+	ReadTerminal(context.Context, int) ([]byte, bool, error)
+	WriteTerminal(context.Context, []byte) error
+	ResizeTerminal(context.Context, uint16, uint16) error
 }
 
 type OpenedConnection struct {
@@ -69,6 +84,12 @@ type activeConnection struct {
 	token        *struct{}
 }
 
+type terminalStreamEntry struct {
+	handle TerminalConnectionHandle
+	token  *struct{}
+	closed bool
+}
+
 type ConnectionService struct {
 	backend ConnectionBackend
 	network *NetworkReadService
@@ -82,11 +103,13 @@ type ConnectionService struct {
 	mu       sync.Mutex
 	opening  int
 	active   map[string]activeConnection
+	streams  map[string]terminalStreamEntry
 	reserved map[string]struct{}
 	closed   bool
 }
 
 var _ v1.ConnectionService = (*ConnectionService)(nil)
+var _ v1.TerminalService = (*ConnectionService)(nil)
 
 func NewConnectionService(cfg ConnectionServiceConfig) (*ConnectionService, error) {
 	if cfg.Backend == nil {
@@ -120,6 +143,7 @@ func NewConnectionService(cfg ConnectionServiceConfig) (*ConnectionService, erro
 		shutdownCtx: shutdownCtx,
 		shutdown:    shutdown,
 		active:      make(map[string]activeConnection),
+		streams:     make(map[string]terminalStreamEntry),
 		reserved:    make(map[string]struct{}),
 	}, nil
 }
@@ -205,6 +229,7 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 	}
 
 	token := &struct{}{}
+	stream, streamable := opened.Handle.(TerminalConnectionHandle)
 	s.mu.Lock()
 	if s.closed {
 		s.opening--
@@ -218,6 +243,10 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 	s.opening--
 	delete(s.reserved, connectionID)
 	s.active[connectionID] = activeConnection{public: public, handle: opened.Handle, token: token}
+	if streamable {
+		s.pruneRetainedStreamsLocked()
+		s.streams[connectionID] = terminalStreamEntry{handle: stream, token: token}
+	}
 	reserved = false
 	s.mu.Unlock()
 
@@ -270,6 +299,9 @@ func (s *ConnectionService) Disconnect(ctx context.Context, req v1.DisconnectReq
 	if current, stillActive := s.active[req.ConnectionID]; stillActive && current.token == active.token {
 		delete(s.active, req.ConnectionID)
 	}
+	if stream, ok := s.streams[req.ConnectionID]; ok && stream.token == active.token {
+		delete(s.streams, req.ConnectionID)
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -287,6 +319,7 @@ func (s *ConnectionService) Close() error {
 	s.closed = true
 	active := s.active
 	s.active = make(map[string]activeConnection)
+	s.streams = make(map[string]terminalStreamEntry)
 	s.mu.Unlock()
 
 	s.shutdown()
@@ -307,6 +340,7 @@ func (s *ConnectionService) Close() error {
 func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{}, done <-chan struct{}) {
 	<-done
 
+	retainStream := false
 	s.mu.Lock()
 	current, ok := s.active[connectionID]
 	if ok && current.token == token {
@@ -319,6 +353,11 @@ func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{
 			ok = false
 		default:
 			delete(s.active, connectionID)
+			if stream, exists := s.streams[connectionID]; exists && stream.token == token {
+				stream.closed = true
+				s.streams[connectionID] = stream
+				retainStream = true
+			}
 		}
 	} else {
 		ok = false
@@ -327,6 +366,39 @@ func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{
 
 	if ok {
 		s.network.RemoveConnectionPath(connectionID)
+	}
+	if retainStream {
+		time.AfterFunc(terminalStreamRetention, func() {
+			s.expireTerminalStream(connectionID, token)
+		})
+	}
+}
+
+func (s *ConnectionService) expireTerminalStream(connectionID string, token *struct{}) {
+	s.mu.Lock()
+	if stream, ok := s.streams[connectionID]; ok && stream.token == token && stream.closed {
+		delete(s.streams, connectionID)
+	}
+	s.mu.Unlock()
+}
+
+func (s *ConnectionService) pruneRetainedStreamsLocked() {
+	limit := s.max * retainedTerminalStreamScale
+	if limit < s.max+1 {
+		limit = s.max + 1
+	}
+	for len(s.streams) >= limit {
+		removed := false
+		for id, stream := range s.streams {
+			if stream.closed {
+				delete(s.streams, id)
+				removed = true
+				break
+			}
+		}
+		if !removed {
+			return
+		}
 	}
 }
 
@@ -390,8 +462,9 @@ func (s *ConnectionService) reserveConnectionID() (string, error) {
 			return "", ErrConnectionServiceClosed
 		}
 		_, active := s.active[connectionID]
+		_, stream := s.streams[connectionID]
 		_, reserved := s.reserved[connectionID]
-		if !active && !reserved {
+		if !active && !stream && !reserved {
 			s.reserved[connectionID] = struct{}{}
 			s.mu.Unlock()
 			return connectionID, nil

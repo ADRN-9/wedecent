@@ -146,6 +146,7 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		Devices:     readService,
 		Account:     accountService,
 		Connections: connectionService,
+		Terminal:    connectionService,
 		Transports:  networkService,
 		Routes:      networkService,
 		Router:      cfg.RouterService,
