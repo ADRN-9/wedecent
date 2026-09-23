@@ -3,7 +3,11 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	coreclient "wedecent.com/wedecent/internal/coreapi/client"
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
@@ -15,6 +19,8 @@ var (
 	ErrTerminalWriteOutcomeUnknown = errors.New("wd-ui: terminal write outcome is unknown")
 )
 
+var connectOperationCounter atomic.Uint64
+
 type coreRecoverFunc func(context.Context) error
 
 type coreRecoveryCall struct {
@@ -23,19 +29,21 @@ type coreRecoveryCall struct {
 }
 
 // recoveringCore adds bounded process recovery around the existing typed Core
-// client without changing Local Core protocol or session semantics.
+// client without changing networking, trust, or session ownership.
 //
-// Read-only and idempotent operations may replay after recovery. Connect and
-// terminal writes replay only when the typed transport stage proves request
-// transmission had not started. Once a write may have begun, their result is
-// reported as unknown instead of risking duplicate side effects.
+// Connect is replayable because this wrapper supplies a stable operation ID and
+// Local Core deduplicates that ID. Terminal writes remain stage-aware because
+// they do not yet have protocol-level idempotency.
 type recoveringCore struct {
 	inner   guiapp.Core
 	recover coreRecoverFunc
 
-	mu         sync.Mutex
-	inFlight   *coreRecoveryCall
-	generation uint64
+	mu                        sync.Mutex
+	inFlight                  *coreRecoveryCall
+	generation                uint64
+	pendingConnectDevice      string
+	pendingConnectOperationID string
+	pendingConnectExpiresAt   time.Time
 }
 
 var _ guiapp.Core = (*recoveringCore)(nil)
@@ -84,25 +92,44 @@ func (c *recoveringCore) GetDevice(ctx context.Context, req v1.GetDeviceRequest)
 }
 
 func (c *recoveringCore) Connect(ctx context.Context, req v1.ConnectRequest) (v1.Connection, error) {
+	prepared, err := c.prepareConnectRequest(req)
+	if err != nil {
+		return v1.Connection{}, err
+	}
+
 	generation := c.recoveryGeneration()
-	out, err := c.inner.Connect(ctx, req)
+	out, err := c.inner.Connect(ctx, prepared)
 	if !c.shouldRecover(err) {
+		c.clearPendingConnect(prepared)
 		return out, err
 	}
 
-	mayHaveReached := coreclient.RequestMayHaveReachedCore(err)
+	firstMayHaveReached := coreclient.RequestMayHaveReachedCore(err)
 	recoveryErr := c.recoverOnce(ctx, generation)
-	if mayHaveReached {
-		return out, unknownMutationError(ErrConnectOutcomeUnknown, err, recoveryErr)
-	}
 	if recoveryErr != nil {
+		if firstMayHaveReached {
+			// Keep the operation ID pending. A later Connect for the same device
+			// in this UI process can reuse it while the Core replay window lasts.
+			return out, unknownMutationError(ErrConnectOutcomeUnknown, err, recoveryErr)
+		}
+		c.clearPendingConnect(prepared)
 		return out, recoveryErr
 	}
 
-	retryOut, retryErr := c.inner.Connect(ctx, req)
-	if c.shouldRecover(retryErr) && coreclient.RequestMayHaveReachedCore(retryErr) {
+	// Any transport stage is safe to replay with the same operation ID. If the
+	// original Core is still alive it deduplicates the request; if Core restarted,
+	// the old process-local connection cannot still exist.
+	retryOut, retryErr := c.inner.Connect(ctx, prepared)
+	if !c.shouldRecover(retryErr) {
+		c.clearPendingConnect(prepared)
+		return retryOut, retryErr
+	}
+	if firstMayHaveReached || coreclient.RequestMayHaveReachedCore(retryErr) {
+		// Even a pre-write retry failure cannot erase uncertainty from an earlier
+		// post-write attempt. Retain the key for later same-device reconciliation.
 		return retryOut, unknownMutationError(ErrConnectOutcomeUnknown, retryErr, nil)
 	}
+	c.clearPendingConnect(prepared)
 	return retryOut, retryErr
 }
 
@@ -170,6 +197,48 @@ func (c *recoveringCore) ResizeTerminal(ctx context.Context, req v1.TerminalResi
 
 func (c *recoveringCore) shouldRecover(err error) bool {
 	return errors.Is(err, coreclient.ErrUnavailable)
+}
+
+func (c *recoveringCore) prepareConnectRequest(req v1.ConnectRequest) (v1.ConnectRequest, error) {
+	if req.OperationID != "" {
+		return req, nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.pendingConnectOperationID != "" {
+		if c.pendingConnectDevice != req.DeviceID || time.Now().After(c.pendingConnectExpiresAt) {
+			return v1.ConnectRequest{}, ErrConnectOutcomeUnknown
+		}
+		req.OperationID = c.pendingConnectOperationID
+		return req, nil
+	}
+	req.OperationID = nextConnectOperationID()
+	c.pendingConnectDevice = req.DeviceID
+	c.pendingConnectOperationID = req.OperationID
+	c.pendingConnectExpiresAt = time.Now().Add(v1.ConnectOperationReplayWindow)
+	return req, nil
+}
+
+func (c *recoveringCore) clearPendingConnect(req v1.ConnectRequest) {
+	if req.OperationID == "" {
+		return
+	}
+	c.mu.Lock()
+	if c.pendingConnectOperationID == req.OperationID && c.pendingConnectDevice == req.DeviceID {
+		c.pendingConnectDevice = ""
+		c.pendingConnectOperationID = ""
+		c.pendingConnectExpiresAt = time.Time{}
+	}
+	c.mu.Unlock()
+}
+
+func nextConnectOperationID() string {
+	// The operation ID is a collision-resistant replay key, not a secret. PID,
+	// wall-clock nanoseconds and a process-local atomic counter avoid dependence
+	// on a second credential/randomness source while remaining unique across UI
+	// processes and retries.
+	return fmt.Sprintf("op_%x_%x_%x", uint64(os.Getpid()), uint64(time.Now().UnixNano()), connectOperationCounter.Add(1))
 }
 
 func unknownMutationError(kind, transportErr, recoveryErr error) error {

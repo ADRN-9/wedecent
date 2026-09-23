@@ -15,8 +15,17 @@ func unavailableStage(stage coreclient.UnavailableStage) error {
 
 func TestRecoveringCoreRetriesConnectBeforeRequestWrite(t *testing.T) {
 	var connectCalls int
-	inner := &fakeUICore{connect: func(context.Context, v1.ConnectRequest) (v1.Connection, error) {
+	var operationID string
+	inner := &fakeUICore{connect: func(_ context.Context, req v1.ConnectRequest) (v1.Connection, error) {
 		connectCalls++
+		if req.OperationID == "" {
+			t.Fatal("Connect request did not include an operation ID")
+		}
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if req.OperationID != operationID {
+			t.Fatalf("operation ID changed across retry: %q != %q", req.OperationID, operationID)
+		}
 		if connectCalls == 1 {
 			return v1.Connection{}, unavailableStage(coreclient.UnavailableStageDial)
 		}
@@ -40,6 +49,90 @@ func TestRecoveringCoreRetriesConnectBeforeRequestWrite(t *testing.T) {
 	}
 }
 
+func TestRecoveringCoreRetriesConnectAfterResponseLoss(t *testing.T) {
+	var connectCalls int
+	var operationID string
+	inner := &fakeUICore{connect: func(_ context.Context, req v1.ConnectRequest) (v1.Connection, error) {
+		connectCalls++
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if req.OperationID != operationID {
+			t.Fatalf("operation ID changed across ambiguous retry: %q != %q", req.OperationID, operationID)
+		}
+		if connectCalls == 1 {
+			return v1.Connection{}, unavailableStage(coreclient.UnavailableStageReadResponse)
+		}
+		return v1.Connection{ID: "conn_reconciled"}, nil
+	}}
+	var recoverCalls int
+	core := newRecoveringCore(inner, func(context.Context) error {
+		recoverCalls++
+		return nil
+	})
+
+	connection, err := core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer"})
+	if err != nil {
+		t.Fatalf("Connect() error = %v", err)
+	}
+	if connection.ID != "conn_reconciled" {
+		t.Fatalf("Connect() ID = %q, want conn_reconciled", connection.ID)
+	}
+	if connectCalls != 2 || recoverCalls != 1 {
+		t.Fatalf("connect calls = %d, recovery calls = %d; want 2, 1", connectCalls, recoverCalls)
+	}
+}
+
+func TestRecoveringCoreReusesPendingConnectAfterRecoveryFailure(t *testing.T) {
+	recoveryErr := errors.New("recovery failed")
+	var operationIDs []string
+	var connectCalls int
+	inner := &fakeUICore{connect: func(_ context.Context, req v1.ConnectRequest) (v1.Connection, error) {
+		connectCalls++
+		operationIDs = append(operationIDs, req.OperationID)
+		if connectCalls == 1 {
+			return v1.Connection{}, unavailableStage(coreclient.UnavailableStageReadResponse)
+		}
+		return v1.Connection{ID: "conn_manual_reconcile"}, nil
+	}}
+	var recoverCalls int
+	core := newRecoveringCore(inner, func(context.Context) error {
+		recoverCalls++
+		if recoverCalls == 1 {
+			return recoveryErr
+		}
+		return nil
+	})
+
+	_, err := core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer"})
+	if !errors.Is(err, ErrConnectOutcomeUnknown) || !errors.Is(err, recoveryErr) {
+		t.Fatalf("first Connect() error = %v; want unknown outcome and recovery failure", err)
+	}
+	connection, err := core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer"})
+	if err != nil {
+		t.Fatalf("manual reconciliation Connect() error = %v", err)
+	}
+	if connection.ID != "conn_manual_reconcile" {
+		t.Fatalf("connection = %#v", connection)
+	}
+	if len(operationIDs) != 2 || operationIDs[0] == "" || operationIDs[0] != operationIDs[1] {
+		t.Fatalf("operation IDs = %#v; want the same non-empty ID", operationIDs)
+	}
+}
+
+func TestRecoveringCorePendingConnectBlocksDifferentDevice(t *testing.T) {
+	recoveryErr := errors.New("recovery failed")
+	inner := &fakeUICore{connect: func(context.Context, v1.ConnectRequest) (v1.Connection, error) {
+		return v1.Connection{}, unavailableStage(coreclient.UnavailableStageReadResponse)
+	}}
+	core := newRecoveringCore(inner, func(context.Context) error { return recoveryErr })
+
+	_, _ = core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer-a"})
+	_, err := core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer-b"})
+	if !errors.Is(err, ErrConnectOutcomeUnknown) {
+		t.Fatalf("different-device Connect() error = %v; want ErrConnectOutcomeUnknown", err)
+	}
+}
+
 func TestRecoveringCoreRetriesTerminalWriteBeforeRequestWrite(t *testing.T) {
 	var writeCalls int
 	inner := &fakeUICore{writeTerminal: func(context.Context, v1.TerminalWriteRequest) error {
@@ -60,30 +153,6 @@ func TestRecoveringCoreRetriesTerminalWriteBeforeRequestWrite(t *testing.T) {
 	}
 	if writeCalls != 2 || recoverCalls != 1 {
 		t.Fatalf("write calls = %d, recovery calls = %d; want 2, 1", writeCalls, recoverCalls)
-	}
-}
-
-func TestRecoveringCoreMarksConnectUnknownAfterRequestWrite(t *testing.T) {
-	var connectCalls int
-	inner := &fakeUICore{connect: func(context.Context, v1.ConnectRequest) (v1.Connection, error) {
-		connectCalls++
-		return v1.Connection{}, unavailableStage(coreclient.UnavailableStageReadResponse)
-	}}
-	var recoverCalls int
-	core := newRecoveringCore(inner, func(context.Context) error {
-		recoverCalls++
-		return nil
-	})
-
-	_, err := core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer"})
-	if !errors.Is(err, ErrConnectOutcomeUnknown) {
-		t.Fatalf("Connect() error = %v; want ErrConnectOutcomeUnknown", err)
-	}
-	if !errors.Is(err, coreclient.ErrUnavailable) {
-		t.Fatalf("Connect() error = %v; want wrapped ErrUnavailable", err)
-	}
-	if connectCalls != 1 || recoverCalls != 1 {
-		t.Fatalf("connect calls = %d, recovery calls = %d; want 1, 1", connectCalls, recoverCalls)
 	}
 }
 
@@ -113,8 +182,14 @@ func TestRecoveringCoreMarksTerminalWriteUnknownAfterRequestWrite(t *testing.T) 
 
 func TestRecoveringCoreMarksRetryUnknownIfSecondConnectWasWritten(t *testing.T) {
 	var connectCalls int
-	inner := &fakeUICore{connect: func(context.Context, v1.ConnectRequest) (v1.Connection, error) {
+	var operationID string
+	inner := &fakeUICore{connect: func(_ context.Context, req v1.ConnectRequest) (v1.Connection, error) {
 		connectCalls++
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if operationID != req.OperationID {
+			t.Fatalf("operation ID changed: %q != %q", req.OperationID, operationID)
+		}
 		if connectCalls == 1 {
 			return v1.Connection{}, unavailableStage(coreclient.UnavailableStageDial)
 		}
@@ -131,7 +206,7 @@ func TestRecoveringCoreMarksRetryUnknownIfSecondConnectWasWritten(t *testing.T) 
 	}
 }
 
-func TestRecoveringCoreAmbiguousMutationPreservesRecoveryFailure(t *testing.T) {
+func TestRecoveringCoreAmbiguousTerminalMutationPreservesRecoveryFailure(t *testing.T) {
 	recoveryErr := errors.New("recovery failed")
 	inner := &fakeUICore{writeTerminal: func(context.Context, v1.TerminalWriteRequest) error {
 		return unavailableStage(coreclient.UnavailableStageReadResponse)
