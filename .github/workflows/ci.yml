@@ -177,7 +177,9 @@ jobs:
       - uses: supabase/setup-cli@v1
         with:
           version: 2.117.0
+      - name: Test registry fallback and throttle retry policy
+        run: ./scripts/test-start-supabase-db-ci.sh
       - name: Start disposable local Supabase database
-        run: supabase db start
+        run: ./scripts/start-supabase-db-ci.sh
       - name: Run database pgTAP tests
-        run: supabase test db
+        run: env -u SUPABASE_INTERNAL_IMAGE_REGISTRY supabase test db
