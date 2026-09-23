@@ -17,12 +17,17 @@ const (
 	MethodAccountSignOut       = "account.sign_out"
 	MethodConnectionConnect    = "connection.connect"
 	MethodConnectionDisconnect = "connection.disconnect"
+	MethodTerminalRead         = "terminal.read"
+	MethodTerminalWrite        = "terminal.write"
+	MethodTerminalResize       = "terminal.resize"
 	MethodTransportsList       = "transports.list"
 	MethodRouteGet             = "route.get"
 	MethodRouterPolicyGet      = "router.policy.get"
 	MethodRouterPolicySet      = "router.policy.set"
 	MethodRouterStatsGet       = "router.stats.get"
 )
+
+const MaxTerminalChunkBytes = 32 << 10
 
 type ConnectionPath string
 
@@ -79,6 +84,11 @@ type Connection struct {
 	StartedAt time.Time       `json:"started_at"`
 }
 
+type TerminalReadResult struct {
+	Data   []byte `json:"data,omitempty"`
+	Closed bool   `json:"closed"`
+}
+
 type RouteHop struct {
 	From      string        `json:"from"`
 	To        string        `json:"to"`
@@ -130,6 +140,22 @@ type DisconnectRequest struct {
 	ConnectionID string `json:"connection_id"`
 }
 
+type TerminalReadRequest struct {
+	ConnectionID string `json:"connection_id"`
+	MaxBytes     int    `json:"max_bytes,omitempty"`
+}
+
+type TerminalWriteRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Data         []byte `json:"data"`
+}
+
+type TerminalResizeRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Cols         uint16 `json:"cols"`
+	Rows         uint16 `json:"rows"`
+}
+
 type GetRouteStatusRequest struct {
 	ConnectionID string `json:"connection_id"`
 }
@@ -157,6 +183,12 @@ type ConnectionService interface {
 	Disconnect(context.Context, DisconnectRequest) error
 }
 
+type TerminalService interface {
+	ReadTerminal(context.Context, TerminalReadRequest) (TerminalReadResult, error)
+	WriteTerminal(context.Context, TerminalWriteRequest) error
+	ResizeTerminal(context.Context, TerminalResizeRequest) error
+}
+
 type TransportService interface {
 	GetTransportStatus(context.Context) ([]TransportStatus, error)
 }
@@ -180,6 +212,7 @@ type Service interface {
 	AccountService
 	DeviceService
 	ConnectionService
+	TerminalService
 	TransportService
 	RouteService
 	RouterService
