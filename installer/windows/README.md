@@ -34,13 +34,14 @@ This current-user setting is owned by `wd-ui`, not by the elevated installer. On
 - The service-account password is cryptographically random and is never written to disk, an environment variable, or a process command line. It is sent to `wd-agent.exe service install --account-password-stdin` through an inherited anonymous pipe.
 - The installer rejects service accounts that are members of the local Administrators group and grants `SeServiceLogonRight` when needed.
 - `wd-agent.exe` performs the existing identity initialization, state-directory ACL restriction, SCM registration, and service startup.
-- Upgrades stop the existing agent service, replace the verified binary set as one rollback unit, preserve identity/state/account configuration, and restore prior binaries if the upgraded service does not restart.
+- Before any install/upgrade mutation, the installer checks for running installed `wd-ui.exe` and `wd-core.exe` images. If either is active, it fails before stopping the agent service or replacing files and instructs the operator to close the user processes. It never terminates those interactive processes itself.
+- Upgrades stop the existing agent service only after that preflight succeeds, replace the verified binary set as one rollback unit, preserve identity/state/account configuration, and restore prior binaries if the upgraded service does not restart.
 - Rollback tracks whether each destination existed before the transaction so a pre-copy failure cannot delete an untouched older binary.
 - Installer metadata is written atomically with an Administrators/SYSTEM-only ACL before it can authorize managed-account deletion.
 - Normal uninstall removes the installed program directory, including all five binaries, while preserving cryptographic agent state and the service account. Permanent identity deletion requires explicit purge flags; `-WhatIf` is a real dry run.
 - The elevated installer and uninstaller do not guess which interactive user's HKCU hive should own startup state. UI autostart is explicit, per-user, and managed by `wd-ui.exe` itself.
 
-If `wd-core.exe`, `wd-ui.exe`, or another installed executable is running and Windows refuses to replace its image during an upgrade, the installer fails the transaction rather than killing an interactive process or silently leaving mixed binary versions. Close `wd-ui.exe` and any manually running WeDecent user-side processes, then rerun the installer; an open UI may otherwise relaunch Core in response to a later API request.
+The process preflight compares the running image path with the exact installed `wd-ui.exe`/`wd-core.exe` destinations. A matching process whose executable path cannot be inspected is treated conservatively as a conflict. Close the installed UI/Core processes and rerun the installer. This prevents an autostarted UI from relaunching Core after the upgrade has already disrupted the agent service, and avoids depending on a later file-lock failure to trigger rollback.
 
 Before uninstalling, a user who enabled UI autostart should run `wd-ui.exe autostart disable` in that same user context. The elevated uninstaller intentionally does not enumerate arbitrary users' HKCU Run entries; uninstalling without disabling may leave a harmless stale per-user startup value pointing to the removed image.
 
@@ -58,6 +59,8 @@ Preview installer changes without mutating the machine:
 ```powershell
 .\Install-WeDecent.ps1 -WhatIf
 ```
+
+The same user-process preflight runs during `-WhatIf`, so a dry run can report that installed UI/Core processes must be closed without mutating the machine.
 
 On a disposable fresh-install test machine, require proof that the service account was created and is installer-managed:
 
@@ -111,7 +114,7 @@ Never use the purge form for a normal upgrade or temporary uninstall. Deleting t
 
 ## Silent use
 
-A default fresh install is non-interactive: the installer generates the dedicated account password internally. An upgrade is also non-interactive. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
+A default fresh install is non-interactive: the installer generates the dedicated account password internally. An upgrade is also non-interactive when no installed UI/Core process is active. A running installed user-side process is an intentional fail-fast condition rather than something a silent installer kills automatically. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
 
 The installer does not silently opt an interactive user into UI autostart. That choice must be made from the target user's context with `wd-ui.exe autostart enable`.
 
