@@ -68,6 +68,7 @@ func ReadResponse(r io.Reader) (Response, error) {
 	if err != nil {
 		return Response{}, err
 	}
+	defer wipe(payload)
 
 	var response Response
 	if err := decodeStrict(payload, &response); err != nil {
