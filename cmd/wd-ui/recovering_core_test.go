@@ -111,10 +111,19 @@ func TestRecoveringCoreRetriesSafeStatusAfterRecovery(t *testing.T) {
 	}
 }
 
-func TestRecoveringCoreDoesNotReplayConnect(t *testing.T) {
+func TestRecoveringCoreReplaysIdempotentConnect(t *testing.T) {
 	var connectCalls int
-	inner := &fakeUICore{connect: func(context.Context, v1.ConnectRequest) (v1.Connection, error) {
+	var operationID string
+	inner := &fakeUICore{connect: func(_ context.Context, req v1.ConnectRequest) (v1.Connection, error) {
 		connectCalls++
+		if req.OperationID == "" {
+			t.Fatal("Connect request did not include an operation ID")
+		}
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if req.OperationID != operationID {
+			t.Fatalf("operation ID changed across retry: %q != %q", req.OperationID, operationID)
+		}
 		return v1.Connection{}, unavailableForTest()
 	}}
 	var recoverCalls int
@@ -124,11 +133,11 @@ func TestRecoveringCoreDoesNotReplayConnect(t *testing.T) {
 	})
 
 	_, err := core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer"})
-	if !errors.Is(err, coreclient.ErrUnavailable) {
-		t.Fatalf("Connect() error = %v; want ErrUnavailable", err)
+	if !errors.Is(err, ErrConnectOutcomeUnknown) || !errors.Is(err, coreclient.ErrUnavailable) {
+		t.Fatalf("Connect() error = %v; want unknown outcome wrapping ErrUnavailable", err)
 	}
-	if connectCalls != 1 || recoverCalls != 1 {
-		t.Fatalf("connect calls = %d, recovery calls = %d; want 1, 1", connectCalls, recoverCalls)
+	if connectCalls != 2 || recoverCalls != 1 {
+		t.Fatalf("connect calls = %d, recovery calls = %d; want 2, 1", connectCalls, recoverCalls)
 	}
 }
 

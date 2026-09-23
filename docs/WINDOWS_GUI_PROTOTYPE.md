@@ -9,6 +9,7 @@ The Windows installer copies `wd-core.exe` and `wd-ui.exe` into the protected Pr
 ## Components
 
 - `internal/coreapi/client` is the typed UI-side Local Core client. It implements the complete `v1.Service` interface and opens one protected local IPC connection for exactly one bounded request/response exchange.
+- `internal/coreapi.ConnectIdempotencyService` is a narrow process-local decorator around the authoritative connection service. It stores only bounded replay metadata for `connection.connect`; the underlying connection manager still owns handles, routes, limits, terminal streams, and shutdown.
 - `internal/guiapp` owns platform-neutral GUI session state. It stores only the public `v1.Connection` returned by Local Core, keeps only device ID/name for the device picker, and addresses terminal operations by the opaque connection ID.
 - `cmd/wd-ui` is the native Windows shell. It uses Win32 controls directly and adds no third-party GUI framework or CGO dependency.
 
@@ -18,11 +19,11 @@ The Windows CI job builds `wd-ui.exe` and exercises its `version` command so Win
 
 The GUI never reads trust files, account-session files, route-selection policy, private keys, connection grants, route capabilities, relay tickets, peer locators, fingerprints, or TLS configuration.
 
-All device discovery/status, connection establishment, path selection, authorization, terminal I/O, and disconnect operations go through the existing Local Core API. The GUI can provide only values already allowed by that API, such as a trusted device ID, an opaque Local Core connection ID, terminal bytes, and terminal dimensions.
+All device discovery/status, connection establishment, path selection, authorization, terminal I/O, and disconnect operations go through the existing Local Core API. The GUI can provide only values already allowed by that API, such as a trusted device ID, an opaque Local Core connection ID, terminal bytes, terminal dimensions, and an opaque Connect operation ID used only for replay safety.
 
 The typed client uses `localipc.Dial`, so Windows connects to the existing current-user named pipe rather than opening localhost TCP. The pipe name is derived from the current user's SID and the server DACL grants access only to that SID. Each API call has a bounded deadline. Context cancellation forces the local IPC connection deadline forward so a stalled response read is unblocked. Response IDs must exactly match the request ID.
 
-Local Core protocol errors are already sanitized by the server and may be shown using their public message. Local dial, named-pipe, OS, and other transport failures are classified as retryable unavailability without retaining their raw error text in GUI-layer errors. The client additionally records only a stable local transport stage (`dial`, `set_deadline`, `write_request`, or `read_response`) so mutation recovery can distinguish a request that definitely was not written from one that may already have reached Core. Raw OS, path, pipe, and syscall errors are still not exposed to the UI.
+Local Core protocol errors are already sanitized by the server and may be shown using their public message. Local dial, named-pipe, OS, and other transport failures are classified as retryable unavailability without retaining their raw error text in GUI-layer errors. The client additionally records only a stable local transport stage (`dial`, `set_deadline`, `write_request`, or `read_response`) so non-idempotent mutation recovery can distinguish a request that definitely was not written from one that may already have reached Core. Raw OS, path, pipe, and syscall errors are still not exposed to the UI.
 
 Core launch and recovery remain narrower than general process supervision:
 
@@ -33,8 +34,13 @@ Core launch and recovery remain narrower than general process supervision:
 - The child is started without a console window. `wd-ui` waits only for the protected endpoint to become healthy; raw process-start/path/OS failures are not surfaced to the GUI.
 - Bootstrap and later recovery use the same bounded eight-second health window with short status probes and bounded retry backoff.
 - Concurrent recovery attempts are coalesced so one UI process does not start multiple sibling cores for the same outage. Concurrent GUI processes may still race to launch; the local pipe listener's create-only first handle allows only one core to own the per-user endpoint, and endpoint health wins if another process wins that race.
-- Recovery is replay-aware. Status/device reads, disconnect, and terminal resize may retry after recovery because they are read-only or idempotent. `connection.connect` and `terminal.write` may retry once only when the local transport failed before request transmission began (`dial` or `set_deadline`). A `write_request` failure may have partially transmitted the frame, and a `read_response` failure means the request was already written, so those mutation outcomes are never replayed automatically.
-- Cancellation or timeout during request write/response read preserves both the context error and the post-write transport stage. A mutation therefore remains explicitly outcome-unknown even when its immediate cause was a timeout or cancellation.
+- Status/device reads, disconnect, and terminal resize may retry after recovery because they are read-only or idempotent.
+- `connection.connect` carries an optional bounded `operation_id`. The Windows recovery wrapper creates one stable ID for each logical Connect. Local Core coalesces concurrent duplicates and replays the same completed result for that ID during the bounded replay window, so a response loss can be retried without creating a second connection.
+- Reusing one non-empty Connect operation ID for a different device is rejected. Empty IDs preserve legacy caller behavior without deduplication.
+- The replay cache is process-local, capped at 4096 entries, and retains completed results for five minutes. It never evicts an unexpired or in-flight key just to admit another key; cache exhaustion therefore fails closed instead of weakening idempotency.
+- A Core restart clears both the replay cache and the process-local connection table. Replaying the same operation ID after restart is safe because the prior Core cannot still own the old connection.
+- `terminal.write` has no protocol-level idempotency key yet. It may retry automatically only when the local transport failed before request transmission began (`dial` or `set_deadline`). A `write_request` failure may have partially transmitted the frame, and a `read_response` failure means the request was already written, so those terminal-write outcomes remain outcome-unknown.
+- Cancellation or timeout during request write/response read preserves both the context error and the post-write transport stage, so terminal-write uncertainty is not hidden by a timeout or cancellation.
 - `terminal.read` remains retried by the existing controller so session-loss handling stays in one place.
 - `wd-ui` does not terminate the core when the window exits. The Local Core remains an independent same-user process and can serve other local clients.
 
@@ -62,12 +68,12 @@ Natural terminal closure is observed through the terminal stream and clears the 
 
 Transient terminal-read outages are retried by the controller with bounded exponential backoff from 250 ms to 2 seconds. On Windows, a local transport `ErrUnavailable` first runs the bounded single-flight Core recovery path; the wrapper then returns the original unavailable result so the controller retains ownership of retry timing and session-loss detection. A sanitized remote `connection_unavailable` response is still treated as a transient application-level condition, but it does not authorize a process launch.
 
-Mutation recovery is deliberately more conservative than read recovery:
+Mutation recovery is method-specific:
 
-- If Connect or terminal write fails at `dial` or `set_deadline`, no request bytes were sent. After bounded Core recovery the same operation may be attempted once more.
-- If the request write begins or the response is lost, the UI does not know whether Core performed the mutation. It returns a stable operation-specific uncertainty error instead of replaying the request.
-- For terminal input, the edit control remains populated after an uncertain send. The UI warns that the input may already have been sent and tells the user to inspect terminal output before sending it again.
-- For Connect, a lost response can leave a process-local Core connection whose opaque ID never reached the GUI. The current v1 API has no connection-list/reconciliation method and Connect has no idempotency key, so Refresh cannot prove whether such a session exists. The UI therefore warns that the result is uncertain and instructs the user to restart Local Core before retrying Connect, which clears Core's process-local connection table. Adding protocol-level Connect idempotency/reconciliation is a future hardening item.
+- Connect is idempotent within the Local Core replay window. The UI uses the same operation ID before and after recovery regardless of whether the original transport failed before write, during write, or while waiting for the response. If Core processed the first request, the retry receives the same cached `v1.Connection`; if Core restarted, the old process-local connection no longer exists and the retry opens a new one safely.
+- If recovery itself fails after an ambiguous Connect, `wd-ui` keeps the operation ID pending. A later Connect for the same device in the same UI process reuses that ID and can reconcile with the still-running Core. A different-device Connect is blocked while that pending outcome remains unresolved.
+- The pending operation ID is UI-process memory only. If the UI process itself is restarted after an ambiguous Connect that could not be reconciled, restart Local Core before attempting another Connect; the new UI no longer has the old replay key.
+- Terminal write remains non-idempotent. If it fails at `dial` or `set_deadline`, no request bytes were sent and one retry after Core recovery is safe. If request write begins or the response is lost, the edit control remains populated and the UI warns that input may already have been sent so terminal output can be checked before any manual resend.
 
 A Local Core process restart necessarily loses its process-local connection table. Once the restarted core authoritatively returns `connection_not_found` for an old opaque connection ID, the controller clears that stale GUI session and returns `ErrSessionLost`; a fresh `connection.connect` can then proceed. `connection_not_found` during an explicit disconnect is treated as completed teardown because there is no remaining core-side session to close.
 
@@ -79,4 +85,4 @@ This is not a full terminal emulator. The output control is a plain-text Win32 e
 
 The prototype does not yet provide account sign-in/sign-out, router policy controls, route visualization, multiple simultaneous terminal tabs, clipboard policy, terminal scrollback persistence, or accessibility-specific terminal semantics.
 
-Recovery is request-driven rather than a permanent watchdog: if no UI call observes the outage, `wd-ui` does not poll solely to keep Core alive. There is still no logon autostart mechanism, installer-owned per-user scheduled task, machine service for Core, or upgrade coordinator that shuts down a running per-user Core before binary replacement. Connect lacks a protocol-level idempotency/reconciliation mechanism, so a post-write response loss still requires explicit Core restart before a safe user retry. Those lifecycle and protocol choices remain separate hardening work.
+Recovery is request-driven rather than a permanent watchdog: if no UI call observes the outage, `wd-ui` does not poll solely to keep Core alive. There is still no logon autostart mechanism, installer-owned per-user scheduled task, machine service for Core, or upgrade coordinator that shuts down a running per-user Core before binary replacement. Connect replay metadata is intentionally process-local and time-bounded rather than durable state, and terminal writes still lack protocol-level idempotency. Those lifecycle and protocol choices remain separate hardening work.

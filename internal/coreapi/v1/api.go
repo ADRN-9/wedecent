@@ -27,7 +27,11 @@ const (
 	MethodRouterStatsGet       = "router.stats.get"
 )
 
-const MaxTerminalChunkBytes = 32 << 10
+const (
+	MaxTerminalChunkBytes        = 32 << 10
+	MaxConnectOperationIDBytes   = 64
+	ConnectOperationReplayWindow = 5 * time.Minute
+)
 
 type ConnectionPath string
 
@@ -133,7 +137,8 @@ type GetDeviceRequest struct {
 }
 
 type ConnectRequest struct {
-	DeviceID string `json:"device_id"`
+	DeviceID    string `json:"device_id"`
+	OperationID string `json:"operation_id,omitempty"`
 }
 
 type DisconnectRequest struct {

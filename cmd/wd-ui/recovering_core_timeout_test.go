@@ -9,14 +9,26 @@ import (
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
 )
 
-func TestRecoveringCoreConnectTimeoutAfterWriteIsOutcomeUnknown(t *testing.T) {
+func TestRecoveringCoreConnectTimeoutAfterWriteReconciles(t *testing.T) {
 	var connectCalls int
-	inner := &fakeUICore{connect: func(context.Context, v1.ConnectRequest) (v1.Connection, error) {
+	var operationID string
+	inner := &fakeUICore{connect: func(_ context.Context, req v1.ConnectRequest) (v1.Connection, error) {
 		connectCalls++
-		return v1.Connection{}, errors.Join(
-			context.DeadlineExceeded,
-			&coreclient.UnavailableError{Stage: coreclient.UnavailableStageReadResponse},
-		)
+		if req.OperationID == "" {
+			t.Fatal("Connect request did not include an operation ID")
+		}
+		if operationID == "" {
+			operationID = req.OperationID
+		} else if req.OperationID != operationID {
+			t.Fatalf("operation ID changed across retry: %q != %q", req.OperationID, operationID)
+		}
+		if connectCalls == 1 {
+			return v1.Connection{}, errors.Join(
+				context.DeadlineExceeded,
+				&coreclient.UnavailableError{Stage: coreclient.UnavailableStageReadResponse},
+			)
+		}
+		return v1.Connection{ID: "conn_reconciled", DeviceID: req.DeviceID}, nil
 	}}
 	var recoverCalls int
 	core := newRecoveringCore(inner, func(context.Context) error {
@@ -24,15 +36,15 @@ func TestRecoveringCoreConnectTimeoutAfterWriteIsOutcomeUnknown(t *testing.T) {
 		return nil
 	})
 
-	_, err := core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer"})
-	if !errors.Is(err, ErrConnectOutcomeUnknown) {
-		t.Fatalf("Connect() error = %v; want ErrConnectOutcomeUnknown", err)
+	connection, err := core.Connect(context.Background(), v1.ConnectRequest{DeviceID: "peer"})
+	if err != nil {
+		t.Fatalf("Connect() error = %v", err)
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Connect() error = %v; want timeout cause preserved", err)
+	if connection.ID != "conn_reconciled" {
+		t.Fatalf("Connect() result = %#v", connection)
 	}
-	if connectCalls != 1 || recoverCalls != 1 {
-		t.Fatalf("connect calls = %d, recovery calls = %d; want 1, 1", connectCalls, recoverCalls)
+	if connectCalls != 2 || recoverCalls != 1 {
+		t.Fatalf("connect calls = %d, recovery calls = %d; want 2, 1", connectCalls, recoverCalls)
 	}
 }
 
