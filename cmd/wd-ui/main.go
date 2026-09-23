@@ -28,11 +28,12 @@ func main() {
 		showFatal(err)
 		os.Exit(1)
 	}
-	if err := prepareLocalCore(context.Background(), core); err != nil {
+	uiCore, err := prepareLocalCore(context.Background(), core)
+	if err != nil {
 		showFatal(err)
 		os.Exit(1)
 	}
-	controller, err := guiapp.New(core)
+	controller, err := guiapp.New(uiCore)
 	if err != nil {
 		showFatal(err)
 		os.Exit(1)

@@ -4,7 +4,7 @@
 
 This v0.4.4 development slice adds a native Windows prototype over the Local Core `v1` contract. It is intentionally a UI client, not a networking implementation.
 
-The Windows installer copies `wd-core.exe` and `wd-ui.exe` into the protected Program Files install directory alongside the other release binaries. The installer itself does not create a Local Core service, startup task, Run-key entry, or other per-user autostart mechanism. When `wd-ui` starts, it probes the protected Local Core endpoint and, only when the local transport is unavailable, starts the exact sibling `wd-core.exe` as the same interactive user before opening the UI.
+The Windows installer copies `wd-core.exe` and `wd-ui.exe` into the protected Program Files install directory alongside the other release binaries. The installer itself does not create a Local Core service, startup task, Run-key entry, or other per-user autostart mechanism. When `wd-ui` starts, it probes the protected Local Core endpoint and, only when the local transport is unavailable, starts the exact sibling `wd-core.exe` as the same interactive user before opening the UI. While the UI remains active, transport-only Core loss can trigger the same bounded launch path again; this is request-driven recovery, not a machine service or independent watchdog.
 
 ## Components
 
@@ -24,15 +24,16 @@ The typed client uses `localipc.Dial`, so Windows connects to the existing curre
 
 Local Core protocol errors are already sanitized by the server and may be shown using their public message. Local dial, named-pipe, OS, and other transport failures are classified as retryable unavailability without retaining their raw error text in GUI-layer errors.
 
-Startup bootstrap is deliberately narrower than general process supervision:
+Core launch and recovery remain narrower than general process supervision:
 
 - `wd-ui` first probes `status.get` over the protected Local Core client.
 - A sibling core is started only for the local transport `ErrUnavailable` sentinel. An application-level/protocol error from an already-running core never causes another process launch.
 - The launcher resolves the running `wd-ui` executable, follows that image's symlink target, selects only `wd-core.exe` in the same resolved directory, and rejects a sibling that is not a regular file. It never searches `PATH`, invokes `cmd.exe`, uses a shell verb, or requests elevation.
 - The child inherits the current user's token and environment. This preserves the existing optional environment-based Core configuration without placing secrets or configuration values on a new command line.
 - The child is started without a console window. `wd-ui` waits only for the protected endpoint to become healthy; raw process-start/path/OS failures are not surfaced to the GUI.
-- Bootstrap is bounded to eight seconds with short status probes and bounded retry backoff. Caller cancellation is honored before another process is launched.
-- Concurrent GUI starts may race to launch a core. The local pipe listener claims its first pipe handle with create-only semantics, so only one core can own the per-user endpoint. A bootstrap whose own child exits still succeeds if another core makes the protected endpoint healthy.
+- Bootstrap and later recovery use the same bounded eight-second health window with short status probes and bounded retry backoff.
+- Concurrent recovery attempts are coalesced so one UI process does not start multiple sibling cores for the same outage. Concurrent GUI processes may still race to launch; the local pipe listener's create-only first handle allows only one core to own the per-user endpoint, and endpoint health wins if another process wins that race.
+- Recovery is replay-aware. Status/device reads, disconnect, and terminal resize may retry after recovery because they are read-only or idempotent. `connection.connect` and `terminal.write` are never automatically replayed after transport loss because a missing response cannot prove the first request did not take effect. `terminal.read` remains retried by the existing controller so session-loss handling stays in one place.
 - `wd-ui` does not terminate the core when the window exits. The Local Core remains an independent same-user process and can serve other local clients.
 
 Terminal input is bounded before it reaches Local Core. The Win32 edit control retains at most `MaxTerminalChunkBytes - 1` UTF-16 code units, leaving room for the carriage return added by the Send action for ordinary ASCII input. The Send path then checks the actual UTF-8 byte length and rejects any payload above the 32 KiB v1 terminal-write limit; the platform-neutral controller repeats the same byte-length check before copying input into a request. Multibyte text therefore cannot bypass the wire-level bound.
@@ -44,6 +45,7 @@ Terminal input is copied before crossing the controller boundary. Encoded IPC re
 The window can:
 
 - bootstrap the same-user Local Core on demand when its protected endpoint is absent;
+- relaunch a missing Local Core on a later transport-only outage while preserving the existing protocol/session boundary;
 - refresh current Local Core status and trusted devices;
 - select one trusted device and request `connection.connect`;
 - read bounded terminal output through `terminal.read`;
@@ -56,7 +58,7 @@ Only one interactive connection is represented by the prototype at a time. The p
 
 Natural terminal closure is observed through the terminal stream and clears the controller's active UI session after final buffered output is returned. Idle `terminal.read` calls rely on the Local Core's bounded long-poll behavior and simply issue the next one-request/one-response read when an empty still-open result arrives.
 
-Transient Local Core outages are retried by the controller with bounded exponential backoff from 250 ms to 2 seconds. A missing pipe, temporary IPC read/write failure, or `connection_unavailable` response therefore does not erase the GUI's active opaque connection ID. If Local Core comes back with the same in-memory session still available, terminal reads resume.
+Transient terminal-read outages are retried by the controller with bounded exponential backoff from 250 ms to 2 seconds. On Windows, a local transport `ErrUnavailable` first runs the bounded single-flight Core recovery path; the wrapper then returns the original unavailable result so the controller retains ownership of retry timing and session-loss detection. A sanitized remote `connection_unavailable` response is still treated as a transient application-level condition, but it does not authorize a process launch.
 
 A Local Core process restart necessarily loses its process-local connection table. Once the restarted core authoritatively returns `connection_not_found` for the old opaque connection ID, the controller clears that stale GUI session and returns `ErrSessionLost`; a fresh `connection.connect` can then proceed. `connection_not_found` during an explicit disconnect is treated as completed teardown because there is no remaining core-side session to close.
 
@@ -68,4 +70,4 @@ This is not a full terminal emulator. The output control is a plain-text Win32 e
 
 The prototype does not yet provide account sign-in/sign-out, router policy controls, route visualization, multiple simultaneous terminal tabs, clipboard policy, terminal scrollback persistence, or accessibility-specific terminal semantics.
 
-On-demand startup is not a crash supervisor. If a core that was already serving the UI exits later, the current terminal lifecycle keeps retrying transient IPC loss and recognizes authoritative session loss when a core returns; this slice does not automatically spawn a replacement core mid-session. Logon autostart, crash-restart policy, upgrade coordination with a running per-user core, and broader process supervision remain separate lifecycle decisions.
+Recovery is request-driven rather than a permanent watchdog: if no UI call observes the outage, `wd-ui` does not poll solely to keep Core alive. There is still no logon autostart mechanism, installer-owned per-user scheduled task, machine service for Core, or upgrade coordinator that shuts down a running per-user Core before binary replacement. Ambiguous `Connect` and terminal-write transport failures are intentionally not replayed automatically. Those lifecycle and UX choices remain separate decisions.
