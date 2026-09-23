@@ -10,14 +10,14 @@ import (
 
 func validManifest() Manifest {
 	return Manifest{
-		Schema:           ManifestSchemaV1,
-		Channel:          StableChannel,
-		Sequence:         42,
-		Version:          "v1.2.3",
-		PublishedAt:      "2026-09-23T20:00:00Z",
-		ReleaseURL:       "https://downloads.wedecent.com/windows/v1.2.3/wedecent-v1.2.3-windows-amd64.zip",
-		ReleaseSHA256:    strings.Repeat("a", 64),
-		InstallerURL:     "https://downloads.wedecent.com/windows/v1.2.3/wedecent-v1.2.3-windows-installer.zip",
+		Schema:          ManifestSchemaV1,
+		Channel:         StableChannel,
+		Sequence:        42,
+		Version:         "v1.2.3",
+		PublishedAt:     "2026-09-23T20:00:00Z",
+		ReleaseURL:      "https://downloads.wedecent.com/windows/v1.2.3/wedecent-v1.2.3-windows-amd64.zip",
+		ReleaseSHA256:   strings.Repeat("a", 64),
+		InstallerURL:    "https://downloads.wedecent.com/windows/v1.2.3/wedecent-v1.2.3-windows-installer.zip",
 		InstallerSHA256: strings.Repeat("b", 64),
 	}
 }
@@ -52,9 +52,9 @@ func TestParseCanonicalRejectsAlternateEncodings(t *testing.T) {
 	plain := strings.TrimSuffix(string(canonical), "\n")
 
 	tests := map[string][]byte{
-		"leading whitespace": append([]byte(" "), canonical...),
+		"leading whitespace":  append([]byte(" "), canonical...),
 		"missing trailing LF": []byte(plain),
-		"extra trailing LF":  append(append([]byte(nil), canonical...), '\n'),
+		"extra trailing LF":   append(append([]byte(nil), canonical...), '\n'),
 		"pretty JSON": []byte(`{
   "schema": 1,
   "channel": "stable",
@@ -69,7 +69,7 @@ func TestParseCanonicalRejectsAlternateEncodings(t *testing.T) {
 `),
 		"reordered fields": []byte(`{"channel":"stable","schema":1,"sequence":42,"version":"v1.2.3","published_at":"2026-09-23T20:00:00Z","release_url":"https://downloads.wedecent.com/windows/v1.2.3/wedecent-v1.2.3-windows-amd64.zip","release_sha256":"` + strings.Repeat("a", 64) + `","installer_url":"https://downloads.wedecent.com/windows/v1.2.3/wedecent-v1.2.3-windows-installer.zip","installer_sha256":"` + strings.Repeat("b", 64) + `"}
 `),
-		"unknown field": []byte(strings.Replace(plain, `"schema":1`, `"schema":1,"extra":true`, 1) + "\n"),
+		"unknown field":   []byte(strings.Replace(plain, `"schema":1`, `"schema":1,"extra":true`, 1) + "\n"),
 		"duplicate field": []byte(strings.Replace(plain, `"schema":1`, `"schema":1,"schema":1`, 1) + "\n"),
 		"multiple values": append(append([]byte(nil), canonical...), []byte("{}\n")...),
 		"trailing junk":   append(append([]byte(nil), canonical...), []byte("junk")...),
@@ -165,7 +165,7 @@ func TestSignatureEncodingRejectsMalformedInput(t *testing.T) {
 		[]byte(" Zm9v\n"),
 		[]byte("Zm9v \n"),
 		[]byte("Zm9v\n\n"),
-		[]byte(strings.TrimSuffix(string(encoded), "\n") + "=") ,
+		[]byte(strings.TrimSuffix(string(encoded), "\n") + "="),
 		[]byte(strings.Repeat("A", 127)),
 	}
 	for _, input := range tests {
@@ -181,22 +181,22 @@ func TestSignatureEncodingRejectsMalformedInput(t *testing.T) {
 
 func TestManifestValidationRejectsInvalidFields(t *testing.T) {
 	tests := map[string]func(*Manifest){
-		"schema":            func(m *Manifest) { m.Schema = 2 },
-		"channel":           func(m *Manifest) { m.Channel = "beta" },
-		"zero sequence":     func(m *Manifest) { m.Sequence = 0 },
-		"prerelease":        func(m *Manifest) { m.Version = "v1.2.3-rc.1" },
-		"leading zero":      func(m *Manifest) { m.Version = "v01.2.3" },
-		"fractional time":   func(m *Manifest) { m.PublishedAt = "2026-09-23T20:00:00.1Z" },
-		"non-UTC time":      func(m *Manifest) { m.PublishedAt = "2026-09-23T16:00:00-04:00" },
-		"uppercase hash":    func(m *Manifest) { m.ReleaseSHA256 = strings.Repeat("A", 64) },
-		"short hash":        func(m *Manifest) { m.InstallerSHA256 = strings.Repeat("b", 63) },
-		"wrong scheme":      func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, "https://", "http://", 1) },
-		"wrong host":        func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, DownloadHost, "example.com", 1) },
-		"host port":         func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, DownloadHost, DownloadHost+":443", 1) },
-		"query":             func(m *Manifest) { m.InstallerURL += "?download=1" },
-		"fragment":          func(m *Manifest) { m.InstallerURL += "#fragment" },
+		"schema":             func(m *Manifest) { m.Schema = 2 },
+		"channel":            func(m *Manifest) { m.Channel = "beta" },
+		"zero sequence":      func(m *Manifest) { m.Sequence = 0 },
+		"prerelease":         func(m *Manifest) { m.Version = "v1.2.3-rc.1" },
+		"leading zero":       func(m *Manifest) { m.Version = "v01.2.3" },
+		"fractional time":    func(m *Manifest) { m.PublishedAt = "2026-09-23T20:00:00.1Z" },
+		"non-UTC time":       func(m *Manifest) { m.PublishedAt = "2026-09-23T16:00:00-04:00" },
+		"uppercase hash":     func(m *Manifest) { m.ReleaseSHA256 = strings.Repeat("A", 64) },
+		"short hash":         func(m *Manifest) { m.InstallerSHA256 = strings.Repeat("b", 63) },
+		"wrong scheme":       func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, "https://", "http://", 1) },
+		"wrong host":         func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, DownloadHost, "example.com", 1) },
+		"host port":          func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, DownloadHost, DownloadHost+":443", 1) },
+		"query":              func(m *Manifest) { m.InstallerURL += "?download=1" },
+		"fragment":           func(m *Manifest) { m.InstallerURL += "#fragment" },
 		"wrong release path": func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, "windows-amd64.zip", "other.zip", 1) },
-		"encoded path":      func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, "/windows/", "/%77indows/", 1) },
+		"encoded path":       func(m *Manifest) { m.ReleaseURL = strings.Replace(m.ReleaseURL, "/windows/", "/%77indows/", 1) },
 	}
 
 	for name, mutate := range tests {
