@@ -24,6 +24,8 @@ The typed client uses `localipc.Dial`, so Windows connects to the existing curre
 
 Local Core protocol errors are already sanitized by the server and may be shown using their public message. Local dial, named-pipe, OS, and other transport failures are classified as retryable unavailability without retaining their raw error text in GUI-layer errors.
 
+Terminal input is bounded before it reaches Local Core. The Win32 edit control retains at most `MaxTerminalChunkBytes - 1` UTF-16 code units, leaving room for the carriage return added by the Send action for ordinary ASCII input. The Send path then checks the actual UTF-8 byte length and rejects any payload above the 32 KiB v1 terminal-write limit; the platform-neutral controller repeats the same byte-length check before copying input into a request. Multibyte text therefore cannot bypass the wire-level bound.
+
 Terminal input is copied before crossing the controller boundary. Encoded IPC request buffers, decoded raw response frames, and copied response-result buffers are overwritten on a best-effort basis after use. As elsewhere in the Go codebase, this is memory hygiene rather than a guarantee of cryptographic zeroization.
 
 ## Prototype behavior
