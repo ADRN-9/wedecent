@@ -236,7 +236,7 @@ func TestOpenAgentListenersBindsSeparateRoutingSockets(
 		listenerRoleRouteControl,
 		listenerRoleRouteTunnel,
 	}
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
 		wantListenerCount++
 		wantRoles = append(wantRoles, listenerRoleRouterAdmin)
 	}

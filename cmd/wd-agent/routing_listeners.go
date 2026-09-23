@@ -264,13 +264,14 @@ func openAgentListeners(
 			return nil, err
 		}
 
-		// Windows Local Core runs as the interactive user while wd-agent may run
-		// as a service account. Bind a separate machine-local admin pipe only for
-		// real routers. Its pipe ACL supplies locality; mTLS and the dedicated
-		// controller trust source supply router-admin authorization. The trust
+		// Windows named pipes and Linux abstract Unix sockets provide a
+		// machine-local byte stream across the agent/service-user boundary.
+		// Bind the admin endpoint only on platforms with an implemented local
+		// transport. Endpoint access is not authorization: mTLS and the dedicated
+		// controller trust source still gate every router-admin request. The trust
 		// source reloads its file for each new connection so revoke takes effect
 		// without recycling the routing runtime.
-		if runtime.GOOS == "windows" {
+		if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
 			controllers, err := routercontrol.NewFileControllerTrust(cfg.StateDir)
 			if err != nil {
 				set.close()
