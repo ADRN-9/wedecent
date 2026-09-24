@@ -93,6 +93,11 @@ foreach ($name in $binaryNames) {
     $binaryPaths[$name] = $path
     Assert-True (Test-Path -LiteralPath $path -PathType Leaf) "Missing $path"
 }
+$updater = Join-Path $InstallDir 'Update-WeDecent.ps1'
+Assert-True (Test-Path -LiteralPath $updater -PathType Leaf) "Missing $updater"
+$updaterItem = Get-Item -LiteralPath $updater -Force
+Assert-True (($updaterItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) 'Installed updater must not be a reparse point'
+
 $wd = $binaryPaths['wd.exe']
 $agent = $binaryPaths['wd-agent.exe']
 $metadataPath = Join-Path (Join-Path $env:ProgramData 'WeDecent') 'installer.json'
