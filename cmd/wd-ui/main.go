@@ -11,7 +11,7 @@ import (
 	"wedecent.com/wedecent/internal/guiapp"
 )
 
-var errUIUsage = errors.New("usage: wd-ui [version|autostart <enable|disable|status>]")
+var errUIUsage = errors.New("usage: wd-ui [version|autostart <enable|disable|status>|update-key status]")
 
 func main() {
 	if len(os.Args) > 1 {
@@ -28,6 +28,15 @@ func main() {
 			if err := runAutostartCommand(os.Args[2:], os.Stdout); err != nil {
 				code := 1
 				if errors.Is(err, ErrAutostartUsage) {
+					code = 2
+				}
+				exitCLI(err, code)
+			}
+			return
+		case "update-key":
+			if err := runUpdateKeyCommand(os.Args[2:], os.Stdout); err != nil {
+				code := 1
+				if errors.Is(err, ErrUpdateKeyUsage) {
 					code = 2
 				}
 				exitCLI(err, code)
