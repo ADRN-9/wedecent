@@ -150,7 +150,7 @@ function Get-ValidSignerThumbprint {
         throw "Signed artifact must not be a reparse point: $($item.Name)"
     }
     $signature = Get-AuthenticodeSignature -LiteralPath $item.FullName
-    if ($signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or -not $signature.SignerCertificate) {
+    if ($signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid -or -not $signature.SignerCertificate) {
         throw "Authenticode verification failed: $($item.Name)"
     }
     $thumbprint = [string]$signature.SignerCertificate.Thumbprint
@@ -324,7 +324,7 @@ function Expand-VerifiedInstallerArchive {
     $expected = @{}
     foreach ($name in $script:InstallerNames) { $expected[$name] = $true }
     $seen = @{}
-    [long]$total = 0
+    [long]$declaredTotal = 0
     $archive = [IO.Compression.ZipFile]::OpenRead($ArchivePath)
     try {
         if ($archive.Entries.Count -ne $script:InstallerNames.Count) {
@@ -339,17 +339,28 @@ function Expand-VerifiedInstallerArchive {
             $unixType = (($entry.ExternalAttributes -shr 16) -band 0xF000)
             if ($unixType -ne 0 -and $unixType -ne 0x8000) { throw "Installer archive entry is not a regular file: $name" }
             if ($entry.Length -lt 0 -or $entry.Length -gt $script:MaxArchiveBytes) { throw "Installer archive entry exceeds the size limit: $name" }
-            $total += $entry.Length
-            if ($total -gt $script:MaxExtractedBytes) { throw 'Installer archive extracted payload exceeds the size limit.' }
+            $declaredTotal += $entry.Length
+            if ($declaredTotal -gt $script:MaxExtractedBytes) { throw 'Installer archive extracted payload exceeds the size limit.' }
             $seen[$name] = $true
         }
         New-Item -ItemType Directory -Path $Destination | Out-Null
+        [long]$actualTotal = 0
         foreach ($entry in $archive.Entries) {
             $path = Join-Path $Destination $entry.FullName
             $input = $entry.Open()
             $output = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
             try {
-                $input.CopyTo($output)
+                $buffer = New-Object byte[] 65536
+                [long]$written = 0
+                while (($read = $input.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                    $written += $read
+                    $actualTotal += $read
+                    if ($written -gt $entry.Length -or $written -gt $script:MaxArchiveBytes -or $actualTotal -gt $script:MaxExtractedBytes) {
+                        throw "Installer archive extracted data exceeds declared limits: $($entry.FullName)"
+                    }
+                    $output.Write($buffer, 0, $read)
+                }
+                if ($written -ne $entry.Length) { throw "Installer archive extracted length mismatch: $($entry.FullName)" }
                 $output.Flush($true)
             } finally {
                 $output.Dispose()
