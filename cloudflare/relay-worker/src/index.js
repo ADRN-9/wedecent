@@ -10,6 +10,15 @@ import {
   scheduleReplayCleanup,
 } from "./grant-replay.js";
 import {
+  emitRelayTrace,
+  healthProbeRequest,
+  recordRelayException,
+  recordRelayMetric,
+  relayMetricContext,
+  relayReadiness,
+  withRelayTraceHeader,
+} from "./observability.js";
+import {
   consumeTokenBucket,
   enforceRelayConnectionRateLimit,
   limiterRequestConfig,
@@ -21,98 +30,135 @@ const STATUS_PREFIX = "/v1/status/";
 const TIME_PATH = "/v1/time";
 const DIRECT_AUTHORIZE_PREFIX = "/v1/direct-authorize/";
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
+const HEALTH_VERSION = 11;
 
 export default {
   async fetch(request, env) {
-    const url = new URL(request.url);
+    const metricContext = relayMetricContext(request);
+    const traceID = crypto.randomUUID();
+    const startedAtMS = Date.now();
 
-    if (request.method === "GET" && url.pathname === "/healthz") {
-      return Response.json({ service: "wedecent-relay", status: "ok", version: 10 });
+    try {
+      const response = await handleRelayRequest(request, env);
+      const durationMS = Date.now() - startedAtMS;
+      recordRelayMetric(env, metricContext, response, durationMS);
+      emitRelayTrace(console.log, metricContext, traceID, response.status, durationMS);
+      return withRelayTraceHeader(response, traceID);
+    } catch (error) {
+      const durationMS = Date.now() - startedAtMS;
+      recordRelayException(env, metricContext, durationMS);
+      emitRelayTrace(console.error, metricContext, traceID, 500, durationMS, "exception");
+      throw error;
     }
+  },
+};
 
-    if (url.pathname === TIME_PATH) {
-      if (request.method !== "GET") {
-        return new Response("Method not allowed", { status: 405 });
-      }
-      return Response.json(
-        { unix_ms: Date.now() },
-        { headers: { "Cache-Control": "no-store, no-cache, must-revalidate", Pragma: "no-cache" } },
-      );
+async function handleRelayRequest(request, env) {
+  const url = new URL(request.url);
+
+  if (url.pathname === "/healthz") {
+    if (request.method !== "GET") {
+      return new Response("Method not allowed", { status: 405 });
     }
+    return Response.json(
+      { service: "wedecent-relay", status: "ok", version: HEALTH_VERSION },
+      { headers: { "Cache-Control": "no-store" } },
+    );
+  }
 
-    if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
-      return authorizeDirectRequest(request, env, url);
+  if (url.pathname === "/readyz") {
+    if (request.method !== "GET") {
+      return new Response("Method not allowed", { status: 405 });
     }
+    const ready = await relayReadiness(env);
+    return Response.json(
+      { service: "wedecent-relay", status: ready ? "ready" : "not_ready", version: HEALTH_VERSION },
+      { status: ready ? 200 : 503, headers: { "Cache-Control": "no-store" } },
+    );
+  }
 
-    if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
-      return new Response("Not found", { status: 404 });
+  if (url.pathname === TIME_PATH) {
+    if (request.method !== "GET") {
+      return new Response("Method not allowed", { status: 405 });
     }
+    return Response.json(
+      { unix_ms: Date.now() },
+      { headers: { "Cache-Control": "no-store, no-cache, must-revalidate", Pragma: "no-cache" } },
+    );
+  }
 
-    if (url.pathname.startsWith(STATUS_PREFIX)) {
-      if (!legacyAuthorized(request, env)) {
-        return new Response(env.RELAY_ACCESS_TOKEN ? "Unauthorized" : "Relay admin token is not configured", {
-          status: env.RELAY_ACCESS_TOKEN ? 401 : 503,
-        });
-      }
-      if (request.method !== "GET") {
-        return new Response("Method not allowed", { status: 405 });
-      }
-      const deviceId = decodeURIComponent(url.pathname.slice(STATUS_PREFIX.length));
-      if (!DEVICE_ID.test(deviceId)) {
-        return new Response("Invalid device ID", { status: 400 });
-      }
-      const objectId = env.DEVICE_RELAY.idFromName(deviceId);
-      return env.DEVICE_RELAY.get(objectId).fetch(new Request("https://wedecent.internal/status"));
+  if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
+    return authorizeDirectRequest(request, env, url);
+  }
+
+  if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
+    return new Response("Not found", { status: 404 });
+  }
+
+  if (url.pathname.startsWith(STATUS_PREFIX)) {
+    if (!legacyAuthorized(request, env)) {
+      return new Response(env.RELAY_ACCESS_TOKEN ? "Unauthorized" : "Relay admin token is not configured", {
+        status: env.RELAY_ACCESS_TOKEN ? 401 : 503,
+      });
     }
-
-    if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
-      return new Response("WebSocket upgrade required", { status: 426 });
+    if (request.method !== "GET") {
+      return new Response("Method not allowed", { status: 405 });
     }
-
-    const deviceId = decodeURIComponent(url.pathname.slice(STREAM_PREFIX.length));
+    const deviceId = decodeURIComponent(url.pathname.slice(STATUS_PREFIX.length));
     if (!DEVICE_ID.test(deviceId)) {
       return new Response("Invalid device ID", { status: 400 });
     }
-
-    const role = url.searchParams.get("role");
-    if (role !== "agent" && role !== "client") {
-      return new Response("Invalid relay role", { status: 400 });
-    }
-
-    const slot = url.searchParams.get("slot");
-    if (role === "agent" && slot !== null && !AGENT_SLOT.test(slot)) {
-      return new Response("Invalid agent relay slot", { status: 400 });
-    }
-    if (role === "client" && slot !== null) {
-      return new Response("Clients must not specify a relay slot", { status: 400 });
-    }
-
-    const admission = await enforceRelayConnectionRateLimit(request, env, deviceId);
-    if (!admission.ok) {
-      return new Response(admission.message, {
-        status: admission.status,
-        headers: {
-          "Cache-Control": "no-store",
-          "Retry-After": String(admission.retryAfterSeconds),
-        },
-      });
-    }
-
-    const authorization = await authorizeStream(request, env, {
-      deviceId,
-      role,
-      slot: role === "agent" ? Number.parseInt(slot, 10) : null,
-    });
-    if (!authorization.ok) {
-      return new Response(authorization.message, { status: authorization.status });
-    }
-
     const objectId = env.DEVICE_RELAY.idFromName(deviceId);
-    return env.DEVICE_RELAY.get(objectId).fetch(
-      prepareDeviceRelayRequest(request, authorization.replay, CONNECTION_GRANT_HEADER),
-    );
-  },
-};
+    return env.DEVICE_RELAY.get(objectId).fetch(new Request("https://wedecent.internal/status"));
+  }
+
+  if (request.headers.get("Upgrade")?.toLowerCase() !== "websocket") {
+    return new Response("WebSocket upgrade required", { status: 426 });
+  }
+
+  const deviceId = decodeURIComponent(url.pathname.slice(STREAM_PREFIX.length));
+  if (!DEVICE_ID.test(deviceId)) {
+    return new Response("Invalid device ID", { status: 400 });
+  }
+
+  const role = url.searchParams.get("role");
+  if (role !== "agent" && role !== "client") {
+    return new Response("Invalid relay role", { status: 400 });
+  }
+
+  const slot = url.searchParams.get("slot");
+  if (role === "agent" && slot !== null && !AGENT_SLOT.test(slot)) {
+    return new Response("Invalid agent relay slot", { status: 400 });
+  }
+  if (role === "client" && slot !== null) {
+    return new Response("Clients must not specify a relay slot", { status: 400 });
+  }
+
+  const admission = await enforceRelayConnectionRateLimit(request, env, deviceId);
+  if (!admission.ok) {
+    return new Response(admission.message, {
+      status: admission.status,
+      headers: {
+        "Cache-Control": "no-store",
+        "Retry-After": String(admission.retryAfterSeconds),
+      },
+    });
+  }
+
+  const authorization = await authorizeStream(request, env, {
+    deviceId,
+    role,
+    slot: role === "agent" ? Number.parseInt(slot, 10) : null,
+  });
+  if (!authorization.ok) {
+    return new Response(authorization.message, { status: authorization.status });
+  }
+
+  const objectId = env.DEVICE_RELAY.idFromName(deviceId);
+  return env.DEVICE_RELAY.get(objectId).fetch(
+    prepareDeviceRelayRequest(request, authorization.replay, CONNECTION_GRANT_HEADER),
+  );
+}
 
 async function authorizeDirectRequest(request, env, url) {
   if (request.method !== "POST") {
@@ -173,6 +219,15 @@ function bearerToken(request) {
 
 export class ConnectionRateLimiter extends DurableObject {
   async fetch(request) {
+    if (healthProbeRequest(request)) {
+      try {
+        await this.ctx.storage.get("__health__");
+        return new Response(null, { status: 204 });
+      } catch {
+        return new Response("Rate-limit storage unavailable", { status: 500 });
+      }
+    }
+
     const config = limiterRequestConfig(request);
     if (!config) {
       return new Response("Invalid rate-limit request", { status: 400 });
@@ -198,6 +253,15 @@ export class DeviceRelay extends DurableObject {
   async fetch(request) {
     const url = new URL(request.url);
 
+    if (healthProbeRequest(request)) {
+      try {
+        await this.ctx.storage.get("__health__");
+        this.ctx.getWebSockets();
+        return new Response(null, { status: 204 });
+      } catch {
+        return new Response("Relay storage unavailable", { status: 500 });
+      }
+    }
     if (url.pathname === "/status") {
       return this.#status();
     }

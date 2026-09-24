@@ -10,6 +10,25 @@
       "custom_domain": true
     }
   ],
+  "analytics_engine_datasets": [
+    {
+      "binding": "RELAY_METRICS",
+      "dataset": "wedecent_relay_metrics"
+    }
+  ],
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": false,
+      "head_sampling_rate": 0.1,
+      "redact_query_string": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.05
+    }
+  },
   "durable_objects": {
     "bindings": [
       {

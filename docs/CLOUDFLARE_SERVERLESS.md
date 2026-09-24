@@ -11,7 +11,7 @@ The Cloudflare relay sees encrypted TLS records and routing metadata only. The a
 
 ## 1. Deploy the Worker
 
-The Durable Object namespaces and custom domain are declared in `cloudflare/relay-worker/wrangler.jsonc`.
+The Durable Object namespaces, Analytics Engine dataset, observability settings, and custom domain are declared in `cloudflare/relay-worker/wrangler.jsonc`.
 
 ```bash
 cd cloudflare/relay-worker
@@ -20,17 +20,21 @@ npm test
 npx wrangler deploy
 ```
 
-Verify:
+Verify liveness and readiness:
 
 ```bash
 curl https://relay.wedecent.com/healthz
+curl https://relay.wedecent.com/readyz
 ```
 
-Expected:
+Expected when healthy:
 
 ```json
-{"service":"wedecent-relay","status":"ok","version":10}
+{"service":"wedecent-relay","status":"ok","version":11}
+{"service":"wedecent-relay","status":"ready","version":11}
 ```
+
+`/healthz` is a shallow liveness check. `/readyz` verifies required relay bindings/configuration and both Durable Object storage paths, returning HTTP 503 with sanitized `not_ready` status when a dependency is unavailable. See [`RELAY_OBSERVABILITY.md`](RELAY_OBSERVABILITY.md) for the metrics/tracing contract and privacy boundaries.
 
 ## 2. Relay authentication v2
 
@@ -63,7 +67,17 @@ The Worker trusts Cloudflare's `CF-Connecting-IP` header as the platform-provide
 
 Rate-limit state is durable across object eviction/restart. If the limiter namespace or its storage is unavailable, new stream admission fails closed rather than silently bypassing the limit. The limiter applies to connection attempts, not active-stream duration or bandwidth; those are separate policies.
 
-## 4. Legacy/admin relay token
+## 4. Relay observability
+
+Each Worker request writes a best-effort low-cardinality data point to Workers Analytics Engine and emits a sampled sanitized structured trace. Metrics contain normalized route/role/status/outcome plus count and duration only; they omit raw/hashed IPs, device IDs, URLs, credentials, tickets, grants, and terminal data.
+
+Workers logs are sampled at 10% with invocation logs disabled and query strings redacted. Cloudflare automatic traces are sampled at 5%. Platform traces can still contain request paths, and relay request paths contain device IDs as routing metadata already visible to Cloudflare. Do not add terminal plaintext, bearer tokens, tickets, grants, JWTs, pairing material, credentials, private keys, or raw source IPs to custom logs/spans.
+
+Non-WebSocket HTTP responses include `X-WeDecent-Trace-ID` for operator correlation. Telemetry failure never changes relay authentication/admission behavior; readiness reports missing telemetry/dependency bindings separately.
+
+See [`RELAY_OBSERVABILITY.md`](RELAY_OBSERVABILITY.md) for schema and operational details.
+
+## 5. Legacy/admin relay token
 
 During migration, the Worker still accepts the existing `RELAY_ACCESS_TOKEN` from old stream binaries. The same secret also protects the operator-only `/v1/status/<device-id>` diagnostic endpoint.
 
@@ -73,7 +87,7 @@ If needed, configure it with Wrangler or the Cloudflare Dashboard as an encrypte
 
 After all stream endpoints use relay-auth-v2, remove legacy stream-token acceptance and rotate the remaining admin/status credential.
 
-## 5. Start the remote agent
+## 6. Start the remote agent
 
 No relay secret is required:
 
@@ -87,7 +101,7 @@ No relay secret is required:
 
 `--listen ''` means the agent exposes no WeDecent inbound TCP listener.
 
-## 6. Pair from the client
+## 7. Pair from the client
 
 ```bash
 ./bin/wd init --name system-1
@@ -99,7 +113,7 @@ No relay secret is required:
 
 Enter the one-time pairing secret from the agent when prompted.
 
-## 7. Connect
+## 8. Connect
 
 The paired device stores its `wsrelay://` locator:
 
@@ -115,8 +129,9 @@ No shared relay token is required for the stream.
 - Agent tickets are self-bound to the agent device ID and a specific parked slot.
 - Client tickets are target-bound, but account-level permission is still enforced by the target agent's paired-client trust store, not by Cloudflare.
 - The Worker cannot decrypt terminal contents.
-- Stream admission now has source-IP and target-device attempt rate limits; identity/account-specific quotas remain future control-plane work.
-- Rate limiting does not replace relay authentication, connection grants, terminal trust, or the inner pinned TLS session.
+- Stream admission has source-IP and target-device attempt rate limits; identity/account-specific quotas remain future control-plane work.
+- Relay custom metrics and logs deliberately omit raw IPs, device IDs, credentials, tickets/grants, and terminal contents; platform traces can contain routing paths.
+- Rate limiting and observability do not replace relay authentication, connection grants, terminal trust, or the inner pinned TLS session.
 - Rotate any legacy `RELAY_ACCESS_TOKEN` that has ever been distributed to endpoints once migration is complete.
 
 ## Relay status diagnostic
