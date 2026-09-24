@@ -19,7 +19,7 @@ SIGNER="${WEDECENT_WINDOWS_AUTHENTICODE_SIGNER:-}"
 VERIFIER="${WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER:-}"
 
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
-installer_scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
+installer_scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 Update-WeDecent.ps1)
 release_files=("${binaries[@]}" VERSION.txt SHA256SUMS.txt)
 package_payload=("${binaries[@]}" VERSION.txt SHA256SUMS.txt "${installer_scripts[@]}" README.md)
 package_files=("${package_payload[@]}" PACKAGE_SHA256SUMS.txt)
