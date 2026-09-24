@@ -101,7 +101,7 @@ for source in "$SIGNED_RELEASE_DIR" "$SIGNED_INSTALLER_DIR"; do
 done
 
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
-scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
+scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 Update-WeDecent.ps1)
 release_files=("${binaries[@]}" VERSION.txt SHA256SUMS.txt)
 package_payload=("${binaries[@]}" VERSION.txt SHA256SUMS.txt "${scripts[@]}" README.md)
 installer_files=("${package_payload[@]}" PACKAGE_SHA256SUMS.txt)
@@ -152,8 +152,6 @@ snapshot_files() {
 snapshot_files "$SIGNED_RELEASE_DIR" "$RELEASE_SNAPSHOT" "${release_files[@]}"
 snapshot_files "$SIGNED_INSTALLER_DIR" "$INSTALLER_SNAPSHOT" "${installer_files[@]}"
 
-# Bind the installable package to the exact signed release that is published beside it.
-# Only the private snapshots are trusted below this point.
 for name in "${release_files[@]}"; do
   cmp -s "$RELEASE_SNAPSHOT/$name" "$INSTALLER_SNAPSHOT/$name" ||
     fail "signed installer release payload differs from signed release: $name"
