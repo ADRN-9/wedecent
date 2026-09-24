@@ -6,8 +6,8 @@ record that says which immutable version it should consider next without allowin
 download origin, CDN, cache, or an older still-valid record to redirect it to arbitrary
 bytes.
 
-This document defines the first update-protocol boundary. It does **not** enable automatic
-network polling or installer execution yet.
+This document defines the current update-protocol boundary. It does **not** enable automatic
+background polling or installer execution yet.
 
 ## Stable channel manifest
 
@@ -51,14 +51,37 @@ a trailing LF. Verification accepts an LF or CRLF line ending on the detached si
 file, but the manifest bytes themselves must match the canonical representation exactly.
 
 The production private update-signing key must remain outside this repository and outside
-release artifacts. This repository currently defines only the cryptographic format and
-verification primitive; it does **not** embed a production public key in this slice.
+release artifacts. The verification API requires the caller to supply a pinned Ed25519
+public key; this repository does **not** embed a production update public key in this
+slice. Production provisioning must not trust a key delivered beside the manifest, from
+DNS, from the download origin, or through trust-on-first-use.
 
-A later discovery client must pin an explicitly provisioned production update public key.
-It must not trust a key delivered beside the manifest, from DNS, from the download origin,
-or through trust-on-first-use.
+## Fixed-origin discovery
 
-## Rollback resistance
+`internal/updateinfo.DiscoveryClient` retrieves exactly two stable-channel objects:
+
+```text
+https://downloads.wedecent.com/windows/stable/manifest-v1.json
+https://downloads.wedecent.com/windows/stable/manifest-v1.sig
+```
+
+The URLs are constants, not caller input. Redirects are rejected rather than followed,
+non-200 responses fail closed, and both response bodies are bounded before allocation.
+The manifest is authenticated with the explicitly provisioned pinned Ed25519 public key
+before any manifest fields are returned. A candidate must then pass `CheckAdvance`
+against both the installed stable version and the caller-supplied highest accepted
+sequence.
+
+Discovery is deliberately read-only with respect to anti-rollback state. Fetching or
+verifying a candidate does **not** persist its sequence. This matters because a download,
+Authenticode check, installer preflight, or installation may still fail. Consuming the
+sequence merely because a candidate was observed would make a safe retry of that same
+signed release look like a rollback.
+
+The fetcher preserves caller cancellation/deadline causes while also classifying failures
+as update-discovery errors. It does not log or return response bodies.
+
+## Rollback resistance and local state
 
 A valid signature alone does not make an old signed manifest current. A client that has
 accepted sequence `N` must persist `N` in protected local state and reject every later
@@ -69,15 +92,32 @@ For an update to be eligible, the candidate must advance both:
 1. the highest previously accepted manifest sequence; and
 2. the currently installed stable `vMAJOR.MINOR.PATCH` version.
 
-`internal/updateinfo.CheckAdvance` implements this decision once the caller supplies the
-persisted sequence and installed version. Version components are compared with arbitrary
-precision rather than machine integers.
+`internal/updateinfo.CheckAdvance` implements the eligibility decision. Version components
+are compared with arbitrary precision rather than machine integers.
+
+`internal/updateinfo.StateStore` provides the separate monotonic commit primitive. The
+state file is `update-state.json` under the caller-selected per-user client state
+directory. Missing state means sequence zero. Persisted state is strict, canonical,
+bounded JSON and contains only the storage version and highest accepted stable sequence.
+It is non-secret; its purpose is rollback resistance, not confidentiality.
+
+The store fails closed on symbolic links, non-regular files, malformed/alternate
+encodings, and sequence decreases. On Unix-like systems the state file and containing
+directory must be owned by the effective user and must not be accessible to group/other
+users. Writes use a same-directory temporary file, file sync, atomic rename, and parent
+directory sync. On Windows replacement uses `MoveFileExW` with replace-existing and
+write-through semantics so advancing anti-rollback state does not require a
+remove-then-rename window that could erase the previous sequence after a crash.
+
+The store's mutex prevents races between callers sharing one `StateStore` instance. It is
+not a cross-process compare-and-swap primitive. The eventual updater should have a single
+process owner, or add an explicit OS-level interprocess lock before multiple updater
+processes are introduced.
 
 Sequence persistence prevents replay of an older signed record **after** a newer record
-has been accepted. It does not by itself solve first-run freshness or a network adversary
-that indefinitely suppresses every newer manifest. Discovery cadence, freshness policy,
-and any operational alerting for prolonged suppression belong to the later network
-update-discovery slice.
+has been committed. It does not solve first-run freshness or a network adversary that
+indefinitely suppresses every newer manifest. Discovery cadence, production key rotation,
+and operational alerting for prolonged suppression remain separate policy decisions.
 
 ## Artifact verification remains independent
 
@@ -101,16 +141,15 @@ of the download origin alone cannot forge a valid channel manifest.
 
 This slice does not:
 
-- publish a mutable stable-channel manifest;
+- publish the mutable stable-channel manifest/signature objects;
 - embed or provision the production Ed25519 public key;
-- fetch update metadata over the network;
-- follow redirects or alternate origins;
-- persist the highest accepted sequence;
-- download a release or installer;
+- schedule or automatically poll for updates;
+- automatically advance sequence state after discovery;
+- download a release or installer archive for application;
 - launch PowerShell or execute an installer;
 - stop, replace, or restart any running WeDecent process;
 - create a scheduled task, service, or background updater.
 
-Those behaviors should be added as separate reviewable boundaries so network policy,
-key rotation, local anti-rollback state, download verification, installer preflight,
-process ownership, and recovery can each fail closed independently.
+Those behaviors should remain separate reviewable boundaries so key provisioning,
+manifest publication, download verification, installer preflight, process ownership,
+sequence commit timing, and recovery can each fail closed independently.
