@@ -43,18 +43,64 @@ rejected rather than normalized before signature verification.
 The manifest never contains credentials, local paths, executable arguments, alternate
 hosts, redirect destinations, or installer command lines.
 
-## Signature file
+## Signature and public-key artifacts
 
 The manifest is signed over its exact canonical bytes with Ed25519. The detached
 signature file is the 64-byte Ed25519 signature encoded with unpadded URL-safe base64 and
 a trailing LF. Verification accepts an LF or CRLF line ending on the detached signature
 file, but the manifest bytes themselves must match the canonical representation exactly.
 
+`internal/updateinfo.EncodePublicKey` / `DecodePublicKey` define the release-tooling public
+key representation: the raw 32-byte Ed25519 public key encoded as one unpadded URL-safe
+base64 line. Alternate whitespace and padded encodings are rejected. This file format is
+a provisioning artifact, not a discovery mechanism.
+
 The production private update-signing key must remain outside this repository and outside
 release artifacts. The verification API requires the caller to supply a pinned Ed25519
-public key; this repository does **not** embed a production update public key in this
-slice. Production provisioning must not trust a key delivered beside the manifest, from
-DNS, from the download origin, or through trust-on-first-use.
+public key; this repository still does **not** embed a production update public key.
+Production provisioning must not trust a key delivered beside the manifest, from DNS,
+from the download origin, or through trust-on-first-use.
+
+## Stable-channel publication tooling
+
+`scripts/publish-windows-stable-update.sh` provides the release-operator boundary for
+preparing and publishing the mutable stable pair without taking custody of private key
+material.
+
+For a requested stable version and sequence it:
+
+1. downloads the already-published immutable release and installer ZIPs from their exact
+   canonical `downloads.wedecent.com` URLs and derives the SHA-256 values from those bytes;
+2. invokes `cmd/wd-update-manifest` to create the canonical schema-v1 manifest using the
+   same Go encoder used by clients;
+3. invokes the absolute, non-symlink executable named by
+   `WEDECENT_UPDATE_MANIFEST_SIGNER`, passing only the manifest path and destination
+   signature path;
+4. verifies the produced signature locally against an explicitly supplied canonical
+   public-key file;
+5. when a stable pair already exists, downloads and verifies both existing objects and
+   rejects a candidate that does not advance both sequence and stable version;
+6. delegates publication to the absolute, non-symlink executable named by
+   `WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER`; and
+7. downloads the resulting pair again, requires byte-for-byte equality with the prepared
+   pair, and verifies the signature once more.
+
+The private signer and storage credentials remain outside this repository. The publisher
+hook receives the SHA-256 of both previously verified stable objects (or `-` for a clean
+bootstrap) and must atomically compare those expected states and replace the manifest and
+signature as one logical operation. A two-step unconditional overwrite of the signature
+and manifest is **not** an acceptable implementation: a crash or competing publisher can
+otherwise strand a mismatched pair. Publication is therefore fail-closed unless release
+operations provide a storage primitive that implements the documented pair CAS contract.
+
+`--dry-run` performs artifact hashing, canonical generation, signing, existing-state
+verification, and rollback checks without invoking the pair publisher.
+
+This tooling completes the repository-side publication boundary, but production rollout
+still requires provisioning an actual production Ed25519 key pair, protecting the private
+key in release operations, installing the corresponding public-key pin into clients through
+an authenticated build/provisioning path, and providing the production atomic publisher
+hook. No test key is a production trust anchor.
 
 ## Fixed-origin discovery
 
@@ -141,8 +187,8 @@ of the download origin alone cannot forge a valid channel manifest.
 
 This slice does not:
 
-- publish the mutable stable-channel manifest/signature objects;
-- embed or provision the production Ed25519 public key;
+- embed or provision the production Ed25519 public-key pin in client binaries;
+- supply a production private signing key or production atomic-publisher implementation;
 - schedule or automatically poll for updates;
 - automatically advance sequence state after discovery;
 - download a release or installer archive for application;
