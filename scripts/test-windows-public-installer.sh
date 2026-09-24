@@ -19,7 +19,7 @@ BIN="$WORK/bin"
 mkdir -p -- "$RELEASE" "$INSTALLER" "$BIN"
 
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
-scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
+scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 Update-WeDecent.ps1)
 for name in "${binaries[@]}"; do
   printf 'signed fixture: %s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" > "$RELEASE/$name"
 done
@@ -133,9 +133,9 @@ grep -Fq 'Authenticode: verified' <<<"$output" || fail 'installer Authenticode v
 
 : > "$CURL_LOG"
 if WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
-   WEDECENT_FAKE_VERIFIER_REJECT_BASENAME='Install-WeDecent.ps1' \
+   WEDECENT_FAKE_VERIFIER_REJECT_BASENAME='Update-WeDecent.ps1' \
    run_verify >/dev/null 2>&1; then
-  fail 'rejected installer script signature unexpectedly succeeded'
+  fail 'rejected updater signature unexpectedly succeeded'
 fi
 [[ "$(wc -l < "$CURL_LOG" | tr -d '[:space:]')" == '2' ]] || fail 'signature failure used unexpected network requests'
 
