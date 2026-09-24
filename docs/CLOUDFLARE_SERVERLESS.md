@@ -11,7 +11,7 @@ The Cloudflare relay sees encrypted TLS records and routing metadata only. The a
 
 ## 1. Deploy the Worker
 
-The Durable Object namespace and custom domain are declared in `cloudflare/relay-worker/wrangler.jsonc`.
+The Durable Object namespaces and custom domain are declared in `cloudflare/relay-worker/wrangler.jsonc`.
 
 ```bash
 cd cloudflare/relay-worker
@@ -26,10 +26,10 @@ Verify:
 curl https://relay.wedecent.com/healthz
 ```
 
-Expected for relay-auth-v2:
+Expected:
 
 ```json
-{"service":"wedecent-relay","status":"ok","version":5}
+{"service":"wedecent-relay","status":"ok","version":10}
 ```
 
 ## 2. Relay authentication v2
@@ -40,17 +40,40 @@ The Worker verifies the ticket with Web Crypto and binds it to the requested dev
 
 The inner pinned TLS session remains the terminal authorization boundary. A client relay ticket proves possession of a client identity key; it does not by itself authorize that identity to open a terminal on a target agent.
 
-## 3. Legacy/admin relay token
+## 3. Relay connection admission limits
 
-During migration, Worker v5 still accepts the existing `RELAY_ACCESS_TOKEN` from old stream binaries. The same secret also protects the operator-only `/v1/status/<device-id>` diagnostic endpoint.
+Syntactically valid `/v1/stream/<device-id>` WebSocket attempts are rate-limited before relay-ticket verification. Each attempt must pass both a source-IP bucket and a target-device bucket backed by the dedicated `RELAY_RATE_LIMIT` SQLite Durable Object namespace.
 
-Deploy Worker v5 first. Keep the secret configured in Cloudflare while older binaries exist, but do not distribute or configure it on upgraded v0.3 clients or agents.
+Defaults are:
+
+- source IP: 120 connection attempts per 60-second token-bucket window;
+- target device: 240 connection attempts per 60-second token-bucket window.
+
+The device allowance is intentionally higher so a normal agent can re-establish its parked relay slots without exhausting the device bucket. Both agent and client stream attempts consume the same admission budgets. Invalid paths, invalid device IDs, invalid roles/slots, status checks, health checks, time checks, and direct-authorization requests do not consume stream-connection quota.
+
+Optional Worker environment values can tune the limits without changing code:
+
+- `RELAY_RATE_LIMIT_WINDOW_SECONDS` — positive integer, maximum 3600;
+- `RELAY_IP_CONNECTIONS_PER_WINDOW` — positive integer, maximum 10000;
+- `RELAY_DEVICE_CONNECTIONS_PER_WINDOW` — positive integer, maximum 10000.
+
+Invalid configuration fails stream admission closed with HTTP 503. A depleted bucket returns HTTP 429 plus `Retry-After`; the response does not reveal whether the source-IP or device bucket was responsible.
+
+The Worker trusts Cloudflare's `CF-Connecting-IP` header as the platform-provided client address. The raw address is not placed in Durable Object names or storage: the Worker hashes it with SHA-256 first. If the header is missing or malformed, requests share a single `unknown` source bucket rather than bypassing IP limiting.
+
+Rate-limit state is durable across object eviction/restart. If the limiter namespace or its storage is unavailable, new stream admission fails closed rather than silently bypassing the limit. The limiter applies to connection attempts, not active-stream duration or bandwidth; those are separate policies.
+
+## 4. Legacy/admin relay token
+
+During migration, the Worker still accepts the existing `RELAY_ACCESS_TOKEN` from old stream binaries. The same secret also protects the operator-only `/v1/status/<device-id>` diagnostic endpoint.
+
+Keep the secret configured in Cloudflare while older binaries exist, but do not distribute or configure it on upgraded v0.3 clients or agents.
 
 If needed, configure it with Wrangler or the Cloudflare Dashboard as an encrypted Worker secret. Never commit or paste it into logs, screenshots, source files, or chat.
 
 After all stream endpoints use relay-auth-v2, remove legacy stream-token acceptance and rotate the remaining admin/status credential.
 
-## 4. Start the remote agent
+## 5. Start the remote agent
 
 No relay secret is required:
 
@@ -64,7 +87,7 @@ No relay secret is required:
 
 `--listen ''` means the agent exposes no WeDecent inbound TCP listener.
 
-## 5. Pair from the client
+## 6. Pair from the client
 
 ```bash
 ./bin/wd init --name system-1
@@ -76,7 +99,7 @@ No relay secret is required:
 
 Enter the one-time pairing secret from the agent when prompted.
 
-## 6. Connect
+## 7. Connect
 
 The paired device stores its `wsrelay://` locator:
 
@@ -92,7 +115,8 @@ No shared relay token is required for the stream.
 - Agent tickets are self-bound to the agent device ID and a specific parked slot.
 - Client tickets are target-bound, but account-level permission is still enforced by the target agent's paired-client trust store, not by Cloudflare.
 - The Worker cannot decrypt terminal contents.
-- Production still needs per-IP/identity/device rate limiting and server-issued account/RBAC grants.
+- Stream admission now has source-IP and target-device attempt rate limits; identity/account-specific quotas remain future control-plane work.
+- Rate limiting does not replace relay authentication, connection grants, terminal trust, or the inner pinned TLS session.
 - Rotate any legacy `RELAY_ACCESS_TOKEN` that has ever been distributed to endpoints once migration is complete.
 
 ## Relay status diagnostic
