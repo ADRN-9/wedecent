@@ -71,6 +71,7 @@ Maximum payload size: 1 MiB. Terminal data is emitted in chunks up to 32 KiB.
 8   ERROR
 9   PING
 10  PONG
+11  OPEN_AUTHORIZED_SESSION
 ```
 
 Control messages use stream `0`. Terminal data currently uses stream `1`. The stream field is retained so later versions can multiplex terminals, file transfer and forwarding without replacing the frame header.
@@ -130,3 +131,18 @@ This prevents a different key from registering itself as an existing device ID.
 5. Client and agent perform the **inner pinned TLS handshake through the relay**.
 
 The relay cannot decrypt the inner session.
+
+## Version compatibility and negotiation
+
+Version 1 uses exact-match compatibility boundaries. It does not negotiate a version range and it does not downgrade to older protocol variants.
+
+| Boundary | v1 identifier | Compatibility rule |
+| --- | --- | --- |
+| Inner terminal TLS | ALPN `wedecent/1` | Missing, older, or newer ALPN is rejected before an authenticated session is accepted. |
+| Terminal framing | header version byte `1` | Readers reject every non-`1` frame version. Writers always emit `1`. |
+| Relay TLS | ALPN `wedecent-relay/1` | Missing, older, or newer ALPN is rejected. |
+| Relay registration signature | domain `wedecent-relay-register-v1` | The versioned signing domain is part of the signed bytes and must remain exact for v1. |
+| Local Core IPC | JSON field `"version":"v1"` | Requests and responses with any other version are rejected before method dispatch/result handling. |
+| Router-admin TLS | ALPN `wedecent-router-admin/1` | Missing, older, or newer ALPN is rejected before router-admin authorization succeeds. |
+
+A future protocol version must advertise a new explicit version/ALPN and define its compatibility behavior. Unknown versions must fail closed rather than being interpreted as v1.
