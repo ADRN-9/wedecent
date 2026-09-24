@@ -258,6 +258,8 @@ type serveConfig struct {
 	Shell                  string
 	Discover               bool
 	MaxConnections         int
+	SessionIdleTimeout     time.Duration
+	SessionMaxDuration     time.Duration
 	RelayAddr              string
 	WebRelay               string
 	RelaySlots             int
@@ -269,6 +271,13 @@ type serveConfig struct {
 	RouteTunnelListenAddr  string
 	RouteTunnelTransport   string
 	RouteMaxConnections    int
+}
+
+func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
+	return session.SessionPolicy{
+		IdleTimeout: cfg.SessionIdleTimeout,
+		MaxDuration: cfg.SessionMaxDuration,
+	}
 }
 
 func parseServeConfig(args []string) (serveConfig, error) {
@@ -312,6 +321,18 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"max-connections",
 		32,
 		"maximum concurrent direct client connections",
+	)
+	fs.DurationVar(
+		&cfg.SessionIdleTimeout,
+		"session-idle-timeout",
+		session.DefaultSessionIdleTimeout,
+		"terminal session idle timeout; 0 disables the idle limit",
+	)
+	fs.DurationVar(
+		&cfg.SessionMaxDuration,
+		"session-max-duration",
+		session.DefaultSessionMaxDuration,
+		"terminal session absolute maximum duration; 0 disables the maximum",
 	)
 	fs.StringVar(
 		&cfg.RelayAddr,
@@ -421,6 +442,10 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		)
 	}
 
+	if err := cfg.sessionPolicy().Validate(); err != nil {
+		return serveConfig{}, fmt.Errorf("session policy: %w", err)
+	}
+
 	if cfg.RelaySlots < 1 ||
 		cfg.RelaySlots > 32 {
 		return serveConfig{}, errors.New(
@@ -505,6 +530,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		Shell:            cfg.Shell,
 		Logger:           slog.Default(),
 		DirectAuthorizer: directAuthorizer,
+		Policy:           cfg.sessionPolicy(),
 	}
 
 	// Routing authority/trust/replay state is not loaded unless an operator

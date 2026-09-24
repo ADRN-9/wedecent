@@ -19,7 +19,7 @@
 - [x] Client/device trust removal and revocation commands
 - [x] Relay per-IP/device connection rate limits
 - [x] Relay metrics, health endpoints and tracing
-- [ ] Session idle/max-duration policy
+- [x] Session idle/max-duration policy
 - [ ] Config files rather than only CLI flags
 - [ ] OS keychain/TPM-backed private keys where available
 - [ ] Fuzz tests for frame and relay-control decoders

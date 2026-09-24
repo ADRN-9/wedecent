@@ -20,6 +20,7 @@ import (
 )
 
 const terminalStreamID = 1
+const sessionPolicyExitCode = 124
 
 type DirectAuthorizer interface {
 	Authorize(context.Context, string, string, string) error
@@ -32,6 +33,7 @@ type Server struct {
 	Shell            string
 	Logger           *slog.Logger
 	DirectAuthorizer DirectAuthorizer
+	Policy           SessionPolicy
 }
 
 func (s *Server) ServeConn(raw net.Conn) {
@@ -217,6 +219,12 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		_ = sendError(conn, "unauthorized", "client is not paired")
 		return
 	}
+	if err := s.Policy.Validate(); err != nil {
+		s.log().Error("invalid terminal session policy", "error", err)
+		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "session_policy_invalid"})
+		_ = sendError(conn, "server_error", "terminal session policy is invalid")
+		return
+	}
 	var open protocol.OpenSession
 	if err := protocol.ParseJSON(first.Payload, &open); err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "invalid_request"})
@@ -253,6 +261,10 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		return protocol.WriteFrame(conn, f)
 	}
 
+	policyTimers := newSessionPolicyTimers(s.Policy)
+	defer policyTimers.Stop()
+	activityCh := make(chan struct{}, 1)
+
 	ptyReadDone := make(chan struct{})
 	go func() {
 		defer close(ptyReadDone)
@@ -264,6 +276,7 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 				if werr := writeFrame(protocol.Frame{Type: protocol.TypeData, StreamID: terminalStreamID, Payload: data}); werr != nil {
 					return
 				}
+				signalSessionActivity(activityCh)
 			}
 			if err != nil {
 				return
@@ -295,6 +308,34 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 			}
 		}
 	}()
+
+	expireSession := func(reason string) {
+		s.log().Info("terminal policy expired", "client_id", peer.ID, "reason", reason)
+		// Bound terminal-output drain before the final close frame. Setting a
+		// write deadline first unblocks a PTY forwarding goroutine stuck on a
+		// peer that stopped reading.
+		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_ = pty.Close()
+		if ptyReadDone != nil {
+			drainTimer := time.NewTimer(500 * time.Millisecond)
+			select {
+			case <-ptyReadDone:
+				ptyReadDone = nil
+			case <-drainTimer.C:
+			case <-readErrCh:
+			}
+			if !drainTimer.Stop() {
+				select {
+				case <-drainTimer.C:
+				default:
+				}
+			}
+		}
+		if err := writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: sessionPolicyExitCode, Reason: reason})}); err != nil {
+			return
+		}
+		waitForPeerClose(frameCh, readErrCh, 2*time.Second)
+	}
 
 	for {
 		select {
@@ -334,16 +375,19 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		case frame := <-frameCh:
 			switch frame.Type {
 			case protocol.TypeData:
-				if frame.StreamID == terminalStreamID {
+				if frame.StreamID == terminalStreamID && len(frame.Payload) > 0 {
 					if _, err := pty.Write(frame.Payload); err != nil {
 						closeReason = "pty_write_failed"
 						return
 					}
+					policyTimers.Activity()
 				}
 			case protocol.TypeResize:
 				var resize protocol.Resize
 				if protocol.ParseJSON(frame.Payload, &resize) == nil {
-					_ = pty.Resize(resize.Cols, resize.Rows)
+					if pty.Resize(resize.Cols, resize.Rows) == nil {
+						policyTimers.Activity()
+					}
 				}
 			case protocol.TypePing:
 				_ = writeFrame(protocol.Frame{Type: protocol.TypePong})
@@ -351,6 +395,16 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 				closeReason = "peer_close"
 				return
 			}
+		case <-activityCh:
+			policyTimers.Activity()
+		case <-policyTimers.idleC:
+			closeReason = "policy_idle_timeout"
+			expireSession("session idle timeout")
+			return
+		case <-policyTimers.maxC:
+			closeReason = "policy_max_duration"
+			expireSession("session maximum duration reached")
+			return
 		case <-ptyReadDone:
 			// Wait for Cmd.Wait() to provide the authoritative exit code.
 			ptyReadDone = nil
