@@ -9,12 +9,14 @@ import (
 	"time"
 )
 
+const TerminalALPN = "wedecent/1"
+
 func ServerTLS(id *Identity) *tls.Config {
 	return &tls.Config{
 		MinVersion:   tls.VersionTLS13,
 		Certificates: []tls.Certificate{id.Certificate},
 		ClientAuth:   tls.RequestClientCert,
-		NextProtos:   []string{"wedecent/1"},
+		NextProtos:   []string{TerminalALPN},
 	}
 }
 
@@ -26,10 +28,10 @@ func ClientTLS(id *Identity, expectedFingerprint string) *tls.Config {
 		MinVersion:         tls.VersionTLS13,
 		Certificates:       []tls.Certificate{id.Certificate},
 		InsecureSkipVerify: true, // Safe only with VerifyConnection below.
-		NextProtos:         []string{"wedecent/1"},
+		NextProtos:         []string{TerminalALPN},
 		VerifyConnection: func(cs tls.ConnectionState) error {
-			if cs.NegotiatedProtocol != "wedecent/1" {
-				return errors.New("peer did not negotiate wedecent/1")
+			if cs.NegotiatedProtocol != TerminalALPN {
+				return fmt.Errorf("peer did not negotiate %s", TerminalALPN)
 			}
 			if len(cs.PeerCertificates) != 1 {
 				return errors.New("expected exactly one peer certificate")
@@ -54,8 +56,8 @@ func ClientTLS(id *Identity, expectedFingerprint string) *tls.Config {
 }
 
 func PeerCertificate(cs tls.ConnectionState) (*x509.Certificate, error) {
-	if cs.NegotiatedProtocol != "wedecent/1" {
-		return nil, errors.New("peer did not negotiate wedecent/1")
+	if cs.NegotiatedProtocol != TerminalALPN {
+		return nil, fmt.Errorf("peer did not negotiate %s", TerminalALPN)
 	}
 	if len(cs.PeerCertificates) != 1 {
 		return nil, errors.New("peer did not present exactly one certificate")
