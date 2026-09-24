@@ -31,6 +31,8 @@
   - [x] Canonical signed stable-channel manifest format with rollback checks
   - [x] Fixed-origin signed manifest discovery and protected sequence-state primitive
   - [ ] Production update-key provisioning and stable-channel manifest publication
+    - [x] Strict public-key artifact format plus external-signer/atomic-publisher tooling
+    - [ ] Provision the production client public-key pin and production atomic publisher hook
   - [ ] Installer download, verification, application and post-success sequence commit
 
 ## Phase 2 — platform coverage

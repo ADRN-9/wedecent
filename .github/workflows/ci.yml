@@ -124,6 +124,8 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Test stable signed update publication boundary
+        run: bash ./scripts/test-windows-stable-update-publication.sh
       - name: Test Windows signing finalizer
         run: ./scripts/test-windows-signing-finalizer.sh
       - name: Test signed Windows public-download preparation
