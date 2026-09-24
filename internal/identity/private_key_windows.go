@@ -20,6 +20,8 @@ const (
 	identityPrivateKeyFile               = "identity.key.dpapi"
 	legacyIdentityPrivateKeyFile         = "identity.key"
 	maxProtectedIdentityKeyFileSize      = 64 * 1024
+	protectedKeyReadRaceAttempts         = 20
+	protectedKeyReadRaceDelay            = 5 * time.Millisecond
 	legacyMigrationRaceAttempts          = 20
 	legacyMigrationRaceDelay             = 5 * time.Millisecond
 	dpapiIdentityKeyMagic                = "WEDPAPI1"
@@ -175,6 +177,30 @@ func identityPrivateKeyPath(dir string) string {
 }
 
 func loadProtectedPrivateKey(path string) (ed25519.PrivateKey, keyProtectionScope, error) {
+	return loadProtectedPrivateKeyWithRetry(func() (ed25519.PrivateKey, keyProtectionScope, error) {
+		return loadProtectedPrivateKeyOnce(path)
+	}, protectedKeyReadRaceAttempts, protectedKeyReadRaceDelay)
+}
+
+func loadProtectedPrivateKeyWithRetry(load func() (ed25519.PrivateKey, keyProtectionScope, error), attempts int, delay time.Duration) (ed25519.PrivateKey, keyProtectionScope, error) {
+	if attempts < 1 {
+		attempts = 1
+	}
+	var lastRace error
+	for attempt := 0; attempt < attempts; attempt++ {
+		priv, scope, err := load()
+		if err == nil || !isProtectedKeyReadRace(err) {
+			return priv, scope, err
+		}
+		lastRace = err
+		if attempt+1 < attempts && delay > 0 {
+			time.Sleep(delay)
+		}
+	}
+	return nil, 0, fmt.Errorf("protected identity private key remained busy during read: %w", lastRace)
+}
+
+func loadProtectedPrivateKeyOnce(path string) (ed25519.PrivateKey, keyProtectionScope, error) {
 	if err := requireRegularFile(path, "protected identity private key"); err != nil {
 		if errors.Is(unwrapPathError(err), os.ErrNotExist) {
 			return nil, 0, os.ErrNotExist
@@ -193,6 +219,10 @@ func loadProtectedPrivateKey(path string) (ed25519.PrivateKey, keyProtectionScop
 		return nil, 0, fmt.Errorf("read protected identity private key: %w", err)
 	}
 	return decodeProtectedPrivateKey(blob)
+}
+
+func isProtectedKeyReadRace(err error) bool {
+	return errors.Is(err, windows.ERROR_SHARING_VIOLATION) || errors.Is(err, windows.ERROR_LOCK_VIOLATION)
 }
 
 func decodeProtectedPrivateKey(blob []byte) (ed25519.PrivateKey, keyProtectionScope, error) {
