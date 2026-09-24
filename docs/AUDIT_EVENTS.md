@@ -35,7 +35,9 @@ Agent pairing and terminal lifecycle records:
 - `pairing.trust_added` — successful client trust creation after the single-use pairing secret has been consumed
 - `terminal.authorization` — direct-session authorization success or denial; grants and authorization-service error strings are never recorded
 - `terminal.session_opened` — successful, denied, or failed terminal-open attempts
-- `terminal.session_closed` — the end of an accepted terminal session with a stable close reason such as `process_exit`, `peer_close`, or `peer_disconnect`
+- `terminal.session_closed` — the end of an accepted terminal session with a stable close reason such as `process_exit`, `peer_close`, `peer_disconnect`, `policy_idle_timeout`, or `policy_max_duration`
+
+Terminal timeout policy records only the stable close reason. The configured duration and all terminal input/output remain outside the audit payload.
 
 Router administration records:
 
