@@ -15,7 +15,7 @@
 
 ## Phase 1.1 — production hardening
 
-- [ ] Persistent structured audit events
+- [x] Persistent structured audit events
 - [x] Client/device trust removal and revocation commands
 - [ ] Relay per-IP/device connection rate limits
 - [ ] Relay metrics, health endpoints and tracing
