@@ -17,12 +17,12 @@ Examples:
 
 Release mode checks the public release ZIP checksum, exact seven-file archive shape,
 internal five-binary checksum manifest, and VERSION.txt. Installer mode checks the
-separate public installer ZIP, exact twelve-file package shape, the five-binary release
+separate public installer ZIP, exact thirteen-file package shape, the five-binary release
 manifest, the complete installer-package manifest, and VERSION.txt.
 
 If WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER is set, it must be an absolute non-symlink
 executable. Release mode verifies the five binaries; installer mode verifies those five
-binaries plus all three packaged PowerShell scripts.
+binaries plus all four packaged PowerShell scripts.
 EOF
 }
 
@@ -124,7 +124,7 @@ out = pathlib.Path(sys.argv[2])
 version = sys.argv[3]
 artifact = sys.argv[4]
 binaries = ["wd.exe", "wd-agent.exe", "wd-routerctl.exe", "wd-core.exe", "wd-ui.exe"]
-scripts = ["Install-WeDecent.ps1", "Uninstall-WeDecent.ps1", "Test-WeDecentInstall.ps1"]
+scripts = ["Install-WeDecent.ps1", "Uninstall-WeDecent.ps1", "Test-WeDecentInstall.ps1", "Update-WeDecent.ps1"]
 release_files = binaries + ["VERSION.txt", "SHA256SUMS.txt"]
 package_payload = binaries + ["VERSION.txt", "SHA256SUMS.txt"] + scripts + ["README.md"]
 installer_files = package_payload + ["PACKAGE_SHA256SUMS.txt"]
@@ -134,7 +134,7 @@ with zipfile.ZipFile(archive, "r") as zf:
     infos = zf.infolist()
     names = [info.filename for info in infos]
     if sorted(names) != sorted(expected_files) or len(names) != len(expected_files) or len(set(names)) != len(names):
-        expected_label = "seven signed release files" if artifact == "release" else "twelve signed installer-package files"
+        expected_label = "seven signed release files" if artifact == "release" else "thirteen signed installer-package files"
         raise SystemExit(f"public archive must contain exactly the {expected_label}")
     for info in infos:
         if info.is_dir() or "/" in info.filename or "\\" in info.filename:
@@ -174,7 +174,7 @@ if artifact == "installer":
 PY
 
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
-scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
+scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 Update-WeDecent.ps1)
 if [[ -n "$AUTHENTICODE_VERIFIER" ]]; then
   signed_files=("${binaries[@]}")
   if [[ "$ARTIFACT" == 'installer' ]]; then
