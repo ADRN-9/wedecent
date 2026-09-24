@@ -20,7 +20,7 @@ BIN="$WORK/bin"
 REMOTE="$WORK/remote"
 mkdir -p -- "$RELEASE" "$INSTALLER" "$BIN" "$REMOTE"
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
-scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
+scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 Update-WeDecent.ps1)
 RELEASE_ARCHIVE='wedecent-v0.3.0-rc.9-windows-amd64.zip'
 INSTALLER_ARCHIVE='wedecent-v0.3.0-rc.9-windows-installer.zip'
 for name in "${binaries[@]}"; do
