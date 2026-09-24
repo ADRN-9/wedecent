@@ -23,16 +23,47 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return errors.New("expected create or verify command")
+		return errors.New("expected create, verify, or key-info command")
 	}
 	switch args[0] {
 	case "create":
 		return runCreate(args[1:], stdout)
 	case "verify":
 		return runVerify(args[1:], stdout)
+	case "key-info":
+		return runKeyInfo(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func runKeyInfo(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("key-info", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	publicKeyPath := flags.String("public-key", "", "canonical update public key file")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("key-info accepts no positional arguments")
+	}
+	if *publicKeyPath == "" {
+		return errors.New("--public-key is required")
+	}
+	keyBytes, err := readBoundedRegular(*publicKeyPath, maxKeyFileBytes)
+	if err != nil {
+		return fmt.Errorf("read public key: %w", err)
+	}
+	publicKey, err := updateinfo.DecodePublicKey(keyBytes)
+	if err != nil {
+		return err
+	}
+	fingerprint, err := updateinfo.PublicKeyFingerprint(publicKey)
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(stdout, "fingerprint=sha256:%s\n", fingerprint)
+	return err
 }
 
 func runCreate(args []string, stdout io.Writer) error {
