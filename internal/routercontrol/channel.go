@@ -2,13 +2,16 @@ package routercontrol
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
 	"path/filepath"
 	"strings"
 
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/coreapi"
+	v1 "wedecent.com/wedecent/internal/coreapi/v1"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/meshruntime"
 	"wedecent.com/wedecent/internal/trust"
@@ -122,10 +125,20 @@ func NewRuntimeServer(
 	if err != nil {
 		return nil, err
 	}
+
+	var exposed v1.RouterService = service
+	if fileTrust, ok := controllers.(*FileControllerTrust); ok && fileTrust != nil {
+		auditLog, auditErr := audit.Open(filepath.Dir(fileTrust.path))
+		if auditErr != nil {
+			return nil, fmt.Errorf("routercontrol: open audit log: %w", auditErr)
+		}
+		exposed = newAuditedRouterService(service, auditLog, runtime.Identity.ID)
+	}
+
 	return &RuntimeServer{
 		agent:       runtime.Identity,
 		controllers: controllers,
-		protocol:    &ProtocolServer{Service: service},
+		protocol:    &ProtocolServer{Service: exposed},
 	}, nil
 }
 
@@ -150,6 +163,7 @@ func (s *RuntimeServer) ServeOne(ctx context.Context, raw net.Conn) error {
 	defer cancel()
 	deadline, _ := requestCtx.Deadline()
 	_ = conn.SetDeadline(deadline)
+	requestCtx = withRouterAuditActor(requestCtx, authenticatedControllerID(conn))
 
 	closeDone := make(chan struct{})
 	stopClose := context.AfterFunc(requestCtx, func() {
@@ -171,4 +185,16 @@ func (s *RuntimeServer) ServeOne(ctx context.Context, raw net.Conn) error {
 		return fmt.Errorf("routercontrol: serve request: %w", err)
 	}
 	return nil
+}
+
+func authenticatedControllerID(conn net.Conn) string {
+	stateConn, ok := conn.(interface{ ConnectionState() tls.ConnectionState })
+	if !ok {
+		return ""
+	}
+	cert, err := identity.PeerCertificate(stateConn.ConnectionState())
+	if err != nil {
+		return ""
+	}
+	return identity.CertificateDeviceID(cert)
 }
