@@ -71,9 +71,21 @@ Maximum payload size: 1 MiB. Terminal data is emitted in chunks up to 32 KiB.
 8   ERROR
 9   PING
 10  PONG
+11  OPEN_AUTHORIZED_SESSION
 ```
 
 Control messages use stream `0`. Terminal data currently uses stream `1`. The stream field is retained so later versions can multiplex terminals, file transfer and forwarding without replacing the frame header.
+
+## Version compatibility
+
+Protocol v1 is deliberately strict; there is no downgrade or implicit cross-version fallback.
+
+- Inner terminal TLS requires TLS 1.3 and ALPN `wedecent/1`. The pinned client rejects a missing or different ALPN, and server-side peer validation also requires the negotiated v1 ALPN before accepting a peer certificate for protocol use.
+- Every terminal frame carries version byte `1`. A reader rejects any other version immediately after the fixed header, before reading or allocating the declared payload.
+- Relay TLS requires TLS 1.3 and ALPN `wedecent-relay/1`. The relay client rejects a missing or different negotiated ALPN.
+- The relay registration signature domain is versioned independently as `wedecent-relay-register-v1`.
+
+A future incompatible protocol version must be implemented explicitly with a distinct advertised ALPN and/or frame version. Implementations must not silently reinterpret an unknown version as v1.
 
 ## Terminal session
 
