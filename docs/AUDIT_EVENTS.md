@@ -1,0 +1,30 @@
+# Persistent audit events
+
+WeDecent role state directories may contain an append-only `audit.jsonl` security-event log. Each line is one JSON object with a UTC timestamp, stable event type, outcome, and a deliberately small set of identifiers/reason fields.
+
+The audit schema intentionally has no arbitrary payload field. Terminal input/output, pairing secrets, connection grants/JWTs, passwords, access/refresh tokens, private keys, and other credential material must never be written to this log.
+
+## Storage and bounds
+
+- active log: `<role-state>/audit.jsonl`
+- one rotated archive: `<role-state>/audit.jsonl.1`
+- active and archive files are secured to mode `0600` where the platform supports POSIX-style mode bits
+- the role state directory is created with mode `0700`
+- append operations are serialized across processes with an OS-backed lock file
+- the active log rotates at 16 MiB; only one archive is retained, bounding audit-log storage to roughly 32 MiB plus one small lock file
+- each encoded event is limited to 4 KiB
+- symbolic-link or non-regular-file log/lock/archive paths are rejected
+- each successful append is flushed with `fsync`/the platform equivalent before returning
+
+Rotation is local operational retention, not tamper evidence. A local account with permission to modify the role state directory can alter or delete local audit files. Central immutable audit retention remains a separate team-control-plane concern.
+
+## Initial event set
+
+This first persistence slice records local terminal-trust administration:
+
+- `trust.device_unpair` — client-side removal of a trusted device
+- `trust.client_revoke` — agent-side removal of a trusted terminal client
+
+Trust mutation commands persist an `attempt` event before changing the trust store, then append `success` or a stable `failed` reason. If the initial audit append fails, the trust mutation is not attempted. If the trust mutation succeeds but the final success event cannot be persisted, the command returns an explicit error describing that the state change already occurred.
+
+Pairing/session lifecycle events are intentionally handled in the follow-up slice of the same roadmap milestone rather than being inferred from generic process logs.
