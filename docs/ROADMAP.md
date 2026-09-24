@@ -27,6 +27,9 @@
 - [x] Fuzz tests for frame and relay-control decoders
 - [x] Protocol negotiation/version compatibility tests
 - [ ] Signed release/update mechanism
+  - [x] Authenticode-signed Windows release and immutable public-download verification
+  - [x] Canonical signed stable-channel manifest format with rollback checks
+  - [ ] Network discovery, protected sequence persistence, installer download/application
 
 ## Phase 2 — platform coverage
 
