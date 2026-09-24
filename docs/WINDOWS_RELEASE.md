@@ -10,6 +10,22 @@ The release builder derives `built_at` from `SOURCE_DATE_EPOCH`. When that varia
 
 Release builds refuse a dirty working tree. `WEDECENT_ALLOW_DIRTY=1` exists only for local diagnostic builds and marks the embedded commit with `-dirty`; dirty builds must not be published.
 
+## Stable-update public-key pin
+
+The stable update Ed25519 verification key is a build-time trust anchor, not runtime configuration. `wd-ui` contains no environment-variable, local-file, DNS, or download-origin fallback for replacing it.
+
+A release operator provisions the public key explicitly when building the Windows release:
+
+```bash
+./scripts/build-windows-release.sh --update-public-key /authenticated/path/update-public-key.txt
+```
+
+The file must use the strict canonical public-key format defined by `internal/updateinfo`: one unpadded URL-safe-base64 encoding of the raw 32-byte Ed25519 public key, with an optional LF/CRLF terminator. The builder validates it through the shared Go parser before linking it only into `wd-ui.exe`.
+
+`VERSION.txt` records only `update_public_key_fingerprint=...`, where the value is the lowercase SHA-256 of the raw public key. The release builder also checks that the canonical key text is present in the resulting `wd-ui.exe`. The key is public, but its source is security-sensitive: production release operations must obtain it through an authenticated provisioning path that is independent of `downloads.wedecent.com`.
+
+When `--update-public-key` is omitted, the build remains valid for development and reproducibility testing but `VERSION.txt` records `update_public_key_fingerprint=unprovisioned` and `wd-ui update-key status` reports `provisioned=false`. Update discovery must remain disabled in such a binary. A production key is deliberately not committed to this repository, and CI fixture keys are not production trust anchors.
+
 ## Unsigned reproducible output
 
 The default unsigned output directory is `dist/wedecent-windows-amd64/` and contains:
