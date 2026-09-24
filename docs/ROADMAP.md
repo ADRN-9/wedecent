@@ -22,6 +22,8 @@
 - [x] Session idle/max-duration policy
 - [x] Config files rather than only CLI flags
 - [ ] OS keychain/TPM-backed private keys where available
+  - [x] Windows DPAPI protection and plaintext-key migration
+  - [ ] TPM/CNG non-exportable Windows keys and non-Windows platform stores
 - [ ] Fuzz tests for frame and relay-control decoders
 - [ ] Protocol negotiation/version compatibility tests
 - [ ] Signed release/update mechanism
