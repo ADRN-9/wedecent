@@ -23,8 +23,12 @@ if [[ "$OUT_DIR" == "$RELEASE_DIR" || "$RELEASE_DIR" == "$OUT_DIR"/* || "$OUT_DI
 fi
 
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
+installer_scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 Update-WeDecent.ps1)
 for name in "${binaries[@]}" VERSION.txt SHA256SUMS.txt; do
   [[ -f "$RELEASE_DIR/$name" ]] || fail "release bundle is missing $name; run scripts/build-windows-release.sh first"
+done
+for name in "${installer_scripts[@]}" README.md; do
+  [[ -f "$ROOT/installer/windows/$name" && ! -L "$ROOT/installer/windows/$name" ]] || fail "installer source is missing or invalid: $name"
 done
 
 (
@@ -40,16 +44,15 @@ for name in "${binaries[@]}"; do
 done
 cp -- "$RELEASE_DIR/VERSION.txt" "$OUT_DIR/VERSION.txt"
 cp -- "$RELEASE_DIR/SHA256SUMS.txt" "$OUT_DIR/SHA256SUMS.txt"
-cp -- "$ROOT/installer/windows/Install-WeDecent.ps1" "$OUT_DIR/Install-WeDecent.ps1"
-cp -- "$ROOT/installer/windows/Uninstall-WeDecent.ps1" "$OUT_DIR/Uninstall-WeDecent.ps1"
-cp -- "$ROOT/installer/windows/Test-WeDecentInstall.ps1" "$OUT_DIR/Test-WeDecentInstall.ps1"
-cp -- "$ROOT/installer/windows/README.md" "$OUT_DIR/README.md"
+for name in "${installer_scripts[@]}" README.md; do
+  cp -- "$ROOT/installer/windows/$name" "$OUT_DIR/$name"
+done
 
 (
   cd "$OUT_DIR"
   sha256sum \
     "${binaries[@]}" VERSION.txt SHA256SUMS.txt \
-    Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 README.md \
+    "${installer_scripts[@]}" README.md \
     | LC_ALL=C sort -k2 > PACKAGE_SHA256SUMS.txt
   sha256sum -c PACKAGE_SHA256SUMS.txt
   sha256sum -c SHA256SUMS.txt
