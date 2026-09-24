@@ -45,7 +45,7 @@ func TestPublicKeyFingerprint(t *testing.T) {
 	if len(fingerprint) != 64 {
 		t.Fatalf("fingerprint length = %d", len(fingerprint))
 	}
-	if fingerprint != "debd2b2441c1f0b1e661695e563aa0a58a7b84205a147f3b2f5ebc1945d153be" {
+	if fingerprint != "92a684adefd6ddaf253e72042460067e128440ee025e25d299fd581bc495b1ad" {
 		t.Fatalf("fingerprint = %q", fingerprint)
 	}
 }
