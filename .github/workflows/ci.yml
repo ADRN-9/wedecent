@@ -105,7 +105,7 @@ jobs:
           go build -trimpath -buildvcs=false -o wd-routerctl.exe ./cmd/wd-routerctl
           go build -trimpath -buildvcs=false -o wd-core.exe ./cmd/wd-core
           go build -trimpath -buildvcs=false -o wd-ui.exe ./cmd/wd-ui
-      - name: Verify native version and UI autostart status commands
+      - name: Verify native version, autostart, and update-key status commands
         shell: pwsh
         run: |
           .\wd.exe version
@@ -114,6 +114,20 @@ jobs:
           .\wd-core.exe version
           .\wd-ui.exe version
           .\wd-ui.exe autostart status
+          $defaultKeyStatus = .\wd-ui.exe update-key status
+          if ($defaultKeyStatus -ne 'provisioned=false') {
+            throw "unexpected default update-key status: $defaultKeyStatus"
+          }
+          $fixtureKey = 'QkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkJCQkI'
+          go build -trimpath -buildvcs=false -ldflags "-X=wedecent.com/wedecent/internal/updateinfo.provisionedPublicKeyText=$fixtureKey" -o wd-ui-provisioned.exe ./cmd/wd-ui
+          $provisionedStatus = .\wd-ui-provisioned.exe update-key status
+          $expected = @(
+            'provisioned=true',
+            'fingerprint=sha256:425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c'
+          )
+          if (Compare-Object -ReferenceObject $expected -DifferenceObject $provisionedStatus) {
+            throw "unexpected provisioned update-key status: $($provisionedStatus -join ', ')"
+          }
 
   windows-release:
     runs-on: ubuntu-latest
@@ -126,6 +140,8 @@ jobs:
           cache: true
       - name: Test stable signed update publication boundary
         run: bash ./scripts/test-windows-stable-update-publication.sh
+      - name: Test Windows update public-key build injection
+        run: bash ./scripts/test-update-public-key-build.sh
       - name: Test Windows signing finalizer
         run: ./scripts/test-windows-signing-finalizer.sh
       - name: Test signed Windows public-download preparation
