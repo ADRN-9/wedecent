@@ -49,6 +49,8 @@ jobs:
         run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
         run: go vet ./...
+      - name: Test protocol version compatibility
+        run: go test ./internal/protocol ./internal/coreapi/ipc ./internal/identity ./internal/transport ./internal/routercontrol -run '^TestProtocolVersionCompatibility' -count=1
       - name: Fuzz protocol decoders
         run: |
           go test ./internal/protocol -run '^$' -fuzz '^FuzzReadFrame$' -fuzztime=5s
