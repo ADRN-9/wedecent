@@ -29,7 +29,9 @@
 - [ ] Signed release/update mechanism
   - [x] Authenticode-signed Windows release and immutable public-download verification
   - [x] Canonical signed stable-channel manifest format with rollback checks
-  - [ ] Network discovery, protected sequence persistence, installer download/application
+  - [x] Fixed-origin signed manifest discovery and protected sequence-state primitive
+  - [ ] Production update-key provisioning and stable-channel manifest publication
+  - [ ] Installer download, verification, application and post-success sequence commit
 
 ## Phase 2 — platform coverage
 
