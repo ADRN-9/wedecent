@@ -18,13 +18,21 @@ The audit schema intentionally has no arbitrary payload field. Terminal input/ou
 
 Rotation is local operational retention, not tamper evidence. A local account with permission to modify the role state directory can alter or delete local audit files. Central immutable audit retention remains a separate team-control-plane concern.
 
-## Initial event set
+## Event set
 
-This first persistence slice records local terminal-trust administration:
+Local trust administration records:
 
 - `trust.device_unpair` — client-side removal of a trusted device
 - `trust.client_revoke` — agent-side removal of a trusted terminal client
 
 Trust mutation commands persist an `attempt` event before changing the trust store, then append `success` or a stable `failed` reason. If the initial audit append fails, the trust mutation is not attempted. If the trust mutation succeeds but the final success event cannot be persisted, the command returns an explicit error describing that the state change already occurred.
 
-Pairing/session lifecycle events are intentionally handled in the follow-up slice of the same roadmap milestone rather than being inferred from generic process logs.
+Agent pairing and terminal lifecycle records:
+
+- `pairing.request` — denied or failed pairing attempts using stable reason codes only
+- `pairing.trust_added` — successful client trust creation after the single-use pairing secret has been consumed
+- `terminal.authorization` — direct-session authorization success or denial; grants and authorization-service error strings are never recorded
+- `terminal.session_opened` — successful, denied, or failed terminal-open attempts
+- `terminal.session_closed` — the end of an accepted terminal session with a stable close reason such as `process_exit`, `peer_close`, or `peer_disconnect`
+
+Runtime pairing/session audit writes are best-effort after the security decision: an audit I/O failure is emitted to the normal operator log but does not tear down an already-authorized terminal session. This differs intentionally from explicit trust mutation commands, where the pre-mutation audit event is fail-closed.
