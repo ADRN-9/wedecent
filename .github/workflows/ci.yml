@@ -78,7 +78,9 @@ jobs:
             'installer/windows/Install-WeDecent.ps1',
             'installer/windows/Uninstall-WeDecent.ps1',
             'installer/windows/Test-WeDecentInstall.ps1',
-            'scripts/test-windows-upgrade-preflight.ps1'
+            'installer/windows/Update-WeDecent.ps1',
+            'scripts/test-windows-upgrade-preflight.ps1',
+            'scripts/test-windows-updater.ps1'
           )
           foreach ($file in $files) {
             $tokens = $null
@@ -96,6 +98,9 @@ jobs:
       - name: Verify Windows upgrade user-process preflight
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
+      - name: Verify Windows updater security behavior
+        shell: pwsh
+        run: .\scripts\test-windows-updater.ps1
       - name: Test native Windows agent
         run: go test ./...
       - name: Build native Windows binaries
