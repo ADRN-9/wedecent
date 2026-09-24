@@ -25,7 +25,7 @@ PACKAGE="$WORK/package"
 mkdir -p -- "$RELEASE" "$PACKAGE"
 
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
-installer_scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
+installer_scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 Update-WeDecent.ps1)
 package_payload=("${binaries[@]}" VERSION.txt SHA256SUMS.txt "${installer_scripts[@]}" README.md)
 
 for name in "${binaries[@]}"; do
@@ -157,7 +157,7 @@ AFTER="$(snapshot_sources)"
 [[ -d "$OUT_DIR/release" && -d "$OUT_DIR/installer" ]] || fail 'signed output tree is incomplete'
 
 sign_count="$(wc -l < "$SIGN_LOG" | tr -d '[:space:]')"
-[[ "$sign_count" == '8' ]] || fail "signer invocation count = $sign_count; want 8"
+[[ "$sign_count" == '9' ]] || fail "signer invocation count = $sign_count; want 9"
 
 for name in "${binaries[@]}"; do
   "$VERIFIER" "$OUT_DIR/release/$name" || fail "release binary did not verify: $name"
@@ -190,7 +190,7 @@ if UNSIGNED_RELEASE_DIR="$RELEASE" \
    "$FINALIZER" >/dev/null 2>&1; then
   fail 'existing signed output was overwritten'
 fi
-[[ "$(wc -l < "$SIGN_LOG" | tr -d '[:space:]')" == '8' ]] || fail 'existing-output failure invoked signer'
+[[ "$(wc -l < "$SIGN_LOG" | tr -d '[:space:]')" == '9' ]] || fail 'existing-output failure invoked signer'
 
 printf 'unexpected\n' > "$PACKAGE/unexpected.txt"
 if UNSIGNED_RELEASE_DIR="$RELEASE" \
@@ -203,7 +203,7 @@ if UNSIGNED_RELEASE_DIR="$RELEASE" \
   fail 'unexpected package payload entry was accepted'
 fi
 [[ ! -e "$OUT_DIR_2" ]] || fail 'invalid package payload published signed output'
-[[ "$(wc -l < "$SIGN_LOG" | tr -d '[:space:]')" == '8' ]] || fail 'invalid package payload invoked signer'
+[[ "$(wc -l < "$SIGN_LOG" | tr -d '[:space:]')" == '9' ]] || fail 'invalid package payload invoked signer'
 rm -f -- "$PACKAGE/unexpected.txt"
 
 printf 'Windows signing finalizer behavior verified.\n'
