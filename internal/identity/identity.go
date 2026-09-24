@@ -32,14 +32,17 @@ type Identity struct {
 }
 
 func Ensure(dir, name string) (*Identity, error) {
+	return ensure(dir, name, defaultKeyProtectionScope())
+}
+
+func ensure(dir, name string, scope keyProtectionScope) (*Identity, error) {
 	name = SanitizeName(name)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create identity directory: %w", err)
 	}
-	keyPath := filepath.Join(dir, "identity.key")
 	certPath := filepath.Join(dir, "identity.crt")
 
-	priv, err := loadOrCreateKey(keyPath)
+	priv, err := loadOrCreatePrivateKey(dir, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -59,57 +62,8 @@ func Ensure(dir, name string) (*Identity, error) {
 			return nil, err
 		}
 	}
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return nil, err
-	}
-	keyPEM, err := os.ReadFile(keyPath)
-	if err != nil {
-		return nil, err
-	}
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("load TLS identity: %w", err)
-	}
-	cert.Leaf = leaf
+	cert := tlsCertificateFor(leaf, priv)
 	return &Identity{ID: id, Name: name, Certificate: cert, Leaf: leaf, PublicKey: pub, PrivateKey: priv}, nil
-}
-
-func loadOrCreateKey(path string) (ed25519.PrivateKey, error) {
-	data, err := os.ReadFile(path)
-	if err == nil {
-		block, _ := pem.Decode(data)
-		if block == nil || block.Type != "PRIVATE KEY" {
-			return nil, errors.New("invalid identity private key PEM")
-		}
-		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-		if err != nil {
-			return nil, fmt.Errorf("parse identity private key: %w", err)
-		}
-		priv, ok := key.(ed25519.PrivateKey)
-		if !ok {
-			return nil, errors.New("identity key is not Ed25519")
-		}
-		if err := os.Chmod(path, 0o600); err != nil {
-			return nil, fmt.Errorf("secure identity private key permissions: %w", err)
-		}
-		return priv, nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	der, err := x509.MarshalPKCS8PrivateKey(priv)
-	if err != nil {
-		return nil, err
-	}
-	if err := writePrivateFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der})); err != nil {
-		return nil, err
-	}
-	return priv, nil
 }
 
 func issueCertificate(path, name, id string, pub ed25519.PublicKey, priv ed25519.PrivateKey) (*x509.Certificate, error) {

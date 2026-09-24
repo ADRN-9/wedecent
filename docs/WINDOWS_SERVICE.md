@@ -12,7 +12,7 @@ Relay-auth-v2 streams use short-lived Ed25519 tickets signed by the machine iden
 - LocalSystem;
 - local Administrators.
 
-The service identity private key in this directory now supplies relay proof-of-possession. Do not loosen the state-directory ACL.
+The service identity private key in this directory supplies relay proof-of-possession. On Windows it is stored as a machine-scoped DPAPI blob (`identity.key.dpapi`) rather than plaintext PEM. Machine-scoped DPAPI is defense in depth, not the authorization boundary: keep the state-directory ACL restricted because a principal that can read the blob on the same machine may be able to ask DPAPI to decrypt it.
 
 ## Prerequisites
 
@@ -76,6 +76,8 @@ Use a non-default service name consistently with `--service-name` on management 
 
 The earlier service prototype stored `relay-token.dpapi` in the state directory. Relay-auth-v2 does not read that file. After the Worker is on v5 and the upgraded service has been validated, the stale DPAPI blob can be removed from the machine.
 
+Existing plaintext `identity.key` files are migrated on the next identity `Ensure`: WeDecent protects the same Ed25519 key with DPAPI, verifies the protected copy, and only then removes the live plaintext file. The public key, device ID, and existing trust pins therefore remain unchanged. Removing the old file is not secure erasure of filesystem history, backups, snapshots, or SSD remnants.
+
 ## Service runtime
 
 The SCM starts the binary with the internal command:
@@ -96,12 +98,12 @@ The upgraded service does not read `WEDECENT_RELAY_TOKEN`.
 
 ## Package installer
 
-The release package now includes `Install-WeDecent.ps1`, `Uninstall-WeDecent.ps1`, and `Test-WeDecentInstall.ps1`. The package installer creates the dedicated local account on a fresh machine, grants **Log on as a service**, verifies release checksums, and delegates identity/ACL/SCM setup to this command. Automated installation passes the generated password over standard input with `--account-password-stdin`; the password is not placed in the command line, environment, or a temporary file.
+The release package includes `Install-WeDecent.ps1`, `Uninstall-WeDecent.ps1`, and `Test-WeDecentInstall.ps1`. The package installer creates the dedicated local account on a fresh machine, grants **Log on as a service**, verifies release checksums, and delegates identity/ACL/SCM setup to this command. Automated installation passes the generated password over standard input with `--account-password-stdin`; the password is not placed in the command line, environment, or a temporary file.
 
 The low-level `wd-agent service install` command intentionally still does not create accounts or grant user rights itself. Without `--account-password-stdin` it retains the existing hidden interactive password prompt.
 
 ## Current limitations
 
-- Identity private keys are filesystem-protected and are not TPM/CNG-backed yet.
+- DPAPI protection is machine-scoped for service-install compatibility; TPM/CNG non-exportable identity keys are not implemented yet.
 - The service log is a local text file rather than Windows Event Log.
-- Authenticode signing and MSI/WiX packaging are not implemented yet.
+- MSI/WiX packaging is not implemented yet.

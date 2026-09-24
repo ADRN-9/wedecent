@@ -2,9 +2,6 @@ package identity
 
 import (
 	"crypto/ed25519"
-	"crypto/tls"
-	"crypto/x509"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"os"
@@ -12,38 +9,22 @@ import (
 	"strings"
 )
 
-// Load reads an existing device identity without creating or renewing key or
-// certificate material.
+// Load reads an existing device identity without creating, migrating, or
+// renewing key or certificate material.
 func Load(dir string) (*Identity, error) {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil, errors.New("identity directory is required")
 	}
 
-	keyPath := filepath.Join(dir, "identity.key")
 	certPath := filepath.Join(dir, "identity.crt")
-	if err := requireRegularFile(keyPath, "identity private key"); err != nil {
-		return nil, err
-	}
 	if err := requireRegularFile(certPath, "identity certificate"); err != nil {
 		return nil, err
 	}
 
-	keyPEM, err := os.ReadFile(keyPath)
+	priv, err := loadExistingPrivateKey(dir)
 	if err != nil {
-		return nil, fmt.Errorf("read identity private key: %w", err)
-	}
-	block, _ := pem.Decode(keyPEM)
-	if block == nil || block.Type != "PRIVATE KEY" {
-		return nil, errors.New("invalid identity private key PEM")
-	}
-	parsedKey, err := x509.ParsePKCS8PrivateKey(block.Bytes)
-	if err != nil {
-		return nil, fmt.Errorf("parse identity private key: %w", err)
-	}
-	priv, ok := parsedKey.(ed25519.PrivateKey)
-	if !ok {
-		return nil, errors.New("identity key is not Ed25519")
+		return nil, err
 	}
 	pub := priv.Public().(ed25519.PublicKey)
 
@@ -61,16 +42,7 @@ func Load(dir string) (*Identity, error) {
 		return nil, errors.New("identity certificate device ID does not match private key")
 	}
 
-	certPEM, err := os.ReadFile(certPath)
-	if err != nil {
-		return nil, fmt.Errorf("read identity certificate: %w", err)
-	}
-	cert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return nil, fmt.Errorf("load TLS identity: %w", err)
-	}
-	cert.Leaf = leaf
-
+	cert := tlsCertificateFor(leaf, priv)
 	return &Identity{
 		ID:          id,
 		Name:        SanitizeName(leaf.Subject.CommonName),

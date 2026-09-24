@@ -13,7 +13,8 @@ func TestLoadExistingIdentityWithoutReplacingMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	keyBefore, err := os.ReadFile(filepath.Join(dir, "identity.key"))
+	keyPath := identityPrivateKeyPath(dir)
+	keyBefore, err := os.ReadFile(keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +31,7 @@ func TestLoadExistingIdentityWithoutReplacingMaterial(t *testing.T) {
 		t.Fatalf("loaded identity = %q/%q", loaded.ID, loaded.Name)
 	}
 
-	keyAfter, err := os.ReadFile(filepath.Join(dir, "identity.key"))
+	keyAfter, err := os.ReadFile(keyPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,10 +49,10 @@ func TestLoadMissingIdentityDoesNotCreateFiles(t *testing.T) {
 	if _, err := Load(dir); err == nil {
 		t.Fatal("Load succeeded without identity files")
 	}
-	for _, name := range []string{"identity.key", "identity.crt"} {
-		_, err := os.Lstat(filepath.Join(dir, name))
+	for _, path := range []string{identityPrivateKeyPath(dir), filepath.Join(dir, "identity.crt")} {
+		_, err := os.Lstat(path)
 		if !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("%s was created or stat failed: %v", name, err)
+			t.Fatalf("%s was created or stat failed: %v", path, err)
 		}
 	}
 }
@@ -65,11 +66,11 @@ func TestLoadRejectsSymlinkedPrivateKey(t *testing.T) {
 	if _, err := Ensure(other, "other"); err != nil {
 		t.Fatal(err)
 	}
-	keyPath := filepath.Join(dir, "identity.key")
+	keyPath := identityPrivateKeyPath(dir)
 	if err := os.Remove(keyPath); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(other, "identity.key"), keyPath); err != nil {
+	if err := os.Symlink(identityPrivateKeyPath(other), keyPath); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	if _, err := Load(dir); err == nil {
