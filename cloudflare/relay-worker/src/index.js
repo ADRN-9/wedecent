@@ -9,6 +9,11 @@ import {
   replayMetadataFromRequest,
   scheduleReplayCleanup,
 } from "./grant-replay.js";
+import {
+  consumeTokenBucket,
+  enforceRelayConnectionRateLimit,
+  limiterRequestConfig,
+} from "./rate-limit.js";
 
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const STREAM_PREFIX = "/v1/stream/";
@@ -22,7 +27,7 @@ export default {
     const url = new URL(request.url);
 
     if (request.method === "GET" && url.pathname === "/healthz") {
-      return Response.json({ service: "wedecent-relay", status: "ok", version: 9 });
+      return Response.json({ service: "wedecent-relay", status: "ok", version: 10 });
     }
 
     if (url.pathname === TIME_PATH) {
@@ -82,6 +87,17 @@ export default {
       return new Response("Clients must not specify a relay slot", { status: 400 });
     }
 
+    const admission = await enforceRelayConnectionRateLimit(request, env, deviceId);
+    if (!admission.ok) {
+      return new Response(admission.message, {
+        status: admission.status,
+        headers: {
+          "Cache-Control": "no-store",
+          "Retry-After": String(admission.retryAfterSeconds),
+        },
+      });
+    }
+
     const authorization = await authorizeStream(request, env, {
       deviceId,
       role,
@@ -97,7 +113,6 @@ export default {
     );
   },
 };
-
 
 async function authorizeDirectRequest(request, env, url) {
   if (request.method !== "POST") {
@@ -154,6 +169,27 @@ function bearerToken(request) {
   }
   const match = /^Bearer ([^\s]+)$/.exec(value);
   return match ? match[1] : "";
+}
+
+export class ConnectionRateLimiter extends DurableObject {
+  async fetch(request) {
+    const config = limiterRequestConfig(request);
+    if (!config) {
+      return new Response("Invalid rate-limit request", { status: 400 });
+    }
+
+    try {
+      const state = await this.ctx.storage.get("bucket");
+      const result = consumeTokenBucket(state, Date.now(), config.capacity, config.windowMS);
+      await this.ctx.storage.put("bucket", result.state);
+      return Response.json(
+        { accepted: result.accepted, retry_after_ms: result.retryAfterMS },
+        { headers: { "Cache-Control": "no-store" } },
+      );
+    } catch {
+      return new Response("Rate-limit storage unavailable", { status: 500 });
+    }
+  }
 }
 
 export class DeviceRelay extends DurableObject {

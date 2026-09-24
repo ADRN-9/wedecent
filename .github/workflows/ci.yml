@@ -152,14 +152,21 @@ jobs:
       - uses: actions/setup-node@v6
         with:
           node-version: '24'
+      - name: Install pinned Worker tooling
+        working-directory: cloudflare/relay-worker
+        run: npm install --ignore-scripts --no-audit --no-fund
       - name: Check Worker syntax
         working-directory: cloudflare/relay-worker
         run: |
           node --check src/index.js
           node --check src/relay-auth.js
-      - name: Test relay authentication
+          node --check src/rate-limit.js
+      - name: Test relay authentication and admission
         working-directory: cloudflare/relay-worker
         run: npm test
+      - name: Validate Worker bundle and configuration
+        working-directory: cloudflare/relay-worker
+        run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wedecent-relay-worker-dry-run"
 
   control-plane:
     runs-on: ubuntu-latest
