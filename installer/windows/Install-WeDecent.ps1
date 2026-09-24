@@ -21,7 +21,12 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:BinaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
-$script:VerifiedBinaryHashes = @{}
+$script:InstallNames = @($script:BinaryNames + @('Update-WeDecent.ps1'))
+$script:PackagePayloadNames = @(
+    $script:BinaryNames +
+    @('VERSION.txt', 'SHA256SUMS.txt', 'Install-WeDecent.ps1', 'Uninstall-WeDecent.ps1', 'Test-WeDecentInstall.ps1', 'Update-WeDecent.ps1', 'README.md')
+)
+$script:VerifiedInstallHashes = @{}
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -225,27 +230,50 @@ function Get-Sha256FileHash {
 }
 
 function Assert-ReleaseBundle {
-    $required = @($script:BinaryNames + @('VERSION.txt', 'SHA256SUMS.txt'))
+    $required = @($script:PackagePayloadNames + @('PACKAGE_SHA256SUMS.txt'))
     foreach ($name in $required) {
         $path = Join-Path $BundlePath $name
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
-            throw "Release bundle is missing $name at $path"
+            throw "Installer package is missing $name at $path"
+        }
+        $item = Get-Item -LiteralPath $path -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Installer package entry is a reparse point: $name"
         }
     }
 
-    $hashes = Get-ManifestHashes (Join-Path $BundlePath 'SHA256SUMS.txt')
-    $verifiedHashes = @{}
+    $releaseHashes = Get-ManifestHashes (Join-Path $BundlePath 'SHA256SUMS.txt')
+    if ($releaseHashes.Count -ne $script:BinaryNames.Count) {
+        throw 'SHA256SUMS.txt must contain exactly the five release binaries.'
+    }
     foreach ($name in $script:BinaryNames) {
-        if (-not $hashes.ContainsKey($name)) {
+        if (-not $releaseHashes.ContainsKey($name)) {
             throw "SHA256SUMS.txt has no entry for $name"
         }
         $actual = Get-Sha256FileHash (Join-Path $BundlePath $name)
-        if ($actual -ne $hashes[$name]) {
+        if ($actual -ne $releaseHashes[$name]) {
             throw "Checksum mismatch for $name"
         }
-        $verifiedHashes[$name] = $hashes[$name]
     }
-    $script:VerifiedBinaryHashes = $verifiedHashes
+
+    $packageHashes = Get-ManifestHashes (Join-Path $BundlePath 'PACKAGE_SHA256SUMS.txt')
+    if ($packageHashes.Count -ne $script:PackagePayloadNames.Count) {
+        throw "PACKAGE_SHA256SUMS.txt must contain exactly $($script:PackagePayloadNames.Count) payload entries."
+    }
+    foreach ($name in $script:PackagePayloadNames) {
+        if (-not $packageHashes.ContainsKey($name)) {
+            throw "PACKAGE_SHA256SUMS.txt has no entry for $name"
+        }
+        $actual = Get-Sha256FileHash (Join-Path $BundlePath $name)
+        if ($actual -ne $packageHashes[$name]) {
+            throw "Installer package checksum mismatch for $name"
+        }
+    }
+
+    $verifiedHashes = @{}
+    foreach ($name in $script:BinaryNames) { $verifiedHashes[$name] = $releaseHashes[$name] }
+    $verifiedHashes['Update-WeDecent.ps1'] = $packageHashes['Update-WeDecent.ps1']
+    $script:VerifiedInstallHashes = $verifiedHashes
 
     $versionLine = Get-Content -LiteralPath (Join-Path $BundlePath 'VERSION.txt') |
         Where-Object { $_ -like 'version=*' } |
@@ -502,7 +530,7 @@ function Remove-BinaryBackup {
 function Get-BinaryDestinations {
     param([Parameter(Mandatory = $true)][string]$Directory)
     $destinations = @{}
-    foreach ($name in $script:BinaryNames) {
+    foreach ($name in $script:InstallNames) {
         $destinations[$name] = Join-Path $Directory $name
     }
     return $destinations
@@ -553,14 +581,14 @@ function Install-Binaries {
         [Parameter(Mandatory = $true)][System.Collections.Generic.List[string]]$AttemptedNames,
         [Parameter(Mandatory = $true)][hashtable]$OriginalState
     )
-    foreach ($name in $script:BinaryNames) {
-        if (-not $script:VerifiedBinaryHashes.ContainsKey($name)) {
+    foreach ($name in $script:InstallNames) {
+        if (-not $script:VerifiedInstallHashes.ContainsKey($name)) {
             throw "No pinned verified hash for $name"
         }
         $source = Join-Path $SourceDirectory $name
         $sourceHash = Get-Sha256FileHash $source
-        if ($sourceHash -ne $script:VerifiedBinaryHashes[$name]) {
-            throw "Release bundle changed after verification: $name"
+        if ($sourceHash -ne $script:VerifiedInstallHashes[$name]) {
+            throw "Installer package changed after verification: $name"
         }
         $destination = $Destinations[$name]
         $OriginalState[$name] = Test-Path -LiteralPath $destination -PathType Leaf
@@ -571,16 +599,20 @@ function Install-Binaries {
 
 function Assert-InstalledBinaries {
     param([Parameter(Mandatory = $true)][hashtable]$Destinations)
-    foreach ($name in $script:BinaryNames) {
-        if (-not $script:VerifiedBinaryHashes.ContainsKey($name)) {
+    foreach ($name in $script:InstallNames) {
+        if (-not $script:VerifiedInstallHashes.ContainsKey($name)) {
             throw "No pinned verified hash for $name"
         }
         $destination = $Destinations[$name]
         if (-not (Test-Path -LiteralPath $destination -PathType Leaf)) {
-            throw "Installed binary is missing: $destination"
+            throw "Installed file is missing: $destination"
+        }
+        $item = Get-Item -LiteralPath $destination -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Installed file is a reparse point: $destination"
         }
         $actual = Get-Sha256FileHash $destination
-        if ($actual -ne $script:VerifiedBinaryHashes[$name]) {
+        if ($actual -ne $script:VerifiedInstallHashes[$name]) {
             throw "Installed checksum mismatch for $name"
         }
     }
@@ -600,7 +632,7 @@ function Rollback-Binaries {
 
 function Remove-BinaryBackups {
     param([Parameter(Mandatory = $true)][hashtable]$Destinations)
-    foreach ($name in $script:BinaryNames) {
+    foreach ($name in $script:InstallNames) {
         Remove-BinaryBackup $Destinations[$name]
     }
 }
@@ -695,7 +727,7 @@ if ($service) {
     } catch {
         $failed = $_
         Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        Invoke-RollbackStep 'restore installed binaries' {
+        Invoke-RollbackStep 'restore installed files' {
             Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
         }
         Invoke-RollbackStep 'restart previous agent service' {
@@ -791,7 +823,7 @@ if ($service) {
                 if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
             }
         }
-        Invoke-RollbackStep 'restore installed binaries' {
+        Invoke-RollbackStep 'restore installed files' {
             Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
         }
         if ($AddToMachinePath) {
@@ -839,6 +871,7 @@ Write-Host "Agent:     $agentDestination"
 Write-Host "RouterCtl: $($binaryDestinations['wd-routerctl.exe'])"
 Write-Host "Core:      $($binaryDestinations['wd-core.exe'])"
 Write-Host "UI:        $($binaryDestinations['wd-ui.exe'])"
+Write-Host "Updater:   $($binaryDestinations['Update-WeDecent.ps1'])"
 Write-Host "State:     $StateDir"
 Write-Host "Service:   $ServiceName ($($finalService.StartName))"
 Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the installer does not register them as services or autostart entries.'
