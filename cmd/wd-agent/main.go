@@ -256,6 +256,7 @@ type serveConfig struct {
 	Name                   string
 	ListenAddr             string
 	RFCOMMChannel          int
+	SerialDevice           string
 	Shell                  string
 	Discover               bool
 	MaxConnections         int
@@ -310,6 +311,12 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"rfcomm-channel",
 		0,
 		"Linux Bluetooth RFCOMM listen channel 1-30; 0 disables RFCOMM",
+	)
+	fs.StringVar(
+		&cfg.SerialDevice,
+		"serial",
+		"",
+		"Linux serial device path, e.g. /dev/ttyACM0; empty disables serial",
 	)
 	fs.StringVar(
 		&cfg.Shell,
@@ -455,6 +462,13 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		)
 	}
 
+	if err := validateAgentSerialEndpoint(cfg.SerialDevice); err != nil {
+		return serveConfig{}, fmt.Errorf("--serial: %w", err)
+	}
+	if cfg.SerialDevice != "" && runtime.GOOS != "linux" {
+		return serveConfig{}, errors.New("--serial is supported only on Linux")
+	}
+
 	if err := cfg.sessionPolicy().Validate(); err != nil {
 		return serveConfig{}, fmt.Errorf("session policy: %w", err)
 	}
@@ -475,6 +489,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 
 	if cfg.ListenAddr == "" &&
 		cfg.RFCOMMChannel == 0 &&
+		cfg.SerialDevice == "" &&
 		cfg.RelayAddr == "" &&
 		cfg.WebRelay == "" &&
 		cfg.RouteControlListenAddr == "" &&
@@ -571,7 +586,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	}
 	defer listeners.close()
 
-	if (cfg.ListenAddr != "" || cfg.RFCOMMChannel != 0) &&
+	if (cfg.ListenAddr != "" || cfg.RFCOMMChannel != 0 || cfg.SerialDevice != "") &&
 		directAuthorizer == nil {
 		slog.Warn(
 			"direct terminal authorization is unavailable; configure --authorization-url or --web-relay to enable direct terminal sessions",
@@ -593,6 +608,9 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	)
 
 	listeners.printAddresses()
+	if cfg.SerialDevice != "" {
+		fmt.Printf("Serial:        %s\n", cfg.SerialDevice)
+	}
 
 	if cfg.Discover {
 		if listeners.direct == nil {
@@ -684,7 +702,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		}
 	}
 
-	return listeners.serve(ctx)
+	return serveAgentLocalTransports(ctx, listeners, cfg.SerialDevice, server)
 }
 
 func webRelayLoop(ctx context.Context, slot int, baseURL string, opts transport.WebRelayOptions, id *identity.Identity, server *session.Server) {
@@ -776,6 +794,6 @@ Commands:
   enrollment-proof Print or sign a cryptographic device-enrollment request
   pairing-secret   Rotate and print a one-time pairing secret
   clients          List or revoke paired terminal clients
-  serve            Run the terminal agent (direct, relay, or both)
+  serve            Run the terminal agent (direct, RFCOMM, serial, relay, or routing)
   service          Install and manage the native Windows service`)
 }
