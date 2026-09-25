@@ -8,18 +8,19 @@ import (
 	"testing"
 )
 
-func TestWindowsRFCOMMAddressFromSockaddr(t *testing.T) {
+func TestWindowsRFCOMMAddressFromSockaddrUsesListenerChannel(t *testing.T) {
 	locator, err := parseRFCOMMLocator("01:23:45:67:89:AB/7")
 	if err != nil {
 		t.Fatalf("parseRFCOMMLocator: %v", err)
 	}
 	raw := windowsRFCOMMSockaddr(locator)
-	got, err := windowsRFCOMMAddressFromSockaddr(raw)
+	binary.LittleEndian.PutUint32(raw[32:36], 0)
+	got, err := windowsRFCOMMAddressFromSockaddr(raw, 9)
 	if err != nil {
 		t.Fatalf("windowsRFCOMMAddressFromSockaddr: %v", err)
 	}
-	if got != locator.canonical {
-		t.Fatalf("address = %q, want %q", got, locator.canonical)
+	if got != "01:23:45:67:89:AB/9" {
+		t.Fatalf("address = %q", got)
 	}
 }
 
@@ -30,20 +31,19 @@ func TestWindowsRFCOMMAddressFromSockaddrRejectsFamily(t *testing.T) {
 	}
 	raw := windowsRFCOMMSockaddr(locator)
 	binary.LittleEndian.PutUint16(raw[0:2], 2)
-	if _, err := windowsRFCOMMAddressFromSockaddr(raw); err == nil || !strings.Contains(err.Error(), "address family") {
+	if _, err := windowsRFCOMMAddressFromSockaddr(raw, 7); err == nil || !strings.Contains(err.Error(), "address family") {
 		t.Fatalf("family error = %v", err)
 	}
 }
 
-func TestWindowsRFCOMMAddressFromSockaddrRejectsChannel(t *testing.T) {
+func TestWindowsRFCOMMAddressFromSockaddrRejectsListenerChannel(t *testing.T) {
 	locator, err := parseRFCOMMLocator("01:23:45:67:89:AB/7")
 	if err != nil {
 		t.Fatalf("parseRFCOMMLocator: %v", err)
 	}
-	for _, channel := range []uint32{0, 31} {
-		raw := windowsRFCOMMSockaddr(locator)
-		binary.LittleEndian.PutUint32(raw[32:36], channel)
-		if _, err := windowsRFCOMMAddressFromSockaddr(raw); err == nil || !strings.Contains(err.Error(), "invalid channel") {
+	raw := windowsRFCOMMSockaddr(locator)
+	for _, channel := range []uint8{0, 31} {
+		if _, err := windowsRFCOMMAddressFromSockaddr(raw, channel); err == nil || !strings.Contains(err.Error(), "listener channel") {
 			t.Fatalf("channel %d error = %v", channel, err)
 		}
 	}
