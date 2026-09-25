@@ -4,8 +4,6 @@ import (
 	"context"
 	"errors"
 	"net"
-	"path/filepath"
-	"strings"
 )
 
 const defaultSerialBaud = 115200
@@ -26,10 +24,6 @@ func (d SerialDialer) Dial(ctx context.Context, endpoint string) (Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	path, err := normalizeSerialPath(endpoint)
-	if err != nil {
-		return nil, err
-	}
 	baud := d.Baud
 	if baud == 0 {
 		baud = defaultSerialBaud
@@ -37,26 +31,7 @@ func (d SerialDialer) Dial(ctx context.Context, endpoint string) (Conn, error) {
 	if baud != defaultSerialBaud {
 		return nil, errors.New("transport: serial currently requires 115200 baud")
 	}
-	return dialSerial(ctx, path, baud)
-}
-
-func normalizeSerialPath(endpoint string) (string, error) {
-	if endpoint == "" {
-		return "", errors.New("transport: serial device path is required")
-	}
-	if strings.TrimSpace(endpoint) != endpoint {
-		return "", errors.New("transport: serial device path must not contain surrounding whitespace")
-	}
-	if strings.IndexByte(endpoint, 0) >= 0 {
-		return "", errors.New("transport: serial device path contains NUL")
-	}
-	if !filepath.IsAbs(endpoint) || filepath.Clean(endpoint) != endpoint {
-		return "", errors.New("transport: serial device path must be a canonical absolute path")
-	}
-	if endpoint == "/dev" || !strings.HasPrefix(endpoint, "/dev/") {
-		return "", errors.New("transport: serial device path must be under /dev")
-	}
-	return endpoint, nil
+	return dialSerial(ctx, endpoint, baud)
 }
 
 type serialAddr string
