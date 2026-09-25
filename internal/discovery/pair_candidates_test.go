@@ -83,13 +83,25 @@ func TestSelectPairCandidateDeduplicatesExactEndpoint(t *testing.T) {
 func TestSelectPairCandidateRejectsMalformedEndpoint(t *testing.T) {
 	t.Parallel()
 
-	_, err := SelectPairCandidate([]Result{{
-		DeviceID:    testPairDeviceID,
-		Endpoint:    "not-an-endpoint",
-		Fingerprint: testPairFP,
-	}}, testPairDeviceID, testPairFP)
-	if err == nil || errors.Is(err, ErrNoPairCandidate) {
-		t.Fatalf("error = %v, want malformed endpoint error", err)
+	for _, endpoint := range []string{
+		"not-an-endpoint",
+		" 192.0.2.10:7443",
+		"0.0.0.0:7443",
+		"224.0.0.1:7443",
+		"192.0.2.10:0",
+	} {
+		endpoint := endpoint
+		t.Run(endpoint, func(t *testing.T) {
+			t.Parallel()
+			_, err := SelectPairCandidate([]Result{{
+				DeviceID:    testPairDeviceID,
+				Endpoint:    endpoint,
+				Fingerprint: testPairFP,
+			}}, testPairDeviceID, testPairFP)
+			if err == nil || errors.Is(err, ErrNoPairCandidate) {
+				t.Fatalf("error = %v, want malformed endpoint error", err)
+			}
+		})
 	}
 }
 
@@ -101,8 +113,14 @@ func TestSelectPairCandidateRejectsInvalidExpectedIdentity(t *testing.T) {
 		t.Fatalf("error = %v, want ErrTrustedIdentityMismatch", err)
 	}
 
-	_, err = SelectPairCandidate(nil, "not-a-device", testPairFP)
-	if err == nil {
-		t.Fatal("invalid device ID unexpectedly accepted")
+	for _, deviceID := range []string{"not-a-device", " " + testPairDeviceID, testPairDeviceID + " "} {
+		deviceID := deviceID
+		t.Run(deviceID, func(t *testing.T) {
+			t.Parallel()
+			_, err := SelectPairCandidate(nil, deviceID, testPairFP)
+			if err == nil {
+				t.Fatal("invalid device ID unexpectedly accepted")
+			}
+		})
 	}
 }
