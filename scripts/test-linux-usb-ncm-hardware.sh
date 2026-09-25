@@ -14,9 +14,26 @@ for command in go grep ip mktemp readlink sed tee tr; do
 done
 
 : "${WEDECENT_USB_NCM_INTERFACE:?set WEDECENT_USB_NCM_INTERFACE to the already configured USB NCM host interface}"
-: "${WEDECENT_USB_NCM_PEER_IP:?set WEDECENT_USB_NCM_PEER_IP to the gadget-side point-to-point IP address}"
+: "${WEDECENT_USB_NCM_PEER_IP:?set WEDECENT_USB_NCM_PEER_IP to the gadget-side point-to-point IPv4 address}"
 : "${WEDECENT_USB_NCM_FINGERPRINT:?set WEDECENT_USB_NCM_FINGERPRINT to the peer WeDecent fingerprint}"
 : "${WEDECENT_USB_NCM_PAIRING_SECRET:?set WEDECENT_USB_NCM_PAIRING_SECRET to a live single-use pairing secret}"
+
+validate_ipv4() {
+  local address="$1" octet
+  [[ "$address" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  local old_ifs="$IFS"
+  IFS='.' read -r -a octets <<<"$address"
+  IFS="$old_ifs"
+  for octet in "${octets[@]}"; do
+    [[ "$octet" =~ ^[0-9]+$ ]] || return 1
+    (( 10#$octet <= 255 )) || return 1
+  done
+}
+
+if ! validate_ipv4 "$WEDECENT_USB_NCM_PEER_IP"; then
+  echo "WEDECENT_USB_NCM_PEER_IP must be an explicit IPv4 address" >&2
+  exit 1
+fi
 
 peer_port="${WEDECENT_USB_NCM_PEER_PORT:-7443}"
 if [[ ! "$peer_port" =~ ^[0-9]+$ ]] || (( peer_port < 1 || peer_port > 65535 )); then
@@ -25,8 +42,8 @@ if [[ ! "$peer_port" =~ ^[0-9]+$ ]] || (( peer_port < 1 || peer_port > 65535 ));
 fi
 
 iface="$WEDECENT_USB_NCM_INTERFACE"
-if [[ "$iface" == */* || -z "$iface" || ! -d "/sys/class/net/$iface" ]]; then
-  echo "WEDECENT_USB_NCM_INTERFACE must name an existing network interface" >&2
+if [[ ! "$iface" =~ ^[A-Za-z0-9_.:-]+$ || ! -d "/sys/class/net/$iface" ]]; then
+  echo "WEDECENT_USB_NCM_INTERFACE must name an existing simple network interface" >&2
   exit 1
 fi
 if [[ ! -e "/sys/class/net/$iface/device" ]]; then
@@ -61,14 +78,14 @@ if [[ ! "$vendor" =~ ^[0-9A-Fa-f]{4}$ || ! "$product" =~ ^[0-9A-Fa-f]{4}$ ]]; th
   exit 1
 fi
 
-operstate="$(cat "/sys/class/net/$iface/operstate" 2>/dev/null || true)"
+operstate="$(<"/sys/class/net/$iface/operstate")"
 if [[ "$operstate" != "up" && "$operstate" != "unknown" ]]; then
   echo "$iface is not operational (state: $operstate)" >&2
   exit 1
 fi
 
 route_output="$(ip route get "$WEDECENT_USB_NCM_PEER_IP")"
-if ! grep -Eq "(^|[[:space:]])dev[[:space:]]+$iface([[:space:]]|$)" <<<"$route_output"; then
+if ! grep -Fq " dev $iface " <<<" $route_output "; then
   echo "route to $WEDECENT_USB_NCM_PEER_IP does not use $iface" >&2
   echo "$route_output" >&2
   exit 1
