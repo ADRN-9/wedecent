@@ -1,5 +1,17 @@
 # Roadmap
 
+## v0.4.4 core release status
+
+The secure remote-terminal/routed-access core and Phase 2 platform coverage are implemented. The repository can be finalized as a v0.4.4 release candidate once canonical CI passes on the release-readiness change.
+
+The remaining Phase 1.1 checkboxes are external/platform-boundary items rather than missing core transport/session code:
+
+- Windows TPM/CNG non-exportable Ed25519 identity support: issue #84.
+- Non-Windows service-safe platform-backed Ed25519 identity storage: issue #92.
+- Production stable-update trust/publisher provisioning: issue #93; requires an explicit production change.
+
+Later Phase 3-5 items are product expansion and are not prerequisites for the v0.4.4 secure terminal core.
+
 ## Phase 1 — working foundation (implemented)
 
 - [x] Linux PTY
@@ -23,14 +35,15 @@
 - [x] Config files rather than only CLI flags
 - [ ] OS keychain/TPM-backed private keys where available
   - [x] Windows DPAPI protection and plaintext-key migration
-  - [ ] TPM/CNG non-exportable Windows keys and non-Windows platform stores
+  - [ ] TPM/CNG non-exportable Windows Ed25519 keys — blocked/tracked in #84
+  - [ ] Non-Windows platform-backed Ed25519 storage with unattended service semantics — tracked in #92
 - [x] Fuzz tests for frame and relay-control decoders
 - [x] Protocol negotiation/version compatibility tests
 - [ ] Signed release/update mechanism
   - [x] Authenticode-signed Windows release and immutable public-download verification
   - [x] Canonical signed stable-channel manifest format with rollback checks
   - [x] Fixed-origin signed manifest discovery and protected sequence-state primitive
-  - [ ] Production update-key provisioning and stable-channel manifest publication
+  - [ ] Production update-key provisioning and stable-channel manifest publication — tracked in #93
     - [x] Strict public-key artifact format plus external-signer/atomic-publisher tooling
     - [ ] Provision the production client public-key pin and production atomic publisher hook
   - [x] Installer download, verification, application and post-success sequence commit
@@ -38,7 +51,7 @@
     - [x] Exact package/Authenticode verification immediately before application
     - [x] Installer application, recovery and post-success sequence commit
 
-## Phase 2 — platform coverage
+## Phase 2 — platform coverage (implemented)
 
 - [x] Windows ConPTY agent
 - [x] macOS PTY implementation
@@ -46,6 +59,8 @@
 - [x] systemd/launchd/Windows Service packaging
 
 ## Phase 3 — physical/offline transports
+
+These are post-v0.4.4 transport expansions, not release blockers for the secure terminal core.
 
 ### Bluetooth
 
