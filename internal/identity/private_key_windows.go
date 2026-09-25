@@ -350,20 +350,7 @@ func verifyAndRemoveLegacyKey(path string, protected ed25519.PrivateKey) error {
 }
 
 func verifyAndRemoveLegacyKeyOnce(path string, protected ed25519.PrivateKey) error {
-	legacy, err := loadLegacyPrivateKeyIfPresent(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if !legacy.Public().(ed25519.PublicKey).Equal(protected.Public().(ed25519.PublicKey)) {
-		return errors.New("protected and legacy identity private keys do not match")
-	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove redundant plaintext identity private key: %w", err)
-	}
-	return nil
+	return verifyAndDeleteLegacyKeyByHandle(path, protected)
 }
 
 func isLegacyMigrationRace(err error) bool {
