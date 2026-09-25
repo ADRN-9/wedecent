@@ -84,6 +84,7 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
 - [ ] USB networking adapter as a simpler high-throughput path
   - [x] Guarded Linux configfs NCM function helper with explicit UDC/MAC/VID/PID and no host-network mutation
   - [x] Reuse existing pinned direct-TCP transport over an operator-configured point-to-point IP link
+  - [x] Hardware-required USB-interface/route validation harness and operator procedure
   - [ ] Record successful real NCM enumeration and authorized direct-TCP terminal validation over USB
 - [ ] Direct bulk-endpoint transport only where driver/user-mode support is practical
 
