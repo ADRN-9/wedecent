@@ -10,6 +10,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -133,7 +134,7 @@ func (l *windowsRFCOMMListener) Accept() (net.Conn, error) {
 			return nil, fmt.Errorf("transport: accept RFCOMM: %w", err)
 		}
 
-		if err := waitWindowsSocket(nil, l.socket, true, zeroTime); err != nil {
+		if err := waitWindowsSocket(nil, l.socket, true, time.Time{}); err != nil {
 			if l.closed.Load() {
 				return nil, net.ErrClosed
 			}
@@ -166,7 +167,5 @@ func windowsRFCOMMAddressFromSockaddr(raw [40]byte) (string, error) {
 	copy(addr[:], raw[8:14])
 	return canonicalRFCOMMAddress(addr, uint8(port)), nil
 }
-
-var zeroTime = func() (t time.Time) { return t }()
 
 var _ net.Listener = (*windowsRFCOMMListener)(nil)
