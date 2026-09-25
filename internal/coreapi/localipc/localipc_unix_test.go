@@ -13,7 +13,7 @@ import (
 )
 
 func TestUnixListenDialRoundTripAndPermissions(t *testing.T) {
-	t.Setenv("WEDECENT_HOME", t.TempDir())
+	t.Setenv("WEDECENT_HOME", shortUnixIPCTestHome(t))
 
 	listener, err := Listen()
 	if err != nil {
@@ -79,7 +79,7 @@ func TestUnixEndpointRejectsRelativeCoreHome(t *testing.T) {
 }
 
 func TestUnixListenRejectsUnsafeExistingEndpoint(t *testing.T) {
-	base := t.TempDir()
+	base := shortUnixIPCTestHome(t)
 	t.Setenv("WEDECENT_HOME", base)
 	path, err := Endpoint()
 	if err != nil {
@@ -97,7 +97,7 @@ func TestUnixListenRejectsUnsafeExistingEndpoint(t *testing.T) {
 }
 
 func TestUnixListenRejectsSecondLiveListener(t *testing.T) {
-	t.Setenv("WEDECENT_HOME", t.TempDir())
+	t.Setenv("WEDECENT_HOME", shortUnixIPCTestHome(t))
 	listener, err := Listen()
 	if err != nil {
 		t.Fatal(err)
@@ -110,12 +110,26 @@ func TestUnixListenRejectsSecondLiveListener(t *testing.T) {
 }
 
 func TestUnixDialHonorsCanceledContext(t *testing.T) {
-	t.Setenv("WEDECENT_HOME", t.TempDir())
+	t.Setenv("WEDECENT_HOME", shortUnixIPCTestHome(t))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := Dial(ctx); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Dial() error = %v, want context.Canceled", err)
 	}
+}
+
+func shortUnixIPCTestHome(t *testing.T) string {
+	t.Helper()
+	base := os.TempDir()
+	if len(filepath.Join(base, "wd-ipc-1234567890", "core", unixSocketName)) >= 100 {
+		base = "/tmp"
+	}
+	dir, err := os.MkdirTemp(base, "wd-ipc-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	return dir
 }
 
 func assertMode(t *testing.T, path string, want os.FileMode) {
