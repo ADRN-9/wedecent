@@ -373,24 +373,29 @@ func (s *agentListenerSet) serve(ctx context.Context) error {
 		}()
 	}
 
-	err := <-errCh
+	firstErr := <-errCh
 
 	// A fatal accept error on any configured listener shuts down all listener
-	// roles instead of silently leaving the process partially available.
+	// roles instead of silently leaving the process partially available. Wait
+	// for every accept loop to observe shutdown before returning so callers can
+	// safely rebind singleton local endpoints immediately after serve returns.
 	cancel()
 	s.close()
+	for remaining := 1; remaining < len(s.listeners); remaining++ {
+		<-errCh
+	}
 
 	if ctx.Err() != nil {
 		return nil
 	}
 
-	if err == nil {
+	if firstErr == nil {
 		return errors.New(
 			"wd-agent: listener stopped unexpectedly",
 		)
 	}
 
-	return err
+	return firstErr
 }
 
 func serveAgentListener(
