@@ -6,7 +6,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 1
 fi
 
-for command in go grep mktemp readlink sed stat tee; do
+for command in dirname go grep mktemp readlink sed tee tr; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required" >&2
     exit 1
