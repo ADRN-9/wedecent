@@ -75,6 +75,9 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
 ### USB
 
 - [ ] USB CDC-ACM serial adapter
+  - [x] Linux serial dialer, strict locator, explicit `wd pair` / `wd connect` selection, and agent composition
+  - [x] Hardware-required validation harness and operator procedure
+  - [ ] Record a successful authorized terminal run over real USB CDC-ACM endpoints
 - [ ] Linux USB gadget mode documentation/helper
 - [ ] USB networking adapter as a simpler high-throughput path
 - [ ] Direct bulk-endpoint transport only where driver/user-mode support is practical
