@@ -14,6 +14,7 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 	path := filepath.Join(dir, "agent.json")
 	contents := `{
   "listen": "127.0.0.1:9000",
+  "rfcomm_channel": 6,
   "discover": false,
   "max_connections": 17,
   "session_idle_timeout": "45m",
@@ -29,6 +30,7 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 	expanded, err := expandServeConfigArgs([]string{
 		"--config", path,
 		"--listen=127.0.0.1:9100",
+		"--rfcomm-channel=7",
 		"--discover=true",
 		"--max-connections=23",
 	})
@@ -42,6 +44,9 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 
 	if cfg.ListenAddr != "127.0.0.1:9100" {
 		t.Fatalf("ListenAddr = %q", cfg.ListenAddr)
+	}
+	if cfg.RFCOMMChannel != 7 {
+		t.Fatalf("RFCOMMChannel = %d", cfg.RFCOMMChannel)
 	}
 	if !cfg.Discover {
 		t.Fatal("explicit --discover=true did not override config")

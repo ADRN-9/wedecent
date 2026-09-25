@@ -16,6 +16,7 @@ import (
 	"wedecent.com/wedecent/internal/meshruntime"
 	"wedecent.com/wedecent/internal/routercontrol"
 	"wedecent.com/wedecent/internal/session"
+	"wedecent.com/wedecent/internal/transport"
 )
 
 const (
@@ -24,6 +25,7 @@ const (
 	defaultRouteLANDiscoveryTimeout = 3 * time.Second
 
 	listenerRoleDirect       = "direct-terminal"
+	listenerRoleRFCOMM       = "rfcomm-terminal"
 	listenerRoleRouteControl = "route-control"
 	listenerRoleRouteTunnel  = "route-tunnel"
 	listenerRoleRouterAdmin  = "router-admin"
@@ -32,6 +34,8 @@ const (
 var errAgentRoutingConfig = errors.New(
 	"wd-agent: invalid routing listener configuration",
 )
+
+var listenRFCOMM = transport.ListenRFCOMM
 
 type agentRoutingRuntime struct {
 	runtime          *meshruntime.Runtime
@@ -245,6 +249,31 @@ func openAgentListeners(
 	}
 	set.direct = direct
 
+	if cfg.RFCOMMChannel != 0 {
+		rfcomm, err := listenRFCOMM(cfg.RFCOMMChannel)
+		if err != nil {
+			set.close()
+			return nil, fmt.Errorf(
+				"wd-agent: listen %s on channel %d: %w",
+				listenerRoleRFCOMM,
+				cfg.RFCOMMChannel,
+				err,
+			)
+		}
+		if err := addListener(
+			listenerRoleRFCOMM,
+			rfcomm,
+			cfg.MaxConnections,
+			func(_ context.Context, conn net.Conn) error {
+				server.ServeConn(conn)
+				return nil
+			},
+		); err != nil {
+			set.close()
+			return nil, err
+		}
+	}
+
 	if strings.TrimSpace(cfg.RouteControlListenAddr) != "" {
 		_, err = addTCP(
 			listenerRoleRouteControl,
@@ -327,6 +356,12 @@ func (s *agentListenerSet) printAddresses() {
 		case listenerRoleDirect:
 			fmt.Printf(
 				"Listening:     %s\n",
+				listener.listener.Addr(),
+			)
+
+		case listenerRoleRFCOMM:
+			fmt.Printf(
+				"RFCOMM:        %s\n",
 				listener.listener.Addr(),
 			)
 

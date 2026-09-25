@@ -255,6 +255,7 @@ type serveConfig struct {
 	StateDir               string
 	Name                   string
 	ListenAddr             string
+	RFCOMMChannel          int
 	Shell                  string
 	Discover               bool
 	MaxConnections         int
@@ -303,6 +304,12 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"listen",
 		"127.0.0.1:7443",
 		"TCP listen address; empty disables inbound TCP",
+	)
+	fs.IntVar(
+		&cfg.RFCOMMChannel,
+		"rfcomm-channel",
+		0,
+		"Linux Bluetooth RFCOMM listen channel 1-30; 0 disables RFCOMM",
 	)
 	fs.StringVar(
 		&cfg.Shell,
@@ -442,6 +449,12 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		)
 	}
 
+	if cfg.RFCOMMChannel < 0 || cfg.RFCOMMChannel > 30 {
+		return serveConfig{}, errors.New(
+			"rfcomm-channel must be 0 (disabled) or between 1 and 30",
+		)
+	}
+
 	if err := cfg.sessionPolicy().Validate(); err != nil {
 		return serveConfig{}, fmt.Errorf("session policy: %w", err)
 	}
@@ -461,6 +474,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	}
 
 	if cfg.ListenAddr == "" &&
+		cfg.RFCOMMChannel == 0 &&
 		cfg.RelayAddr == "" &&
 		cfg.WebRelay == "" &&
 		cfg.RouteControlListenAddr == "" &&
@@ -557,7 +571,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	}
 	defer listeners.close()
 
-	if cfg.ListenAddr != "" &&
+	if (cfg.ListenAddr != "" || cfg.RFCOMMChannel != 0) &&
 		directAuthorizer == nil {
 		slog.Warn(
 			"direct terminal authorization is unavailable; configure --authorization-url or --web-relay to enable direct terminal sessions",

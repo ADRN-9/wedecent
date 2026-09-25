@@ -18,6 +18,7 @@ type serveFileConfig struct {
 	StateDir               *string `json:"state"`
 	Name                   *string `json:"name"`
 	ListenAddr             *string `json:"listen"`
+	RFCOMMChannel          *int    `json:"rfcomm_channel"`
 	Shell                  *string `json:"shell"`
 	Discover               *bool   `json:"discover"`
 	MaxConnections         *int    `json:"max_connections"`
@@ -155,7 +156,7 @@ func loadServeConfigArgs(path string) ([]string, error) {
 }
 
 func (cfg serveFileConfig) flagArgs() []string {
-	args := make([]string, 0, 19)
+	args := make([]string, 0, 20)
 	addString := func(name string, value *string) {
 		if value != nil {
 			args = append(args, "--"+name+"="+*value)
@@ -175,6 +176,7 @@ func (cfg serveFileConfig) flagArgs() []string {
 	addString("state", cfg.StateDir)
 	addString("name", cfg.Name)
 	addString("listen", cfg.ListenAddr)
+	addInt("rfcomm-channel", cfg.RFCOMMChannel)
 	addString("shell", cfg.Shell)
 	addBool("discover", cfg.Discover)
 	addInt("max-connections", cfg.MaxConnections)
