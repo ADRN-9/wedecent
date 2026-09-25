@@ -93,7 +93,7 @@ func (l *windowsRFCOMMListener) Accept() (net.Conn, error) {
 			uintptr(unsafe.Pointer(&remoteLen)),
 		)
 		if accepted != ^uintptr(0) {
-			if remoteLen < 36 {
+			if remoteLen < 16 {
 				closeWindowsSocket(accepted)
 				return nil, errors.New("transport: accepted truncated RFCOMM address")
 			}
@@ -110,7 +110,7 @@ func (l *windowsRFCOMMListener) Accept() (net.Conn, error) {
 				return nil, fmt.Errorf("transport: configure accepted RFCOMM socket: %w", err)
 			}
 
-			remote, err := windowsRFCOMMAddressFromSockaddr(remoteRaw)
+			remote, err := windowsRFCOMMAddressFromSockaddr(remoteRaw, l.channel)
 			if err != nil {
 				closeWindowsSocket(accepted)
 				return nil, err
@@ -155,17 +155,16 @@ func (l *windowsRFCOMMListener) Addr() net.Addr {
 	return rfcommAddr(fmt.Sprintf("*/%d", l.channel))
 }
 
-func windowsRFCOMMAddressFromSockaddr(raw [40]byte) (string, error) {
+func windowsRFCOMMAddressFromSockaddr(raw [40]byte, channel uint8) (string, error) {
 	if binary.LittleEndian.Uint16(raw[0:2]) != windowsAFBTH {
 		return "", errors.New("transport: accepted non-RFCOMM Bluetooth address family")
 	}
-	port := binary.LittleEndian.Uint32(raw[32:36])
-	if port < 1 || port > 30 {
-		return "", errors.New("transport: accepted RFCOMM address has invalid channel")
+	if channel < 1 || channel > 30 {
+		return "", errors.New("transport: accepted RFCOMM address has invalid listener channel")
 	}
 	var addr [6]uint8
 	copy(addr[:], raw[8:14])
-	return canonicalRFCOMMAddress(addr, uint8(port)), nil
+	return canonicalRFCOMMAddress(addr, channel), nil
 }
 
 var _ net.Listener = (*windowsRFCOMMListener)(nil)
