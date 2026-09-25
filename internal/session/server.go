@@ -19,8 +19,13 @@ import (
 	"wedecent.com/wedecent/internal/trust"
 )
 
-const terminalStreamID = 1
-const sessionPolicyExitCode = 124
+const (
+	terminalStreamID         = 1
+	sessionPolicyExitCode    = 124
+	terminalExitDrainTimeout = 2 * time.Second
+)
+
+var errTerminalDrainTimeout = errors.New("terminal output drain timeout")
 
 type DirectAuthorizer interface {
 	Authorize(context.Context, string, string, string) error
@@ -343,13 +348,19 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 			closeReason = "process_exit"
 			// Cmd.Wait may return before the PTY reader has forwarded the final
 			// bytes written by the shell. Close is the protocol's terminal frame,
-			// so do not send it until PTY output has drained. A disconnected peer
-			// still aborts promptly instead of waiting on the PTY indefinitely.
+			// so send it only after PTY output has drained. If draining does not
+			// finish promptly, fail closed by dropping the transport without a
+			// terminal close frame rather than letting Close overtake output.
 			if ptyReadDone != nil {
-				select {
-				case <-ptyReadDone:
+				err := waitForTerminalDrain(ptyReadDone, readErrCh, terminalExitDrainTimeout)
+				switch {
+				case err == nil:
 					ptyReadDone = nil
-				case err := <-readErrCh:
+				case errors.Is(err, errTerminalDrainTimeout):
+					closeReason = "pty_drain_timeout"
+					s.log().Warn("terminal output drain timed out", "client_id", peer.ID)
+					return
+				default:
 					closeReason = "peer_disconnect"
 					if !errors.Is(err, io.EOF) {
 						s.log().Debug("session read ended", "error", err)
@@ -409,6 +420,23 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 			// Wait for Cmd.Wait() to provide the authoritative exit code.
 			ptyReadDone = nil
 		}
+	}
+}
+
+func waitForTerminalDrain(ptyReadDone <-chan struct{}, readErrCh <-chan error, timeout time.Duration) error {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	select {
+	case <-ptyReadDone:
+		return nil
+	case err := <-readErrCh:
+		if err == nil {
+			return io.EOF
+		}
+		return err
+	case <-timer.C:
+		return errTerminalDrainTimeout
 	}
 }
 
