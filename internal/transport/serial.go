@@ -6,7 +6,6 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
-	"time"
 )
 
 const defaultSerialBaud = 115200
@@ -65,5 +64,3 @@ func (a serialAddr) String() string  { return string(a) }
 
 var _ net.Addr = serialAddr("")
 var _ Dialer = SerialDialer{}
-
-var _ = time.Second
