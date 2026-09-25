@@ -44,6 +44,16 @@ func (d MultiDialer) Dial(ctx context.Context, locator string) (Conn, error) {
 		}
 		return RFCOMMDialer{Timeout: d.Relay.Timeout}.Dial(ctx, endpoint)
 	}
+	if strings.HasPrefix(locator, "serial://") {
+		u, err := url.Parse(locator)
+		if err != nil || u.Scheme != "serial" || u.Host != "" || u.User != nil || u.Opaque != "" || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || u.Path == "" {
+			return nil, errors.New("invalid serial locator")
+		}
+		if locator != "serial://"+u.Path {
+			return nil, errors.New("invalid serial locator")
+		}
+		return SerialDialer{}.Dial(ctx, u.Path)
+	}
 	if strings.HasPrefix(locator, "relay://") {
 		u, err := url.Parse(locator)
 		if err != nil || u.Host == "" {
