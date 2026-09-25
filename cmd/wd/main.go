@@ -608,6 +608,7 @@ func runPair(args []string) error {
 	stateDir := fs.String("state", state, "client state directory")
 	name := fs.String("name", hostname(), "client display name")
 	endpoint := fs.String("endpoint", "", "direct device endpoint, e.g. 192.168.1.20:7443")
+	rfcomm := fs.String("rfcomm", "", "Linux Bluetooth RFCOMM endpoint, MAC/channel")
 	relayAddr := fs.String("relay", "", "legacy TCP relay address, e.g. relay.wedecent.com:443")
 	webRelay := fs.String("web-relay", "", "serverless WebSocket relay URL, e.g. https://relay.wedecent.com")
 	deviceID := fs.String("device-id", "", "target device ID when pairing through a relay")
@@ -620,34 +621,7 @@ func runPair(args []string) error {
 	if *fingerprint == "" {
 		return errors.New("--fingerprint is required; obtain it from wd discover or wd-agent identity")
 	}
-	selected := 0
-	if *endpoint != "" {
-		selected++
-	}
-	if *relayAddr != "" {
-		selected++
-	}
-	if *webRelay != "" {
-		selected++
-	}
-	if selected != 1 {
-		return errors.New("specify exactly one of --endpoint, --relay, or --web-relay")
-	}
-
-	var locator string
-	var err error
-	if *endpoint != "" {
-		locator, err = directLocator(*endpoint)
-	} else {
-		if *deviceID == "" {
-			return errors.New("--device-id is required with a relay")
-		}
-		if *webRelay != "" {
-			locator, err = webRelayLocator(*webRelay, *deviceID)
-		} else {
-			locator, err = relayLocator(*relayAddr, *deviceID)
-		}
-	}
+	locator, err := pairTransportLocator(*endpoint, *rfcomm, *relayAddr, *webRelay, *deviceID)
 	if err != nil {
 		return err
 	}
@@ -727,6 +701,7 @@ func runConnect(args []string) (int, error) {
 	stateDir := fs.String("state", state, "client state directory")
 	name := fs.String("name", hostname(), "client display name")
 	endpoint := fs.String("endpoint", "", "override with a direct host:port")
+	rfcomm := fs.String("rfcomm", "", "override with a Linux Bluetooth RFCOMM MAC/channel")
 	relayAddr := fs.String("relay", "", "override with a legacy relay host:port")
 	webRelay := fs.String("web-relay", "", "override with a serverless WebSocket relay URL")
 	lanTimeout := fs.Duration("lan-timeout", 1500*time.Millisecond, "trusted LAN discovery window; 0 disables automatic LAN selection")
@@ -743,7 +718,7 @@ func runConnect(args []string) (int, error) {
 	}
 	if fs.NArg() != 1 {
 		return 0, errors.New(
-			"usage: wd connect [--endpoint host:port | --relay host:port | --web-relay URL | " +
+			"usage: wd connect [--endpoint host:port | --rfcomm MAC/channel | --relay host:port | --web-relay URL | " +
 				"--route-router device-id --route-first-transport lan|internet --route-second-transport lan|internet " +
 				"[--route-first-cost n] [--route-second-cost n]] [--lan-timeout duration] <device-id>",
 		)
@@ -751,20 +726,11 @@ func runConnect(args []string) (int, error) {
 	if *lanTimeout < 0 || *lanTimeout > 10*time.Second {
 		return 0, errors.New("--lan-timeout must be between 0 and 10s")
 	}
-	selected := 0
-	if *endpoint != "" {
-		selected++
-	}
-	if *relayAddr != "" {
-		selected++
-	}
-	if *webRelay != "" {
-		selected++
-	}
-	if selected > 1 {
-		return 0, errors.New("--endpoint, --relay, and --web-relay are mutually exclusive")
-	}
 	deviceID := fs.Arg(0)
+	overrideLocator, overrideSelected, err := connectTransportOverride(*endpoint, *rfcomm, *relayAddr, *webRelay, deviceID)
+	if err != nil {
+		return 0, err
+	}
 	routeConfig := routedConnectConfig{
 		RouterDeviceID:  *routeRouter,
 		FirstTransport:  *routeFirstTransport,
@@ -776,8 +742,8 @@ func runConnect(args []string) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if routed && selected != 0 {
-		return 0, errors.New("routed connections cannot be combined with --endpoint, --relay, or --web-relay")
+	if routed && overrideSelected {
+		return 0, errors.New("routed connections cannot be combined with --endpoint, --rfcomm, --relay, or --web-relay")
 	}
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
@@ -797,21 +763,8 @@ func runConnect(args []string) (int, error) {
 		}
 	}
 	if !routed {
-		if *endpoint != "" {
-			peer.Endpoint, err = directLocator(*endpoint)
-			if err != nil {
-				return 0, err
-			}
-		} else if *relayAddr != "" {
-			peer.Endpoint, err = relayLocator(*relayAddr, deviceID)
-			if err != nil {
-				return 0, err
-			}
-		} else if *webRelay != "" {
-			peer.Endpoint, err = webRelayLocator(*webRelay, deviceID)
-			if err != nil {
-				return 0, err
-			}
+		if overrideSelected {
+			peer.Endpoint = overrideLocator
 		} else if *lanTimeout > 0 && (peer.Endpoint == "" || strings.HasPrefix(peer.Endpoint, "relay://") || strings.HasPrefix(peer.Endpoint, "wsrelay://")) {
 			fallbackEndpoint := peer.Endpoint
 			lanCtx, lanCancel := context.WithTimeout(context.Background(), *lanTimeout)
@@ -1019,7 +972,7 @@ Commands:
   discover   Find signed WeDecent LAN advertisements
   devices    List paired devices
   unpair     Remove local trust for one paired device
-  pair       Pair directly or through a relay
+  pair       Pair directly, over RFCOMM, or through a relay
   route-trust  Manage dedicated source-to-router routing trust
-  connect    Open an interactive terminal directly, through a relay, or via one trusted router`)
+  connect    Open an interactive terminal directly, over RFCOMM, through a relay, or via one trusted router`)
 }
