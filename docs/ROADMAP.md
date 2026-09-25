@@ -65,6 +65,9 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
 ### Bluetooth
 
 - [ ] Linux BlueZ RFCOMM adapter
+  - [x] Native Linux dial/listen primitives, agent composition, and explicit `wd pair` / `wd connect` selection
+  - [x] Hardware-required validation harness and operator procedure
+  - [ ] Record a successful authorized terminal run on two real Linux Bluetooth Classic endpoints
 - [ ] Windows Bluetooth Classic adapter
 - [ ] L2CAP CoC evaluation for platforms where it is preferable
 - [ ] Pair/transport discovery UX
