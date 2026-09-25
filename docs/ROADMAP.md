@@ -72,7 +72,9 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
   - [x] Native Winsock RFCOMM dial/listen primitives using the existing locator, agent composition, and `wd pair` / `wd connect` selection
   - [x] Hardware-required validation harness and operator procedure
   - [ ] Record a successful authorized terminal run with a real Windows Bluetooth Classic endpoint
-- [ ] L2CAP CoC evaluation for platforms where it is preferable
+- [x] L2CAP CoC evaluation for platforms where it is preferable
+  - [x] Native Linux and Apple APIs are viable but require an explicit packet-to-stream/platform bridge
+  - [x] Defer implementation while Windows lacks a comparably narrow user-mode CoC path and no concrete BLE-only endpoint requires it; see `L2CAP_COC_EVALUATION.md`
 - [ ] Pair/transport discovery UX
 
 ### USB
