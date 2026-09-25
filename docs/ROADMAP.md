@@ -43,7 +43,7 @@
 - [x] Windows ConPTY agent
 - [x] macOS PTY implementation
 - [x] Native terminal/raw-mode handling on Windows/macOS clients
-- [ ] systemd/launchd/Windows Service packaging
+- [x] systemd/launchd/Windows Service packaging
 
 ## Phase 3 — physical/offline transports
 

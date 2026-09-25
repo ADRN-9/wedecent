@@ -1,0 +1,29 @@
+[Unit]
+Description=WeDecent Remote Access Agent
+Documentation=https://github.com/ADRN-9/wedecent
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=wedecent
+Group=wedecent
+ExecStart=/usr/local/libexec/wedecent/wd-agent serve --config=/etc/wedecent/agent.json --state=/var/lib/wedecent/agent
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/wedecent
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target
