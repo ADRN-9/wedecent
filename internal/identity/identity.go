@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
@@ -73,7 +74,12 @@ func ensure(dir, name string, scope keyProtectionScope) (*Identity, error) {
 	return &Identity{ID: id, Name: name, Certificate: cert, Leaf: leaf, PublicKey: pub, PrivateKey: priv}, nil
 }
 
-func issueCertificate(path, name, id string, pub ed25519.PublicKey, priv ed25519.PrivateKey, replaceExisting bool) (*x509.Certificate, error) {
+func issueCertificate(path, name, id string, pub ed25519.PublicKey, signer crypto.Signer, replaceExisting bool) (*x509.Certificate, error) {
+	signerPub, ok := signer.Public().(ed25519.PublicKey)
+	if !ok || !signerPub.Equal(pub) {
+		return nil, errors.New("identity signer public key does not match certificate public key")
+	}
+
 	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
 	serial, err := rand.Int(rand.Reader, serialLimit)
 	if err != nil {
@@ -90,7 +96,7 @@ func issueCertificate(path, name, id string, pub ed25519.PublicKey, priv ed25519
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth, x509.ExtKeyUsageClientAuth},
 		URIs:         []*url.URL{u},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, priv)
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, pub, signer)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"crypto"
 	"crypto/ed25519"
 	"crypto/tls"
 	"crypto/x509"
@@ -61,10 +62,10 @@ func parsePrivateKeyDER(der []byte) (ed25519.PrivateKey, error) {
 	return priv, nil
 }
 
-func tlsCertificateFor(leaf *x509.Certificate, priv ed25519.PrivateKey) tls.Certificate {
+func tlsCertificateFor(leaf *x509.Certificate, signer crypto.Signer) tls.Certificate {
 	return tls.Certificate{
 		Certificate: [][]byte{leaf.Raw},
-		PrivateKey:  priv,
+		PrivateKey:  signer,
 		Leaf:        leaf,
 	}
 }
