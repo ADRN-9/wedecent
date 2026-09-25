@@ -1,47 +1,73 @@
 # Security Notes
 
-This repository is an early MVP and should receive an independent security review before privileged production deployment.
+WeDecent v0.4.4 is a security-sensitive remote-access release candidate. Privileged production deployment should still receive an independent security review and an operator-specific deployment review.
 
 ## Current protections
 
-- TLS 1.3 only for terminal and relay TLS channels
-- Ed25519 identities generated locally
-- SPKI public-key pinning for device authentication
-- Client public-key authorization at the agent
-- 192-bit random, single-use pairing secrets; only hashes are stored
-- 1 MiB protocol-frame hard limit
-- Fixed operator-configured shell; clients cannot submit executable paths/command strings
-- Agent direct connection concurrency limit
-- Relay registration challenge signatures
-- Relay per-device parked-slot cap and slot expiration
-- Identity private-key files created with mode `0600`
-- Native Windows service mode refuses built-in LocalSystem/LocalService/NetworkService accounts
-- Short-lived Ed25519 proof-of-possession tickets bind relay stream upgrades to endpoint identity, target device, role and agent slot
-- Windows service does not require or load a shared relay secret for relay-auth-v2 streams
-- Supabase RLS, organization roles, explicit device access, and cryptographic device enrollment authorize account-to-device access
-- Relay admission requires a matching short-lived signed `terminal.connect` grant for clients, and Durable Object state prevents grant `jti` replay
-- Client account access/refresh tokens are stored in a mode-0600 session file on Unix-like systems; Windows seals the session with CurrentUser DPAPI, and account tokens are never accepted as command-line arguments
-- WebSocket relay terminal connections acquire short-lived account grants in memory from the authenticated control-plane session; grant JWTs are not persisted by the normal connect path
-- Windows console password entry disables echo for account and pairing secret prompts
-- Relay-based pairing requires an authenticated short-lived account grant in addition to the independent fingerprint and single-use pairing secret checks
+- TLS 1.3 endpoint sessions with exact SPKI public-key pinning
+- Ed25519 endpoint identities generated locally
+- strict separation of terminal trust, routing trust, and router-administration trust
+- 192-bit random single-use pairing secrets; only hashes are retained
+- fixed operator-configured shell; remote clients cannot submit executable paths or shell command strings
+- bounded framed protocols with strict decoding and compatibility/fuzz gates
+- persistent structured audit events for security-sensitive mutations/lifecycle events
+- direct/listener concurrency bounds and session idle/max-duration policy
+- relay per-IP/device rate limits, health/metrics/tracing, parked-slot limits, and bounded replay protection
+- short-lived Ed25519 proof-of-possession relay tickets and short-lived account-authorized terminal connection grants
+- one-hop route capabilities separately signed for `mesh.forward`, with exact route binding and durable replay protection
+- router administration over machine-local IPC with TLS 1.3, dedicated ALPN, exact controller trust, and no TCP fallback
+- protected per-user Local Core IPC; UI-facing APIs expose no private keys, bearer tokens, passwords, route capabilities, or raw trust stores
+- Local Core terminal I/O bounds, bounded retained output, and idempotency protection for ambiguous connect/write outcomes
+- Windows identity keys protected with machine-scope DPAPI plus restrictive state ACLs; legacy plaintext migration preserves the exact Ed25519 identity
+- non-Windows identity files use owner-only permissions, bounded descriptor-backed reads, symlink/path-swap rejection, and atomic no-replace first creation
+- identity certificates are bounded, descriptor-verified, single-PEM files with self-signature validation and exact public-key matching
+- Windows account sessions protected with CurrentUser DPAPI; Unix-like account sessions remain owner-only files
+- hardened systemd/LaunchAgent/Windows Service packaging that preserves identity/config/state on uninstall
+- reproducible Windows release/installer generation, Authenticode finalization/verification, immutable public-object checks, signed stable manifests, rollback state, verified installer staging/application, and post-success sequence commit
 
-## Known gaps before production
+## Remaining security boundaries
 
-- No persistent security audit store
-- No relay IP/device rate limiter or abuse detection
-- A client that knows a device ID can intentionally consume parked relay slots; inner authentication protects shell access, but targeted availability controls are still required
-- No TPM/Secure Enclave/Windows CNG key storage
-- Windows account sessions use CurrentUser DPAPI but are not yet backed by TPM/CNG or a dedicated Credential Manager integration
-- No automatic relay certificate issuance/rotation
-- No sandbox around the spawned shell; shell privilege equals the agent OS account
-- No file-transfer path validation because file transfer is not implemented yet
-- No fuzzing corpus/continuous fuzz infrastructure yet
-- Windows service mode still requires a dedicated account to be provisioned separately and granted the `Log on as a service` right
+### Platform-backed identity keys
+
+The current device identity algorithm is Ed25519 and its public key defines the device ID/fingerprint. We do not silently substitute RSA/ECDSA to satisfy a platform key store.
+
+- Windows DPAPI protection is implemented, but a persistent non-exportable native TPM/CNG Ed25519 signer is not currently available through the built-in Windows platform boundary used by this project. Tracked in issue #84.
+- Non-Windows platform-backed/non-exportable storage remains open. Any solution must preserve unattended systemd/LaunchAgent startup and exact Ed25519 identity semantics rather than depending on a desktop Secret Service session or shell helper. Tracked in issue #92.
+
+### Production update trust provisioning
+
+The repository contains the signed-update mechanism and credential-agnostic signer/publisher boundaries, but the real production trust anchor and publisher are intentionally not committed or auto-provisioned.
+
+- production stable-update Ed25519 key material must remain outside the repository
+- the exact production public-key pin must be provisioned into the production release/client boundary
+- the production manifest/signature publisher must implement the documented atomic compare-and-swap pair update
+- production Authenticode verifier policy must enforce the intended publisher chain/identity/timestamp policy
+
+Tracked in issue #93. Production provisioning/publication requires an explicit production change.
+
+### Host privilege and containment
+
+- The spawned shell has the privileges of the `wd-agent` OS account. WeDecent does not provide an additional shell sandbox.
+- Operators must choose the service account deliberately and protect its state, configuration, backups, and host login boundary.
+- File transfer and port forwarding are not part of the current core release, so their future path/authorization policy remains to be designed before those roadmap features are enabled.
+
+### External infrastructure
+
+- Public relay and control-plane deployments retain their own cloud/provider operational security boundaries, credentials, certificate rotation, monitoring, incident response, and capacity planning.
+- Multi-region relay selection and the full managed-team control plane remain later roadmap work.
 
 ## Threat model note
 
-The public relay is not trusted with terminal plaintext. It necessarily observes some metadata: requested device ID, connection timing, remote IP addresses and byte-flow characteristics. The inner pinned TLS session protects terminal content and client credentials from the relay.
+The relay is not trusted with terminal plaintext. It necessarily observes routing metadata such as target device IDs, connection timing, source addresses, and byte-flow characteristics. The inner endpoint-pinned TLS session protects terminal content and endpoint credentials from the relay.
 
-## Account-control-plane boundary
+A router in the one-hop A -> B -> C model authenticates/authorizes forwarding but does not terminate the inner A <-> C terminal TLS session.
 
-The Supabase account-authorization migration enables RLS on every exposed control-plane table and removes anonymous table privileges. Endpoint identity enrollment and short-lived connection-grant writes are intentionally server-only: accepting those writes directly from a browser would let an authenticated user claim cryptographic device identities without proving possession of their Ed25519 private keys. See `docs/ACCOUNT_AUTHORIZATION.md`.
+## Local Core / UI boundary
+
+The Local Core owns authenticated connection establishment, authorization requests, route selection, endpoint pinning, terminal handles, and router-admin proxying. The GUI receives opaque connection IDs and bounded non-secret status/terminal data only. The GUI must not become an alternate trust/network authority.
+
+## Account/control-plane boundary
+
+Supabase RLS protects exposed control-plane tables. Sensitive issuance/enrollment operations remain server-controlled: an authenticated browser/user session is not sufficient to claim a cryptographic device identity or mint route/terminal capabilities without the corresponding server-side authorization checks.
+
+See `docs/ACCOUNT_AUTHORIZATION.md`, `docs/ARCHITECTURE.md`, `docs/LOCAL_CORE_API.md`, `docs/ROADMAP.md`, and `docs/RELEASE_READINESS.md`.
