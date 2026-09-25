@@ -174,11 +174,14 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 	}()
 
 	if isTTY {
+		lastCols, lastRows := cols, rows
 		stopResize := watchResize(func() {
 			c2, r2, err := terminal.Size(in)
-			if err != nil {
+			if err != nil || c2 == 0 || r2 == 0 ||
+				(c2 == lastCols && r2 == lastRows) {
 				return
 			}
+			lastCols, lastRows = c2, r2
 			payload, _ := protocol.JSON(protocol.Resize{Cols: c2, Rows: r2})
 			_ = writeFrame(protocol.Frame{Type: protocol.TypeResize, Payload: payload})
 		})
