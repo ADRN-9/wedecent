@@ -41,8 +41,8 @@
 ## Phase 2 — platform coverage
 
 - [x] Windows ConPTY agent
-- [ ] macOS PTY implementation
-- [ ] Native terminal/raw-mode handling on Windows/macOS clients
+- [x] macOS PTY implementation
+- [x] Native terminal/raw-mode handling on Windows/macOS clients
 - [ ] systemd/launchd/Windows Service packaging
 
 ## Phase 3 — physical/offline transports

@@ -115,6 +115,30 @@ jobs:
           .\wd-ui.exe version
           .\wd-ui.exe autostart status
 
+  macos-agent:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Test native macOS code
+        run: go test ./...
+      - name: Build native macOS binaries
+        run: |
+          go build -trimpath -buildvcs=false -o wd ./cmd/wd
+          go build -trimpath -buildvcs=false -o wd-agent ./cmd/wd-agent
+          go build -trimpath -buildvcs=false -o wd-routerctl ./cmd/wd-routerctl
+          go build -trimpath -buildvcs=false -o wd-core ./cmd/wd-core
+      - name: Verify native versions
+        run: |
+          ./wd version
+          ./wd-agent version
+          ./wd-routerctl version
+          ./wd-core version
+
   windows-release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
