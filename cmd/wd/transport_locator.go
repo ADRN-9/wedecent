@@ -40,9 +40,19 @@ func serialLocator(endpoint string) (string, error) {
 	return "serial://" + raw, nil
 }
 
-func pairTransportLocator(endpoint, rfcomm, serialDevice, relayAddr, webRelay, deviceID string) (string, error) {
+// pairTransportLocator keeps the original five-argument command contract while
+// allowing the serial device to be supplied by the CLI wiring slice as the
+// optional sixth argument. This lets locator validation land independently.
+func pairTransportLocator(endpoint, rfcomm, relayAddr, webRelay, deviceID string, serialDevice ...string) (string, error) {
+	serial := ""
+	if len(serialDevice) > 1 {
+		return "", errors.New("internal error: multiple serial transport arguments")
+	}
+	if len(serialDevice) == 1 {
+		serial = serialDevice[0]
+	}
 	selected := 0
-	for _, value := range []string{endpoint, rfcomm, serialDevice, relayAddr, webRelay} {
+	for _, value := range []string{endpoint, rfcomm, serial, relayAddr, webRelay} {
 		if strings.TrimSpace(value) != "" {
 			selected++
 		}
@@ -56,8 +66,8 @@ func pairTransportLocator(endpoint, rfcomm, serialDevice, relayAddr, webRelay, d
 		return directLocator(endpoint)
 	case strings.TrimSpace(rfcomm) != "":
 		return rfcommLocator(rfcomm)
-	case strings.TrimSpace(serialDevice) != "":
-		return serialLocator(serialDevice)
+	case strings.TrimSpace(serial) != "":
+		return serialLocator(serial)
 	case strings.TrimSpace(webRelay) != "":
 		if strings.TrimSpace(deviceID) == "" {
 			return "", errors.New("--device-id is required with a relay")
@@ -71,9 +81,18 @@ func pairTransportLocator(endpoint, rfcomm, serialDevice, relayAddr, webRelay, d
 	}
 }
 
-func connectTransportOverride(endpoint, rfcomm, serialDevice, relayAddr, webRelay, deviceID string) (string, bool, error) {
+// connectTransportOverride accepts an optional serial device after the existing
+// arguments so the command entrypoint can be wired in a separate auditable PR.
+func connectTransportOverride(endpoint, rfcomm, relayAddr, webRelay, deviceID string, serialDevice ...string) (string, bool, error) {
+	serial := ""
+	if len(serialDevice) > 1 {
+		return "", false, errors.New("internal error: multiple serial transport arguments")
+	}
+	if len(serialDevice) == 1 {
+		serial = serialDevice[0]
+	}
 	selected := 0
-	for _, value := range []string{endpoint, rfcomm, serialDevice, relayAddr, webRelay} {
+	for _, value := range []string{endpoint, rfcomm, serial, relayAddr, webRelay} {
 		if strings.TrimSpace(value) != "" {
 			selected++
 		}
@@ -92,8 +111,8 @@ func connectTransportOverride(endpoint, rfcomm, serialDevice, relayAddr, webRela
 	case strings.TrimSpace(rfcomm) != "":
 		locator, err := rfcommLocator(rfcomm)
 		return locator, true, err
-	case strings.TrimSpace(serialDevice) != "":
-		locator, err := serialLocator(serialDevice)
+	case strings.TrimSpace(serial) != "":
+		locator, err := serialLocator(serial)
 		return locator, true, err
 	case strings.TrimSpace(webRelay) != "":
 		locator, err := webRelayLocator(webRelay, deviceID)
