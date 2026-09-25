@@ -78,7 +78,9 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
 - [ ] Pair/transport discovery UX
   - [x] Define the discovery-versus-trust contract, ambiguity handling, and fail-closed selection rules; see `TRANSPORT_DISCOVERY.md`
   - [x] Add deterministic first-pair LAN candidate selection that rejects identity conflicts, malformed endpoints, and ambiguous locators
-  - [ ] Wire the selector into executable client discovery/selection UX and extend transport pickers where appropriate
+  - [x] Add bounded first-pair LAN candidate collection that preserves conflicting/ambiguous candidates through the full discovery window
+  - [x] Wire explicit `wd pair --discover-lan --device-id ... --fingerprint ...` with strict transport mutual exclusion and no fallback
+  - [ ] Extend Bluetooth/USB transport pickers where platform APIs safely support it, or explicitly defer those pickers with documented criteria
 
 ### USB
 
