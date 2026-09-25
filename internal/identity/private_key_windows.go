@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -20,6 +21,7 @@ const (
 	identityPrivateKeyFile               = "identity.key.dpapi"
 	legacyIdentityPrivateKeyFile         = "identity.key"
 	maxProtectedIdentityKeyFileSize      = 64 * 1024
+	maxLegacyIdentityKeyFileSize         = 16 * 1024
 	protectedKeyReadRaceAttempts         = 20
 	protectedKeyReadRaceDelay            = 5 * time.Millisecond
 	legacyMigrationRaceAttempts          = 20
@@ -201,22 +203,16 @@ func loadProtectedPrivateKeyWithRetry(load func() (ed25519.PrivateKey, keyProtec
 }
 
 func loadProtectedPrivateKeyOnce(path string) (ed25519.PrivateKey, keyProtectionScope, error) {
-	if err := requireRegularFile(path, "protected identity private key"); err != nil {
-		if errors.Is(unwrapPathError(err), os.ErrNotExist) {
+	blob, err := readVerifiedIdentityKeyFile(path, "protected identity private key", maxProtectedIdentityKeyFileSize)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, 0, os.ErrNotExist
 		}
 		return nil, 0, err
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("stat protected identity private key: %w", err)
-	}
-	if info.Size() <= int64(len(dpapiIdentityKeyMagic)+1) || info.Size() > maxProtectedIdentityKeyFileSize {
+	defer zeroBytes(blob)
+	if len(blob) <= len(dpapiIdentityKeyMagic)+1 {
 		return nil, 0, errors.New("protected identity private key has an invalid size")
-	}
-	blob, err := os.ReadFile(path)
-	if err != nil {
-		return nil, 0, fmt.Errorf("read protected identity private key: %w", err)
 	}
 	return decodeProtectedPrivateKey(blob)
 }
@@ -375,22 +371,61 @@ func isLegacyMigrationRace(err error) bool {
 }
 
 func loadLegacyPrivateKeyIfPresent(path string) (ed25519.PrivateKey, error) {
-	if err := requireRegularFile(path, "legacy identity private key"); err != nil {
-		if errors.Is(unwrapPathError(err), os.ErrNotExist) {
-			return nil, os.ErrNotExist
-		}
-		return nil, err
+	priv, err := loadLegacyPrivateKey(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, os.ErrNotExist
 	}
-	return loadLegacyPrivateKey(path)
+	return priv, err
 }
 
 func loadLegacyPrivateKey(path string) (ed25519.PrivateKey, error) {
-	data, err := os.ReadFile(path)
+	data, err := readVerifiedIdentityKeyFile(path, "legacy identity private key", maxLegacyIdentityKeyFileSize)
 	if err != nil {
-		return nil, fmt.Errorf("read legacy identity private key: %w", err)
+		return nil, err
 	}
 	defer zeroBytes(data)
 	return parseLegacyPrivateKey(data)
+}
+
+func readVerifiedIdentityKeyFile(path, label string, maxSize int64) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("load %s: %w", label, err)
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s must be a regular file", label)
+	}
+
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", label, err)
+	}
+	defer f.Close()
+
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("stat opened %s: %w", label, err)
+	}
+	after, err := os.Lstat(path)
+	if err != nil {
+		return nil, fmt.Errorf("re-stat %s path: %w", label, err)
+	}
+	if after.Mode()&os.ModeSymlink != 0 || !after.Mode().IsRegular() || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || !os.SameFile(opened, after) {
+		return nil, fmt.Errorf("%s path changed while opening", label)
+	}
+	if opened.Size() < 0 || opened.Size() > maxSize {
+		return nil, fmt.Errorf("%s has an invalid size", label)
+	}
+
+	data, err := io.ReadAll(io.LimitReader(f, maxSize+1))
+	if err != nil {
+		return nil, fmt.Errorf("read %s: %w", label, err)
+	}
+	if int64(len(data)) > maxSize {
+		zeroBytes(data)
+		return nil, fmt.Errorf("%s has an invalid size", label)
+	}
+	return data, nil
 }
 
 func unwrapPathError(err error) error {
