@@ -298,19 +298,6 @@ func CertificateDeviceID(cert *x509.Certificate) string {
 	return DeviceID(pub)
 }
 
-func writePrivateFile(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-	if err := f.Chmod(0o600); err != nil {
-		return err
-	}
-	_, err = f.Write(data)
-	return err
-}
-
 func SanitizeName(s string) string {
 	s = strings.TrimSpace(s)
 	var b strings.Builder
