@@ -123,8 +123,8 @@ func loadCertificate(path string) (*x509.Certificate, error) {
 	if err != nil {
 		return nil, err
 	}
-	block, _ := pem.Decode(data)
-	if block == nil || block.Type != "CERTIFICATE" {
+	block, err := decodeIdentityPEM(data, "CERTIFICATE")
+	if err != nil {
 		return nil, errors.New("invalid identity certificate PEM")
 	}
 	cert, err := x509.ParseCertificate(block.Bytes)

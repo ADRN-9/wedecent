@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/tls"
@@ -17,9 +18,22 @@ const (
 	keyProtectionMachine
 )
 
+func decodeIdentityPEM(data []byte, blockType string) (*pem.Block, error) {
+	trimmed := bytes.TrimSpace(data)
+	begin := []byte("-----BEGIN " + blockType + "-----")
+	if !bytes.HasPrefix(trimmed, begin) {
+		return nil, errors.New("invalid identity PEM")
+	}
+	block, rest := pem.Decode(trimmed)
+	if block == nil || block.Type != blockType || len(bytes.TrimSpace(rest)) != 0 {
+		return nil, errors.New("invalid identity PEM")
+	}
+	return block, nil
+}
+
 func parseLegacyPrivateKey(data []byte) (ed25519.PrivateKey, error) {
-	block, _ := pem.Decode(data)
-	if block == nil || block.Type != "PRIVATE KEY" {
+	block, err := decodeIdentityPEM(data, "PRIVATE KEY")
+	if err != nil {
 		return nil, errors.New("invalid identity private key PEM")
 	}
 	key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
