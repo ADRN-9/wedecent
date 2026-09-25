@@ -9,29 +9,20 @@ import (
 	"path/filepath"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
-	extendedStartupInfoPresent       = 0x00080000
-	createUnicodeEnvironment         = 0x00000400
 	procThreadAttributePseudoConsole = 0x00020016
-	infinite                         = 0xFFFFFFFF
 )
 
 var (
-	kernel32                          = syscall.NewLazyDLL("kernel32.dll")
-	procCreatePseudoConsole           = kernel32.NewProc("CreatePseudoConsole")
-	procResizePseudoConsole           = kernel32.NewProc("ResizePseudoConsole")
-	procClosePseudoConsole            = kernel32.NewProc("ClosePseudoConsole")
-	procInitializeProcThreadAttrList  = kernel32.NewProc("InitializeProcThreadAttributeList")
-	procUpdateProcThreadAttribute     = kernel32.NewProc("UpdateProcThreadAttribute")
-	procDeleteProcThreadAttributeList = kernel32.NewProc("DeleteProcThreadAttributeList")
+	kernel32                = syscall.NewLazyDLL("kernel32.dll")
+	procCreatePseudoConsole = kernel32.NewProc("CreatePseudoConsole")
+	procResizePseudoConsole = kernel32.NewProc("ResizePseudoConsole")
+	procClosePseudoConsole  = kernel32.NewProc("ClosePseudoConsole")
 )
-
-type startupInfoEx struct {
-	StartupInfo   syscall.StartupInfo
-	AttributeList *byte
-}
 
 type windowsExitError struct{ code uint32 }
 
@@ -82,49 +73,71 @@ func Start(shell string, cols, rows uint16, _ string) (*PTY, error) {
 		cleanupPipes()
 		return nil, fmt.Errorf("CreatePseudoConsole failed: HRESULT 0x%08x", uint32(hr))
 	}
+
+	// CreatePseudoConsole duplicates the PTY-side pipe handles into the console
+	// host. Release this process's copies immediately, matching Microsoft's
+	// documented ConPTY lifecycle; retain only the host-side read/write ends.
 	_ = inputRead.Close()
 	_ = outputWrite.Close()
 
-	attrList, err := newPseudoConsoleAttributeList(hpc)
+	attrList, err := windows.NewProcThreadAttributeList(1)
 	if err != nil {
 		procClosePseudoConsole.Call(hpc)
 		_ = inputWrite.Close()
 		_ = outputRead.Close()
-		return nil, err
+		return nil, fmt.Errorf("allocate ConPTY process attribute list: %w", err)
+	}
+	defer attrList.Delete()
+
+	if err := attrList.Update(
+		procThreadAttributePseudoConsole,
+		unsafe.Pointer(hpc),
+		unsafe.Sizeof(hpc),
+	); err != nil {
+		procClosePseudoConsole.Call(hpc)
+		_ = inputWrite.Close()
+		_ = outputRead.Close()
+		return nil, fmt.Errorf("set ConPTY process attribute: %w", err)
 	}
 
-	si := startupInfoEx{AttributeList: attrList.ptr}
-	si.StartupInfo.Cb = uint32(unsafe.Sizeof(si))
-	cmdLine, err := syscall.UTF16PtrFromString(syscall.EscapeArg(shell))
+	si := windows.StartupInfoEx{
+		ProcThreadAttributeList: attrList.List(),
+	}
+	si.Cb = uint32(unsafe.Sizeof(si))
+	// A console parent can otherwise have its standard handles duplicated into
+	// the child even when bInheritHandles is false. Explicit null standard
+	// handles prevent those parent-console streams from bypassing the ConPTY;
+	// the pseudoconsole attribute supplies the child's console attachment.
+	si.Flags = windows.STARTF_USESTDHANDLES
+
+	cmdLine, err := windows.UTF16PtrFromString(syscall.EscapeArg(shell))
 	if err != nil {
-		attrList.close()
 		procClosePseudoConsole.Call(hpc)
 		_ = inputWrite.Close()
 		_ = outputRead.Close()
 		return nil, fmt.Errorf("encode shell path: %w", err)
 	}
 
-	var pi syscall.ProcessInformation
-	err = syscall.CreateProcess(
+	var pi windows.ProcessInformation
+	err = windows.CreateProcess(
 		nil,
 		cmdLine,
 		nil,
 		nil,
 		false,
-		extendedStartupInfoPresent|createUnicodeEnvironment,
+		windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_UNICODE_ENVIRONMENT,
 		nil,
 		nil,
 		&si.StartupInfo,
 		&pi,
 	)
-	attrList.close()
 	if err != nil {
 		procClosePseudoConsole.Call(hpc)
 		_ = inputWrite.Close()
 		_ = outputRead.Close()
 		return nil, fmt.Errorf("start shell with ConPTY: %w", err)
 	}
-	_ = syscall.CloseHandle(pi.Thread)
+	_ = windows.CloseHandle(pi.Thread)
 
 	p := &PTY{
 		reader: outputRead,
@@ -144,11 +157,11 @@ func Start(shell string, cols, rows uint16, _ string) (*PTY, error) {
 		return nil
 	}
 	p.wait = func() error {
-		if _, err := syscall.WaitForSingleObject(pi.Process, infinite); err != nil {
+		if _, err := windows.WaitForSingleObject(pi.Process, windows.INFINITE); err != nil {
 			return err
 		}
 		var code uint32
-		if err := syscall.GetExitCodeProcess(pi.Process, &code); err != nil {
+		if err := windows.GetExitCodeProcess(pi.Process, &code); err != nil {
 			return err
 		}
 		if code != 0 {
@@ -159,59 +172,12 @@ func Start(shell string, cols, rows uint16, _ string) (*PTY, error) {
 	p.close = func() error {
 		_ = inputWrite.Close()
 		_ = outputRead.Close()
-		_ = syscall.TerminateProcess(pi.Process, 1)
-		_ = syscall.CloseHandle(pi.Process)
+		_ = windows.TerminateProcess(pi.Process, 1)
+		_ = windows.CloseHandle(pi.Process)
 		procClosePseudoConsole.Call(hpc)
 		return nil
 	}
 	return p, nil
-}
-
-type attributeList struct {
-	storage []byte
-	ptr     *byte
-}
-
-func newPseudoConsoleAttributeList(hpc uintptr) (*attributeList, error) {
-	var size uintptr
-	procInitializeProcThreadAttrList.Call(0, 1, 0, uintptr(unsafe.Pointer(&size)))
-	if size == 0 {
-		return nil, errors.New("InitializeProcThreadAttributeList returned zero size")
-	}
-	storage := make([]byte, size)
-	ptr := &storage[0]
-	ok, _, err := procInitializeProcThreadAttrList.Call(
-		uintptr(unsafe.Pointer(ptr)),
-		1,
-		0,
-		uintptr(unsafe.Pointer(&size)),
-	)
-	if ok == 0 {
-		return nil, fmt.Errorf("InitializeProcThreadAttributeList: %w", err)
-	}
-	ok, _, err = procUpdateProcThreadAttribute.Call(
-		uintptr(unsafe.Pointer(ptr)),
-		0,
-		procThreadAttributePseudoConsole,
-		hpc,
-		unsafe.Sizeof(hpc),
-		0,
-		0,
-	)
-	if ok == 0 {
-		procDeleteProcThreadAttributeList.Call(uintptr(unsafe.Pointer(ptr)))
-		return nil, fmt.Errorf("UpdateProcThreadAttribute: %w", err)
-	}
-	return &attributeList{storage: storage, ptr: ptr}, nil
-}
-
-func (a *attributeList) close() {
-	if a == nil || a.ptr == nil {
-		return
-	}
-	procDeleteProcThreadAttributeList.Call(uintptr(unsafe.Pointer(a.ptr)))
-	a.ptr = nil
-	a.storage = nil
 }
 
 func packCoord(cols, rows uint16) uint32 {
