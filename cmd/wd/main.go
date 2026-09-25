@@ -609,6 +609,7 @@ func runPair(args []string) error {
 	name := fs.String("name", hostname(), "client display name")
 	endpoint := fs.String("endpoint", "", "direct device endpoint, e.g. 192.168.1.20:7443")
 	rfcomm := fs.String("rfcomm", "", "Linux Bluetooth RFCOMM endpoint, MAC/channel")
+	serialDevice := fs.String("serial", "", "Linux serial device path, e.g. /dev/ttyACM0")
 	relayAddr := fs.String("relay", "", "legacy TCP relay address, e.g. relay.wedecent.com:443")
 	webRelay := fs.String("web-relay", "", "serverless WebSocket relay URL, e.g. https://relay.wedecent.com")
 	deviceID := fs.String("device-id", "", "target device ID when pairing through a relay")
@@ -621,7 +622,7 @@ func runPair(args []string) error {
 	if *fingerprint == "" {
 		return errors.New("--fingerprint is required; obtain it from wd discover or wd-agent identity")
 	}
-	locator, err := pairTransportLocator(*endpoint, *rfcomm, *relayAddr, *webRelay, *deviceID)
+	locator, err := pairTransportLocator(*endpoint, *rfcomm, *relayAddr, *webRelay, *deviceID, *serialDevice)
 	if err != nil {
 		return err
 	}
@@ -702,6 +703,7 @@ func runConnect(args []string) (int, error) {
 	name := fs.String("name", hostname(), "client display name")
 	endpoint := fs.String("endpoint", "", "override with a direct host:port")
 	rfcomm := fs.String("rfcomm", "", "override with a Linux Bluetooth RFCOMM MAC/channel")
+	serialDevice := fs.String("serial", "", "override with a Linux serial device path, e.g. /dev/ttyACM0")
 	relayAddr := fs.String("relay", "", "override with a legacy relay host:port")
 	webRelay := fs.String("web-relay", "", "override with a serverless WebSocket relay URL")
 	lanTimeout := fs.Duration("lan-timeout", 1500*time.Millisecond, "trusted LAN discovery window; 0 disables automatic LAN selection")
@@ -718,7 +720,7 @@ func runConnect(args []string) (int, error) {
 	}
 	if fs.NArg() != 1 {
 		return 0, errors.New(
-			"usage: wd connect [--endpoint host:port | --rfcomm MAC/channel | --relay host:port | --web-relay URL | " +
+			"usage: wd connect [--endpoint host:port | --rfcomm MAC/channel | --serial /dev/ttyACM0 | --relay host:port | --web-relay URL | " +
 				"--route-router device-id --route-first-transport lan|internet --route-second-transport lan|internet " +
 				"[--route-first-cost n] [--route-second-cost n]] [--lan-timeout duration] <device-id>",
 		)
@@ -727,7 +729,7 @@ func runConnect(args []string) (int, error) {
 		return 0, errors.New("--lan-timeout must be between 0 and 10s")
 	}
 	deviceID := fs.Arg(0)
-	overrideLocator, overrideSelected, err := connectTransportOverride(*endpoint, *rfcomm, *relayAddr, *webRelay, deviceID)
+	overrideLocator, overrideSelected, err := connectTransportOverride(*endpoint, *rfcomm, *relayAddr, *webRelay, deviceID, *serialDevice)
 	if err != nil {
 		return 0, err
 	}
@@ -743,7 +745,7 @@ func runConnect(args []string) (int, error) {
 		return 0, err
 	}
 	if routed && overrideSelected {
-		return 0, errors.New("routed connections cannot be combined with --endpoint, --rfcomm, --relay, or --web-relay")
+		return 0, errors.New("routed connections cannot be combined with --endpoint, --rfcomm, --serial, --relay, or --web-relay")
 	}
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
@@ -972,7 +974,7 @@ Commands:
   discover   Find signed WeDecent LAN advertisements
   devices    List paired devices
   unpair     Remove local trust for one paired device
-  pair       Pair directly, over RFCOMM, or through a relay
+  pair       Pair directly, over RFCOMM or serial, or through a relay
   route-trust  Manage dedicated source-to-router routing trust
-  connect    Open an interactive terminal directly, over RFCOMM, through a relay, or via one trusted router`)
+  connect    Open an interactive terminal directly, over RFCOMM or serial, through a relay, or via one trusted router`)
 }
