@@ -121,7 +121,14 @@ func loadCertificate(path string) (*x509.Certificate, error) {
 	if block == nil || block.Type != "CERTIFICATE" {
 		return nil, errors.New("invalid identity certificate PEM")
 	}
-	return x509.ParseCertificate(block.Bytes)
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, err
+	}
+	if err := cert.CheckSignature(cert.SignatureAlgorithm, cert.RawTBSCertificate, cert.Signature); err != nil {
+		return nil, fmt.Errorf("invalid identity certificate self-signature: %w", err)
+	}
+	return cert, nil
 }
 
 func readCertificateFile(path string) ([]byte, error) {
