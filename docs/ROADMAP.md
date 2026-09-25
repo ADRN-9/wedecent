@@ -40,7 +40,7 @@
 
 ## Phase 2 — platform coverage
 
-- [ ] Windows ConPTY agent
+- [x] Windows ConPTY agent
 - [ ] macOS PTY implementation
 - [ ] Native terminal/raw-mode handling on Windows/macOS clients
 - [ ] systemd/launchd/Windows Service packaging
