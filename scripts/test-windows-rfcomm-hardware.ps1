@@ -103,6 +103,14 @@ try {
         throw 'terminal input already contains WEDECENT_RFCOMM_TERMINAL_MARKER contiguously; use split input so PTY/console echo cannot satisfy the assertion'
     }
 
+    $timeoutSeconds = 60
+    $timeoutText = [Environment]::GetEnvironmentVariable('WEDECENT_RFCOMM_TERMINAL_TIMEOUT_SECONDS')
+    if (-not [string]::IsNullOrWhiteSpace($timeoutText)) {
+        if (-not [int]::TryParse($timeoutText, [ref]$timeoutSeconds) -or $timeoutSeconds -lt 1 -or $timeoutSeconds -gt 300 -or $timeoutText -ne $timeoutSeconds.ToString()) {
+            throw 'WEDECENT_RFCOMM_TERMINAL_TIMEOUT_SECONDS must be canonical decimal 1-300'
+        }
+    }
+
     $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
     $startInfo.FileName = $wd
     $startInfo.UseShellExecute = $false
@@ -125,11 +133,22 @@ try {
     if (-not $process.Start()) {
         throw 'failed to start wd connect'
     }
+    $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+    $stderrTask = $process.StandardError.ReadToEndAsync()
     $process.StandardInput.Write($terminalInput)
     $process.StandardInput.Close()
-    $stdout = $process.StandardOutput.ReadToEnd()
-    $stderr = $process.StandardError.ReadToEnd()
-    $process.WaitForExit()
+    if (-not $process.WaitForExit($timeoutSeconds * 1000)) {
+        try {
+            $process.Kill($true)
+        }
+        catch {
+            $process.Kill()
+        }
+        [void]$process.WaitForExit(5000)
+        throw "authorized RFCOMM terminal exceeded ${timeoutSeconds}s timeout"
+    }
+    $stdout = $stdoutTask.GetAwaiter().GetResult()
+    $stderr = $stderrTask.GetAwaiter().GetResult()
 
     Write-Output $stdout
     if (-not [string]::IsNullOrEmpty($stderr)) {
