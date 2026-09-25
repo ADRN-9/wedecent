@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,8 +24,31 @@ type serialConn struct {
 	closed   bool
 }
 
-func dialSerial(ctx context.Context, path string, baud int) (Conn, error) {
+func normalizeSerialPath(endpoint string) (string, error) {
+	if endpoint == "" {
+		return "", errors.New("transport: serial device path is required")
+	}
+	if strings.TrimSpace(endpoint) != endpoint {
+		return "", errors.New("transport: serial device path must not contain surrounding whitespace")
+	}
+	if strings.IndexByte(endpoint, 0) >= 0 {
+		return "", errors.New("transport: serial device path contains NUL")
+	}
+	if !filepath.IsAbs(endpoint) || filepath.Clean(endpoint) != endpoint {
+		return "", errors.New("transport: serial device path must be a canonical absolute path")
+	}
+	if endpoint == "/dev" || !strings.HasPrefix(endpoint, "/dev/") {
+		return "", errors.New("transport: serial device path must be under /dev")
+	}
+	return endpoint, nil
+}
+
+func dialSerial(ctx context.Context, endpoint string, baud int) (Conn, error) {
 	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	path, err := normalizeSerialPath(endpoint)
+	if err != nil {
 		return nil, err
 	}
 	fd, err := unix.Open(path, unix.O_RDWR|unix.O_NOCTTY|unix.O_CLOEXEC|unix.O_NONBLOCK|unix.O_NOFOLLOW, 0)
