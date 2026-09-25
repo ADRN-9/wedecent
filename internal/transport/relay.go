@@ -37,6 +37,13 @@ func (d MultiDialer) Dial(ctx context.Context, locator string) (Conn, error) {
 		}
 		return TCPDialer{Timeout: d.Relay.Timeout}.Dial(ctx, u.Host)
 	}
+	if strings.HasPrefix(locator, "rfcomm://") {
+		endpoint := strings.TrimPrefix(locator, "rfcomm://")
+		if endpoint == "" || strings.ContainsAny(endpoint, "?#") {
+			return nil, errors.New("invalid RFCOMM locator")
+		}
+		return RFCOMMDialer{Timeout: d.Relay.Timeout}.Dial(ctx, endpoint)
+	}
 	if strings.HasPrefix(locator, "relay://") {
 		u, err := url.Parse(locator)
 		if err != nil || u.Host == "" {

@@ -46,6 +46,17 @@ func (d RFCOMMDialer) Dial(ctx context.Context, endpoint string) (Conn, error) {
 	return dialRFCOMM(dialCtx, locator)
 }
 
+// NormalizeRFCOMMLocator validates an explicit Bluetooth Classic RFCOMM
+// endpoint and returns its canonical MAC/channel form. It performs no
+// discovery, pairing, channel selection, or trust inference.
+func NormalizeRFCOMMLocator(endpoint string) (string, error) {
+	locator, err := parseRFCOMMLocator(endpoint)
+	if err != nil {
+		return "", err
+	}
+	return locator.canonical, nil
+}
+
 func parseRFCOMMLocator(endpoint string) (rfcommLocator, error) {
 	var zero rfcommLocator
 	parts := strings.Split(endpoint, "/")
