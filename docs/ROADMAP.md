@@ -77,7 +77,8 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
   - [x] Defer implementation while Windows lacks a comparably narrow user-mode CoC path and no concrete BLE-only endpoint requires it; see `L2CAP_COC_EVALUATION.md`
 - [ ] Pair/transport discovery UX
   - [x] Define the discovery-versus-trust contract, ambiguity handling, and fail-closed selection rules; see `TRANSPORT_DISCOVERY.md`
-  - [ ] Implement executable client discovery/selection UX with deterministic trust-boundary tests
+  - [x] Add deterministic first-pair LAN candidate selection that rejects identity conflicts, malformed endpoints, and ambiguous locators
+  - [ ] Wire the selector into executable client discovery/selection UX and extend transport pickers where appropriate
 
 ### USB
 
