@@ -118,7 +118,7 @@ func TestLoadLegacyWindowsIdentityDoesNotMigrate(t *testing.T) {
 	writeLegacyWindowsKey(t, dir, priv)
 	pub := priv.Public().(ed25519.PublicKey)
 	id := DeviceID(pub)
-	if _, err := issueCertificate(filepath.Join(dir, "identity.crt"), "legacy-load", id, pub, priv); err != nil {
+	if _, err := issueCertificate(filepath.Join(dir, "identity.crt"), "legacy-load", id, pub, priv, false); err != nil {
 		t.Fatal(err)
 	}
 
