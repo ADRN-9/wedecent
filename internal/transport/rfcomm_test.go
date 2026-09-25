@@ -23,6 +23,16 @@ func TestParseRFCOMMLocator(t *testing.T) {
 	}
 }
 
+func TestNormalizeRFCOMMLocator(t *testing.T) {
+	got, err := NormalizeRFCOMMLocator("01:23:45:67:89:ab/7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "01:23:45:67:89:AB/7" {
+		t.Fatalf("NormalizeRFCOMMLocator = %q", got)
+	}
+}
+
 func TestParseRFCOMMLocatorRejectsAmbiguousInput(t *testing.T) {
 	for _, endpoint := range []string{
 		"01:23:45:67:89:AB",
