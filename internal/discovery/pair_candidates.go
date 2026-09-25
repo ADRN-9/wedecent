@@ -19,8 +19,7 @@ var (
 // The caller must supply an independently verified expected fingerprint.
 // Discovery metadata never creates trust.
 func SelectPairCandidate(results []Result, deviceID, expectedFingerprint string) (Result, error) {
-	deviceID = strings.TrimSpace(deviceID)
-	if !strings.HasPrefix(deviceID, "wd_") || len(deviceID) != 19 {
+	if strings.TrimSpace(deviceID) != deviceID || !strings.HasPrefix(deviceID, "wd_") || len(deviceID) != 19 {
 		return Result{}, errors.New("discovery: invalid WeDecent device ID")
 	}
 	expected, err := identity.ParseFingerprint(expectedFingerprint)
@@ -58,11 +57,14 @@ func SelectPairCandidate(results []Result, deviceID, expectedFingerprint string)
 	default:
 		return Result{}, fmt.Errorf("%w for %s; select one explicitly with --endpoint", ErrAmbiguousPairCandidate, deviceID)
 	}
-	panic("unreachable")
+	return Result{}, errors.New("discovery: internal pair candidate selection error")
 }
 
 func canonicalLANEndpoint(endpoint string) (string, error) {
-	host, portText, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if strings.TrimSpace(endpoint) != endpoint {
+		return "", errors.New("endpoint must not contain surrounding whitespace")
+	}
+	host, portText, err := net.SplitHostPort(endpoint)
 	if err != nil {
 		return "", errors.New("endpoint must be IP:port")
 	}
