@@ -67,16 +67,16 @@ func TestSerialLocatorRejectsUnsafeDevice(t *testing.T) {
 }
 
 func TestPairTransportLocatorRequiresExactlyOneTransport(t *testing.T) {
-	if _, err := pairTransportLocator("", "", "", "", "", ""); err == nil || !strings.Contains(err.Error(), "exactly one") {
+	if _, err := pairTransportLocator("", "", "", "", ""); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("empty selection error = %v", err)
 	}
-	if _, err := pairTransportLocator("127.0.0.1:7443", "01:23:45:67:89:AB/7", "", "", "", ""); err == nil || !strings.Contains(err.Error(), "exactly one") {
+	if _, err := pairTransportLocator("127.0.0.1:7443", "01:23:45:67:89:AB/7", "", "", ""); err == nil || !strings.Contains(err.Error(), "exactly one") {
 		t.Fatalf("multiple selection error = %v", err)
 	}
 }
 
 func TestPairTransportLocatorRFCOMMDoesNotRequireRelayDeviceID(t *testing.T) {
-	got, err := pairTransportLocator("", "01:23:45:67:89:ab/7", "", "", "", "")
+	got, err := pairTransportLocator("", "01:23:45:67:89:ab/7", "", "", "")
 	if err != nil {
 		t.Fatalf("pair RFCOMM locator: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestPairTransportLocatorRFCOMMDoesNotRequireRelayDeviceID(t *testing.T) {
 }
 
 func TestPairTransportLocatorSerialDoesNotRequireRelayDeviceID(t *testing.T) {
-	got, err := pairTransportLocator("", "", "/dev/ttyACM0", "", "", "")
+	got, err := pairTransportLocator("", "", "", "", "", "/dev/ttyACM0")
 	if err != nil {
 		t.Fatalf("pair serial locator: %v", err)
 	}
@@ -95,14 +95,20 @@ func TestPairTransportLocatorSerialDoesNotRequireRelayDeviceID(t *testing.T) {
 	}
 }
 
+func TestPairTransportLocatorRejectsSerialWithOtherTransport(t *testing.T) {
+	if _, err := pairTransportLocator("127.0.0.1:7443", "", "", "", "", "/dev/ttyACM0"); err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("multiple selection error = %v", err)
+	}
+}
+
 func TestPairTransportLocatorRelayStillRequiresDeviceID(t *testing.T) {
-	if _, err := pairTransportLocator("", "", "", "relay.example:443", "", ""); err == nil || !strings.Contains(err.Error(), "--device-id") {
+	if _, err := pairTransportLocator("", "", "relay.example:443", "", ""); err == nil || !strings.Contains(err.Error(), "--device-id") {
 		t.Fatalf("relay without device ID error = %v", err)
 	}
 }
 
 func TestConnectTransportOverrideRFCOMM(t *testing.T) {
-	got, selected, err := connectTransportOverride("", "01:23:45:67:89:ab/7", "", "", "", "wd_aaaaaaaaaaaaaaaa")
+	got, selected, err := connectTransportOverride("", "01:23:45:67:89:ab/7", "", "", "wd_aaaaaaaaaaaaaaaa")
 	if err != nil {
 		t.Fatalf("connect RFCOMM override: %v", err)
 	}
@@ -115,7 +121,7 @@ func TestConnectTransportOverrideRFCOMM(t *testing.T) {
 }
 
 func TestConnectTransportOverrideSerial(t *testing.T) {
-	got, selected, err := connectTransportOverride("", "", "/dev/ttyACM0", "", "", "wd_aaaaaaaaaaaaaaaa")
+	got, selected, err := connectTransportOverride("", "", "", "", "wd_aaaaaaaaaaaaaaaa", "/dev/ttyACM0")
 	if err != nil {
 		t.Fatalf("connect serial override: %v", err)
 	}
@@ -128,13 +134,13 @@ func TestConnectTransportOverrideSerial(t *testing.T) {
 }
 
 func TestConnectTransportOverrideMutualExclusion(t *testing.T) {
-	if _, _, err := connectTransportOverride("127.0.0.1:7443", "", "/dev/ttyACM0", "", "", "wd_aaaaaaaaaaaaaaaa"); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
+	if _, _, err := connectTransportOverride("127.0.0.1:7443", "", "", "", "wd_aaaaaaaaaaaaaaaa", "/dev/ttyACM0"); err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
 		t.Fatalf("multiple overrides error = %v", err)
 	}
 }
 
 func TestConnectTransportOverrideNone(t *testing.T) {
-	got, selected, err := connectTransportOverride("", "", "", "", "", "wd_aaaaaaaaaaaaaaaa")
+	got, selected, err := connectTransportOverride("", "", "", "", "wd_aaaaaaaaaaaaaaaa")
 	if err != nil {
 		t.Fatalf("no override: %v", err)
 	}
