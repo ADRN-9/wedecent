@@ -6,7 +6,7 @@ if [[ "$(uname -s)" != "Linux" ]]; then
   exit 1
 fi
 
-for command in go bluetoothctl grep mktemp; do
+for command in go bluetoothctl grep mktemp sed tee; do
   if ! command -v "$command" >/dev/null 2>&1; then
     echo "$command is required" >&2
     exit 1
@@ -86,8 +86,10 @@ if [[ ! -f "$WEDECENT_RFCOMM_CONNECTION_GRANT_FILE" ]]; then
   exit 1
 fi
 
+# Split the expected marker in the input command so PTY echo cannot satisfy the
+# assertion. Only successful command execution emits the contiguous marker.
 marker="WEDECENT_RFCOMM_TERMINAL_HARDWARE_OK"
-printf 'printf "%s\\n"\nexit\n' "$marker" | \
+printf 'printf "WEDECENT_RFCOMM_""TERMINAL_HARDWARE_OK\\n"\nexit\n' | \
   "$work/bin/wd" connect \
     --state "$work/state" \
     --rfcomm "${WEDECENT_RFCOMM_PEER_MAC}/${WEDECENT_RFCOMM_CHANNEL}" \
