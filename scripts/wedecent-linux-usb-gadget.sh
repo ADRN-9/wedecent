@@ -40,7 +40,7 @@ validate_hex4() {
 validate_string() {
   local value="$1" name="$2"
   [[ ${#value} -le 126 ]] || fail "$name is too long"
-  [[ "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *$'\0'* ]] || fail "$name contains invalid control characters"
+  [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || fail "$name contains invalid control characters"
 }
 
 require_configfs() {
@@ -56,6 +56,25 @@ require_udc() {
 write_value() {
   local value="$1" path="$2"
   printf '%s' "$value" > "$path"
+}
+
+assert_owned_layout() {
+  local entry function_count=0 config_count=0
+  [[ -d "$GADGET_DIR/functions/$FUNCTION_NAME" ]] || fail "refusing teardown: expected $FUNCTION_NAME is missing"
+  [[ -d "$GADGET_DIR/configs/$CONFIG_NAME" ]] || fail "refusing teardown: expected $CONFIG_NAME is missing"
+  [[ -L "$GADGET_DIR/configs/$CONFIG_NAME/$FUNCTION_NAME" ]] || fail "refusing teardown: expected function link is missing"
+
+  for entry in "$GADGET_DIR/functions/"*; do
+    [[ -e "$entry" ]] || continue
+    ((function_count += 1))
+    [[ "${entry##*/}" == "$FUNCTION_NAME" ]] || fail "refusing teardown: unexpected gadget function ${entry##*/}"
+  done
+  for entry in "$GADGET_DIR/configs/"*; do
+    [[ -e "$entry" ]] || continue
+    ((config_count += 1))
+    [[ "${entry##*/}" == "$CONFIG_NAME" ]] || fail "refusing teardown: unexpected gadget configuration ${entry##*/}"
+  done
+  [[ $function_count -eq 1 && $config_count -eq 1 ]] || fail "refusing teardown: gadget layout is not the helper-managed single-function layout"
 }
 
 setup_gadget() {
@@ -85,7 +104,7 @@ setup_gadget() {
   validate_string "$product" "product"
   require_udc "$udc"
 
-  [[ ! -e "$GADGET_DIR" ]] || fail "$GADGET_DIR already exists; inspect it manually or run teardown if it was created by this helper"
+  [[ ! -e "$GADGET_DIR" ]] || fail "$GADGET_DIR already exists; inspect it manually or run teardown only if it was created by this helper"
 
   mkdir "$GADGET_DIR"
   local committed=0
@@ -102,7 +121,7 @@ setup_gadget() {
       rmdir "$GADGET_DIR" 2>/dev/null || true
     fi
   }
-  trap cleanup_partial RETURN
+  trap cleanup_partial EXIT
 
   write_value "0x$vendor" "$GADGET_DIR/idVendor"
   write_value "0x$product_id" "$GADGET_DIR/idProduct"
@@ -115,14 +134,13 @@ setup_gadget() {
   mkdir "$GADGET_DIR/configs/$CONFIG_NAME"
   mkdir "$GADGET_DIR/configs/$CONFIG_NAME/strings/$LANG_ID"
   write_value "WeDecent serial" "$GADGET_DIR/configs/$CONFIG_NAME/strings/$LANG_ID/configuration"
-  write_value "250" "$GADGET_DIR/configs/$CONFIG_NAME/MaxPower"
 
   mkdir "$GADGET_DIR/functions/$FUNCTION_NAME"
   ln -s "$GADGET_DIR/functions/$FUNCTION_NAME" "$GADGET_DIR/configs/$CONFIG_NAME/$FUNCTION_NAME"
 
   write_value "$udc" "$GADGET_DIR/UDC"
   committed=1
-  trap - RETURN
+  trap - EXIT
 
   echo "Configured $GADGET_NAME on UDC $udc"
   echo "Gadget-side serial endpoint is normally /dev/ttyGS0; verify the actual node before starting wd-agent."
@@ -132,10 +150,7 @@ teardown_gadget() {
   require_root
   require_configfs
   [[ -d "$GADGET_DIR" ]] || fail "$GADGET_DIR does not exist"
-
-  [[ -d "$GADGET_DIR/functions/$FUNCTION_NAME" ]] || fail "refusing teardown: expected $FUNCTION_NAME is missing"
-  [[ -d "$GADGET_DIR/configs/$CONFIG_NAME" ]] || fail "refusing teardown: expected $CONFIG_NAME is missing"
-  [[ -L "$GADGET_DIR/configs/$CONFIG_NAME/$FUNCTION_NAME" ]] || fail "refusing teardown: expected function link is missing"
+  assert_owned_layout
 
   write_value "" "$GADGET_DIR/UDC"
   rm "$GADGET_DIR/configs/$CONFIG_NAME/$FUNCTION_NAME"
