@@ -82,6 +82,9 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
   - [x] Guarded configfs CDC-ACM setup/status/teardown helper and operator documentation
   - [ ] Record successful real UDC enumeration and authorized CDC-ACM terminal validation
 - [ ] USB networking adapter as a simpler high-throughput path
+  - [x] Guarded Linux configfs NCM function helper with explicit UDC/MAC/VID/PID and no host-network mutation
+  - [x] Reuse existing pinned direct-TCP transport over an operator-configured point-to-point IP link
+  - [ ] Record successful real NCM enumeration and authorized direct-TCP terminal validation over USB
 - [ ] Direct bulk-endpoint transport only where driver/user-mode support is practical
 
 A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient unless one side supports USB device/gadget/dual-role mode.
