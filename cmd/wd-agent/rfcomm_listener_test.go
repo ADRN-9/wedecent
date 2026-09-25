@@ -60,13 +60,22 @@ func TestOpenAgentListenersRFCOMMFailureClosesPreviouslyBoundTCP(t *testing.T) {
 		listenRFCOMM = original
 	})
 
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	address := probe.Addr().String()
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	listenRFCOMM = func(int) (net.Listener, error) {
 		return nil, errTestRFCOMMListen
 	}
 
 	set, err := openAgentListeners(
 		serveConfig{
-			ListenAddr:     "127.0.0.1:0",
+			ListenAddr:     address,
 			RFCOMMChannel:  7,
 			MaxConnections: 3,
 		},
@@ -78,6 +87,14 @@ func TestOpenAgentListenersRFCOMMFailureClosesPreviouslyBoundTCP(t *testing.T) {
 			set.close()
 		}
 		t.Fatal("expected RFCOMM listener failure")
+	}
+
+	rebound, err := net.Listen("tcp", address)
+	if err != nil {
+		t.Fatalf("TCP listener leaked after RFCOMM startup failure: %v", err)
+	}
+	if err := rebound.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
