@@ -612,23 +612,47 @@ func runPair(args []string) error {
 	serialDevice := fs.String("serial", "", "Linux serial device path, e.g. /dev/ttyACM0")
 	relayAddr := fs.String("relay", "", "legacy TCP relay address, e.g. relay.wedecent.com:443")
 	webRelay := fs.String("web-relay", "", "serverless WebSocket relay URL, e.g. https://relay.wedecent.com")
-	deviceID := fs.String("device-id", "", "target device ID when pairing through a relay")
-	fingerprint := fs.String("fingerprint", "", "expected SHA256 device public-key fingerprint")
+	deviceID := fs.String("device-id", "", "target device ID for relay or LAN discovery pairing")
+	fingerprint := fs.String("fingerprint", "", "independently verified expected SHA256 device public-key fingerprint")
+	discoverLAN := fs.Bool("discover-lan", false, "discover a direct LAN endpoint for --device-id")
+	discoverTimeout := fs.Duration("discover-timeout", 6*time.Second, "LAN discovery window for --discover-lan")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *fingerprint == "" {
-		return errors.New("--fingerprint is required; obtain it from wd discover or wd-agent identity")
-	}
-	locator, err := pairTransportLocator(*endpoint, *rfcomm, *relayAddr, *webRelay, *deviceID, *serialDevice)
-	if err != nil {
-		return err
+		return errors.New("--fingerprint is required; verify it through an independent trusted channel such as local wd-agent identity output or managed enrollment data")
 	}
 	fp, err := identity.ParseFingerprint(*fingerprint)
 	if err != nil {
 		return err
+	}
+	var discoverTimeoutSet bool
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == "discover-timeout" {
+			discoverTimeoutSet = true
+		}
+	})
+	if discoverTimeoutSet && !*discoverLAN {
+		return errors.New("--discover-timeout requires --discover-lan")
+	}
+	locator, err := resolvePairLocator(context.Background(), pairLocatorOptions{
+		Endpoint:        *endpoint,
+		RFCOMM:          *rfcomm,
+		SerialDevice:    *serialDevice,
+		Relay:           *relayAddr,
+		WebRelay:        *webRelay,
+		DeviceID:        *deviceID,
+		Fingerprint:     *fingerprint,
+		DiscoverLAN:     *discoverLAN,
+		DiscoverTimeout: *discoverTimeout,
+	}, discovery.FindPairCandidate)
+	if err != nil {
+		return err
+	}
+	if *discoverLAN {
+		fmt.Fprintf(os.Stderr, "WeDecent: selected discovered LAN routing hint %s; trust still requires the expected fingerprint and pairing secret\n", locator)
 	}
 
 	secret, err := readPairingSecret()
@@ -974,7 +998,7 @@ Commands:
   discover   Find signed WeDecent LAN advertisements
   devices    List paired devices
   unpair     Remove local trust for one paired device
-  pair       Pair directly, over RFCOMM or serial, or through a relay
+  pair       Pair directly, by discovered LAN routing hint, over RFCOMM or serial, or through a relay
   route-trust  Manage dedicated source-to-router routing trust
   connect    Open an interactive terminal directly, over RFCOMM or serial, through a relay, or via one trusted router`)
 }
