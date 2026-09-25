@@ -103,7 +103,7 @@ func issueCertificate(path, name, id string, pub ed25519.PublicKey, signer crypt
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	if err := writeCertificateFile(path, certPEM, replaceExisting); err != nil {
 		if !replaceExisting && errors.Is(err, os.ErrExist) {
-			existing, loadErr := loadCertificate(path)
+			existing, loadErr := loadConcurrentlyCreatedCertificate(path)
 			if loadErr != nil {
 				return nil, fmt.Errorf("load concurrently created identity certificate: %w", loadErr)
 			}
