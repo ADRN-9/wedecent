@@ -12,6 +12,33 @@ import (
 	"unsafe"
 )
 
+func TestNormalizeSerialPathLinux(t *testing.T) {
+	got, err := normalizeSerialPath("/dev/ttyACM0")
+	if err != nil {
+		t.Fatalf("normalize serial path: %v", err)
+	}
+	if got != "/dev/ttyACM0" {
+		t.Fatalf("path = %q", got)
+	}
+}
+
+func TestNormalizeSerialPathLinuxRejectsUnsafeInput(t *testing.T) {
+	for _, path := range []string{
+		"",
+		"ttyACM0",
+		"/tmp/ttyACM0",
+		"/dev",
+		"/dev/../tmp/tty",
+		" /dev/ttyACM0 ",
+	} {
+		t.Run(path, func(t *testing.T) {
+			if _, err := normalizeSerialPath(path); err == nil {
+				t.Fatalf("normalizeSerialPath(%q) unexpectedly succeeded", path)
+			}
+		})
+	}
+}
+
 func openSerialTestPTY(t *testing.T) (*os.File, string) {
 	t.Helper()
 	fd, err := syscall.Open("/dev/ptmx", syscall.O_RDWR|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
