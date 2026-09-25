@@ -41,20 +41,22 @@ func (d SerialDialer) Dial(ctx context.Context, endpoint string) (Conn, error) {
 }
 
 func normalizeSerialPath(endpoint string) (string, error) {
-	path := strings.TrimSpace(endpoint)
-	if path == "" {
+	if endpoint == "" {
 		return "", errors.New("transport: serial device path is required")
 	}
-	if strings.IndexByte(path, 0) >= 0 {
+	if strings.TrimSpace(endpoint) != endpoint {
+		return "", errors.New("transport: serial device path must not contain surrounding whitespace")
+	}
+	if strings.IndexByte(endpoint, 0) >= 0 {
 		return "", errors.New("transport: serial device path contains NUL")
 	}
-	if !filepath.IsAbs(path) || filepath.Clean(path) != path {
+	if !filepath.IsAbs(endpoint) || filepath.Clean(endpoint) != endpoint {
 		return "", errors.New("transport: serial device path must be a canonical absolute path")
 	}
-	if path == "/dev" || !strings.HasPrefix(path, "/dev/") {
+	if endpoint == "/dev" || !strings.HasPrefix(endpoint, "/dev/") {
 		return "", errors.New("transport: serial device path must be under /dev")
 	}
-	return path, nil
+	return endpoint, nil
 }
 
 type serialAddr string
