@@ -73,14 +73,15 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
-      - name: Parse Windows installer scripts
+      - name: Parse Windows installer and hardware scripts
         shell: pwsh
         run: |
           $files = @(
             'installer/windows/Install-WeDecent.ps1',
             'installer/windows/Uninstall-WeDecent.ps1',
             'installer/windows/Test-WeDecentInstall.ps1',
-            'scripts/test-windows-upgrade-preflight.ps1'
+            'scripts/test-windows-upgrade-preflight.ps1',
+            'scripts/test-windows-rfcomm-hardware.ps1'
           )
           foreach ($file in $files) {
             $tokens = $null
