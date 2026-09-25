@@ -79,6 +79,8 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
   - [x] Hardware-required validation harness and operator procedure
   - [ ] Record a successful authorized terminal run over real USB CDC-ACM endpoints
 - [ ] Linux USB gadget mode documentation/helper
+  - [x] Guarded configfs CDC-ACM setup/status/teardown helper and operator documentation
+  - [ ] Record successful real UDC enumeration and authorized CDC-ACM terminal validation
 - [ ] USB networking adapter as a simpler high-throughput path
 - [ ] Direct bulk-endpoint transport only where driver/user-mode support is practical
 
