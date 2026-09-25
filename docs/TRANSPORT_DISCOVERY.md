@@ -52,6 +52,20 @@ Discovery can return stale, duplicate, spoofed, or conflicting candidates. The U
 
 Signed multicast discovery may advertise a direct TCP endpoint, device ID, name, and fingerprint. Treat the endpoint as a routing hint. For paired devices, the existing trusted-LAN path may be selected only after exact fingerprint matching and a successful authenticated probe.
 
+First-pair LAN discovery is available explicitly through:
+
+```text
+wd pair --discover-lan --device-id wd_xxxxxxxxxxxxxxxx --fingerprint SHA256:<independently-verified-fingerprint>
+```
+
+The expected fingerprint must come from an independent trusted channel, such as local `wd-agent identity` output on the target machine or authenticated managed enrollment data. Do not copy the discovery-advertised fingerprint into `--fingerprint` merely because it was discovered on the LAN.
+
+`--discover-lan` observes the full bounded discovery window before selecting a candidate. Exact duplicate advertisements are harmless, but distinct valid endpoints for the same target are treated as ambiguous and fail rather than selecting the first packet. A matching device ID with a conflicting fingerprint is a hard identity error.
+
+The discovery window defaults to 6 seconds and can be changed with `--discover-timeout`, up to 1 minute. `--discover-timeout` is valid only with `--discover-lan`. LAN discovery is mutually exclusive with `--endpoint`, `--rfcomm`, `--serial`, `--relay`, and `--web-relay`; it never falls back to one of those transports after failure.
+
+After a single candidate is selected, the client converts only its direct IP/port into the existing `tcp://` locator and then runs the unchanged pairing path. The normal single-use pairing secret, TLS 1.3 identity verification, exact expected fingerprint, and successful pairing protocol remain required before trust is persisted.
+
 ### Bluetooth RFCOMM
 
 Do not infer a WeDecent peer from a Bluetooth device name or OS pairing state. A picker may enumerate nearby or paired Bluetooth devices for operator convenience, but the RFCOMM address/channel remains only a locator. Automatic SDP/channel discovery, if added, must not change identity or authorization semantics.
@@ -66,10 +80,10 @@ Interface identity, USB MAC addresses, and point-to-point IP addresses remain tr
 
 ## CLI direction
 
-The current `wd discover` command should remain safe to script. Any future richer discovery command or interactive picker should keep machine-readable locator data distinct from trust decisions.
+The current `wd discover` command remains safe to script and continues to expose signed LAN advertisement data without creating trust. `wd pair --discover-lan` is the first executable selection UX and deliberately requires both an explicit target device ID and an independently verified expected fingerprint.
 
-Pairing help and errors must not imply that a discovery result by itself is an acceptable source of the expected fingerprint. Recommended wording should direct operators to verify the fingerprint through a trusted independent channel, such as local `wd-agent identity` output or managed enrollment data.
+Future richer discovery commands or interactive pickers must keep machine-readable locator data distinct from trust decisions. Pairing help and errors must not imply that a discovery result by itself is an acceptable source of the expected fingerprint.
 
 ## Completion criteria
 
-The roadmap parent item `Pair/transport discovery UX` remains incomplete until executable client UX implements these rules with deterministic tests. Documentation of this contract is only the first slice.
+The roadmap parent item `Pair/transport discovery UX` remains incomplete until the remaining transport picker work is intentionally completed or explicitly deferred. The LAN first-pair discovery path now implements this contract with deterministic ambiguity and trust-boundary tests.
