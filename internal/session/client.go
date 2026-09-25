@@ -219,10 +219,11 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 }
 
 func (c *Client) dial(ctx context.Context, endpoint string) (transport.Conn, error) {
-	if c.Dialer == nil {
-		c.Dialer = transport.MultiDialer{}
+	dialer := c.Dialer
+	if dialer == nil {
+		dialer = transport.MultiDialer{}
 	}
-	return c.Dialer.Dial(ctx, endpoint)
+	return dialer.Dial(ctx, endpoint)
 }
 
 func tlsClient(raw transport.Conn, id *identity.Identity, fp string) (*tls.Conn, error) {
