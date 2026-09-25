@@ -71,6 +71,18 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 	}
 }
 
+func TestServeConfigSerialFlagExpansion(t *testing.T) {
+	path := writeServeConfigTestFile(t, `{"listen":"","serial":"/dev/ttyACM0"}`)
+	expanded, err := expandServeConfigArgs([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(expanded, "\x00")
+	if !strings.Contains(joined, "--serial=/dev/ttyACM0") {
+		t.Fatalf("expanded = %#v", expanded)
+	}
+}
+
 func TestServeConfigUnknownFieldFailsClosed(t *testing.T) {
 	path := writeServeConfigTestFile(t, `{"listen":"127.0.0.1:7443","unexpected":true}`)
 	_, err := expandServeConfigArgs([]string{"--config=" + path})

@@ -5,8 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"path"
+	"strings"
 	"time"
 
+	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/transport"
 )
 
@@ -18,6 +21,22 @@ var dialAgentSerial = func(ctx context.Context, endpoint string) (net.Conn, erro
 		return nil, err
 	}
 	return conn, nil
+}
+
+func validateAgentSerialEndpoint(endpoint string) error {
+	if endpoint == "" {
+		return nil
+	}
+	if strings.TrimSpace(endpoint) != endpoint {
+		return errors.New("serial device path must not contain surrounding whitespace")
+	}
+	if strings.IndexByte(endpoint, 0) >= 0 || strings.ContainsAny(endpoint, "?#") {
+		return errors.New("invalid serial device path")
+	}
+	if endpoint == "/dev" || !strings.HasPrefix(endpoint, "/dev/") || path.Clean(endpoint) != endpoint {
+		return errors.New("serial device path must be a canonical absolute path under /dev")
+	}
+	return nil
 }
 
 // serveAgentSerial repeatedly opens one explicitly configured serial stream and
@@ -73,4 +92,48 @@ func serveAgentSerial(
 		case <-timer.C:
 		}
 	}
+}
+
+func serveAgentLocalTransports(
+	ctx context.Context,
+	listeners *agentListenerSet,
+	serialEndpoint string,
+	server *session.Server,
+) error {
+	if listeners == nil {
+		return errors.New("wd-agent: local listener set is unavailable")
+	}
+	if serialEndpoint == "" {
+		return listeners.serve(ctx)
+	}
+	if server == nil {
+		return errors.New("wd-agent: endpoint session server is unavailable")
+	}
+
+	localCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- listeners.serve(localCtx)
+	}()
+	go func() {
+		errCh <- serveAgentSerial(localCtx, serialEndpoint, server.ServeConn)
+	}()
+
+	firstErr := <-errCh
+	cancel()
+	listeners.close()
+	secondErr := <-errCh
+
+	if ctx.Err() != nil {
+		return nil
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	if secondErr != nil {
+		return secondErr
+	}
+	return errors.New("wd-agent: local transport stopped unexpectedly")
 }
