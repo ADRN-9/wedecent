@@ -69,6 +69,9 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
   - [x] Hardware-required validation harness and operator procedure
   - [ ] Record a successful authorized terminal run on two real Linux Bluetooth Classic endpoints
 - [ ] Windows Bluetooth Classic adapter
+  - [x] Native Winsock RFCOMM dial/listen primitives using the existing locator, agent composition, and `wd pair` / `wd connect` selection
+  - [x] Hardware-required validation harness and operator procedure
+  - [ ] Record a successful authorized terminal run with a real Windows Bluetooth Classic endpoint
 - [ ] L2CAP CoC evaluation for platforms where it is preferable
 - [ ] Pair/transport discovery UX
 
