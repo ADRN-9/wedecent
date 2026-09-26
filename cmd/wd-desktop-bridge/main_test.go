@@ -60,7 +60,7 @@ func TestRunStatusEmitsSanitizedJSON(t *testing.T) {
 
 func TestRunInventoryEmitsSanitizedJSON(t *testing.T) {
 	source := fakeCoreSource{
-		devices: []v1.Device{{ID: "wd_0123456789abcdef", Name: "laptop", Fingerprint: "SHA256:secretish", Endpoint: "tcp://192.0.2.5:8022"}},
+		devices:    []v1.Device{{ID: "wd_0123456789abcdef", Name: "laptop", Fingerprint: "SHA256:secretish", Endpoint: "tcp://192.0.2.5:8022"}},
 		transports: []v1.TransportStatus{{Name: v1.TransportLAN, Available: true, Detail: "implementation detail"}},
 	}
 	var out bytes.Buffer
