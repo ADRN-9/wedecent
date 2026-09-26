@@ -313,7 +313,12 @@ async fn core_connect(
     bridge: tauri::State<'_, SharedTerminalBridge>,
     device_id: String,
 ) -> Result<ConnectionSummary, String> {
-    terminal_bridge_request(bridge.inner().clone(), "connect", IdRequest { id: device_id }).await
+    terminal_bridge_request(
+        bridge.inner().clone(),
+        "connect",
+        IdRequest { id: device_id },
+    )
+    .await
 }
 
 #[tauri::command]
