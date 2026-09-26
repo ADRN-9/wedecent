@@ -22,6 +22,7 @@ let terminal = null;
 let terminalInputDisposable = null;
 let activeConnectionID = null;
 let terminalGeneration = 0;
+let writeChain = Promise.resolve();
 
 function getInvoke() {
   const invoke = window.__TAURI__?.core?.invoke;
@@ -121,6 +122,7 @@ async function stopTerminal(message = 'No active session') {
   const connectionID = activeConnectionID;
   activeConnectionID = null;
   terminalGeneration += 1;
+  writeChain = Promise.resolve();
   disconnectButton.disabled = true;
   terminalInputDisposable?.dispose();
   terminalInputDisposable = null;
@@ -157,6 +159,22 @@ async function pollTerminal(connectionID, generation) {
   }
 }
 
+function queueTerminalWrite(invoke, connectionID, data) {
+  const bytes = new TextEncoder().encode(data);
+  const dataBase64 = bytesToBase64(bytes);
+  writeChain = writeChain.then(async () => {
+    if (activeConnectionID !== connectionID) {
+      return;
+    }
+    await invoke('terminal_write', { connectionId: connectionID, dataBase64 });
+  }).catch(async () => {
+    if (activeConnectionID === connectionID) {
+      await stopTerminal('Session unavailable');
+      terminalDetail.textContent = 'Terminal input failed. No fallback path was attempted.';
+    }
+  });
+}
+
 async function startTerminal(device) {
   if (activeConnectionID) {
     await stopTerminal();
@@ -173,11 +191,8 @@ async function startTerminal(device) {
     const connection = await invoke('core_connect', { deviceId: device.id });
     activeConnectionID = connection.id;
     terminalGeneration += 1;
+    writeChain = Promise.resolve();
     const generation = terminalGeneration;
-
-    terminalHeading.textContent = device.name || device.id;
-    terminalDetail.textContent = `Connected through Local Core (${connection.path}).`;
-    disconnectButton.disabled = false;
 
     await invoke('terminal_resize', {
       connectionId: connection.id,
@@ -185,28 +200,21 @@ async function startTerminal(device) {
       rows: TERMINAL_ROWS,
     });
 
+    terminalHeading.textContent = device.name || device.id;
+    terminalDetail.textContent = `Connected through Local Core (${connection.path}).`;
+    disconnectButton.disabled = false;
+
     terminalInputDisposable?.dispose();
-    terminalInputDisposable = xterm.onData(async (data) => {
-      if (activeConnectionID !== connection.id) {
-        return;
-      }
-      try {
-        const bytes = new TextEncoder().encode(data);
-        await invoke('terminal_write', {
-          connectionId: connection.id,
-          dataBase64: bytesToBase64(bytes),
-        });
-      } catch (_) {
-        await stopTerminal('Session unavailable');
-        terminalDetail.textContent = 'Terminal input failed. No fallback path was attempted.';
+    terminalInputDisposable = xterm.onData((data) => {
+      if (activeConnectionID === connection.id) {
+        queueTerminalWrite(invoke, connection.id, data);
       }
     });
 
     xterm.focus();
     void pollTerminal(connection.id, generation);
   } catch (_) {
-    activeConnectionID = null;
-    terminalHeading.textContent = 'Connection failed';
+    await stopTerminal('Connection failed');
     terminalDetail.textContent = 'Local Core did not establish an authorized secure session. No fallback path was attempted.';
   }
 }
