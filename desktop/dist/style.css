@@ -21,7 +21,7 @@ button {
 }
 
 .shell {
-  max-width: 760px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 72px 32px;
 }
@@ -55,7 +55,8 @@ h1 {
   gap: 24px;
 }
 
-.status-heading button {
+.status-heading button,
+.device-connect {
   padding: 8px 14px;
   border: 1px solid currentColor;
   border-radius: 8px;
@@ -101,6 +102,35 @@ dd {
   overflow-wrap: anywhere;
 }
 
+ul {
+  padding-left: 20px;
+}
+
+li + li {
+  margin-top: 10px;
+}
+
+.device-connect {
+  text-align: left;
+}
+
+.terminal-panel {
+  overflow: hidden;
+}
+
+#terminal {
+  min-height: 390px;
+  margin-top: 20px;
+  padding: 10px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #000;
+}
+
+#terminal .xterm {
+  min-height: 370px;
+}
+
 .boundary {
   margin-top: 24px;
   max-width: 64ch;
@@ -108,8 +138,16 @@ dd {
 }
 
 @media (max-width: 560px) {
+  .shell {
+    padding: 40px 18px;
+  }
+
   dl {
     grid-template-columns: 1fr;
+  }
+
+  #terminal {
+    min-height: 330px;
   }
 }
 
@@ -117,5 +155,9 @@ dd {
   :root {
     background: #f7f7f5;
     color: #151719;
+  }
+
+  #terminal {
+    background: #000;
   }
 }
