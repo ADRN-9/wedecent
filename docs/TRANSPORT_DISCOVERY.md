@@ -70,13 +70,30 @@ After a single candidate is selected, the client converts only its direct IP/por
 
 Do not infer a WeDecent peer from a Bluetooth device name or OS pairing state. A picker may enumerate nearby or paired Bluetooth devices for operator convenience, but the RFCOMM address/channel remains only a locator. Automatic SDP/channel discovery, if added, must not change identity or authorization semantics.
 
+The current CLI intentionally keeps RFCOMM selection explicit rather than adding automatic Bluetooth enumeration or SDP selection. The existing `--rfcomm` locator is sufficient for the Phase 3 transport contract. A richer picker is deferred to the Phase 4 desktop product, where native platform APIs can present candidates visibly without treating pairing state, device name, address, or discovered channel as trust.
+
 ### USB CDC-ACM
 
 A picker may enumerate candidate serial devices, but `/dev` path, USB VID/PID, product name, serial number, bus path, and physical attachment remain locator metadata only. The selected stream must still pass through normal TLS fingerprint verification and pairing authorization.
 
+The current CLI intentionally keeps USB serial selection explicit through `--serial`. Cross-platform automatic serial enumeration is deferred to the Phase 4 desktop product so platform-native metadata can be presented as untrusted locator information instead of silently selecting a device from USB descriptors.
+
 ### USB networking
 
 Interface identity, USB MAC addresses, and point-to-point IP addresses remain transport metadata. Use the existing pinned direct-TCP path.
+
+## Deferred richer transport pickers
+
+Bluetooth and USB auto-enumeration are not required to complete the Phase 3 security/transport work. They are deferred to the desktop UX rather than added as CLI auto-selection because the platform APIs and available metadata differ substantially and are easy to mistake for identity evidence.
+
+Reopen richer transport picker work when at least one of these is true:
+
+- the Phase 4 desktop shell is ready to show multiple native candidates and require explicit operator selection;
+- a concrete hardware workflow cannot reasonably provide an explicit RFCOMM or serial locator;
+- a platform provides a stable native enumeration API that yields a canonical locator without requiring trust inference; or
+- measured usability evidence shows explicit locator entry is blocking the target deployment.
+
+Any future picker must still display discovery metadata as untrusted, require independently verified identity for first pairing, reject conflicting candidates, and pass the selected stream through the existing TLS/session authorization path.
 
 ## CLI direction
 
@@ -86,4 +103,4 @@ Future richer discovery commands or interactive pickers must keep machine-readab
 
 ## Completion criteria
 
-The roadmap parent item `Pair/transport discovery UX` remains incomplete until the remaining transport picker work is intentionally completed or explicitly deferred. The LAN first-pair discovery path now implements this contract with deterministic ambiguity and trust-boundary tests.
+The Phase 3 `Pair/transport discovery UX` item is complete for the current CLI scope: the discovery/trust contract is documented, first-pair LAN selection is executable and fail-closed, and richer Bluetooth/USB enumeration is explicitly deferred to the Phase 4 desktop picker under the criteria above.
