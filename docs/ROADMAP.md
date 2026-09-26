@@ -103,13 +103,15 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
 
 ## Phase 4 — PuTTY-style desktop product
 
-- [ ] Tauri desktop shell
+- [x] Tauri desktop shell
   - [x] Freeze the client-only desktop authority/process boundary and completion criteria; see `DESKTOP_SHELL.md`
   - [x] Add the minimal Tauri v2 shell scaffold without transport/trust/runtime logic
   - [x] Add a read-only, sanitized status bridge over the existing protected Local Core client
-  - [ ] Connect the shell through the approved Local Core application boundary and exercise it in canonical CI
+  - [x] Connect the shell through the approved Local Core application boundary and exercise it in canonical CI
 - [ ] xterm.js terminal renderer
 - [ ] Device list + transport/latency badges
+  - [x] Render sanitized Local Core device identity summaries and transport availability without endpoints, fingerprints, or transport detail
+  - [ ] Add latency only after Local Core exposes a bounded authoritative measurement; do not infer it in the renderer
 - [ ] Tabs and multiple terminal streams per secure connection
 - [ ] Session profiles
 - [ ] File transfer
