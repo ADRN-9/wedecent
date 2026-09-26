@@ -142,6 +142,48 @@ func TestRunTerminalCommandsUseJSONStdin(t *testing.T) {
 	}
 }
 
+func TestServeProcessesMultipleRequestsWithoutRespawn(t *testing.T) {
+	source := &fakeCoreSource{
+		connection: v1.Connection{ID: "conn_abc", DeviceID: "wd_0123456789abcdef", State: v1.ConnectionStateConnected, Path: v1.ConnectionPathDirect},
+		read:       v1.TerminalReadResult{Data: []byte("hello")},
+	}
+	input := strings.Join([]string{
+		`{"op":"connect","request":{"id":"wd_0123456789abcdef"}}`,
+		`{"op":"terminal-write","request":{"id":"conn_abc","data":"aGk="}}`,
+		`{"op":"unknown","request":{"id":"conn_abc"}}`,
+		`{"op":"terminal-read","request":{"id":"conn_abc"}}`,
+	}, "\n") + "\n"
+	var out bytes.Buffer
+	if err := run([]string{"serve"}, strings.NewReader(input), &out, source); err != nil {
+		t.Fatal(err)
+	}
+
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	if len(lines) != 4 {
+		t.Fatalf("serve output lines = %d, want 4: %q", len(lines), out.String())
+	}
+	if !strings.Contains(lines[0], `"ok":true`) || !strings.Contains(lines[0], `"id":"conn_abc"`) {
+		t.Fatalf("connect response = %q", lines[0])
+	}
+	if string(source.writeReq.Data) != "hi" || !strings.Contains(lines[1], `"ok":true`) {
+		t.Fatalf("write request = %#v response = %q", source.writeReq, lines[1])
+	}
+	if !strings.Contains(lines[2], `"ok":false`) || !strings.Contains(lines[2], `Invalid desktop terminal request`) {
+		t.Fatalf("invalid response = %q", lines[2])
+	}
+	if !strings.Contains(lines[3], base64.StdEncoding.EncodeToString([]byte("hello"))) {
+		t.Fatalf("read response = %q", lines[3])
+	}
+}
+
+func TestServeRejectsOversizedLine(t *testing.T) {
+	input := strings.Repeat("x", maxBridgeRequestBytes+1) + "\n"
+	err := run([]string{"serve"}, strings.NewReader(input), &bytes.Buffer{}, &fakeCoreSource{})
+	if !errors.Is(err, desktopbridge.ErrInvalidTerminalBridgeRequest) {
+		t.Fatalf("serve oversized error = %v", err)
+	}
+}
+
 func TestRunRejectsMalformedTerminalRequests(t *testing.T) {
 	source := &fakeCoreSource{}
 	for _, input := range []string{`{"id":"conn_abc","extra":true}`, `{"id":"conn_abc"} {"id":"conn_2"}`, `not-json`} {
