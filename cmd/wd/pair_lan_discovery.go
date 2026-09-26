@@ -7,25 +7,29 @@ import (
 	"time"
 
 	"wedecent.com/wedecent/internal/discovery"
+	"wedecent.com/wedecent/internal/identity"
 )
 
 type pairLANFinder func(context.Context, string, string) (discovery.Result, error)
 
 type pairLocatorOptions struct {
-	Endpoint          string
-	RFCOMM            string
-	SerialDevice      string
-	Relay             string
-	WebRelay          string
-	DeviceID          string
-	Fingerprint       string
-	DiscoverLAN       bool
-	DiscoverTimeout   time.Duration
+	Endpoint        string
+	RFCOMM          string
+	SerialDevice    string
+	Relay           string
+	WebRelay        string
+	DeviceID        string
+	Fingerprint     string
+	DiscoverLAN     bool
+	DiscoverTimeout time.Duration
 }
 
 func resolvePairLocator(ctx context.Context, opts pairLocatorOptions, finder pairLANFinder) (string, error) {
 	if !opts.DiscoverLAN {
 		return pairTransportLocator(opts.Endpoint, opts.RFCOMM, opts.Relay, opts.WebRelay, opts.DeviceID, opts.SerialDevice)
+	}
+	if _, err := identity.ParseFingerprint(opts.Fingerprint); err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(opts.DeviceID) != opts.DeviceID || !strings.HasPrefix(opts.DeviceID, "wd_") || len(opts.DeviceID) != 19 {
 		return "", errors.New("--discover-lan requires a canonical --device-id")
