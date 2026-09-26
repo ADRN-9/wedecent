@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,7 +21,7 @@ const (
 	maxBridgeRequestBytes = 64 * 1024
 )
 
-var errUsage = errors.New("usage: wd-desktop-bridge <status|inventory|connect|disconnect|terminal-read|terminal-write|terminal-resize|version>")
+var errUsage = errors.New("usage: wd-desktop-bridge <status|inventory|connect|disconnect|terminal-read|terminal-write|terminal-resize|serve|version>")
 
 type coreSource interface {
 	desktopbridge.StatusSource
@@ -46,6 +48,17 @@ type okResponse struct {
 	OK bool `json:"ok"`
 }
 
+type serveEnvelope struct {
+	Op      string          `json:"op"`
+	Request json.RawMessage `json:"request"`
+}
+
+type serveResponse struct {
+	OK     bool `json:"ok"`
+	Result any  `json:"result,omitempty"`
+	Error  string `json:"error,omitempty"`
+}
+
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "wd-desktop-bridge:", publicError(err))
@@ -66,6 +79,9 @@ func run(args []string, stdin io.Reader, stdout io.Writer, source coreSource) er
 			return err
 		}
 		source = client
+	}
+	if args[0] == "serve" {
+		return serve(stdin, stdout, source)
 	}
 
 	ctx := context.Background()
@@ -133,6 +149,84 @@ func run(args []string, stdin io.Reader, stdout io.Writer, source coreSource) er
 		return encoder.Encode(okResponse{OK: true})
 	default:
 		return errUsage
+	}
+}
+
+func serve(stdin io.Reader, stdout io.Writer, source coreSource) error {
+	scanner := bufio.NewScanner(stdin)
+	scanner.Buffer(make([]byte, 4096), maxBridgeRequestBytes)
+	encoder := json.NewEncoder(stdout)
+	encoder.SetEscapeHTML(true)
+
+	for scanner.Scan() {
+		result, err := handleServeRequest(scanner.Bytes(), source)
+		response := serveResponse{OK: err == nil, Result: result}
+		if err != nil {
+			response.Result = nil
+			response.Error = publicError(err)
+		}
+		if err := encoder.Encode(response); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("%w: persistent bridge input exceeds limit", desktopbridge.ErrInvalidTerminalBridgeRequest)
+	}
+	return nil
+}
+
+func handleServeRequest(line []byte, source coreSource) (any, error) {
+	var envelope serveEnvelope
+	if err := decodeRequest(bytes.NewReader(line), &envelope); err != nil {
+		return nil, err
+	}
+	if len(envelope.Request) == 0 {
+		return nil, fmt.Errorf("%w: missing persistent bridge request", desktopbridge.ErrInvalidTerminalBridgeRequest)
+	}
+
+	ctx := context.Background()
+	switch envelope.Op {
+	case "connect":
+		var req idRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		return desktopbridge.Connect(ctx, source, req.ID)
+	case "disconnect":
+		var req idRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		if err := desktopbridge.Disconnect(ctx, source, req.ID); err != nil {
+			return nil, err
+		}
+		return okResponse{OK: true}, nil
+	case "terminal-read":
+		var req idRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		return desktopbridge.ReadTerminal(ctx, source, req.ID)
+	case "terminal-write":
+		var req terminalWriteRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		if err := desktopbridge.WriteTerminal(ctx, source, req.ID, req.Data); err != nil {
+			return nil, err
+		}
+		return okResponse{OK: true}, nil
+	case "terminal-resize":
+		var req terminalResizeRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		if err := desktopbridge.ResizeTerminal(ctx, source, req.ID, req.Cols, req.Rows); err != nil {
+			return nil, err
+		}
+		return okResponse{OK: true}, nil
+	default:
+		return nil, fmt.Errorf("%w: unknown persistent bridge operation", desktopbridge.ErrInvalidTerminalBridgeRequest)
 	}
 }
 
