@@ -104,6 +104,9 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
 ## Phase 4 — PuTTY-style desktop product
 
 - [ ] Tauri desktop shell
+  - [x] Freeze the client-only desktop authority/process boundary and completion criteria; see `DESKTOP_SHELL.md`
+  - [ ] Add the minimal Tauri v2 shell scaffold without transport/trust/runtime logic
+  - [ ] Connect the shell through the approved Local Core application boundary and exercise it in canonical CI
 - [ ] xterm.js terminal renderer
 - [ ] Device list + transport/latency badges
 - [ ] Tabs and multiple terminal streams per secure connection
