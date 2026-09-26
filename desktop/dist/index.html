@@ -5,7 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark light">
   <title>WeDecent</title>
+  <link rel="stylesheet" href="./vendor/xterm.css">
   <link rel="stylesheet" href="./style.css">
+  <script src="./vendor/xterm.js" defer></script>
   <script src="./app.js" defer></script>
 </head>
 <body>
@@ -37,6 +39,18 @@
       <strong id="devices-heading">Device inventory</strong>
       <p id="devices-detail">Loaded from Local Core without endpoints or fingerprints.</p>
       <ul id="device-list"></ul>
+    </section>
+
+    <section class="status terminal-panel" aria-labelledby="terminal-heading">
+      <div class="status-heading">
+        <div>
+          <p class="eyebrow">Terminal</p>
+          <strong id="terminal-heading">No active session</strong>
+        </div>
+        <button id="disconnect-terminal" type="button" disabled>Disconnect</button>
+      </div>
+      <p id="terminal-detail">Choose a known device. Local Core remains responsible for authorization, path selection, identity verification, and the secure session.</p>
+      <div id="terminal" aria-label="Remote terminal"></div>
     </section>
 
     <section class="status" aria-labelledby="transports-heading">
