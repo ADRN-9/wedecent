@@ -54,8 +54,8 @@ type serveEnvelope struct {
 }
 
 type serveResponse struct {
-	OK     bool `json:"ok"`
-	Result any  `json:"result,omitempty"`
+	OK     bool   `json:"ok"`
+	Result any    `json:"result,omitempty"`
 	Error  string `json:"error,omitempty"`
 }
 
