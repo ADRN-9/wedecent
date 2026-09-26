@@ -167,10 +167,20 @@ fn load_bridge_request_json<R: Serialize, T: DeserializeOwned>(
         .stderr(Stdio::null())
         .spawn()
         .map_err(|_| ())?;
-    {
-        let mut stdin = child.stdin.take().ok_or(())?;
-        stdin.write_all(&encoded).map_err(|_| ())?;
+
+    let write_result = match child.stdin.take() {
+        Some(mut stdin) => stdin.write_all(&encoded),
+        None => Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "desktop bridge stdin unavailable",
+        )),
+    };
+    if write_result.is_err() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(());
     }
+
     read_bridge_output(child)
 }
 
