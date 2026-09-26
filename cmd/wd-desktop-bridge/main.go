@@ -14,23 +14,46 @@ import (
 	"wedecent.com/wedecent/internal/desktopbridge"
 )
 
-const bridgeTimeout = 3 * time.Second
+const (
+	bridgeTimeout         = 3 * time.Second
+	maxBridgeRequestBytes = 64 * 1024
+)
 
-var errUsage = errors.New("usage: wd-desktop-bridge <status|inventory|version>")
+var errUsage = errors.New("usage: wd-desktop-bridge <status|inventory|connect|disconnect|terminal-read|terminal-write|terminal-resize|version>")
 
 type coreSource interface {
 	desktopbridge.StatusSource
 	desktopbridge.InventorySource
+	desktopbridge.TerminalSource
+}
+
+type idRequest struct {
+	ID string `json:"id"`
+}
+
+type terminalWriteRequest struct {
+	ID   string `json:"id"`
+	Data []byte `json:"data"`
+}
+
+type terminalResizeRequest struct {
+	ID   string `json:"id"`
+	Cols uint16 `json:"cols"`
+	Rows uint16 `json:"rows"`
+}
+
+type okResponse struct {
+	OK bool `json:"ok"`
 }
 
 func main() {
-	if err := run(os.Args[1:], os.Stdout, nil); err != nil {
+	if err := run(os.Args[1:], os.Stdin, os.Stdout, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "wd-desktop-bridge:", publicError(err))
 		os.Exit(1)
 	}
 }
 
-func run(args []string, stdout io.Writer, source coreSource) error {
+func run(args []string, stdin io.Reader, stdout io.Writer, source coreSource) error {
 	if len(args) != 1 {
 		return errUsage
 	}
@@ -45,29 +68,94 @@ func run(args []string, stdout io.Writer, source coreSource) error {
 		source = client
 	}
 
+	ctx := context.Background()
 	encoder := json.NewEncoder(stdout)
 	encoder.SetEscapeHTML(true)
 	switch args[0] {
 	case "status":
-		status, err := desktopbridge.GetStatus(context.Background(), source)
+		status, err := desktopbridge.GetStatus(ctx, source)
 		if err != nil {
 			return err
 		}
 		return encoder.Encode(status)
 	case "inventory":
-		inventory, err := desktopbridge.GetInventory(context.Background(), source)
+		inventory, err := desktopbridge.GetInventory(ctx, source)
 		if err != nil {
 			return err
 		}
 		return encoder.Encode(inventory)
+	case "connect":
+		var req idRequest
+		if err := decodeRequest(stdin, &req); err != nil {
+			return err
+		}
+		connection, err := desktopbridge.Connect(ctx, source, req.ID)
+		if err != nil {
+			return err
+		}
+		return encoder.Encode(connection)
+	case "disconnect":
+		var req idRequest
+		if err := decodeRequest(stdin, &req); err != nil {
+			return err
+		}
+		if err := desktopbridge.Disconnect(ctx, source, req.ID); err != nil {
+			return err
+		}
+		return encoder.Encode(okResponse{OK: true})
+	case "terminal-read":
+		var req idRequest
+		if err := decodeRequest(stdin, &req); err != nil {
+			return err
+		}
+		result, err := desktopbridge.ReadTerminal(ctx, source, req.ID)
+		if err != nil {
+			return err
+		}
+		return encoder.Encode(result)
+	case "terminal-write":
+		var req terminalWriteRequest
+		if err := decodeRequest(stdin, &req); err != nil {
+			return err
+		}
+		if err := desktopbridge.WriteTerminal(ctx, source, req.ID, req.Data); err != nil {
+			return err
+		}
+		return encoder.Encode(okResponse{OK: true})
+	case "terminal-resize":
+		var req terminalResizeRequest
+		if err := decodeRequest(stdin, &req); err != nil {
+			return err
+		}
+		if err := desktopbridge.ResizeTerminal(ctx, source, req.ID, req.Cols, req.Rows); err != nil {
+			return err
+		}
+		return encoder.Encode(okResponse{OK: true})
 	default:
 		return errUsage
 	}
 }
 
+func decodeRequest(reader io.Reader, out any) error {
+	limited := io.LimitReader(reader, maxBridgeRequestBytes+1)
+	decoder := json.NewDecoder(limited)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(out); err != nil {
+		return fmt.Errorf("%w: malformed bridge request", desktopbridge.ErrInvalidTerminalBridgeRequest)
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return fmt.Errorf("%w: bridge request must contain one JSON value", desktopbridge.ErrInvalidTerminalBridgeRequest)
+	}
+	return nil
+}
+
 func publicError(err error) string {
 	if errors.Is(err, errUsage) {
 		return errUsage.Error()
+	}
+	if errors.Is(err, desktopbridge.ErrInvalidTerminalBridgeRequest) {
+		return "Invalid desktop terminal request"
 	}
 	if coreclient.IsUnavailable(err) || errors.Is(err, context.DeadlineExceeded) {
 		return "Local Core is unavailable"
