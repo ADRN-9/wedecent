@@ -10,9 +10,9 @@ import (
 )
 
 type inventorySource struct {
-	devices    []v1.Device
-	transports []v1.TransportStatus
-	deviceErr  error
+	devices      []v1.Device
+	transports   []v1.TransportStatus
+	deviceErr    error
 	transportErr error
 }
 
@@ -40,7 +40,7 @@ func TestGetInventorySanitizesRendererState(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := Inventory{
-		Devices: []Device{{ID: "wd_0123456789abcdef", Name: "laptop"}},
+		Devices:    []Device{{ID: "wd_0123456789abcdef", Name: "laptop"}},
 		Transports: []Transport{{Name: v1.TransportLAN, Available: true}},
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -58,7 +58,7 @@ func TestGetInventoryRequiresSource(t *testing.T) {
 func TestGetInventoryFailsClosedOnPartialCoreError(t *testing.T) {
 	want := errors.New("transport status unavailable")
 	_, err := GetInventory(context.Background(), inventorySource{
-		devices: []v1.Device{{ID: "wd_0123456789abcdef", Name: "laptop"}},
+		devices:      []v1.Device{{ID: "wd_0123456789abcdef", Name: "laptop"}},
 		transportErr: want,
 	})
 	if !errors.Is(err, want) {
