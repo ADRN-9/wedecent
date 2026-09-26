@@ -3,5 +3,6 @@
 .DS_Store
 
 /dist/
+/desktop/src-tauri/target/
 
 /supabase/.temp/
