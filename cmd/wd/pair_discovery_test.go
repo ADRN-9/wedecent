@@ -42,10 +42,10 @@ func TestResolvePairLocatorDiscoverLANRejectsExplicitTransport(t *testing.T) {
 
 	for name, values := range map[string][5]string{
 		"endpoint": {"192.0.2.10:7443", "", "", "", ""},
-		"rfcomm":  {"", "AA:BB:CC:DD:EE:FF/3", "", "", ""},
-		"relay":   {"", "", "relay.example:443", "", ""},
+		"rfcomm":   {"", "AA:BB:CC:DD:EE:FF/3", "", "", ""},
+		"relay":    {"", "", "relay.example:443", "", ""},
 		"webrelay": {"", "", "", "https://relay.example", ""},
-		"serial":  {"", "", "", "", "/dev/ttyACM0"},
+		"serial":   {"", "", "", "", "/dev/ttyACM0"},
 	} {
 		name, values := name, values
 		t.Run(name, func(t *testing.T) {
@@ -68,7 +68,7 @@ func TestResolvePairLocatorDiscoverLANRejectsExplicitTransport(t *testing.T) {
 func TestResolvePairLocatorDiscoverLANValidatesBeforeNetwork(t *testing.T) {
 	t.Parallel()
 
-	for name, deviceID, fingerprint, timeout := range []struct {
+	cases := []struct {
 		name        string
 		deviceID    string
 		fingerprint string
@@ -79,12 +79,13 @@ func TestResolvePairLocatorDiscoverLANValidatesBeforeNetwork(t *testing.T) {
 		{"bad-fingerprint", testPairDiscoveryDeviceID, "not-a-fingerprint", time.Second},
 		{"zero-timeout", testPairDiscoveryDeviceID, testPairDiscoveryFingerprint, 0},
 		{"long-timeout", testPairDiscoveryDeviceID, testPairDiscoveryFingerprint, 11 * time.Second},
-	} {
-		name, deviceID, fingerprint, timeout := name, deviceID, fingerprint, timeout
-		t.Run(name, func(t *testing.T) {
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			called := false
-			_, err := resolvePairLocatorWithFinder(context.Background(), true, timeout, "", "", "", "", deviceID, fingerprint, "", func(context.Context, string, string) (discovery.Result, error) {
+			_, err := resolvePairLocatorWithFinder(context.Background(), true, tc.timeout, "", "", "", "", tc.deviceID, tc.fingerprint, "", func(context.Context, string, string) (discovery.Result, error) {
 				called = true
 				return discovery.Result{}, nil
 			})
