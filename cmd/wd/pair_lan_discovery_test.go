@@ -9,6 +9,8 @@ import (
 	"wedecent.com/wedecent/internal/discovery"
 )
 
+const testPairLANFingerprint = "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
 func TestResolvePairLocatorExplicitTransport(t *testing.T) {
 	t.Parallel()
 
@@ -29,14 +31,14 @@ func TestResolvePairLocatorDiscovery(t *testing.T) {
 		DiscoverLAN:     true,
 		DiscoverTimeout: time.Second,
 		DeviceID:        "wd_aaaaaaaaaaaaaaaa",
-		Fingerprint:     "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		Fingerprint:     testPairLANFingerprint,
 	}, func(ctx context.Context, deviceID, fingerprint string) (discovery.Result, error) {
 		called = true
 		if deviceID != "wd_aaaaaaaaaaaaaaaa" {
 			t.Fatalf("deviceID = %q", deviceID)
 		}
-		if fingerprint == "" {
-			t.Fatal("fingerprint is empty")
+		if fingerprint != testPairLANFingerprint {
+			t.Fatalf("fingerprint = %q", fingerprint)
 		}
 		if _, ok := ctx.Deadline(); !ok {
 			t.Fatal("discovery context has no deadline")
@@ -70,6 +72,7 @@ func TestResolvePairLocatorDiscoveryRejectsExplicitTransport(t *testing.T) {
 			opts.DiscoverLAN = true
 			opts.DiscoverTimeout = time.Second
 			opts.DeviceID = "wd_aaaaaaaaaaaaaaaa"
+			opts.Fingerprint = testPairLANFingerprint
 			_, err := resolvePairLocator(context.Background(), opts, func(context.Context, string, string) (discovery.Result, error) {
 				t.Fatal("finder called for invalid mixed transport selection")
 				return discovery.Result{}, nil
@@ -89,10 +92,11 @@ func TestResolvePairLocatorDiscoveryRejectsInvalidInputs(t *testing.T) {
 		return discovery.Result{}, nil
 	}
 	for name, opts := range map[string]pairLocatorOptions{
-		"missing device": {DiscoverLAN: true, DiscoverTimeout: time.Second},
-		"spaced device":  {DiscoverLAN: true, DiscoverTimeout: time.Second, DeviceID: " wd_aaaaaaaaaaaaaaaa"},
-		"zero timeout":   {DiscoverLAN: true, DeviceID: "wd_aaaaaaaaaaaaaaaa"},
-		"long timeout":   {DiscoverLAN: true, DiscoverTimeout: time.Minute + time.Nanosecond, DeviceID: "wd_aaaaaaaaaaaaaaaa"},
+		"missing device":   {DiscoverLAN: true, DiscoverTimeout: time.Second, Fingerprint: testPairLANFingerprint},
+		"spaced device":    {DiscoverLAN: true, DiscoverTimeout: time.Second, DeviceID: " wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
+		"bad fingerprint":  {DiscoverLAN: true, DiscoverTimeout: time.Second, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: "not-a-fingerprint"},
+		"zero timeout":     {DiscoverLAN: true, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
+		"long timeout":     {DiscoverLAN: true, DiscoverTimeout: time.Minute + time.Nanosecond, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
 	} {
 		name, opts := name, opts
 		t.Run(name, func(t *testing.T) {
@@ -112,6 +116,7 @@ func TestResolvePairLocatorDiscoveryPropagatesFinderError(t *testing.T) {
 		DiscoverLAN:     true,
 		DiscoverTimeout: time.Second,
 		DeviceID:        "wd_aaaaaaaaaaaaaaaa",
+		Fingerprint:     testPairLANFingerprint,
 	}, func(context.Context, string, string) (discovery.Result, error) {
 		return discovery.Result{}, want
 	})
