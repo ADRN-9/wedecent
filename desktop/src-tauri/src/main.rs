@@ -28,9 +28,12 @@ fn bridge_executable_name() -> &'static str {
 
 fn sibling_bridge_path(current_exe: &Path) -> io::Result<PathBuf> {
     let current_exe = fs::canonicalize(current_exe)?;
-    let parent = current_exe
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "desktop executable has no parent"))?;
+    let parent = current_exe.parent().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "desktop executable has no parent",
+        )
+    })?;
     let bridge = parent.join(bridge_executable_name());
     let metadata = fs::symlink_metadata(&bridge)?;
     if !metadata.file_type().is_file() {
@@ -103,9 +106,7 @@ mod tests {
         );
         assert!(got.is_err(), "escaped non-JSON fixture must fail");
 
-        let got = parse_status(
-            br#"{"api_version":"v1"}"#,
-        );
+        let got = parse_status(br#"{"api_version":"v1"}"#);
         assert!(got.is_err(), "incomplete status must fail");
 
         let got = parse_status(
