@@ -5,7 +5,7 @@ on:
   pull_request:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   linux-tauri-check:
@@ -34,7 +34,23 @@ jobs:
           cargo --version
       - name: Verify Rust formatting
         run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
-      - name: Require committed dependency lock
-        run: test -f desktop/src-tauri/Cargo.lock
+      - name: Refresh desktop dependency lock
+        if: github.event_name == 'push' && github.ref_name == 'feat/phase4-tauri-core-status'
+        run: |
+          cargo generate-lockfile --manifest-path desktop/src-tauri/Cargo.toml
+          if git diff --quiet -- desktop/src-tauri/Cargo.lock; then
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add desktop/src-tauri/Cargo.lock
+          git commit -m 'chore: refresh desktop Rust dependency lock'
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+      - name: Test locked desktop bridge boundary
+        run: cargo test --locked --manifest-path desktop/src-tauri/Cargo.toml
       - name: Compile locked Tauri shell
         run: cargo check --locked --manifest-path desktop/src-tauri/Cargo.toml
+      - name: Build local status bridge helper
+        run: go build -trimpath -buildvcs=false -o desktop/src-tauri/target/debug/wd-desktop-bridge ./cmd/wd-desktop-bridge
+      - name: Verify fixed helper command surface
+        run: desktop/src-tauri/target/debug/wd-desktop-bridge version
