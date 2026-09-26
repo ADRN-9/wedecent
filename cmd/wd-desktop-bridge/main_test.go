@@ -10,6 +10,7 @@ import (
 
 	coreclient "wedecent.com/wedecent/internal/coreapi/client"
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
+	"wedecent.com/wedecent/internal/desktopbridge"
 )
 
 type fakeCoreSource struct {
