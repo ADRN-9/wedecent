@@ -477,18 +477,17 @@ mod tests {
 
     #[test]
     fn persistent_response_requires_success_result() {
-        let ok: OkResponse =
-            decode_persistent_response(br#"{"ok":true,"result":{"ok":true}}\n"#)
-                .expect("valid persistent response");
+        let ok: OkResponse = decode_persistent_response(br#"{"ok":true,"result":{"ok":true}}"#)
+            .expect("valid persistent response");
         assert!(ok.ok);
 
         let error: Result<OkResponse, ()> = decode_persistent_response(
-            br#"{"ok":false,"error":"Local Core rejected the desktop request"}\n"#,
+            br#"{"ok":false,"error":"Local Core rejected the desktop request"}"#,
         );
         assert!(error.is_err());
 
         let leaked: Result<OkResponse, ()> = decode_persistent_response(
-            br#"{"ok":true,"result":{"ok":true},"endpoint":"tcp://192.0.2.1:22"}\n"#,
+            br#"{"ok":true,"result":{"ok":true},"endpoint":"tcp://192.0.2.1:22"}"#,
         );
         assert!(leaked.is_err());
     }
