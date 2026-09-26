@@ -108,7 +108,9 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
   - [x] Add the minimal Tauri v2 shell scaffold without transport/trust/runtime logic
   - [x] Add a read-only, sanitized status bridge over the existing protected Local Core client
   - [x] Connect the shell through the approved Local Core application boundary and exercise it in canonical CI
-- [ ] xterm.js terminal renderer
+- [x] xterm.js terminal renderer
+  - [x] Pin xterm.js as a build-time dependency and keep the runtime renderer local/offline
+  - [x] Route connect/read/write/resize/disconnect only through bounded typed Tauri commands and the protected Local Core client
 - [ ] Device list + transport/latency badges
   - [x] Render sanitized Local Core device identity summaries and transport availability without endpoints, fingerprints, or transport detail
   - [ ] Add latency only after Local Core exposes a bounded authoritative measurement; do not infer it in the renderer
