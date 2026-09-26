@@ -92,11 +92,11 @@ func TestResolvePairLocatorDiscoveryRejectsInvalidInputs(t *testing.T) {
 		return discovery.Result{}, nil
 	}
 	for name, opts := range map[string]pairLocatorOptions{
-		"missing device":   {DiscoverLAN: true, DiscoverTimeout: time.Second, Fingerprint: testPairLANFingerprint},
-		"spaced device":    {DiscoverLAN: true, DiscoverTimeout: time.Second, DeviceID: " wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
-		"bad fingerprint":  {DiscoverLAN: true, DiscoverTimeout: time.Second, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: "not-a-fingerprint"},
-		"zero timeout":     {DiscoverLAN: true, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
-		"long timeout":     {DiscoverLAN: true, DiscoverTimeout: time.Minute + time.Nanosecond, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
+		"missing device":  {DiscoverLAN: true, DiscoverTimeout: time.Second, Fingerprint: testPairLANFingerprint},
+		"spaced device":   {DiscoverLAN: true, DiscoverTimeout: time.Second, DeviceID: " wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
+		"bad fingerprint": {DiscoverLAN: true, DiscoverTimeout: time.Second, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: "not-a-fingerprint"},
+		"zero timeout":    {DiscoverLAN: true, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
+		"long timeout":    {DiscoverLAN: true, DiscoverTimeout: time.Minute + time.Nanosecond, DeviceID: "wd_aaaaaaaaaaaaaaaa", Fingerprint: testPairLANFingerprint},
 	} {
 		name, opts := name, opts
 		t.Run(name, func(t *testing.T) {
