@@ -1,4 +1,4 @@
-use serde::{Deserialize, Serialize};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     env, fs,
     io::{self, Read},
@@ -6,7 +6,7 @@ use std::{
     process::{Command, Stdio},
 };
 
-const MAX_BRIDGE_OUTPUT_BYTES: u64 = 8 * 1024;
+const MAX_BRIDGE_OUTPUT_BYTES: u64 = 64 * 1024;
 const BRIDGE_FAILURE: &str = "Local Core is unavailable";
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -16,6 +16,27 @@ struct CoreStatus {
     signed_in: bool,
     device_id: String,
     device_name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct DeviceSummary {
+    id: String,
+    name: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct TransportSummary {
+    name: String,
+    available: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct CoreInventory {
+    devices: Vec<DeviceSummary>,
+    transports: Vec<TransportSummary>,
 }
 
 fn bridge_executable_name() -> &'static str {
@@ -45,18 +66,18 @@ fn sibling_bridge_path(current_exe: &Path) -> io::Result<PathBuf> {
     Ok(bridge)
 }
 
-fn parse_status(bytes: &[u8]) -> Result<CoreStatus, ()> {
+fn parse_bridge_json<T: DeserializeOwned>(bytes: &[u8]) -> Result<T, ()> {
     if bytes.len() > MAX_BRIDGE_OUTPUT_BYTES as usize {
         return Err(());
     }
     serde_json::from_slice(bytes).map_err(|_| ())
 }
 
-fn load_core_status() -> Result<CoreStatus, ()> {
+fn load_bridge_json<T: DeserializeOwned>(command: &'static str) -> Result<T, ()> {
     let current_exe = env::current_exe().map_err(|_| ())?;
     let bridge = sibling_bridge_path(&current_exe).map_err(|_| ())?;
     let mut child = Command::new(bridge)
-        .arg("status")
+        .arg(command)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -80,17 +101,22 @@ fn load_core_status() -> Result<CoreStatus, ()> {
     if !status.success() {
         return Err(());
     }
-    parse_status(&output)
+    parse_bridge_json(&output)
 }
 
 #[tauri::command]
 fn core_status() -> Result<CoreStatus, String> {
-    load_core_status().map_err(|_| BRIDGE_FAILURE.to_string())
+    load_bridge_json("status").map_err(|_| BRIDGE_FAILURE.to_string())
+}
+
+#[tauri::command]
+fn core_inventory() -> Result<CoreInventory, String> {
+    load_bridge_json("inventory").map_err(|_| BRIDGE_FAILURE.to_string())
 }
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![core_status])
+        .invoke_handler(tauri::generate_handler![core_status, core_inventory])
         .run(tauri::generate_context!())
         .expect("failed to run WeDecent desktop shell");
 }
@@ -101,7 +127,7 @@ mod tests {
 
     #[test]
     fn parse_status_accepts_only_expected_fields() {
-        let got = parse_status(
+        let got: CoreStatus = parse_bridge_json(
             br#"{"api_version":"v1","signed_in":true,"device_id":"wd_0123456789abcdef","device_name":"laptop"}"#,
         )
         .expect("valid status");
@@ -115,18 +141,40 @@ mod tests {
             }
         );
 
-        assert!(parse_status(br#"{"api_version":"v1"}"#).is_err());
-        assert!(parse_status(
-            br#"{"api_version":"v1","signed_in":true,"device_id":"wd_0123456789abcdef","device_name":"laptop","email":"person@example.com"}"#
-        )
-        .is_err());
+        let incomplete: Result<CoreStatus, ()> = parse_bridge_json(br#"{"api_version":"v1"}"#);
+        assert!(incomplete.is_err());
+        let unknown: Result<CoreStatus, ()> = parse_bridge_json(
+            br#"{"api_version":"v1","signed_in":true,"device_id":"wd_0123456789abcdef","device_name":"laptop","email":"person@example.com"}"#,
+        );
+        assert!(unknown.is_err());
     }
 
     #[test]
-    fn parse_status_rejects_malformed_and_oversized_output() {
-        assert!(parse_status(b"not json").is_err());
+    fn parse_inventory_rejects_trust_and_routing_fields() {
+        let got: CoreInventory = parse_bridge_json(
+            br#"{"devices":[{"id":"wd_0123456789abcdef","name":"laptop"}],"transports":[{"name":"lan","available":true}]}"#,
+        )
+        .expect("valid inventory");
+        assert_eq!(got.devices.len(), 1);
+        assert_eq!(got.transports.len(), 1);
+
+        let fingerprint: Result<CoreInventory, ()> = parse_bridge_json(
+            br#"{"devices":[{"id":"wd_0123456789abcdef","name":"laptop","fingerprint":"SHA256:nope"}],"transports":[]}"#,
+        );
+        assert!(fingerprint.is_err());
+        let detail: Result<CoreInventory, ()> = parse_bridge_json(
+            br#"{"devices":[],"transports":[{"name":"lan","available":true,"detail":"nope"}]}"#,
+        );
+        assert!(detail.is_err());
+    }
+
+    #[test]
+    fn parse_bridge_json_rejects_malformed_and_oversized_output() {
+        let malformed: Result<CoreStatus, ()> = parse_bridge_json(b"not json");
+        assert!(malformed.is_err());
         let oversized = vec![b'x'; MAX_BRIDGE_OUTPUT_BYTES as usize + 1];
-        assert!(parse_status(&oversized).is_err());
+        let result: Result<CoreStatus, ()> = parse_bridge_json(&oversized);
+        assert!(result.is_err());
     }
 
     #[test]
