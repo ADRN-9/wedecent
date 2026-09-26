@@ -19,11 +19,11 @@ func resolvePairLocator(ctx context.Context, discoverLAN bool, discoverTimeout t
 }
 
 func resolvePairLocatorWithFinder(ctx context.Context, discoverLAN bool, discoverTimeout time.Duration, endpoint, rfcomm, relayAddr, webRelay, deviceID, fingerprint, serialDevice string, finder pairCandidateFinder) (string, error) {
-	if _, err := identity.ParseFingerprint(fingerprint); err != nil {
-		return "", err
-	}
 	if !discoverLAN {
 		return pairTransportLocator(endpoint, rfcomm, relayAddr, webRelay, deviceID, serialDevice)
+	}
+	if _, err := identity.ParseFingerprint(fingerprint); err != nil {
+		return "", err
 	}
 
 	for _, value := range []string{endpoint, rfcomm, serialDevice, relayAddr, webRelay} {
