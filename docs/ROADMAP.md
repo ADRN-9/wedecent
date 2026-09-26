@@ -75,10 +75,12 @@ These are post-v0.4.4 transport expansions, not release blockers for the secure 
 - [x] L2CAP CoC evaluation for platforms where it is preferable
   - [x] Native Linux and Apple APIs are viable but require an explicit packet-to-stream/platform bridge
   - [x] Defer implementation while Windows lacks a comparably narrow user-mode CoC path and no concrete BLE-only endpoint requires it; see `L2CAP_COC_EVALUATION.md`
-- [ ] Pair/transport discovery UX
+- [x] Pair/transport discovery UX
   - [x] Define the discovery-versus-trust contract, ambiguity handling, and fail-closed selection rules; see `TRANSPORT_DISCOVERY.md`
   - [x] Add deterministic first-pair LAN candidate selection that rejects identity conflicts, malformed endpoints, and ambiguous locators
-  - [ ] Wire the selector into executable client discovery/selection UX and extend transport pickers where appropriate
+  - [x] Add bounded first-pair LAN candidate collection that preserves conflicting/ambiguous candidates through the full discovery window
+  - [x] Wire explicit `wd pair --discover-lan --device-id ... --fingerprint ...` with strict transport mutual exclusion and no fallback
+  - [x] Defer richer Bluetooth/USB enumeration to the Phase 4 desktop picker with explicit reopen criteria; see `TRANSPORT_DISCOVERY.md`
 
 ### USB
 
