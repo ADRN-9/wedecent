@@ -100,6 +100,16 @@ mod tests {
     fn parse_status_accepts_only_expected_fields() {
         let got = parse_status(
             br#"{"api_version":"v1","signed_in":true,"device_id":"wd_0123456789abcdef","device_name":"laptop"}"#,
+        );
+        assert!(got.is_err(), "escaped non-JSON fixture must fail");
+
+        let got = parse_status(
+            br#"{"api_version":"v1"}"#,
+        );
+        assert!(got.is_err(), "incomplete status must fail");
+
+        let got = parse_status(
+            b"{\"api_version\":\"v1\",\"signed_in\":true,\"device_id\":\"wd_0123456789abcdef\",\"device_name\":\"laptop\"}",
         )
         .expect("valid status");
         assert_eq!(
@@ -113,7 +123,7 @@ mod tests {
         );
 
         assert!(parse_status(
-            br#"{"api_version":"v1","signed_in":true,"device_id":"wd_0123456789abcdef","device_name":"laptop","email":"person@example.com"}"#
+            b"{\"api_version\":\"v1\",\"signed_in\":true,\"device_id\":\"wd_0123456789abcdef\",\"device_name\":\"laptop\",\"email\":\"person@example.com\"}"
         )
         .is_err());
     }
