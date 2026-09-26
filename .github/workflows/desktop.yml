@@ -1,0 +1,40 @@
+name: Desktop shell
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-tauri-check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Tauri Linux prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev
+      - name: Select stable Rust
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustc --version
+          cargo --version
+      - name: Verify Rust formatting
+        run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
+      - name: Require committed dependency lock
+        run: test -f desktop/src-tauri/Cargo.lock
+      - name: Compile locked Tauri shell
+        run: cargo check --locked --manifest-path desktop/src-tauri/Cargo.toml
