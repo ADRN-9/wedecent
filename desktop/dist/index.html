@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="dark light">
   <title>WeDecent</title>
   <link rel="stylesheet" href="./style.css">
+  <script src="./app.js" defer></script>
 </head>
 <body>
   <main class="shell" aria-labelledby="app-title">
@@ -13,11 +14,25 @@
       <p class="eyebrow">WeDecent desktop</p>
       <h1 id="app-title">Secure terminal</h1>
     </header>
-    <section class="status" aria-live="polite">
-      <strong>Desktop shell ready</strong>
-      <p>Local Core integration is intentionally not enabled in this scaffold.</p>
+
+    <section class="status" aria-labelledby="core-heading" aria-live="polite">
+      <div class="status-heading">
+        <div>
+          <p class="eyebrow">Local Core</p>
+          <strong id="core-heading">Checking status…</strong>
+        </div>
+        <button id="retry-status" type="button">Retry</button>
+      </div>
+      <p id="core-detail">Connecting through the protected local application boundary.</p>
+      <dl id="core-fields" hidden>
+        <div><dt>Device</dt><dd id="device-name"></dd></div>
+        <div><dt>Device ID</dt><dd id="device-id"></dd></div>
+        <div><dt>API</dt><dd id="api-version"></dd></div>
+        <div><dt>Account</dt><dd id="account-state"></dd></div>
+      </dl>
     </section>
-    <p class="boundary">Trust, routing, transport selection, cryptography, and session authority remain outside this renderer.</p>
+
+    <p class="boundary">Trust, routing, transport selection, cryptography, credentials, and session authority remain outside this renderer.</p>
   </main>
 </body>
 </html>
