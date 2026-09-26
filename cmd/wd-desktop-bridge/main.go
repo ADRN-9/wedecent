@@ -14,12 +14,13 @@ import (
 	"wedecent.com/wedecent/internal/desktopbridge"
 )
 
-const statusTimeout = 3 * time.Second
+const bridgeTimeout = 3 * time.Second
 
-var errUsage = errors.New("usage: wd-desktop-bridge <status|version>")
+var errUsage = errors.New("usage: wd-desktop-bridge <status|inventory|version>")
 
-type statusSource interface {
+type coreSource interface {
 	desktopbridge.StatusSource
+	desktopbridge.InventorySource
 }
 
 func main() {
@@ -29,28 +30,36 @@ func main() {
 	}
 }
 
-func run(args []string, stdout io.Writer, source statusSource) error {
+func run(args []string, stdout io.Writer, source coreSource) error {
 	if len(args) != 1 {
 		return errUsage
 	}
-	switch args[0] {
-	case "version":
+	if args[0] == "version" {
 		return buildinfo.Write(stdout, "wd-desktop-bridge")
-	case "status":
-		if source == nil {
-			client, err := coreclient.New(coreclient.Config{Timeout: statusTimeout})
-			if err != nil {
-				return err
-			}
-			source = client
+	}
+	if source == nil {
+		client, err := coreclient.New(coreclient.Config{Timeout: bridgeTimeout})
+		if err != nil {
+			return err
 		}
+		source = client
+	}
+
+	encoder := json.NewEncoder(stdout)
+	encoder.SetEscapeHTML(true)
+	switch args[0] {
+	case "status":
 		status, err := desktopbridge.GetStatus(context.Background(), source)
 		if err != nil {
 			return err
 		}
-		encoder := json.NewEncoder(stdout)
-		encoder.SetEscapeHTML(true)
 		return encoder.Encode(status)
+	case "inventory":
+		inventory, err := desktopbridge.GetInventory(context.Background(), source)
+		if err != nil {
+			return err
+		}
+		return encoder.Encode(inventory)
 	default:
 		return errUsage
 	}
@@ -65,7 +74,7 @@ func publicError(err error) string {
 	}
 	var remote *coreclient.RemoteError
 	if errors.As(err, &remote) {
-		return "Local Core rejected the status request"
+		return "Local Core rejected the desktop request"
 	}
-	return "Local Core status request failed"
+	return "Local Core desktop request failed"
 }
