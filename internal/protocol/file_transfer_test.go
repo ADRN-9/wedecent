@@ -64,23 +64,14 @@ func TestValidateFileDownloadOpen(t *testing.T) {
 
 func TestFileTransferMetadataStrictJSON(t *testing.T) {
 	var upload FileUploadOpen
-	if err := ParseTypedStreamJSON([]byte(`{"path":"safe/file","existing":"fail","unexpected":true}`), &upload); err == nil {
+	if err := ParseTypedStreamJSON([]byte("{\"path\":\"safe/file\",\"existing\":\"fail\",\"unexpected\":true}"), &upload); err == nil {
 		t.Fatal("accepted unknown upload metadata field")
 	}
-	if err := ParseTypedStreamJSON([]byte(`{"path":"safe/file","existing":"fail"} {}`), &upload); err == nil {
+	if err := ParseTypedStreamJSON([]byte("{\"path\":\"safe/file\",\"existing\":\"fail\"} {}"), &upload); err == nil {
 		t.Fatal("accepted trailing upload metadata JSON")
 	}
-
-	// Use well-formed JSON too, so unknown-field rejection is tested rather
-	// than only malformed syntax rejection.
-	if err := ParseTypedStreamJSON([]byte(`{"path":"safe/file","existing":"fail"}`), &upload); err == nil {
-		t.Fatal("escaped JSON fixture unexpectedly parsed")
-	}
-	if err := ParseTypedStreamJSON([]byte("{\"path\":\"safe/file\",\"existing\":\"fail\",\"unexpected\":true}"), &upload); err == nil {
-		t.Fatal("accepted unknown upload metadata field in valid JSON")
-	}
-	if err := ParseTypedStreamJSON([]byte("{\"path\":\"safe/file\",\"existing\":\"fail\"} {}"), &upload); err == nil {
-		t.Fatal("accepted trailing upload metadata JSON after valid object")
+	if err := ParseTypedStreamJSON([]byte("{\"path\":\"safe/file\",\"existing\":\"fail\"}"), &upload); err != nil {
+		t.Fatalf("rejected valid upload metadata JSON: %v", err)
 	}
 }
 
