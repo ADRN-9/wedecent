@@ -244,7 +244,7 @@ func (s *ConnectionService) ResizeTerminalStream(ctx context.Context, req v1.Ter
 	return nil
 }
 
-func (s *ConnectionService) activeMultiplexTerminal(connectionID string) (MultiplexTerminalConnectionHandle, *struct{}, <-chan struct{}, error) {
+func (s *ConnectionService) activeMultiplexTerminal(connectionID string) (MultiplexTerminalConnectionHandle, *connectionGeneration, <-chan struct{}, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.closed {
@@ -265,7 +265,7 @@ func (s *ConnectionService) activeMultiplexTerminal(connectionID string) (Multip
 	return parent, active.token, done, nil
 }
 
-func (s *ConnectionService) logicalTerminalStream(connectionID, terminalID string) (*multiplexTerminalChildHandle, *struct{}, error) {
+func (s *ConnectionService) logicalTerminalStream(connectionID, terminalID string) (*multiplexTerminalChildHandle, *connectionGeneration, error) {
 	if !validConnectionID(connectionID) || !validTerminalStreamID(terminalID) {
 		return nil, nil, ErrInvalidTerminalRequest
 	}
@@ -289,7 +289,7 @@ func (s *ConnectionService) logicalTerminalStream(connectionID, terminalID strin
 	return child, entry.token, nil
 }
 
-func (s *ConnectionService) watchLogicalTerminalParent(terminalID string, token *struct{}, child *multiplexTerminalChildHandle, done <-chan struct{}) {
+func (s *ConnectionService) watchLogicalTerminalParent(terminalID string, token *connectionGeneration, child *multiplexTerminalChildHandle, done <-chan struct{}) {
 	select {
 	case <-done:
 		s.removeLogicalTerminal(terminalID, token, child)
@@ -298,7 +298,7 @@ func (s *ConnectionService) watchLogicalTerminalParent(terminalID string, token 
 	}
 }
 
-func (s *ConnectionService) removeLogicalTerminal(terminalID string, token *struct{}, child *multiplexTerminalChildHandle) {
+func (s *ConnectionService) removeLogicalTerminal(terminalID string, token *connectionGeneration, child *multiplexTerminalChildHandle) {
 	s.mu.Lock()
 	if current, ok := s.streams[terminalID]; ok && current.token == token && current.handle == child {
 		delete(s.streams, terminalID)
