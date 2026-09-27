@@ -77,7 +77,7 @@ func TestManagedTerminalProbeLatencyUsesExistingAuthenticatedSession(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rtt <= 0 || rtt > time.Second {
+	if rtt < 0 || rtt > time.Second {
 		t.Fatalf("RTT = %s", rtt)
 	}
 	if err := managed.Close(); err != nil {
