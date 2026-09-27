@@ -123,12 +123,6 @@ func (c *Client) Disconnect(ctx context.Context, req v1.DisconnectRequest) error
 	return c.call(ctx, v1.MethodConnectionDisconnect, req, nil)
 }
 
-func (c *Client) ProbeConnectionLatency(ctx context.Context, req v1.ConnectionLatencyRequest) (v1.ConnectionLatency, error) {
-	var out v1.ConnectionLatency
-	err := c.call(ctx, v1.MethodConnectionLatency, req, &out)
-	return out, err
-}
-
 func (c *Client) ReadTerminal(ctx context.Context, req v1.TerminalReadRequest) (v1.TerminalReadResult, error) {
 	var out v1.TerminalReadResult
 	err := c.call(ctx, v1.MethodTerminalRead, req, &out)
