@@ -3,6 +3,7 @@ package session
 import (
 	"errors"
 	"fmt"
+	"sync"
 
 	"wedecent.com/wedecent/internal/protocol"
 )
@@ -37,7 +38,9 @@ type typedStreamRecord struct {
 // typedParentStreamRegistry owns the connection-wide typed StreamID namespace.
 // Closed IDs remain recorded for the lifetime of the authenticated parent so a
 // different operation kind can never reuse a terminal/file/forwarding ID.
+// The registry protects its own map because multiple operation engines share it.
 type typedParentStreamRegistry struct {
+	mu     sync.Mutex
 	states map[uint32]typedStreamRecord
 }
 
@@ -46,6 +49,8 @@ func newTypedParentStreamRegistry() *typedParentStreamRegistry {
 }
 
 func (r *typedParentStreamRegistry) reserve(streamID uint32, kind protocol.StreamKind) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if streamID < protocol.MinTypedStreamID {
 		return errTypedStreamIDReserved
 	}
@@ -63,6 +68,8 @@ func (r *typedParentStreamRegistry) reserve(streamID uint32, kind protocol.Strea
 }
 
 func (r *typedParentStreamRegistry) accept(streamID uint32, kind protocol.StreamKind) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	record, exists := r.states[streamID]
 	if !exists || record.kind != kind || record.state != typedStreamOpening {
 		return fmt.Errorf("%w: %d", errTypedStreamNotOpen, streamID)
@@ -73,11 +80,25 @@ func (r *typedParentStreamRegistry) accept(streamID uint32, kind protocol.Stream
 }
 
 func (r *typedParentStreamRegistry) isOpen(streamID uint32, kind protocol.StreamKind) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	record, exists := r.states[streamID]
 	return exists && record.kind == kind && record.state == typedStreamOpen
 }
 
+func (r *typedParentStreamRegistry) kind(streamID uint32) (protocol.StreamKind, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	record, exists := r.states[streamID]
+	if !exists || record.state == typedStreamClosed {
+		return "", false
+	}
+	return record.kind, true
+}
+
 func (r *typedParentStreamRegistry) close(streamID uint32, kind protocol.StreamKind) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	record, exists := r.states[streamID]
 	if !exists || record.kind != kind || record.state == typedStreamClosed {
 		return fmt.Errorf("%w: %d", errTypedStreamNotOpen, streamID)
@@ -88,6 +109,8 @@ func (r *typedParentStreamRegistry) close(streamID uint32, kind protocol.StreamK
 }
 
 func (r *typedParentStreamRegistry) closeKind(kind protocol.StreamKind) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	for streamID, record := range r.states {
 		if record.kind == kind && record.state != typedStreamClosed {
 			record.state = typedStreamClosed
