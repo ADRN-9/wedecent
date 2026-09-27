@@ -5,9 +5,9 @@ import "errors"
 type StreamKind string
 
 const (
-	StreamKindTerminal  StreamKind = "terminal"
-	MaxTypedStreamChunk            = 64 << 10
-	MaxTypedStreamWindow           = 1 << 20
+	StreamKindTerminal   StreamKind = "terminal"
+	MaxTypedStreamChunk             = 64 << 10
+	MaxTypedStreamWindow            = 1 << 20
 )
 
 type StreamOpen struct {
