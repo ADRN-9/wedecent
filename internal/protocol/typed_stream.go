@@ -1,6 +1,11 @@
 package protocol
 
-import "errors"
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+)
 
 type StreamKind string
 
@@ -39,6 +44,22 @@ type StreamClose struct {
 type StreamError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+func ParseTypedStreamJSON(data []byte, v any) error {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(v); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("typed stream payload contains trailing JSON value")
+		}
+		return err
+	}
+	return nil
 }
 
 func ValidateStreamOpen(streamID uint32, open StreamOpen) error {
