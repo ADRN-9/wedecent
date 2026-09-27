@@ -32,7 +32,7 @@ func routeTypedTerminalFrame(capabilities []protocol.Capability, server *typedTe
 	return true, server.Handle(frame)
 }
 
-func isTypedTerminalFrame(frameType uint8) bool {
+func isTypedTerminalFrame(frameType protocol.Type) bool {
 	switch frameType {
 	case protocol.TypeStreamOpen,
 		protocol.TypeStreamAccepted,
