@@ -17,5 +17,5 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: false
-      - name: List Go files needing formatting
-        run: gofmt -l cmd internal
+      - name: Show typed stream formatter diff
+        run: gofmt -d internal/protocol/typed_stream.go
