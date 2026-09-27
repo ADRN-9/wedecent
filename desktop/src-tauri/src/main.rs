@@ -12,6 +12,7 @@ const MAX_BRIDGE_INPUT_BYTES: usize = 64 * 1024;
 const BRIDGE_FAILURE: &str = "Local Core is unavailable";
 
 type SharedTerminalBridge = Arc<Mutex<Option<BridgeProcess>>>;
+struct LatencyBridge(SharedTerminalBridge);
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -347,11 +348,11 @@ async fn core_disconnect(
 
 #[tauri::command]
 async fn connection_latency(
-    bridge: tauri::State<'_, SharedTerminalBridge>,
+    bridge: tauri::State<'_, LatencyBridge>,
     connection_id: String,
 ) -> Result<ConnectionLatencySummary, String> {
     terminal_bridge_request(
-        bridge.inner().clone(),
+        bridge.inner().0.clone(),
         "connection-latency",
         IdRequest { id: connection_id },
     )
@@ -419,8 +420,10 @@ async fn terminal_resize(
 
 fn main() {
     let terminal_bridge: SharedTerminalBridge = Arc::new(Mutex::new(None));
+    let latency_bridge = LatencyBridge(Arc::new(Mutex::new(None)));
     tauri::Builder::default()
         .manage(terminal_bridge)
+        .manage(latency_bridge)
         .invoke_handler(tauri::generate_handler![
             core_status,
             core_inventory,
