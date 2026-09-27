@@ -38,6 +38,7 @@ type Server struct {
 	Shell            string
 	Logger           *slog.Logger
 	DirectAuthorizer DirectAuthorizer
+	FileTransfer     *FileTransferRuntime
 	Policy           SessionPolicy
 }
 
@@ -236,7 +237,8 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		_ = sendError(conn, "bad_request", "invalid session request")
 		return
 	}
-	capabilities := negotiateSessionCapabilities(open.Capabilities, true)
+	fileReady := s.FileTransfer != nil && s.FileTransfer.Ready()
+	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady)
 	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
 		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities)
 		return
