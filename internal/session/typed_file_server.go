@@ -306,8 +306,22 @@ func (s *typedFileServer) peerClose(frame protocol.Frame) error {
 			s.closeChild(frame.StreamID)
 			return s.sendStreamError(frame.StreamID, "upload_commit_failed", "file upload validation or commit failed")
 		}
+		s.closeChild(frame.StreamID)
+		return s.sendClose(frame.StreamID, "peer_close")
 	}
+	if child.kind != protocol.StreamKindFileDownload {
+		return fmt.Errorf("%w: unsupported file stream kind", errTypedStreamProtocol)
+	}
+	child.mu.Lock()
+	complete := child.remaining == 0
+	child.mu.Unlock()
 	s.closeChild(frame.StreamID)
+	if complete {
+		// The server already sent download_complete and this is the client's
+		// acknowledgement. Do not emit a second close frame.
+		return nil
+	}
+	// Client-initiated early download close is acknowledged explicitly.
 	return s.sendClose(frame.StreamID, "peer_close")
 }
 
@@ -347,8 +361,9 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 			remaining = child.remaining
 			child.mu.Unlock()
 			if remaining == 0 {
-				s.closeChild(streamID)
-				_ = s.sendClose(streamID, "download_complete")
+				if err := s.sendClose(streamID, "download_complete"); err != nil {
+					s.closeChild(streamID)
+				}
 				return
 			}
 			if available == 0 {
@@ -395,14 +410,16 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 			default:
 			}
 			if remaining == 0 && err == nil {
-				s.closeChild(streamID)
-				_ = s.sendClose(streamID, "download_complete")
+				if writeErr := s.sendClose(streamID, "download_complete"); writeErr != nil {
+					s.closeChild(streamID)
+				}
 				return
 			}
 		}
 		if errors.Is(err, io.EOF) {
-			s.closeChild(streamID)
-			_ = s.sendClose(streamID, "download_complete")
+			if writeErr := s.sendClose(streamID, "download_complete"); writeErr != nil {
+				s.closeChild(streamID)
+			}
 			return
 		}
 		if err != nil {
