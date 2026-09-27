@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -58,14 +59,11 @@ func ValidateFileDownloadOpen(open FileDownloadOpen) error {
 }
 
 func validateFileTransferPath(path string) error {
-	if path == "" || len(path) > MaxFileTransferPathBytes {
+	if path == "" || len(path) > MaxFileTransferPathBytes || !utf8.ValidString(path) {
 		return errors.New("file transfer path is out of range")
 	}
-	if strings.HasPrefix(path, "/") || strings.HasSuffix(path, "/") || strings.Contains(path, "\\") {
+	if strings.HasPrefix(path, "/") || strings.HasSuffix(path, "/") || strings.ContainsAny(path, `\<>:"|?*`) {
 		return errors.New("file transfer path must be canonical and relative")
-	}
-	if len(path) >= 2 && ((path[0] >= 'A' && path[0] <= 'Z') || (path[0] >= 'a' && path[0] <= 'z')) && path[1] == ':' {
-		return errors.New("file transfer path must not use a drive prefix")
 	}
 	for _, r := range path {
 		if r == 0 || unicode.IsControl(r) {
@@ -73,11 +71,27 @@ func validateFileTransferPath(path string) error {
 		}
 	}
 	for _, part := range strings.Split(path, "/") {
-		if part == "" || part == "." || part == ".." {
+		if part == "" || part == "." || part == ".." || strings.HasSuffix(part, ".") || strings.HasSuffix(part, " ") || windowsReservedFileName(part) {
 			return errors.New("file transfer path contains a non-canonical segment")
 		}
 	}
 	return nil
+}
+
+func windowsReservedFileName(part string) bool {
+	base := part
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	base = strings.ToUpper(base)
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	if len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9' {
+		return true
+	}
+	return false
 }
 
 func validSHA256Hex(value string) bool {
