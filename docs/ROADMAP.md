@@ -111,12 +111,12 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
 - [x] xterm.js terminal renderer
   - [x] Pin xterm.js as a build-time dependency and keep the runtime renderer local/offline
   - [x] Route connect/read/write/resize/disconnect only through bounded typed Tauri commands and the protected Local Core client
-- [ ] Device list + transport/latency badges
+- [x] Device list + transport/latency badges
   - [x] Render sanitized Local Core device identity summaries and transport availability without endpoints, fingerprints, or transport detail
-  - [ ] Add latency only after Local Core exposes a bounded authoritative measurement; do not infer it in the renderer
-- [ ] Tabs and multiple terminal streams per secure connection
-  - [x] Add bounded desktop tabs with independent Core-owned secure connection IDs and isolated xterm/read/write state
-  - [ ] Define and implement protocol/Core multiplexing before claiming multiple terminal streams inside one secure connection
+  - [x] Show only the bounded authoritative RTT measured through Local Core; the renderer does not infer latency from transport metadata
+- [x] Tabs and multiple terminal streams per secure connection
+  - [x] Add bounded desktop tabs that reuse one authenticated Core-owned parent connection per device while keeping isolated xterm/read/write state
+  - [x] Negotiate `typed-streams-v1`, keep opaque Core-owned child IDs at the UI boundary, and prove independent child I/O/resize/close, parent cleanup, fail-closed malformed controls, resource limits, and stream-level audit identity
 - [x] Session profiles
   - [x] Persist only a bounded local profile label and canonical device ID; profiles contain no trust material, credentials, grants, fingerprints, endpoints, or transport authority
   - [x] Resolve a profile target only against the current sanitized Local Core inventory before requesting a Core-owned connection

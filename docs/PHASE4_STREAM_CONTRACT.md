@@ -1,18 +1,21 @@
 # Phase 4 multiplexed stream contract
 
-This document defines the security and protocol requirements for the remaining Phase 4 multi-stream, file-transfer, and port-forwarding work. It is a design contract only; it does not enable new protocol messages or operations by itself.
+This document defines the security and protocol requirements for Phase 4 multi-stream, file-transfer, and port-forwarding work. Terminal multiplexing is implemented; the file-transfer and forwarding sections remain design gates for work that is not yet enabled.
 
 ## Current state
 
-The framed protocol already carries a 32-bit `StreamID`, but the current terminal session implementation is intentionally single-stream:
+Terminal multiplexing is implemented over the existing authenticated parent TLS/session boundary:
 
-- one authenticated TLS connection opens one terminal session;
-- terminal data uses stream ID `1`;
-- the server starts one PTY per accepted connection;
-- resize and close are connection/session scoped rather than independently stream scoped;
-- Local Core exposes one terminal read/write/resize surface per connection.
+- `typed-streams-v1` is an explicitly negotiated optional capability; legacy peers retain the existing stream-1 terminal behavior;
+- typed stream IDs begin at `2`, are unique for the parent connection lifetime, and are never renderer-visible wire identifiers;
+- one authenticated parent may own a bounded set of independently flow-controlled terminal children, each with its own PTY, input/output, resize, and close lifecycle;
+- Local Core owns opaque `term_...` identifiers and the mapping to wire stream IDs;
+- desktop tabs for the same device reuse one Core-owned authenticated parent when multiplexing is negotiated, while legacy peers remain limited to the existing default terminal;
+- child close is acknowledged and does not close siblings; parent loss closes every child;
+- malformed or out-of-order typed controls fail closed, concurrent/lifetime stream allocation is bounded, and stream lifecycle audit records include the authenticated peer/transport plus numeric wire `stream_id`;
+- pinned TLS identity, connection authorization, route/transport selection, and trust remain parent-connection responsibilities and are not delegated to logical children or the renderer.
 
-Desktop tabs may therefore use multiple independent Core-owned secure connections today, but that is not the same as multiplexing multiple terminal streams inside one secure connection.
+File transfer and local/remote port forwarding are not enabled yet. They require their own negotiated capabilities, operation authorization, resource policy, audit semantics, and narrow Local Core APIs before UI exposure.
 
 ## Non-negotiable security boundary
 
@@ -30,12 +33,14 @@ Multiplexing must not change identity, trust, or transport semantics.
 
 Do not repurpose existing v1 frame meanings in-place. A peer that understands only the existing single-terminal contract must fail closed rather than interpret a new stream type as terminal data.
 
-Before adding multiplexing, define a negotiated protocol capability/version that explicitly advertises support for typed streams. Compatibility tests must prove that:
+Terminal multiplexing uses the explicitly negotiated `typed-streams-v1` capability. Compatibility tests prove that:
 
 1. old peers continue to interoperate for the existing terminal-only behavior;
-2. a new client never sends multiplex-only messages to a peer that did not negotiate them;
-3. a new server rejects malformed, duplicate, out-of-order, or unauthorized stream operations;
+2. a new client never sends multiplex-only terminal messages to a peer that did not negotiate them;
+3. a new server rejects malformed, duplicate, out-of-order, or unauthorized typed terminal operations;
 4. unknown stream kinds and unknown control messages fail closed.
+
+Future operation families must negotiate their own capability in addition to the typed-stream framing they use. In particular, successful negotiation of `typed-streams-v1` alone must not imply that a peer authorizes or understands file transfer or port forwarding.
 
 ## Stream model
 
@@ -50,9 +55,8 @@ Each stream has:
 - independent flow-control/backpressure accounting;
 - an audit identity tying it to the authenticated peer and parent secure connection.
 
-Initial stream kinds should be explicit constants rather than free-form renderer strings:
+Stream kinds are explicit protocol constants rather than free-form renderer strings. Terminal is implemented. Future reviewed kinds may include:
 
-- terminal
 - file upload
 - file download
 - local-forward data
@@ -64,11 +68,11 @@ The renderer must never be able to invent an unrecognized stream kind that the C
 
 Authentication of the TLS connection is necessary but not sufficient for privileged operations.
 
-The existing connection authorization path should remain the gate for establishing the authenticated secure connection. New operation types must then have explicit authorization semantics before implementation.
+The existing connection authorization path remains the gate for establishing the authenticated secure connection. New operation types must then have explicit authorization semantics before implementation.
 
 At minimum:
 
-- terminal access must retain the current paired-client and connection-authorization requirements;
+- terminal access retains the current paired-client and connection-authorization requirements;
 - file transfer must be separately policy-controllable from terminal access;
 - port forwarding must be separately policy-controllable from terminal access and file transfer;
 - remote forwarding/listening must be distinguishable from outbound/local forwarding because its exposure and risk are different;
@@ -95,9 +99,9 @@ A slow or abandoned stream must not create unbounded memory growth or block unre
 
 ## Terminal streams
 
-A multiplexed terminal stream must carry its own PTY lifecycle and resize state.
+Multiplexed terminal streams are implemented and gated by `typed-streams-v1`.
 
-Required properties:
+Implemented properties:
 
 - each accepted terminal stream starts exactly one PTY;
 - input/output/resize/close messages identify the target stream;
@@ -105,9 +109,11 @@ Required properties:
 - parent TLS failure closes every child stream;
 - per-stream output queues are bounded;
 - stream-ID reuse within one secure connection is rejected;
-- terminal stream authorization and audit events identify both connection and stream.
+- terminal stream authorization remains anchored to the authenticated parent connection;
+- audit events identify the authenticated peer/parent transport and numeric child stream ID;
+- the desktop receives only opaque Core-issued terminal IDs and cannot select wire stream IDs or bypass parent authorization.
 
-Only after these properties are implemented and tested may the roadmap claim multiple terminal streams per secure connection.
+Live pinned-TLS regression coverage proves independent sibling I/O and resize, acknowledged child close with sibling survival, parent cleanup, malformed-frame failure, and resource limits across the normal managed client/server path.
 
 ## File transfer
 
@@ -148,9 +154,8 @@ Required design properties:
 
 ## Local Core API direction
 
-Renderer APIs should remain typed and narrow. Candidate Core-level operations are conceptually:
+Renderer APIs remain typed and narrow. Terminal stream open/close/read/write/resize is implemented through opaque Core-owned terminal IDs. Candidate future Core-level operations are conceptually:
 
-- open/close/list terminal streams within an authenticated connection;
 - begin/read/write/cancel file transfer;
 - start/stop/list local forwards;
 - start/stop/list remote forwards.

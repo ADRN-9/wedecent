@@ -18,7 +18,7 @@ func TestAppendWritesStructuredJSONL(t *testing.T) {
 	}
 	fixed := time.Date(2026, 9, 23, 12, 34, 56, 0, time.UTC)
 	log.now = func() time.Time { return fixed }
-	if err := log.Append(Event{Type: "terminal.session_opened", Outcome: "success", ActorID: "wd_client", PeerID: "wd_agent", Transport: "direct"}); err != nil {
+	if err := log.Append(Event{Type: "terminal.stream_opened", Outcome: "success", ActorID: "wd_client", PeerID: "wd_agent", Transport: "direct", StreamID: 7}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -35,7 +35,7 @@ func TestAppendWritesStructuredJSONL(t *testing.T) {
 	if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.Time != fixed || event.Type != "terminal.session_opened" || event.Outcome != "success" || event.ActorID != "wd_client" || event.PeerID != "wd_agent" || event.Transport != "direct" {
+	if event.Time != fixed || event.Type != "terminal.stream_opened" || event.Outcome != "success" || event.ActorID != "wd_client" || event.PeerID != "wd_agent" || event.Transport != "direct" || event.StreamID != 7 {
 		t.Fatalf("unexpected event: %+v", event)
 	}
 	if scanner.Scan() {
