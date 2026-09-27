@@ -16,8 +16,12 @@ type terminalStreamIPCService struct {
 func (s *terminalStreamIPCService) ReadTerminal(context.Context, v1.TerminalReadRequest) (v1.TerminalReadResult, error) {
 	return v1.TerminalReadResult{}, nil
 }
-func (s *terminalStreamIPCService) WriteTerminal(context.Context, v1.TerminalWriteRequest) error { return nil }
-func (s *terminalStreamIPCService) ResizeTerminal(context.Context, v1.TerminalResizeRequest) error { return nil }
+func (s *terminalStreamIPCService) WriteTerminal(context.Context, v1.TerminalWriteRequest) error {
+	return nil
+}
+func (s *terminalStreamIPCService) ResizeTerminal(context.Context, v1.TerminalResizeRequest) error {
+	return nil
+}
 func (s *terminalStreamIPCService) OpenTerminalStream(context.Context, v1.TerminalStreamOpenRequest) (v1.TerminalStream, error) {
 	return s.opened, nil
 }
@@ -83,5 +87,9 @@ type terminalOnlyIPCService struct{}
 func (terminalOnlyIPCService) ReadTerminal(context.Context, v1.TerminalReadRequest) (v1.TerminalReadResult, error) {
 	return v1.TerminalReadResult{}, nil
 }
-func (terminalOnlyIPCService) WriteTerminal(context.Context, v1.TerminalWriteRequest) error { return nil }
-func (terminalOnlyIPCService) ResizeTerminal(context.Context, v1.TerminalResizeRequest) error { return nil }
+func (terminalOnlyIPCService) WriteTerminal(context.Context, v1.TerminalWriteRequest) error {
+	return nil
+}
+func (terminalOnlyIPCService) ResizeTerminal(context.Context, v1.TerminalResizeRequest) error {
+	return nil
+}
