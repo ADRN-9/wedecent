@@ -5,14 +5,14 @@ import (
 	"testing"
 )
 
-func TestFileTransferCapabilityAndKindsRemainFailClosedUntilRuntime(t *testing.T) {
-	if SupportedCapability(CapabilityFileTransferV1) {
-		t.Fatal("file transfer capability advertised before authoritative runtime exists")
+func TestFileTransferCapabilityIsSupportedButTerminalValidatorRemainsStrict(t *testing.T) {
+	if !SupportedCapability(CapabilityFileTransferV1) {
+		t.Fatal("file transfer capability is not marked supported")
 	}
 	for _, kind := range []StreamKind{StreamKindFileUpload, StreamKindFileDownload} {
 		open := StreamOpen{Kind: kind, InitialWindow: 1}
 		if err := ValidateStreamOpen(MinTypedStreamID, open); err == nil {
-			t.Fatalf("terminal typed-stream validator accepted reserved file kind %q", kind)
+			t.Fatalf("terminal typed-stream validator accepted file kind %q", kind)
 		}
 	}
 }
