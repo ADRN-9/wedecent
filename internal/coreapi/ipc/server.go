@@ -109,6 +109,10 @@ func (s *Server) ServeOne(ctx context.Context, rw io.ReadWriter) error {
 
 func (s *Server) handle(ctx context.Context, req Request) Response {
 	response := Response{Version: v1.Version, ID: req.ID}
+	if streamResponse, handled := s.handleTerminalStream(ctx, req, response); handled {
+		return streamResponse
+	}
+
 	var result any
 	var err error
 
@@ -261,6 +265,10 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 		return errorResponse(response, ErrorMethodNotFound, "method not found")
 	}
 
+	return s.finish(response, result, err)
+}
+
+func (s *Server) finish(response Response, result any, err error) Response {
 	if err != nil {
 		switch {
 		case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
