@@ -200,7 +200,7 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	}
 	s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport})
 
-	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term})
+	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, Capabilities: req.Capabilities})
 	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport)
 }
 
@@ -236,6 +236,7 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		_ = sendError(conn, "bad_request", "invalid session request")
 		return
 	}
+	negotiatedCapabilities := negotiateSessionCapabilities(open.Capabilities, true)
 	if open.Cols == 0 {
 		open.Cols = 80
 	}
@@ -249,15 +250,6 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		return
 	}
 	defer pty.Close()
-	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeSessionAccepted}); err != nil {
-		return
-	}
-	s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, Transport: transport})
-	closeReason := "connection_ended"
-	defer func() {
-		s.recordAudit(audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, Transport: transport, Reason: closeReason})
-	}()
-	s.log().Info("terminal opened", "client_id", peer.ID, "client_name", peer.Name)
 
 	var writeMu sync.Mutex
 	writeFrame := func(f protocol.Frame) error {
@@ -265,6 +257,23 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		defer writeMu.Unlock()
 		return protocol.WriteFrame(conn, f)
 	}
+
+	if err := writeFrame(protocol.Frame{Type: protocol.TypeSessionAccepted, Payload: sessionAcceptedPayload(negotiatedCapabilities)}); err != nil {
+		return
+	}
+
+	var typedStreams *typedTerminalServer
+	if hasSessionCapability(negotiatedCapabilities, protocol.CapabilityTypedStreamsV1) {
+		typedStreams = newTypedTerminalServer(s.Shell, writeFrame)
+		defer typedStreams.CloseAll()
+	}
+
+	s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, Transport: transport})
+	closeReason := "connection_ended"
+	defer func() {
+		s.recordAudit(audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, Transport: transport, Reason: closeReason})
+	}()
+	s.log().Info("terminal opened", "client_id", peer.ID, "client_name", peer.Name)
 
 	policyTimers := newSessionPolicyTimers(s.Policy)
 	defer policyTimers.Stop()
@@ -384,6 +393,15 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 			}
 			return
 		case frame := <-frameCh:
+			if handled, err := routeNegotiatedTypedTerminalFrame(negotiatedCapabilities, typedStreams, frame); handled {
+				if err != nil {
+					closeReason = "typed_stream_protocol_error"
+					_ = writeFrame(protocol.Frame{Type: protocol.TypeError, Payload: mustJSON(protocol.Error{Code: "typed_stream_protocol_error", Message: "invalid typed stream frame"})})
+					return
+				}
+				policyTimers.Activity()
+				continue
+			}
 			switch frame.Type {
 			case protocol.TypeData:
 				if frame.StreamID == terminalStreamID && len(frame.Payload) > 0 {
