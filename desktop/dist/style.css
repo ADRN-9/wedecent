@@ -56,7 +56,9 @@ h1 {
 }
 
 .status-heading button,
-.device-connect {
+.device-connect,
+.terminal-tab,
+.terminal-tab-close {
   padding: 8px 14px;
   border: 1px solid currentColor;
   border-radius: 8px;
@@ -118,16 +120,60 @@ li + li {
   overflow: hidden;
 }
 
-#terminal {
-  min-height: 390px;
+.terminal-tabs {
+  display: flex;
+  gap: 8px;
   margin-top: 20px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+
+.terminal-tab-wrap {
+  display: inline-flex;
+  flex: 0 0 auto;
+}
+
+.terminal-tab {
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+.terminal-tab[aria-selected="true"] {
+  font-weight: 700;
+  outline: 2px solid currentColor;
+  outline-offset: -3px;
+}
+
+.terminal-tab-close {
+  padding-inline: 10px;
+  border-left: 0;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.terminal-stack {
+  min-height: 390px;
+  margin-top: 12px;
   padding: 10px;
   overflow: hidden;
   border-radius: 8px;
   background: #000;
 }
 
-#terminal .xterm {
+#terminal-empty {
+  margin: 12px;
+  color: #b8bcc2;
+}
+
+.terminal[hidden] {
+  display: none;
+}
+
+.terminal .xterm {
   min-height: 370px;
 }
 
@@ -146,7 +192,7 @@ li + li {
     grid-template-columns: 1fr;
   }
 
-  #terminal {
+  .terminal-stack {
     min-height: 330px;
   }
 }
@@ -157,7 +203,7 @@ li + li {
     color: #151719;
   }
 
-  #terminal {
+  .terminal-stack {
     background: #000;
   }
 }
