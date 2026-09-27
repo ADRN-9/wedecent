@@ -136,7 +136,7 @@ func TestTypedStreamMessagesRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got StreamOpen
-	if err := ParseJSON(payload, &got); err != nil {
+	if err := ParseTypedStreamJSON(payload, &got); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(got, want) {
@@ -149,10 +149,20 @@ func TestTypedStreamMessagesRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var gotResize Resize
-	if err := ParseJSON(payload, &gotResize); err != nil {
+	if err := ParseTypedStreamJSON(payload, &gotResize); err != nil {
 		t.Fatal(err)
 	}
 	if gotResize != resize {
 		t.Fatalf("resize round trip = %#v, want %#v", gotResize, resize)
+	}
+}
+
+func TestParseTypedStreamJSONRejectsUnknownAndTrailingValues(t *testing.T) {
+	var open StreamOpen
+	if err := ParseTypedStreamJSON([]byte(`{"kind":"terminal","cols":80,"rows":24,"initial_window":1,"unexpected":true}`), &open); err == nil {
+		t.Fatal("unknown typed stream field accepted")
+	}
+	if err := ParseTypedStreamJSON([]byte(`{"kind":"terminal","cols":80,"rows":24,"initial_window":1} {}`), &open); err == nil {
+		t.Fatal("trailing typed stream JSON value accepted")
 	}
 }
