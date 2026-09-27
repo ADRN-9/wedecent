@@ -31,6 +31,7 @@ const PROFILE_ID_PATTERN = /^profile-[a-zA-Z0-9-]{1,96}$/;
 
 const sessions = new Map();
 const parentsByDevice = new Map();
+const connectingDevices = new Set();
 const knownDevices = new Map();
 let profiles = loadProfiles();
 let activeTabID = null;
@@ -581,6 +582,11 @@ async function startTerminal(device) {
   }
 
   const existingParent = parentsByDevice.get(device.id);
+  if (!existingParent && connectingDevices.has(device.id)) {
+    terminalHeading.textContent = 'Connection already in progress';
+    terminalDetail.textContent = 'Local Core is already establishing the authenticated parent for this device.';
+    return;
+  }
   if (existingParent?.mode === 'legacy') {
     terminalHeading.textContent = 'Additional terminal unavailable';
     terminalDetail.textContent = 'This authenticated peer does not expose logical terminal multiplexing. Its default terminal remains open; no alternate connection or transport was attempted.';
@@ -592,7 +598,13 @@ async function startTerminal(device) {
     session = createSession(device);
     let parent = existingParent;
     if (!parent) {
-      const connection = await getInvoke()('core_connect', { deviceId: device.id });
+      connectingDevices.add(device.id);
+      let connection;
+      try {
+        connection = await getInvoke()('core_connect', { deviceId: device.id });
+      } finally {
+        connectingDevices.delete(device.id);
+      }
       parent = {
         deviceID: device.id,
         connectionID: connection.id,
