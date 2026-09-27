@@ -516,8 +516,13 @@ func (s *ManagedMultiplexTerminal) Close() error {
 		return nil
 	default:
 	}
+	// Application close is best-effort. finish() is authoritative local
+	// teardown and may observe a TLS close-notify write failure after the peer
+	// has already closed the transport; that must not turn completed teardown
+	// into a failed close operation.
 	_ = s.writeFrame(protocol.Frame{Type: protocol.TypeClose})
-	return s.finish()
+	_ = s.finish()
+	return nil
 }
 
 func (s *ManagedMultiplexTerminal) monitor() {
