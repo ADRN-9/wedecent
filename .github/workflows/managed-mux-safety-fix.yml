@@ -1,0 +1,322 @@
+name: Managed multiplex safety fix
+on:
+  push:
+    branches: [feat/typed-terminal-managed-client]
+permissions:
+  contents: write
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: feat/typed-terminal-managed-client
+      - name: Apply reviewed state-machine fixes
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path("internal/session/managed_multiplex.go")
+          text = path.read_text()
+          replacements = [
+          ('''\tsendCredit   uint32
+          \trecvCredit   uint32
+          \tcreditNotify chan struct{}
+
+          \taccepted   chan error
+          \tacceptOnce sync.Once
+          \tdone       chan struct{}
+          \tcloseOnce  sync.Once
+          ''','''\tsendCredit   uint32
+          \trecvCredit   uint32
+          \tcreditNotify chan struct{}
+
+          \tacceptedOK bool
+          \tclosing    bool
+          \taccepted   chan error
+          \tacceptOnce sync.Once
+          \tdone       chan struct{}
+          \tcloseOnce  sync.Once
+          '''),
+          ('''func (s *ManagedMultiplexTerminal) CloseTerminalStream(ctx context.Context, id uint32) error {
+          \t_, typed, err := s.child(id)
+          \tif err != nil {
+          \t\treturn err
+          \t}
+          \tif !typed {
+          \t\treturn s.Close()
+          \t}
+          \tpayload, _ := protocol.JSON(protocol.StreamClose{Reason: "client_close"})
+          \tif err := s.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamClose, StreamID: id, Payload: payload}); err != nil {
+          \t\treturn err
+          \t}
+          \ts.closeChild(id)
+          \treturn nil
+          }
+          ''','''func (s *ManagedMultiplexTerminal) CloseTerminalStream(ctx context.Context, id uint32) error {
+          \tchild, typed, err := s.child(id)
+          \tif err != nil {
+          \t\treturn err
+          \t}
+          \tif !typed {
+          \t\treturn s.Close()
+          \t}
+          \tchild.mu.Lock()
+          \tif !child.acceptedOK {
+          \t\tchild.mu.Unlock()
+          \t\treturn errors.New("terminal stream is not open")
+          \t}
+          \tsendClose := !child.closing
+          \tchild.closing = true
+          \tchild.mu.Unlock()
+          \tif sendClose {
+          \t\tpayload, _ := protocol.JSON(protocol.StreamClose{Reason: "client_close"})
+          \t\tif err := s.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamClose, StreamID: id, Payload: payload}); err != nil {
+          \t\t\t_ = s.finish()
+          \t\t\treturn err
+          \t\t}
+          \t}
+          \tselect {
+          \tcase <-ctx.Done():
+          \t\treturn ctx.Err()
+          \tcase <-s.done:
+          \t\treturn io.ErrClosedPipe
+          \tcase <-child.done:
+          \t\treturn nil
+          \t}
+          }
+          '''),
+          ('''func (s *ManagedMultiplexTerminal) handleAccepted(frame protocol.Frame) bool {
+          \tif !s.isTyped() {
+          \t\treturn false
+          \t}
+          \tvar accepted protocol.StreamAccepted
+          \tif protocol.ParseTypedStreamJSON(frame.Payload, &accepted) != nil || protocol.ValidateStreamAccepted(frame.StreamID, accepted) != nil {
+          \t\treturn false
+          \t}
+          \ts.mu.Lock()
+          \tchild := s.streams[frame.StreamID]
+          \ts.mu.Unlock()
+          \tif child == nil {
+          \t\treturn false
+          \t}
+          \tchild.mu.Lock()
+          \tchild.sendCredit = accepted.InitialWindow
+          \tchild.mu.Unlock()
+          \tchild.acceptOnce.Do(func() { child.accepted <- nil })
+          \treturn true
+          }
+          ''','''func (s *ManagedMultiplexTerminal) handleAccepted(frame protocol.Frame) bool {
+          \tif !s.isTyped() {
+          \t\treturn false
+          \t}
+          \tvar accepted protocol.StreamAccepted
+          \tif protocol.ParseTypedStreamJSON(frame.Payload, &accepted) != nil || protocol.ValidateStreamAccepted(frame.StreamID, accepted) != nil {
+          \t\treturn false
+          \t}
+          \ts.mu.Lock()
+          \tchild := s.streams[frame.StreamID]
+          \ts.mu.Unlock()
+          \tif child == nil {
+          \t\treturn false
+          \t}
+          \tchild.mu.Lock()
+          \tif child.acceptedOK || child.closing {
+          \t\tchild.mu.Unlock()
+          \t\treturn false
+          \t}
+          \tchild.acceptedOK = true
+          \tchild.sendCredit = accepted.InitialWindow
+          \tchild.mu.Unlock()
+          \tchild.acceptOnce.Do(func() { child.accepted <- nil })
+          \treturn true
+          }
+          '''),
+          ('''func (s *ManagedMultiplexTerminal) handleTypedData(frame protocol.Frame) bool {
+          \tif !s.isTyped() || protocol.ValidateStreamData(frame.StreamID, frame.Payload) != nil {
+          \t\treturn false
+          \t}
+          \ts.mu.Lock()
+          \tchild := s.streams[frame.StreamID]
+          \ts.mu.Unlock()
+          \tif child == nil {
+          \t\treturn false
+          \t}
+          \tchild.mu.Lock()
+          \tif uint32(len(frame.Payload)) > child.recvCredit || len(frame.Payload) > managedTerminalOutputLimit-child.outputBytes {
+          \t\tchild.mu.Unlock()
+          \t\treturn false
+          \t}
+          \tchild.recvCredit -= uint32(len(frame.Payload))
+          \tchild.outputQueue = append(child.outputQueue, append([]byte(nil), frame.Payload...))
+          \tchild.outputBytes += len(frame.Payload)
+          \tchild.mu.Unlock()
+          \tselect {
+          \tcase child.outputNotify <- struct{}{}:
+          \tdefault:
+          \t}
+          \treturn true
+          }
+          ''','''func (s *ManagedMultiplexTerminal) handleTypedData(frame protocol.Frame) bool {
+          \tif !s.isTyped() || protocol.ValidateStreamData(frame.StreamID, frame.Payload) != nil {
+          \t\treturn false
+          \t}
+          \ts.mu.Lock()
+          \tchild := s.streams[frame.StreamID]
+          \ts.mu.Unlock()
+          \tif child == nil {
+          \t\treturn false
+          \t}
+          \tchild.mu.Lock()
+          \tif !child.acceptedOK || uint32(len(frame.Payload)) > child.recvCredit || len(frame.Payload) > managedTerminalOutputLimit-child.outputBytes {
+          \t\tchild.mu.Unlock()
+          \t\treturn false
+          \t}
+          \tchild.recvCredit -= uint32(len(frame.Payload))
+          \tchild.outputQueue = append(child.outputQueue, append([]byte(nil), frame.Payload...))
+          \tchild.outputBytes += len(frame.Payload)
+          \tchild.mu.Unlock()
+          \tselect {
+          \tcase child.outputNotify <- struct{}{}:
+          \tdefault:
+          \t}
+          \treturn true
+          }
+          '''),
+          ('''func (s *ManagedMultiplexTerminal) handleWindowUpdate(frame protocol.Frame) bool {
+          \tif !s.isTyped() {
+          \t\treturn false
+          \t}
+          \tvar update protocol.StreamWindowUpdate
+          \tif protocol.ParseTypedStreamJSON(frame.Payload, &update) != nil || protocol.ValidateStreamWindowUpdate(frame.StreamID, update) != nil {
+          \t\treturn false
+          \t}
+          \ts.mu.Lock()
+          \tchild := s.streams[frame.StreamID]
+          \ts.mu.Unlock()
+          \tif child == nil {
+          \t\treturn false
+          \t}
+          \tchild.mu.Lock()
+          \tif update.Bytes > protocol.MaxTypedStreamWindow-child.sendCredit {
+          \t\tchild.mu.Unlock()
+          \t\treturn false
+          \t}
+          \tchild.sendCredit += update.Bytes
+          \tchild.mu.Unlock()
+          \tselect {
+          \tcase child.creditNotify <- struct{}{}:
+          \tdefault:
+          \t}
+          \treturn true
+          }
+          ''','''func (s *ManagedMultiplexTerminal) handleWindowUpdate(frame protocol.Frame) bool {
+          \tif !s.isTyped() {
+          \t\treturn false
+          \t}
+          \tvar update protocol.StreamWindowUpdate
+          \tif protocol.ParseTypedStreamJSON(frame.Payload, &update) != nil || protocol.ValidateStreamWindowUpdate(frame.StreamID, update) != nil {
+          \t\treturn false
+          \t}
+          \ts.mu.Lock()
+          \tchild := s.streams[frame.StreamID]
+          \ts.mu.Unlock()
+          \tif child == nil {
+          \t\treturn false
+          \t}
+          \tchild.mu.Lock()
+          \tif !child.acceptedOK || update.Bytes > protocol.MaxTypedStreamWindow-child.sendCredit {
+          \t\tchild.mu.Unlock()
+          \t\treturn false
+          \t}
+          \tchild.sendCredit += update.Bytes
+          \tchild.mu.Unlock()
+          \tselect {
+          \tcase child.creditNotify <- struct{}{}:
+          \tdefault:
+          \t}
+          \treturn true
+          }
+          '''),
+          ('''func (s *ManagedMultiplexTerminal) handleStreamClose(frame protocol.Frame) bool {
+          \tif !s.isTyped() {
+          \t\treturn false
+          \t}
+          \tvar msg protocol.StreamClose
+          \tif protocol.ParseTypedStreamJSON(frame.Payload, &msg) != nil || protocol.ValidateStreamClose(frame.StreamID, msg) != nil {
+          \t\treturn false
+          \t}
+          \treturn s.closeChild(frame.StreamID)
+          }
+          ''','''func (s *ManagedMultiplexTerminal) handleStreamClose(frame protocol.Frame) bool {
+          \tif !s.isTyped() {
+          \t\treturn false
+          \t}
+          \tvar msg protocol.StreamClose
+          \tif protocol.ParseTypedStreamJSON(frame.Payload, &msg) != nil || protocol.ValidateStreamClose(frame.StreamID, msg) != nil {
+          \t\treturn false
+          \t}
+          \ts.mu.Lock()
+          \tchild := s.streams[frame.StreamID]
+          \ts.mu.Unlock()
+          \tif child == nil {
+          \t\treturn false
+          \t}
+          \tchild.mu.Lock()
+          \taccepted := child.acceptedOK
+          \tchild.mu.Unlock()
+          \tif !accepted {
+          \t\treturn false
+          \t}
+          \treturn s.closeChild(frame.StreamID)
+          }
+          '''),
+          ('''func (s *ManagedMultiplexTerminal) handleStreamError(frame protocol.Frame) bool {
+          \tif !s.isTyped() {
+          \t\treturn false
+          \t}
+          \tvar msg protocol.StreamError
+          \tif protocol.ParseTypedStreamJSON(frame.Payload, &msg) != nil || protocol.ValidateStreamError(frame.StreamID, msg) != nil {
+          \t\treturn false
+          \t}
+          \treturn s.closeChild(frame.StreamID)
+          }
+          ''','''func (s *ManagedMultiplexTerminal) handleStreamError(frame protocol.Frame) bool {
+          \tif !s.isTyped() {
+          \t\treturn false
+          \t}
+          \tvar msg protocol.StreamError
+          \tif protocol.ParseTypedStreamJSON(frame.Payload, &msg) != nil || protocol.ValidateStreamError(frame.StreamID, msg) != nil {
+          \t\treturn false
+          \t}
+          \ts.mu.Lock()
+          \tchild := s.streams[frame.StreamID]
+          \ts.mu.Unlock()
+          \tif child == nil {
+          \t\treturn false
+          \t}
+          \tchild.mu.Lock()
+          \taccepted := child.acceptedOK
+          \tchild.mu.Unlock()
+          \tif !accepted {
+          \t\tchild.acceptOnce.Do(func() { child.accepted <- errors.New("terminal stream rejected") })
+          \t}
+          \treturn s.closeChild(frame.StreamID)
+          }
+          '''),
+          ]
+          for old, new in replacements:
+              if text.count(old) != 1:
+                  raise SystemExit("expected source block not found exactly once")
+              text = text.replace(old, new)
+          path.write_text(text)
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+      - name: Format and commit
+        run: |
+          gofmt -w internal/session/managed_multiplex.go
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add internal/session/managed_multiplex.go
+          git commit -m "fix: harden managed multiplex stream state"
+          git push origin HEAD:feat/typed-terminal-managed-client
