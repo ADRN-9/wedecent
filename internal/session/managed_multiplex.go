@@ -33,6 +33,8 @@ type managedMuxChild struct {
 	recvCredit   uint32
 	creditNotify chan struct{}
 
+	acceptedOK bool
+	closing    bool
 	accepted   chan error
 	acceptOnce sync.Once
 	done       chan struct{}
@@ -454,19 +456,36 @@ func (s *ManagedMultiplexTerminal) ResizeTerminalStream(ctx context.Context, id 
 }
 
 func (s *ManagedMultiplexTerminal) CloseTerminalStream(ctx context.Context, id uint32) error {
-	_, typed, err := s.child(id)
+	child, typed, err := s.child(id)
 	if err != nil {
 		return err
 	}
 	if !typed {
 		return s.Close()
 	}
-	payload, _ := protocol.JSON(protocol.StreamClose{Reason: "client_close"})
-	if err := s.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamClose, StreamID: id, Payload: payload}); err != nil {
-		return err
+	child.mu.Lock()
+	if !child.acceptedOK {
+		child.mu.Unlock()
+		return errors.New("terminal stream is not open")
 	}
-	s.closeChild(id)
-	return nil
+	sendClose := !child.closing
+	child.closing = true
+	child.mu.Unlock()
+	if sendClose {
+		payload, _ := protocol.JSON(protocol.StreamClose{Reason: "client_close"})
+		if err := s.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamClose, StreamID: id, Payload: payload}); err != nil {
+			_ = s.finish()
+			return err
+		}
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.done:
+		return io.ErrClosedPipe
+	case <-child.done:
+		return nil
+	}
 }
 
 func (s *ManagedMultiplexTerminal) child(id uint32) (*managedMuxChild, bool, error) {
@@ -583,6 +602,11 @@ func (s *ManagedMultiplexTerminal) handleAccepted(frame protocol.Frame) bool {
 		return false
 	}
 	child.mu.Lock()
+	if child.acceptedOK || child.closing {
+		child.mu.Unlock()
+		return false
+	}
+	child.acceptedOK = true
 	child.sendCredit = accepted.InitialWindow
 	child.mu.Unlock()
 	child.acceptOnce.Do(func() { child.accepted <- nil })
@@ -600,7 +624,7 @@ func (s *ManagedMultiplexTerminal) handleTypedData(frame protocol.Frame) bool {
 		return false
 	}
 	child.mu.Lock()
-	if uint32(len(frame.Payload)) > child.recvCredit || len(frame.Payload) > managedTerminalOutputLimit-child.outputBytes {
+	if !child.acceptedOK || uint32(len(frame.Payload)) > child.recvCredit || len(frame.Payload) > managedTerminalOutputLimit-child.outputBytes {
 		child.mu.Unlock()
 		return false
 	}
@@ -630,7 +654,7 @@ func (s *ManagedMultiplexTerminal) handleWindowUpdate(frame protocol.Frame) bool
 		return false
 	}
 	child.mu.Lock()
-	if update.Bytes > protocol.MaxTypedStreamWindow-child.sendCredit {
+	if !child.acceptedOK || update.Bytes > protocol.MaxTypedStreamWindow-child.sendCredit {
 		child.mu.Unlock()
 		return false
 	}
@@ -651,6 +675,18 @@ func (s *ManagedMultiplexTerminal) handleStreamClose(frame protocol.Frame) bool 
 	if protocol.ParseTypedStreamJSON(frame.Payload, &msg) != nil || protocol.ValidateStreamClose(frame.StreamID, msg) != nil {
 		return false
 	}
+	s.mu.Lock()
+	child := s.streams[frame.StreamID]
+	s.mu.Unlock()
+	if child == nil {
+		return false
+	}
+	child.mu.Lock()
+	accepted := child.acceptedOK
+	child.mu.Unlock()
+	if !accepted {
+		return false
+	}
 	return s.closeChild(frame.StreamID)
 }
 
@@ -661,6 +697,18 @@ func (s *ManagedMultiplexTerminal) handleStreamError(frame protocol.Frame) bool 
 	var msg protocol.StreamError
 	if protocol.ParseTypedStreamJSON(frame.Payload, &msg) != nil || protocol.ValidateStreamError(frame.StreamID, msg) != nil {
 		return false
+	}
+	s.mu.Lock()
+	child := s.streams[frame.StreamID]
+	s.mu.Unlock()
+	if child == nil {
+		return false
+	}
+	child.mu.Lock()
+	accepted := child.acceptedOK
+	child.mu.Unlock()
+	if !accepted {
+		child.acceptOnce.Do(func() { child.accepted <- errors.New("terminal stream rejected") })
 	}
 	return s.closeChild(frame.StreamID)
 }
