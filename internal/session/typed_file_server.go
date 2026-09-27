@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	typedFileReceiveWindow       uint32 = 256 << 10
+	typedFileReceiveWindow      uint32 = 256 << 10
 	maxFileStreamsPerConnection        = 4
 	fileAuthorizationTimeout           = 15 * time.Second
 )
