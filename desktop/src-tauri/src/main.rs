@@ -61,6 +61,13 @@ struct ConnectionLatencySummary {
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
+struct TerminalStreamSummary {
+    id: String,
+    connection_id: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 struct TerminalReadSummary {
     #[serde(default)]
     data: String,
@@ -87,6 +94,36 @@ struct TerminalWriteRequest {
 #[derive(Serialize)]
 struct TerminalResizeRequest {
     id: String,
+    cols: u16,
+    rows: u16,
+}
+
+#[derive(Serialize)]
+struct TerminalStreamOpenRequest {
+    connection_id: String,
+    cols: u16,
+    rows: u16,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    term: String,
+}
+
+#[derive(Serialize)]
+struct TerminalStreamIdRequest {
+    connection_id: String,
+    terminal_id: String,
+}
+
+#[derive(Serialize)]
+struct TerminalStreamWriteRequest {
+    connection_id: String,
+    terminal_id: String,
+    data: String,
+}
+
+#[derive(Serialize)]
+struct TerminalStreamResizeRequest {
+    connection_id: String,
+    terminal_id: String,
     cols: u16,
     rows: u16,
 }
@@ -418,6 +455,116 @@ async fn terminal_resize(
     }
 }
 
+#[tauri::command]
+async fn terminal_stream_open(
+    bridge: tauri::State<'_, SharedTerminalBridge>,
+    connection_id: String,
+    cols: u16,
+    rows: u16,
+    term: String,
+) -> Result<TerminalStreamSummary, String> {
+    terminal_bridge_request(
+        bridge.inner().clone(),
+        "terminal-stream-open",
+        TerminalStreamOpenRequest {
+            connection_id,
+            cols,
+            rows,
+            term,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+async fn terminal_stream_close(
+    bridge: tauri::State<'_, SharedTerminalBridge>,
+    connection_id: String,
+    terminal_id: String,
+) -> Result<(), String> {
+    let response: OkResponse = terminal_bridge_request(
+        bridge.inner().clone(),
+        "terminal-stream-close",
+        TerminalStreamIdRequest {
+            connection_id,
+            terminal_id,
+        },
+    )
+    .await?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(BRIDGE_FAILURE.to_string())
+    }
+}
+
+#[tauri::command]
+async fn terminal_stream_read(
+    bridge: tauri::State<'_, SharedTerminalBridge>,
+    connection_id: String,
+    terminal_id: String,
+) -> Result<TerminalReadSummary, String> {
+    terminal_bridge_request(
+        bridge.inner().clone(),
+        "terminal-stream-read",
+        TerminalStreamIdRequest {
+            connection_id,
+            terminal_id,
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+async fn terminal_stream_write(
+    bridge: tauri::State<'_, SharedTerminalBridge>,
+    connection_id: String,
+    terminal_id: String,
+    data_base64: String,
+) -> Result<(), String> {
+    let response: OkResponse = terminal_bridge_request(
+        bridge.inner().clone(),
+        "terminal-stream-write",
+        TerminalStreamWriteRequest {
+            connection_id,
+            terminal_id,
+            data: data_base64,
+        },
+    )
+    .await?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(BRIDGE_FAILURE.to_string())
+    }
+}
+
+#[tauri::command]
+async fn terminal_stream_resize(
+    bridge: tauri::State<'_, SharedTerminalBridge>,
+    connection_id: String,
+    terminal_id: String,
+    cols: u16,
+    rows: u16,
+) -> Result<(), String> {
+    let response: OkResponse = terminal_bridge_request(
+        bridge.inner().clone(),
+        "terminal-stream-resize",
+        TerminalStreamResizeRequest {
+            connection_id,
+            terminal_id,
+            cols,
+            rows,
+        },
+    )
+    .await?;
+    if response.ok {
+        Ok(())
+    } else {
+        Err(BRIDGE_FAILURE.to_string())
+    }
+}
+
 fn main() {
     let terminal_bridge: SharedTerminalBridge = Arc::new(Mutex::new(None));
     let latency_bridge = LatencyBridge(Arc::new(Mutex::new(None)));
@@ -432,7 +579,12 @@ fn main() {
             connection_latency,
             terminal_read,
             terminal_write,
-            terminal_resize
+            terminal_resize,
+            terminal_stream_open,
+            terminal_stream_close,
+            terminal_stream_read,
+            terminal_stream_write,
+            terminal_stream_resize
         ])
         .run(tauri::generate_context!())
         .expect("failed to run WeDecent desktop shell");
@@ -508,6 +660,34 @@ mod tests {
         let read: TerminalReadSummary =
             parse_bridge_json(br#"{"data":"aGVsbG8=","closed":false}"#).expect("valid read");
         assert_eq!(read.data, "aGVsbG8=");
+
+        let stream: TerminalStreamSummary =
+            parse_bridge_json(br#"{"id":"term_abc","connection_id":"conn_abc"}"#)
+                .expect("valid terminal stream");
+        assert_eq!(stream.connection_id, "conn_abc");
+        let leaked_stream: Result<TerminalStreamSummary, ()> = parse_bridge_json(
+            br#"{"id":"term_abc","connection_id":"conn_abc","endpoint":"tcp://192.0.2.1:22"}"#,
+        );
+        assert!(leaked_stream.is_err());
+    }
+
+    #[test]
+    fn terminal_stream_requests_expose_only_opaque_ids_and_terminal_fields() {
+        let encoded = serde_json::to_value(TerminalStreamOpenRequest {
+            connection_id: "conn_abc".into(),
+            cols: 80,
+            rows: 24,
+            term: "xterm-256color".into(),
+        })
+        .expect("serialize stream open request");
+        assert_eq!(encoded["connection_id"], "conn_abc");
+        assert_eq!(encoded["cols"], 80);
+        assert_eq!(encoded["rows"], 24);
+        assert_eq!(encoded["term"], "xterm-256color");
+        assert!(encoded.get("endpoint").is_none());
+        assert!(encoded.get("fingerprint").is_none());
+        assert!(encoded.get("transport").is_none());
+        assert!(encoded.get("grant").is_none());
     }
 
     #[test]
