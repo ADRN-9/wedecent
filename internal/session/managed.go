@@ -1,9 +1,7 @@
 package session
 
 import (
-	"bytes"
 	"context"
-	"crypto/rand"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -20,7 +18,6 @@ const (
 	managedTerminalWriteTimeout = 10 * time.Second
 	managedTerminalOutputLimit  = 256 << 10
 	managedTerminalChunkLimit   = 32 << 10
-	managedLatencyNonceBytes    = 16
 )
 
 // ManagedTerminal is the authenticated terminal session used by Local Core.
@@ -34,9 +31,7 @@ type ManagedTerminal struct {
 	readMu  sync.Mutex
 	probeMu sync.Mutex
 
-	probeStateMu sync.Mutex
-	probeNonce   []byte
-	probePong    chan struct{}
+	probePong chan struct{}
 
 	outputMu     sync.Mutex
 	outputQueue  [][]byte
@@ -135,9 +130,10 @@ func (s *ManagedTerminal) Done() <-chan struct{} {
 	return s.done
 }
 
-// ProbeLatency measures a nonce-correlated protocol round trip on the existing
-// authenticated TLS application session. It never dials, discovers, selects a
-// route, or establishes trust. Exactly one probe is in flight per session.
+// ProbeLatency measures one protocol round trip on the existing authenticated
+// TLS application session. It never dials, discovers, selects a route, or
+// establishes trust. Exactly one probe is in flight per session, and any stale
+// Pong notification is drained before the Ping is sent.
 func (s *ManagedTerminal) ProbeLatency(ctx context.Context) (time.Duration, error) {
 	if s == nil {
 		return 0, io.ErrClosedPipe
@@ -152,31 +148,12 @@ func (s *ManagedTerminal) ProbeLatency(ctx context.Context) (time.Duration, erro
 	s.probeMu.Lock()
 	defer s.probeMu.Unlock()
 
-	nonce := make([]byte, managedLatencyNonceBytes)
-	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return 0, err
+	select {
+	case <-s.probePong:
+	default:
 	}
-	for {
-		select {
-		case <-s.probePong:
-		default:
-			goto drained
-		}
-	}
-
-drained:
-
-	s.probeStateMu.Lock()
-	s.probeNonce = append(s.probeNonce[:0], nonce...)
-	s.probeStateMu.Unlock()
-	defer func() {
-		s.probeStateMu.Lock()
-		s.probeNonce = nil
-		s.probeStateMu.Unlock()
-	}()
-
 	started := time.Now()
-	if err := s.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypePing, Payload: nonce}); err != nil {
+	if err := s.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypePing}); err != nil {
 		return 0, err
 	}
 
@@ -318,19 +295,14 @@ func (s *ManagedTerminal) monitor() {
 			_ = s.finish()
 			return
 		case protocol.TypePing:
-			if err := s.writeFrame(protocol.Frame{Type: protocol.TypePong, StreamID: frame.StreamID, Payload: append([]byte(nil), frame.Payload...)}); err != nil {
+			if err := s.writeFrame(protocol.Frame{Type: protocol.TypePong}); err != nil {
 				_ = s.finish()
 				return
 			}
 		case protocol.TypePong:
-			s.probeStateMu.Lock()
-			matches := len(s.probeNonce) != 0 && bytes.Equal(frame.Payload, s.probeNonce)
-			s.probeStateMu.Unlock()
-			if matches {
-				select {
-				case s.probePong <- struct{}{}:
-				default:
-				}
+			select {
+			case s.probePong <- struct{}{}:
+			default:
 			}
 		case protocol.TypeError:
 			_ = s.finish()
@@ -405,10 +377,6 @@ func (s *ManagedTerminal) finish() error {
 		close(s.done)
 		select {
 		case s.outputNotify <- struct{}{}:
-		default:
-		}
-		select {
-		case s.probePong <- struct{}{}:
 		default:
 		}
 		_ = s.conn.SetDeadline(time.Now().Add(managedTerminalCloseTimeout))
