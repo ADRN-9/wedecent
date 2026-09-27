@@ -9,71 +9,134 @@ import (
 
 const (
 	maxTerminalStreamsPerConnection   = 8
-	maxTerminalStreamIDsPerConnection = 256
+	maxTypedStreamIDsPerConnection    = 256
+	maxTerminalStreamIDsPerConnection = maxTypedStreamIDsPerConnection
 )
 
 var (
-	errTypedStreamIDReserved = errors.New("typed terminal stream ID is reserved")
-	errTypedStreamDuplicate  = errors.New("typed terminal stream ID already used")
-	errTypedStreamLimit      = errors.New("typed terminal stream limit reached")
-	errTypedStreamNotOpen    = errors.New("typed terminal stream is not open")
+	errTypedStreamIDReserved = errors.New("typed stream ID is reserved")
+	errTypedStreamDuplicate  = errors.New("typed stream ID already used")
+	errTypedStreamLimit      = errors.New("typed stream limit reached")
+	errTypedStreamNotOpen    = errors.New("typed stream is not open")
+	errTypedStreamKind       = errors.New("typed stream kind is invalid")
 )
 
-type typedTerminalStreamState uint8
+type typedStreamState uint8
 
 const (
-	typedTerminalStreamOpening typedTerminalStreamState = iota + 1
-	typedTerminalStreamOpen
-	typedTerminalStreamClosed
+	typedStreamOpening typedStreamState = iota + 1
+	typedStreamOpen
+	typedStreamClosed
 )
 
-type typedTerminalStreamSet struct {
-	states map[uint32]typedTerminalStreamState
-	open   int
+type typedStreamRecord struct {
+	kind  protocol.StreamKind
+	state typedStreamState
 }
 
-func newTypedTerminalStreamSet() *typedTerminalStreamSet {
-	return &typedTerminalStreamSet{states: make(map[uint32]typedTerminalStreamState)}
+// typedParentStreamRegistry owns the connection-wide typed StreamID namespace.
+// Closed IDs remain recorded for the lifetime of the authenticated parent so a
+// different operation kind can never reuse a terminal/file/forwarding ID.
+type typedParentStreamRegistry struct {
+	states map[uint32]typedStreamRecord
 }
 
-func (s *typedTerminalStreamSet) reserve(streamID uint32) error {
+func newTypedParentStreamRegistry() *typedParentStreamRegistry {
+	return &typedParentStreamRegistry{states: make(map[uint32]typedStreamRecord)}
+}
+
+func (r *typedParentStreamRegistry) reserve(streamID uint32, kind protocol.StreamKind) error {
 	if streamID < protocol.MinTypedStreamID {
 		return errTypedStreamIDReserved
 	}
-	if _, exists := s.states[streamID]; exists {
+	if kind == "" {
+		return errTypedStreamKind
+	}
+	if _, exists := r.states[streamID]; exists {
 		return errTypedStreamDuplicate
 	}
-	if len(s.states) >= maxTerminalStreamIDsPerConnection {
+	if len(r.states) >= maxTypedStreamIDsPerConnection {
 		return errTypedStreamLimit
 	}
+	r.states[streamID] = typedStreamRecord{kind: kind, state: typedStreamOpening}
+	return nil
+}
+
+func (r *typedParentStreamRegistry) accept(streamID uint32, kind protocol.StreamKind) error {
+	record, exists := r.states[streamID]
+	if !exists || record.kind != kind || record.state != typedStreamOpening {
+		return fmt.Errorf("%w: %d", errTypedStreamNotOpen, streamID)
+	}
+	record.state = typedStreamOpen
+	r.states[streamID] = record
+	return nil
+}
+
+func (r *typedParentStreamRegistry) isOpen(streamID uint32, kind protocol.StreamKind) bool {
+	record, exists := r.states[streamID]
+	return exists && record.kind == kind && record.state == typedStreamOpen
+}
+
+func (r *typedParentStreamRegistry) close(streamID uint32, kind protocol.StreamKind) error {
+	record, exists := r.states[streamID]
+	if !exists || record.kind != kind || record.state == typedStreamClosed {
+		return fmt.Errorf("%w: %d", errTypedStreamNotOpen, streamID)
+	}
+	record.state = typedStreamClosed
+	r.states[streamID] = record
+	return nil
+}
+
+func (r *typedParentStreamRegistry) closeKind(kind protocol.StreamKind) {
+	for streamID, record := range r.states {
+		if record.kind == kind && record.state != typedStreamClosed {
+			record.state = typedStreamClosed
+			r.states[streamID] = record
+		}
+	}
+}
+
+type typedTerminalStreamSet struct {
+	registry *typedParentStreamRegistry
+	open     int
+}
+
+func newTypedTerminalStreamSet() *typedTerminalStreamSet {
+	return newTypedTerminalStreamSetWithRegistry(newTypedParentStreamRegistry())
+}
+
+func newTypedTerminalStreamSetWithRegistry(registry *typedParentStreamRegistry) *typedTerminalStreamSet {
+	if registry == nil {
+		registry = newTypedParentStreamRegistry()
+	}
+	return &typedTerminalStreamSet{registry: registry}
+}
+
+func (s *typedTerminalStreamSet) reserve(streamID uint32) error {
 	// Stream 1 remains the legacy/default terminal. Additional typed terminals
 	// therefore have one fewer slot than the connection-wide terminal limit.
 	if s.open >= maxTerminalStreamsPerConnection-1 {
 		return errTypedStreamLimit
 	}
-	s.states[streamID] = typedTerminalStreamOpening
+	if err := s.registry.reserve(streamID, protocol.StreamKindTerminal); err != nil {
+		return err
+	}
 	s.open++
 	return nil
 }
 
 func (s *typedTerminalStreamSet) accept(streamID uint32) error {
-	if s.states[streamID] != typedTerminalStreamOpening {
-		return fmt.Errorf("%w: %d", errTypedStreamNotOpen, streamID)
-	}
-	s.states[streamID] = typedTerminalStreamOpen
-	return nil
+	return s.registry.accept(streamID, protocol.StreamKindTerminal)
 }
 
 func (s *typedTerminalStreamSet) isOpen(streamID uint32) bool {
-	return s.states[streamID] == typedTerminalStreamOpen
+	return s.registry.isOpen(streamID, protocol.StreamKindTerminal)
 }
 
 func (s *typedTerminalStreamSet) close(streamID uint32) error {
-	state, exists := s.states[streamID]
-	if !exists || state == typedTerminalStreamClosed {
-		return fmt.Errorf("%w: %d", errTypedStreamNotOpen, streamID)
+	if err := s.registry.close(streamID, protocol.StreamKindTerminal); err != nil {
+		return err
 	}
-	s.states[streamID] = typedTerminalStreamClosed
 	if s.open > 0 {
 		s.open--
 	}
@@ -81,10 +144,6 @@ func (s *typedTerminalStreamSet) close(streamID uint32) error {
 }
 
 func (s *typedTerminalStreamSet) closeAll() {
-	for streamID, state := range s.states {
-		if state != typedTerminalStreamClosed {
-			s.states[streamID] = typedTerminalStreamClosed
-		}
-	}
+	s.registry.closeKind(protocol.StreamKindTerminal)
 	s.open = 0
 }
