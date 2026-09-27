@@ -52,7 +52,7 @@ func TestParseFileUploadStreamOpen(t *testing.T) {
 		{"missing metadata", StreamOpen{Kind: StreamKindFileUpload, InitialWindow: 1}},
 		{"oversized metadata", StreamOpen{Kind: StreamKindFileUpload, Metadata: make([]byte, MaxTypedStreamOpenMetadata+1), InitialWindow: 1}},
 		{"zero window", StreamOpen{Kind: StreamKindFileUpload, Metadata: metadata}},
-		{"unknown metadata field", StreamOpen{Kind: StreamKindFileUpload, Metadata: []byte(`{"path":"safe/file","existing":"fail","extra":true}`), InitialWindow: 1}},
+		{"unknown metadata field", StreamOpen{Kind: StreamKindFileUpload, Metadata: []byte("{\"path\":\"safe/file\",\"existing\":\"fail\",\"extra\":true}"), InitialWindow: 1}},
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
@@ -68,7 +68,7 @@ func TestParseFileUploadStreamOpen(t *testing.T) {
 }
 
 func TestParseFileDownloadStreamOpen(t *testing.T) {
-	metadata := []byte(`{"path":"logs/current.txt"}`)
+	metadata := []byte("{\"path\":\"logs/current.txt\"}")
 	open := StreamOpen{Kind: StreamKindFileDownload, Metadata: metadata, InitialWindow: 1}
 	got, err := ParseFileDownloadStreamOpen(MinTypedStreamID, open)
 	if err != nil {
@@ -79,7 +79,7 @@ func TestParseFileDownloadStreamOpen(t *testing.T) {
 	}
 	if _, err := ParseFileDownloadStreamOpen(MinTypedStreamID, StreamOpen{
 		Kind:          StreamKindFileDownload,
-		Metadata:      []byte(`{"path":"../secret"}`),
+		Metadata:      []byte("{\"path\":\"../secret\"}"),
 		InitialWindow: 1,
 	}); err == nil {
 		t.Fatal("accepted traversal in download stream metadata")
