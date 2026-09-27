@@ -44,6 +44,31 @@ type terminalResizeRequest struct {
 	Rows uint16 `json:"rows"`
 }
 
+type terminalStreamOpenRequest struct {
+	ConnectionID string `json:"connection_id"`
+	Cols         uint16 `json:"cols"`
+	Rows         uint16 `json:"rows"`
+	Term         string `json:"term,omitempty"`
+}
+
+type terminalStreamIDRequest struct {
+	ConnectionID string `json:"connection_id"`
+	TerminalID   string `json:"terminal_id"`
+}
+
+type terminalStreamWriteRequest struct {
+	ConnectionID string `json:"connection_id"`
+	TerminalID   string `json:"terminal_id"`
+	Data         []byte `json:"data"`
+}
+
+type terminalStreamResizeRequest struct {
+	ConnectionID string `json:"connection_id"`
+	TerminalID   string `json:"terminal_id"`
+	Cols         uint16 `json:"cols"`
+	Rows         uint16 `json:"rows"`
+}
+
 type okResponse struct {
 	OK bool `json:"ok"`
 }
@@ -232,6 +257,65 @@ func handleServeRequest(line []byte, source coreSource) (any, error) {
 			return nil, err
 		}
 		if err := desktopbridge.ResizeTerminal(ctx, source, req.ID, req.Cols, req.Rows); err != nil {
+			return nil, err
+		}
+		return okResponse{OK: true}, nil
+	case "terminal-stream-open":
+		streams, ok := source.(desktopbridge.TerminalStreamSource)
+		if !ok {
+			return nil, errors.New("terminal streams are unavailable")
+		}
+		var req terminalStreamOpenRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		return desktopbridge.OpenTerminalStream(ctx, streams, req.ConnectionID, req.Cols, req.Rows, req.Term)
+	case "terminal-stream-close":
+		streams, ok := source.(desktopbridge.TerminalStreamSource)
+		if !ok {
+			return nil, errors.New("terminal streams are unavailable")
+		}
+		var req terminalStreamIDRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		if err := desktopbridge.CloseTerminalStream(ctx, streams, req.ConnectionID, req.TerminalID); err != nil {
+			return nil, err
+		}
+		return okResponse{OK: true}, nil
+	case "terminal-stream-read":
+		streams, ok := source.(desktopbridge.TerminalStreamSource)
+		if !ok {
+			return nil, errors.New("terminal streams are unavailable")
+		}
+		var req terminalStreamIDRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		return desktopbridge.ReadTerminalStream(ctx, streams, req.ConnectionID, req.TerminalID)
+	case "terminal-stream-write":
+		streams, ok := source.(desktopbridge.TerminalStreamSource)
+		if !ok {
+			return nil, errors.New("terminal streams are unavailable")
+		}
+		var req terminalStreamWriteRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		if err := desktopbridge.WriteTerminalStream(ctx, streams, req.ConnectionID, req.TerminalID, req.Data); err != nil {
+			return nil, err
+		}
+		return okResponse{OK: true}, nil
+	case "terminal-stream-resize":
+		streams, ok := source.(desktopbridge.TerminalStreamSource)
+		if !ok {
+			return nil, errors.New("terminal streams are unavailable")
+		}
+		var req terminalStreamResizeRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		if err := desktopbridge.ResizeTerminalStream(ctx, streams, req.ConnectionID, req.TerminalID, req.Cols, req.Rows); err != nil {
 			return nil, err
 		}
 		return okResponse{OK: true}, nil
