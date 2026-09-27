@@ -123,6 +123,12 @@ func (c *Client) Disconnect(ctx context.Context, req v1.DisconnectRequest) error
 	return c.call(ctx, v1.MethodConnectionDisconnect, req, nil)
 }
 
+func (c *Client) ProbeConnectionLatency(ctx context.Context, req v1.ConnectionLatencyRequest) (v1.ConnectionLatency, error) {
+	var out v1.ConnectionLatency
+	err := c.call(ctx, v1.MethodConnectionLatency, req, &out)
+	return out, err
+}
+
 func (c *Client) ReadTerminal(ctx context.Context, req v1.TerminalReadRequest) (v1.TerminalReadResult, error) {
 	var out v1.TerminalReadResult
 	err := c.call(ctx, v1.MethodTerminalRead, req, &out)
@@ -135,6 +141,30 @@ func (c *Client) WriteTerminal(ctx context.Context, req v1.TerminalWriteRequest)
 
 func (c *Client) ResizeTerminal(ctx context.Context, req v1.TerminalResizeRequest) error {
 	return c.call(ctx, v1.MethodTerminalResize, req, nil)
+}
+
+func (c *Client) OpenTerminalStream(ctx context.Context, req v1.TerminalStreamOpenRequest) (v1.TerminalStream, error) {
+	var out v1.TerminalStream
+	err := c.call(ctx, v1.MethodTerminalStreamOpen, req, &out)
+	return out, err
+}
+
+func (c *Client) CloseTerminalStream(ctx context.Context, req v1.TerminalStreamCloseRequest) error {
+	return c.call(ctx, v1.MethodTerminalStreamClose, req, nil)
+}
+
+func (c *Client) ReadTerminalStream(ctx context.Context, req v1.TerminalStreamReadRequest) (v1.TerminalReadResult, error) {
+	var out v1.TerminalReadResult
+	err := c.call(ctx, v1.MethodTerminalStreamRead, req, &out)
+	return out, err
+}
+
+func (c *Client) WriteTerminalStream(ctx context.Context, req v1.TerminalStreamWriteRequest) error {
+	return c.call(ctx, v1.MethodTerminalStreamWrite, req, nil)
+}
+
+func (c *Client) ResizeTerminalStream(ctx context.Context, req v1.TerminalStreamResizeRequest) error {
+	return c.call(ctx, v1.MethodTerminalStreamResize, req, nil)
 }
 
 func (c *Client) GetTransportStatus(ctx context.Context) ([]v1.TransportStatus, error) {
