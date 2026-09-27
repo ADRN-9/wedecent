@@ -41,3 +41,38 @@ func TestNegotiateSessionCapabilitiesDoesNotInventSupport(t *testing.T) {
 		t.Fatalf("unknown capability accepted: %#v", got)
 	}
 }
+
+func TestNegotiateFileTransferRequiresTypedAndReadyFileRuntime(t *testing.T) {
+	both := []protocol.Capability{
+		protocol.CapabilityTypedStreamsV1,
+		protocol.CapabilityFileTransferV1,
+	}
+	wantBoth := []protocol.Capability{
+		protocol.CapabilityTypedStreamsV1,
+		protocol.CapabilityFileTransferV1,
+	}
+	if got := negotiateSessionCapabilitiesForRuntime(both, true, true); !reflect.DeepEqual(got, wantBoth) {
+		t.Fatalf("ready negotiation = %#v, want %#v", got, wantBoth)
+	}
+	if got := negotiateSessionCapabilitiesForRuntime(both, true, false); !reflect.DeepEqual(got, []protocol.Capability{protocol.CapabilityTypedStreamsV1}) {
+		t.Fatalf("file capability negotiated without file runtime: %#v", got)
+	}
+	if got := negotiateSessionCapabilitiesForRuntime([]protocol.Capability{protocol.CapabilityFileTransferV1}, true, true); len(got) != 0 {
+		t.Fatalf("file capability negotiated without typed framing: %#v", got)
+	}
+	if got := negotiateSessionCapabilitiesForRuntime(both, false, true); len(got) != 0 {
+		t.Fatalf("file capability negotiated without typed runtime: %#v", got)
+	}
+}
+
+func TestLegacyNegotiationWrapperNeverAdvertisesFileTransfer(t *testing.T) {
+	requested := []protocol.Capability{
+		protocol.CapabilityTypedStreamsV1,
+		protocol.CapabilityFileTransferV1,
+	}
+	got := negotiateSessionCapabilities(requested, true)
+	want := []protocol.Capability{protocol.CapabilityTypedStreamsV1}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("legacy live negotiation = %#v, want %#v", got, want)
+	}
+}
