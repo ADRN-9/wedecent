@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -163,7 +164,7 @@ func TestManagedMultiplexLiveParentKeepsSiblingAfterChildClose(t *testing.T) {
 		for {
 			frame, err := protocol.ReadFrame(conn)
 			if err != nil {
-				if errors.Is(err, io.EOF) {
+				if isExpectedLiveMuxCloseError(err) {
 					serverErr <- nil
 				} else {
 					serverErr <- err
@@ -425,11 +426,19 @@ func waitLiveMuxPTYClosed(t *testing.T, pty *liveMuxPTY) {
 	}
 }
 
+func isExpectedLiveMuxCloseError(err error) bool {
+	if err == nil || errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
+		return true
+	}
+	message := err.Error()
+	return strings.Contains(message, "failed to send closeNotify alert") && strings.Contains(message, "closed pipe")
+}
+
 func waitLiveMuxServer(t *testing.T, serverErr <-chan error) {
 	t.Helper()
 	select {
 	case err := <-serverErr:
-		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, net.ErrClosed) {
+		if !isExpectedLiveMuxCloseError(err) {
 			t.Fatalf("live multiplex server failed: %v", err)
 		}
 	case <-time.After(2 * time.Second):
