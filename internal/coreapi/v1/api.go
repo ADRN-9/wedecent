@@ -17,6 +17,7 @@ const (
 	MethodAccountSignOut       = "account.sign_out"
 	MethodConnectionConnect    = "connection.connect"
 	MethodConnectionDisconnect = "connection.disconnect"
+	MethodConnectionLatency    = "connection.latency"
 	MethodTerminalRead         = "terminal.read"
 	MethodTerminalWrite        = "terminal.write"
 	MethodTerminalResize       = "terminal.resize"
@@ -90,6 +91,15 @@ type Connection struct {
 	StartedAt time.Time       `json:"started_at"`
 }
 
+// ConnectionLatency is an informational round-trip measurement made over an
+// already-authenticated secure application connection. It is not identity,
+// authorization, route-selection, or transport-discovery evidence.
+type ConnectionLatency struct {
+	ConnectionID string    `json:"connection_id"`
+	RTTMicros    uint64    `json:"rtt_micros"`
+	MeasuredAt   time.Time `json:"measured_at"`
+}
+
 type TerminalReadResult struct {
 	Data   []byte `json:"data,omitempty"`
 	Closed bool   `json:"closed"`
@@ -147,6 +157,10 @@ type DisconnectRequest struct {
 	ConnectionID string `json:"connection_id"`
 }
 
+type ConnectionLatencyRequest struct {
+	ConnectionID string `json:"connection_id"`
+}
+
 type TerminalReadRequest struct {
 	ConnectionID string `json:"connection_id"`
 	MaxBytes     int    `json:"max_bytes,omitempty"`
@@ -191,6 +205,10 @@ type ConnectionService interface {
 	Disconnect(context.Context, DisconnectRequest) error
 }
 
+type ConnectionMetricsService interface {
+	ProbeConnectionLatency(context.Context, ConnectionLatencyRequest) (ConnectionLatency, error)
+}
+
 type TerminalService interface {
 	ReadTerminal(context.Context, TerminalReadRequest) (TerminalReadResult, error)
 	WriteTerminal(context.Context, TerminalWriteRequest) error
@@ -220,6 +238,7 @@ type Service interface {
 	AccountService
 	DeviceService
 	ConnectionService
+	ConnectionMetricsService
 	TerminalService
 	TransportService
 	RouteService

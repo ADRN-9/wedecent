@@ -11,22 +11,24 @@ import (
 )
 
 const (
-	ErrorInvalidParams         = "invalid_params"
-	ErrorMethodNotFound        = "method_not_found"
-	ErrorDeviceNotFound        = "device_not_found"
-	ErrorRouteNotFound         = "route_not_found"
-	ErrorConnectionNotFound    = "connection_not_found"
-	ErrorConnectionLimit       = "connection_limit"
-	ErrorConnectionUnavailable = "connection_unavailable"
-	ErrorConnectionFailed      = "connection_failed"
-	ErrorTerminalUnavailable   = "terminal_unavailable"
-	ErrorTerminalFailed        = "terminal_operation_failed"
-	ErrorRequestCanceled       = "request_canceled"
-	ErrorAccountUnavailable    = "account_unavailable"
-	ErrorAccountFailed         = "account_operation_failed"
-	ErrorRouterUnavailable     = "router_unavailable"
-	ErrorRouterFailed          = "router_operation_failed"
-	ErrorInternal              = "internal_error"
+	ErrorInvalidParams                = "invalid_params"
+	ErrorMethodNotFound               = "method_not_found"
+	ErrorDeviceNotFound               = "device_not_found"
+	ErrorRouteNotFound                = "route_not_found"
+	ErrorConnectionNotFound           = "connection_not_found"
+	ErrorConnectionLimit              = "connection_limit"
+	ErrorConnectionUnavailable        = "connection_unavailable"
+	ErrorConnectionFailed             = "connection_failed"
+	ErrorConnectionLatencyUnavailable = "connection_latency_unavailable"
+	ErrorConnectionLatencyFailed      = "connection_latency_failed"
+	ErrorTerminalUnavailable          = "terminal_unavailable"
+	ErrorTerminalFailed               = "terminal_operation_failed"
+	ErrorRequestCanceled              = "request_canceled"
+	ErrorAccountUnavailable           = "account_unavailable"
+	ErrorAccountFailed                = "account_operation_failed"
+	ErrorRouterUnavailable            = "router_unavailable"
+	ErrorRouterFailed                 = "router_operation_failed"
+	ErrorInternal                     = "internal_error"
 )
 
 type Services struct {
@@ -169,6 +171,19 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		}
 		err = s.connections.Disconnect(ctx, params)
+	case v1.MethodConnectionLatency:
+		if s.connections == nil {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		metrics, ok := s.connections.(v1.ConnectionMetricsService)
+		if !ok {
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
+		}
+		var params v1.ConnectionLatencyRequest
+		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
+		}
+		result, err = metrics.ProbeConnectionLatency(ctx, params)
 	case v1.MethodTerminalRead:
 		if s.terminal == nil {
 			return errorResponse(response, ErrorMethodNotFound, "method not found")
@@ -264,6 +279,10 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 			return errorResponse(response, ErrorConnectionUnavailable, "connection service is unavailable")
 		case errors.Is(err, coreapi.ErrConnectionOperation):
 			return errorResponse(response, ErrorConnectionFailed, "connection operation failed")
+		case errors.Is(err, coreapi.ErrConnectionLatencyUnavailable):
+			return errorResponse(response, ErrorConnectionLatencyUnavailable, "connection latency is unavailable")
+		case errors.Is(err, coreapi.ErrConnectionLatencyOperation):
+			return errorResponse(response, ErrorConnectionLatencyFailed, "connection latency probe failed")
 		case errors.Is(err, coreapi.ErrTerminalUnavailable):
 			return errorResponse(response, ErrorTerminalUnavailable, "terminal stream is unavailable")
 		case errors.Is(err, coreapi.ErrTerminalOperation):

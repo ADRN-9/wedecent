@@ -29,6 +29,9 @@ type ManagedTerminal struct {
 
 	writeMu sync.Mutex
 	readMu  sync.Mutex
+	probeMu sync.Mutex
+
+	probePong chan struct{}
 
 	outputMu     sync.Mutex
 	outputQueue  [][]byte
@@ -113,6 +116,7 @@ func (c *Client) OpenManagedTerminal(ctx context.Context, peer trust.Peer, cols,
 	managed := &ManagedTerminal{
 		conn:         conn,
 		done:         make(chan struct{}),
+		probePong:    make(chan struct{}, 1),
 		outputNotify: make(chan struct{}, 1),
 	}
 	go managed.monitor()
@@ -124,6 +128,43 @@ func (s *ManagedTerminal) Done() <-chan struct{} {
 		return nil
 	}
 	return s.done
+}
+
+// ProbeLatency measures one protocol round trip on the existing authenticated
+// TLS application session. It never dials, discovers, selects a route, or
+// establishes trust. Exactly one probe is in flight per session, and any stale
+// Pong notification is drained before the Ping is sent.
+func (s *ManagedTerminal) ProbeLatency(ctx context.Context) (time.Duration, error) {
+	if s == nil {
+		return 0, io.ErrClosedPipe
+	}
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if channelClosed(s.done) {
+		return 0, io.ErrClosedPipe
+	}
+
+	s.probeMu.Lock()
+	defer s.probeMu.Unlock()
+
+	select {
+	case <-s.probePong:
+	default:
+	}
+	started := time.Now()
+	if err := s.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypePing}); err != nil {
+		return 0, err
+	}
+
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-s.done:
+		return 0, io.ErrClosedPipe
+	case <-s.probePong:
+		return time.Since(started), nil
+	}
 }
 
 // ReadTerminal returns up to maxBytes of buffered PTY output. It blocks until
@@ -258,6 +299,11 @@ func (s *ManagedTerminal) monitor() {
 				_ = s.finish()
 				return
 			}
+		case protocol.TypePong:
+			select {
+			case s.probePong <- struct{}{}:
+			default:
+			}
 		case protocol.TypeError:
 			_ = s.finish()
 			return
@@ -268,8 +314,8 @@ func (s *ManagedTerminal) monitor() {
 					return
 				}
 			}
-		case protocol.TypePong, protocol.TypeResize:
-			// Pong and peer resize frames do not carry UI terminal output.
+		case protocol.TypeResize:
+			// Peer resize frames do not carry UI terminal output.
 		default:
 			// Do not accept protocol extensions implicitly at the Local Core
 			// boundary. Unexpected frames terminate the session fail-closed.
