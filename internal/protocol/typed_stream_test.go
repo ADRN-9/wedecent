@@ -28,7 +28,7 @@ func TestLegacyFrameTypeNumbersRemainStable(t *testing.T) {
 		}
 	}
 	if TypeStreamOpen != 12 || TypeStreamAccepted != 13 || TypeStreamData != 14 ||
-		TypeStreamWindowUpdate != 15 || TypeStreamClose != 16 || TypeStreamError != 17 {
+		TypeStreamWindowUpdate != 15 || TypeStreamResize != 16 || TypeStreamClose != 17 || TypeStreamError != 18 {
 		t.Fatalf("typed-stream frame IDs are not appended after legacy frames")
 	}
 }
@@ -102,5 +102,18 @@ func TestTypedStreamMessagesRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round trip = %#v, want %#v", got, want)
+	}
+
+	resize := Resize{Cols: 100, Rows: 30}
+	payload, err = JSON(resize)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotResize Resize
+	if err := ParseJSON(payload, &gotResize); err != nil {
+		t.Fatal(err)
+	}
+	if gotResize != resize {
+		t.Fatalf("resize round trip = %#v, want %#v", gotResize, resize)
 	}
 }
