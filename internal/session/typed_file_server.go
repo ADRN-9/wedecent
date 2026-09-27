@@ -29,6 +29,7 @@ type typedFileChild struct {
 	mu         sync.Mutex
 	sendCredit typedStreamCredit
 	recvCredit typedStreamCredit
+	remaining  uint64
 	creditCh   chan struct{}
 	done       chan struct{}
 	closeOnce  sync.Once
@@ -182,7 +183,7 @@ func (s *typedFileServer) openDownload(ctx context.Context, streamID uint32, env
 		s.releaseReservation(streamID, protocol.StreamKindFileDownload)
 		return s.sendStreamError(streamID, "authorization_denied", "file download is not authorized")
 	}
-	download, _, err := s.runtime.Store.OpenDownload(metadata)
+	download, size, err := s.runtime.Store.OpenDownload(metadata)
 	if err != nil {
 		s.releaseReservation(streamID, protocol.StreamKindFileDownload)
 		return s.sendStreamError(streamID, "file_open_failed", "file download could not start")
@@ -193,7 +194,7 @@ func (s *typedFileServer) openDownload(ctx context.Context, streamID uint32, env
 		s.releaseReservation(streamID, protocol.StreamKindFileDownload)
 		return err
 	}
-	child := &typedFileChild{kind: protocol.StreamKindFileDownload, download: download, sendCredit: sendCredit, creditCh: make(chan struct{}, 1), done: make(chan struct{})}
+	child := &typedFileChild{kind: protocol.StreamKindFileDownload, download: download, sendCredit: sendCredit, remaining: size, creditCh: make(chan struct{}, 1), done: make(chan struct{})}
 	if err := s.activate(streamID, child); err != nil {
 		_ = download.Close()
 		s.releaseReservation(streamID, protocol.StreamKindFileDownload)
@@ -339,10 +340,17 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 	buf := make([]byte, protocol.MaxTypedStreamChunk)
 	for {
 		available := uint32(0)
+		remaining := uint64(0)
 		for available == 0 {
 			child.mu.Lock()
 			available = child.sendCredit.available()
+			remaining = child.remaining
 			child.mu.Unlock()
+			if remaining == 0 {
+				s.closeChild(streamID)
+				_ = s.sendClose(streamID, "download_complete")
+				return
+			}
 			if available == 0 {
 				select {
 				case <-child.creditCh:
@@ -352,6 +360,9 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 			}
 		}
 		limit := int(available)
+		if uint64(limit) > remaining {
+			limit = int(remaining)
+		}
 		if limit > len(buf) {
 			limit = len(buf)
 		}
@@ -359,6 +370,10 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 		if n > 0 {
 			child.mu.Lock()
 			creditErr := child.sendCredit.consume(uint32(n))
+			if uint64(n) <= child.remaining {
+				child.remaining -= uint64(n)
+			}
+			remaining = child.remaining
 			child.mu.Unlock()
 			if creditErr != nil {
 				s.closeChild(streamID)
@@ -367,6 +382,11 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 			payload := append([]byte(nil), buf[:n]...)
 			if writeErr := s.writeFrame(protocol.Frame{Type: protocol.TypeStreamData, StreamID: streamID, Payload: payload}); writeErr != nil {
 				s.closeChild(streamID)
+				return
+			}
+			if remaining == 0 && err == nil {
+				s.closeChild(streamID)
+				_ = s.sendClose(streamID, "download_complete")
 				return
 			}
 		}
