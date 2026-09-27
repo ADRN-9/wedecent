@@ -367,6 +367,11 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 			limit = len(buf)
 		}
 		n, err := child.download.Read(buf[:limit])
+		select {
+		case <-child.done:
+			return
+		default:
+		}
 		if n > 0 {
 			child.mu.Lock()
 			creditErr := child.sendCredit.consume(uint32(n))
@@ -383,6 +388,11 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 			if writeErr := s.writeFrame(protocol.Frame{Type: protocol.TypeStreamData, StreamID: streamID, Payload: payload}); writeErr != nil {
 				s.closeChild(streamID)
 				return
+			}
+			select {
+			case <-child.done:
+				return
+			default:
 			}
 			if remaining == 0 && err == nil {
 				s.closeChild(streamID)
