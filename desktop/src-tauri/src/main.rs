@@ -12,6 +12,7 @@ const MAX_BRIDGE_INPUT_BYTES: usize = 64 * 1024;
 const BRIDGE_FAILURE: &str = "Local Core is unavailable";
 
 type SharedTerminalBridge = Arc<Mutex<Option<BridgeProcess>>>;
+struct LatencyBridge(SharedTerminalBridge);
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -50,6 +51,12 @@ struct ConnectionSummary {
     device_id: String,
     state: String,
     path: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct ConnectionLatencySummary {
+    rtt_micros: u64,
 }
 
 #[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -340,6 +347,19 @@ async fn core_disconnect(
 }
 
 #[tauri::command]
+async fn connection_latency(
+    bridge: tauri::State<'_, LatencyBridge>,
+    connection_id: String,
+) -> Result<ConnectionLatencySummary, String> {
+    terminal_bridge_request(
+        bridge.inner().0.clone(),
+        "connection-latency",
+        IdRequest { id: connection_id },
+    )
+    .await
+}
+
+#[tauri::command]
 async fn terminal_read(
     bridge: tauri::State<'_, SharedTerminalBridge>,
     connection_id: String,
@@ -400,13 +420,16 @@ async fn terminal_resize(
 
 fn main() {
     let terminal_bridge: SharedTerminalBridge = Arc::new(Mutex::new(None));
+    let latency_bridge = LatencyBridge(Arc::new(Mutex::new(None)));
     tauri::Builder::default()
         .manage(terminal_bridge)
+        .manage(latency_bridge)
         .invoke_handler(tauri::generate_handler![
             core_status,
             core_inventory,
             core_connect,
             core_disconnect,
+            connection_latency,
             terminal_read,
             terminal_write,
             terminal_resize
@@ -474,6 +497,13 @@ mod tests {
             br#"{"id":"conn_abc","device_id":"wd_0123456789abcdef","state":"connected","path":"direct","endpoint":"tcp://192.0.2.1:22"}"#,
         );
         assert!(leaked.is_err());
+
+        let latency: ConnectionLatencySummary =
+            parse_bridge_json(br#"{"rtt_micros":2450}"#).expect("valid latency");
+        assert_eq!(latency.rtt_micros, 2450);
+        let leaked_latency: Result<ConnectionLatencySummary, ()> =
+            parse_bridge_json(br#"{"rtt_micros":2450,"endpoint":"tcp://192.0.2.1:22"}"#);
+        assert!(leaked_latency.is_err());
 
         let read: TerminalReadSummary =
             parse_bridge_json(br#"{"data":"aGVsbG8=","closed":false}"#).expect("valid read");

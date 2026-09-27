@@ -201,6 +201,16 @@ func handleServeRequest(line []byte, source coreSource) (any, error) {
 			return nil, err
 		}
 		return okResponse{OK: true}, nil
+	case "connection-latency":
+		var req idRequest
+		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {
+			return nil, err
+		}
+		metrics, ok := source.(desktopbridge.LatencySource)
+		if !ok {
+			return nil, errors.New("connection latency is unavailable")
+		}
+		return desktopbridge.ProbeConnectionLatency(ctx, metrics, req.ID)
 	case "terminal-read":
 		var req idRequest
 		if err := decodeRequest(bytes.NewReader(envelope.Request), &req); err != nil {

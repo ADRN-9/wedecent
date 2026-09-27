@@ -58,6 +58,8 @@ jobs:
       - name: Check renderer JavaScript syntax
         run: |
           node --check desktop/dist/app.js
+          node --check desktop/dist/latency.js
+          test -s desktop/dist/latency.css
           test -s desktop/dist/vendor/xterm.js
           test -s desktop/dist/vendor/xterm.css
           test -s desktop/dist/vendor/XTERM-LICENSE
