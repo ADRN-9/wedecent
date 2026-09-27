@@ -20,6 +20,7 @@ const disconnectButton = document.querySelector('#disconnect-terminal');
 
 const TERMINAL_COLS = 80;
 const TERMINAL_ROWS = 24;
+const TERMINAL_TYPE = 'xterm-256color';
 const READ_DELAY_MS = 25;
 const MAX_TERMINAL_TABS = 8;
 const MAX_SESSION_PROFILES = 32;
@@ -29,6 +30,7 @@ const DEVICE_ID_PATTERN = /^wd_[a-z2-7]{16}$/;
 const PROFILE_ID_PATTERN = /^profile-[a-zA-Z0-9-]{1,96}$/;
 
 const sessions = new Map();
+const parentsByDevice = new Map();
 const knownDevices = new Map();
 let profiles = loadProfiles();
 let activeTabID = null;
@@ -258,7 +260,7 @@ function showInventory(inventory) {
   }
   devicesDetail.textContent = devices.length === 0
     ? 'No known devices are currently exposed by Local Core.'
-    : 'Choose a device to open another authorized terminal tab through Local Core.';
+    : 'Choose a device to open an authorized terminal tab through Local Core. Multiplex-capable sessions share one authenticated parent.';
   replaceList(deviceList, devices, deviceItem);
   replaceList(transportList, transports, (transport) => textItem(`${transport.name} — ${transport.available ? 'available' : 'unavailable'}`));
   renderProfiles();
@@ -380,6 +382,7 @@ function createSession(device) {
     terminal,
     inputDisposable: null,
     connectionID: null,
+    terminalID: null,
     generation: 0,
     writeChain: Promise.resolve(),
     heading: `Connecting to ${device.name || device.id}…`,
@@ -391,22 +394,65 @@ function createSession(device) {
   return session;
 }
 
-async function disconnectSession(session, message = 'Session disconnected') {
+function removeSessionUI(session) {
+  session.inputDisposable?.dispose();
+  session.inputDisposable = null;
+  session.terminal.dispose();
+  session.tabWrap.remove();
+  session.panel.remove();
+  sessions.delete(session.tabID);
+  if (activeTabID === session.tabID) {
+    activeTabID = sessions.keys().next().value || null;
+  }
+  refreshTerminalChrome();
+}
+
+async function disconnectParent(parent) {
+  if (!parent?.connectionID) {
+    return;
+  }
+  const connectionID = parent.connectionID;
+  parent.connectionID = null;
+  parentsByDevice.delete(parent.deviceID);
+  try {
+    await getInvoke()('core_disconnect', { connectionId: connectionID });
+  } catch (_) {
+    // Local Core owns lifecycle state; an already-closed parent needs no fallback.
+  }
+}
+
+async function stopSession(
+  session,
+  heading = 'Session disconnected',
+  detail = 'The tab remains local. No alternate transport or control path was attempted.',
+  closeRemote = true,
+) {
   const connectionID = session.connectionID;
+  const terminalID = session.terminalID;
+  const parent = parentsByDevice.get(session.device.id);
   session.connectionID = null;
+  session.terminalID = null;
   session.generation += 1;
   session.writeChain = Promise.resolve();
   session.inputDisposable?.dispose();
   session.inputDisposable = null;
 
-  if (connectionID) {
+  if (parent) {
+    parent.tabs.delete(session.tabID);
+  }
+
+  if (closeRemote && connectionID && terminalID) {
     try {
-      await getInvoke()('core_disconnect', { connectionId: connectionID });
+      await getInvoke()('terminal_stream_close', { connectionId: connectionID, terminalId: terminalID });
     } catch (_) {
-      // Local Core owns lifecycle state; an already-closed connection needs no fallback.
+      // Child close is best-effort cleanup only; never replay terminal input or choose another path.
     }
   }
-  setSessionStatus(session, message, 'The tab remains local. No alternate transport or control path was attempted.');
+
+  if (parent && parent.tabs.size === 0) {
+    await disconnectParent(parent);
+  }
+  setSessionStatus(session, heading, detail);
 }
 
 async function closeSession(tabID) {
@@ -414,55 +460,112 @@ async function closeSession(tabID) {
   if (!session) {
     return;
   }
-  await disconnectSession(session);
-  session.inputDisposable?.dispose();
-  session.terminal.dispose();
-  session.tabWrap.remove();
-  session.panel.remove();
-  sessions.delete(tabID);
-
-  if (activeTabID === tabID) {
-    activeTabID = sessions.keys().next().value || null;
+  if (session.connectionID) {
+    await stopSession(session);
   }
-  refreshTerminalChrome();
+  removeSessionUI(session);
 }
 
-async function pollTerminal(session, connectionID, generation) {
+async function readTerminal(session, connectionID, terminalID) {
   const invoke = getInvoke();
-  while (session.connectionID === connectionID && session.generation === generation) {
+  if (terminalID) {
+    return invoke('terminal_stream_read', { connectionId: connectionID, terminalId: terminalID });
+  }
+  return invoke('terminal_read', { connectionId: connectionID });
+}
+
+async function pollTerminal(session, connectionID, terminalID, generation) {
+  while (
+    session.connectionID === connectionID
+    && session.terminalID === terminalID
+    && session.generation === generation
+  ) {
     try {
-      const result = await invoke('terminal_read', { connectionId: connectionID });
+      const result = await readTerminal(session, connectionID, terminalID);
       if (result.data) {
         session.terminal.write(base64ToBytes(result.data));
       }
       if (result.closed) {
-        await disconnectSession(session, 'Session closed');
-        setSessionStatus(session, 'Session closed', 'The secure terminal stream was closed by Local Core or the remote endpoint.');
+        await stopSession(
+          session,
+          'Session closed',
+          'The secure terminal stream was closed by Local Core or the remote endpoint.',
+          false,
+        );
         return;
       }
     } catch (_) {
-      await disconnectSession(session, 'Session unavailable');
-      setSessionStatus(session, 'Session unavailable', 'Terminal I/O stopped. No alternate transport or control path was attempted.');
+      await stopSession(
+        session,
+        'Session unavailable',
+        'Terminal I/O stopped. No alternate transport or control path was attempted.',
+      );
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, READ_DELAY_MS));
   }
 }
 
-function queueTerminalWrite(session, invoke, connectionID, data) {
+function queueTerminalWrite(session, connectionID, terminalID, data) {
   const bytes = new TextEncoder().encode(data);
   const dataBase64 = bytesToBase64(bytes);
   session.writeChain = session.writeChain.then(async () => {
-    if (session.connectionID !== connectionID) {
+    if (session.connectionID !== connectionID || session.terminalID !== terminalID) {
       return;
     }
-    await invoke('terminal_write', { connectionId: connectionID, dataBase64 });
+    const invoke = getInvoke();
+    if (terminalID) {
+      await invoke('terminal_stream_write', { connectionId: connectionID, terminalId: terminalID, dataBase64 });
+    } else {
+      await invoke('terminal_write', { connectionId: connectionID, dataBase64 });
+    }
   }).catch(async () => {
-    if (session.connectionID === connectionID) {
-      await disconnectSession(session, 'Session unavailable');
-      setSessionStatus(session, 'Session unavailable', 'Terminal input failed. No fallback path was attempted.');
+    if (session.connectionID === connectionID && session.terminalID === terminalID) {
+      await stopSession(
+        session,
+        'Session unavailable',
+        'Terminal input failed. No fallback path was attempted.',
+      );
     }
   });
+}
+
+async function attachSession(session, parent, terminalID) {
+  session.connectionID = parent.connectionID;
+  session.terminalID = terminalID;
+  session.generation += 1;
+  session.writeChain = Promise.resolve();
+  parent.tabs.add(session.tabID);
+  const generation = session.generation;
+  const connectionID = parent.connectionID;
+
+  setSessionStatus(
+    session,
+    session.device.name || session.device.id,
+    terminalID
+      ? `Connected through Local Core (${parent.path}); this tab is a Core-owned logical terminal on the shared authenticated session.`
+      : `Connected through Local Core (${parent.path}); this peer is using the authenticated default terminal stream.`,
+  );
+  session.inputDisposable = session.terminal.onData((data) => {
+    if (session.connectionID === connectionID && session.terminalID === terminalID) {
+      queueTerminalWrite(session, connectionID, terminalID, data);
+    }
+  });
+  session.terminal.focus();
+  void pollTerminal(session, connectionID, terminalID, generation);
+}
+
+async function openLogicalTerminal(parent) {
+  const stream = await getInvoke()('terminal_stream_open', {
+    connectionId: parent.connectionID,
+    cols: TERMINAL_COLS,
+    rows: TERMINAL_ROWS,
+    term: TERMINAL_TYPE,
+  });
+  if (!stream || stream.connection_id !== parent.connectionID || typeof stream.id !== 'string') {
+    throw new Error('invalid logical terminal result');
+  }
+  return stream.id;
 }
 
 async function startTerminal(device) {
@@ -477,35 +580,61 @@ async function startTerminal(device) {
     return;
   }
 
+  const existingParent = parentsByDevice.get(device.id);
+  if (existingParent?.mode === 'legacy') {
+    terminalHeading.textContent = 'Additional terminal unavailable';
+    terminalDetail.textContent = 'This authenticated peer does not expose logical terminal multiplexing. Its default terminal remains open; no alternate connection or transport was attempted.';
+    return;
+  }
+
   let session;
   try {
     session = createSession(device);
-    const invoke = getInvoke();
-    const connection = await invoke('core_connect', { deviceId: device.id });
-    session.connectionID = connection.id;
-    session.generation += 1;
-    session.writeChain = Promise.resolve();
-    const generation = session.generation;
+    let parent = existingParent;
+    if (!parent) {
+      const connection = await getInvoke()('core_connect', { deviceId: device.id });
+      parent = {
+        deviceID: device.id,
+        connectionID: connection.id,
+        path: connection.path,
+        mode: 'pending',
+        tabs: new Set(),
+      };
+      parentsByDevice.set(device.id, parent);
 
-    await invoke('terminal_resize', {
-      connectionId: connection.id,
-      cols: TERMINAL_COLS,
-      rows: TERMINAL_ROWS,
-    });
-
-    setSessionStatus(session, device.name || device.id, `Connected through Local Core (${connection.path}).`);
-    session.inputDisposable = session.terminal.onData((data) => {
-      if (session.connectionID === connection.id) {
-        queueTerminalWrite(session, invoke, connection.id, data);
+      try {
+        const terminalID = await openLogicalTerminal(parent);
+        parent.mode = 'multiplex';
+        await attachSession(session, parent, terminalID);
+        return;
+      } catch (_) {
+        parent.mode = 'legacy';
+        await getInvoke()('terminal_resize', {
+          connectionId: parent.connectionID,
+          cols: TERMINAL_COLS,
+          rows: TERMINAL_ROWS,
+        });
+        await attachSession(session, parent, null);
+        return;
       }
-    });
+    }
 
-    session.terminal.focus();
-    void pollTerminal(session, connection.id, generation);
+    if (parent.mode !== 'multiplex') {
+      throw new Error('logical terminals unavailable');
+    }
+    const terminalID = await openLogicalTerminal(parent);
+    await attachSession(session, parent, terminalID);
   } catch (_) {
     if (session) {
-      await disconnectSession(session, 'Connection failed');
-      setSessionStatus(session, 'Connection failed', 'Local Core did not establish an authorized secure session. No fallback path was attempted.');
+      const parent = parentsByDevice.get(device.id);
+      if (parent && parent.tabs.size === 0) {
+        await disconnectParent(parent);
+      }
+      setSessionStatus(
+        session,
+        'Connection failed',
+        'Local Core did not establish an authorized terminal stream. No fallback path was attempted.',
+      );
     }
   }
 }
@@ -535,14 +664,14 @@ retryButton.addEventListener('click', refreshStatus);
 disconnectButton.addEventListener('click', () => {
   const session = activeSession();
   if (session) {
-    void disconnectSession(session);
+    void stopSession(session);
   }
 });
 window.addEventListener('beforeunload', () => {
   const invoke = getInvoke();
-  for (const session of sessions.values()) {
-    if (session.connectionID) {
-      void invoke('core_disconnect', { connectionId: session.connectionID });
+  for (const parent of parentsByDevice.values()) {
+    if (parent.connectionID) {
+      void invoke('core_disconnect', { connectionId: parent.connectionID });
     }
   }
 });
