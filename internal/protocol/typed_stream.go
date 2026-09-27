@@ -10,14 +10,14 @@ import (
 type StreamKind string
 
 const (
-	StreamKindTerminal              StreamKind = "terminal"
-	MinTypedStreamID                uint32     = 2
-	MaxTypedStreamChunk                        = 64 << 10
-	MaxTypedStreamWindow                       = 1 << 20
-	MaxTypedStreamTermLength                   = 64
-	MaxTypedStreamCloseReasonLength            = 128
-	MaxTypedStreamErrorCodeLength              = 64
-	MaxTypedStreamErrorMessageLength           = 256
+	StreamKindTerminal               StreamKind = "terminal"
+	MinTypedStreamID                 uint32     = 2
+	MaxTypedStreamChunk                         = 64 << 10
+	MaxTypedStreamWindow                        = 1 << 20
+	MaxTypedStreamTermLength                    = 64
+	MaxTypedStreamCloseReasonLength             = 128
+	MaxTypedStreamErrorCodeLength               = 64
+	MaxTypedStreamErrorMessageLength            = 256
 )
 
 type StreamOpen struct {
