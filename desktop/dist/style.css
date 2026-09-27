@@ -57,6 +57,8 @@ h1 {
 
 .status-heading button,
 .device-connect,
+.device-save-profile,
+.profile-actions button,
 .terminal-tab,
 .terminal-tab-close {
   padding: 8px 14px;
@@ -112,8 +114,34 @@ li + li {
   margin-top: 10px;
 }
 
+.device-row,
+.profile-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .device-connect {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow-wrap: anywhere;
   text-align: left;
+}
+
+.device-save-profile {
+  flex: 0 0 auto;
+}
+
+.profile-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.profile-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 8px;
 }
 
 .terminal-panel {
@@ -190,6 +218,16 @@ li + li {
 
   dl {
     grid-template-columns: 1fr;
+  }
+
+  .device-row,
+  .profile-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .profile-actions {
+    align-self: flex-start;
   }
 
   .terminal-stack {
