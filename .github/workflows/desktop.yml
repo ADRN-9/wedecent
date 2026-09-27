@@ -55,13 +55,39 @@ jobs:
           name: native-file-transfer-cargo-lock
           path: desktop/src-tauri/Cargo.lock
           if-no-files-found: error
-      - name: Commit generated dependency lock
+      - name: Wire and commit native file command surface
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          path = Path('desktop/src-tauri/src/main.rs')
+          text = path.read_text()
+          if 'mod file_transfer;' not in text:
+              text = 'mod file_transfer;\n\n' + text
+          builder = '    tauri::Builder::default()\n        .manage(terminal_bridge)'
+          replacement = '    tauri::Builder::default()\n        .plugin(tauri_plugin_dialog::init())\n        .manage(terminal_bridge)'
+          if builder in text:
+              text = text.replace(builder, replacement, 1)
+          handler = '            terminal_stream_write,\n            terminal_stream_resize\n        ])'
+          handler_replacement = '            terminal_stream_write,\n            terminal_stream_resize,\n            file_transfer::file_transfer_status,\n            file_transfer::file_upload_pick,\n            file_transfer::file_download_pick\n        ])'
+          if handler in text:
+              text = text.replace(handler, handler_replacement, 1)
+          required = [
+              'mod file_transfer;',
+              '.plugin(tauri_plugin_dialog::init())',
+              'file_transfer::file_transfer_status',
+              'file_transfer::file_upload_pick',
+              'file_transfer::file_download_pick',
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              raise SystemExit(f'missing expected wiring after patch: {missing}')
+          path.write_text(text)
+          PY
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add desktop/src-tauri/Cargo.lock
+          git add desktop/src-tauri/Cargo.lock desktop/src-tauri/src/main.rs
           if ! git diff --cached --quiet; then
-            git commit -m 'desktop: commit generated native dependency lock'
+            git commit -m 'desktop: wire native file transfer commands'
             git push origin HEAD:feat/desktop-native-file-transfer
           fi
       - name: Verify Rust formatting
