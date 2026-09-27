@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
+	"wedecent.com/wedecent/internal/desktopbridge"
 )
 
 type fakeFileCoreSource struct {
