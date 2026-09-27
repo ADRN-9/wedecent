@@ -1,0 +1,13 @@
+name: Managed multiplex format diagnostic
+on:
+  push:
+    branches: [feat/typed-terminal-managed-client]
+jobs:
+  gofmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+      - run: gofmt -d internal/session/managed_multiplex.go
