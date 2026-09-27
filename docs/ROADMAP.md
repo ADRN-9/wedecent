@@ -117,7 +117,9 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
 - [ ] Tabs and multiple terminal streams per secure connection
   - [x] Add bounded desktop tabs with independent Core-owned secure connection IDs and isolated xterm/read/write state
   - [ ] Define and implement protocol/Core multiplexing before claiming multiple terminal streams inside one secure connection
-- [ ] Session profiles
+- [x] Session profiles
+  - [x] Persist only a bounded local profile label and canonical device ID; profiles contain no trust material, credentials, grants, fingerprints, endpoints, or transport authority
+  - [x] Resolve a profile target only against the current sanitized Local Core inventory before requesting a Core-owned connection
 - [ ] File transfer
 - [ ] Local/remote port forwarding
 
