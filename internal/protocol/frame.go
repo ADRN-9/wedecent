@@ -33,6 +33,7 @@ const (
 	TypeStreamAccepted
 	TypeStreamData
 	TypeStreamWindowUpdate
+	TypeStreamResize
 	TypeStreamClose
 	TypeStreamError
 )
