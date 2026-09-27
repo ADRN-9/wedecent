@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"io"
@@ -12,6 +13,11 @@ import (
 )
 
 func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, transport string, capabilities []protocol.Capability) {
+	fileNegotiated := hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1)
+	if fileNegotiated && (s.FileTransfer == nil || !s.FileTransfer.Ready()) {
+		// Capability negotiation must never outrun the authoritative runtime.
+		return
+	}
 	accepted, err := sessionAcceptedFrame(capabilities)
 	if err != nil {
 		return
@@ -44,16 +50,33 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		}
 	}
 
+	sessionCtx, cancelSession := context.WithCancel(context.Background())
+	defer cancelSession()
+	registry := newTypedParentStreamRegistry()
 	streamAudit := newTypedTerminalAuditTracker(peerID, transport, s.recordAudit)
-	typedServer := newTypedTerminalServer(s.Shell, func(frame protocol.Frame) error {
+	typedServer := newTypedTerminalServerWithRegistry(s.Shell, func(frame protocol.Frame) error {
 		if err := writeFrame(frame); err != nil {
 			return err
 		}
 		streamAudit.observeOutgoing(frame)
 		signalActivity()
 		return nil
-	})
+	}, registry)
+	var fileServer *typedFileServer
+	if fileNegotiated {
+		fileServer = newTypedFileServer(s.FileTransfer, peerID, registry, func(frame protocol.Frame) error {
+			if err := writeFrame(frame); err != nil {
+				return err
+			}
+			signalActivity()
+			return nil
+		})
+	}
 	defer func() {
+		cancelSession()
+		if fileServer != nil {
+			fileServer.CloseAll()
+		}
 		typedServer.CloseAll()
 		streamAudit.closeAll(closeReason)
 	}()
@@ -81,6 +104,10 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 	}()
 
 	expireSession := func(reason string) {
+		cancelSession()
+		if fileServer != nil {
+			fileServer.CloseAll()
+		}
 		typedServer.CloseAll()
 		streamAudit.closeAll(closeReason)
 		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
@@ -97,7 +124,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 			}
 			return
 		case frame := <-frameCh:
-			handled, err := routeTypedTerminalFrame(capabilities, typedServer, frame)
+			handled, err := routeTypedApplicationFrame(sessionCtx, capabilities, registry, typedServer, fileServer, frame)
 			if handled {
 				if err != nil {
 					closeReason = "typed_stream_protocol_error"
