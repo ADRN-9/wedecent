@@ -17,6 +17,8 @@ const (
 	fileAuthorizationTimeout           = 15 * time.Second
 )
 
+var errTypedFileStreamRejected = errors.New("typed file stream rejection already sent")
+
 type typedFileFrameWriter func(protocol.Frame) error
 
 type typedFileChild struct {
@@ -84,7 +86,7 @@ func (s *typedFileServer) open(ctx context.Context, frame protocol.Frame) error 
 		if err != nil {
 			return fmt.Errorf("%w: %v", errTypedStreamProtocol, err)
 		}
-		return s.openUpload(ctx, frame.StreamID, envelope, metadata)
+		return s.openUpload(ctx, frame.StreamID, metadata)
 	case protocol.StreamKindFileDownload:
 		metadata, err := protocol.ParseFileDownloadStreamOpen(frame.StreamID, envelope)
 		if err != nil {
@@ -104,7 +106,10 @@ func (s *typedFileServer) reserve(streamID uint32, kind protocol.StreamKind) err
 	if s.active >= maxFileStreamsPerConnection {
 		s.mu.Unlock()
 		_ = s.registry.close(streamID, kind)
-		return s.sendStreamError(streamID, "resource_limit", "file stream limit reached")
+		if err := s.sendStreamError(streamID, "resource_limit", "file stream limit reached"); err != nil {
+			return err
+		}
+		return errTypedFileStreamRejected
 	}
 	s.active++
 	s.mu.Unlock()
@@ -129,8 +134,11 @@ func (s *typedFileServer) authorize(ctx context.Context, direction FileTransferD
 	return s.runtime.Authorize(authCtx, s.peerID, direction, path)
 }
 
-func (s *typedFileServer) openUpload(ctx context.Context, streamID uint32, envelope protocol.StreamOpen, metadata protocol.FileUploadOpen) error {
+func (s *typedFileServer) openUpload(ctx context.Context, streamID uint32, metadata protocol.FileUploadOpen) error {
 	if err := s.reserve(streamID, protocol.StreamKindFileUpload); err != nil {
+		if errors.Is(err, errTypedFileStreamRejected) {
+			return nil
+		}
 		return err
 	}
 	if err := s.authorize(ctx, FileTransferUpload, metadata.Path); err != nil {
@@ -160,12 +168,14 @@ func (s *typedFileServer) openUpload(ctx context.Context, streamID uint32, envel
 		s.closeChild(streamID)
 		return err
 	}
-	_ = envelope
 	return nil
 }
 
 func (s *typedFileServer) openDownload(ctx context.Context, streamID uint32, envelope protocol.StreamOpen, metadata protocol.FileDownloadOpen) error {
 	if err := s.reserve(streamID, protocol.StreamKindFileDownload); err != nil {
+		if errors.Is(err, errTypedFileStreamRejected) {
+			return nil
+		}
 		return err
 	}
 	if err := s.authorize(ctx, FileTransferDownload, metadata.Path); err != nil {
