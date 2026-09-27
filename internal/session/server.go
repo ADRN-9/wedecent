@@ -200,7 +200,7 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	}
 	s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport})
 
-	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term})
+	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, Capabilities: req.Capabilities})
 	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport)
 }
 
@@ -234,6 +234,11 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 	if err := protocol.ParseJSON(first.Payload, &open); err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "invalid_request"})
 		_ = sendError(conn, "bad_request", "invalid session request")
+		return
+	}
+	capabilities := negotiateSessionCapabilities(open.Capabilities, true)
+	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
+		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities)
 		return
 	}
 	if open.Cols == 0 {
