@@ -29,6 +29,13 @@ const (
 	TypePing
 	TypePong
 	TypeOpenAuthorizedSession
+	TypeStreamOpen
+	TypeStreamAccepted
+	TypeStreamData
+	TypeStreamWindowUpdate
+	TypeStreamResize
+	TypeStreamClose
+	TypeStreamError
 )
 
 type Frame struct {
