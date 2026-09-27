@@ -11,7 +11,7 @@ type StreamKind string
 
 const (
 	StreamKindTerminal              StreamKind = "terminal"
-	MinTypedStreamID                           = 2
+	MinTypedStreamID                uint32     = 2
 	MaxTypedStreamChunk                        = 64 << 10
 	MaxTypedStreamWindow                       = 1 << 20
 	MaxTypedStreamTermLength                   = 64
