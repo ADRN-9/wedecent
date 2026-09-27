@@ -34,6 +34,7 @@ func (f *fakeFileCoreSource) OpenFileUpload(_ context.Context, req v1.FileUpload
 	return f.uploadOp, nil
 }
 func (f *fakeFileCoreSource) WriteFileUpload(_ context.Context, req v1.FileUploadWriteRequest) error {
+	req.Data = append([]byte(nil), req.Data...)
 	f.uploadWrite = req
 	return nil
 }
