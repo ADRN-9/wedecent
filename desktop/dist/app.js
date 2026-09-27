@@ -11,18 +11,19 @@ const deviceList = document.querySelector('#device-list');
 const transportList = document.querySelector('#transport-list');
 const terminalHeading = document.querySelector('#terminal-heading');
 const terminalDetail = document.querySelector('#terminal-detail');
-const terminalElement = document.querySelector('#terminal');
+const terminalTabs = document.querySelector('#terminal-tabs');
+const terminalStack = document.querySelector('#terminal-stack');
+const terminalEmpty = document.querySelector('#terminal-empty');
 const disconnectButton = document.querySelector('#disconnect-terminal');
 
 const TERMINAL_COLS = 80;
 const TERMINAL_ROWS = 24;
 const READ_DELAY_MS = 25;
+const MAX_TERMINAL_TABS = 8;
 
-let terminal = null;
-let terminalInputDisposable = null;
-let activeConnectionID = null;
-let terminalGeneration = 0;
-let writeChain = Promise.resolve();
+const sessions = new Map();
+let activeTabID = null;
+let nextTabID = 1;
 
 function getInvoke() {
   const invoke = window.__TAURI__?.core?.invoke;
@@ -77,7 +78,7 @@ function showInventory(inventory) {
   const transports = Array.isArray(inventory.transports) ? inventory.transports : [];
   devicesDetail.textContent = devices.length === 0
     ? 'No known devices are currently exposed by Local Core.'
-    : 'Choose a device to ask Local Core to establish an authorized secure session.';
+    : 'Choose a device to open another authorized terminal tab through Local Core.';
   replaceList(deviceList, devices, deviceItem);
   replaceList(transportList, transports, (transport) => textItem(`${transport.name} — ${transport.available ? 'available' : 'unavailable'}`));
 }
@@ -100,32 +101,122 @@ function base64ToBytes(value) {
   return bytes;
 }
 
-function ensureTerminal() {
-  if (terminal) {
-    return terminal;
+function getSession(tabID) {
+  return sessions.get(tabID) || null;
+}
+
+function activeSession() {
+  return activeTabID ? getSession(activeTabID) : null;
+}
+
+function refreshTerminalChrome() {
+  const session = activeSession();
+  terminalEmpty.hidden = sessions.size !== 0;
+  disconnectButton.disabled = !session?.connectionID;
+
+  for (const [tabID, entry] of sessions) {
+    const active = tabID === activeTabID;
+    entry.button.setAttribute('aria-selected', active ? 'true' : 'false');
+    entry.panel.hidden = !active;
   }
+
+  if (!session) {
+    terminalHeading.textContent = 'No active session';
+    terminalDetail.textContent = 'Choose a known device. Local Core remains responsible for authorization, path selection, identity verification, and the secure session.';
+    return;
+  }
+
+  terminalHeading.textContent = session.heading;
+  terminalDetail.textContent = session.detail;
+  if (session.terminal) {
+    session.terminal.focus();
+  }
+}
+
+function setSessionStatus(session, heading, detail) {
+  session.heading = heading;
+  session.detail = detail;
+  if (session.tabID === activeTabID) {
+    refreshTerminalChrome();
+  }
+}
+
+function createSession(device) {
   if (typeof window.Terminal !== 'function') {
     throw new Error('xterm renderer unavailable');
   }
-  terminal = new window.Terminal({
+
+  const tabID = `terminal-tab-${nextTabID}`;
+  nextTabID += 1;
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'terminal-tab';
+  button.setAttribute('role', 'tab');
+  button.setAttribute('aria-selected', 'false');
+  button.textContent = device.name || device.id;
+  button.addEventListener('click', () => {
+    activeTabID = tabID;
+    refreshTerminalChrome();
+  });
+
+  const close = document.createElement('button');
+  close.type = 'button';
+  close.className = 'terminal-tab-close';
+  close.setAttribute('aria-label', `Close ${device.name || device.id} terminal`);
+  close.textContent = '×';
+  close.addEventListener('click', (event) => {
+    event.stopPropagation();
+    void closeSession(tabID);
+  });
+
+  const tabWrap = document.createElement('span');
+  tabWrap.className = 'terminal-tab-wrap';
+  tabWrap.append(button, close);
+  terminalTabs.append(tabWrap);
+
+  const panel = document.createElement('div');
+  panel.className = 'terminal';
+  panel.setAttribute('role', 'tabpanel');
+  panel.hidden = true;
+  terminalStack.append(panel);
+
+  const terminal = new window.Terminal({
     cols: TERMINAL_COLS,
     rows: TERMINAL_ROWS,
     cursorBlink: true,
     convertEol: false,
     scrollback: 5000,
   });
-  terminal.open(terminalElement);
-  return terminal;
+  terminal.open(panel);
+
+  const session = {
+    tabID,
+    device,
+    button,
+    tabWrap,
+    panel,
+    terminal,
+    inputDisposable: null,
+    connectionID: null,
+    generation: 0,
+    writeChain: Promise.resolve(),
+    heading: `Connecting to ${device.name || device.id}…`,
+    detail: 'Local Core is selecting and authorizing the secure path.',
+  };
+  sessions.set(tabID, session);
+  activeTabID = tabID;
+  refreshTerminalChrome();
+  return session;
 }
 
-async function stopTerminal(message = 'No active session') {
-  const connectionID = activeConnectionID;
-  activeConnectionID = null;
-  terminalGeneration += 1;
-  writeChain = Promise.resolve();
-  disconnectButton.disabled = true;
-  terminalInputDisposable?.dispose();
-  terminalInputDisposable = null;
+async function disconnectSession(session, message = 'Session disconnected') {
+  const connectionID = session.connectionID;
+  session.connectionID = null;
+  session.generation += 1;
+  session.writeChain = Promise.resolve();
+  session.inputDisposable?.dispose();
+  session.inputDisposable = null;
 
   if (connectionID) {
     try {
@@ -134,65 +225,81 @@ async function stopTerminal(message = 'No active session') {
       // Local Core owns lifecycle state; an already-closed connection needs no fallback.
     }
   }
-  terminalHeading.textContent = message;
+  setSessionStatus(session, message, 'The tab remains local. No alternate transport or control path was attempted.');
 }
 
-async function pollTerminal(connectionID, generation) {
+async function closeSession(tabID) {
+  const session = getSession(tabID);
+  if (!session) {
+    return;
+  }
+  await disconnectSession(session);
+  session.inputDisposable?.dispose();
+  session.terminal.dispose();
+  session.tabWrap.remove();
+  session.panel.remove();
+  sessions.delete(tabID);
+
+  if (activeTabID === tabID) {
+    activeTabID = sessions.keys().next().value || null;
+  }
+  refreshTerminalChrome();
+}
+
+async function pollTerminal(session, connectionID, generation) {
   const invoke = getInvoke();
-  while (activeConnectionID === connectionID && terminalGeneration === generation) {
+  while (session.connectionID === connectionID && session.generation === generation) {
     try {
       const result = await invoke('terminal_read', { connectionId: connectionID });
       if (result.data) {
-        ensureTerminal().write(base64ToBytes(result.data));
+        session.terminal.write(base64ToBytes(result.data));
       }
       if (result.closed) {
-        await stopTerminal('Session closed');
-        terminalDetail.textContent = 'The secure terminal stream was closed by Local Core or the remote endpoint.';
+        await disconnectSession(session, 'Session closed');
+        setSessionStatus(session, 'Session closed', 'The secure terminal stream was closed by Local Core or the remote endpoint.');
         return;
       }
     } catch (_) {
-      await stopTerminal('Session unavailable');
-      terminalDetail.textContent = 'Terminal I/O stopped. No alternate transport or control path was attempted.';
+      await disconnectSession(session, 'Session unavailable');
+      setSessionStatus(session, 'Session unavailable', 'Terminal I/O stopped. No alternate transport or control path was attempted.');
       return;
     }
     await new Promise((resolve) => setTimeout(resolve, READ_DELAY_MS));
   }
 }
 
-function queueTerminalWrite(invoke, connectionID, data) {
+function queueTerminalWrite(session, invoke, connectionID, data) {
   const bytes = new TextEncoder().encode(data);
   const dataBase64 = bytesToBase64(bytes);
-  writeChain = writeChain.then(async () => {
-    if (activeConnectionID !== connectionID) {
+  session.writeChain = session.writeChain.then(async () => {
+    if (session.connectionID !== connectionID) {
       return;
     }
     await invoke('terminal_write', { connectionId: connectionID, dataBase64 });
   }).catch(async () => {
-    if (activeConnectionID === connectionID) {
-      await stopTerminal('Session unavailable');
-      terminalDetail.textContent = 'Terminal input failed. No fallback path was attempted.';
+    if (session.connectionID === connectionID) {
+      await disconnectSession(session, 'Session unavailable');
+      setSessionStatus(session, 'Session unavailable', 'Terminal input failed. No fallback path was attempted.');
     }
   });
 }
 
 async function startTerminal(device) {
-  if (activeConnectionID) {
-    await stopTerminal();
+  if (sessions.size >= MAX_TERMINAL_TABS) {
+    terminalHeading.textContent = 'Terminal tab limit reached';
+    terminalDetail.textContent = `Close a tab before opening another. The desktop UI is limited to ${MAX_TERMINAL_TABS} simultaneous tabs.`;
+    return;
   }
 
-  const xterm = ensureTerminal();
-  xterm.clear();
-  terminalHeading.textContent = `Connecting to ${device.name || device.id}…`;
-  terminalDetail.textContent = 'Local Core is selecting and authorizing the secure path.';
-  disconnectButton.disabled = true;
-
+  let session;
   try {
+    session = createSession(device);
     const invoke = getInvoke();
     const connection = await invoke('core_connect', { deviceId: device.id });
-    activeConnectionID = connection.id;
-    terminalGeneration += 1;
-    writeChain = Promise.resolve();
-    const generation = terminalGeneration;
+    session.connectionID = connection.id;
+    session.generation += 1;
+    session.writeChain = Promise.resolve();
+    const generation = session.generation;
 
     await invoke('terminal_resize', {
       connectionId: connection.id,
@@ -200,22 +307,20 @@ async function startTerminal(device) {
       rows: TERMINAL_ROWS,
     });
 
-    terminalHeading.textContent = device.name || device.id;
-    terminalDetail.textContent = `Connected through Local Core (${connection.path}).`;
-    disconnectButton.disabled = false;
-
-    terminalInputDisposable?.dispose();
-    terminalInputDisposable = xterm.onData((data) => {
-      if (activeConnectionID === connection.id) {
-        queueTerminalWrite(invoke, connection.id, data);
+    setSessionStatus(session, device.name || device.id, `Connected through Local Core (${connection.path}).`);
+    session.inputDisposable = session.terminal.onData((data) => {
+      if (session.connectionID === connection.id) {
+        queueTerminalWrite(session, invoke, connection.id, data);
       }
     });
 
-    xterm.focus();
-    void pollTerminal(connection.id, generation);
+    session.terminal.focus();
+    void pollTerminal(session, connection.id, generation);
   } catch (_) {
-    await stopTerminal('Connection failed');
-    terminalDetail.textContent = 'Local Core did not establish an authorized secure session. No fallback path was attempted.';
+    if (session) {
+      await disconnectSession(session, 'Connection failed');
+      setSessionStatus(session, 'Connection failed', 'Local Core did not establish an authorized secure session. No fallback path was attempted.');
+    }
   }
 }
 
@@ -241,10 +346,18 @@ async function refreshStatus() {
 }
 
 retryButton.addEventListener('click', refreshStatus);
-disconnectButton.addEventListener('click', () => stopTerminal());
+disconnectButton.addEventListener('click', () => {
+  const session = activeSession();
+  if (session) {
+    void disconnectSession(session);
+  }
+});
 window.addEventListener('beforeunload', () => {
-  if (activeConnectionID) {
-    void getInvoke()('core_disconnect', { connectionId: activeConnectionID });
+  const invoke = getInvoke();
+  for (const session of sessions.values()) {
+    if (session.connectionID) {
+      void invoke('core_disconnect', { connectionId: session.connectionID });
+    }
   }
 });
 window.addEventListener('DOMContentLoaded', refreshStatus, { once: true });

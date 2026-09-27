@@ -115,6 +115,8 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
   - [x] Render sanitized Local Core device identity summaries and transport availability without endpoints, fingerprints, or transport detail
   - [ ] Add latency only after Local Core exposes a bounded authoritative measurement; do not infer it in the renderer
 - [ ] Tabs and multiple terminal streams per secure connection
+  - [x] Add bounded desktop tabs with independent Core-owned secure connection IDs and isolated xterm/read/write state
+  - [ ] Define and implement protocol/Core multiplexing before claiming multiple terminal streams inside one secure connection
 - [ ] Session profiles
 - [ ] File transfer
 - [ ] Local/remote port forwarding

@@ -50,7 +50,10 @@
         <button id="disconnect-terminal" type="button" disabled>Disconnect</button>
       </div>
       <p id="terminal-detail">Choose a known device. Local Core remains responsible for authorization, path selection, identity verification, and the secure session.</p>
-      <div id="terminal" aria-label="Remote terminal"></div>
+      <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="Terminal sessions"></div>
+      <div id="terminal-stack" class="terminal-stack" aria-live="polite">
+        <p id="terminal-empty">No terminal tabs are open.</p>
+      </div>
     </section>
 
     <section class="status" aria-labelledby="transports-heading">
