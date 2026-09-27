@@ -140,6 +140,13 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose connection service: %w", err)
 	}
+	fileTransferService, err := coreapi.NewFileTransferService(coreapi.FileTransferServiceConfig{
+		Connections: connectionService,
+	})
+	if err != nil {
+		_ = connectionService.Close()
+		return nil, fmt.Errorf("core process: compose file transfer service: %w", err)
+	}
 	idempotentConnections, err := coreapi.NewConnectIdempotencyService(connectionService)
 	if err != nil {
 		_ = connectionService.Close()
@@ -152,14 +159,15 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	server, err := ipc.NewServerWithServices(ipc.Services{
-		Status:      readService,
-		Devices:     readService,
-		Account:     accountService,
-		Connections: idempotentConnections,
-		Terminal:    idempotentTerminal,
-		Transports:  networkService,
-		Routes:      networkService,
-		Router:      cfg.RouterService,
+		Status:       readService,
+		Devices:      readService,
+		Account:      accountService,
+		Connections:  idempotentConnections,
+		Terminal:     idempotentTerminal,
+		FileTransfer: fileTransferService,
+		Transports:   networkService,
+		Routes:       networkService,
+		Router:       cfg.RouterService,
 	})
 	if err != nil {
 		_ = connectionService.Close()

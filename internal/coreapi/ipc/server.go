@@ -23,6 +23,10 @@ const (
 	ErrorConnectionLatencyFailed      = "connection_latency_failed"
 	ErrorTerminalUnavailable          = "terminal_unavailable"
 	ErrorTerminalFailed               = "terminal_operation_failed"
+	ErrorFileTransferUnavailable      = "file_transfer_unavailable"
+	ErrorFileTransferLimit            = "file_transfer_limit"
+	ErrorFileTransferNotFound         = "file_transfer_not_found"
+	ErrorFileTransferFailed           = "file_transfer_failed"
 	ErrorRequestCanceled              = "request_canceled"
 	ErrorAccountUnavailable           = "account_unavailable"
 	ErrorAccountFailed                = "account_operation_failed"
@@ -32,14 +36,15 @@ const (
 )
 
 type Services struct {
-	Status      v1.StatusService
-	Devices     v1.DeviceService
-	Account     v1.AccountService
-	Connections v1.ConnectionService
-	Terminal    v1.TerminalService
-	Transports  v1.TransportService
-	Routes      v1.RouteService
-	Router      v1.RouterService
+	Status       v1.StatusService
+	Devices      v1.DeviceService
+	Account      v1.AccountService
+	Connections  v1.ConnectionService
+	Terminal     v1.TerminalService
+	FileTransfer v1.FileTransferService
+	Transports   v1.TransportService
+	Routes       v1.RouteService
+	Router       v1.RouterService
 }
 
 type Server struct {
@@ -48,6 +53,7 @@ type Server struct {
 	account     v1.AccountService
 	connections v1.ConnectionService
 	terminal    v1.TerminalService
+	files       v1.FileTransferService
 	transports  v1.TransportService
 	routes      v1.RouteService
 	router      v1.RouterService
@@ -71,6 +77,7 @@ func NewServerWithServices(services Services) (*Server, error) {
 		account:     services.Account,
 		connections: services.Connections,
 		terminal:    services.Terminal,
+		files:       services.FileTransfer,
 		transports:  services.Transports,
 		routes:      services.Routes,
 		router:      services.Router,
@@ -111,6 +118,9 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 	response := Response{Version: v1.Version, ID: req.ID}
 	if streamResponse, handled := s.handleTerminalStream(ctx, req, response); handled {
 		return streamResponse
+	}
+	if fileResponse, handled := s.handleFileTransfer(ctx, req, response); handled {
+		return fileResponse
 	}
 
 	var result any
@@ -275,7 +285,7 @@ func (s *Server) finish(response Response, result any, err error) Response {
 			return errorResponse(response, ErrorRequestCanceled, "request canceled")
 		case errors.Is(err, coreapi.ErrDeviceNotFound):
 			return errorResponse(response, ErrorDeviceNotFound, "device not found")
-		case errors.Is(err, coreapi.ErrInvalidRouteRequest), errors.Is(err, coreapi.ErrInvalidConnectionRequest), errors.Is(err, coreapi.ErrInvalidRouterPolicy), errors.Is(err, coreapi.ErrInvalidTerminalRequest):
+		case errors.Is(err, coreapi.ErrInvalidRouteRequest), errors.Is(err, coreapi.ErrInvalidConnectionRequest), errors.Is(err, coreapi.ErrInvalidRouterPolicy), errors.Is(err, coreapi.ErrInvalidTerminalRequest), errors.Is(err, coreapi.ErrInvalidFileTransferRequest):
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters")
 		case errors.Is(err, coreapi.ErrRouteNotFound):
 			return errorResponse(response, ErrorRouteNotFound, "route not found")
@@ -295,6 +305,14 @@ func (s *Server) finish(response Response, result any, err error) Response {
 			return errorResponse(response, ErrorTerminalUnavailable, "terminal stream is unavailable")
 		case errors.Is(err, coreapi.ErrTerminalOperation):
 			return errorResponse(response, ErrorTerminalFailed, "terminal operation failed")
+		case errors.Is(err, coreapi.ErrFileTransferUnavailable):
+			return errorResponse(response, ErrorFileTransferUnavailable, "file transfer is unavailable")
+		case errors.Is(err, coreapi.ErrFileTransferLimit):
+			return errorResponse(response, ErrorFileTransferLimit, "file transfer limit reached")
+		case errors.Is(err, coreapi.ErrFileTransferNotFound):
+			return errorResponse(response, ErrorFileTransferNotFound, "file transfer operation not found")
+		case errors.Is(err, coreapi.ErrFileTransferOperation):
+			return errorResponse(response, ErrorFileTransferFailed, "file transfer operation failed")
 		case errors.Is(err, coreapi.ErrAccountNotConfigured):
 			return errorResponse(response, ErrorAccountUnavailable, "account sign-in is unavailable")
 		case errors.Is(err, coreapi.ErrAccountOperation):

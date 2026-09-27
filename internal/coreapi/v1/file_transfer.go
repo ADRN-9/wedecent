@@ -2,7 +2,17 @@ package v1
 
 import "context"
 
-const MaxFileTransferChunkBytes = 32 << 10
+const (
+	MaxFileTransferChunkBytes = 32 << 10
+
+	MethodFileTransferStatus = "file_transfer.status"
+	MethodFileUploadOpen     = "file_upload.open"
+	MethodFileUploadWrite    = "file_upload.write"
+	MethodFileUploadCommit   = "file_upload.commit"
+	MethodFileDownloadOpen   = "file_download.open"
+	MethodFileDownloadRead   = "file_download.read"
+	MethodFileTransferCancel = "file_transfer.cancel"
+)
 
 type FileTransferDirection string
 
