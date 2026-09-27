@@ -66,6 +66,45 @@ func TestValidateStreamOpen(t *testing.T) {
 	}
 }
 
+func TestValidateStreamDataAndResize(t *testing.T) {
+	if err := ValidateStreamData(2, []byte("hello")); err != nil {
+		t.Fatalf("valid stream data rejected: %v", err)
+	}
+	if err := ValidateStreamResize(2, Resize{Cols: 100, Rows: 30}); err != nil {
+		t.Fatalf("valid resize rejected: %v", err)
+	}
+	for _, tc := range []struct {
+		name     string
+		streamID uint32
+		payload  []byte
+	}{
+		{"zero ID", 0, []byte{1}},
+		{"empty", 2, nil},
+		{"oversized", 2, make([]byte, MaxTypedStreamChunk+1)},
+	} {
+		t.Run("data "+tc.name, func(t *testing.T) {
+			if err := ValidateStreamData(tc.streamID, tc.payload); err == nil {
+				t.Fatal("invalid stream data accepted")
+			}
+		})
+	}
+	for _, tc := range []struct {
+		name     string
+		streamID uint32
+		resize   Resize
+	}{
+		{"zero ID", 0, Resize{Cols: 80, Rows: 24}},
+		{"zero cols", 2, Resize{Rows: 24}},
+		{"zero rows", 2, Resize{Cols: 80}},
+	} {
+		t.Run("resize "+tc.name, func(t *testing.T) {
+			if err := ValidateStreamResize(tc.streamID, tc.resize); err == nil {
+				t.Fatal("invalid typed resize accepted")
+			}
+		})
+	}
+}
+
 func TestValidateStreamWindowUpdate(t *testing.T) {
 	if err := ValidateStreamWindowUpdate(3, StreamWindowUpdate{Bytes: 32 << 10}); err != nil {
 		t.Fatalf("valid window update rejected: %v", err)
