@@ -29,7 +29,25 @@ func routeTypedTerminalFrame(capabilities []protocol.Capability, server *typedTe
 	if server == nil {
 		return true, fmt.Errorf("%w: typed terminal server unavailable", errTypedStreamProtocol)
 	}
-	return true, server.Handle(frame)
+	if err := server.Handle(frame); err != nil {
+		return true, err
+	}
+	if frame.Type != protocol.TypeStreamClose {
+		return true, nil
+	}
+
+	ack := protocol.StreamClose{Reason: "peer_close"}
+	if err := protocol.ValidateStreamClose(frame.StreamID, ack); err != nil {
+		return true, fmt.Errorf("%w: invalid stream close acknowledgement: %v", errTypedStreamProtocol, err)
+	}
+	payload, err := protocol.JSON(ack)
+	if err != nil {
+		return true, err
+	}
+	if err := server.writeFrame(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: frame.StreamID, Payload: payload}); err != nil {
+		return true, err
+	}
+	return true, nil
 }
 
 func isTypedTerminalFrame(frameType protocol.Type) bool {

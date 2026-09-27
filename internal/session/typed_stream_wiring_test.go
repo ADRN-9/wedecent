@@ -67,3 +67,50 @@ func TestRouteTypedTerminalFrameLeavesLegacyFramesAlone(t *testing.T) {
 		t.Fatal("legacy frame was classified as typed")
 	}
 }
+
+func TestRouteTypedTerminalFrameAcknowledgesPeerClose(t *testing.T) {
+	sink := &typedFrameSink{}
+	server := newTypedTerminalServerWithStarter(
+		"/bin/sh",
+		sink.write,
+		func(string, uint16, uint16, string) (typedTerminalPTY, error) { return newFakeTypedPTY(), nil },
+	)
+	capabilities := []protocol.Capability{protocol.CapabilityTypedStreamsV1}
+
+	handled, err := routeTypedTerminalFrame(capabilities, server, protocol.Frame{
+		Type:     protocol.TypeStreamOpen,
+		StreamID: protocol.MinTypedStreamID,
+		Payload:  typedOpenPayload(t, 64<<10),
+	})
+	if err != nil || !handled {
+		t.Fatalf("open handled=%v err=%v", handled, err)
+	}
+
+	closePayload, err := protocol.JSON(protocol.StreamClose{Reason: "client_close"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handled, err = routeTypedTerminalFrame(capabilities, server, protocol.Frame{
+		Type:     protocol.TypeStreamClose,
+		StreamID: protocol.MinTypedStreamID,
+		Payload:  closePayload,
+	})
+	if err != nil || !handled {
+		t.Fatalf("close handled=%v err=%v", handled, err)
+	}
+
+	frames := sink.snapshot()
+	if len(frames) != 2 || frames[0].Type != protocol.TypeStreamAccepted || frames[1].Type != protocol.TypeStreamClose {
+		t.Fatalf("frames = %#v", frames)
+	}
+	if frames[1].StreamID != protocol.MinTypedStreamID {
+		t.Fatalf("close ack stream id = %d", frames[1].StreamID)
+	}
+	var ack protocol.StreamClose
+	if err := protocol.ParseTypedStreamJSON(frames[1].Payload, &ack); err != nil {
+		t.Fatal(err)
+	}
+	if err := protocol.ValidateStreamClose(frames[1].StreamID, ack); err != nil {
+		t.Fatalf("close ack = %#v err=%v", ack, err)
+	}
+}
