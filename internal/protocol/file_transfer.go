@@ -22,9 +22,9 @@ const (
 	FileExistingReplace FileExistingPolicy = "replace"
 )
 
-// FileUploadOpen is capability-specific metadata for a future file-upload
-// stream. It is defined separately from StreamOpen so terminal-only runtimes
-// cannot accidentally accept file metadata as a terminal open operation.
+// FileUploadOpen is capability-specific metadata for a file-upload stream.
+// Protocol validation is not authorization; the authoritative agent must
+// separately authorize the authenticated peer before opening storage.
 type FileUploadOpen struct {
 	Path         string             `json:"path"`
 	ExpectedSize *uint64            `json:"expected_size,omitempty"`
@@ -32,11 +32,55 @@ type FileUploadOpen struct {
 	Existing     FileExistingPolicy `json:"existing"`
 }
 
-// FileDownloadOpen is capability-specific metadata for a future file-download
-// stream. The authoritative agent must still apply its filesystem policy before
-// opening this path; protocol validation alone is not authorization.
+// FileDownloadOpen is capability-specific metadata for a file-download stream.
+// The authoritative agent must still apply authorization and filesystem policy
+// before opening this path.
 type FileDownloadOpen struct {
 	Path string `json:"path"`
+}
+
+func ParseFileUploadStreamOpen(streamID uint32, open StreamOpen) (FileUploadOpen, error) {
+	if err := validateFileStreamEnvelope(streamID, open, StreamKindFileUpload); err != nil {
+		return FileUploadOpen{}, err
+	}
+	var metadata FileUploadOpen
+	if err := ParseTypedStreamJSON(open.Metadata, &metadata); err != nil {
+		return FileUploadOpen{}, err
+	}
+	if err := ValidateFileUploadOpen(metadata); err != nil {
+		return FileUploadOpen{}, err
+	}
+	return metadata, nil
+}
+
+func ParseFileDownloadStreamOpen(streamID uint32, open StreamOpen) (FileDownloadOpen, error) {
+	if err := validateFileStreamEnvelope(streamID, open, StreamKindFileDownload); err != nil {
+		return FileDownloadOpen{}, err
+	}
+	var metadata FileDownloadOpen
+	if err := ParseTypedStreamJSON(open.Metadata, &metadata); err != nil {
+		return FileDownloadOpen{}, err
+	}
+	if err := ValidateFileDownloadOpen(metadata); err != nil {
+		return FileDownloadOpen{}, err
+	}
+	return metadata, nil
+}
+
+func validateFileStreamEnvelope(streamID uint32, open StreamOpen, want StreamKind) error {
+	if err := validateStreamOpenWindow(streamID, open); err != nil {
+		return err
+	}
+	if open.Kind != want {
+		return errors.New("file stream kind does not match operation")
+	}
+	if open.Cols != 0 || open.Rows != 0 || open.Term != "" {
+		return errors.New("file stream contains terminal-only fields")
+	}
+	if len(open.Metadata) == 0 || len(open.Metadata) > MaxTypedStreamOpenMetadata {
+		return errors.New("file stream metadata is out of range")
+	}
+	return nil
 }
 
 func ValidateFileUploadOpen(open FileUploadOpen) error {
