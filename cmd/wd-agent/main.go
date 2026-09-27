@@ -252,27 +252,31 @@ func writeJSON(value any) error {
 }
 
 type serveConfig struct {
-	StateDir               string
-	Name                   string
-	ListenAddr             string
-	RFCOMMChannel          int
-	SerialDevice           string
-	Shell                  string
-	Discover               bool
-	MaxConnections         int
-	SessionIdleTimeout     time.Duration
-	SessionMaxDuration     time.Duration
-	RelayAddr              string
-	WebRelay               string
-	RelaySlots             int
-	RelayCA                string
-	RelayServerName        string
-	AuthorizationURL       string
-	RouteControlListenAddr string
-	RouteControlTransport  string
-	RouteTunnelListenAddr  string
-	RouteTunnelTransport   string
-	RouteMaxConnections    int
+	StateDir                  string
+	Name                      string
+	ListenAddr                string
+	RFCOMMChannel             int
+	SerialDevice              string
+	Shell                     string
+	Discover                  bool
+	MaxConnections            int
+	SessionIdleTimeout        time.Duration
+	SessionMaxDuration        time.Duration
+	FileTransferRoot          string
+	FileTransferAllowUpload   bool
+	FileTransferAllowDownload bool
+	FileTransferMaxBytes      uint64
+	RelayAddr                 string
+	WebRelay                  string
+	RelaySlots                int
+	RelayCA                   string
+	RelayServerName           string
+	AuthorizationURL          string
+	RouteControlListenAddr    string
+	RouteControlTransport     string
+	RouteTunnelListenAddr     string
+	RouteTunnelTransport      string
+	RouteMaxConnections       int
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
@@ -349,6 +353,30 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"terminal session absolute maximum duration; 0 disables the maximum",
 	)
 	fs.StringVar(
+		&cfg.FileTransferRoot,
+		"file-root",
+		"",
+		"absolute rooted file-transfer directory; empty disables file transfer",
+	)
+	fs.BoolVar(
+		&cfg.FileTransferAllowUpload,
+		"file-upload",
+		false,
+		"allow authorized file uploads beneath --file-root",
+	)
+	fs.BoolVar(
+		&cfg.FileTransferAllowDownload,
+		"file-download",
+		false,
+		"allow authorized file downloads beneath --file-root",
+	)
+	fs.Uint64Var(
+		&cfg.FileTransferMaxBytes,
+		"file-max-bytes",
+		0,
+		"maximum bytes per file transfer; required when file transfer is enabled",
+	)
+	fs.StringVar(
 		&cfg.RelayAddr,
 		"relay",
 		"",
@@ -420,6 +448,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		return serveConfig{}, err
 	}
 
+	cfg.FileTransferRoot = strings.TrimSpace(cfg.FileTransferRoot)
 	cfg.RouteControlListenAddr = strings.TrimSpace(
 		cfg.RouteControlListenAddr,
 	)
@@ -471,6 +500,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 
 	if err := cfg.sessionPolicy().Validate(); err != nil {
 		return serveConfig{}, fmt.Errorf("session policy: %w", err)
+	}
+	if err := cfg.validateFileTransfer(); err != nil {
+		return serveConfig{}, err
 	}
 
 	if cfg.RelaySlots < 1 ||
@@ -552,6 +584,14 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		}
 	}
 
+	fileTransferRuntime, err := openAgentFileTransferRuntime(cfg)
+	if err != nil {
+		return err
+	}
+	if fileTransferRuntime != nil {
+		defer fileTransferRuntime.Store.Close()
+	}
+
 	server := &session.Server{
 		Identity:         id,
 		Trust:            store,
@@ -559,6 +599,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		Shell:            cfg.Shell,
 		Logger:           slog.Default(),
 		DirectAuthorizer: directAuthorizer,
+		FileTransfer:     fileTransferRuntime,
 		Policy:           cfg.sessionPolicy(),
 	}
 
