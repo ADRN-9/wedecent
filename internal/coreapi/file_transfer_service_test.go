@@ -15,11 +15,6 @@ import (
 
 const testFileConnectionID = "conn_AAAAAAAAAAAAAAAAAAAAAAAA"
 
-type testConnectionTokenHolder struct {
-	pad   byte
-	token struct{}
-}
-
 type fakeFileParent struct {
 	mu        sync.Mutex
 	available bool
@@ -113,10 +108,9 @@ func (h *fakeDownloadHandle) Cancel(context.Context) error {
 	return nil
 }
 
-func newFileServiceForTest(t *testing.T, parent *fakeFileParent, max int, random io.Reader) (*FileTransferService, *ConnectionService, *struct{}) {
+func newFileServiceForTest(t *testing.T, parent *fakeFileParent, max int, random io.Reader) (*FileTransferService, *ConnectionService, *connectionGeneration) {
 	t.Helper()
-	holder := &testConnectionTokenHolder{pad: 1}
-	token := &holder.token
+	token := &connectionGeneration{}
 	connections := &ConnectionService{
 		active: map[string]activeConnection{
 			testFileConnectionID: {handle: parent, token: token},
@@ -186,8 +180,7 @@ func TestFileTransferServiceValidatesPathAvailabilityAndConnectionToken(t *testi
 	}
 	connections.mu.Lock()
 	active := connections.active[testFileConnectionID]
-	replacement := &testConnectionTokenHolder{pad: 1}
-	active.token = &replacement.token
+	active.token = &connectionGeneration{}
 	connections.active[testFileConnectionID] = active
 	connections.mu.Unlock()
 	if active.token == token {

@@ -76,17 +76,21 @@ type ConnectionServiceConfig struct {
 	Now       func() time.Time
 }
 
+type connectionGeneration struct {
+	marker byte
+}
+
 type activeConnection struct {
 	public       v1.Connection
 	handle       ConnectionHandle
 	closing      bool
 	suppressDone bool
-	token        *struct{}
+	token        *connectionGeneration
 }
 
 type terminalStreamEntry struct {
 	handle TerminalConnectionHandle
-	token  *struct{}
+	token  *connectionGeneration
 	closed bool
 }
 
@@ -228,7 +232,7 @@ func (s *ConnectionService) Connect(ctx context.Context, req v1.ConnectRequest) 
 		return v1.Connection{}, fmt.Errorf("%w: publish path state", ErrConnectionOperation)
 	}
 
-	token := &struct{}{}
+	token := &connectionGeneration{}
 	stream, streamable := opened.Handle.(TerminalConnectionHandle)
 	s.mu.Lock()
 	if s.closed {
@@ -337,7 +341,7 @@ func (s *ConnectionService) Close() error {
 	return nil
 }
 
-func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{}, done <-chan struct{}) {
+func (s *ConnectionService) watchRemoteClose(connectionID string, token *connectionGeneration, done <-chan struct{}) {
 	<-done
 
 	retainStream := false
@@ -374,7 +378,7 @@ func (s *ConnectionService) watchRemoteClose(connectionID string, token *struct{
 	}
 }
 
-func (s *ConnectionService) expireTerminalStream(connectionID string, token *struct{}) {
+func (s *ConnectionService) expireTerminalStream(connectionID string, token *connectionGeneration) {
 	s.mu.Lock()
 	if stream, ok := s.streams[connectionID]; ok && stream.token == token && stream.closed {
 		delete(s.streams, connectionID)
