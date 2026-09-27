@@ -10,27 +10,27 @@ import (
 const Version = "v1"
 
 const (
-	MethodStatusGet             = "status.get"
-	MethodDevicesList           = "devices.list"
-	MethodDeviceGet             = "device.get"
-	MethodAccountSignIn         = "account.sign_in"
-	MethodAccountSignOut        = "account.sign_out"
-	MethodConnectionConnect     = "connection.connect"
-	MethodConnectionDisconnect  = "connection.disconnect"
-	MethodConnectionLatency     = "connection.latency"
-	MethodTerminalRead          = "terminal.read"
-	MethodTerminalWrite         = "terminal.write"
-	MethodTerminalResize        = "terminal.resize"
-	MethodTerminalStreamOpen    = "terminal_stream.open"
-	MethodTerminalStreamClose   = "terminal_stream.close"
-	MethodTerminalStreamRead    = "terminal_stream.read"
-	MethodTerminalStreamWrite   = "terminal_stream.write"
-	MethodTerminalStreamResize  = "terminal_stream.resize"
-	MethodTransportsList        = "transports.list"
-	MethodRouteGet              = "route.get"
-	MethodRouterPolicyGet       = "router.policy.get"
-	MethodRouterPolicySet       = "router.policy.set"
-	MethodRouterStatsGet        = "router.stats.get"
+	MethodStatusGet            = "status.get"
+	MethodDevicesList          = "devices.list"
+	MethodDeviceGet            = "device.get"
+	MethodAccountSignIn        = "account.sign_in"
+	MethodAccountSignOut       = "account.sign_out"
+	MethodConnectionConnect    = "connection.connect"
+	MethodConnectionDisconnect = "connection.disconnect"
+	MethodConnectionLatency    = "connection.latency"
+	MethodTerminalRead         = "terminal.read"
+	MethodTerminalWrite        = "terminal.write"
+	MethodTerminalResize       = "terminal.resize"
+	MethodTerminalStreamOpen   = "terminal_stream.open"
+	MethodTerminalStreamClose  = "terminal_stream.close"
+	MethodTerminalStreamRead   = "terminal_stream.read"
+	MethodTerminalStreamWrite  = "terminal_stream.write"
+	MethodTerminalStreamResize = "terminal_stream.resize"
+	MethodTransportsList       = "transports.list"
+	MethodRouteGet             = "route.get"
+	MethodRouterPolicyGet      = "router.policy.get"
+	MethodRouterPolicySet      = "router.policy.set"
+	MethodRouterStatsGet       = "router.stats.get"
 )
 
 const (
@@ -245,7 +245,6 @@ type Service interface {
 	ConnectionService
 	ConnectionMetricsService
 	TerminalService
-	TerminalStreamService
 	TransportService
 	RouteService
 	RouterService
