@@ -36,7 +36,9 @@ type managedFileState struct {
 	kind  protocol.StreamKind
 	child *managedMuxChild
 
-	mu          sync.Mutex
+	wireMu sync.Mutex
+	mu     sync.Mutex
+
 	terminalErr error
 	closeReason string
 }
@@ -476,18 +478,26 @@ func (d *ManagedFileDownload) Read(ctx context.Context, maxBytes int) ([]byte, b
 				child.outputQueue[0] = chunk[n:]
 			}
 			child.outputBytes -= n
-			done := channelClosed(child.done)
-			closed := done && child.outputBytes == 0
+			closed := channelClosed(child.done) && child.outputBytes == 0
 			child.mu.Unlock()
-			if n > 0 && !done {
-				payload, _ := protocol.JSON(protocol.StreamWindowUpdate{Bytes: uint32(n)})
-				if err := d.session.terminal.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: d.id, Payload: payload}); err != nil {
-					_ = d.session.terminal.finish()
-					return out, true, err
-				}
+
+			if n > 0 {
+				d.state.wireMu.Lock()
 				child.mu.Lock()
-				child.recvCredit += uint32(n)
+				done := channelClosed(child.done)
 				child.mu.Unlock()
+				if !done {
+					payload, _ := protocol.JSON(protocol.StreamWindowUpdate{Bytes: uint32(n)})
+					if err := d.session.terminal.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: d.id, Payload: payload}); err != nil {
+						d.state.wireMu.Unlock()
+						_ = d.session.terminal.finish()
+						return out, true, err
+					}
+					child.mu.Lock()
+					child.recvCredit += uint32(n)
+					child.mu.Unlock()
+				}
+				d.state.wireMu.Unlock()
 			}
 			if closed {
 				return out, true, d.state.result()
@@ -618,25 +628,33 @@ func (s *ManagedMultiplexSession) cancelFile(ctx context.Context, id uint32, sta
 		return err
 	}
 	child := state.child
+	state.wireMu.Lock()
 	child.mu.Lock()
 	if channelClosed(child.done) {
 		child.mu.Unlock()
-		if err := state.result(); err != nil {
-			return err
-		}
-		return nil
+		state.wireMu.Unlock()
+		return state.result()
 	}
 	child.closing = true
 	child.mu.Unlock()
 	streamErr := protocol.StreamError{Code: "client_cancelled", Message: "file transfer cancelled by client"}
 	payload, _ := protocol.JSON(streamErr)
 	if err := s.terminal.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamError, StreamID: id, Payload: payload}); err != nil {
+		state.wireMu.Unlock()
 		_ = s.terminal.finish()
 		return err
 	}
-	state.setError(context.Canceled)
-	s.removeFile(id, state)
-	return nil
+	state.wireMu.Unlock()
+
+	select {
+	case <-ctx.Done():
+		_ = s.terminal.finish()
+		return ctx.Err()
+	case <-s.terminal.done:
+		return io.ErrClosedPipe
+	case <-child.done:
+		return state.result()
+	}
 }
 
 func (s *ManagedMultiplexSession) fileState(id uint32) *managedFileState {
@@ -786,7 +804,16 @@ func (s *ManagedMultiplexSession) handleFileClose(frame protocol.Frame, state *m
 			return false
 		}
 	case protocol.StreamKindFileDownload:
+		state.wireMu.Lock()
+		defer state.wireMu.Unlock()
 		if closing {
+			if msg.Reason == "download_complete" {
+				// A cancellation error may have crossed a server completion frame.
+				// The server will acknowledge the cancellation with peer_close;
+				// keep this child until that acknowledgement arrives.
+				state.setCloseReason(msg.Reason)
+				return true
+			}
 			if msg.Reason != "peer_close" {
 				return false
 			}
