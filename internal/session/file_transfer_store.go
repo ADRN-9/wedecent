@@ -68,10 +68,61 @@ func (s *FileTransferStore) Close() error {
 	return s.root.Close()
 }
 
+// FileDownload is bounded to the size observed when the authoritative store
+// opened the regular file. Later growth cannot expand transfer authority, and
+// truncation is reported instead of silently completing a shorter transfer.
+type FileDownload struct {
+	mu        sync.Mutex
+	file      *os.File
+	remaining uint64
+	closed    bool
+}
+
+func (d *FileDownload) Read(buf []byte) (int, error) {
+	if d == nil {
+		return 0, errors.New("download is unavailable")
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return 0, os.ErrClosed
+	}
+	if d.remaining == 0 {
+		return 0, io.EOF
+	}
+	if uint64(len(buf)) > d.remaining {
+		buf = buf[:int(d.remaining)]
+	}
+	n, err := d.file.Read(buf)
+	if n > 0 {
+		d.remaining -= uint64(n)
+	}
+	if errors.Is(err, io.EOF) && d.remaining > 0 {
+		return n, io.ErrUnexpectedEOF
+	}
+	if n > 0 && d.remaining == 0 && errors.Is(err, io.EOF) {
+		return n, nil
+	}
+	return n, err
+}
+
+func (d *FileDownload) Close() error {
+	if d == nil {
+		return nil
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil
+	}
+	d.closed = true
+	return d.file.Close()
+}
+
 // OpenDownload opens one regular file after strict protocol validation. The
 // final path component may not be a symlink. Intermediate symlinks are resolved
 // only when os.Root can prove they remain beneath the configured root.
-func (s *FileTransferStore) OpenDownload(open protocol.FileDownloadOpen) (*os.File, uint64, error) {
+func (s *FileTransferStore) OpenDownload(open protocol.FileDownloadOpen) (*FileDownload, uint64, error) {
 	if s == nil || s.root == nil {
 		return nil, 0, errors.New("file transfer store is unavailable")
 	}
@@ -107,7 +158,8 @@ func (s *FileTransferStore) OpenDownload(open protocol.FileDownloadOpen) (*os.Fi
 		_ = file.Close()
 		return nil, 0, errors.New("download exceeds the file transfer size limit")
 	}
-	return file, uint64(actual.Size()), nil
+	size := uint64(actual.Size())
+	return &FileDownload{file: file, remaining: size}, size, nil
 }
 
 // BeginUpload creates a private staging file in the destination directory. This
