@@ -210,6 +210,9 @@ func handleServeRequest(line []byte, source coreSource) (any, error) {
 	}
 
 	ctx := context.Background()
+	if result, handled, err := handleFileTransferServeRequest(ctx, envelope.Op, envelope.Request, source); handled {
+		return result, err
+	}
 	switch envelope.Op {
 	case "connect":
 		var req idRequest
@@ -341,6 +344,9 @@ func decodeRequest(reader io.Reader, out any) error {
 func publicError(err error) string {
 	if errors.Is(err, errUsage) {
 		return errUsage.Error()
+	}
+	if errors.Is(err, desktopbridge.ErrInvalidFileTransferBridgeRequest) {
+		return "Invalid desktop file transfer request"
 	}
 	if errors.Is(err, desktopbridge.ErrInvalidTerminalBridgeRequest) {
 		return "Invalid desktop terminal request"
