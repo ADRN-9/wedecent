@@ -19,6 +19,30 @@ import (
 	"wedecent.com/wedecent/internal/protocol"
 )
 
+type managedFileTestAuthorizer struct {
+	mu            sync.Mutex
+	allowUpload   bool
+	allowDownload bool
+}
+
+func (a *managedFileTestAuthorizer) AuthorizeFileTransfer(ctx context.Context, req FileTransferAuthorizationRequest) error {
+	a.mu.Lock()
+	allowUpload := a.allowUpload
+	allowDownload := a.allowDownload
+	a.mu.Unlock()
+	return (StaticFileTransferAuthorizer{
+		AllowUpload:   allowUpload,
+		AllowDownload: allowDownload,
+	}).AuthorizeFileTransfer(ctx, req)
+}
+
+func (a *managedFileTestAuthorizer) set(upload, download bool) {
+	a.mu.Lock()
+	a.allowUpload = upload
+	a.allowDownload = download
+	a.mu.Unlock()
+}
+
 func TestParseManagedMultiplexCapabilities(t *testing.T) {
 	jsonPayload := func(capabilities ...protocol.Capability) []byte {
 		t.Helper()
@@ -29,10 +53,10 @@ func TestParseManagedMultiplexCapabilities(t *testing.T) {
 		return payload
 	}
 	tests := []struct {
-		name string
-		data []byte
-		typed bool
-		file bool
+		name    string
+		data    []byte
+		typed   bool
+		file    bool
 		wantErr bool
 	}{
 		{name: "legacy"},
@@ -100,9 +124,9 @@ func TestManagedFileTransferLiveUploadDownloadAndTerminalSibling(t *testing.T) {
 	}
 	_ = waitLiveMuxPTYStarted(t, started)
 
-	uploadData := bytes.Repeat([]byte("upload-data-"), 9000)
-	size := uint64(len(uploadData))
-	digest := sha256.Sum256(uploadData)
+	wantUpload := bytes.Repeat([]byte("upload-data-"), 9000)
+	size := uint64(len(wantUpload))
+	digest := sha256.Sum256(wantUpload)
 	upload, err := managed.OpenFileUpload(ctx, protocol.FileUploadOpen{
 		Path: "upload.bin", ExpectedSize: &size,
 		SHA256: hex.EncodeToString(digest[:]), Existing: protocol.FileExistingFail,
@@ -110,6 +134,7 @@ func TestManagedFileTransferLiveUploadDownloadAndTerminalSibling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	uploadData := append([]byte(nil), wantUpload...)
 	for len(uploadData) != 0 {
 		n := 17000
 		if n > len(uploadData) {
@@ -127,7 +152,6 @@ func TestManagedFileTransferLiveUploadDownloadAndTerminalSibling(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantUpload := bytes.Repeat([]byte("upload-data-"), 9000)
 	if !bytes.Equal(committed, wantUpload) {
 		t.Fatal("committed upload differs from source")
 	}
@@ -167,12 +191,8 @@ func TestManagedFileTransferDenialAndCancelStayChildScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	runtime := &FileTransferRuntime{
-		Store: store,
-		Authorizer: StaticFileTransferAuthorizer{
-			AllowUpload: false, AllowDownload: true,
-		},
-	}
+	authorizer := &managedFileTestAuthorizer{allowDownload: true}
+	runtime := &FileTransferRuntime{Store: store, Authorizer: authorizer}
 
 	clientID, serverID, peer := managedSessionTestIdentities(t, "tcp://ignored.test:7443")
 	clientSide, serverSide := net.Pipe()
@@ -198,9 +218,7 @@ func TestManagedFileTransferDenialAndCancelStayChildScoped(t *testing.T) {
 		t.Fatalf("parent did not survive denied file child: %v", err)
 	}
 
-	// Switch the test-only runtime policy before the next operation while the
-	// server is idle. The runtime still uses the independent file authorizer.
-	runtime.Authorizer = StaticFileTransferAuthorizer{AllowUpload: true, AllowDownload: true}
+	authorizer.set(true, true)
 	upload, err := managed.OpenFileUpload(ctx, protocol.FileUploadOpen{Path: "cancel.bin", Existing: protocol.FileExistingFail})
 	if err != nil {
 		t.Fatal(err)
@@ -225,7 +243,7 @@ func TestManagedFileTransferDenialAndCancelStayChildScoped(t *testing.T) {
 	waitManagedFileServer(t, serverErr)
 }
 
-func serveManagedFileTestParent(raw net.Conn, serverID, clientID *identity.Identity, runtime *FileTransferRuntime, started chan<- *liveMuxPTY, serverErr chan<- error) {
+func serveManagedFileTestParent(raw net.Conn, serverID *identity.Identity, peerID string, runtime *FileTransferRuntime, started chan<- *liveMuxPTY, serverErr chan<- error) {
 	conn := tls.Server(raw, identity.ServerTLS(serverID))
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(20 * time.Second))
@@ -275,7 +293,7 @@ func serveManagedFileTestParent(raw net.Conn, serverID, clientID *identity.Ident
 		return pty, nil
 	})
 	terminalServer.states = newTypedTerminalStreamSetWithRegistry(registry)
-	fileServer := newTypedFileServer(runtime, clientID.ID, registry, writeFrame)
+	fileServer := newTypedFileServer(runtime, peerID, registry, writeFrame)
 	defer terminalServer.CloseAll()
 	defer fileServer.CloseAll()
 
