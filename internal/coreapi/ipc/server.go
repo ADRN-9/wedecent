@@ -208,7 +208,7 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 		wipe(params.Data)
 	case v1.MethodTerminalResize:
 		if s.terminal == nil {
-			return errorResponse(response, ErrorMethodNotFound, "method not_found")
+			return errorResponse(response, ErrorMethodNotFound, "method not found")
 		}
 		var params v1.TerminalResizeRequest
 		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
