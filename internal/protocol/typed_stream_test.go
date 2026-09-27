@@ -52,6 +52,7 @@ func TestValidateStreamOpen(t *testing.T) {
 	}{
 		{"zero ID", 0, valid},
 		{"unknown kind", 2, StreamOpen{Kind: "file", Cols: 80, Rows: 24, InitialWindow: 1}},
+		{"terminal metadata", 2, StreamOpen{Kind: StreamKindTerminal, Cols: 80, Rows: 24, Metadata: []byte(`{}`), InitialWindow: 1}},
 		{"zero cols", 2, StreamOpen{Kind: StreamKindTerminal, Rows: 24, InitialWindow: 1}},
 		{"zero rows", 2, StreamOpen{Kind: StreamKindTerminal, Cols: 80, InitialWindow: 1}},
 		{"zero window", 2, StreamOpen{Kind: StreamKindTerminal, Cols: 80, Rows: 24}},
