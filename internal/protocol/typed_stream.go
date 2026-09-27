@@ -10,9 +10,14 @@ import (
 type StreamKind string
 
 const (
-	StreamKindTerminal   StreamKind = "terminal"
-	MaxTypedStreamChunk             = 64 << 10
-	MaxTypedStreamWindow            = 1 << 20
+	StreamKindTerminal              StreamKind = "terminal"
+	MinTypedStreamID                           = 2
+	MaxTypedStreamChunk                        = 64 << 10
+	MaxTypedStreamWindow                       = 1 << 20
+	MaxTypedStreamTermLength                   = 64
+	MaxTypedStreamCloseReasonLength            = 128
+	MaxTypedStreamErrorCodeLength              = 64
+	MaxTypedStreamErrorMessageLength           = 256
 )
 
 type StreamOpen struct {
@@ -62,9 +67,16 @@ func ParseTypedStreamJSON(data []byte, v any) error {
 	return nil
 }
 
+func validateTypedStreamID(streamID uint32) error {
+	if streamID < MinTypedStreamID {
+		return errors.New("typed stream ID is reserved")
+	}
+	return nil
+}
+
 func ValidateStreamOpen(streamID uint32, open StreamOpen) error {
-	if streamID == 0 {
-		return errors.New("typed stream ID must be non-zero")
+	if err := validateTypedStreamID(streamID); err != nil {
+		return err
 	}
 	if open.Kind != StreamKindTerminal {
 		return errors.New("unsupported typed stream kind")
@@ -72,15 +84,28 @@ func ValidateStreamOpen(streamID uint32, open StreamOpen) error {
 	if open.Cols == 0 || open.Rows == 0 {
 		return errors.New("terminal stream size must be non-zero")
 	}
+	if len(open.Term) > MaxTypedStreamTermLength {
+		return errors.New("terminal stream type is too long")
+	}
 	if open.InitialWindow == 0 || open.InitialWindow > MaxTypedStreamWindow {
 		return errors.New("typed stream initial window is out of range")
 	}
 	return nil
 }
 
+func ValidateStreamAccepted(streamID uint32, accepted StreamAccepted) error {
+	if err := validateTypedStreamID(streamID); err != nil {
+		return err
+	}
+	if accepted.InitialWindow == 0 || accepted.InitialWindow > MaxTypedStreamWindow {
+		return errors.New("typed stream accepted window is out of range")
+	}
+	return nil
+}
+
 func ValidateStreamData(streamID uint32, payload []byte) error {
-	if streamID == 0 {
-		return errors.New("typed stream ID must be non-zero")
+	if err := validateTypedStreamID(streamID); err != nil {
+		return err
 	}
 	if len(payload) == 0 || len(payload) > MaxTypedStreamChunk {
 		return errors.New("typed stream data is out of range")
@@ -89,8 +114,8 @@ func ValidateStreamData(streamID uint32, payload []byte) error {
 }
 
 func ValidateStreamResize(streamID uint32, resize Resize) error {
-	if streamID == 0 {
-		return errors.New("typed stream ID must be non-zero")
+	if err := validateTypedStreamID(streamID); err != nil {
+		return err
 	}
 	if resize.Cols == 0 || resize.Rows == 0 {
 		return errors.New("typed terminal resize must be non-zero")
@@ -99,11 +124,34 @@ func ValidateStreamResize(streamID uint32, resize Resize) error {
 }
 
 func ValidateStreamWindowUpdate(streamID uint32, update StreamWindowUpdate) error {
-	if streamID == 0 {
-		return errors.New("typed stream ID must be non-zero")
+	if err := validateTypedStreamID(streamID); err != nil {
+		return err
 	}
 	if update.Bytes == 0 || update.Bytes > MaxTypedStreamWindow {
 		return errors.New("typed stream window update is out of range")
+	}
+	return nil
+}
+
+func ValidateStreamClose(streamID uint32, closeMessage StreamClose) error {
+	if err := validateTypedStreamID(streamID); err != nil {
+		return err
+	}
+	if len(closeMessage.Reason) > MaxTypedStreamCloseReasonLength {
+		return errors.New("typed stream close reason is too long")
+	}
+	return nil
+}
+
+func ValidateStreamError(streamID uint32, streamError StreamError) error {
+	if err := validateTypedStreamID(streamID); err != nil {
+		return err
+	}
+	if streamError.Code == "" || len(streamError.Code) > MaxTypedStreamErrorCodeLength {
+		return errors.New("typed stream error code is out of range")
+	}
+	if len(streamError.Message) > MaxTypedStreamErrorMessageLength {
+		return errors.New("typed stream error message is too long")
 	}
 	return nil
 }
