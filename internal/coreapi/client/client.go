@@ -137,6 +137,30 @@ func (c *Client) ResizeTerminal(ctx context.Context, req v1.TerminalResizeReques
 	return c.call(ctx, v1.MethodTerminalResize, req, nil)
 }
 
+func (c *Client) OpenTerminalStream(ctx context.Context, req v1.TerminalStreamOpenRequest) (v1.TerminalStream, error) {
+	var out v1.TerminalStream
+	err := c.call(ctx, v1.MethodTerminalStreamOpen, req, &out)
+	return out, err
+}
+
+func (c *Client) CloseTerminalStream(ctx context.Context, req v1.TerminalStreamCloseRequest) error {
+	return c.call(ctx, v1.MethodTerminalStreamClose, req, nil)
+}
+
+func (c *Client) ReadTerminalStream(ctx context.Context, req v1.TerminalStreamReadRequest) (v1.TerminalReadResult, error) {
+	var out v1.TerminalReadResult
+	err := c.call(ctx, v1.MethodTerminalStreamRead, req, &out)
+	return out, err
+}
+
+func (c *Client) WriteTerminalStream(ctx context.Context, req v1.TerminalStreamWriteRequest) error {
+	return c.call(ctx, v1.MethodTerminalStreamWrite, req, nil)
+}
+
+func (c *Client) ResizeTerminalStream(ctx context.Context, req v1.TerminalStreamResizeRequest) error {
+	return c.call(ctx, v1.MethodTerminalStreamResize, req, nil)
+}
+
 func (c *Client) GetTransportStatus(ctx context.Context) ([]v1.TransportStatus, error) {
 	var out []v1.TransportStatus
 	err := c.call(ctx, v1.MethodTransportsList, nil, &out)
