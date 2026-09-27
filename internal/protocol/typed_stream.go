@@ -15,6 +15,7 @@ const (
 	MaxTypedStreamChunk                         = 64 << 10
 	MaxTypedStreamWindow                        = 1 << 20
 	MaxTypedStreamTermLength                    = 64
+	MaxTypedStreamOpenMetadata                  = 4 << 10
 	MaxTypedStreamCloseReasonLength             = 128
 	MaxTypedStreamErrorCodeLength               = 64
 	MaxTypedStreamErrorMessageLength            = 256
@@ -25,6 +26,10 @@ type StreamOpen struct {
 	Cols uint16     `json:"cols,omitempty"`
 	Rows uint16     `json:"rows,omitempty"`
 	Term string     `json:"term,omitempty"`
+	// Metadata is reserved for capability-specific typed-stream open metadata.
+	// Terminal streams must not set it. Operation-specific validators must
+	// parse it with ParseTypedStreamJSON and enforce MaxTypedStreamOpenMetadata.
+	Metadata json.RawMessage `json:"metadata,omitempty"`
 	// InitialWindow is receive credit granted by the opener to the acceptor.
 	// The acceptor may send at most this many data bytes before receiving
 	// StreamWindowUpdate credit from the opener.
@@ -74,21 +79,31 @@ func validateTypedStreamID(streamID uint32) error {
 	return nil
 }
 
-func ValidateStreamOpen(streamID uint32, open StreamOpen) error {
+func validateStreamOpenWindow(streamID uint32, open StreamOpen) error {
 	if err := validateTypedStreamID(streamID); err != nil {
+		return err
+	}
+	if open.InitialWindow == 0 || open.InitialWindow > MaxTypedStreamWindow {
+		return errors.New("typed stream initial window is out of range")
+	}
+	return nil
+}
+
+func ValidateStreamOpen(streamID uint32, open StreamOpen) error {
+	if err := validateStreamOpenWindow(streamID, open); err != nil {
 		return err
 	}
 	if open.Kind != StreamKindTerminal {
 		return errors.New("unsupported typed stream kind")
+	}
+	if len(open.Metadata) != 0 {
+		return errors.New("terminal stream metadata is not allowed")
 	}
 	if open.Cols == 0 || open.Rows == 0 {
 		return errors.New("terminal stream size must be non-zero")
 	}
 	if len(open.Term) > MaxTypedStreamTermLength {
 		return errors.New("terminal stream type is too long")
-	}
-	if open.InitialWindow == 0 || open.InitialWindow > MaxTypedStreamWindow {
-		return errors.New("typed stream initial window is out of range")
 	}
 	return nil
 }
