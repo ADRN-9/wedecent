@@ -1,0 +1,6 @@
+.terminal-latency-badge {
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.72;
+  white-space: nowrap;
+}
