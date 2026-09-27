@@ -146,6 +146,12 @@ func (s *FileTransferStore) BeginUpload(open protocol.FileUploadOpen) (*FileUplo
 		return nil, errors.New("upload parent must be an existing directory")
 	}
 
+	var expectedSize uint64
+	hasExpectedSize := open.ExpectedSize != nil
+	if hasExpectedSize {
+		expectedSize = *open.ExpectedSize
+	}
+
 	for attempt := 0; attempt < 8; attempt++ {
 		stageName, err := uploadStageName(parent)
 		if err != nil {
@@ -159,14 +165,15 @@ func (s *FileTransferStore) BeginUpload(open protocol.FileUploadOpen) (*FileUplo
 			return nil, fmt.Errorf("create upload staging file: %w", err)
 		}
 		return &FileUpload{
-			root:       s.root,
-			file:       file,
-			stagePath:  stageName,
-			destination: open.Path,
-			expected:   open.ExpectedSize,
-			expectedSHA: open.SHA256,
-			maxBytes:   s.maxBytes,
-			digest:     sha256.New(),
+			root:            s.root,
+			file:            file,
+			stagePath:       stageName,
+			destination:     open.Path,
+			expectedSize:    expectedSize,
+			hasExpectedSize: hasExpectedSize,
+			expectedSHA:     open.SHA256,
+			maxBytes:        s.maxBytes,
+			digest:          sha256.New(),
 		}, nil
 	}
 	return nil, errors.New("could not allocate a private upload staging file")
@@ -187,17 +194,18 @@ func uploadStageName(parent string) (string, error) {
 type FileUpload struct {
 	mu sync.Mutex
 
-	root        *os.Root
-	file        *os.File
-	stagePath   string
-	destination string
-	expected    *uint64
-	expectedSHA string
-	maxBytes    uint64
-	digest      hash.Hash
-	written     uint64
-	closed      bool
-	committed   bool
+	root            *os.Root
+	file            *os.File
+	stagePath       string
+	destination     string
+	expectedSize    uint64
+	hasExpectedSize bool
+	expectedSHA     string
+	maxBytes        uint64
+	digest          hash.Hash
+	written         uint64
+	closed          bool
+	committed       bool
 }
 
 func (u *FileUpload) Write(data []byte) (int, error) {
@@ -216,7 +224,7 @@ func (u *FileUpload) Write(data []byte) (int, error) {
 	if length > u.maxBytes-u.written {
 		return 0, u.failLocked(errors.New("upload exceeds the file transfer size limit"))
 	}
-	if u.expected != nil && length > *u.expected-u.written {
+	if u.hasExpectedSize && length > u.expectedSize-u.written {
 		return 0, u.failLocked(errors.New("upload exceeds the expected size"))
 	}
 
@@ -246,7 +254,7 @@ func (u *FileUpload) Commit() error {
 	if u.closed {
 		return os.ErrClosed
 	}
-	if u.expected != nil && u.written != *u.expected {
+	if u.hasExpectedSize && u.written != u.expectedSize {
 		return u.failLocked(errors.New("upload size does not match the expected size"))
 	}
 	if u.expectedSHA != "" && hex.EncodeToString(u.digest.Sum(nil)) != u.expectedSHA {
