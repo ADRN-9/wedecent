@@ -58,6 +58,25 @@ func TestTypedTerminalStreamLimitIncludesLegacyStream(t *testing.T) {
 	}
 }
 
+func TestTypedTerminalStreamLifetimeIDLimit(t *testing.T) {
+	streams := newTypedTerminalStreamSet()
+	for i := 0; i < maxTerminalStreamIDsPerConnection; i++ {
+		streamID := uint32(i + 2)
+		if err := streams.reserve(streamID); err != nil {
+			t.Fatalf("reserve %d: %v", streamID, err)
+		}
+		if err := streams.accept(streamID); err != nil {
+			t.Fatalf("accept %d: %v", streamID, err)
+		}
+		if err := streams.close(streamID); err != nil {
+			t.Fatalf("close %d: %v", streamID, err)
+		}
+	}
+	if err := streams.reserve(uint32(maxTerminalStreamIDsPerConnection + 2)); !errors.Is(err, errTypedStreamLimit) {
+		t.Fatalf("lifetime over-limit reserve error = %v", err)
+	}
+}
+
 func TestTypedTerminalStreamCloseAllPreservesNoReuseInvariant(t *testing.T) {
 	streams := newTypedTerminalStreamSet()
 	for _, id := range []uint32{2, 7} {
