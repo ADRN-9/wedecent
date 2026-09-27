@@ -1,6 +1,8 @@
 package session
 
 import (
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -63,5 +65,71 @@ func TestFileTransferStoreSnapshotsExpectedSizeMetadata(t *testing.T) {
 		t.Fatal(err)
 	} else if string(data) != "payload" {
 		t.Fatalf("published data = %q", data)
+	}
+}
+
+func TestFileTransferDownloadDoesNotExpandIfFileGrows(t *testing.T) {
+	rootDir := t.TempDir()
+	path := filepath.Join(rootDir, "grow")
+	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenFileTransferStore(rootDir, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	download, size, err := store.OpenDownload(protocol.FileDownloadOpen{Path: "grow"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer download.Close()
+	if size != 5 {
+		t.Fatalf("size = %d", size)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("-later")); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := io.ReadAll(download)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hello" {
+		t.Fatalf("download expanded after open: %q", data)
+	}
+}
+
+func TestFileTransferDownloadReportsPostOpenTruncation(t *testing.T) {
+	rootDir := t.TempDir()
+	path := filepath.Join(rootDir, "shrink")
+	if err := os.WriteFile(path, []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := OpenFileTransferStore(rootDir, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	download, _, err := store.OpenDownload(protocol.FileDownloadOpen{Path: "shrink"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer download.Close()
+	if err := os.Truncate(path, 2); err != nil {
+		t.Fatal(err)
+	}
+	_, err = io.ReadAll(download)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("truncation error = %v", err)
 	}
 }
