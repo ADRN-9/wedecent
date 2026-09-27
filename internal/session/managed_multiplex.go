@@ -303,12 +303,15 @@ func (s *ManagedMultiplexTerminal) OpenTerminalStream(ctx context.Context, cols,
 		return 0, err
 	}
 	if err := s.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: id, Payload: payload}); err != nil {
-		s.removeChild(id)
+		_ = s.finish()
 		return 0, err
 	}
 	select {
 	case <-ctx.Done():
-		s.removeChild(id)
+		// Once StreamOpen has been written, acceptance is ambiguous. Keep
+		// fail-closed semantics by ending the parent rather than deleting
+		// the child and treating a late valid StreamAccepted as unknown.
+		_ = s.finish()
 		return 0, ctx.Err()
 	case <-s.done:
 		return 0, io.ErrClosedPipe
@@ -456,6 +459,9 @@ func (s *ManagedMultiplexTerminal) ResizeTerminalStream(ctx context.Context, id 
 }
 
 func (s *ManagedMultiplexTerminal) CloseTerminalStream(ctx context.Context, id uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	child, typed, err := s.child(id)
 	if err != nil {
 		return err
