@@ -5,23 +5,30 @@ import "errors"
 type StreamKind string
 
 const (
-	StreamKindTerminal   StreamKind = "terminal"
-	MaxTypedStreamWindow            = 1 << 20
+	StreamKindTerminal  StreamKind = "terminal"
+	MaxTypedStreamChunk            = 64 << 10
+	MaxTypedStreamWindow           = 1 << 20
 )
 
 type StreamOpen struct {
-	Kind          StreamKind `json:"kind"`
-	Cols          uint16     `json:"cols,omitempty"`
-	Rows          uint16     `json:"rows,omitempty"`
-	Term          string     `json:"term,omitempty"`
-	InitialWindow uint32     `json:"initial_window"`
+	Kind StreamKind `json:"kind"`
+	Cols uint16     `json:"cols,omitempty"`
+	Rows uint16     `json:"rows,omitempty"`
+	Term string     `json:"term,omitempty"`
+	// InitialWindow is receive credit granted by the opener to the acceptor.
+	// The acceptor may send at most this many data bytes before receiving
+	// StreamWindowUpdate credit from the opener.
+	InitialWindow uint32 `json:"initial_window"`
 }
 
 type StreamAccepted struct {
+	// InitialWindow is receive credit granted by the acceptor to the opener.
 	InitialWindow uint32 `json:"initial_window"`
 }
 
 type StreamWindowUpdate struct {
+	// Bytes adds send credit for the peer. Credit is additive but the runtime
+	// must keep its effective per-stream window bounded by MaxTypedStreamWindow.
 	Bytes uint32 `json:"bytes"`
 }
 
@@ -46,6 +53,26 @@ func ValidateStreamOpen(streamID uint32, open StreamOpen) error {
 	}
 	if open.InitialWindow == 0 || open.InitialWindow > MaxTypedStreamWindow {
 		return errors.New("typed stream initial window is out of range")
+	}
+	return nil
+}
+
+func ValidateStreamData(streamID uint32, payload []byte) error {
+	if streamID == 0 {
+		return errors.New("typed stream ID must be non-zero")
+	}
+	if len(payload) == 0 || len(payload) > MaxTypedStreamChunk {
+		return errors.New("typed stream data is out of range")
+	}
+	return nil
+}
+
+func ValidateStreamResize(streamID uint32, resize Resize) error {
+	if streamID == 0 {
+		return errors.New("typed stream ID must be non-zero")
+	}
+	if resize.Cols == 0 || resize.Rows == 0 {
+		return errors.New("typed terminal resize must be non-zero")
 	}
 	return nil
 }
