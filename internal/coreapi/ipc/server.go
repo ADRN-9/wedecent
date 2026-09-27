@@ -11,24 +11,24 @@ import (
 )
 
 const (
-	ErrorInvalidParams               = "invalid_params"
-	ErrorMethodNotFound              = "method_not_found"
-	ErrorDeviceNotFound              = "device_not_found"
-	ErrorRouteNotFound               = "route_not_found"
-	ErrorConnectionNotFound          = "connection_not_found"
-	ErrorConnectionLimit             = "connection_limit"
-	ErrorConnectionUnavailable       = "connection_unavailable"
-	ErrorConnectionFailed            = "connection_failed"
+	ErrorInvalidParams                = "invalid_params"
+	ErrorMethodNotFound               = "method_not_found"
+	ErrorDeviceNotFound               = "device_not_found"
+	ErrorRouteNotFound                = "route_not_found"
+	ErrorConnectionNotFound           = "connection_not_found"
+	ErrorConnectionLimit              = "connection_limit"
+	ErrorConnectionUnavailable        = "connection_unavailable"
+	ErrorConnectionFailed             = "connection_failed"
 	ErrorConnectionLatencyUnavailable = "connection_latency_unavailable"
 	ErrorConnectionLatencyFailed      = "connection_latency_failed"
-	ErrorTerminalUnavailable         = "terminal_unavailable"
-	ErrorTerminalFailed              = "terminal_operation_failed"
-	ErrorRequestCanceled             = "request_canceled"
-	ErrorAccountUnavailable          = "account_unavailable"
-	ErrorAccountFailed               = "account_operation_failed"
-	ErrorRouterUnavailable           = "router_unavailable"
-	ErrorRouterFailed                = "router_operation_failed"
-	ErrorInternal                    = "internal_error"
+	ErrorTerminalUnavailable          = "terminal_unavailable"
+	ErrorTerminalFailed               = "terminal_operation_failed"
+	ErrorRequestCanceled              = "request_canceled"
+	ErrorAccountUnavailable           = "account_unavailable"
+	ErrorAccountFailed                = "account_operation_failed"
+	ErrorRouterUnavailable            = "router_unavailable"
+	ErrorRouterFailed                 = "router_operation_failed"
+	ErrorInternal                     = "internal_error"
 )
 
 type Services struct {
@@ -208,7 +208,7 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 		wipe(params.Data)
 	case v1.MethodTerminalResize:
 		if s.terminal == nil {
-			return errorResponse(response, ErrorMethodNotFound, "method not found")
+			return errorResponse(response, ErrorMethodNotFound, "method not_found")
 		}
 		var params v1.TerminalResizeRequest
 		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
