@@ -29,6 +29,14 @@ const (
 	TypePing
 	TypePong
 	TypeOpenAuthorizedSession
+	// Typed-stream frames are valid only after explicit capability negotiation.
+	// They are appended to preserve every existing v1 frame number and meaning.
+	TypeOpenStream
+	TypeStreamAccepted
+	TypeStreamData
+	TypeStreamResize
+	TypeStreamClose
+	TypeStreamWindow
 )
 
 type Frame struct {
