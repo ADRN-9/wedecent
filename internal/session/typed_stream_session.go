@@ -44,14 +44,19 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		}
 	}
 
+	streamAudit := newTypedTerminalAuditTracker(peerID, transport, s.recordAudit)
 	typedServer := newTypedTerminalServer(s.Shell, func(frame protocol.Frame) error {
 		if err := writeFrame(frame); err != nil {
 			return err
 		}
+		streamAudit.observeOutgoing(frame)
 		signalActivity()
 		return nil
 	})
-	defer typedServer.CloseAll()
+	defer func() {
+		typedServer.CloseAll()
+		streamAudit.closeAll(closeReason)
+	}()
 
 	done := make(chan struct{})
 	defer close(done)
@@ -77,6 +82,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 
 	expireSession := func(reason string) {
 		typedServer.CloseAll()
+		streamAudit.closeAll(closeReason)
 		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_ = writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: sessionPolicyExitCode, Reason: reason})})
 		waitForPeerClose(frameCh, readErrCh, 2*time.Second)
@@ -98,6 +104,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 					_ = writeFrame(protocol.Frame{Type: protocol.TypeError, Payload: mustJSON(protocol.Error{Code: "protocol_error", Message: "invalid typed stream operation"})})
 					return
 				}
+				streamAudit.observeIncoming(frame)
 				policyTimers.Activity()
 				continue
 			}
