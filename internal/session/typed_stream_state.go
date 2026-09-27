@@ -5,7 +5,10 @@ import (
 	"fmt"
 )
 
-const maxTerminalStreamsPerConnection = 8
+const (
+	maxTerminalStreamsPerConnection   = 8
+	maxTerminalStreamIDsPerConnection = 256
+)
 
 var (
 	errTypedStreamIDReserved = errors.New("typed terminal stream ID is reserved")
@@ -37,6 +40,9 @@ func (s *typedTerminalStreamSet) reserve(streamID uint32) error {
 	}
 	if _, exists := s.states[streamID]; exists {
 		return errTypedStreamDuplicate
+	}
+	if len(s.states) >= maxTerminalStreamIDsPerConnection {
+		return errTypedStreamLimit
 	}
 	// Stream 1 remains the legacy/default terminal. Additional typed terminals
 	// therefore have one fewer slot than the connection-wide terminal limit.
