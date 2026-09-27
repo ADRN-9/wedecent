@@ -2,12 +2,12 @@
 
 WeDecent role state directories may contain an append-only `audit.jsonl` security-event log. Each line is one JSON object with a UTC timestamp, stable event type, outcome, and a deliberately small set of identifiers/reason fields.
 
-The audit schema intentionally has no arbitrary payload field. Terminal input/output, pairing secrets, connection grants/JWTs, passwords, access/refresh tokens, private keys, and other credential material must never be written to this log.
+The audit schema intentionally has no arbitrary payload field. Terminal input/output, pairing secrets, connection grants/JWTs, passwords, access/refresh tokens, private keys, and other credential material must never be written to this log. Typed terminal lifecycle events may include the bounded numeric protocol `stream_id`; they never include terminal contents or renderer-local identifiers.
 
 ## Storage and bounds
 
 - active log: `<role-state>/audit.jsonl`
-- one rotated archive: `<role-state>/audit.jsonl.1`
+- one rotated archive: `audit.jsonl.1`
 - active and archive files are secured to mode `0600` where the platform supports POSIX-style mode bits
 - the role state directory is created with mode `0700`
 - append operations are serialized across processes with an OS-backed lock file
@@ -36,6 +36,10 @@ Agent pairing and terminal lifecycle records:
 - `terminal.authorization` — direct-session authorization success or denial; grants and authorization-service error strings are never recorded
 - `terminal.session_opened` — successful, denied, or failed terminal-open attempts
 - `terminal.session_closed` — the end of an accepted terminal session with a stable close reason such as `process_exit`, `peer_close`, `peer_disconnect`, `pty_drain_timeout`, `policy_idle_timeout`, or `policy_max_duration`
+- `terminal.stream_opened` — a negotiated typed terminal child was accepted by the authoritative agent; the event includes the authenticated peer, parent transport, and numeric `stream_id`
+- `terminal.stream_closed` — an accepted typed terminal child ended; the event carries the same peer/transport/`stream_id` identity plus a stable reason such as `peer_close`, `process_exit`, `pty_drain_timeout`, a stable stream error code, or the parent-session close reason
+
+Typed stream lifecycle accounting is exact-once per accepted child. A stream rejected before `StreamAccepted` is not recorded as opened. Parent TLS/session termination accounts for every still-open typed child before the parent `terminal.session_closed` record. The wire stream ID is only an audit correlation identifier within that authenticated parent session; it is not identity or authorization evidence.
 
 `pty_drain_timeout` means the child process exited but final PTY output did not finish draining within the bounded shutdown window. The server closes the transport without sending a terminal close frame so a close frame cannot overtake final terminal output.
 
