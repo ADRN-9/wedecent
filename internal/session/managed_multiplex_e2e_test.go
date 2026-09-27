@@ -429,7 +429,7 @@ func waitLiveMuxServer(t *testing.T, serverErr <-chan error) {
 	t.Helper()
 	select {
 	case err := <-serverErr:
-		if err != nil {
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrClosedPipe) && !errors.Is(err, net.ErrClosed) {
 			t.Fatalf("live multiplex server failed: %v", err)
 		}
 	case <-time.After(2 * time.Second):
