@@ -258,7 +258,11 @@ func openManagedTerminal(ctx context.Context, id *identity.Identity, store *trus
 		Dialer:          dialer,
 		ConnectionGrant: grant,
 	}
-	return client.OpenManagedMultiplexSession(ctx, peer, 80, 24, "")
+	managed, err := client.OpenManagedMultiplexSession(ctx, peer, 80, 24, "")
+	if err != nil {
+		return nil, err
+	}
+	return &managedSessionHandle{ManagedMultiplexSession: managed}, nil
 }
 
 func hasRelayScheme(endpoint string) bool {
