@@ -337,7 +337,7 @@ func (s *typedFileServer) peerError(frame protocol.Frame) error {
 		return err
 	}
 	s.closeChild(frame.StreamID)
-	return nil
+	return s.sendClose(frame.StreamID, "peer_close")
 }
 
 func (s *typedFileServer) openChild(streamID uint32) (*typedFileChild, error) {
