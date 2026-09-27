@@ -3,7 +3,6 @@ package session
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -477,9 +476,10 @@ func (d *ManagedFileDownload) Read(ctx context.Context, maxBytes int) ([]byte, b
 				child.outputQueue[0] = chunk[n:]
 			}
 			child.outputBytes -= n
-			closed := channelClosed(child.done) && child.outputBytes == 0
+			done := channelClosed(child.done)
+			closed := done && child.outputBytes == 0
 			child.mu.Unlock()
-			if n > 0 {
+			if n > 0 && !done {
 				payload, _ := protocol.JSON(protocol.StreamWindowUpdate{Bytes: uint32(n)})
 				if err := d.session.terminal.writeFrameContext(ctx, protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: d.id, Payload: payload}); err != nil {
 					_ = d.session.terminal.finish()
@@ -790,8 +790,14 @@ func (s *ManagedMultiplexSession) handleFileClose(frame protocol.Frame, state *m
 			if msg.Reason != "peer_close" {
 				return false
 			}
-		} else if msg.Reason != "download_complete" {
-			return false
+		} else {
+			if msg.Reason != "download_complete" {
+				return false
+			}
+			ack, _ := protocol.JSON(protocol.StreamClose{Reason: "peer_close"})
+			if err := s.terminal.writeFrame(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: frame.StreamID, Payload: ack}); err != nil {
+				return false
+			}
 		}
 	default:
 		return false
