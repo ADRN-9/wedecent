@@ -365,17 +365,15 @@ func (s *FileTransferService) connectionTokenCurrent(connectionID string, token 
 
 func (s *FileTransferService) reserveOperationID() (string, error) {
 	for attempt := 0; attempt < maxConnectionIDAttempts; attempt++ {
-		s.mu.Lock()
-		if len(s.ops)+len(s.reserved) >= s.max {
-			s.mu.Unlock()
-			return "", ErrFileTransferLimit
-		}
-		s.mu.Unlock()
 		operationID, err := s.newOperationID()
 		if err != nil {
 			return "", fmt.Errorf("%w: generate operation ID", ErrFileTransferOperation)
 		}
 		s.mu.Lock()
+		if len(s.ops)+len(s.reserved) >= s.max {
+			s.mu.Unlock()
+			return "", ErrFileTransferLimit
+		}
 		_, active := s.ops[operationID]
 		_, reserved := s.reserved[operationID]
 		if !active && !reserved {
