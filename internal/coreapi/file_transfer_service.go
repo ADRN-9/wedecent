@@ -56,7 +56,7 @@ type FileTransferServiceConfig struct {
 
 type fileTransferEntry struct {
 	connectionID string
-	token        *struct{}
+	token        *connectionGeneration
 	direction    v1.FileTransferDirection
 	upload       FileUploadHandle
 	download     FileDownloadHandle
@@ -332,7 +332,7 @@ func (s *FileTransferService) CancelFileTransfer(ctx context.Context, req v1.Fil
 	return nil
 }
 
-func (s *FileTransferService) activeFileParent(connectionID string) (FileTransferConnectionHandle, *struct{}, <-chan struct{}, error) {
+func (s *FileTransferService) activeFileParent(connectionID string) (FileTransferConnectionHandle, *connectionGeneration, <-chan struct{}, error) {
 	if !validConnectionID(connectionID) {
 		return nil, nil, nil, ErrInvalidFileTransferRequest
 	}
@@ -356,7 +356,7 @@ func (s *FileTransferService) activeFileParent(connectionID string) (FileTransfe
 	return parent, active.token, done, nil
 }
 
-func (s *FileTransferService) connectionTokenCurrent(connectionID string, token *struct{}) bool {
+func (s *FileTransferService) connectionTokenCurrent(connectionID string, token *connectionGeneration) bool {
 	s.connections.mu.Lock()
 	defer s.connections.mu.Unlock()
 	active, ok := s.connections.active[connectionID]
@@ -439,7 +439,7 @@ func (s *FileTransferService) takeOperationAnyDirection(connectionID, operationI
 	return entry, nil
 }
 
-func (s *FileTransferService) removeOperation(operationID string, token *struct{}) {
+func (s *FileTransferService) removeOperation(operationID string, token *connectionGeneration) {
 	s.mu.Lock()
 	if current, ok := s.ops[operationID]; ok && current.token == token {
 		delete(s.ops, operationID)
@@ -447,7 +447,7 @@ func (s *FileTransferService) removeOperation(operationID string, token *struct{
 	s.mu.Unlock()
 }
 
-func (s *FileTransferService) watchOperation(operationID string, token *struct{}, childDone, parentDone <-chan struct{}) {
+func (s *FileTransferService) watchOperation(operationID string, token *connectionGeneration, childDone, parentDone <-chan struct{}) {
 	select {
 	case <-childDone:
 	case <-parentDone:
