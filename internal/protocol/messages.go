@@ -14,16 +14,22 @@ type PairResponse struct {
 }
 
 type OpenSession struct {
-	Cols uint16 `json:"cols"`
-	Rows uint16 `json:"rows"`
-	Term string `json:"term"`
+	Cols         uint16       `json:"cols"`
+	Rows         uint16       `json:"rows"`
+	Term         string       `json:"term"`
+	Capabilities []Capability `json:"capabilities,omitempty"`
 }
 
 type OpenAuthorizedSession struct {
-	Cols            uint16 `json:"cols"`
-	Rows            uint16 `json:"rows"`
-	Term            string `json:"term"`
-	ConnectionGrant string `json:"connection_grant"`
+	Cols            uint16       `json:"cols"`
+	Rows            uint16       `json:"rows"`
+	Term            string       `json:"term"`
+	ConnectionGrant string       `json:"connection_grant"`
+	Capabilities    []Capability `json:"capabilities,omitempty"`
+}
+
+type SessionAccepted struct {
+	Capabilities []Capability `json:"capabilities,omitempty"`
 }
 
 type Resize struct {
