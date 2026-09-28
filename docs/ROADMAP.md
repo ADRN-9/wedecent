@@ -128,6 +128,8 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
 - [x] Desktop application UX and accessibility
   - [x] Add a responsive workspace layout, local device/profile filtering, explicit Core/session/transfer state presentation, and in-app profile editing
   - [x] Add keyboard-accessible terminal tab semantics, visible focus, reduced-motion handling, and deterministic UX contract checks without expanding renderer authority; see `DESKTOP_UX.md`
+  - [x] Add explicit empty/no-result collection states, deterministic modal/tab focus restoration, and visible keyboard shortcut guidance
+  - [x] Add bounded renderer-only terminal appearance preferences plus deterministic behavior and deeper accessibility regression gates
 - [ ] Local/remote port forwarding
 
 ## Phase 5 — team control plane
