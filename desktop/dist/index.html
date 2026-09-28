@@ -7,11 +7,14 @@
   <title>WeDecent</title>
   <link rel="stylesheet" href="./vendor/xterm.css">
   <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./ux-v3.css">
   <link rel="stylesheet" href="./latency.css">
   <script src="./vendor/xterm.js" defer></script>
   <script src="./app.js" defer></script>
   <script src="./ux-model.js" defer></script>
   <script src="./ux.js" defer></script>
+  <script src="./ux-v3-model.js" defer></script>
+  <script src="./ux-v3.js" defer></script>
   <script src="./file-transfer-ui.js" defer></script>
   <script src="./latency.js" defer></script>
 </head>
@@ -99,7 +102,13 @@
           <p id="terminal-detail">Choose a known device. Local Core remains responsible for authorization, path selection, identity verification, and the secure session.</p>
 
           <div class="terminal-utility-row">
-            <p class="shortcut-hint"><strong>Keyboard:</strong> Ctrl/Cmd+K filters devices; terminal tabs use ←/→, Home/End, and Delete.</p>
+            <div>
+              <p class="shortcut-hint"><strong>Keyboard:</strong> Ctrl/Cmd+K filters devices; tabs use ←/→, Home/End, and Delete; Ctrl/Cmd+PageUp/PageDown cycles sessions; Alt+T focuses the active terminal.</p>
+              <div class="terminal-quick-actions">
+                <button id="focus-terminal" class="secondary-action" type="button" disabled aria-keyshortcuts="Alt+T" aria-describedby="terminal-detail">Focus terminal</button>
+                <button id="terminal-reset-appearance" class="secondary-action" type="button" aria-describedby="terminal-preferences-detail">Reset appearance</button>
+              </div>
+            </div>
             <fieldset class="terminal-preferences" aria-describedby="terminal-preferences-detail">
               <legend>Terminal appearance</legend>
               <label for="terminal-font-size">Text size
@@ -118,6 +127,19 @@
                   <option value="spacious">Spacious</option>
                 </select>
               </label>
+              <div class="terminal-preferences-v3">
+                <label for="terminal-cursor-style">Cursor
+                  <select id="terminal-cursor-style">
+                    <option value="block">Block</option>
+                    <option value="underline">Underline</option>
+                    <option value="bar">Bar</option>
+                  </select>
+                </label>
+                <label class="cursor-toggle" for="terminal-cursor-blink">
+                  <span>Blink cursor</span>
+                  <input id="terminal-cursor-blink" type="checkbox" checked>
+                </label>
+              </div>
             </fieldset>
           </div>
           <p id="terminal-preferences-detail" class="field-hint">Appearance preferences are stored locally in this desktop and never affect Core session authority or wire dimensions.</p>
