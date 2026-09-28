@@ -1,7 +1,10 @@
+const fileTransferPanel = document.querySelector('.file-transfer-panel');
 const filePathInput = document.querySelector('#file-remote-path');
+const filePathHint = document.querySelector('#file-path-hint');
 const fileUploadButton = document.querySelector('#file-upload');
 const fileDownloadButton = document.querySelector('#file-download');
 const fileTransferDetail = document.querySelector('#file-transfer-detail');
+const fileTransferState = document.querySelector('#file-transfer-state');
 
 const MAX_FILE_REMOTE_PATH_BYTES = 4096;
 let fileTransferBusy = false;
@@ -22,6 +25,29 @@ function validRemoteFilePath(value) {
     && !/[\u0000-\u001f\u007f\\]/.test(value);
 }
 
+function setTransferDetail(message, label, state) {
+  fileTransferDetail.textContent = message;
+  fileTransferState.textContent = label;
+  fileTransferState.dataset.state = state;
+  fileTransferPanel.setAttribute('aria-busy', state === 'busy' ? 'true' : 'false');
+}
+
+function refreshFilePathHint() {
+  const value = filePathInput.value.trim();
+  if (!value) {
+    filePathHint.textContent = 'Relative remote path; controls, backslashes, and paths over 4096 UTF-8 bytes are rejected.';
+    filePathHint.dataset.state = 'idle';
+    return;
+  }
+  if (validRemoteFilePath(value)) {
+    filePathHint.textContent = `${new TextEncoder().encode(value).length} UTF-8 bytes · valid remote relative path format.`;
+    filePathHint.dataset.state = 'valid';
+    return;
+  }
+  filePathHint.textContent = 'Enter a non-empty relative path without controls or backslashes and within 4096 UTF-8 bytes.';
+  filePathHint.dataset.state = 'invalid';
+}
+
 function refreshFileTransferControls() {
   const connectionID = activeFileConnectionID();
   const ready = Boolean(
@@ -32,6 +58,7 @@ function refreshFileTransferControls() {
   );
   fileUploadButton.disabled = !ready;
   fileDownloadButton.disabled = !ready;
+  refreshFilePathHint();
 }
 
 async function refreshFileTransferStatus() {
@@ -41,28 +68,48 @@ async function refreshFileTransferStatus() {
   refreshFileTransferControls();
 
   if (!connectionID) {
-    fileTransferDetail.textContent = 'Open and activate an authenticated terminal session to use file transfer.';
+    setTransferDetail(
+      'Open and activate an authenticated terminal session to use file transfer.',
+      'Unavailable',
+      'idle',
+    );
     return;
   }
 
-  fileTransferDetail.textContent = 'Checking file-transfer availability through the active Core-owned session…';
+  setTransferDetail(
+    'Checking file-transfer availability through the active Core-owned session…',
+    'Checking',
+    'busy',
+  );
   try {
     const status = await getInvoke()('file_transfer_status', { connectionId: connectionID });
     if (generation !== fileTransferStatusGeneration || activeFileConnectionID() !== connectionID) {
       return;
     }
     if (!status || status.available !== true) {
-      fileTransferDetail.textContent = 'File transfer is unavailable on this authenticated session. No fallback path was attempted.';
+      setTransferDetail(
+        'File transfer is unavailable on this authenticated session. No fallback path was attempted.',
+        'Unavailable',
+        'unavailable',
+      );
       refreshFileTransferControls();
       return;
     }
     fileTransferAvailableConnectionID = connectionID;
-    fileTransferDetail.textContent = 'File transfer is available. The operating-system picker and local file data stay in the trusted native process.';
+    setTransferDetail(
+      'File transfer is available. The operating-system picker and local file data stay in the trusted native process.',
+      'Ready',
+      'connected',
+    );
   } catch (_) {
     if (generation !== fileTransferStatusGeneration || activeFileConnectionID() !== connectionID) {
       return;
     }
-    fileTransferDetail.textContent = 'File-transfer availability could not be verified. No fallback path was attempted.';
+    setTransferDetail(
+      'File-transfer availability could not be verified. No fallback path was attempted.',
+      'Unavailable',
+      'error',
+    );
   }
   refreshFileTransferControls();
 }
@@ -90,17 +137,31 @@ async function runUpload() {
 
   fileTransferBusy = true;
   refreshFileTransferControls();
-  fileTransferDetail.textContent = 'Choose a local file in the native picker. Its path and bytes are not exposed to this renderer.';
+  setTransferDetail(
+    'Choose a local file in the native picker. Its path and bytes are not exposed to this renderer.',
+    'Uploading',
+    'busy',
+  );
   try {
     const result = await getInvoke()('file_upload_pick', { connectionId: connectionID, remotePath });
     if (!validateTransferResult(result)) {
       throw new Error('invalid native transfer result');
     }
-    fileTransferDetail.textContent = result.cancelled
-      ? 'Upload cancelled in the native picker.'
-      : `Upload completed: ${result.bytes.toLocaleString()} bytes transferred.`;
+    if (result.cancelled) {
+      setTransferDetail('Upload cancelled in the native picker.', 'Ready', 'idle');
+    } else {
+      setTransferDetail(
+        `Upload completed: ${result.bytes.toLocaleString()} bytes transferred.`,
+        'Complete',
+        'success',
+      );
+    }
   } catch (_) {
-    fileTransferDetail.textContent = 'Upload failed. No alternate path or weaker transfer mechanism was attempted.';
+    setTransferDetail(
+      'Upload failed. No alternate path or weaker transfer mechanism was attempted.',
+      'Failed',
+      'error',
+    );
   } finally {
     fileTransferBusy = false;
     refreshFileTransferControls();
@@ -122,17 +183,31 @@ async function runDownload() {
 
   fileTransferBusy = true;
   refreshFileTransferControls();
-  fileTransferDetail.textContent = 'Choose a destination in the native picker. Existing files are never silently replaced.';
+  setTransferDetail(
+    'Choose a destination in the native picker. Existing files are never silently replaced.',
+    'Downloading',
+    'busy',
+  );
   try {
     const result = await getInvoke()('file_download_pick', { connectionId: connectionID, remotePath });
     if (!validateTransferResult(result)) {
       throw new Error('invalid native transfer result');
     }
-    fileTransferDetail.textContent = result.cancelled
-      ? 'Download cancelled in the native picker.'
-      : `Download completed: ${result.bytes.toLocaleString()} bytes transferred.`;
+    if (result.cancelled) {
+      setTransferDetail('Download cancelled in the native picker.', 'Ready', 'idle');
+    } else {
+      setTransferDetail(
+        `Download completed: ${result.bytes.toLocaleString()} bytes transferred.`,
+        'Complete',
+        'success',
+      );
+    }
   } catch (_) {
-    fileTransferDetail.textContent = 'Download failed. No partial destination or fallback path should be used.';
+    setTransferDetail(
+      'Download failed. No partial destination or fallback path should be used.',
+      'Failed',
+      'error',
+    );
   } finally {
     fileTransferBusy = false;
     refreshFileTransferControls();
