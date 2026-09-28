@@ -1,3 +1,5 @@
+mod file_transfer;
+
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use std::{
     env, fs,
@@ -569,6 +571,7 @@ fn main() {
     let terminal_bridge: SharedTerminalBridge = Arc::new(Mutex::new(None));
     let latency_bridge = LatencyBridge(Arc::new(Mutex::new(None)));
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(terminal_bridge)
         .manage(latency_bridge)
         .invoke_handler(tauri::generate_handler![
@@ -584,7 +587,10 @@ fn main() {
             terminal_stream_close,
             terminal_stream_read,
             terminal_stream_write,
-            terminal_stream_resize
+            terminal_stream_resize,
+            file_transfer::file_transfer_status,
+            file_transfer::file_upload_pick,
+            file_transfer::file_download_pick
         ])
         .run(tauri::generate_context!())
         .expect("failed to run WeDecent desktop shell");

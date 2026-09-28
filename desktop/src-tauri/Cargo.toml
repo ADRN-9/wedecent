@@ -9,6 +9,14 @@ publish = false
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
+base64 = "=0.22.1"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tauri = { version = "=2.11.5", features = [] }
+tauri-plugin = "=2.6.3"
+tauri-plugin-dialog = "=2.6.0"
+tauri-codegen = "=2.6.3"
+tauri-macros = "=2.6.3"
+tauri-runtime = "=2.11.3"
+tauri-runtime-wry = "=2.11.4"
+tauri-utils = "=2.9.3"
