@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="./latency.css">
   <script src="./vendor/xterm.js" defer></script>
   <script src="./app.js" defer></script>
+  <script src="./ux-model.js" defer></script>
   <script src="./ux.js" defer></script>
   <script src="./file-transfer-ui.js" defer></script>
   <script src="./latency.js" defer></script>
@@ -54,8 +55,9 @@
           </div>
           <p id="devices-detail">Loaded from Local Core without endpoints or fingerprints.</p>
           <label class="filter-label" for="device-filter">Filter devices</label>
-          <input id="device-filter" class="filter-input" type="search" autocomplete="off" placeholder="Name or device ID" aria-keyshortcuts="Control+K Meta+K">
-          <ul id="device-list" class="action-list"></ul>
+          <input id="device-filter" class="filter-input" type="search" autocomplete="off" placeholder="Name or device ID" aria-keyshortcuts="Control+K Meta+K" aria-controls="device-list" aria-describedby="device-list-state">
+          <ul id="device-list" class="action-list" aria-describedby="device-list-state"></ul>
+          <p id="device-list-state" class="list-state" role="status" aria-live="polite">No devices loaded yet.</p>
         </section>
 
         <section class="status compact-card" aria-labelledby="profiles-heading">
@@ -68,15 +70,17 @@
           </div>
           <p id="profiles-detail">Profiles are local presentation shortcuts only. They never store trust material, credentials, fingerprints, grants, endpoints, or transport authority.</p>
           <label class="filter-label" for="profile-filter">Filter profiles</label>
-          <input id="profile-filter" class="filter-input" type="search" autocomplete="off" placeholder="Profile name">
-          <ul id="profile-list" class="action-list"></ul>
+          <input id="profile-filter" class="filter-input" type="search" autocomplete="off" placeholder="Profile name" aria-controls="profile-list" aria-describedby="profile-list-state">
+          <ul id="profile-list" class="action-list" aria-describedby="profile-list-state"></ul>
+          <p id="profile-list-state" class="list-state" role="status" aria-live="polite">No saved profiles yet.</p>
         </section>
 
         <section class="status compact-card transport-card" aria-labelledby="transports-heading">
           <p class="eyebrow">Transports</p>
           <strong id="transports-heading">Availability</strong>
           <p>Informational only. Availability never establishes identity or trust.</p>
-          <ul id="transport-list" class="transport-list"></ul>
+          <ul id="transport-list" class="transport-list" aria-describedby="transport-list-state"></ul>
+          <p id="transport-list-state" class="list-state" role="status" aria-live="polite">No transport availability reported.</p>
         </section>
       </aside>
 
@@ -89,10 +93,35 @@
             </div>
             <div class="terminal-actions">
               <span id="session-state-chip" class="state-chip" data-state="idle">Idle</span>
-              <button id="disconnect-terminal" class="danger-action" type="button" disabled>Disconnect</button>
+              <button id="disconnect-terminal" class="danger-action" type="button" disabled aria-describedby="terminal-detail">Disconnect</button>
             </div>
           </div>
           <p id="terminal-detail">Choose a known device. Local Core remains responsible for authorization, path selection, identity verification, and the secure session.</p>
+
+          <div class="terminal-utility-row">
+            <p class="shortcut-hint"><strong>Keyboard:</strong> Ctrl/Cmd+K filters devices; terminal tabs use ←/→, Home/End, and Delete.</p>
+            <fieldset class="terminal-preferences" aria-describedby="terminal-preferences-detail">
+              <legend>Terminal appearance</legend>
+              <label for="terminal-font-size">Text size
+                <select id="terminal-font-size">
+                  <option value="12">Small</option>
+                  <option value="14">Medium</option>
+                  <option value="16">Large</option>
+                  <option value="18">Larger</option>
+                  <option value="20">Largest</option>
+                </select>
+              </label>
+              <label for="terminal-density">Line spacing
+                <select id="terminal-density">
+                  <option value="compact">Compact</option>
+                  <option value="comfortable">Comfortable</option>
+                  <option value="spacious">Spacious</option>
+                </select>
+              </label>
+            </fieldset>
+          </div>
+          <p id="terminal-preferences-detail" class="field-hint">Appearance preferences are stored locally in this desktop and never affect Core session authority or wire dimensions.</p>
+
           <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="Terminal sessions"></div>
           <div id="terminal-stack" class="terminal-stack" aria-live="polite">
             <div id="terminal-empty" class="empty-state">
@@ -126,8 +155,8 @@
           >
           <p id="file-path-hint" class="field-hint">Relative remote path; controls, backslashes, and paths over 4096 UTF-8 bytes are rejected.</p>
           <div class="file-transfer-actions">
-            <button id="file-upload" class="primary-action" type="button" disabled>Upload from this computer</button>
-            <button id="file-download" class="secondary-action" type="button" disabled>Download to this computer</button>
+            <button id="file-upload" class="primary-action" type="button" disabled aria-describedby="file-transfer-detail">Upload from this computer</button>
+            <button id="file-download" class="secondary-action" type="button" disabled aria-describedby="file-transfer-detail">Download to this computer</button>
           </div>
           <p id="file-transfer-detail" class="operation-detail" aria-live="polite">Open and activate an authenticated terminal session to use file transfer.</p>
         </section>
@@ -137,13 +166,13 @@
     <p class="boundary">Trust, routing, transport selection, cryptography, credentials, and session authority remain outside this renderer.</p>
   </main>
 
-  <dialog id="profile-dialog" aria-labelledby="profile-dialog-title">
+  <dialog id="profile-dialog" aria-labelledby="profile-dialog-title" aria-describedby="profile-dialog-detail profile-dialog-error">
     <form id="profile-dialog-form" method="dialog">
       <p class="eyebrow">Local shortcut</p>
       <h2 id="profile-dialog-title">Save session profile</h2>
       <p id="profile-dialog-detail">Profiles store only a local label and canonical device ID.</p>
       <label for="profile-dialog-name">Profile name</label>
-      <input id="profile-dialog-name" type="text" maxlength="64" autocomplete="off" required>
+      <input id="profile-dialog-name" type="text" maxlength="64" autocomplete="off" required aria-describedby="profile-dialog-error">
       <p id="profile-dialog-error" class="form-error" role="alert" hidden></p>
       <div class="dialog-actions">
         <button id="profile-dialog-cancel" type="button" value="cancel">Cancel</button>

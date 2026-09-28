@@ -30,24 +30,31 @@ body {
 
 button,
 input,
+select,
 dialog {
   font: inherit;
 }
 
 button,
-input {
+input,
+select {
   min-height: 40px;
 }
 
-button {
+button,
+select {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface-strong);
   color: inherit;
+}
+
+button {
   cursor: pointer;
 }
 
-button:hover:not(:disabled) {
+button:hover:not(:disabled),
+select:hover:not(:disabled) {
   border-color: var(--accent);
 }
 
@@ -58,6 +65,7 @@ button:disabled {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 .terminal-tab:focus-visible,
 .terminal-tab-close:focus-visible {
   outline: 3px solid var(--focus);
@@ -147,14 +155,16 @@ h2 {
 .section-title-row,
 .terminal-actions,
 .file-transfer-actions,
-.dialog-actions {
+.dialog-actions,
+.terminal-utility-row {
   display: flex;
   align-items: center;
   gap: 12px;
 }
 
 .status-heading,
-.section-title-row {
+.section-title-row,
+.terminal-utility-row {
   justify-content: space-between;
 }
 
@@ -165,7 +175,9 @@ h2 {
 .status p,
 .boundary,
 .operation-detail,
-.field-hint {
+.field-hint,
+.list-state,
+.shortcut-hint {
   line-height: 1.55;
 }
 
@@ -250,7 +262,9 @@ dl div {
 dt,
 .filter-label,
 .file-path-label,
-dialog label {
+dialog label,
+.terminal-preferences label,
+.terminal-preferences legend {
   font-size: 0.76rem;
   font-weight: 800;
   letter-spacing: 0.04em;
@@ -298,6 +312,15 @@ dd {
   margin-top: 8px;
 }
 
+.list-state {
+  margin: 12px 0 0 !important;
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--surface-soft);
+  font-size: 0.86rem;
+}
+
 .device-row,
 .profile-row {
   display: flex;
@@ -338,6 +361,60 @@ dd {
 .terminal-panel {
   min-width: 0;
   overflow: hidden;
+}
+
+.terminal-utility-row {
+  align-items: flex-start;
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+
+.shortcut-hint {
+  flex: 1 1 280px;
+  margin: 3px 0 !important;
+  font-size: 0.84rem;
+}
+
+.terminal-preferences {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: end;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.terminal-preferences legend {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.terminal-preferences label {
+  display: grid;
+  gap: 5px;
+}
+
+.terminal-preferences select {
+  min-height: 34px;
+  padding: 5px 28px 5px 8px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 600;
+}
+
+#terminal-preferences-detail {
+  margin-top: 7px !important;
 }
 
 .terminal-tabs {
@@ -489,6 +566,23 @@ dialog label {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     max-height: none;
     overflow: visible;
+  }
+}
+
+@media (max-width: 760px) {
+  .terminal-utility-row,
+  .terminal-preferences {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .terminal-preferences {
+    width: 100%;
+  }
+
+  .terminal-preferences label,
+  .terminal-preferences select {
+    width: 100%;
   }
 }
 
