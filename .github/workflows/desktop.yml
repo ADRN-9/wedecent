@@ -90,6 +90,16 @@ jobs:
             git commit -m 'desktop: wire native file transfer commands'
             git push origin HEAD:feat/desktop-native-file-transfer
           fi
+      - name: Format and commit native Rust code
+        run: |
+          cargo fmt --manifest-path desktop/src-tauri/Cargo.toml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add desktop/src-tauri/src/file_transfer.rs desktop/src-tauri/src/main.rs
+          if ! git diff --cached --quiet; then
+            git commit -m 'desktop: format native file transfer code'
+            git push origin HEAD:feat/desktop-native-file-transfer
+          fi
       - name: Verify Rust formatting
         run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
       - name: Require committed dependency lock
