@@ -485,6 +485,9 @@ func (d *ManagedFileDownload) Read(ctx context.Context, maxBytes int) ([]byte, b
 				d.state.wireMu.Lock()
 				child.mu.Lock()
 				done := channelClosed(child.done)
+				if !done {
+					child.recvCredit += uint32(n)
+				}
 				child.mu.Unlock()
 				if !done {
 					payload, _ := protocol.JSON(protocol.StreamWindowUpdate{Bytes: uint32(n)})
@@ -493,9 +496,6 @@ func (d *ManagedFileDownload) Read(ctx context.Context, maxBytes int) ([]byte, b
 						_ = d.session.terminal.finish()
 						return out, true, err
 					}
-					child.mu.Lock()
-					child.recvCredit += uint32(n)
-					child.mu.Unlock()
 				}
 				d.state.wireMu.Unlock()
 			}
