@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "build:assets": "node --check ./dist/app.js && node --check ./dist/ux.js && node --check ./dist/file-transfer-ui.js && node --check ./dist/latency.js && node ./scripts/check-renderer-boundary.mjs && node ./scripts/check-ui-contract.mjs && node ./scripts/build-assets.mjs"
+    "build:assets": "node --check ./dist/app.js && node --check ./dist/ux-model.js && node --check ./dist/ux.js && node --check ./dist/file-transfer-ui.js && node --check ./dist/latency.js && node --test ./scripts/ui-behavior.test.mjs && node ./scripts/check-renderer-boundary.mjs && node ./scripts/check-ui-contract.mjs && node ./scripts/build-assets.mjs"
   },
   "dependencies": {
     "@xterm/xterm": "6.0.0"
