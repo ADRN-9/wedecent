@@ -47,6 +47,14 @@ jobs:
           rustup default stable
           rustc --version
           cargo --version
+      - name: Generate pinned native lock artifact
+        run: cargo generate-lockfile --manifest-path desktop/src-tauri/Cargo.toml
+      - name: Upload pinned native lock artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-pinned-cargo-lock
+          path: desktop/src-tauri/Cargo.lock
+          if-no-files-found: error
       - name: Verify Rust formatting
         run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
       - name: Require committed dependency lock
