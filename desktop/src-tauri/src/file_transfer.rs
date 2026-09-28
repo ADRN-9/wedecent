@@ -124,13 +124,7 @@ pub(super) async fn file_download_pick(
     let suggested_name = safe_remote_basename(&remote_path)?;
     let bridge = bridge.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        download_selected_file(
-            &app,
-            &bridge,
-            connection_id,
-            remote_path,
-            suggested_name,
-        )
+        download_selected_file(&app, &bridge, connection_id, remote_path, suggested_name)
     })
     .await
     .map_err(|_| FILE_FAILURE.to_string())?
@@ -259,8 +253,8 @@ fn download_selected_file(
     if destination.exists() {
         return Err(DESTINATION_EXISTS.to_string());
     }
-    let (mut output, temp_path) = create_private_temp(&destination)
-        .map_err(|_| FILE_FAILURE.to_string())?;
+    let (mut output, temp_path) =
+        create_private_temp(&destination).map_err(|_| FILE_FAILURE.to_string())?;
     let mut cleanup = TempCleanup::new(temp_path.clone());
 
     let operation: FileOperation = match with_terminal_bridge(
@@ -399,9 +393,9 @@ fn safe_remote_basename(remote_path: &str) -> Result<String, String> {
 }
 
 fn create_private_temp(destination: &Path) -> io::Result<(File, PathBuf)> {
-    let parent = destination.parent().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent")
-    })?;
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "destination has no parent"))?;
     for _ in 0..32 {
         let serial = TEMP_COUNTER.fetch_add(1, Ordering::Relaxed);
         let temp_path = parent.join(format!(
@@ -478,7 +472,10 @@ mod tests {
     fn remote_basename_is_strict() {
         assert_eq!(safe_remote_basename("dir/file.txt").unwrap(), "file.txt");
         for invalid in ["", "dir/", ".", "..", "dir/..", "bad\nname"] {
-            assert!(safe_remote_basename(invalid).is_err(), "accepted {invalid:?}");
+            assert!(
+                safe_remote_basename(invalid).is_err(),
+                "accepted {invalid:?}"
+            );
         }
     }
 
