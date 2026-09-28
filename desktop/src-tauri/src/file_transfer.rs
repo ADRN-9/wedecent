@@ -17,7 +17,7 @@ const MAX_REMOTE_PATH_BYTES: usize = 4096;
 const MAX_PUBLIC_ID_BYTES: usize = 128;
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(super) struct FileTransferStatus {
     available: bool,
