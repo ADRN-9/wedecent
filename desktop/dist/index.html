@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="./latency.css">
   <script src="./vendor/xterm.js" defer></script>
   <script src="./app.js" defer></script>
+  <script src="./file-transfer-ui.js" defer></script>
   <script src="./latency.js" defer></script>
 </head>
 <body>
@@ -63,6 +64,29 @@
       <div id="terminal-stack" class="terminal-stack" aria-live="polite">
         <p id="terminal-empty">No terminal tabs are open.</p>
       </div>
+    </section>
+
+    <section class="status file-transfer-panel" aria-labelledby="file-transfer-heading">
+      <p class="eyebrow">Files</p>
+      <strong id="file-transfer-heading">Transfer through active session</strong>
+      <p>Enter a canonical remote relative path. Local file selection and destination paths remain inside the trusted native process.</p>
+      <label class="file-path-label" for="file-remote-path">Remote path</label>
+      <input
+        id="file-remote-path"
+        class="file-path-input"
+        type="text"
+        inputmode="text"
+        autocomplete="off"
+        autocapitalize="off"
+        spellcheck="false"
+        maxlength="4096"
+        placeholder="documents/report.txt"
+      >
+      <div class="file-transfer-actions">
+        <button id="file-upload" type="button" disabled>Upload</button>
+        <button id="file-download" type="button" disabled>Download</button>
+      </div>
+      <p id="file-transfer-detail" aria-live="polite">Open and activate an authenticated terminal session to use file transfer.</p>
     </section>
 
     <section class="status" aria-labelledby="transports-heading">
