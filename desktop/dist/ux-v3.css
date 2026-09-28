@@ -1,0 +1,157 @@
+.terminal-preferences-v3 {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.terminal-preferences-v3 label {
+  display: grid;
+  gap: 5px;
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.terminal-preferences-v3 select {
+  min-height: 34px;
+  padding: 5px 28px 5px 8px;
+  text-transform: none;
+  letter-spacing: normal;
+  font-weight: 600;
+}
+
+.cursor-toggle {
+  grid-template-columns: auto auto;
+  align-items: center;
+  min-height: 34px;
+}
+
+.cursor-toggle input {
+  width: 18px;
+  height: 18px;
+  margin: 0;
+}
+
+.terminal-quick-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+#focus-terminal:disabled {
+  opacity: 0.55;
+}
+
+@media (max-height: 720px) {
+  .shell {
+    padding-block: 16px;
+  }
+
+  .workspace-sidebar {
+    top: 10px;
+    max-height: calc(100vh - 20px);
+  }
+
+  .terminal-stack {
+    min-height: clamp(260px, 48vh, 420px);
+  }
+
+  .empty-state,
+  .terminal .xterm {
+    min-height: clamp(240px, 44vh, 400px);
+  }
+}
+
+@media (max-width: 760px) {
+  .terminal-preferences-v3,
+  .terminal-quick-actions {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .terminal-preferences-v3 label,
+  .terminal-preferences-v3 select,
+  .terminal-quick-actions button {
+    width: 100%;
+  }
+
+  .cursor-toggle {
+    display: flex;
+    justify-content: space-between;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --border: #7f8da0;
+    --muted: #d0d7e2;
+    --focus: #ffffff;
+  }
+
+  .status,
+  .terminal-stack,
+  .terminal-utility-row,
+  .list-state,
+  button,
+  input,
+  select,
+  dialog {
+    border-width: 2px;
+  }
+
+  .state-chip,
+  .count-badge {
+    border-width: 2px;
+  }
+}
+
+@media (forced-colors: active) {
+  :root {
+    forced-color-adjust: auto;
+  }
+
+  .status,
+  .terminal-stack,
+  .terminal-utility-row,
+  .list-state,
+  .state-chip,
+  .count-badge,
+  .transport-list li,
+  button,
+  input,
+  select,
+  dialog {
+    border-color: CanvasText;
+    background: Canvas;
+    color: CanvasText;
+    box-shadow: none;
+  }
+
+  button:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  .terminal-tab:focus-visible,
+  .terminal-tab-close:focus-visible {
+    outline: 3px solid Highlight;
+  }
+
+  .terminal-tab[aria-selected="true"],
+  .state-chip[data-state="connected"],
+  .state-chip[data-state="success"],
+  .state-chip[data-state="busy"],
+  .state-chip[data-state="error"],
+  .state-chip[data-state="unavailable"] {
+    border-color: Highlight;
+    color: CanvasText;
+  }
+
+  dialog::backdrop {
+    background: Canvas;
+    opacity: 0.75;
+  }
+}
