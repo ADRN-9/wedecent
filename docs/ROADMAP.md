@@ -2,7 +2,7 @@
 
 ## v0.4.4 core release status
 
-The secure remote-terminal/routed-access core and Phase 2 platform coverage are implemented. The repository can be finalized as a v0.4.4 release candidate once canonical CI passes on the release-readiness change.
+The secure remote-terminal/routed-access core and Phase 2 platform coverage are implemented, and the repository-side v0.4.4 release candidate was finalized by PR #94 after canonical CI passed on its exact head.
 
 The remaining Phase 1.1 checkboxes are external/platform-boundary items rather than missing core transport/session code:
 
