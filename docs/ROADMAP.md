@@ -125,6 +125,9 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
   - [x] Keep file-transfer ownership in the authenticated agent/Core session with opaque connection and operation IDs at application boundaries
   - [x] Add the fixed Local Core/desktop helper surface and trusted native upload/download flow without exposing local paths or file bytes to the renderer
   - [x] Add renderer controls that invoke only the fixed native transfer commands, fail closed on unavailable sessions, and preserve no-fallback/no-clobber behavior
+- [x] Desktop application UX and accessibility
+  - [x] Add a responsive workspace layout, local device/profile filtering, explicit Core/session/transfer state presentation, and in-app profile editing
+  - [x] Add keyboard-accessible terminal tab semantics, visible focus, reduced-motion handling, and deterministic UX contract checks without expanding renderer authority; see `DESKTOP_UX.md`
 - [ ] Local/remote port forwarding
 
 ## Phase 5 — team control plane
