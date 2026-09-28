@@ -88,7 +88,7 @@ func TestParseManagedMultiplexCapabilities(t *testing.T) {
 
 func TestManagedFileTransferLiveUploadDownloadAndTerminalSibling(t *testing.T) {
 	root := t.TempDir()
-	downloadData := bytes.Repeat([]byte("0123456789abcdef"), 40*1024) // 640 KiB, larger than one receive window.
+	downloadData := bytes.Repeat([]byte("0123456789abcdef"), 20*1024) // 320 KiB, crosses the 256 KiB receive window.
 	if err := os.WriteFile(root+"/download.bin", downloadData, 0o600); err != nil {
 		t.Fatal(err)
 	}

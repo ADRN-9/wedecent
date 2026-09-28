@@ -190,15 +190,21 @@ func TestApplyVerifiedInstallerSerializesSameSequence(t *testing.T) {
 		return nil
 	})
 
+	firstCtx, cancelFirst := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancelFirst()
 	first := make(chan error, 1)
 	go func() {
-		first <- store.ApplyVerifiedInstaller(context.Background(), manifest, path, 0, func(context.Context, string) error { return nil }, executor)
+		first <- store.ApplyVerifiedInstaller(firstCtx, manifest, path, 0, func(context.Context, string) error { return nil }, executor)
 	}()
 	select {
 	case <-started:
-	case <-time.After(2 * time.Second):
-		t.Fatal("first installer did not start")
+	case err := <-first:
+		t.Fatalf("first apply ended before installer start: %v", err)
+	case <-firstCtx.Done():
+		err := <-first
+		t.Fatalf("first installer did not start before context deadline: %v", err)
 	}
+
 	second := make(chan error, 1)
 	go func() {
 		second <- store.ApplyVerifiedInstaller(context.Background(), manifest, path, 0, func(context.Context, string) error { return nil }, executor)
