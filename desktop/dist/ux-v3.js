@@ -102,6 +102,15 @@ function resetTerminalAppearanceV3() {
   focusTerminalButtonV3.focus();
 }
 
+function clearProfileFilterV3() {
+  if (document.activeElement !== profileFilter || !profileFilter.value) {
+    return false;
+  }
+  profileFilter.value = '';
+  profileFilter.dispatchEvent(new Event('input', { bubbles: true }));
+  return true;
+}
+
 terminalCursorStyleV3.addEventListener('change', updateTerminalCursorPreferencesV3);
 terminalCursorBlinkV3.addEventListener('change', updateTerminalCursorPreferencesV3);
 terminalResetAppearanceV3.addEventListener('click', resetTerminalAppearanceV3);
@@ -109,16 +118,19 @@ focusTerminalButtonV3.addEventListener('click', focusActiveTerminalV3);
 
 document.addEventListener('keydown', (event) => {
   const action = uxV3Model.shortcutAction(event);
-  if (action === 'none') {
+  if (action !== 'none') {
+    event.preventDefault();
+    if (action === 'focus-terminal') {
+      focusActiveTerminalV3();
+    } else if (action === 'previous-tab') {
+      cycleTerminalTabV3(-1);
+    } else if (action === 'next-tab') {
+      cycleTerminalTabV3(1);
+    }
     return;
   }
-  event.preventDefault();
-  if (action === 'focus-terminal') {
-    focusActiveTerminalV3();
-  } else if (action === 'previous-tab') {
-    cycleTerminalTabV3(-1);
-  } else if (action === 'next-tab') {
-    cycleTerminalTabV3(1);
+  if (event.key === 'Escape' && clearProfileFilterV3()) {
+    event.preventDefault();
   }
 });
 
