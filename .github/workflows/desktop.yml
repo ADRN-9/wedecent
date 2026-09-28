@@ -47,14 +47,6 @@ jobs:
           rustup default stable
           rustc --version
           cargo --version
-      - name: Generate pinned native lock artifact
-        run: cargo generate-lockfile --manifest-path desktop/src-tauri/Cargo.toml
-      - name: Emit pinned native lock for branch repair
-        run: |
-          echo LOCK_B64_BEGIN
-          base64 -w0 desktop/src-tauri/Cargo.lock
-          echo
-          echo LOCK_B64_END
       - name: Verify Rust formatting
         run: cargo fmt --manifest-path desktop/src-tauri/Cargo.toml -- --check
       - name: Require committed dependency lock
