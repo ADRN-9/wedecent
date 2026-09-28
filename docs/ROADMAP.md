@@ -120,7 +120,11 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
 - [x] Session profiles
   - [x] Persist only a bounded local profile label and canonical device ID; profiles contain no trust material, credentials, grants, fingerprints, endpoints, or transport authority
   - [x] Resolve a profile target only against the current sanitized Local Core inventory before requesting a Core-owned connection
-- [ ] File transfer
+- [x] File transfer
+  - [x] Add bounded typed file-transfer framing, policy/capability negotiation, rooted storage, and lifecycle validation without weakening terminal-stream semantics
+  - [x] Keep file-transfer ownership in the authenticated agent/Core session with opaque connection and operation IDs at application boundaries
+  - [x] Add the fixed Local Core/desktop helper surface and trusted native upload/download flow without exposing local paths or file bytes to the renderer
+  - [x] Add renderer controls that invoke only the fixed native transfer commands, fail closed on unavailable sessions, and preserve no-fallback/no-clobber behavior
 - [ ] Local/remote port forwarding
 
 ## Phase 5 — team control plane
