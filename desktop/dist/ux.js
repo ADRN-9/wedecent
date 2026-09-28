@@ -114,24 +114,20 @@ function syncTerminalSemantics() {
   const tabButtons = [...terminalTabs.querySelectorAll('.terminal-tab')];
   const panels = [...terminalStack.querySelectorAll('.terminal')];
   tabButtons.forEach((button, index) => {
-    const tabID = button.closest('.terminal-tab-wrap')?.querySelector('.terminal-tab') === button
-      ? button.closest('.terminal-tab-wrap')
-      : null;
     const panel = panels[index];
     if (!panel) {
       return;
     }
-    const suffix = button.textContent ? index + 1 : index + 1;
-    const buttonID = button.id || `terminal-tab-button-${suffix}`;
-    const panelID = panel.id || `terminal-panel-${suffix}`;
+    const session = [...sessions.values()].find((entry) => entry.button === button);
+    const stableID = session?.tabID || `terminal-tab-fallback-${index + 1}`;
+    const buttonID = `${stableID}-button`;
+    const panelID = `${stableID}-panel`;
     button.id = buttonID;
     panel.id = panelID;
     button.setAttribute('aria-controls', panelID);
     button.tabIndex = button.getAttribute('aria-selected') === 'true' ? 0 : -1;
     panel.setAttribute('aria-labelledby', buttonID);
-    if (tabID) {
-      tabID.setAttribute('role', 'presentation');
-    }
+    button.closest('.terminal-tab-wrap')?.setAttribute('role', 'presentation');
   });
   syncSessionState();
 }
@@ -305,6 +301,9 @@ profileDialogCancel.addEventListener('click', () => {
   profileDialogTarget = null;
 });
 profileDialog.addEventListener('cancel', () => {
+  profileDialogTarget = null;
+});
+profileDialog.addEventListener('close', () => {
   profileDialogTarget = null;
 });
 
