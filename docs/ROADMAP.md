@@ -130,6 +130,8 @@ A normal passive USB-C cable between two ordinary USB-host PCs is not sufficient
   - [x] Add keyboard-accessible terminal tab semantics, visible focus, reduced-motion handling, and deterministic UX contract checks without expanding renderer authority; see `DESKTOP_UX.md`
   - [x] Add explicit empty/no-result collection states, deterministic modal/tab focus restoration, and visible keyboard shortcut guidance
   - [x] Add bounded renderer-only terminal appearance preferences plus deterministic behavior and deeper accessibility regression gates
+  - [x] Add forced-colors/increased-contrast and short-window resilience plus explicit terminal-focus/session-cycle keyboard affordances
+  - [x] Extend renderer-only terminal preferences with bounded cursor controls and deterministic v3 interaction/authority regression gates; see `DESKTOP_UX_V3.md`
 - [ ] Local/remote port forwarding
 
 ## Phase 5 — team control plane
