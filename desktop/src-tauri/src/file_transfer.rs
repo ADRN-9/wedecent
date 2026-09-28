@@ -162,7 +162,10 @@ fn upload_selected_file(
         },
     )
     .map_err(|_| BRIDGE_FAILURE.to_string())?;
-    validate_operation(&operation, &connection_id, "upload")?;
+    if let Err(err) = validate_operation(&operation, &connection_id, "upload") {
+        cancel_operation(bridge, &connection_id, &operation.id);
+        return Err(err);
+    }
 
     let mut buffer = vec![0u8; FILE_CHUNK_BYTES];
     let mut transferred = 0u64;
@@ -201,9 +204,14 @@ fn upload_selected_file(
             buffer.fill(0);
             return Err(BRIDGE_FAILURE.to_string());
         }
-        transferred = transferred
-            .checked_add(n as u64)
-            .ok_or_else(|| FILE_FAILURE.to_string())?;
+        transferred = match transferred.checked_add(n as u64) {
+            Some(total) => total,
+            None => {
+                buffer.fill(0);
+                cancel_operation(bridge, &connection_id, &operation.id);
+                return Err(FILE_FAILURE.to_string());
+            }
+        };
     }
     buffer.fill(0);
 
@@ -290,9 +298,13 @@ fn download_selected_file(
                 return Err(BRIDGE_FAILURE.to_string());
             }
         };
-        let mut decoded = STANDARD
-            .decode(read.data.as_bytes())
-            .map_err(|_| FILE_FAILURE.to_string())?;
+        let mut decoded = match STANDARD.decode(read.data.as_bytes()) {
+            Ok(decoded) => decoded,
+            Err(_) => {
+                cancel_operation(bridge, &connection_id, &operation.id);
+                return Err(FILE_FAILURE.to_string());
+            }
+        };
         if decoded.len() > FILE_CHUNK_BYTES || (!read.done && decoded.is_empty()) {
             decoded.fill(0);
             cancel_operation(bridge, &connection_id, &operation.id);
@@ -317,15 +329,19 @@ fn download_selected_file(
         }
     }
 
-    output.sync_all().map_err(|_| FILE_FAILURE.to_string())?;
+    if output.sync_all().is_err() {
+        cancel_operation(bridge, &connection_id, &operation.id);
+        return Err(FILE_FAILURE.to_string());
+    }
     drop(output);
-    publish_no_clobber(&temp_path, &destination).map_err(|err| {
-        if err.kind() == io::ErrorKind::AlreadyExists {
+    if let Err(err) = publish_no_clobber(&temp_path, &destination) {
+        cancel_operation(bridge, &connection_id, &operation.id);
+        return Err(if err.kind() == io::ErrorKind::AlreadyExists {
             DESTINATION_EXISTS.to_string()
         } else {
             FILE_FAILURE.to_string()
-        }
-    })?;
+        });
+    }
     cleanup.disarm();
 
     Ok(NativeFileTransferResult {
