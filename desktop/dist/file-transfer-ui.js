@@ -93,7 +93,7 @@ async function runUpload() {
   fileTransferDetail.textContent = 'Choose a local file in the native picker. Its path and bytes are not exposed to this renderer.';
   try {
     const result = await getInvoke()('file_upload_pick', { connectionId: connectionID, remotePath });
-    if (activeFileConnectionID() !== connectionID || !validateTransferResult(result)) {
+    if (!validateTransferResult(result)) {
       throw new Error('invalid native transfer result');
     }
     fileTransferDetail.textContent = result.cancelled
@@ -125,7 +125,7 @@ async function runDownload() {
   fileTransferDetail.textContent = 'Choose a destination in the native picker. Existing files are never silently replaced.';
   try {
     const result = await getInvoke()('file_download_pick', { connectionId: connectionID, remotePath });
-    if (activeFileConnectionID() !== connectionID || !validateTransferResult(result)) {
+    if (!validateTransferResult(result)) {
       throw new Error('invalid native transfer result');
     }
     fileTransferDetail.textContent = result.cancelled
