@@ -14,3 +14,5 @@ serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tauri = { version = "=2.11.5", features = [] }
 tauri-plugin-dialog = "=2.7.3"
+tauri-runtime = "=2.11.3"
+tauri-runtime-wry = "=2.11.4"
