@@ -10,93 +10,146 @@
   <link rel="stylesheet" href="./latency.css">
   <script src="./vendor/xterm.js" defer></script>
   <script src="./app.js" defer></script>
+  <script src="./ux.js" defer></script>
   <script src="./file-transfer-ui.js" defer></script>
   <script src="./latency.js" defer></script>
 </head>
 <body>
   <main class="shell" aria-labelledby="app-title">
-    <header>
-      <p class="eyebrow">WeDecent desktop</p>
-      <h1 id="app-title">Secure terminal</h1>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">WeDecent desktop</p>
+        <h1 id="app-title">Secure terminal</h1>
+      </div>
+      <p class="app-subtitle">A local client for Core-owned secure sessions.</p>
     </header>
 
-    <section class="status" aria-labelledby="core-heading" aria-live="polite">
-      <div class="status-heading">
-        <div>
-          <p class="eyebrow">Local Core</p>
-          <strong id="core-heading">Checking status…</strong>
-        </div>
-        <button id="retry-status" type="button">Retry</button>
+    <div class="workspace">
+      <aside class="workspace-sidebar" aria-label="Connection workspace">
+        <section class="status compact-card" aria-labelledby="core-heading" aria-live="polite">
+          <div class="status-heading">
+            <div>
+              <p class="eyebrow">Local Core</p>
+              <strong id="core-heading">Checking status…</strong>
+            </div>
+            <span id="core-state-chip" class="state-chip" data-state="busy">Checking</span>
+          </div>
+          <p id="core-detail">Connecting through the protected local application boundary.</p>
+          <button id="retry-status" class="secondary-action" type="button">Retry status</button>
+          <dl id="core-fields" hidden>
+            <div><dt>Device</dt><dd id="device-name"></dd></div>
+            <div><dt>Device ID</dt><dd id="device-id"></dd></div>
+            <div><dt>API</dt><dd id="api-version"></dd></div>
+            <div><dt>Account</dt><dd id="account-state"></dd></div>
+          </dl>
+        </section>
+
+        <section class="status compact-card" aria-labelledby="devices-heading">
+          <div class="section-title-row">
+            <div>
+              <p class="eyebrow">Known devices</p>
+              <strong id="devices-heading">Device inventory</strong>
+            </div>
+            <span id="device-count" class="count-badge" aria-label="0 devices">0</span>
+          </div>
+          <p id="devices-detail">Loaded from Local Core without endpoints or fingerprints.</p>
+          <label class="filter-label" for="device-filter">Filter devices</label>
+          <input id="device-filter" class="filter-input" type="search" autocomplete="off" placeholder="Name or device ID" aria-keyshortcuts="Control+K Meta+K">
+          <ul id="device-list" class="action-list"></ul>
+        </section>
+
+        <section class="status compact-card" aria-labelledby="profiles-heading">
+          <div class="section-title-row">
+            <div>
+              <p class="eyebrow">Profiles</p>
+              <strong id="profiles-heading">Session profiles</strong>
+            </div>
+            <span id="profile-count" class="count-badge" aria-label="0 profiles">0</span>
+          </div>
+          <p id="profiles-detail">Profiles are local presentation shortcuts only. They never store trust material, credentials, fingerprints, grants, endpoints, or transport authority.</p>
+          <label class="filter-label" for="profile-filter">Filter profiles</label>
+          <input id="profile-filter" class="filter-input" type="search" autocomplete="off" placeholder="Profile name">
+          <ul id="profile-list" class="action-list"></ul>
+        </section>
+
+        <section class="status compact-card transport-card" aria-labelledby="transports-heading">
+          <p class="eyebrow">Transports</p>
+          <strong id="transports-heading">Availability</strong>
+          <p>Informational only. Availability never establishes identity or trust.</p>
+          <ul id="transport-list" class="transport-list"></ul>
+        </section>
+      </aside>
+
+      <div class="workspace-main">
+        <section class="status terminal-panel" aria-labelledby="terminal-heading">
+          <div class="status-heading terminal-heading-row">
+            <div>
+              <p class="eyebrow">Terminal workspace</p>
+              <strong id="terminal-heading">No active session</strong>
+            </div>
+            <div class="terminal-actions">
+              <span id="session-state-chip" class="state-chip" data-state="idle">Idle</span>
+              <button id="disconnect-terminal" class="danger-action" type="button" disabled>Disconnect</button>
+            </div>
+          </div>
+          <p id="terminal-detail">Choose a known device. Local Core remains responsible for authorization, path selection, identity verification, and the secure session.</p>
+          <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="Terminal sessions"></div>
+          <div id="terminal-stack" class="terminal-stack" aria-live="polite">
+            <div id="terminal-empty" class="empty-state">
+              <strong>No terminal tabs are open</strong>
+              <span>Select a known device or saved profile to start a Core-owned session.</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="status file-transfer-panel" aria-labelledby="file-transfer-heading" aria-busy="false">
+          <div class="section-title-row">
+            <div>
+              <p class="eyebrow">Files</p>
+              <strong id="file-transfer-heading">Transfer through active session</strong>
+            </div>
+            <span id="file-transfer-state" class="state-chip" data-state="idle">Unavailable</span>
+          </div>
+          <p>Enter a canonical remote relative path. Local file selection and destination paths remain inside the trusted native process.</p>
+          <label class="file-path-label" for="file-remote-path">Remote path</label>
+          <input
+            id="file-remote-path"
+            class="file-path-input"
+            type="text"
+            inputmode="text"
+            autocomplete="off"
+            autocapitalize="off"
+            spellcheck="false"
+            maxlength="4096"
+            aria-describedby="file-path-hint file-transfer-detail"
+            placeholder="documents/report.txt"
+          >
+          <p id="file-path-hint" class="field-hint">Relative remote path; controls, backslashes, and paths over 4096 UTF-8 bytes are rejected.</p>
+          <div class="file-transfer-actions">
+            <button id="file-upload" class="primary-action" type="button" disabled>Upload from this computer</button>
+            <button id="file-download" class="secondary-action" type="button" disabled>Download to this computer</button>
+          </div>
+          <p id="file-transfer-detail" class="operation-detail" aria-live="polite">Open and activate an authenticated terminal session to use file transfer.</p>
+        </section>
       </div>
-      <p id="core-detail">Connecting through the protected local application boundary.</p>
-      <dl id="core-fields" hidden>
-        <div><dt>Device</dt><dd id="device-name"></dd></div>
-        <div><dt>Device ID</dt><dd id="device-id"></dd></div>
-        <div><dt>API</dt><dd id="api-version"></dd></div>
-        <div><dt>Account</dt><dd id="account-state"></dd></div>
-      </dl>
-    </section>
-
-    <section class="status" aria-labelledby="devices-heading">
-      <p class="eyebrow">Known devices</p>
-      <strong id="devices-heading">Device inventory</strong>
-      <p id="devices-detail">Loaded from Local Core without endpoints or fingerprints.</p>
-      <ul id="device-list"></ul>
-    </section>
-
-    <section class="status" aria-labelledby="profiles-heading">
-      <p class="eyebrow">Profiles</p>
-      <strong id="profiles-heading">Session profiles</strong>
-      <p id="profiles-detail">Profiles are local presentation shortcuts only. They never store trust material, credentials, fingerprints, grants, endpoints, or transport authority.</p>
-      <ul id="profile-list"></ul>
-    </section>
-
-    <section class="status terminal-panel" aria-labelledby="terminal-heading">
-      <div class="status-heading">
-        <div>
-          <p class="eyebrow">Terminal</p>
-          <strong id="terminal-heading">No active session</strong>
-        </div>
-        <button id="disconnect-terminal" type="button" disabled>Disconnect</button>
-      </div>
-      <p id="terminal-detail">Choose a known device. Local Core remains responsible for authorization, path selection, identity verification, and the secure session.</p>
-      <div id="terminal-tabs" class="terminal-tabs" role="tablist" aria-label="Terminal sessions"></div>
-      <div id="terminal-stack" class="terminal-stack" aria-live="polite">
-        <p id="terminal-empty">No terminal tabs are open.</p>
-      </div>
-    </section>
-
-    <section class="status file-transfer-panel" aria-labelledby="file-transfer-heading">
-      <p class="eyebrow">Files</p>
-      <strong id="file-transfer-heading">Transfer through active session</strong>
-      <p>Enter a canonical remote relative path. Local file selection and destination paths remain inside the trusted native process.</p>
-      <label class="file-path-label" for="file-remote-path">Remote path</label>
-      <input
-        id="file-remote-path"
-        class="file-path-input"
-        type="text"
-        inputmode="text"
-        autocomplete="off"
-        autocapitalize="off"
-        spellcheck="false"
-        maxlength="4096"
-        placeholder="documents/report.txt"
-      >
-      <div class="file-transfer-actions">
-        <button id="file-upload" type="button" disabled>Upload</button>
-        <button id="file-download" type="button" disabled>Download</button>
-      </div>
-      <p id="file-transfer-detail" aria-live="polite">Open and activate an authenticated terminal session to use file transfer.</p>
-    </section>
-
-    <section class="status" aria-labelledby="transports-heading">
-      <p class="eyebrow">Transports</p>
-      <strong id="transports-heading">Availability</strong>
-      <p>Availability is informational only and never establishes identity or trust.</p>
-      <ul id="transport-list"></ul>
-    </section>
+    </div>
 
     <p class="boundary">Trust, routing, transport selection, cryptography, credentials, and session authority remain outside this renderer.</p>
   </main>
+
+  <dialog id="profile-dialog" aria-labelledby="profile-dialog-title">
+    <form id="profile-dialog-form" method="dialog">
+      <p class="eyebrow">Local shortcut</p>
+      <h2 id="profile-dialog-title">Save session profile</h2>
+      <p id="profile-dialog-detail">Profiles store only a local label and canonical device ID.</p>
+      <label for="profile-dialog-name">Profile name</label>
+      <input id="profile-dialog-name" type="text" maxlength="64" autocomplete="off" required>
+      <p id="profile-dialog-error" class="form-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="profile-dialog-cancel" type="button" value="cancel">Cancel</button>
+        <button class="primary-action" type="submit" value="save">Save profile</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>
