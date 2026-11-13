@@ -85,6 +85,9 @@ func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pa
 			return fmt.Errorf("%w: write: %v; verify: %v", ErrPairingTrustUncertain, err, checkErr)
 		}
 		if persisted {
+			if errors.Is(err, ErrTrustStoreDurability) {
+				return fmt.Errorf("%w: trust snapshot is visible but not durably synchronized: %v", ErrPairingTrustUncertain, err)
+			}
 			return &pairingReconciledError{cause: err}
 		}
 		return fmt.Errorf("%w: %v", ErrPairingTrustPersist, err)
