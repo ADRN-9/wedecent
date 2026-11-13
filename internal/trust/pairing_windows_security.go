@@ -142,6 +142,25 @@ func validatePairingDACLForPrincipal(sddl, currentSID, rootSID string, isAdmin b
 	if !strings.Contains(entries, "(") || strings.Count(entries, "(") != strings.Count(entries, ")") {
 		return errors.New("Windows pairing DACL is missing or malformed")
 	}
+	// Convert SDDL aliases (including LA, the local Administrator account)
+	// into native identities. An administrator-group token does not authorize
+	// a different local Administrator account.
+	current, err := windows.StringToSid(currentSID)
+	if err != nil || current == nil || !current.IsValid() {
+		return errors.New("invalid Windows pairing current-account SID")
+	}
+	root, err := windows.StringToSid(rootSID)
+	if err != nil || root == nil || !root.IsValid() {
+		return errors.New("invalid Windows pairing state-owner SID")
+	}
+	system, err := windows.StringToSid(windowsSystemSID)
+	if err != nil {
+		return fmt.Errorf("resolve LocalSystem SID: %w", err)
+	}
+	administrators, err := windows.StringToSid(windowsAdminSID)
+	if err != nil {
+		return fmt.Errorf("resolve Administrators SID: %w", err)
+	}
 	grantsCurrent := false
 	grantsRoot := false
 	for {
@@ -167,10 +186,13 @@ func validatePairingDACLForPrincipal(sddl, currentSID, rootSID string, isAdmin b
 		if parts[0] != "A" {
 			return errors.New("unsupported Windows pairing ACE type")
 		}
-		sid := parts[5]
-		if sid != currentSID && sid != rootSID && sid != "SY" && sid != "BA" &&
-			sid != windowsSystemSID && sid != windowsAdminSID {
-			return fmt.Errorf("pairing state grants access to unauthorized SID %s", sid)
+		trustee, err := windows.StringToSid(parts[5])
+		if err != nil || trustee == nil || !trustee.IsValid() {
+			return errors.New("pairing state ACE trustee SID is invalid")
+		}
+		if !trustee.Equals(current) && !trustee.Equals(root) &&
+			!trustee.Equals(system) && !trustee.Equals(administrators) {
+			return fmt.Errorf("pairing state grants access to unauthorized SID %s", parts[5])
 		}
 		if parts[3] != "" || parts[4] != "" {
 			return errors.New("unsupported object-specific pairing ACE")
@@ -182,12 +204,10 @@ func validatePairingDACLForPrincipal(sddl, currentSID, rootSID string, isAdmin b
 		}
 		inheritOnly := strings.Contains(parts[1], "IO")
 		if !inheritOnly {
-			if sid == currentSID || (isAdmin && (sid == "BA" || sid == windowsAdminSID)) ||
-				(currentSID == windowsSystemSID && (sid == "SY" || sid == windowsSystemSID)) {
+			if trustee.Equals(current) || (isAdmin && trustee.Equals(administrators)) {
 				grantsCurrent = true
 			}
-			if sid == rootSID || (rootSID == windowsAdminSID && (sid == "BA" || sid == windowsAdminSID)) ||
-				(rootSID == windowsSystemSID && (sid == "SY" || sid == windowsSystemSID)) {
+			if trustee.Equals(root) {
 				grantsRoot = true
 			}
 		}
