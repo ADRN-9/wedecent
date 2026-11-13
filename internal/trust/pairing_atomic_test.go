@@ -194,6 +194,86 @@ func TestPairingAtomicCrossProcessConsumption(t *testing.T) {
 	}
 }
 
+// A killed worker must not leave the secret reusable or the peer trusted.
+// Hold the trust-store lock so the child stops after consuming the secret but
+// before persistence, then kill it and restart the authorization attempt.
+func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
+	dir := t.TempDir()
+	store := pairingTestStore(t, dir)
+	secret, err := RotatePairingSecret(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unlockStore, err := lockStoreFile(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { if unlockStore != nil { unlockStore() } }()
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := filepath.Join(dir, "interrupted-start")
+	ready := filepath.Join(dir, "interrupted-ready")
+	child := exec.Command(exe, "-test.run=^TestPairingAtomicChildProcess$")
+	var output bytes.Buffer
+	child.Stdout, child.Stderr = &output, &output
+	child.Env = append(os.Environ(),
+		"WEDECENT_PAIRING_TEST_CHILD=1",
+		"WEDECENT_PAIRING_TEST_DIR="+dir,
+		"WEDECENT_PAIRING_TEST_SECRET="+secret,
+		"WEDECENT_PAIRING_TEST_PEER=wd_aaaaaaaaaaaaaaaa",
+		"WEDECENT_PAIRING_TEST_READY="+ready,
+		"WEDECENT_PAIRING_TEST_START="+start,
+	)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("interrupted helper not ready: %s", output.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := os.WriteFile(start, []byte("go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	secretPath := filepath.Join(dir, pairingSecretFile)
+	for {
+		if _, err := os.Lstat(secretPath); errors.Is(err, os.ErrNotExist) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child did not consume secret: %s", output.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Wait()
+	unlockStore()
+	unlockStore = nil
+	// Re-open after process death to prove persistent trust was not modified.
+	reopened, err := Open(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := pairingTestPeer("wd_aaaaaaaaaaaaaaaa")
+	if _, ok := reopened.Get(peer.ID); ok {
+		t.Fatal("interrupted persistence inserted trust")
+	}
+	if err := PairClientWithSecret(dir, secret, reopened, peer); !errors.Is(err, ErrPairingSecretInvalid) {
+		t.Fatalf("interrupted operation left reusable secret: %v", err)
+	}
+}
+
 func TestPairingAtomicChildProcess(t *testing.T) {
 	if os.Getenv("WEDECENT_PAIRING_TEST_CHILD") != "1" {
 		return
