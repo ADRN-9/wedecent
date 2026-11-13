@@ -14,15 +14,15 @@ import (
 )
 
 const (
-	pairingSecretFile = "pairing-secret.sha256"
-	pairingHashBytes  = 65 // 64 lowercase SHA-256 hex characters and LF.
+	pairingSecretFile   = "pairing-secret.sha256"
+	pairingHashBytes    = 65 // 64 lowercase SHA-256 hex characters and LF.
 	consumedPairingHash = "0000000000000000000000000000000000000000000000000000000000000000"
 )
 
 var (
-	ErrPairingSecretInvalid = errors.New("pairing secret is invalid, missing, or already consumed")
-	ErrPairingStateUnsafe   = errors.New("pairing state is unavailable or unsafe")
-	ErrPairingTrustPersist  = errors.New("pairing secret consumed but trust persistence failed")
+	ErrPairingSecretInvalid  = errors.New("pairing secret is invalid, missing, or already consumed")
+	ErrPairingStateUnsafe    = errors.New("pairing state is unavailable or unsafe")
+	ErrPairingTrustPersist   = errors.New("pairing secret consumed but trust persistence failed")
 	ErrPairingTrustUncertain = errors.New("pairing trust persistence outcome could not be verified")
 )
 
@@ -42,6 +42,9 @@ type pairingHooks struct {
 func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pairingHooks) error {
 	if clients == nil {
 		return fmt.Errorf("%w: terminal trust store is unavailable", ErrPairingStateUnsafe)
+	}
+	if filepath.Clean(clients.path) != filepath.Join(filepath.Clean(dir), "trusted-clients.json") {
+		return fmt.Errorf("%w: pairing requires the dedicated terminal trust store", ErrPairingStateUnsafe)
 	}
 	if !validPairingSecret(secret) {
 		return ErrPairingSecretInvalid
@@ -118,6 +121,9 @@ func RotatePairingSecret(dir string) (string, error) {
 		return "", fmt.Errorf("%w: %v", ErrPairingStateUnsafe, err)
 	}
 	if err := tmp.Chmod(0o600); err != nil {
+		return closeWithError(err)
+	}
+	if err := pairingWindowsStateSecure(tmpPath); err != nil {
 		return closeWithError(err)
 	}
 	if _, err := io.WriteString(tmp, HashSecret(secret)+"\n"); err != nil {
@@ -209,6 +215,9 @@ func lockPairing(dir string) (string, func(), error) {
 			return "", nil, fmt.Errorf("%w: cannot secure state directory", ErrPairingStateUnsafe)
 		}
 	}
+	if err := pairingWindowsStateSecure(dir); err != nil {
+		return "", nil, fmt.Errorf("%w: state directory ACL: %v", ErrPairingStateUnsafe, err)
+	}
 	path := filepath.Join(dir, pairingSecretFile)
 	unlock, err := lockPairingFile(path)
 	if err != nil {
@@ -237,6 +246,9 @@ func readPairingHash(path string) (string, error) {
 	}
 	if !pairingOwnedByCurrentUser(before) {
 		return "", fmt.Errorf("%w: hash file ownership is unsafe", ErrPairingStateUnsafe)
+	}
+	if err := pairingWindowsStateSecure(path); err != nil {
+		return "", fmt.Errorf("%w: hash file ACL: %v", ErrPairingStateUnsafe, err)
 	}
 	if runtime.GOOS != "windows" && before.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("%w: hash file permissions are unsafe", ErrPairingStateUnsafe)
@@ -276,6 +288,9 @@ func consumePairingSecretFile(path, expectedHash string) error {
 	before, err := os.Lstat(path)
 	if err != nil || !before.Mode().IsRegular() || before.Size() != pairingHashBytes {
 		return fmt.Errorf("%w: hash file disappeared before consumption", ErrPairingStateUnsafe)
+	}
+	if err := pairingWindowsStateSecure(path); err != nil {
+		return fmt.Errorf("%w: hash file ACL: %v", ErrPairingStateUnsafe, err)
 	}
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
