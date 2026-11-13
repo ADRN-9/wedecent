@@ -270,3 +270,23 @@ func TestPairingRecoveryProcessKilledAfterDurablePending(t *testing.T) {
 		t.Fatalf("pending journal lost after process kill: %+v, %v", rows, err)
 	}
 }
+
+func TestPairingRecoveryRemovedFileRequiresOperatorRepair(t *testing.T) {
+	dir := recoveryTestDir(t)
+	r, err := OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Begin(testRecoveryRecord(strings.Repeat("e", 32))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, PairingOutcomeFileName)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenPairingRecovery(dir); err == nil {
+		t.Fatal("removed pairing recovery ledger was silently recreated")
+	}
+	if err := r.Begin(testRecoveryRecord(strings.Repeat("f", 32))); err == nil {
+		t.Fatal("open recovery handle accepted lost ledger")
+	}
+}

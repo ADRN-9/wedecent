@@ -2,6 +2,14 @@
 
 package audit
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
-func secureRecoveryTestDir(_ *testing.T, _ string) {}
+func secureRecoveryTestDir(t *testing.T, dir string) {
+	t.Helper()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+}

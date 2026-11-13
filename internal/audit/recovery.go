@@ -54,6 +54,7 @@ type PairingRecovery struct {
 	beforeReplace func() error
 	afterReplace func() error
 	beforeRead func() error
+	allowEmpty bool
 }
 
 func NewPairingAttemptID() (string, error) {
@@ -76,6 +77,15 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 		return nil, fmt.Errorf("pairing recovery durability unavailable: %w", err)
 	}
 	r := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName)}
+	_, stateErr := os.Lstat(r.path)
+	_, lockErr := os.Lstat(r.path + ".lock")
+	if errors.Is(stateErr, os.ErrNotExist) && errors.Is(lockErr, os.ErrNotExist) {
+		r.allowEmpty = true
+	} else if errors.Is(stateErr, os.ErrNotExist) {
+		return nil, errors.New("pairing recovery file missing after initialization: operator repair required")
+	} else if stateErr != nil {
+		return nil, stateErr
+	}
 	if _, err := r.read(); err != nil {
 		return nil, err
 	}
@@ -132,6 +142,9 @@ func (r *PairingRecovery) read() (pairingOutcomeSnapshot, error) {
 	}
 	info, err := os.Lstat(r.path)
 	if errors.Is(err, os.ErrNotExist) {
+		if !r.allowEmpty {
+			return empty, errors.New("pairing recovery file disappeared")
+		}
 		return empty, nil
 	}
 	if err != nil {
@@ -180,6 +193,9 @@ func (r *PairingRecovery) read() (pairingOutcomeSnapshot, error) {
 }
 
 func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) error {
+	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
+		return fmt.Errorf("unsafe pairing recovery root: %w", err)
+	}
 	unlock, err := lockFile(r.path)
 	if err != nil {
 		return err
@@ -198,7 +214,14 @@ func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) e
 	if err := validatePairingSnapshot(snapshot); err != nil {
 		return err
 	}
-	return r.write(snapshot)
+	if err := r.write(snapshot); err != nil {
+		if _, statErr := os.Lstat(r.path); statErr == nil {
+			r.allowEmpty = false
+		}
+		return err
+	}
+	r.allowEmpty = false
+	return nil
 }
 
 func (r *PairingRecovery) write(snapshot pairingOutcomeSnapshot) error {
@@ -306,6 +329,9 @@ func (r *PairingRecovery) Complete(attemptID, outcome string) error {
 func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 	if r == nil {
 		return nil, errors.New("pairing recovery unavailable")
+	}
+	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
+		return nil, err
 	}
 	unlock, err := lockFile(r.path)
 	if err != nil {

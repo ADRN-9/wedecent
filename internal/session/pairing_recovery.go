@@ -1,7 +1,9 @@
 package session
 
 import (
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"wedecent.com/wedecent/internal/audit"
@@ -33,7 +35,15 @@ func InspectPairingRecovery(stateDir string) ([]PairingRecoveryAssessment, error
 	if err != nil {
 		return nil, err
 	}
-	fresh, err := trust.Open(filepath.Join(stateDir, "trusted-clients.json"))
+	trustPath := filepath.Join(stateDir, "trusted-clients.json")
+	if _, statErr := os.Lstat(trustPath); statErr == nil {
+		if err := trust.VerifyPairingStatePath(trustPath); err != nil {
+			return nil, fmt.Errorf("unsafe authoritative pairing trust: %w", err)
+		}
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return nil, statErr
+	}
+	fresh, err := trust.Open(trustPath)
 	if err != nil {
 		return nil, fmt.Errorf("read authoritative pairing trust: %w", err)
 	}
