@@ -30,7 +30,6 @@ func TestWindowsPairingVolumeRejectsNonlocalAndRemovableDrives(t *testing.T) {
 }
 
 func TestWindowsPairingLocalNTFSStatePreflight(t *testing.T) {
-	preparePairingTestDir(t, t.TempDir())
 	dir := t.TempDir()
 	preparePairingTestDir(t, dir)
 	if err := syncPairingDirectory(dir); err != nil {
