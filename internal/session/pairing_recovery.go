@@ -11,15 +11,15 @@ import (
 )
 
 const (
-	PairingRecoveryConfirmed = "confirmed"
+	PairingRecoveryConfirmed          = "confirmed"
 	PairingRecoveryVisibleUnconfirmed = "trust_visible_unconfirmed"
-	PairingRecoveryUnresolved = "unresolved"
-	PairingRecoveryConflict = "trust_conflict"
-	PairingRecoveryDenied = "denied"
+	PairingRecoveryUnresolved         = "unresolved"
+	PairingRecoveryConflict           = "trust_conflict"
+	PairingRecoveryDenied             = "denied"
 )
 
 type PairingRecoveryAssessment struct {
-	Audit audit.PairingOutcome
+	Audit  audit.PairingOutcome
 	Status string
 }
 

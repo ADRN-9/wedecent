@@ -111,11 +111,11 @@ func TestPairingRecoveryDurabilityFaultsAndReconciliationReadFailure(t *testing.
 
 func TestPairingRecoveryMalformedTruncatedSymlinkAndPermissionGuards(t *testing.T) {
 	for name, content := range map[string]string{
-		"truncated": "{",
+		"truncated":     "{",
 		"unknown-field": `{"version":1,"records":[],"unexpected":true}`,
-		"bad-version": `{"version":9,"records":[]}`,
-		"duplicate": `{"version":1,"records":[{"attempt_id":"00000000000000000000000000000000"}]}`,
-		"trailing": `{"version":1,"records":[]}{}`,
+		"bad-version":   `{"version":9,"records":[]}`,
+		"duplicate":     `{"version":1,"records":[{"attempt_id":"00000000000000000000000000000000"}]}`,
+		"trailing":      `{"version":1,"records":[]}{}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := recoveryTestDir(t)
@@ -247,7 +247,7 @@ func TestPairingRecoveryProcessKilledAfterDurablePending(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
-	deadline := time.Now().Add(10*time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, err := os.Stat(ready); err == nil {
 			break
@@ -255,7 +255,7 @@ func TestPairingRecoveryProcessKilledAfterDurablePending(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatalf("child did not commit pending record: %s", output.String())
 		}
-		time.Sleep(20*time.Millisecond)
+		time.Sleep(20 * time.Millisecond)
 	}
 	if err := child.Process.Kill(); err != nil {
 		t.Fatal(err)

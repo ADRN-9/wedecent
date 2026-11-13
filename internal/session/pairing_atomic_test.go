@@ -342,7 +342,7 @@ func TestInspectPairingRecoveryDoesNotEquateVisibilityWithCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := trust.Peer{
-		ID: "wd_bbbbbbbbbbbbbbbb",
+		ID:          "wd_bbbbbbbbbbbbbbbb",
 		Fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 	}
 	const first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"

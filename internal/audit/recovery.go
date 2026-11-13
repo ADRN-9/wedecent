@@ -17,13 +17,13 @@ import (
 )
 
 const (
-	PairingOutcomeFileName = "pairing-outcomes.json"
-	maxPairingOutcomes = 64
-	maxPairingOutcomeBytes = 64 << 10
-	PairingOutcomePending = "pending"
-	PairingOutcomeSuccess = "success"
-	PairingOutcomeDenied = "denied"
-	PairingOutcomeFailed = "failed"
+	PairingOutcomeFileName  = "pairing-outcomes.json"
+	maxPairingOutcomes      = 64
+	maxPairingOutcomeBytes  = 64 << 10
+	PairingOutcomePending   = "pending"
+	PairingOutcomeSuccess   = "success"
+	PairingOutcomeDenied    = "denied"
+	PairingOutcomeFailed    = "failed"
 	PairingOutcomeUncertain = "uncertain"
 )
 
@@ -32,29 +32,29 @@ var pairingFingerprintPattern = regexp.MustCompile(`^SHA256:[0-9A-Fa-f]{64}$`)
 var pairingAttemptPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 type PairingOutcome struct {
-	AttemptID string `json:"attempt_id"`
-	ActorID string `json:"actor_id"`
-	PeerID string `json:"peer_id"`
-	Fingerprint string `json:"fingerprint"`
-	Outcome string `json:"outcome"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	AttemptID   string    `json:"attempt_id"`
+	ActorID     string    `json:"actor_id"`
+	PeerID      string    `json:"peer_id"`
+	Fingerprint string    `json:"fingerprint"`
+	Outcome     string    `json:"outcome"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 type pairingOutcomeSnapshot struct {
-	Version int `json:"version"`
+	Version int              `json:"version"`
 	Records []PairingOutcome `json:"records"`
 }
 
 // PairingRecovery is independent of rotating audit files. Entries never
 // expire or disappear automatically, including when capacity is reached.
 type PairingRecovery struct {
-	path string
+	path          string
 	syncDirectory func(string) error
 	beforeReplace func() error
-	afterReplace func() error
-	beforeRead func() error
-	allowEmpty bool
+	afterReplace  func() error
+	beforeRead    func() error
+	allowEmpty    bool
 }
 
 func NewPairingAttemptID() (string, error) {

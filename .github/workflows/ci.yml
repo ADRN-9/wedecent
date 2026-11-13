@@ -45,9 +45,6 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
-      - name: WD-C16 temporary formatter diff (remove before final candidate)
-        run: |
-          gofmt -d internal/audit/log.go internal/audit/recovery.go internal/audit/recovery_test.go internal/session/pairing_recovery.go internal/session/server.go internal/session/pairing_atomic_test.go internal/trust/pairing.go
       - name: Verify formatting
         run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
