@@ -108,12 +108,6 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		_ = sendError(conn, "bad_request", "invalid pair request")
 		return
 	}
-	ok, err := trust.CheckPairingSecret(s.StateDir, req.PairingSecret)
-	if err != nil || !ok {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "invalid_pairing_secret"})
-		_ = sendError(conn, "pairing_denied", "invalid pairing secret")
-		return
-	}
 	fp, err := identity.FingerprintPublicKey(peer.PublicKey)
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "invalid_client_key"})
@@ -130,15 +124,22 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 	if name == "" {
 		name = peer.Subject.CommonName
 	}
-	// Consume the high-entropy secret before persisting trust so it cannot be reused.
-	if err := invalidatePairingSecret(s.StateDir); err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, Reason: "pairing_secret_consume_failed"})
-		_ = sendError(conn, "server_error", "could not consume pairing secret")
-		return
-	}
-	if err := s.Trust.Put(trust.Peer{ID: clientID, Name: name, Fingerprint: fp}); err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, Reason: "trust_persist_failed"})
-		_ = sendError(conn, "server_error", "could not persist trust; generate a new pairing secret")
+	// Pairing state is consumed and trust persisted under one cross-process lock.
+	// Validate the TLS-bound identity before entering this transaction.
+	if err := trust.PairClientWithSecret(s.StateDir, req.PairingSecret, s.Trust, trust.Peer{
+		ID: clientID, Name: name, Fingerprint: fp,
+	}); err != nil {
+		if errors.Is(err, trust.ErrPairingSecretInvalid) {
+			s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_pairing_secret"})
+			_ = sendError(conn, "pairing_denied", "invalid or already consumed pairing secret")
+			return
+		}
+		reason := "pairing_secret_consume_failed"
+		if errors.Is(err, trust.ErrPairingTrustPersist) {
+			reason = "trust_persist_failed"
+		}
+		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, Reason: reason})
+		_ = sendError(conn, "server_error", "pairing state unavailable; generate a new pairing secret after resolving the error")
 		return
 	}
 	s.recordAudit(audit.Event{Type: "pairing.trust_added", Outcome: "success", PeerID: clientID, Transport: transport})
