@@ -129,8 +129,7 @@ func RotatePairingSecret(dir string) (string, error) {
 	if err := pairingWindowsStateSecure(tmpPath); err != nil {
 		return closeWithError(err)
 	}
-	if _, err := io.WriteString(tmp, HashSecret(secret)+"
-"); err != nil {
+	if _, err := io.WriteString(tmp, HashSecret(secret)+"\n"); err != nil {
 		return closeWithError(err)
 	}
 	if err := tmp.Sync(); err != nil {
@@ -277,8 +276,7 @@ func readPairingHash(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: read hash: %v", ErrPairingStateUnsafe, err)
 	}
-	if len(data) != pairingHashBytes || data[64] != '
-' {
+	if len(data) != pairingHashBytes || data[64] != '\n' {
 		return "", fmt.Errorf("%w: invalid hash encoding", ErrPairingStateUnsafe)
 	}
 	hash := string(data[:64])
@@ -314,12 +312,10 @@ func consumePairingSecretFile(path, expectedHash string) error {
 		return fmt.Errorf("%w: hash path changed before consumption", ErrPairingStateUnsafe)
 	}
 	var data [pairingHashBytes]byte
-	if _, err := f.ReadAt(data[:], 0); err != nil || string(data[:]) != expectedHash+"
-" {
+	if _, err := f.ReadAt(data[:], 0); err != nil || string(data[:]) != expectedHash+"\n" {
 		return ErrPairingSecretInvalid
 	}
-	tombstone := []byte(consumedPairingHash + "
-")
+	tombstone := []byte(consumedPairingHash + "\n")
 	if n, err := f.WriteAt(tombstone, 0); err != nil || n != len(tombstone) {
 		return fmt.Errorf("%w: write consumed marker: %v", ErrPairingStateUnsafe, err)
 	}
