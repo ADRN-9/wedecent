@@ -133,7 +133,7 @@ func TestAppendAuditDirectorySyncFailureIsNotAcknowledged(t *testing.T) {
 	// The line can already be visible, even though durability is uncertain.
 	// The pairing protocol must not consume a secret on this return path.
 	data, err := os.ReadFile(filepath.Join(dir, FileName))
-	if err != nil || !strings.Contains(string(data), "\\"outcome\\":\\"pending\\"") {
+	if err != nil || !strings.Contains(string(data), `"outcome":"pending"`) {
 		t.Fatalf("unacknowledged pending event is not readable: %q, %v", data, err)
 	}
 	log, err = Open(dir)
@@ -145,7 +145,7 @@ func TestAppendAuditDirectorySyncFailureIsNotAcknowledged(t *testing.T) {
 	}
 }
 
-func TestAuditRotationDirectorySyncFailureIsExplicit(t *testing.T) {
+func TestAuditRotationPersistsAcrossRestart(t *testing.T) {
 	dir := t.TempDir()
 	log, err := open(filepath.Join(dir, FileName), maxEventSize+256)
 	if err != nil {
@@ -178,5 +178,45 @@ func TestAuditRotationDirectorySyncFailureIsExplicit(t *testing.T) {
 	archive, err := os.ReadFile(filepath.Join(dir, archiveFileName))
 	if err != nil || len(archive) == 0 {
 		t.Fatalf("rotated log not readable after restart: %v", err)
+	}
+}
+
+func TestAuditRotationMetadataFailureIsNotAcknowledged(t *testing.T) {
+	dir := t.TempDir()
+	log, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(dir, archiveFileName)
+	log.syncDir = func(d string) error {
+		if _, err := os.Stat(archivePath); err == nil {
+			return errors.New("injected post-rename directory sync failure")
+		}
+		return syncAuditDirectory(d)
+	}
+	sawFailure := false
+	for i := 0; i < 100; i++ {
+		err := log.Append(Event{Type: "terminal.session_closed", Outcome: "success", Reason: strings.Repeat("x", 250)})
+		if err != nil {
+			if !strings.Contains(err.Error(), "sync rotated audit directory") {
+				t.Fatalf("unexpected append error: %v", err)
+			}
+			sawFailure = true
+			break
+		}
+	}
+	if !sawFailure {
+		t.Fatal("audit rotation sync failure was not exercised")
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil || len(archive) == 0 {
+		t.Fatalf("audit archive disappeared after metadata failure: %v", err)
+	}
+	restarted, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Append(Event{Type: "pairing.request", Outcome: "pending", PeerID: "wd_aaaaaaaaaaaaaaaa"}); err != nil {
+		t.Fatalf("audit restart after uncertain rotation: %v", err)
 	}
 }
