@@ -36,6 +36,17 @@ The client must already know the expected device SPKI fingerprint. It establishe
 
 The server validates that the TLS client certificate derives to `client_id`, consumes the pairing secret, persists the client fingerprint, and returns the server device identity. The client then persists the server fingerprint and locator.
 
+Pairing validation and consumption, followed by trust persistence, are serialized
+by a machine-local cross-process pairing lock. The agent verifies the TLS
+client certificate, fingerprint, and claimed device ID before entering this
+transaction. Invalid, missing, and already-consumed secrets are denied.
+
+Secret rotation takes the same lock and atomically replaces a private hash
+file. An interrupted operation or trust-store persistence error may consume a
+secret without producing a successful pairing; operators must generate a new
+secret after resolving the failure. No operation automatically restores,
+regenerates, or reuses a consumed secret.
+
 A consumed secret cannot be reused; generate another with:
 
 ```bash
