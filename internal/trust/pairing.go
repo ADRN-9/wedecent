@@ -3,38 +3,207 @@ package trust
 import (
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
+const (
+	pairingSecretFile = "pairing-secret.sha256"
+	pairingHashBytes  = 65 // 64 lowercase SHA-256 hex characters and LF.
+)
+
+var (
+	ErrPairingSecretInvalid = errors.New("pairing secret is invalid, missing, or already consumed")
+	ErrPairingStateUnsafe   = errors.New("pairing state is unavailable or unsafe")
+	ErrPairingTrustPersist  = errors.New("pairing secret consumed but trust persistence failed")
+)
+
+// PairClientWithSecret is the only pairing authorization transaction. The
+// persistent pairing-file lock is shared with RotatePairingSecret, including
+// across agent processes. The secret is consumed before granting trust: a
+// crash or failed trust write may burn the secret, but must never replay it.
+func PairClientWithSecret(dir, secret string, clients *Store, peer Peer) error {
+	if clients == nil {
+		return fmt.Errorf("%w: terminal trust store is unavailable", ErrPairingStateUnsafe)
+	}
+	if !validPairingSecret(secret) {
+		return ErrPairingSecretInvalid
+	}
+	path, unlock, err := lockPairing(dir)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	hash, err := readPairingHash(path)
+	if err != nil {
+		return err
+	}
+	if !SecretMatches(hash, secret) {
+		return ErrPairingSecretInvalid
+	}
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("%w: consume secret: %v", ErrPairingStateUnsafe, err)
+	}
+	if err := clients.Put(peer); err != nil {
+		return fmt.Errorf("%w: %v", ErrPairingTrustPersist, err)
+	}
+	return nil
+}
+
+// RotatePairingSecret synchronizes with every consumer and installs a complete
+// 0600 hash through an atomic same-directory replacement. The plaintext secret
+// is never persisted. Unsafe existing state is not silently overwritten.
 func RotatePairingSecret(dir string) (string, error) {
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	var buf [24]byte
+	if _, err := rand.Read(buf[:]); err != nil {
 		return "", err
 	}
-	buf := make([]byte, 24)
-	if _, err := rand.Read(buf); err != nil {
+	secret := base64.RawURLEncoding.EncodeToString(buf[:])
+	path, unlock, err := lockPairing(dir)
+	if err != nil {
 		return "", err
 	}
-	secret := base64.RawURLEncoding.EncodeToString(buf)
-	path := filepath.Join(dir, "pairing-secret.sha256")
-	if err := os.WriteFile(path, []byte(HashSecret(secret)+"\n"), 0o600); err != nil {
+	defer unlock()
+
+	if _, err := readPairingHash(path); err != nil && !errors.Is(err, ErrPairingSecretInvalid) {
 		return "", err
 	}
-	if err := os.Chmod(path, 0o600); err != nil {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pairing-secret-*")
+	if err != nil {
+		return "", fmt.Errorf("%w: create replacement: %v", ErrPairingStateUnsafe, err)
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	closeWithError := func(err error) (string, error) {
+		_ = tmp.Close()
+		return "", fmt.Errorf("%w: %v", ErrPairingStateUnsafe, err)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		return closeWithError(err)
+	}
+	if _, err := io.WriteString(tmp, HashSecret(secret)+"\n"); err != nil {
+		return closeWithError(err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return closeWithError(err)
+	}
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("%w: close replacement: %v", ErrPairingStateUnsafe, err)
+	}
+	// Defend against substitution between inspection and replacement.
+	if _, err := readPairingHash(path); err != nil && !errors.Is(err, ErrPairingSecretInvalid) {
 		return "", err
+	}
+	if err := replacePairingSecretFile(tmpPath, path); err != nil {
+		return "", fmt.Errorf("%w: replace secret: %v", ErrPairingStateUnsafe, err)
+	}
+	hash, err := readPairingHash(path)
+	if err != nil || !SecretMatches(hash, secret) {
+		return "", fmt.Errorf("%w: verify rotated secret", ErrPairingStateUnsafe)
 	}
 	return secret, nil
 }
 
+// CheckPairingSecret is read-only; callers must never authorize pairing using
+// this check. PairClientWithSecret performs the locked consume+trust transaction.
 func CheckPairingSecret(dir, secret string) (bool, error) {
-	data, err := os.ReadFile(filepath.Join(dir, "pairing-secret.sha256"))
-	if errors.Is(err, os.ErrNotExist) {
+	if !validPairingSecret(secret) {
+		return false, nil
+	}
+	path, unlock, err := lockPairing(dir)
+	if err != nil {
+		return false, err
+	}
+	defer unlock()
+	hash, err := readPairingHash(path)
+	if errors.Is(err, ErrPairingSecretInvalid) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return SecretMatches(strings.TrimSpace(string(data)), secret), nil
+	return SecretMatches(hash, secret), nil
+}
+
+func validPairingSecret(secret string) bool {
+	if len(secret) != 32 {
+		return false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(secret)
+	return err == nil && len(raw) == 24 && base64.RawURLEncoding.EncodeToString(raw) == secret
+}
+
+func lockPairing(dir string) (string, func(), error) {
+	if dir == "" {
+		return "", nil, fmt.Errorf("%w: state directory is empty", ErrPairingStateUnsafe)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", nil, fmt.Errorf("%w: create state directory: %v", ErrPairingStateUnsafe, err)
+	}
+	before, err := os.Lstat(dir)
+	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
+		return "", nil, fmt.Errorf("%w: state directory is not a real directory", ErrPairingStateUnsafe)
+	}
+	if runtime.GOOS != "windows" && before.Mode().Perm()&0o077 != 0 {
+		return "", nil, fmt.Errorf("%w: state directory is accessible to other users", ErrPairingStateUnsafe)
+	}
+	path := filepath.Join(dir, pairingSecretFile)
+	unlock, err := lockPairingFile(path)
+	if err != nil {
+		return "", nil, fmt.Errorf("%w: acquire pairing lock: %v", ErrPairingStateUnsafe, err)
+	}
+	after, err := os.Lstat(dir)
+	if err != nil || !os.SameFile(before, after) || after.Mode()&os.ModeSymlink != 0 {
+		unlock()
+		return "", nil, fmt.Errorf("%w: state directory changed during lock", ErrPairingStateUnsafe)
+	}
+	return path, unlock, nil
+}
+
+// An absent hash is a cleanly rejected replay, while unexpected files, loose
+// Unix modes, invalid encodings, and path changes are operational failures.
+func readPairingHash(path string) (string, error) {
+	before, err := os.Lstat(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", ErrPairingSecretInvalid
+	}
+	if err != nil {
+		return "", fmt.Errorf("%w: stat hash: %v", ErrPairingStateUnsafe, err)
+	}
+	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() != pairingHashBytes {
+		return "", fmt.Errorf("%w: hash file type or size invalid", ErrPairingStateUnsafe)
+	}
+	if runtime.GOOS != "windows" && before.Mode().Perm()&0o077 != 0 {
+		return "", fmt.Errorf("%w: hash file permissions are unsafe", ErrPairingStateUnsafe)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("%w: open hash: %v", ErrPairingStateUnsafe, err)
+	}
+	defer f.Close()
+	opened, e1 := f.Stat()
+	after, e2 := os.Lstat(path)
+	if e1 != nil || e2 != nil || !opened.Mode().IsRegular() || after.Mode()&os.ModeSymlink != 0 ||
+		!os.SameFile(before, opened) || !os.SameFile(opened, after) {
+		return "", fmt.Errorf("%w: hash path changed during read", ErrPairingStateUnsafe)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, pairingHashBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("%w: read hash: %v", ErrPairingStateUnsafe, err)
+	}
+	if len(data) != pairingHashBytes || data[64] != '\n' {
+		return "", fmt.Errorf("%w: invalid hash encoding", ErrPairingStateUnsafe)
+	}
+	hash := string(data[:64])
+	if _, err := hex.DecodeString(hash); err != nil || strings.ToLower(hash) != hash {
+		return "", fmt.Errorf("%w: malformed hash", ErrPairingStateUnsafe)
+	}
+	return hash, nil
 }
