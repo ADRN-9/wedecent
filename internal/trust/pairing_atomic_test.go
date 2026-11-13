@@ -234,7 +234,10 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+	defer func() {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		if _, err := os.Stat(ready); err == nil {
@@ -446,7 +449,10 @@ func TestPairingAtomicRotationRaceIsSerializable(t *testing.T) {
 	}
 	start := make(chan struct{})
 	pairDone := make(chan error, 1)
-	type rotation struct { secret string; err error }
+	type rotation struct {
+		secret string
+		err    error
+	}
 	rotationDone := make(chan rotation, 1)
 	go func() {
 		<-start
