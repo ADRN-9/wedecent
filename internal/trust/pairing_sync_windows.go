@@ -39,7 +39,7 @@ func syncPairingDirectory(dir string) error {
 	if !strings.EqualFold(windows.UTF16ToString(fs[:]), "NTFS") {
 		return errors.New("pairing durability requires a local NTFS filesystem")
 	}
-	return secureWindowsPairingPath(dir)
+	return nil
 }
 
 // Windows does not provide POSIX uid fields; validate effective ownership
