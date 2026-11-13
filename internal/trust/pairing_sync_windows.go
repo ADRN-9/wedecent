@@ -1,0 +1,52 @@
+//go:build windows
+
+package trust
+
+import (
+	"errors"
+	"os"
+	"strings"
+
+	"golang.org/x/sys/windows"
+)
+
+// Windows metadata replacement uses MoveFileEx with WRITE_THROUGH. Only local
+// NTFS volumes are supported; network/FAT/unknown volumes fail closed.
+func syncPairingDirectory(dir string) error {
+	name, err := windows.UTF16PtrFromString(dir)
+	if err != nil {
+		return err
+	}
+	h, err := windows.CreateFile(name, windows.FILE_READ_ATTRIBUTES,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING,
+		windows.FILE_FLAG_BACKUP_SEMANTICS|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(h)
+	var info windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(h, &info); err != nil {
+		return err
+	}
+	if info.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return errors.New("pairing state directory is a Windows reparse point")
+	}
+	var fs [32]uint16
+	if err := windows.GetVolumeInformationByHandle(h, nil, 0, nil, nil, nil, &fs[0], uint32(len(fs))); err != nil {
+		return err
+	}
+	if !strings.EqualFold(windows.UTF16ToString(fs[:]), "NTFS") {
+		return errors.New("pairing durability requires a local NTFS filesystem")
+	}
+	return secureWindowsPairingPath(dir)
+}
+
+// Windows does not provide POSIX uid fields; validate effective ownership
+// and DACL using the pathname's Windows security descriptor instead.
+func pairingWindowsStateSecure(path string) error {
+	if _, err := os.Lstat(path); err != nil {
+		return err
+	}
+	return secureWindowsPairingPath(path)
+}
