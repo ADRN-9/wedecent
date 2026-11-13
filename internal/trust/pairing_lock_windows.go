@@ -67,3 +67,9 @@ func replacePairingSecretFile(source, destination string) error {
 	}
 	return windows.MoveFileEx(from, to, windows.MOVEFILE_REPLACE_EXISTING|windows.MOVEFILE_WRITE_THROUGH)
 }
+
+// Windows state-directory and file ownership is enforced by the service/user
+// DACL; POSIX uid ownership has no meaning on this platform.
+func pairingOwnedByCurrentUser(_ os.FileInfo) bool {
+	return true
+}
