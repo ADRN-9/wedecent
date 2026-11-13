@@ -4,6 +4,7 @@ package trust
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"strings"
 
@@ -37,7 +38,16 @@ func syncPairingDirectory(dir string) error {
 		return err
 	}
 	if !strings.EqualFold(windows.UTF16ToString(fs[:]), "NTFS") {
-		return errors.New("pairing durability requires a local NTFS filesystem")
+		return errors.New("pairing durability requires NTFS")
+	}
+	// NTFS may be served through SMB; checking only the filesystem name is
+	// insufficient to establish local write-through persistence guarantees.
+	var volumeRoot [windows.MAX_PATH + 1]uint16
+	if err := windows.GetVolumePathName(name, &volumeRoot[0], uint32(len(volumeRoot))); err != nil {
+		return fmt.Errorf("resolve pairing volume root: %w", err)
+	}
+	if driveType := windows.GetDriveType(&volumeRoot[0]); driveType != windows.DRIVE_FIXED {
+		return fmt.Errorf("pairing durability requires a local fixed disk (type=%d)", driveType)
 	}
 	return nil
 }
