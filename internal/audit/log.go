@@ -32,6 +32,7 @@ type Event struct {
 	Outcome   string    `json:"outcome"`
 	ActorID   string    `json:"actor_id,omitempty"`
 	PeerID    string    `json:"peer_id,omitempty"`
+	AttemptID string    `json:"attempt_id,omitempty"`
 	Transport string    `json:"transport,omitempty"`
 	StreamID  uint32    `json:"stream_id,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
@@ -132,6 +133,9 @@ func validateEvent(event *Event) error {
 	event.Outcome = strings.TrimSpace(event.Outcome)
 	event.ActorID = strings.TrimSpace(event.ActorID)
 	event.PeerID = strings.TrimSpace(event.PeerID)
+	if event.AttemptID != "" && !pairingAttemptPattern.MatchString(event.AttemptID) {
+		return errors.New("audit pairing attempt ID is invalid")
+	}
 	event.Transport = strings.TrimSpace(event.Transport)
 	event.Reason = strings.TrimSpace(event.Reason)
 	if !eventNamePattern.MatchString(event.Type) {

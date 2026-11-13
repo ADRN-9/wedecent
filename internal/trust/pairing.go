@@ -107,6 +107,32 @@ func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pa
 	return nil
 }
 
+// VerifyPairingStatePath enforces private ownership, narrow Windows ACLs,
+// and stable real-file identities for the pairing recovery register.
+func VerifyPairingStatePath(path string) error {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if before.Mode()&os.ModeSymlink != 0 || (!before.IsDir() && !before.Mode().IsRegular()) {
+		return errors.New("pairing recovery path has an unsafe type")
+	}
+	if !pairingOwnedByCurrentUser(before) {
+		return errors.New("pairing recovery state has foreign ownership")
+	}
+	if runtime.GOOS != "windows" && before.Mode().Perm()&0o077 != 0 {
+		return errors.New("pairing recovery state has broad permissions")
+	}
+	if err := pairingWindowsStateSecure(path); err != nil {
+		return fmt.Errorf("pairing recovery Windows ACL: %w", err)
+	}
+	after, err := os.Lstat(path)
+	if err != nil || !os.SameFile(before, after) {
+		return errors.New("pairing recovery path changed during verification")
+	}
+	return nil
+}
+
 // RotatePairingSecret synchronizes with every consumer and installs a complete
 // 0600 hash through an atomic same-directory replacement. The plaintext secret
 // is never persisted. Unsafe existing state is not silently overwritten.
