@@ -542,8 +542,7 @@ func TestPairingAtomicDurableTombstoneAndInjectedWriteFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(filepath.Join(dir, pairingSecretFile))
-		if err != nil || string(data) != consumedPairingHash+"
-" {
+		if err != nil || string(data) != consumedPairingHash+"\n" {
 			t.Fatalf("consumed marker = %q, error=%v", data, err)
 		}
 		if err := PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); !errors.Is(err, ErrPairingSecretInvalid) {
