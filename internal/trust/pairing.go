@@ -151,6 +151,9 @@ func lockPairing(dir string) (string, func(), error) {
 	if err != nil || before.Mode()&os.ModeSymlink != 0 || !before.IsDir() {
 		return "", nil, fmt.Errorf("%w: state directory is not a real directory", ErrPairingStateUnsafe)
 	}
+	if !pairingOwnedByCurrentUser(before) {
+		return "", nil, fmt.Errorf("%w: state directory is not owned by this process", ErrPairingStateUnsafe)
+	}
 	if runtime.GOOS != "windows" && before.Mode().Perm()&0o077 != 0 {
 		// On Unix the process may repair its own state directory, but must
 		// change permissions on a verified descriptor, never a swapped path.
@@ -196,6 +199,9 @@ func readPairingHash(path string) (string, error) {
 	}
 	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() || before.Size() != pairingHashBytes {
 		return "", fmt.Errorf("%w: hash file type or size invalid", ErrPairingStateUnsafe)
+	}
+	if !pairingOwnedByCurrentUser(before) {
+		return "", fmt.Errorf("%w: hash file ownership is unsafe", ErrPairingStateUnsafe)
 	}
 	if runtime.GOOS != "windows" && before.Mode().Perm()&0o077 != 0 {
 		return "", fmt.Errorf("%w: hash file permissions are unsafe", ErrPairingStateUnsafe)
