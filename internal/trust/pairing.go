@@ -152,7 +152,24 @@ func lockPairing(dir string) (string, func(), error) {
 		return "", nil, fmt.Errorf("%w: state directory is not a real directory", ErrPairingStateUnsafe)
 	}
 	if runtime.GOOS != "windows" && before.Mode().Perm()&0o077 != 0 {
-		return "", nil, fmt.Errorf("%w: state directory is accessible to other users", ErrPairingStateUnsafe)
+		// On Unix the process may repair its own state directory, but must
+		// change permissions on a verified descriptor, never a swapped path.
+		f, openErr := os.Open(dir)
+		if openErr != nil {
+			return "", nil, fmt.Errorf("%w: open state directory: %v", ErrPairingStateUnsafe, openErr)
+		}
+		opened, statErr := f.Stat()
+		onPath, pathErr := os.Lstat(dir)
+		if statErr != nil || pathErr != nil || !opened.IsDir() || !os.SameFile(before, opened) ||
+			!os.SameFile(opened, onPath) {
+			_ = f.Close()
+			return "", nil, fmt.Errorf("%w: state directory changed before securing", ErrPairingStateUnsafe)
+		}
+		chmodErr := f.Chmod(0o700)
+		closeErr := f.Close()
+		if chmodErr != nil || closeErr != nil {
+			return "", nil, fmt.Errorf("%w: cannot secure state directory", ErrPairingStateUnsafe)
+		}
 	}
 	path := filepath.Join(dir, pairingSecretFile)
 	unlock, err := lockPairingFile(path)
