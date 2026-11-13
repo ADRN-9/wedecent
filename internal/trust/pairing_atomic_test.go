@@ -199,7 +199,7 @@ func TestPairingAtomicCrossProcessConsumption(t *testing.T) {
 // before persistence, then kill it and restart the authorization attempt.
 func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 	dir := t.TempDir()
-	store := pairingTestStore(t, dir)
+	pairingTestStore(t, dir)
 	secret, err := RotatePairingSecret(dir)
 	if err != nil {
 		t.Fatal(err)
