@@ -162,7 +162,6 @@ func TestServerPairingAtomicIdentityAndAudit(t *testing.T) {
 	}
 }
 
-
 func TestServerPairingAuditPreflightFailureDoesNotTrust(t *testing.T) {
 	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
 	if err != nil {
