@@ -16,6 +16,7 @@ import (
 
 func pairingTestStore(t *testing.T, dir string) *Store {
 	t.Helper()
+	preparePairingTestDir(t, dir)
 	store, err := Open(filepath.Join(dir, "trusted-clients.json"))
 	if err != nil {
 		t.Fatal(err)
