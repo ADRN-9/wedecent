@@ -161,3 +161,46 @@ func TestServerPairingAtomicIdentityAndAudit(t *testing.T) {
 	}
 }
 
+
+func TestServerPairingAuditPreflightFailureDoesNotTrust(t *testing.T) {
+	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientIdentity, err := identity.Ensure(t.TempDir(), "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverFingerprint, err := identity.FingerprintPublicKey(serverIdentity.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	store, err := trust.Open(filepath.Join(stateDir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := trust.RotatePairingSecret(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Append cannot create an audit log over a directory. The pairing
+	// protocol must fail before consuming the secret or inserting trust.
+	if err := os.Mkdir(filepath.Join(stateDir, audit.FileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Identity: serverIdentity, StateDir: stateDir, Trust: store}
+	frame, err := pairingWireRequest(t, server, clientIdentity, serverFingerprint, secret, clientIdentity.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := pairingErrorCode(t, frame); code != "server_error" {
+		t.Fatalf("audit failure response = %q", code)
+	}
+	if _, ok := store.Get(clientIdentity.ID); ok {
+		t.Fatal("audit preflight failure inserted trust")
+	}
+	if ok, err := trust.CheckPairingSecret(stateDir, secret); err != nil || !ok {
+		t.Fatalf("audit preflight failure consumed usable secret: valid=%v err=%v", ok, err)
+	}
+}
