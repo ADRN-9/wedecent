@@ -508,11 +508,18 @@ func TestPairingAtomicControlledInterleaving(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("first consumer failed to enter locked transaction")
 	}
+	secondReachedLock := make(chan struct{})
 	go func() {
-		secondDone <- PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb"))
+		secondDone <- pairClientWithHooks(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb"),
+			pairingHooks{beforeAcquire: func() { close(secondReachedLock) }})
 	}()
-	// The first consumer still owns the persistent lock. The second cannot
-	// complete, even though it holds a separate Store object and identity.
+	select {
+	case <-secondReachedLock:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second client did not reach pairing lock acquisition")
+	}
+	// Both consumers reached acquisition, while the first still holds the
+	// cross-process lock. The second must not authorize or complete.
 	select {
 	case err := <-secondDone:
 		t.Fatalf("second consumer completed before lock release: %v", err)
@@ -597,7 +604,7 @@ func TestPairingAtomicDurableTombstoneAndInjectedWriteFailures(t *testing.T) {
 		peer := pairingTestPeer("wd_aaaaaaaaaaaaaaaa")
 		err = pairClientWithHooks(dir, secret, store, peer,
 			pairingHooks{putTrust: func(p Peer) error {
-				if err := store.Put(p); err != nil {
+				if err := store.PutPairing(p); err != nil {
 					return err
 				}
 				return errors.New("injected error after commit")
