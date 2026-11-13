@@ -111,6 +111,11 @@ func (l *Log) Append(event Event) error {
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync audit event: %w", err)
 	}
+	// Creation or a preceding log rotation changes the parent namespace.
+	// Pairing's preflight audit must not acknowledge until metadata is synced.
+	if err := syncAuditDirectory(filepath.Dir(l.path)); err != nil {
+		return fmt.Errorf("sync audit directory: %w", err)
+	}
 	return nil
 }
 
@@ -182,14 +187,16 @@ func (l *Log) ensureCapacity(additional int64) error {
 		if archiveInfo.Mode()&os.ModeSymlink != 0 || !archiveInfo.Mode().IsRegular() {
 			return errors.New("audit archive must be a regular file, not a symbolic link")
 		}
-		if err := os.Remove(archive); err != nil {
-			return fmt.Errorf("remove previous audit archive: %w", err)
-		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat audit archive: %w", err)
 	}
-	if err := os.Rename(l.path, archive); err != nil {
+	// Replace the archive atomically instead of deleting the old archive
+	// before moving the active file into place.
+	if err := replaceAuditArchive(l.path, archive); err != nil {
 		return fmt.Errorf("rotate audit log: %w", err)
+	}
+	if err := syncAuditDirectory(dir); err != nil {
+		return fmt.Errorf("sync rotated audit directory: %w", err)
 	}
 	if err := os.Chmod(archive, 0o600); err != nil {
 		return fmt.Errorf("secure audit archive permissions: %w", err)
