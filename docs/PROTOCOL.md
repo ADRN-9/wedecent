@@ -45,8 +45,15 @@ Consumption overwrites the fixed-size hash with an explicit consumed marker
 and synchronizes the existing file before authorizing trust. Rotation takes
 the same lock, uses a synced private temporary file, atomically replaces the
 hash and synchronizes its parent directory on supported Unix filesystems.
-Windows requires a local NTFS volume and write-through replacement, with
-owner and allow-list DACL validation for pairing state.
+Windows requires NTFS on a **local fixed drive**, not merely an NTFS-formatted
+SMB share. It uses write-through replacement, denies reparse-point state, and
+checks effective owner and allow-list DACLs. An elevated Windows installer
+provisions the protected root DACL for the dedicated service account, LocalSystem,
+and Administrators before rotating a secret, then transfers the newly created
+hash and other state ownership to the dedicated service identity before
+starting the Windows service. Ordinary user-owned private state and
+administrator-provisioned service state are distinct supported models;
+inherited access for unrelated local users is not accepted.
 
 A durable pending audit record is required before pairing can modify trust.
 A post-commit trust writer error is re-read from disk: a verified matching
@@ -55,7 +62,18 @@ explicitly uncertain and requires operator review. An interrupted operation
 or unsuccessful trust-store write may consume a secret without pairing.
 Never restore, regenerate or silently reuse a consumed secret; rotate explicitly
 after addressing the failure. Power-loss durability is constrained by the
-underlying filesystem's truthful flush/write-through semantics.
+underlying filesystem's truthful flush/write-through semantics. The pairing
+path uses an explicitly durable trust-store insertion; unrelated trust
+domains retain their existing storage contract.
+
+The audit logger synchronizes the parent directory after creating a log and
+after rotating its bounded archive on supported Unix filesystems. Windows
+uses file synchronization and write-through archive replacement on local
+NTFS, but does not provide a portable directory fsync equivalent. An
+unacknowledged or uncertain audit write must never be mistaken for a
+successful authorization. Simulated interruption/restart tests are not
+physical power-loss validation; storage controller and filesystem durability
+remain separate release gates.
 
 A consumed secret cannot be reused; generate another with:
 
