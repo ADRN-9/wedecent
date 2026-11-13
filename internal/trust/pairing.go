@@ -73,7 +73,7 @@ func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pa
 			return fmt.Errorf("%w: after durable consumption: %v", ErrPairingStateUnsafe, err)
 		}
 	}
-	put := clients.Put
+	put := clients.PutPairing
 	if hooks.putTrust != nil {
 		put = hooks.putTrust
 	}
