@@ -45,6 +45,8 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Enumerate unformatted Go files (temporary WD-C13 diagnostic)
+        run: gofmt -l cmd internal
       - name: Verify formatting
         run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
