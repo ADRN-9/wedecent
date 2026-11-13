@@ -41,11 +41,21 @@ by a machine-local cross-process pairing lock. The agent verifies the TLS
 client certificate, fingerprint, and claimed device ID before entering this
 transaction. Invalid, missing, and already-consumed secrets are denied.
 
-Secret rotation takes the same lock and atomically replaces a private hash
-file. An interrupted operation or trust-store persistence error may consume a
-secret without producing a successful pairing; operators must generate a new
-secret after resolving the failure. No operation automatically restores,
-regenerates, or reuses a consumed secret.
+Consumption overwrites the fixed-size hash with an explicit consumed marker
+and synchronizes the existing file before authorizing trust. Rotation takes
+the same lock, uses a synced private temporary file, atomically replaces the
+hash and synchronizes its parent directory on supported Unix filesystems.
+Windows requires a local NTFS volume and write-through replacement, with
+owner and allow-list DACL validation for pairing state.
+
+A durable pending audit record is required before pairing can modify trust.
+A post-commit trust writer error is re-read from disk: a verified matching
+identity is reported as reconciled success, while an unreadable commit remains
+explicitly uncertain and requires operator review. An interrupted operation
+or unsuccessful trust-store write may consume a secret without pairing.
+Never restore, regenerate or silently reuse a consumed secret; rotate explicitly
+after addressing the failure. Power-loss durability is constrained by the
+underlying filesystem's truthful flush/write-through semantics.
 
 A consumed secret cannot be reused; generate another with:
 
