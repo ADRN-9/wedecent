@@ -6,14 +6,20 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/sys/windows"
 )
 
-// All pairing state objects must belong to the service/user SID and have a
-// DACL that grants access only to that SID, LocalSystem or Administrators.
-// Unknown or inherited broad allow ACEs are rejected, never normalized.
+const (
+	windowsSystemSID = "S-1-5-18"
+	windowsAdminSID  = "S-1-5-32-544"
+)
+
+// Pairing state may be owned by its dedicated service account, by the
+// administrator provisioning that account, or by the current user. The
+// ownership transition is trusted only when the actual DACL remains narrow.
 func secureWindowsPairingPath(path string) error {
 	before, err := os.Lstat(path)
 	if err != nil {
@@ -42,21 +48,54 @@ func secureWindowsPairingPath(path string) error {
 	if err != nil || owner == nil {
 		return fmt.Errorf("read pairing owner: %v", err)
 	}
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil || user == nil || user.User.Sid == nil {
-		return fmt.Errorf("read pairing process SID: %v", err)
-	}
-	if !owner.Equals(user.User.Sid) {
-		return errors.New("pairing state owner differs from the current process")
-	}
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
 		return errors.New("pairing state requires a non-null DACL")
 	}
-	// x/sys/windows in this repository intentionally pins an older stable
-	// version without exported ACE iteration. Convert the OS-owned security
-	// descriptor to SDDL, then reject all unsupported or broadly allowed ACEs.
-	if err := validatePairingDACL(sd.String(), owner.String()); err != nil {
+	token := windows.GetCurrentProcessToken()
+	user, err := token.GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil {
+		return fmt.Errorf("read pairing process SID: %v", err)
+	}
+	adminSID, err := windows.StringToSid(windowsAdminSID)
+	if err != nil {
+		return err
+	}
+	isAdmin, err := token.IsMember(adminSID)
+	if err != nil {
+		return fmt.Errorf("check pairing administrator token: %w", err)
+	}
+	currentSID := user.User.Sid.String()
+	rootSID := owner.String()
+	if !before.IsDir() {
+		parent := filepath.Dir(path)
+		parentInfo, err := os.Lstat(parent)
+		if err != nil || !parentInfo.IsDir() || parentInfo.Mode()&os.ModeSymlink != 0 {
+			return errors.New("pairing parent is not a regular directory")
+		}
+		parentName, err := windows.UTF16PtrFromString(parent)
+		if err != nil {
+			return err
+		}
+		parentAttrs, err := windows.GetFileAttributes(parentName)
+		if err != nil || parentAttrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return errors.New("pairing parent is a reparse point")
+		}
+		parentSD, err := windows.GetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION)
+		if err != nil || parentSD == nil {
+			return fmt.Errorf("read pairing parent owner: %v", err)
+		}
+		parentOwner, _, err := parentSD.Owner()
+		if err != nil || parentOwner == nil {
+			return errors.New("pairing parent owner is unavailable")
+		}
+		rootSID = parentOwner.String()
+	}
+	if err := validatePairingOwner(owner.String(), currentSID, rootSID, isAdmin); err != nil {
+		return err
+	}
+	if err := validatePairingDACLForPrincipal(sd.String(), currentSID, rootSID, isAdmin); err != nil {
 		return err
 	}
 	after, err := os.Lstat(path)
@@ -66,56 +105,96 @@ func secureWindowsPairingPath(path string) error {
 	return nil
 }
 
-// validatePairingDACL accepts a strict subset of Windows' canonical SDDL.
-// Unknown ACE kinds, malformed entries, or allow entries for any untrusted
-// principal cause failure, rather than guessing about effective permissions.
+func validatePairingOwner(ownerSID, currentSID, rootSID string, isAdmin bool) error {
+	if ownerSID == "" || currentSID == "" || rootSID == "" {
+		return errors.New("pairing state owner is unavailable")
+	}
+	if ownerSID == currentSID || ownerSID == windowsSystemSID || ownerSID == windowsAdminSID {
+		return nil
+	}
+	if isAdmin && ownerSID == rootSID {
+		// An elevated installer may provision state owned by the dedicated
+		// service account; it must already be the root owner's identity.
+		return nil
+	}
+	return errors.New("pairing state owner is outside the authorized service boundary")
+}
+
+// Test compatibility wrapper: a self-owned private directory.
 func validatePairingDACL(sddl, ownerSID string) error {
-	index := strings.Index(sddl, "D:")
-	if index < 0 || ownerSID == "" {
+	return validatePairingDACLForPrincipal(sddl, ownerSID, ownerSID, false)
+}
+
+// Every effective allow ACE must name the active account, the explicitly
+// established state-root owner, LocalSystem, or Administrators. Admin-group
+// access is usable only with an administrator token. All supported access
+// control entries must grant full control, not a misleading partial subset.
+// Inherit-only broad ACEs are also rejected because they would expose files.
+func validatePairingDACLForPrincipal(sddl, currentSID, rootSID string, isAdmin bool) error {
+	start := strings.Index(sddl, "D:")
+	if start < 0 || currentSID == "" || rootSID == "" {
 		return errors.New("Windows pairing state requires an explicit DACL")
 	}
-	entries := sddl[index+2:]
+	entries := sddl[start+2:]
 	if end := strings.Index(entries, "S:"); end >= 0 {
 		entries = entries[:end]
 	}
-	if strings.Count(entries, "(") == 0 ||
-		strings.Count(entries, "(") != strings.Count(entries, ")") {
+	if !strings.Contains(entries, "(") || strings.Count(entries, "(") != strings.Count(entries, ")") {
 		return errors.New("Windows pairing DACL is missing or malformed")
 	}
+	grantsCurrent := false
+	grantsRoot := false
 	for {
-		start := strings.Index(entries, "(")
-		if start < 0 {
+		open := strings.IndexByte(entries, '(')
+		if open < 0 {
+			if strings.Trim(entries, "PAIR") != "" {
+				return errors.New("unsupported Windows pairing DACL flags")
+			}
 			break
 		}
-		end := strings.Index(entries[start:], ")")
+		if strings.Trim(entries[:open], "PAIR") != "" {
+			return errors.New("unsupported Windows pairing DACL prefix")
+		}
+		end := strings.IndexByte(entries[open+1:], ')')
 		if end < 0 {
 			return errors.New("unterminated Windows pairing ACE")
 		}
-		end += start
-		parts := strings.Split(entries[start+1:end], ";")
-		if len(parts) != 6 {
+		end += open + 1
+		parts := strings.Split(entries[open+1:end], ";")
+		if len(parts) != 6 || parts[5] == "" {
 			return errors.New("unsupported Windows pairing ACE representation")
 		}
-		if strings.Contains(parts[1], "IO") {
-			entries = entries[end+1:]
-			continue
-		}
-		switch parts[0] {
-		case "D":
-			// Deny entries cannot broaden access.
-		case "A":
-			sid := parts[5]
-			if sid != ownerSID && sid != "SY" && sid != "BA" &&
-				sid != "S-1-5-18" && sid != "S-1-5-32-544" {
-				return fmt.Errorf("Windows pairing DACL grants access to unsupported principal %q", sid)
-			}
-		default:
+		if parts[0] != "A" {
 			return errors.New("unsupported Windows pairing ACE type")
+		}
+		sid := parts[5]
+		if sid != currentSID && sid != rootSID && sid != "SY" && sid != "BA" &&
+			sid != windowsSystemSID && sid != windowsAdminSID {
+			return fmt.Errorf("pairing state grants access to unauthorized SID %s", sid)
+		}
+		if parts[3] != "" || parts[4] != "" {
+			return errors.New("unsupported object-specific pairing ACE")
+		}
+		// Other rights are narrower or ambiguous. No hidden read/write
+		// permissions are inferred from inherited or combined ACEs.
+		if parts[2] != "FA" && parts[2] != "GA" && parts[2] != "0x1f01ff" && parts[2] != "0x001f01ff" {
+			return errors.New("pairing state ACE must grant full control")
+		}
+		inheritOnly := strings.Contains(parts[1], "IO")
+		if !inheritOnly {
+			if sid == currentSID || (isAdmin && (sid == "BA" || sid == windowsAdminSID)) ||
+				(currentSID == windowsSystemSID && (sid == "SY" || sid == windowsSystemSID)) {
+				grantsCurrent = true
+			}
+			if sid == rootSID || (rootSID == windowsAdminSID && (sid == "BA" || sid == windowsAdminSID)) ||
+				(rootSID == windowsSystemSID && (sid == "SY" || sid == windowsSystemSID)) {
+				grantsRoot = true
+			}
 		}
 		entries = entries[end+1:]
 	}
-	if strings.ContainsAny(entries, "()") {
-		return errors.New("malformed trailing Windows pairing DACL")
+	if !grantsCurrent || !grantsRoot {
+		return errors.New("pairing DACL does not grant full control to active account and state owner")
 	}
 	return nil
 }
