@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"unsafe"
+	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -53,30 +53,69 @@ func secureWindowsPairingPath(path string) error {
 	if err != nil || dacl == nil {
 		return errors.New("pairing state requires a non-null DACL")
 	}
-	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(dacl, i, &ace); err != nil || ace == nil {
-			return fmt.Errorf("inspect pairing ACL entry %d: %v", i, err)
-		}
-		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
-			continue
-		}
-		switch ace.Header.AceType {
-		case windows.ACCESS_DENIED_ACE_TYPE:
-			continue
-		case windows.ACCESS_ALLOWED_ACE_TYPE:
-			sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-			if !sid.Equals(user.User.Sid) && sid.String() != "S-1-5-18" &&
-				sid.String() != "S-1-5-32-544" {
-				return fmt.Errorf("pairing state grants access to unauthorized SID %s", sid.String())
-			}
-		default:
-			return errors.New("unsupported pairing state ACL entry")
-		}
+	// x/sys/windows in this repository intentionally pins an older stable
+	// version without exported ACE iteration. Convert the OS-owned security
+	// descriptor to SDDL, then reject all unsupported or broadly allowed ACEs.
+	if err := validatePairingDACL(sd.String(), owner.String()); err != nil {
+		return err
 	}
 	after, err := os.Lstat(path)
 	if err != nil || !os.SameFile(before, after) {
 		return errors.New("pairing state path changed during ACL verification")
+	}
+	return nil
+}
+
+// validatePairingDACL accepts a strict subset of Windows' canonical SDDL.
+// Unknown ACE kinds, malformed entries, or allow entries for any untrusted
+// principal cause failure, rather than guessing about effective permissions.
+func validatePairingDACL(sddl, ownerSID string) error {
+	index := strings.Index(sddl, "D:")
+	if index < 0 || ownerSID == "" {
+		return errors.New("Windows pairing state requires an explicit DACL")
+	}
+	entries := sddl[index+2:]
+	if end := strings.Index(entries, "S:"); end >= 0 {
+		entries = entries[:end]
+	}
+	if strings.Count(entries, "(") == 0 ||
+		strings.Count(entries, "(") != strings.Count(entries, ")") {
+		return errors.New("Windows pairing DACL is missing or malformed")
+	}
+	for {
+		start := strings.Index(entries, "(")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(entries[start:], ")")
+		if end < 0 {
+			return errors.New("unterminated Windows pairing ACE")
+		}
+		end += start
+		parts := strings.Split(entries[start+1:end], ";")
+		if len(parts) != 6 {
+			return errors.New("unsupported Windows pairing ACE representation")
+		}
+		if strings.Contains(parts[1], "IO") {
+			entries = entries[end+1:]
+			continue
+		}
+		switch parts[0] {
+		case "D":
+			// Deny entries cannot broaden access.
+		case "A":
+			sid := parts[5]
+			if sid != ownerSID && sid != "SY" && sid != "BA" &&
+				sid != "S-1-5-18" && sid != "S-1-5-32-544" {
+				return fmt.Errorf("Windows pairing DACL grants access to unsupported principal %q", sid)
+			}
+		default:
+			return errors.New("unsupported Windows pairing ACE type")
+		}
+		entries = entries[end+1:]
+	}
+	if strings.ContainsAny(entries, "()") {
+		return errors.New("malformed trailing Windows pairing DACL")
 	}
 	return nil
 }
