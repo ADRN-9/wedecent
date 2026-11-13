@@ -14,6 +14,8 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
 const (
@@ -540,23 +542,38 @@ func RestrictDirectory(path, account string) error {
 		return err
 	}
 
-	// Protect the state-directory root and make the allowed principals
-	// inheritable. Do not apply /inheritance:r recursively: doing so removes
-	// inherited ACEs from existing files before the new parent ACEs can
-	// propagate to them.
-	cmd := exec.Command(
-		"icacls.exe",
-		clean,
-		"/inheritance:r",
-		"/grant:r",
-		principal+":(OI)(CI)F",
-		"*S-1-5-18:(OI)(CI)F",
-		"*S-1-5-32-544:(OI)(CI)F",
-	)
-	out, err := cmd.CombinedOutput()
+	// Install the exact protected allow-list DACL in one native operation.
+	// icacls /grant:r only replaces named accounts; it does NOT remove a
+	// pre-existing explicit grant to another principal (e.g. LocalAccount).
+	name, err := windows.UTF16PtrFromString(clean)
 	if err != nil {
-		return fmt.Errorf("restrict state directory ACL: %w: %s", err, strings.TrimSpace(string(out)))
+		return err
 	}
+	attrs, err := windows.GetFileAttributes(name)
+	if err != nil {
+		return err
+	}
+	if attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return errors.New("service state root must not be a reparse point")
+	}
+	serviceSID := strings.TrimPrefix(principal, "*")
+	sd, err := windows.SecurityDescriptorFromString(
+		"D:P(A;OICI;FA;;;" + serviceSID + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+	if err != nil {
+		return fmt.Errorf("construct service state ACL: %w", err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return fmt.Errorf("invalid service state ACL: %v", err)
+	}
+	if err := windows.SetNamedSecurityInfo(clean, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil); err != nil {
+		return fmt.Errorf("protect service state ACL: %w", err)
+	}
+	// Existing files are reset to inherit exclusively from the protected
+	// root; the root itself is never reset.
+	var out []byte
 
 	// Existing state files were created before ACL hardening. Re-enable
 	// inheritance and reset their ACLs so they receive the root directory's
@@ -564,8 +581,8 @@ func RestrictDirectory(path, account string) error {
 	// root itself from /reset.
 	children := filepath.Join(clean, "*")
 	for _, args := range [][]string{
-		{children, "/inheritance:e", "/T", "/C"},
-		{children, "/reset", "/T", "/C"},
+		{children, "/inheritance:e", "/T"},
+		{children, "/reset", "/T"},
 	} {
 		out, err := exec.Command("icacls.exe", args...).CombinedOutput()
 		if err != nil {
