@@ -129,7 +129,8 @@ func RotatePairingSecret(dir string) (string, error) {
 	if err := pairingWindowsStateSecure(tmpPath); err != nil {
 		return closeWithError(err)
 	}
-	if _, err := io.WriteString(tmp, HashSecret(secret)+"\n"); err != nil {
+	if _, err := io.WriteString(tmp, HashSecret(secret)+"
+"); err != nil {
 		return closeWithError(err)
 	}
 	if err := tmp.Sync(); err != nil {
@@ -276,7 +277,8 @@ func readPairingHash(path string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: read hash: %v", ErrPairingStateUnsafe, err)
 	}
-	if len(data) != pairingHashBytes || data[64] != '\n' {
+	if len(data) != pairingHashBytes || data[64] != '
+' {
 		return "", fmt.Errorf("%w: invalid hash encoding", ErrPairingStateUnsafe)
 	}
 	hash := string(data[:64])
@@ -312,10 +314,12 @@ func consumePairingSecretFile(path, expectedHash string) error {
 		return fmt.Errorf("%w: hash path changed before consumption", ErrPairingStateUnsafe)
 	}
 	var data [pairingHashBytes]byte
-	if _, err := f.ReadAt(data[:], 0); err != nil || string(data[:]) != expectedHash+"\n" {
+	if _, err := f.ReadAt(data[:], 0); err != nil || string(data[:]) != expectedHash+"
+" {
 		return ErrPairingSecretInvalid
 	}
-	tombstone := []byte(consumedPairingHash + "\n")
+	tombstone := []byte(consumedPairingHash + "
+")
 	if n, err := f.WriteAt(tombstone, 0); err != nil || n != len(tombstone) {
 		return fmt.Errorf("%w: write consumed marker: %v", ErrPairingStateUnsafe, err)
 	}
@@ -336,7 +340,9 @@ func consumePairingSecretFile(path, expectedHash string) error {
 // persistence failure: the caller must emit an attributable audit event.
 type pairingReconciledError struct{ cause error }
 
-func (e *pairingReconciledError) Error() string { return "pairing trust persisted after write error: " + e.cause.Error() }
+func (e *pairingReconciledError) Error() string {
+	return "pairing trust persisted after write error: " + e.cause.Error()
+}
 func (e *pairingReconciledError) Unwrap() error { return e.cause }
 func IsPairingReconciled(err error) bool {
 	var reconciled *pairingReconciledError
