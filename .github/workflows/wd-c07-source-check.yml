@@ -1,0 +1,34 @@
+name: WD-C07 Temporary Source Formatting Snapshot
+
+on:
+  push:
+    branches:
+      - security/atomic-pairing-wd-c03
+    paths:
+      - .github/workflows/wd-c07-source-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  source-snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+      - name: List exact gofmt deviations
+        shell: bash
+        run: |
+          gofmt -l cmd internal | tee wd-c07-unformatted.txt
+      - name: Export bounded public source for local formatting validation
+        uses: actions/upload-artifact@v4
+        with:
+          name: wd-c07-source
+          path: |
+            cmd
+            internal
+            go.mod
+            go.sum
+            wd-c07-unformatted.txt
+          retention-days: 1
+          if-no-files-found: error
