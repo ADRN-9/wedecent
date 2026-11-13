@@ -39,14 +39,14 @@ func TestValidatePairingDACLFailClosed(t *testing.T) {
 
 func TestValidatePairingOwnerAndServiceProvisioningTransition(t *testing.T) {
 	const (
-		service = "S-1-5-21-999-888-777-1001"
+		service   = "S-1-5-21-999-888-777-1001"
 		installer = "S-1-5-21-999-888-777-1002"
-		other = "S-1-5-21-999-888-777-1003"
+		other     = "S-1-5-21-999-888-777-1003"
 	)
 	for _, tc := range []struct {
-		name string
+		name                string
 		owner, active, root string
-		admin, valid bool
+		admin, valid        bool
 	}{
 		{"user-temp-state", installer, installer, installer, false, true},
 		{"installed-service-own-state", service, service, service, false, true},
