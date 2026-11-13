@@ -253,7 +253,7 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 	}
 	secretPath := filepath.Join(dir, pairingSecretFile)
 	for {
-		if _, err := os.Lstat(secretPath); errors.Is(err, os.ErrNotExist) {
+		if _, err := readPairingHash(secretPath); errors.Is(err, ErrPairingSecretInvalid) {
 			break
 		}
 		if time.Now().After(deadline) {
@@ -425,8 +425,8 @@ func TestPairingAtomicTrustPersistenceFailureBurnsSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer := pairingTestPeer("wd_aaaaaaaaaaaaaaaa")
-	if err := PairClientWithSecret(dir, secret, store, peer); !errors.Is(err, ErrPairingTrustPersist) {
-		t.Fatalf("trust persistence failure was not reported: %v", err)
+	if err := PairClientWithSecret(dir, secret, store, peer); !errors.Is(err, ErrPairingTrustUncertain) {
+		t.Fatalf("unverifiable trust persistence was not classified: %v", err)
 	}
 	if err := PairClientWithSecret(dir, secret, store, peer); !errors.Is(err, ErrPairingSecretInvalid) {
 		t.Fatalf("consumed secret replayed after persistence failure: %v", err)
@@ -481,5 +481,179 @@ func TestPairingAtomicRotationRaceIsSerializable(t *testing.T) {
 	}
 	if _, ok := store.Get("wd_bbbbbbbbbbbbbbbb"); ok {
 		t.Fatal("stale secret trusted a client")
+	}
+}
+
+func TestPairingAtomicControlledInterleaving(t *testing.T) {
+	dir := t.TempDir()
+	store := pairingTestStore(t, dir)
+	secret, err := RotatePairingSecret(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	firstDone := make(chan error, 1)
+	secondDone := make(chan error, 1)
+	go func() {
+		firstDone <- pairClientWithHooks(dir, secret, store, pairingTestPeer("wd_aaaaaaaaaaaaaaaa"),
+			pairingHooks{beforeConsume: func() {
+				close(entered)
+				<-release
+			}})
+	}()
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first consumer failed to enter locked transaction")
+	}
+	go func() {
+		secondDone <- PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb"))
+	}()
+	// The first consumer still owns the persistent lock. The second cannot
+	// complete, even though it holds a separate Store object and identity.
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second consumer completed before lock release: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first transaction: %v", err)
+	}
+	if err := <-secondDone; !errors.Is(err, ErrPairingSecretInvalid) {
+		t.Fatalf("second transaction: %v", err)
+	}
+	if n := len(store.List()); n != 1 {
+		t.Fatalf("trusted identities = %d, want one", n)
+	}
+}
+
+func TestPairingAtomicDurableTombstoneAndInjectedWriteFailures(t *testing.T) {
+	t.Run("sync-completed-marker", func(t *testing.T) {
+		dir := t.TempDir()
+		store := pairingTestStore(t, dir)
+		secret, err := RotatePairingSecret(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_aaaaaaaaaaaaaaaa")); err != nil {
+			t.Fatal(err)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, pairingSecretFile))
+		if err != nil || string(data) != consumedPairingHash+"\n" {
+			t.Fatalf("consumed marker = %q, error=%v", data, err)
+		}
+		if err := PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); !errors.Is(err, ErrPairingSecretInvalid) {
+			t.Fatalf("durable marker accepted replay: %v", err)
+		}
+	})
+	t.Run("crash-after-consumption-before-persistence", func(t *testing.T) {
+		dir := t.TempDir()
+		store := pairingTestStore(t, dir)
+		secret, err := RotatePairingSecret(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pairClientWithHooks(dir, secret, store, pairingTestPeer("wd_aaaaaaaaaaaaaaaa"),
+			pairingHooks{afterConsume: func() error { return errors.New("injected interruption") }})
+		if !errors.Is(err, ErrPairingStateUnsafe) {
+			t.Fatalf("interrupted transaction: %v", err)
+		}
+		if len(store.List()) != 0 {
+			t.Fatal("interrupted transaction inserted trust")
+		}
+		if err := PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); !errors.Is(err, ErrPairingSecretInvalid) {
+			t.Fatalf("interrupted transaction allowed replay: %v", err)
+		}
+	})
+	t.Run("precommit-store-failure", func(t *testing.T) {
+		dir := t.TempDir()
+		store := pairingTestStore(t, dir)
+		secret, err := RotatePairingSecret(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = pairClientWithHooks(dir, secret, store, pairingTestPeer("wd_aaaaaaaaaaaaaaaa"),
+			pairingHooks{putTrust: func(Peer) error { return errors.New("injected write failure") }})
+		if !errors.Is(err, ErrPairingTrustPersist) {
+			t.Fatalf("precommit failure: %v", err)
+		}
+		if len(store.List()) != 0 {
+			t.Fatal("failed write inserted trust")
+		}
+		if err := PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); !errors.Is(err, ErrPairingSecretInvalid) {
+			t.Fatalf("failed write allowed replay: %v", err)
+		}
+	})
+	t.Run("postcommit-error-reconciles", func(t *testing.T) {
+		dir := t.TempDir()
+		store := pairingTestStore(t, dir)
+		secret, err := RotatePairingSecret(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		peer := pairingTestPeer("wd_aaaaaaaaaaaaaaaa")
+		err = pairClientWithHooks(dir, secret, store, peer,
+			pairingHooks{putTrust: func(p Peer) error {
+				if err := store.Put(p); err != nil {
+					return err
+				}
+				return errors.New("injected error after commit")
+			}})
+		if !IsPairingReconciled(err) {
+			t.Fatalf("committed write not reconciled: %v", err)
+		}
+		if got, ok := store.Get(peer.ID); !ok || got.Fingerprint != peer.Fingerprint {
+			t.Fatal("reconciled peer is not durable in the trust store")
+		}
+		if err := PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); !errors.Is(err, ErrPairingSecretInvalid) {
+			t.Fatalf("reconciled commit allowed replay: %v", err)
+		}
+	})
+}
+
+func TestPairingAtomicRotationCannotOvertakeCriticalSection(t *testing.T) {
+	dir := t.TempDir()
+	store := pairingTestStore(t, dir)
+	secret, err := RotatePairingSecret(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	pairDone := make(chan error, 1)
+	type rotatedResult struct {
+		secret string
+		err    error
+	}
+	rotateDone := make(chan rotatedResult, 1)
+	go func() {
+		pairDone <- pairClientWithHooks(dir, secret, store, pairingTestPeer("wd_aaaaaaaaaaaaaaaa"),
+			pairingHooks{beforeConsume: func() {
+				close(entered)
+				<-release
+			}})
+	}()
+	<-entered
+	go func() {
+		s, err := RotatePairingSecret(dir)
+		rotateDone <- rotatedResult{secret: s, err: err}
+	}()
+	select {
+	case got := <-rotateDone:
+		t.Fatalf("rotation overtook held pairing lock: %+v", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	if err := <-pairDone; err != nil {
+		t.Fatal(err)
+	}
+	got := <-rotateDone
+	if got.err != nil {
+		t.Fatal(got.err)
+	}
+	if err := PairClientWithSecret(dir, got.secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); err != nil {
+		t.Fatalf("new secret failed after ordered rotation: %v", err)
 	}
 }
