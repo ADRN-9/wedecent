@@ -572,5 +572,14 @@ func RestrictDirectory(path, account string) error {
 			return fmt.Errorf("propagate state directory ACL: %w: %s", err, strings.TrimSpace(string(out)))
 		}
 	}
+
+	// Ownership is security-relevant: an unrelated owner can rewrite its
+	// object's DACL even if access appears restricted. Set the directory and
+	// all provisioned children to the explicit dedicated service SID. This
+	// requires elevated installer rights and must never be silently skipped.
+	out, err = exec.Command("icacls.exe", clean, "/setowner", principal, "/T").CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("set dedicated service state owner: %w: %s", err, strings.TrimSpace(string(out)))
+	}
 	return nil
 }
