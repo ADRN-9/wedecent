@@ -81,6 +81,7 @@ func TestServerPairingAtomicIdentityAndAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	stateDir := t.TempDir()
+	preparePairingSessionTestDir(t, stateDir)
 	store, err := trust.Open(filepath.Join(stateDir, "trusted-clients.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -176,6 +177,7 @@ func TestServerPairingAuditPreflightFailureDoesNotTrust(t *testing.T) {
 		t.Fatal(err)
 	}
 	stateDir := t.TempDir()
+	preparePairingSessionTestDir(t, stateDir)
 	store, err := trust.Open(filepath.Join(stateDir, "trusted-clients.json"))
 	if err != nil {
 		t.Fatal(err)
