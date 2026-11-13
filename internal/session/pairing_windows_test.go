@@ -3,12 +3,13 @@
 package session
 
 import (
-	"os/exec"
 	"testing"
 
 	"golang.org/x/sys/windows"
 )
 
+// Test state is intentionally provisioned with a protected allow-list DACL.
+// GitHub runner temporary-directory inheritance may include broad local users.
 func preparePairingSessionTestDir(t *testing.T, dir string) {
 	t.Helper()
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
@@ -16,11 +17,18 @@ func preparePairingSessionTestDir(t *testing.T, dir string) {
 		t.Fatal(err)
 	}
 	sid := user.User.Sid.String()
-	output, err := exec.Command("icacls.exe", dir, "/inheritance:r", "/grant:r",
-		"*"+sid+":(OI)(CI)F",
-		"*S-1-5-18:(OI)(CI)F",
-		"*S-1-5-32-544:(OI)(CI)F").CombinedOutput()
+	sd, err := windows.SecurityDescriptorFromString(
+		"D:P(A;OICI;FA;;;" + sid + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 	if err != nil {
-		t.Fatalf("prepare private pairing test state: %v: %s", err, output)
+		t.Fatal(err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		t.Fatalf("construct private fixture DACL: %v", err)
+	}
+	if err := windows.SetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT,
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		nil, nil, dacl, nil); err != nil {
+		t.Fatalf("provision private pairing fixture ACL: %v", err)
 	}
 }
