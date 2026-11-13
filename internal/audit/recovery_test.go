@@ -171,7 +171,9 @@ func TestPairingRecoveryConcurrentAttemptsAndCapacityRepair(t *testing.T) {
 			defer wg.Done()
 			recovery, err := OpenPairingRecovery(dir)
 			if err == nil {
-				err = recovery.Begin(testRecoveryRecord(fmt.Sprintf("%032x", i)))
+				record := testRecoveryRecord(fmt.Sprintf("%032x", i))
+				record.PeerID = "wd_" + strings.Repeat("a", 15) + string(rune('a'+i))
+				err = recovery.Begin(record)
 			}
 			errs <- err
 		}(i)
