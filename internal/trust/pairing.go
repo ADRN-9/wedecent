@@ -16,19 +16,30 @@ import (
 const (
 	pairingSecretFile = "pairing-secret.sha256"
 	pairingHashBytes  = 65 // 64 lowercase SHA-256 hex characters and LF.
+	consumedPairingHash = "0000000000000000000000000000000000000000000000000000000000000000"
 )
 
 var (
 	ErrPairingSecretInvalid = errors.New("pairing secret is invalid, missing, or already consumed")
 	ErrPairingStateUnsafe   = errors.New("pairing state is unavailable or unsafe")
 	ErrPairingTrustPersist  = errors.New("pairing secret consumed but trust persistence failed")
+	ErrPairingTrustUncertain = errors.New("pairing trust persistence outcome could not be verified")
 )
 
-// PairClientWithSecret is the only pairing authorization transaction. The
-// persistent pairing-file lock is shared with RotatePairingSecret, including
-// across agent processes. The secret is consumed before granting trust: a
-// crash or failed trust write may burn the secret, but must never replay it.
+// PairClientWithSecret is the only pairing authorization transaction. A
+// persisted consumed marker is synced before any trust insertion.
 func PairClientWithSecret(dir, secret string, clients *Store, peer Peer) error {
+	return pairClientWithHooks(dir, secret, clients, peer, pairingHooks{})
+}
+
+// Test-only hooks are passed per transaction, never stored in shared globals.
+type pairingHooks struct {
+	beforeConsume func()
+	afterConsume func() error
+	putTrust func(Peer) error
+}
+
+func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pairingHooks) error {
 	if clients == nil {
 		return fmt.Errorf("%w: terminal trust store is unavailable", ErrPairingStateUnsafe)
 	}
@@ -48,10 +59,31 @@ func PairClientWithSecret(dir, secret string, clients *Store, peer Peer) error {
 	if !SecretMatches(hash, secret) {
 		return ErrPairingSecretInvalid
 	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("%w: consume secret: %v", ErrPairingStateUnsafe, err)
+	if hooks.beforeConsume != nil {
+		hooks.beforeConsume()
 	}
-	if err := clients.Put(peer); err != nil {
+	if err := consumePairingSecretFile(path, hash); err != nil {
+		return err
+	}
+	if hooks.afterConsume != nil {
+		if err := hooks.afterConsume(); err != nil {
+			return fmt.Errorf("%w: after durable consumption: %v", ErrPairingStateUnsafe, err)
+		}
+	}
+	put := clients.Put
+	if hooks.putTrust != nil {
+		put = hooks.putTrust
+	}
+	if err := put(peer); err != nil {
+		// A trust writer may return an error after the new file became visible.
+		// Never report a definite failure if this exact identity is on disk.
+		persisted, checkErr := clients.pairingPeerOnDisk(peer)
+		if checkErr != nil {
+			return fmt.Errorf("%w: write: %v; verify: %v", ErrPairingTrustUncertain, err, checkErr)
+		}
+		if persisted {
+			return &pairingReconciledError{cause: err}
+		}
 		return fmt.Errorf("%w: %v", ErrPairingTrustPersist, err)
 	}
 	return nil
@@ -103,6 +135,9 @@ func RotatePairingSecret(dir string) (string, error) {
 	}
 	if err := replacePairingSecretFile(tmpPath, path); err != nil {
 		return "", fmt.Errorf("%w: replace secret: %v", ErrPairingStateUnsafe, err)
+	}
+	if err := syncPairingDirectory(filepath.Dir(path)); err != nil {
+		return "", fmt.Errorf("%w: synchronize rotated hash directory: %v", ErrPairingStateUnsafe, err)
 	}
 	hash, err := readPairingHash(path)
 	if err != nil || !SecretMatches(hash, secret) {
@@ -228,5 +263,59 @@ func readPairingHash(path string) (string, error) {
 	if _, err := hex.DecodeString(hash); err != nil || strings.ToLower(hash) != hash {
 		return "", fmt.Errorf("%w: malformed hash", ErrPairingStateUnsafe)
 	}
+	if hash == consumedPairingHash {
+		return "", ErrPairingSecretInvalid
+	}
 	return hash, nil
+}
+
+// A 65-byte tombstone overwrites the existing inode, avoiding a directory
+// removal transaction whose metadata might roll back after sudden power loss.
+// FlushFileBuffers/fsync must succeed before trust is ever written.
+func consumePairingSecretFile(path, expectedHash string) error {
+	before, err := os.Lstat(path)
+	if err != nil || !before.Mode().IsRegular() || before.Size() != pairingHashBytes {
+		return fmt.Errorf("%w: hash file disappeared before consumption", ErrPairingStateUnsafe)
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("%w: open hash for consumption: %v", ErrPairingStateUnsafe, err)
+	}
+	defer f.Close()
+	opened, e1 := f.Stat()
+	onPath, e2 := os.Lstat(path)
+	if e1 != nil || e2 != nil || onPath.Mode()&os.ModeSymlink != 0 ||
+		!os.SameFile(before, opened) || !os.SameFile(opened, onPath) {
+		return fmt.Errorf("%w: hash path changed before consumption", ErrPairingStateUnsafe)
+	}
+	var data [pairingHashBytes]byte
+	if _, err := f.ReadAt(data[:], 0); err != nil || string(data[:]) != expectedHash+"\n" {
+		return ErrPairingSecretInvalid
+	}
+	tombstone := []byte(consumedPairingHash + "\n")
+	if n, err := f.WriteAt(tombstone, 0); err != nil || n != len(tombstone) {
+		return fmt.Errorf("%w: write consumed marker: %v", ErrPairingStateUnsafe, err)
+	}
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("%w: durable consumed marker: %v", ErrPairingStateUnsafe, err)
+	}
+	if _, err := f.ReadAt(data[:], 0); err != nil || string(data[:]) != string(tombstone) {
+		return fmt.Errorf("%w: verify consumed marker", ErrPairingStateUnsafe)
+	}
+	onPath, err = os.Lstat(path)
+	if err != nil || onPath.Mode()&os.ModeSymlink != 0 || !os.SameFile(opened, onPath) {
+		return fmt.Errorf("%w: consumed file identity changed", ErrPairingStateUnsafe)
+	}
+	return nil
+}
+
+// Reconciliation is an explicit, successful-on-disk result, not a generic
+// persistence failure: the caller must emit an attributable audit event.
+type pairingReconciledError struct{ cause error }
+
+func (e *pairingReconciledError) Error() string { return "pairing trust persisted after write error: " + e.cause.Error() }
+func (e *pairingReconciledError) Unwrap() error { return e.cause }
+func IsPairingReconciled(err error) bool {
+	var reconciled *pairingReconciledError
+	return errors.As(err, &reconciled)
 }
