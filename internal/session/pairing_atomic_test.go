@@ -284,4 +284,106 @@ func TestServerPairingCompletionAuditFailureKeepsDetectablePendingOutcome(t *tes
 	if _, err := audit.Open(dir); err != nil {
 		t.Fatalf("pending audit unreadable after restart: %v", err)
 	}
+	assessments, err := InspectPairingRecovery(dir)
+	if err != nil || len(assessments) != 1 ||
+		assessments[0].Status != PairingRecoveryConfirmed ||
+		assessments[0].Audit.Outcome != audit.PairingOutcomeSuccess {
+		t.Fatalf("durable pairing not recoverable after completion log failure: %+v, %v", assessments, err)
+	}
+}
+
+func TestServerPairingRecoveryInvalidStateBlocksConsumption(t *testing.T) {
+	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientIdentity, err := identity.Ensure(t.TempDir(), "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverFP, err := identity.FingerprintPublicKey(serverIdentity.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	preparePairingSessionTestDir(t, dir)
+	store, err := trust.Open(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := trust.RotatePairingSecret(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, audit.PairingOutcomeFileName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Identity: serverIdentity, StateDir: dir, Trust: store}
+	frame, err := pairingWireRequest(t, server, clientIdentity, serverFP, secret, clientIdentity.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pairingErrorCode(t, frame); got != "server_error" {
+		t.Fatalf("unsafe recovery file accepted: %s", got)
+	}
+	if valid, err := trust.CheckPairingSecret(dir, secret); err != nil || !valid {
+		t.Fatalf("preflight failure consumed valid secret: %v, %v", valid, err)
+	}
+	if _, ok := store.Get(clientIdentity.ID); ok {
+		t.Fatal("unsafe recovery preflight inserted trust")
+	}
+}
+
+func TestInspectPairingRecoveryDoesNotEquateVisibilityWithCommit(t *testing.T) {
+	dir := t.TempDir()
+	preparePairingSessionTestDir(t, dir)
+	recovery, err := audit.OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := trust.Peer{
+		ID: "wd_bbbbbbbbbbbbbbbb",
+		Fingerprint: "SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+	}
+	const first = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	const second = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	for _, attempt := range []struct{ id, peer string }{
+		{first, peer.ID}, {second, "wd_cccccccccccccccc"},
+	} {
+		if err := recovery.Begin(audit.PairingOutcome{
+			AttemptID: attempt.id, ActorID: "wd_aaaaaaaaaaaaaaaa",
+			PeerID: attempt.peer, Fingerprint: peer.Fingerprint,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	store, err := trust.Open(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutPairing(peer); err != nil {
+		t.Fatal(err)
+	}
+	assessed, err := InspectPairingRecovery(dir)
+	if err != nil || len(assessed) != 2 {
+		t.Fatalf("inspect recovery: %v, %+v", err, assessed)
+	}
+	if assessed[0].Status != PairingRecoveryVisibleUnconfirmed ||
+		assessed[1].Status != PairingRecoveryUnresolved {
+		t.Fatalf("pending attempt was incorrectly reconciled: %+v", assessed)
+	}
+	if err := recovery.Complete(first, audit.PairingOutcomeUncertain); err != nil {
+		t.Fatal(err)
+	}
+	assessed, err = InspectPairingRecovery(dir)
+	if err != nil || assessed[0].Status != PairingRecoveryVisibleUnconfirmed {
+		t.Fatalf("uncertain trust incorrectly confirmed: %+v, %v", assessed, err)
+	}
+	if err := recovery.Complete(second, audit.PairingOutcomeDenied); err != nil {
+		t.Fatal(err)
+	}
+	assessed, err = InspectPairingRecovery(dir)
+	if err != nil || assessed[1].Status != PairingRecoveryDenied {
+		t.Fatalf("denied record lost on restart: %+v, %v", assessed, err)
+	}
 }
