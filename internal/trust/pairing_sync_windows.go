@@ -46,10 +46,14 @@ func syncPairingDirectory(dir string) error {
 	if err := windows.GetVolumePathName(name, &volumeRoot[0], uint32(len(volumeRoot))); err != nil {
 		return fmt.Errorf("resolve pairing volume root: %w", err)
 	}
-	if driveType := windows.GetDriveType(&volumeRoot[0]); driveType != windows.DRIVE_FIXED {
+	if driveType := windows.GetDriveType(&volumeRoot[0]); !windowsPairingDriveTypeAllowed(driveType) {
 		return fmt.Errorf("pairing durability requires a local fixed disk (type=%d)", driveType)
 	}
 	return nil
+}
+
+func windowsPairingDriveTypeAllowed(driveType uint32) bool {
+	return driveType == windows.DRIVE_FIXED
 }
 
 // Windows does not provide POSIX uid fields; validate effective ownership
