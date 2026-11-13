@@ -35,8 +35,8 @@ func PairClientWithSecret(dir, secret string, clients *Store, peer Peer) error {
 // Test-only hooks are passed per transaction, never stored in shared globals.
 type pairingHooks struct {
 	beforeConsume func()
-	afterConsume func() error
-	putTrust func(Peer) error
+	afterConsume  func() error
+	putTrust      func(Peer) error
 }
 
 func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pairingHooks) error {
