@@ -42,6 +42,7 @@ type Log struct {
 	path     string
 	maxBytes int64
 	now      func() time.Time
+	syncDir  func(string) error
 }
 
 func Open(stateDir string) (*Log, error) {
@@ -64,6 +65,13 @@ func open(path string, maxBytes int64) (*Log, error) {
 }
 
 func (l *Log) Path() string { return l.path }
+
+func (l *Log) syncDirectory(dir string) error {
+	if l.syncDir != nil {
+		return l.syncDir(dir)
+	}
+	return syncAuditDirectory(dir)
+}
 
 func (l *Log) Append(event Event) error {
 	if l == nil {
@@ -113,7 +121,7 @@ func (l *Log) Append(event Event) error {
 	}
 	// Creation or a preceding log rotation changes the parent namespace.
 	// Pairing's preflight audit must not acknowledge until metadata is synced.
-	if err := syncAuditDirectory(filepath.Dir(l.path)); err != nil {
+	if err := l.syncDirectory(filepath.Dir(l.path)); err != nil {
 		return fmt.Errorf("sync audit directory: %w", err)
 	}
 	return nil
@@ -195,7 +203,7 @@ func (l *Log) ensureCapacity(additional int64) error {
 	if err := replaceAuditArchive(l.path, archive); err != nil {
 		return fmt.Errorf("rotate audit log: %w", err)
 	}
-	if err := syncAuditDirectory(dir); err != nil {
+	if err := l.syncDirectory(dir); err != nil {
 		return fmt.Errorf("sync rotated audit directory: %w", err)
 	}
 	if err := os.Chmod(archive, 0o600); err != nil {
