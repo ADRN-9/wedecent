@@ -66,6 +66,17 @@ func (s *Store) FindByFingerprint(fp string) (Peer, bool) {
 }
 
 func (s *Store) Put(p Peer) error {
+	return s.put(p, false)
+}
+
+// PutPairing requires durable directory metadata before acknowledging a
+// newly trusted terminal client. Other trust domains retain their existing
+// storage policy, rather than inheriting pairing-specific filesystem gates.
+func (s *Store) PutPairing(p Peer) error {
+	return s.put(p, true)
+}
+
+func (s *Store) put(p Peer, pairingDurable bool) error {
 	unlock, err := lockStoreFile(s.path)
 	if err != nil {
 		return err
@@ -89,6 +100,13 @@ func (s *Store) Put(p Peer) error {
 			delete(s.Peers, p.ID)
 		}
 		return err
+	}
+	if pairingDurable {
+		// This occurs only after a successful atomic replacement. A failure
+		// here is post-commit uncertainty, never an absent/failed insertion.
+		if err := syncPairingDirectory(filepath.Dir(s.path)); err != nil {
+			return fmt.Errorf("%w: %v", ErrTrustStoreDurability, err)
+		}
 	}
 	return nil
 }
@@ -211,12 +229,9 @@ func (s *Store) saveLocked() error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	// A new trust snapshot must be durable before its writer can acknowledge
-	// authorization. A post-rename sync error is reconciled by pairing callers.
-	if err := syncPairingDirectory(dir); err != nil {
-		return fmt.Errorf("%w: %v", ErrTrustStoreDurability, err)
-	}
-	return nil
+	// The shared Store retains its preexisting contract. Pairing takes an
+	// additional durability step under the same lock in PutPairing.
+	return os.Chmod(s.path, 0o600)
 }
 
 // pairingPeerOnDisk bypasses the in-memory snapshot after a failed write.
