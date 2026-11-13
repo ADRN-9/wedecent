@@ -1,0 +1,57 @@
+package session
+
+import (
+	"fmt"
+	"path/filepath"
+
+	"wedecent.com/wedecent/internal/audit"
+	"wedecent.com/wedecent/internal/trust"
+)
+
+const (
+	PairingRecoveryConfirmed = "confirmed"
+	PairingRecoveryVisibleUnconfirmed = "trust_visible_unconfirmed"
+	PairingRecoveryUnresolved = "unresolved"
+	PairingRecoveryConflict = "trust_conflict"
+	PairingRecoveryDenied = "denied"
+)
+
+type PairingRecoveryAssessment struct {
+	Audit audit.PairingOutcome
+	Status string
+}
+
+// InspectPairingRecovery is read-only; no visible record proves durability
+// without an explicitly confirmed completion marker. An unreadable trust store
+// aborts inspection rather than fabricating absent or successful trust.
+func InspectPairingRecovery(stateDir string) ([]PairingRecoveryAssessment, error) {
+	recovery, err := audit.OpenPairingRecovery(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	records, err := recovery.Records()
+	if err != nil {
+		return nil, err
+	}
+	fresh, err := trust.Open(filepath.Join(stateDir, "trusted-clients.json"))
+	if err != nil {
+		return nil, fmt.Errorf("read authoritative pairing trust: %w", err)
+	}
+	result := make([]PairingRecoveryAssessment, 0, len(records))
+	for _, record := range records {
+		stored, found := fresh.Peers[record.PeerID]
+		status := PairingRecoveryUnresolved
+		switch {
+		case found && stored.Fingerprint != record.Fingerprint:
+			status = PairingRecoveryConflict
+		case record.Outcome == audit.PairingOutcomeSuccess && found:
+			status = PairingRecoveryConfirmed
+		case found:
+			status = PairingRecoveryVisibleUnconfirmed
+		case record.Outcome == audit.PairingOutcomeDenied:
+			status = PairingRecoveryDenied
+		}
+		result = append(result, PairingRecoveryAssessment{Audit: record, Status: status})
+	}
+	return result, nil
+}
