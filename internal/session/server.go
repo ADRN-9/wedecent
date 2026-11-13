@@ -40,6 +40,9 @@ type Server struct {
 	DirectAuthorizer DirectAuthorizer
 	FileTransfer     *FileTransferRuntime
 	Policy           SessionPolicy
+
+	// This per-server fault seam is nil in production.
+	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 
 func (s *Server) ServeConn(raw net.Conn) {
@@ -108,12 +111,6 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		_ = sendError(conn, "bad_request", "invalid pair request")
 		return
 	}
-	ok, err := trust.CheckPairingSecret(s.StateDir, req.PairingSecret)
-	if err != nil || !ok {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "invalid_pairing_secret"})
-		_ = sendError(conn, "pairing_denied", "invalid pairing secret")
-		return
-	}
 	fp, err := identity.FingerprintPublicKey(peer.PublicKey)
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "invalid_client_key"})
@@ -130,18 +127,105 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 	if name == "" {
 		name = peer.Subject.CommonName
 	}
-	// Consume the high-entropy secret before persisting trust so it cannot be reused.
-	if err := invalidatePairingSecret(s.StateDir); err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, Reason: "pairing_secret_consume_failed"})
-		_ = sendError(conn, "server_error", "could not consume pairing secret")
+	// Reject invalid secrets before reserving bounded recovery capacity.
+	// Locked consumption still checks again, including concurrent rotation.
+	valid, err := trust.CheckPairingSecret(s.StateDir, req.PairingSecret)
+	if err != nil {
+		s.log().Error("pairing state preflight failed", "peer_id", clientID, "error", err)
+		_ = sendError(conn, "server_error", "pairing state unavailable")
 		return
 	}
-	if err := s.Trust.Put(trust.Peer{ID: clientID, Name: name, Fingerprint: fp}); err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, Reason: "trust_persist_failed"})
-		_ = sendError(conn, "server_error", "could not persist trust; generate a new pairing secret")
+	if !valid {
+		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_pairing_secret"})
+		_ = sendError(conn, "pairing_denied", "invalid or already consumed pairing secret")
 		return
 	}
-	s.recordAudit(audit.Event{Type: "pairing.trust_added", Outcome: "success", PeerID: clientID, Transport: transport})
+	attemptID, err := audit.NewPairingAttemptID()
+	if err != nil {
+		_ = sendError(conn, "server_error", "pairing audit is unavailable")
+		return
+	}
+	recovery, err := audit.OpenPairingRecovery(s.StateDir)
+	if err == nil {
+		var pairingAudit *audit.Log
+		pairingAudit, err = audit.Open(s.StateDir)
+		if err == nil {
+			err = pairingAudit.Append(audit.Event{
+				Type: "pairing.request", Outcome: "pending", ActorID: s.Identity.ID,
+				PeerID: clientID, Transport: transport, AttemptID: attemptID,
+			})
+		}
+		if err == nil {
+			err = recovery.Begin(audit.PairingOutcome{
+				AttemptID: attemptID, ActorID: s.Identity.ID,
+				PeerID: clientID, Fingerprint: fp,
+			})
+		}
+		if err == nil {
+			s.handlePairCommit(conn, transport, clientID, name, fp, req.PairingSecret, attemptID, pairingAudit, recovery)
+			return
+		}
+	}
+	s.log().Error("pairing audit preflight failed", "peer_id", clientID, "error", err)
+	_ = sendError(conn, "server_error", "pairing audit is unavailable")
+}
+
+// handlePairCommit runs only after both independent pending records are durable.
+func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp, secret, attemptID string, pairingAudit *audit.Log, recovery *audit.PairingRecovery) {
+	// Identity and fingerprint were verified before the durable transaction.
+	pairErr := trust.PairClientWithSecret(s.StateDir, secret, s.Trust, trust.Peer{
+		ID: clientID, Name: name, Fingerprint: fp,
+	})
+	reconciled := trust.IsPairingReconciled(pairErr)
+	outcome := audit.PairingOutcomeSuccess
+	if pairErr != nil && !reconciled {
+		outcome = audit.PairingOutcomeFailed
+		if errors.Is(pairErr, trust.ErrPairingTrustUncertain) {
+			outcome = audit.PairingOutcomeUncertain
+		} else if errors.Is(pairErr, trust.ErrPairingSecretInvalid) {
+			outcome = audit.PairingOutcomeDenied
+		}
+	}
+	if err := recovery.Complete(attemptID, outcome); err != nil {
+		// Trust may be committed. Preserve the pending entry, never fabricate denial.
+		s.log().Error("pairing outcome not synchronized", "peer_id", clientID, "attempt_id", attemptID, "error", err)
+	}
+	if pairErr != nil && !reconciled {
+		if errors.Is(pairErr, trust.ErrPairingSecretInvalid) {
+			s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: "invalid_pairing_secret"})
+			_ = sendError(conn, "pairing_denied", "invalid or already consumed pairing secret")
+			return
+		}
+		reason := "pairing_secret_consume_failed"
+		switch {
+		case errors.Is(pairErr, trust.ErrPairingTrustPersist):
+			reason = "trust_persist_failed"
+		case errors.Is(pairErr, trust.ErrPairingTrustUncertain):
+			reason = "trust_commit_uncertain"
+		}
+		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason})
+		_ = sendError(conn, "server_error", "pairing state unavailable; operator review and new secret required")
+		return
+	}
+	reason := ""
+	if reconciled {
+		reason = "trust_persist_reconciled"
+	}
+	completion := audit.Event{
+		Type: "pairing.trust_added", Outcome: "success", ActorID: s.Identity.ID,
+		PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason,
+	}
+	appendCompletion := pairingAudit.Append
+	if s.pairingCompletionAudit != nil {
+		appendCompletion = func(event audit.Event) error {
+			return s.pairingCompletionAudit(pairingAudit, event)
+		}
+	}
+	if err := appendCompletion(completion); err != nil {
+		// A pending audit record remains, but trust is already committed.
+		// Returning a denial here would misrepresent actual authorization.
+		s.log().Error("pairing success audit could not be completed", "peer_id", clientID, "error", err)
+	}
 	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypePairResponse, Payload: mustJSON(protocol.PairResponse{DeviceID: s.Identity.ID, DeviceName: s.Identity.Name})}); err != nil {
 		return
 	}

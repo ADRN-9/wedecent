@@ -32,6 +32,7 @@ type Event struct {
 	Outcome   string    `json:"outcome"`
 	ActorID   string    `json:"actor_id,omitempty"`
 	PeerID    string    `json:"peer_id,omitempty"`
+	AttemptID string    `json:"attempt_id,omitempty"`
 	Transport string    `json:"transport,omitempty"`
 	StreamID  uint32    `json:"stream_id,omitempty"`
 	Reason    string    `json:"reason,omitempty"`
@@ -42,6 +43,7 @@ type Log struct {
 	path     string
 	maxBytes int64
 	now      func() time.Time
+	syncDir  func(string) error
 }
 
 func Open(stateDir string) (*Log, error) {
@@ -64,6 +66,13 @@ func open(path string, maxBytes int64) (*Log, error) {
 }
 
 func (l *Log) Path() string { return l.path }
+
+func (l *Log) syncDirectory(dir string) error {
+	if l.syncDir != nil {
+		return l.syncDir(dir)
+	}
+	return syncAuditDirectory(dir)
+}
 
 func (l *Log) Append(event Event) error {
 	if l == nil {
@@ -111,6 +120,11 @@ func (l *Log) Append(event Event) error {
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync audit event: %w", err)
 	}
+	// Creation or a preceding log rotation changes the parent namespace.
+	// Pairing's preflight audit must not acknowledge until metadata is synced.
+	if err := l.syncDirectory(filepath.Dir(l.path)); err != nil {
+		return fmt.Errorf("sync audit directory: %w", err)
+	}
 	return nil
 }
 
@@ -119,6 +133,9 @@ func validateEvent(event *Event) error {
 	event.Outcome = strings.TrimSpace(event.Outcome)
 	event.ActorID = strings.TrimSpace(event.ActorID)
 	event.PeerID = strings.TrimSpace(event.PeerID)
+	if event.AttemptID != "" && !pairingAttemptPattern.MatchString(event.AttemptID) {
+		return errors.New("audit pairing attempt ID is invalid")
+	}
 	event.Transport = strings.TrimSpace(event.Transport)
 	event.Reason = strings.TrimSpace(event.Reason)
 	if !eventNamePattern.MatchString(event.Type) {
@@ -182,14 +199,16 @@ func (l *Log) ensureCapacity(additional int64) error {
 		if archiveInfo.Mode()&os.ModeSymlink != 0 || !archiveInfo.Mode().IsRegular() {
 			return errors.New("audit archive must be a regular file, not a symbolic link")
 		}
-		if err := os.Remove(archive); err != nil {
-			return fmt.Errorf("remove previous audit archive: %w", err)
-		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat audit archive: %w", err)
 	}
-	if err := os.Rename(l.path, archive); err != nil {
+	// Replace the archive atomically instead of deleting the old archive
+	// before moving the active file into place.
+	if err := replaceAuditArchive(l.path, archive); err != nil {
 		return fmt.Errorf("rotate audit log: %w", err)
+	}
+	if err := l.syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync rotated audit directory: %w", err)
 	}
 	if err := os.Chmod(archive, 0o600); err != nil {
 		return fmt.Errorf("secure audit archive permissions: %w", err)
