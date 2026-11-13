@@ -88,7 +88,7 @@ func TestValidatePairingDACLInstalledService(t *testing.T) {
 	if err := validatePairingDACLForPrincipal(sddl, installer, service, false); err == nil {
 		t.Fatal("non-admin installer accepted third-party service ACL")
 	}
-	if err := validatePairingDACLForPrincipal("D:P(A;;FA;;;" + service + ")(A;;FA;;;BU)", service, service, false); err == nil {
+	if err := validatePairingDACLForPrincipal("D:P(A;;FA;;;"+service+")(A;;FA;;;BU)", service, service, false); err == nil {
 		t.Fatal("service ACL with broad users grant was accepted")
 	}
 }
@@ -107,9 +107,9 @@ func TestValidatePairingDACLNativeSIDIdentity(t *testing.T) {
 	serviceACL := "D:P(A;;FA;;;" + service + ")(A;;FA;;;SY)(A;;FA;;;BA)"
 	localAdminACL := "D:P(A;;FA;;;LA)(A;;FA;;;SY)(A;;FA;;;BA)"
 	for _, tc := range []struct {
-		name              string
+		name               string
 		sddl, active, root string
-		admin, valid      bool
+		admin, valid       bool
 	}{
 		{"local-administrator-own-identity", localAdminACL, localAdminSID, localAdminSID, false, true},
 		{"local-administrator-numeric-equivalent", "D:P(A;;FA;;;" + localAdminSID + ")", localAdminSID, localAdminSID, false, true},
