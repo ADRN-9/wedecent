@@ -208,7 +208,11 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { if unlockStore != nil { unlockStore() } }()
+	defer func() {
+		if unlockStore != nil {
+			unlockStore()
+		}
+	}()
 
 	exe, err := os.Executable()
 	if err != nil {
