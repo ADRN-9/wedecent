@@ -135,7 +135,7 @@ func TestPairingAtomicCrossProcessConsumption(t *testing.T) {
 	for i := range children {
 		id := fmt.Sprintf("wd_%016d", i+1)
 		c := &child{
-			cmd: exec.Command(exe, "-test.run=^TestPairingAtomicChildProcess$"),
+			cmd:   exec.Command(exe, "-test.run=^TestPairingAtomicChildProcess$"),
 			ready: filepath.Join(dir, fmt.Sprintf("child-ready-%d", i)),
 		}
 		c.cmd.Env = append(os.Environ(),
@@ -542,7 +542,8 @@ func TestPairingAtomicDurableTombstoneAndInjectedWriteFailures(t *testing.T) {
 			t.Fatal(err)
 		}
 		data, err := os.ReadFile(filepath.Join(dir, pairingSecretFile))
-		if err != nil || string(data) != consumedPairingHash+"\n" {
+		if err != nil || string(data) != consumedPairingHash+"
+" {
 			t.Fatalf("consumed marker = %q, error=%v", data, err)
 		}
 		if err := PairClientWithSecret(dir, secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); !errors.Is(err, ErrPairingSecretInvalid) {
