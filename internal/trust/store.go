@@ -207,7 +207,30 @@ func (s *Store) saveLocked() error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
-	return os.Chmod(s.path, 0o600)
+	// A new trust snapshot must be durable before its writer can acknowledge
+	// authorization. A post-rename sync error is reconciled by pairing callers.
+	return syncPairingDirectory(dir)
+}
+
+// pairingPeerOnDisk bypasses the in-memory snapshot after a failed write.
+// It distinguishes an unreadable/ambiguous commit from a definitively absent
+// identity, and never accepts a different fingerprint as the same peer.
+func (s *Store) pairingPeerOnDisk(peer Peer) (bool, error) {
+	if s == nil {
+		return false, errors.New("trust store is nil")
+	}
+	fresh, err := Open(s.path)
+	if err != nil {
+		return false, err
+	}
+	stored, exists := fresh.Peers[peer.ID]
+	if !exists {
+		return false, nil
+	}
+	if stored.Fingerprint != peer.Fingerprint {
+		return false, errors.New("trust store has a conflicting identity")
+	}
+	return true, nil
 }
 
 func HashSecret(secret string) string {
