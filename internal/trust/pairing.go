@@ -34,10 +34,11 @@ func PairClientWithSecret(dir, secret string, clients *Store, peer Peer) error {
 
 // Test-only hooks are passed per transaction, never stored in shared globals.
 type pairingHooks struct {
-	beforeAcquire func()
-	beforeConsume func()
-	afterConsume  func() error
-	putTrust      func(Peer) error
+	beforeAcquire  func()
+	beforeConsume  func()
+	afterConsume   func() error
+	putTrust       func(Peer) error
+	reconcileTrust func(Peer) (bool, error)
 }
 
 func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pairingHooks) error {
@@ -82,17 +83,24 @@ func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pa
 		put = hooks.putTrust
 	}
 	if err := put(peer); err != nil {
-		// A trust writer may return an error after the new file became visible.
-		// Never report a definite failure if this exact identity is on disk.
-		persisted, checkErr := clients.pairingPeerOnDisk(peer)
+		// A visible record never proves directory-sync durability. Only an
+		// explicit post-sync indication from Store can reconcile an error.
+		reconcile := clients.pairingPeerOnDisk
+		if hooks.reconcileTrust != nil {
+			reconcile = hooks.reconcileTrust
+		}
+		persisted, checkErr := reconcile(peer)
 		if checkErr != nil {
 			return fmt.Errorf("%w: write: %v; verify: %v", ErrPairingTrustUncertain, err, checkErr)
 		}
-		if persisted {
-			if errors.Is(err, ErrTrustStoreDurability) {
-				return fmt.Errorf("%w: trust snapshot is visible but not durably synchronized: %v", ErrPairingTrustUncertain, err)
+		if errors.Is(err, errTrustStoreCommitted) {
+			if persisted {
+				return &pairingReconciledError{cause: err}
 			}
-			return &pairingReconciledError{cause: err}
+			return fmt.Errorf("%w: confirmed trust record is missing: %v", ErrPairingTrustUncertain, err)
+		}
+		if persisted || errors.Is(err, ErrTrustStoreDurability) {
+			return fmt.Errorf("%w: trust commit not confirmed durable: %v", ErrPairingTrustUncertain, err)
 		}
 		return fmt.Errorf("%w: %v", ErrPairingTrustPersist, err)
 	}

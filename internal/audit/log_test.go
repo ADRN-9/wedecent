@@ -220,3 +220,45 @@ func TestAuditRotationMetadataFailureIsNotAcknowledged(t *testing.T) {
 		t.Fatalf("audit restart after uncertain rotation: %v", err)
 	}
 }
+
+func TestPendingPairingAuditDetectableAfterOneRotationAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	log, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := "wd_aaaaaaaaaaaaaaaa"
+	if err := log.Append(Event{Type: "pairing.request", Outcome: "pending", PeerID: peer}); err != nil {
+		t.Fatal(err)
+	}
+	rotated := false
+	for i := 0; i < 80; i++ {
+		if err := log.Append(Event{Type: "terminal.session_closed", Outcome: "success", Reason: strings.Repeat("x", 260)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, archiveFileName)); err == nil {
+			rotated = true
+			break
+		}
+	}
+	if !rotated {
+		t.Fatal("audit log did not rotate")
+	}
+	archive, err := os.ReadFile(filepath.Join(dir, archiveFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(archive), `"type":"pairing.request","outcome":"pending"`) ||
+		!strings.Contains(string(archive), peer) {
+		t.Fatal("unresolved pending pairing record missing from rotated archive")
+	}
+	restarted, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Append(Event{Type: "pairing.recovery", Outcome: "pending", PeerID: peer}); err != nil {
+		t.Fatal(err)
+	}
+	// This test proves one rotation, not indefinite retention: a second
+	// rotation can evict the record. Production recovery retention is a gate.
+}

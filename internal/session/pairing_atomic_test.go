@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"net"
 	"os"
 	"path/filepath"
@@ -203,5 +204,84 @@ func TestServerPairingAuditPreflightFailureDoesNotTrust(t *testing.T) {
 	}
 	if ok, err := trust.CheckPairingSecret(stateDir, secret); err != nil || !ok {
 		t.Fatalf("audit preflight failure consumed usable secret: valid=%v err=%v", ok, err)
+	}
+}
+
+func TestServerPairingCompletionAuditFailureKeepsDetectablePendingOutcome(t *testing.T) {
+	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientIdentity, err := identity.Ensure(t.TempDir(), "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverFingerprint, err := identity.FingerprintPublicKey(serverIdentity.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	preparePairingSessionTestDir(t, dir)
+	store, err := trust.Open(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	secret, err := trust.RotatePairingSecret(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := &Server{Identity: serverIdentity, StateDir: dir, Trust: store}
+	completed := false
+	s.pairingCompletionAudit = func(_ *audit.Log, event audit.Event) error {
+		if event.Type != "pairing.trust_added" || event.Outcome != "success" {
+			t.Fatalf("unexpected completion event: %+v", event)
+		}
+		completed = true
+		return errors.New("injected completion audit write failure")
+	}
+	frame, err := pairingWireRequest(t, s, clientIdentity, serverFingerprint, secret, clientIdentity.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !completed || frame.Type != protocol.TypePairResponse {
+		t.Fatalf("committed pairing incorrectly denied after audit failure: completed=%v frame=%d", completed, frame.Type)
+	}
+	// Audit recovery on restart must be able to identify a durable pending
+	// outcome, even though the completion event was not written.
+	data, err := os.ReadFile(filepath.Join(dir, audit.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var pending, success int
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var event audit.Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.PeerID != clientIdentity.ID {
+			continue
+		}
+		if event.Type == "pairing.request" && event.Outcome == "pending" {
+			pending++
+		}
+		if event.Type == "pairing.trust_added" && event.Outcome == "success" {
+			success++
+		}
+	}
+	if pending != 1 || success != 0 {
+		t.Fatalf("audit after injected completion failure: pending=%d success=%d", pending, success)
+	}
+	restarted, err := trust.Open(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := restarted.Get(clientIdentity.ID); !ok {
+		t.Fatal("committed trust missing after audit failure and restart")
+	}
+	if ok, err := trust.CheckPairingSecret(dir, secret); err != nil || ok {
+		t.Fatalf("paired secret reusable after audit failure: valid=%v err=%v", ok, err)
+	}
+	if _, err := audit.Open(dir); err != nil {
+		t.Fatalf("pending audit unreadable after restart: %v", err)
 	}
 }

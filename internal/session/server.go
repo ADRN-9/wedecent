@@ -40,6 +40,9 @@ type Server struct {
 	DirectAuthorizer DirectAuthorizer
 	FileTransfer     *FileTransferRuntime
 	Policy           SessionPolicy
+
+	// This per-server fault seam is nil in production.
+	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 
 func (s *Server) ServeConn(raw net.Conn) {
@@ -164,12 +167,19 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 	if reconciled {
 		reason = "trust_persist_reconciled"
 	}
-	if err := pairingAudit.Append(audit.Event{
+	completion := audit.Event{
 		Type: "pairing.trust_added", Outcome: "success", ActorID: s.Identity.ID,
 		PeerID: clientID, Transport: transport, Reason: reason,
-	}); err != nil {
-		// Trust is already committed: do not misreport a failure while the
-		// authenticated identity remains authorized. The pending audit survives.
+	}
+	appendCompletion := pairingAudit.Append
+	if s.pairingCompletionAudit != nil {
+		appendCompletion = func(event audit.Event) error {
+			return s.pairingCompletionAudit(pairingAudit, event)
+		}
+	}
+	if err := appendCompletion(completion); err != nil {
+		// A pending audit record remains, but trust is already committed.
+		// Returning a denial here would misrepresent actual authorization.
 		s.log().Error("pairing success audit could not be completed", "peer_id", clientID, "error", err)
 	}
 	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypePairResponse, Payload: mustJSON(protocol.PairResponse{DeviceID: s.Identity.ID, DeviceName: s.Identity.Name})}); err != nil {

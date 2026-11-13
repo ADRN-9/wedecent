@@ -607,7 +607,7 @@ func TestPairingAtomicDurableTombstoneAndInjectedWriteFailures(t *testing.T) {
 				if err := store.PutPairing(p); err != nil {
 					return err
 				}
-				return errors.New("injected error after commit")
+				return fmt.Errorf("%w: injected error after commit", errTrustStoreCommitted)
 			}})
 		if !IsPairingReconciled(err) {
 			t.Fatalf("committed write not reconciled: %v", err)
@@ -663,5 +663,187 @@ func TestPairingAtomicRotationCannotOvertakeCriticalSection(t *testing.T) {
 	}
 	if err := PairClientWithSecret(dir, got.secret, store, pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); err != nil {
 		t.Fatalf("new secret failed after ordered rotation: %v", err)
+	}
+}
+
+func TestPairingTrustCommitBoundaries(t *testing.T) {
+	injected := errors.New("injected trust persistence fault")
+	for _, tc := range []struct {
+		name           string
+		configure      func(*Store)
+		withHooks      func(*Store) pairingHooks
+		wantErr        error
+		wantVisible    bool
+		wantReconciled bool
+	}{
+		{
+			name: "before-replacement",
+			configure: func(s *Store) {
+				s.commitHooks.beforeReplace = func() error { return injected }
+			},
+			wantErr: ErrPairingTrustPersist,
+		},
+		{
+			name: "after-replacement-before-sync",
+			configure: func(s *Store) {
+				s.commitHooks.afterReplace = func() error { return injected }
+			},
+			wantErr: ErrPairingTrustUncertain, wantVisible: true,
+		},
+		{
+			name: "during-directory-sync",
+			configure: func(s *Store) {
+				s.commitHooks.syncDirectory = func(string) error { return injected }
+			},
+			wantErr: ErrPairingTrustUncertain, wantVisible: true,
+		},
+		{
+			name: "after-confirmed-durable-commit",
+			configure: func(s *Store) {
+				s.commitHooks.afterCommit = func() error { return injected }
+			},
+			wantVisible: true, wantReconciled: true,
+		},
+		{
+			name: "reconciliation-read-error",
+			configure: func(s *Store) {
+				s.commitHooks.afterReplace = func() error { return injected }
+			},
+			withHooks: func(*Store) pairingHooks {
+				return pairingHooks{reconcileTrust: func(Peer) (bool, error) {
+					return false, os.ErrPermission
+				}}
+			},
+			wantErr: ErrPairingTrustUncertain, wantVisible: true,
+		},
+		{
+			name: "unattested-error-after-actually-durable-commit",
+			withHooks: func(s *Store) pairingHooks {
+				return pairingHooks{putTrust: func(p Peer) error {
+					if err := s.PutPairing(p); err != nil {
+						return err
+					}
+					return injected // No trusted commit proof accompanies this error.
+				}}
+			},
+			wantErr: ErrPairingTrustUncertain, wantVisible: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			s := pairingTestStore(t, dir)
+			secret, err := RotatePairingSecret(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tc.configure != nil {
+				tc.configure(s)
+			}
+			hooks := pairingHooks{}
+			if tc.withHooks != nil {
+				hooks = tc.withHooks(s)
+			}
+			peer := pairingTestPeer("wd_aaaaaaaaaaaaaaaa")
+			err = pairClientWithHooks(dir, secret, s, peer, hooks)
+			if tc.wantReconciled {
+				if !IsPairingReconciled(err) {
+					t.Fatalf("confirmed commit not reconciled: %v", err)
+				}
+			} else if !errors.Is(err, tc.wantErr) || IsPairingReconciled(err) {
+				t.Fatalf("unexpected pairing result: got %v, want %v", err, tc.wantErr)
+			}
+			// Reopening represents a fresh process reading disk, not a claim
+			// about how the filesystem survives sudden physical power loss.
+			reopened, err := Open(filepath.Join(dir, "trusted-clients.json"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, visible := reopened.Get(peer.ID)
+			if visible != tc.wantVisible {
+				t.Fatalf("snapshot visible=%v, want %v", visible, tc.wantVisible)
+			}
+			if err := PairClientWithSecret(dir, secret, reopened,
+				pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); !errors.Is(err, ErrPairingSecretInvalid) {
+				t.Fatalf("consumed secret accepted after restart: %v", err)
+			}
+		})
+	}
+}
+
+// The child is killed after atomic replacement but before the Go pairing
+// directory-sync barrier. This is process-crash evidence, not power-loss proof.
+func TestPairingPostReplaceCrashChild(t *testing.T) {
+	if os.Getenv("WEDECENT_POST_REPLACE_CHILD") != "1" {
+		return
+	}
+	dir := os.Getenv("WEDECENT_POST_REPLACE_DIR")
+	s, err := Open(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.commitHooks.afterReplace = func() error {
+		if err := os.WriteFile(os.Getenv("WEDECENT_POST_REPLACE_READY"), []byte("replaced"), 0o600); err != nil {
+			return err
+		}
+		for {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	t.Fatal(PairClientWithSecret(dir, os.Getenv("WEDECENT_POST_REPLACE_SECRET"),
+		s, pairingTestPeer("wd_aaaaaaaaaaaaaaaa")))
+}
+
+func TestPairingPostReplaceKilledProcessCannotReplay(t *testing.T) {
+	dir := t.TempDir()
+	pairingTestStore(t, dir)
+	secret, err := RotatePairingSecret(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(dir, "post-replace-ready")
+	child := exec.Command(exe, "-test.run=^TestPairingPostReplaceCrashChild$")
+	var output bytes.Buffer
+	child.Stdout, child.Stderr = &output, &output
+	child.Env = append(os.Environ(),
+		"WEDECENT_POST_REPLACE_CHILD=1",
+		"WEDECENT_POST_REPLACE_DIR="+dir,
+		"WEDECENT_POST_REPLACE_READY="+ready,
+		"WEDECENT_POST_REPLACE_SECRET="+secret,
+	)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = child.Process.Kill()
+		_ = child.Wait()
+	}()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child did not reach post-replace barrier: %s", output.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Wait()
+	reopened, err := Open(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, found := reopened.Get("wd_aaaaaaaaaaaaaaaa"); !found {
+		t.Fatal("replaced snapshot was not visible after the child died")
+	}
+	if err := PairClientWithSecret(dir, secret, reopened,
+		pairingTestPeer("wd_bbbbbbbbbbbbbbbb")); !errors.Is(err, ErrPairingSecretInvalid) {
+		t.Fatalf("restarting after post-replacement crash reused secret: %v", err)
 	}
 }

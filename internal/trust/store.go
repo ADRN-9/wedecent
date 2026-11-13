@@ -23,14 +23,27 @@ type Peer struct {
 
 const maxStoreSize = 1 << 20
 
-// ErrTrustStoreDurability means a replacement was visible, but syncing its
-// directory failed, so a crash could still lose the new namespace entry.
+// ErrTrustStoreDurability means pairing cannot prove that an attempted
+// replacement is durable, even when the new snapshot is readable on disk.
 var ErrTrustStoreDurability = errors.New("trust store namespace durability uncertain")
 
+// This private marker can be produced only after the pairing directory sync.
+// A readable snapshot on its own never establishes durability.
+var errTrustStoreCommitted = errors.New("pairing trust store durably committed")
+
+// Optional per-store fault hooks are unused outside package tests.
+type pairingCommitHooks struct {
+	beforeReplace func() error
+	afterReplace  func() error
+	syncDirectory func(string) error
+	afterCommit   func() error
+}
+
 type Store struct {
-	mu    sync.Mutex
-	path  string
-	Peers map[string]Peer `json:"peers"`
+	mu          sync.Mutex
+	path        string
+	Peers       map[string]Peer `json:"peers"`
+	commitHooks pairingCommitHooks
 }
 
 func Open(path string) (*Store, error) {
@@ -93,20 +106,13 @@ func (s *Store) put(p Peer, pairingDurable bool) error {
 	}
 	previous, existed := s.Peers[p.ID]
 	s.Peers[p.ID] = p
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveLocked(pairingDurable); err != nil {
 		if existed {
 			s.Peers[p.ID] = previous
 		} else {
 			delete(s.Peers, p.ID)
 		}
 		return err
-	}
-	if pairingDurable {
-		// This occurs only after a successful atomic replacement. A failure
-		// here is post-commit uncertainty, never an absent/failed insertion.
-		if err := syncPairingDirectory(filepath.Dir(s.path)); err != nil {
-			return fmt.Errorf("%w: %v", ErrTrustStoreDurability, err)
-		}
 	}
 	return nil
 }
@@ -146,7 +152,7 @@ func (s *Store) DeletePeer(id string) (Peer, bool, error) {
 		return Peer{}, false, nil
 	}
 	delete(s.Peers, id)
-	if err := s.saveLocked(); err != nil {
+	if err := s.saveLocked(false); err != nil {
 		s.Peers[id] = peer
 		return Peer{}, false, err
 	}
@@ -188,7 +194,7 @@ func (s *Store) reloadLocked() error {
 	return nil
 }
 
-func (s *Store) saveLocked() error {
+func (s *Store) saveLocked(pairingDurable bool) error {
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -225,13 +231,45 @@ func (s *Store) saveLocked() error {
 		_ = os.Remove(tmpPath)
 		return err
 	}
+	if pairingDurable && s.commitHooks.beforeReplace != nil {
+		if err := s.commitHooks.beforeReplace(); err != nil {
+			_ = os.Remove(tmpPath)
+			return err
+		}
+	}
 	if err := replaceStoreFile(tmpPath, s.path); err != nil {
 		_ = os.Remove(tmpPath)
+		if pairingDurable {
+			// An API error cannot prove the original snapshot is still intact.
+			return fmt.Errorf("%w: replacement: %v", ErrTrustStoreDurability, err)
+		}
 		return err
 	}
-	// The shared Store retains its preexisting contract. Pairing takes an
-	// additional durability step under the same lock in PutPairing.
-	return os.Chmod(s.path, 0o600)
+	if !pairingDurable {
+		// Unrelated trust domains retain their existing persistence contract.
+		return os.Chmod(s.path, 0o600)
+	}
+	// The replacement was already secured (0600) and its contents synced.
+	// No fallible permissions mutation is allowed before durability.
+	if s.commitHooks.afterReplace != nil {
+		if err := s.commitHooks.afterReplace(); err != nil {
+			return fmt.Errorf("%w: after replacement: %v", ErrTrustStoreDurability, err)
+		}
+	}
+	syncDirectory := syncPairingDirectory
+	if s.commitHooks.syncDirectory != nil {
+		syncDirectory = s.commitHooks.syncDirectory
+	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("%w: directory sync: %v", ErrTrustStoreDurability, err)
+	}
+	// Only errors beyond this point are eligible for positive reconciliation.
+	if s.commitHooks.afterCommit != nil {
+		if err := s.commitHooks.afterCommit(); err != nil {
+			return fmt.Errorf("%w: %v", errTrustStoreCommitted, err)
+		}
+	}
+	return nil
 }
 
 // pairingPeerOnDisk bypasses the in-memory snapshot after a failed write.
