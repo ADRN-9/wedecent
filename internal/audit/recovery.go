@@ -77,12 +77,8 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 		return nil, fmt.Errorf("pairing recovery durability unavailable: %w", err)
 	}
 	r := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName)}
-	_, lockErr := os.Lstat(r.path + ".lock")
-	if lockErr != nil && !errors.Is(lockErr, os.ErrNotExist) {
-		return nil, lockErr
-	}
-	// Coordinate initial creation with every other process. The lock is
-	// retained across restarts and is never removed by ordinary operation.
+	// Initialization is serialized with mutation. A second opener must not
+	// confuse an in-progress first creation with a deleted durable ledger.
 	unlock, err := lockFile(r.path)
 	if err != nil {
 		return nil, err
@@ -91,9 +87,13 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	if err := trust.VerifyPairingStatePath(r.path + ".lock"); err != nil {
 		return nil, err
 	}
+	initialized, err := r.initialized()
+	if err != nil {
+		return nil, err
+	}
 	_, stateErr := os.Lstat(r.path)
 	if errors.Is(stateErr, os.ErrNotExist) {
-		if lockErr == nil {
+		if initialized {
 			return nil, errors.New("pairing recovery file missing after initialization: operator repair required")
 		}
 		r.allowEmpty = true
@@ -107,7 +107,45 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	if _, err := r.read(); err != nil {
 		return nil, err
 	}
+	if !initialized {
+		if err := r.markInitialized(); err != nil {
+			return nil, fmt.Errorf("sync pairing recovery initialization: %w", err)
+		}
+	}
 	return r, nil
+}
+
+// The marker lives beyond byte zero because Windows LockFileEx locks byte
+// zero. A synced marker distinguishes deleted state from concurrent creation.
+const pairingRecoveryInitMarker = "WD-C16"
+
+func (r *PairingRecovery) initialized() (bool, error) {
+	f, err := os.OpenFile(r.path+".lock", os.O_RDWR, 0)
+	if err != nil {
+		return false, err
+	}
+	defer f.Close()
+	buf := make([]byte, len(pairingRecoveryInitMarker))
+	n, err := f.ReadAt(buf, 1)
+	if n == 0 && errors.Is(err, io.EOF) {
+		return false, nil
+	}
+	if err != nil || n != len(buf) || string(buf) != pairingRecoveryInitMarker {
+		return false, errors.New("invalid pairing recovery lock initialization marker")
+	}
+	return true, nil
+}
+
+func (r *PairingRecovery) markInitialized() error {
+	f, err := os.OpenFile(r.path+".lock", os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.WriteAt([]byte(pairingRecoveryInitMarker), 1); err != nil {
+		return err
+	}
+	return f.Sync()
 }
 
 func validPairingOutcomeState(state string) bool {
