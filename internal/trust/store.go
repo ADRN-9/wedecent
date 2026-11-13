@@ -23,6 +23,10 @@ type Peer struct {
 
 const maxStoreSize = 1 << 20
 
+// ErrTrustStoreDurability means a replacement was visible, but syncing its
+// directory failed, so a crash could still lose the new namespace entry.
+var ErrTrustStoreDurability = errors.New("trust store namespace durability uncertain")
+
 type Store struct {
 	mu    sync.Mutex
 	path  string
@@ -209,7 +213,10 @@ func (s *Store) saveLocked() error {
 	}
 	// A new trust snapshot must be durable before its writer can acknowledge
 	// authorization. A post-rename sync error is reconciled by pairing callers.
-	return syncPairingDirectory(dir)
+	if err := syncPairingDirectory(dir); err != nil {
+		return fmt.Errorf("%w: %v", ErrTrustStoreDurability, err)
+	}
+	return nil
 }
 
 // pairingPeerOnDisk bypasses the in-memory snapshot after a failed write.
