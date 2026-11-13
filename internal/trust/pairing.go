@@ -221,6 +221,11 @@ func lockPairing(dir string) (string, func(), error) {
 	if err := pairingWindowsStateSecure(dir); err != nil {
 		return "", nil, fmt.Errorf("%w: state directory ACL: %v", ErrPairingStateUnsafe, err)
 	}
+	// Check filesystem durability support before reading, consuming or
+	// rotating a secret, including hashes provisioned by older versions.
+	if err := syncPairingDirectory(dir); err != nil {
+		return "", nil, fmt.Errorf("%w: state filesystem durability: %v", ErrPairingStateUnsafe, err)
+	}
 	path := filepath.Join(dir, pairingSecretFile)
 	unlock, err := lockPairingFile(path)
 	if err != nil {
