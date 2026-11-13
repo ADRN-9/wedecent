@@ -77,12 +77,30 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 		return nil, fmt.Errorf("pairing recovery durability unavailable: %w", err)
 	}
 	r := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName)}
-	_, stateErr := os.Lstat(r.path)
 	_, lockErr := os.Lstat(r.path + ".lock")
-	if errors.Is(stateErr, os.ErrNotExist) && errors.Is(lockErr, os.ErrNotExist) {
+	if lockErr != nil && !errors.Is(lockErr, os.ErrNotExist) {
+		return nil, lockErr
+	}
+	// Coordinate initial creation with every other process. The lock is
+	// retained across restarts and is never removed by ordinary operation.
+	unlock, err := lockFile(r.path)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	if err := trust.VerifyPairingStatePath(r.path + ".lock"); err != nil {
+		return nil, err
+	}
+	_, stateErr := os.Lstat(r.path)
+	if errors.Is(stateErr, os.ErrNotExist) {
+		if lockErr == nil {
+			return nil, errors.New("pairing recovery file missing after initialization: operator repair required")
+		}
 		r.allowEmpty = true
-	} else if errors.Is(stateErr, os.ErrNotExist) {
-		return nil, errors.New("pairing recovery file missing after initialization: operator repair required")
+		if err := r.write(pairingOutcomeSnapshot{Version: 1}); err != nil {
+			return nil, err
+		}
+		r.allowEmpty = false
 	} else if stateErr != nil {
 		return nil, stateErr
 	}
