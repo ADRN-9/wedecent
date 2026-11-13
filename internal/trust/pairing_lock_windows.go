@@ -39,6 +39,9 @@ func lockPairingFile(path string) (func(), error) {
 	if err != nil || !info.Mode().IsRegular() || onPath.Mode()&os.ModeSymlink != 0 || !os.SameFile(info, onPath) {
 		return closeOnError(errors.New("pairing lock must be a stable regular file"))
 	}
+	if err := secureWindowsPairingPath(lockPath); err != nil {
+		return closeOnError(fmt.Errorf("pairing lock ACL: %w", err))
+	}
 	var overlapped windows.Overlapped
 	if err := windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
 		return closeOnError(fmt.Errorf("exclusive pairing lock unavailable: %w", err))
