@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -27,7 +28,7 @@ func lockPairingFile(path string) (func(), error) {
 	if err != nil {
 		return closeOnError(err)
 	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 {
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o077 != 0 || !pairingOwnedByCurrentUser(info) {
 		return closeOnError(errors.New("pairing lock must be a private regular file"))
 	}
 	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
@@ -46,4 +47,9 @@ func lockPairingFile(path string) (func(), error) {
 
 func replacePairingSecretFile(source, destination string) error {
 	return os.Rename(source, destination)
+}
+
+func pairingOwnedByCurrentUser(info os.FileInfo) bool {
+	st, ok := info.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == uint32(os.Geteuid())
 }
