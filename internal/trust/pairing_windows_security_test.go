@@ -7,8 +7,8 @@ import "testing"
 func TestValidatePairingDACLFailClosed(t *testing.T) {
 	const owner = "S-1-5-21-1234-5678-9012-1001"
 	cases := []struct {
-		name string
-		sddl string
+		name  string
+		sddl  string
 		valid bool
 	}{
 		{"current-user-system-admin", "O:" + owner + "D:P(A;;FA;;;" + owner + ")(A;;FA;;;SY)(A;;FA;;;BA)", true},
