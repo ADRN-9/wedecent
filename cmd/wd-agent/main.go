@@ -72,6 +72,9 @@ func runInit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
 		return err
@@ -115,6 +118,9 @@ func runIdentity(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
 		return err
@@ -147,6 +153,9 @@ func runEnrollmentProof(args []string) error {
 		return errors.New("--request and --challenge-file are mutually exclusive")
 	}
 
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
 		return err
@@ -557,6 +566,9 @@ func runServe(args []string) error {
 }
 
 func runAgent(ctx context.Context, cfg serveConfig) error {
+	if err := preflightAgentState(cfg.StateDir); err != nil {
+		return err
+	}
 	id, err := identity.Ensure(
 		cfg.StateDir,
 		cfg.Name,
