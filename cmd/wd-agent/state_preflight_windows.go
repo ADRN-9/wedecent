@@ -115,6 +115,12 @@ func preflightWindowsAgentState(dir string, hooks windowsStateProvisionHooks) (r
 	if err := trust.VerifyPairingStatePath(at); err != nil {
 		return fmt.Errorf("agent state security preflight: %w", err)
 	}
+	// Dedicated service identities are accepted when actually executing under
+	// that SID. Elevated installers use winservice.RestrictDirectory to
+	// provision a different account, never an arbitrary foreign state owner.
+	if err := verifyWindowsAgentStateOwner(at, current.User.Sid); err != nil {
+		return fmt.Errorf("agent state security preflight: %w", err)
+	}
 	for _, item := range seen {
 		now, err := inspectWindowsStateDirectory(item.path)
 		if err != nil || !os.SameFile(item.info, now) {
@@ -205,4 +211,34 @@ func requireLocalNTFS(root string) error {
 		return errors.New("agent state requires local NTFS")
 	}
 	return nil
+}
+
+func verifyWindowsAgentStateOwner(path string, current *windows.SID) error {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION)
+	if err != nil || sd == nil {
+		return fmt.Errorf("read Windows agent state owner: %v", err)
+	}
+	owner, _, err := sd.Owner()
+	if err != nil || owner == nil {
+		return errors.New("Windows agent state owner is unavailable")
+	}
+	if !windowsAgentStateOwnerAllowed(owner, current) {
+		return errors.New("agent state owner does not match the active or supported system identity")
+	}
+	return nil
+}
+
+func windowsAgentStateOwnerAllowed(owner, active *windows.SID) bool {
+	if owner == nil || active == nil {
+		return false
+	}
+	system, err := windows.StringToSid("S-1-5-18")
+	if err != nil {
+		return false
+	}
+	admins, err := windows.StringToSid("S-1-5-32-544")
+	if err != nil {
+		return false
+	}
+	return owner.Equals(active) || owner.Equals(system) || owner.Equals(admins)
 }
