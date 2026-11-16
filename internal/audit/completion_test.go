@@ -368,3 +368,91 @@ func TestPairingProofConcurrentChildCompletionAndAcknowledgment(t *testing.T) {
 		t.Fatalf("concurrent operator ack lost completion: %+v %v", rows, err)
 	}
 }
+
+func TestPairingProofChildKilledPostReplace(t *testing.T) {
+	if os.Getenv("WEDECENT_PROOF_KILL_CHILD") != "1" {
+		return
+	}
+	dir := os.Getenv("WEDECENT_PROOF_DIR")
+	r, err := OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event Event
+	if err := json.Unmarshal([]byte(os.Getenv("WEDECENT_PROOF_EVENT")), &event); err != nil {
+		t.Fatal(err)
+	}
+	r.afterReplace = func() error {
+		ready := os.Getenv("WEDECENT_PROOF_READY")
+		if err := os.WriteFile(ready, []byte("post-replacement"), 0o600); err != nil {
+			return err
+		}
+		for {
+			time.Sleep(100 * time.Millisecond)
+		}
+	}
+	if err := r.ConfirmCompletion(l, event.AttemptID, event); err != nil {
+		t.Fatal(err)
+	}
+	t.Fatal("unreachable: child did not block after replacement")
+}
+
+func TestPairingProofPostReplaceKilledProcessReopensWithoutEvidenceLoss(t *testing.T) {
+	r, l, id := completedRecoveryFixture(t)
+	event := completionTestEvent(id)
+	if err := l.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ready := filepath.Join(filepath.Dir(l.path), "proof-kill-ready")
+	child := exec.Command(exe, "-test.run=^TestPairingProofChildKilledPostReplace$")
+	var output bytes.Buffer
+	child.Stdout, child.Stderr = &output, &output
+	child.Env = append(os.Environ(),
+		"WEDECENT_PROOF_KILL_CHILD=1",
+		"WEDECENT_PROOF_DIR="+filepath.Dir(l.path),
+		"WEDECENT_PROOF_EVENT="+string(payload),
+		"WEDECENT_PROOF_READY="+ready)
+	if err := child.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = child.Process.Kill(); _ = child.Wait() }()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("child did not reach post-replacement injection: %s", output.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if err := child.Process.Kill(); err != nil {
+		t.Fatal(err)
+	}
+	_ = child.Wait()
+	reopened, err := OpenPairingRecovery(filepath.Dir(l.path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reopened.AcknowledgeResolved(id); err != nil {
+		t.Fatalf("visible post-replace proof could not be explicitly re-synchronized: %v", err)
+	}
+	rows, err := reopened.Records()
+	if err != nil || len(rows) != 1 || rows[0].AuditProof == nil ||
+		rows[0].AcknowledgedAt == nil || rows[0].AuditProof.Event != event {
+		t.Fatalf("process death lost or corrupted pairing proof: %+v %v", rows, err)
+	}
+	// Process kill is NOT physical power-loss persistence evidence.
+}
