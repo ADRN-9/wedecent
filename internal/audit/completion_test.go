@@ -402,7 +402,7 @@ func TestPairingProofChildKilledPostReplace(t *testing.T) {
 }
 
 func TestPairingProofPostReplaceKilledProcessReopensWithoutEvidenceLoss(t *testing.T) {
-	r, l, id := completedRecoveryFixture(t)
+	_, l, id := completedRecoveryFixture(t)
 	event := completionTestEvent(id)
 	if err := l.Append(event); err != nil {
 		t.Fatal(err)
