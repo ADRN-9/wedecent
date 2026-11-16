@@ -8,12 +8,12 @@ import (
 	"os/exec"
 	"sync"
 
-	"wedecent.com/wedecent/internal/trust"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"wedecent.com/wedecent/internal/trust"
 
 	"golang.org/x/sys/windows"
 )
