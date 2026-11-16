@@ -525,10 +525,26 @@ func (r *PairingRecovery) ensureCurrentSnapshotDurable() error {
 	return syncDir(filepath.Dir(r.path))
 }
 
+// Proof and authorized reconciliation must use the audit log belonging to
+// this exact state root, never a caller-selected external audit file.
+func (r *PairingRecovery) verifyPairingLogSource(log *Log) error {
+	if r == nil || log == nil ||
+		filepath.Clean(log.path) != filepath.Join(filepath.Dir(r.path), FileName) {
+		return errors.New("pairing recovery audit source does not match protected state directory")
+	}
+	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
+		return fmt.Errorf("pairing recovery audit root is unsafe: %w", err)
+	}
+	return nil
+}
+
 // ConfirmCompletion independently re-reads the durably appended audit event
 // under the rotating log lock, then retains a durable copy in the recovery
 // register. A lost or ambiguous append never manufactures completion proof.
 func (r *PairingRecovery) ConfirmCompletion(log *Log, attemptID string, event Event) error {
+	if err := r.verifyPairingLogSource(log); err != nil {
+		return err
+	}
 	if !pairingAttemptPattern.MatchString(attemptID) {
 		return errors.New("invalid pairing audit confirmation")
 	}
@@ -569,6 +585,9 @@ func (r *PairingRecovery) recordAuditProof(attemptID string, proof PairingAuditP
 // have OS administrator/root authority, trust must match the exact recorded
 // fingerprint, and the reconciliation must itself be audited and synchronized.
 func (r *PairingRecovery) ReconcilePrivileged(log *Log, attemptID string) error {
+	if err := r.verifyPairingLogSource(log); err != nil {
+		return err
+	}
 	check := authorizePairingRecoveryOperator
 	if r != nil && r.operatorCheck != nil {
 		check = r.operatorCheck

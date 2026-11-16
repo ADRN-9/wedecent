@@ -456,3 +456,28 @@ func TestPairingProofPostReplaceKilledProcessReopensWithoutEvidenceLoss(t *testi
 	}
 	// Process kill is NOT physical power-loss persistence evidence.
 }
+
+func TestPairingCompletionRejectsForeignAuditLogSource(t *testing.T) {
+	r, l, id := completedRecoveryFixture(t)
+	event := completionTestEvent(id)
+	other := recoveryTestDir(t)
+	foreign, err := open(filepath.Join(other, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := foreign.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConfirmCompletion(foreign, id, event); err == nil {
+		t.Fatal("foreign audit log supplied proof for another state root")
+	}
+	if err := r.AcknowledgeResolved(id); err == nil {
+		t.Fatal("foreign completion proof permitted acknowledgment")
+	}
+	if err := l.Append(event); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.ConfirmCompletion(l, id, event); err != nil {
+		t.Fatalf("valid matching audit log was rejected: %v", err)
+	}
+}
