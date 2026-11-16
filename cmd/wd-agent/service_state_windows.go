@@ -249,7 +249,6 @@ func guardWindowsServiceState(dir string) (func(), error) {
 	return closeAll, nil
 }
 
-
 func createWindowsServiceLog(path string) (*os.File, error) {
 	current, err := activeWindowsSID()
 	if err != nil {
@@ -262,7 +261,7 @@ func createWindowsServiceLog(path string) (*os.File, error) {
 		return nil, err
 	}
 	sa := windows.SecurityAttributes{
-		Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		Length:             uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
 		SecurityDescriptor: sd,
 	}
 	name, err := windows.UTF16PtrFromString(path)

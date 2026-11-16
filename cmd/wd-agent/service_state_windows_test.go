@@ -11,6 +11,7 @@ import (
 
 	"golang.org/x/sys/windows"
 	"wedecent.com/wedecent/internal/trust"
+	"wedecent.com/wedecent/internal/winservice"
 )
 
 func TestServiceStartupRejectsBroadStateBeforeLogOrIdentity(t *testing.T) {
@@ -131,9 +132,26 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	if configured.User.Sid == nil {
 		t.Fatal("installer SID missing")
 	}
-	state := filepath.Join(t.TempDir(), "dedicated-service-state")
+	serviceSID, err := winservice.ResolveServiceAccountSID(account)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if serviceSID.Equals(configured.User.Sid) {
+		t.Fatal("same-user fixture does not prove distinct service identity")
+	}
+	// Exercise first-run creation below a parent with an unrelated BU allow
+	// ACE, while requiring the dedicated account to own the protected child.
+	parent := prepareWindowsPreflightTestDir(t, true)
+	state := filepath.Join(parent, "dedicated-service-state")
 	if err := provisionWindowsServiceState(state, account); err != nil {
 		t.Fatalf("distinct service SID preflight/provision failed: %v", err)
+	}
+	owner, err := windowsServiceOwner(state)
+	if err != nil || !owner.Equals(serviceSID) {
+		t.Fatalf("wrong dedicated service state owner %v: %v", owner, err)
+	}
+	if err := trust.VerifyPairingStatePath(state); err != nil {
+		t.Fatalf("service state retained inherited unauthorized ACE: %v", err)
 	}
 	entries, err := os.ReadDir(state)
 	if err != nil || len(entries) != 0 {
