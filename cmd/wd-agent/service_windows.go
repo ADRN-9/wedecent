@@ -15,8 +15,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	"wedecent.com/wedecent/internal/identity"
-	"wedecent.com/wedecent/internal/trust"
 	"wedecent.com/wedecent/internal/winservice"
 )
 
@@ -218,58 +216,11 @@ func runServiceInstall(args []string) error {
 		)
 	}
 
-	if err := os.MkdirAll(
-		*stateDir,
-		0o700,
-	); err != nil {
-		return fmt.Errorf(
-			"create state directory: %w",
-			err,
-		)
-	}
-
-	id, err := identity.Ensure(
-		*stateDir,
-		*deviceName,
-	)
-	if err != nil {
-		return err
-	}
-
-	if _, err := trust.Open(
-		filepath.Join(
-			*stateDir,
-			"trusted-clients.json",
-		),
-	); err != nil {
-		return err
-	}
-
-	// The elevated installer first applies the dedicated service account's
-	// restrictive inheritable DACL and owner to existing identity state.
-	// Rotate only after the state-root access boundary is established.
-	if err := winservice.RestrictDirectory(
-		*stateDir,
-		*account,
-	); err != nil {
-		return err
-	}
-
-	pairSecret, err := trust.RotatePairingSecret(
-		*stateDir,
-	)
-	if err != nil {
-		return err
-	}
-
-	// The installer created the replacement hash with its own token.
-	// Transfer ownership to the service account before service startup so
-	// the agent can validate the entire pairing state on its first run.
-	if err := winservice.RestrictDirectory(
-		*stateDir,
-		*account,
-	); err != nil {
-		return fmt.Errorf("finalize service-owned pairing state: %w", err)
+	// Provision and independently verify the configured service SID before
+	// SCM installation. The installer must never create DPAPI identity material,
+	// trust records or pairing secrets under its different Windows token.
+	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
+		return fmt.Errorf("provision dedicated service state: %w", err)
 	}
 
 	password := ""
@@ -351,10 +302,6 @@ func runServiceInstall(args []string) error {
 		return err
 	}
 
-	fp, _ := identity.FingerprintPublicKey(
-		id.PublicKey,
-	)
-
 	fmt.Printf(
 		"Service installed: %s\n",
 		*serviceName,
@@ -367,22 +314,9 @@ func runServiceInstall(args []string) error {
 		"State directory:   %s\n",
 		*stateDir,
 	)
-	fmt.Printf(
-		"Device ID:         %s\n",
-		id.ID,
-	)
-	fmt.Printf(
-		"Fingerprint:       %s\n",
-		fp,
-	)
-	fmt.Printf(
-		"Pair secret:       %s\n",
-		pairSecret,
-	)
-
-	fmt.Println(
-		"\nThe pair secret is single-use. Keep it private.",
-	)
+	fmt.Println("Identity and pairing state will be created only by the service account.")
+	fmt.Println("For onboarding, request the fingerprint and a fresh pairing secret")
+	fmt.Println("through an explicitly authorized service-account provisioning workflow.")
 
 	if *startNow {
 		if err := winservice.Start(
@@ -412,6 +346,17 @@ func runServiceRun(args []string) error {
 	cfg, err := parseServeConfig(serveArgs)
 	if err != nil {
 		return err
+	}
+	// Retain no-delete-sharing handles for every ancestor while the service
+	// accesses identity, trust, pairing and audit state. No log is opened
+	// until the active service SID and complete path have been validated.
+	unlockState, err := guardWindowsServiceState(cfg.StateDir)
+	if err != nil {
+		return fmt.Errorf("service state path guard: %w", err)
+	}
+	defer unlockState()
+	if err := verifyWindowsServiceState(cfg.StateDir); err != nil {
+		return fmt.Errorf("service state security preflight: %w", err)
 	}
 	logFile, err := openServiceLog(cfg.StateDir)
 	if err != nil {
@@ -512,12 +457,45 @@ func defaultServiceStateDir() string {
 }
 
 func openServiceLog(stateDir string) (*os.File, error) {
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create service state directory: %w", err)
+	// This also applies when tests or future service entrypoints call the
+	// helper directly. Do not create even an empty log under unsafe state.
+	if err := verifyWindowsServiceState(stateDir); err != nil {
+		return nil, fmt.Errorf("service log state preflight: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(stateDir, "service.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	path := filepath.Join(stateDir, "service.log")
+	info, err := os.Lstat(path)
+	create := errors.Is(err, os.ErrNotExist)
+	if err != nil && !create {
+		return nil, err
+	}
+	if !create {
+		if err := verifyWindowsServiceFile(path); err != nil {
+			return nil, err
+		}
+	}
+	flags := os.O_WRONLY | os.O_APPEND
+	if create {
+		flags |= os.O_CREATE | os.O_EXCL
+	}
+	f, err := os.OpenFile(path, flags, 0o600)
 	if err != nil {
-		return nil, fmt.Errorf("open service log: %w", err)
+		return nil, fmt.Errorf("open protected service log: %w", err)
+	}
+	fail := func(err error) (*os.File, error) {
+		_ = f.Close()
+		return nil, err
+	}
+	if err := verifyWindowsServiceFile(path); err != nil {
+		return fail(err)
+	}
+	opened, err := f.Stat()
+	if err != nil {
+		return fail(err)
+	}
+	onPath, err := os.Lstat(path)
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(opened, onPath) ||
+		(!create && !os.SameFile(info, onPath)) {
+		return fail(errors.New("service log path changed during protected open"))
 	}
 	return f, nil
 }

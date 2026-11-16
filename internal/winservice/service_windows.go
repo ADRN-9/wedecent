@@ -526,6 +526,16 @@ func accountSIDPrincipal(account string) (string, error) {
 	return "*" + sidText, nil
 }
 
+// ResolveServiceAccountSID identifies the exact configured account without
+// inferring it from the elevated installer token or a matching account name.
+func ResolveServiceAccountSID(account string) (*windows.SID, error) {
+	principal, err := accountSIDPrincipal(account)
+	if err != nil {
+		return nil, err
+	}
+	return windows.StringToSid(strings.TrimPrefix(principal, "*"))
+}
+
 // RestrictDirectory removes inherited ACL entries and grants full control only
 // to the configured service account, LocalSystem, and local Administrators.
 // The caller must be elevated and the directory must already exist.
