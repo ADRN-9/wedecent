@@ -45,6 +45,10 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: WD-C31-D2 temporary formatter diagnosis (remove before final SHA)
+        run: |
+          gofmt -l cmd internal
+          gofmt -d cmd/wd-agent/state_preflight_windows.go cmd/wd-agent/state_preflight_windows_test.go cmd/wd-agent/main.go cmd/wd-agent/clients.go
       - name: Verify formatting
         run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
