@@ -477,7 +477,15 @@ func openServiceLog(stateDir string) (*os.File, error) {
 	if create {
 		flags |= os.O_CREATE | os.O_EXCL
 	}
-	f, err := os.OpenFile(path, flags, 0o600)
+	var f *os.File
+	if create {
+		// Set owner and protected DACL in the same CreateFile operation;
+		// elevated installers can otherwise default to the Administrators
+		// group owner even inside a private service directory.
+		f, err = createWindowsServiceLog(path)
+	} else {
+		f, err = os.OpenFile(path, flags, 0o600)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("open protected service log: %w", err)
 	}

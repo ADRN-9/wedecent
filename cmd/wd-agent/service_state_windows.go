@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 	"wedecent.com/wedecent/internal/trust"
@@ -217,3 +219,32 @@ func guardWindowsServiceState(dir string) (func(), error) {
 	return closeAll, nil
 }
 
+
+func createWindowsServiceLog(path string) (*os.File, error) {
+	current, err := activeWindowsSID()
+	if err != nil {
+		return nil, err
+	}
+	sid := current.String()
+	sd, err := windows.SecurityDescriptorFromString(
+		"O:" + sid + "D:P(A;;FA;;;" + sid + ")(A;;FA;;;SY)(A;;FA;;;BA)")
+	if err != nil {
+		return nil, err
+	}
+	sa := windows.SecurityAttributes{
+		Length: uint32(unsafe.Sizeof(windows.SecurityAttributes{})),
+		SecurityDescriptor: sd,
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		return nil, err
+	}
+	h, err := windows.CreateFile(name, windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		&sa, windows.CREATE_NEW, windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT, 0)
+	runtime.KeepAlive(sd)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(h), path), nil
+}
