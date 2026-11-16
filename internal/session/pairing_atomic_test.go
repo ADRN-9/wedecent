@@ -286,9 +286,17 @@ func TestServerPairingCompletionAuditFailureKeepsDetectablePendingOutcome(t *tes
 	}
 	assessments, err := InspectPairingRecovery(dir)
 	if err != nil || len(assessments) != 1 ||
-		assessments[0].Status != PairingRecoveryConfirmed ||
-		assessments[0].Audit.Outcome != audit.PairingOutcomeSuccess {
-		t.Fatalf("durable pairing not recoverable after completion log failure: %+v, %v", assessments, err)
+		assessments[0].Status != PairingRecoveryAuditOutstanding ||
+		assessments[0].Audit.Outcome != audit.PairingOutcomeSuccess ||
+		assessments[0].Audit.AuditProof != nil {
+		t.Fatalf("unaudited trust was incorrectly confirmed: %+v, %v", assessments, err)
+	}
+	recovery, err := audit.OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovery.AcknowledgeResolved(assessments[0].Audit.AttemptID); err == nil {
+		t.Fatal("completion audit failure permitted premature acknowledgment")
 	}
 }
 
