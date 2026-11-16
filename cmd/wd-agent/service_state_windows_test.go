@@ -61,7 +61,12 @@ func TestServiceLogOpenRejectsRedirectedFile(t *testing.T) {
 }
 
 func TestServiceLogSecureFirstOpenAndReopen(t *testing.T) {
-	dir := prepareWindowsPreflightTestDir(t, false)
+	// Preflight's native CreateDirectory security attributes establish the
+	// actual account SID as owner (TempDir may be group-owned on CI).
+	dir := filepath.Join(t.TempDir(), "service-owned")
+	if err := preflightAgentState(dir); err != nil {
+		t.Fatal(err)
+	}
 	hold, err := guardWindowsServiceState(dir)
 	if err != nil {
 		t.Fatal(err)
@@ -138,17 +143,33 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	// under this exact different account. No same-user fixture substitutes.
 }
 
-func TestServiceRuntimeGuardBlocksRename(t *testing.T) {
-	dir := prepareWindowsPreflightTestDir(t, false)
+func TestServiceRuntimeGuardRejectsObservedPathSubstitution(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "service-owned")
+	if err := preflightAgentState(dir); err != nil {
+		t.Fatal(err)
+	}
 	unlock, err := guardWindowsServiceState(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer unlock()
-	if err := os.Rename(dir, dir+"-swapped"); err == nil {
-		t.Fatal("state root renamed while no-delete-sharing handle held")
+	swapped := dir + "-swapped"
+	if err := os.Rename(dir, swapped); err == nil {
+		// On some Windows volumes a rename may succeed despite our guard.
+		// No subsequent service state write may follow the absent old path.
+		if err := verifyWindowsServiceState(dir); err == nil {
+			t.Fatal("state substitution was not detected")
+		}
+		if _, err := openServiceLog(dir); err == nil {
+			t.Fatal("log was created after state pathname substitution")
+		}
+		if err := os.Rename(swapped, dir); err != nil {
+			t.Fatalf("restore renamed test fixture: %v", err)
+		}
+	} else {
+		t.Logf("directory rename prevented by open state handles: %v", err)
 	}
 	if err := verifyWindowsServiceState(dir); err != nil {
-		t.Fatalf("guarded state unexpectedly corrupted: %v", err)
+		t.Fatalf("restored state unexpectedly invalid: %v", err)
 	}
 }
