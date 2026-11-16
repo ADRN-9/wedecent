@@ -173,3 +173,19 @@ func TestServiceRuntimeGuardRejectsObservedPathSubstitution(t *testing.T) {
 		t.Fatalf("restored state unexpectedly invalid: %v", err)
 	}
 }
+
+func TestServiceProvisionRejectsExistingSensitiveFilesWithoutRepair(t *testing.T) {
+	dir := prepareWindowsPreflightTestDir(t, false)
+	key := filepath.Join(dir, "identity.key.dpapi")
+	content := []byte("existing-key-must-not-be-rewritten")
+	if err := os.WriteFile(key, content, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireEmptyWindowsServiceState(dir); err == nil {
+		t.Fatal("existing sensitive service state was silently accepted")
+	}
+	read, err := os.ReadFile(key)
+	if err != nil || string(read) != string(content) {
+		t.Fatalf("existing identity material changed: %q, %v", read, err)
+	}
+}

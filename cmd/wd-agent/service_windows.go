@@ -216,13 +216,6 @@ func runServiceInstall(args []string) error {
 		)
 	}
 
-	// Provision and independently verify the configured service SID before
-	// SCM installation. The installer must never create DPAPI identity material,
-	// trust records or pairing secrets under its different Windows token.
-	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
-		return fmt.Errorf("provision dedicated service state: %w", err)
-	}
-
 	password := ""
 
 	if !strings.HasSuffix(
@@ -256,6 +249,13 @@ func runServiceInstall(args []string) error {
 			"resolve wd-agent executable: %w",
 			err,
 		)
+	}
+
+	// Provision and independently verify the configured service SID before
+	// SCM installation. The installer must never create DPAPI identity material,
+	// trust records or pairing secrets under its different Windows token.
+	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
+		return fmt.Errorf("provision dedicated service state: %w", err)
 	}
 
 	serviceArgs := []string{

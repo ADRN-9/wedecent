@@ -39,7 +39,7 @@ func windowsServiceOwner(path string) (*windows.SID, error) {
 // The installer only provisions empty, private state. Existing identity,
 // trust or audit files require explicit operator migration; never rewrite
 // exposed key material by granting it a safer DACL after the fact.
-func provisionWindowsServiceState(dir, account string) error {
+func provisionWindowsServiceState(dir, account string) (result error) {
 	serviceSID, err := winservice.ResolveServiceAccountSID(account)
 	if err != nil {
 		return err
@@ -68,26 +68,56 @@ func provisionWindowsServiceState(dir, account string) error {
 	if err != nil || !isAdmin {
 		return errors.New("service state provisioning requires an elevated administrator token")
 	}
+	_, beforeErr := os.Lstat(dir)
+	fresh := errors.Is(beforeErr, os.ErrNotExist)
+	if beforeErr != nil && !fresh {
+		return beforeErr
+	}
 	if err := preflightAgentState(dir); err != nil {
 		return err
+	}
+	if fresh {
+		// Never remove an unrelated directory: clean up only this exact new
+		// empty inode on an unsuccessful provisioning attempt. Preexisting
+		// directories are never removed or rewritten by this cleanup.
+		created, err := os.Lstat(dir)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if result == nil {
+				return
+			}
+			current, err := os.Lstat(dir)
+			if err == nil && current.IsDir() && os.SameFile(created, current) {
+				_ = os.Remove(dir) // only succeeds when still empty
+			}
+		}()
 	}
 	guard, err := guardWindowsServiceState(dir)
 	if err != nil {
 		return err
 	}
 	defer guard()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
+	if err := requireEmptyWindowsServiceState(dir); err != nil {
 		return err
-	}
-	if len(entries) != 0 {
-		return errors.New("existing service state is not empty: explicit offline migration and re-enrollment required")
 	}
 	if err := winservice.RestrictDirectory(dir, account); err != nil {
 		return fmt.Errorf("secure dedicated service ownership: %w", err)
 	}
 	if err := verifyWindowsStateForSID(dir, serviceSID); err != nil {
 		return fmt.Errorf("verify provisioned dedicated service state: %w", err)
+	}
+	return nil
+}
+
+func requireEmptyWindowsServiceState(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	if len(entries) != 0 {
+		return errors.New("existing service state is not empty: explicit offline migration and re-enrollment required")
 	}
 	return nil
 }
@@ -174,7 +204,7 @@ func guardWindowsServiceState(dir string) (func(), error) {
 	}
 	var held []*os.File
 	closeAll := func() {
-		for i := len(held)-1; i >= 0; i-- {
+		for i := len(held) - 1; i >= 0; i-- {
 			_ = held[i].Close()
 		}
 	}
