@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"golang.org/x/sys/windows"
 	"wedecent.com/wedecent/internal/trust"
@@ -218,13 +217,3 @@ func guardWindowsServiceState(dir string) (func(), error) {
 	return closeAll, nil
 }
 
-// State migration is explicitly offline: stop the service, preserve all
-// prior files as incident evidence, inspect ownership/ACLs, then re-enroll
-// under a fresh dedicated account and newly provisioned empty directory.
-func validateServiceStateInput(path string) error {
-	if strings.TrimSpace(path) == "" {
-		return errors.New("service state directory is required")
-	}
-	_, _, err := windowsStatePathComponents(path)
-	return err
-}
