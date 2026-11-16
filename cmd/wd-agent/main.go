@@ -102,6 +102,9 @@ func runPairingSecret(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	secret, err := trust.RotatePairingSecret(*stateDir)
 	if err != nil {
 		return err

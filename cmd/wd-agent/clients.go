@@ -39,6 +39,9 @@ func runClientsList(args []string) error {
 	if fs.NArg() != 0 {
 		return errors.New("usage: wd-agent clients list [--state directory]")
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	store, err := trust.Open(filepath.Join(*stateDir, "trusted-clients.json"))
 	if err != nil {
 		return err
@@ -66,6 +69,9 @@ func runClientsRevoke(args []string) error {
 	}
 
 	clientID := fs.Arg(0)
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	auditLog, err := audit.Open(*stateDir)
 	if err != nil {
 		return fmt.Errorf("open audit log: %w", err)
