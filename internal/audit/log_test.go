@@ -3,6 +3,7 @@ package audit
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,4 +117,148 @@ func TestAppendRejectsInvalidEventName(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "event type") {
 		t.Fatalf("expected invalid event type, got %v", err)
 	}
+}
+
+func TestAppendAuditDirectorySyncFailureIsNotAcknowledged(t *testing.T) {
+	dir := t.TempDir()
+	log, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.syncDir = func(string) error { return errors.New("injected metadata sync failure") }
+	err = log.Append(Event{Type: "pairing.request", Outcome: "pending", PeerID: "wd_aaaaaaaaaaaaaaaa"})
+	if err == nil || !strings.Contains(err.Error(), "sync audit directory") {
+		t.Fatalf("append with failed metadata sync reported success: %v", err)
+	}
+	// The line can already be visible, even though durability is uncertain.
+	// The pairing protocol must not consume a secret on this return path.
+	data, err := os.ReadFile(filepath.Join(dir, FileName))
+	if err != nil || !strings.Contains(string(data), `"outcome":"pending"`) {
+		t.Fatalf("unacknowledged pending event is not readable: %q, %v", data, err)
+	}
+	log, err = Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(Event{Type: "pairing.request", Outcome: "denied", PeerID: "wd_aaaaaaaaaaaaaaaa"}); err != nil {
+		t.Fatalf("audit recovery after restart: %v", err)
+	}
+}
+
+func TestAuditRotationPersistsAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	log, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.syncDir = syncAuditDirectory
+	rotated := false
+	for i := 0; i < 100; i++ {
+		err := log.Append(Event{Type: "terminal.session_closed", Outcome: "success", Reason: strings.Repeat("x", 250)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, archiveFileName)); err == nil {
+			rotated = true
+			break
+		}
+	}
+	if !rotated {
+		t.Fatal("test never rotated the audit log")
+	}
+	// A successful archive replacement and subsequent startup must preserve
+	// readable events in both the archive and current log.
+	restarted, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Append(Event{Type: "pairing.request", Outcome: "pending", PeerID: "wd_aaaaaaaaaaaaaaaa"}); err != nil {
+		t.Fatal(err)
+	}
+	archive, err := os.ReadFile(filepath.Join(dir, archiveFileName))
+	if err != nil || len(archive) == 0 {
+		t.Fatalf("rotated log not readable after restart: %v", err)
+	}
+}
+
+func TestAuditRotationMetadataFailureIsNotAcknowledged(t *testing.T) {
+	dir := t.TempDir()
+	log, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	archivePath := filepath.Join(dir, archiveFileName)
+	log.syncDir = func(d string) error {
+		if _, err := os.Stat(archivePath); err == nil {
+			return errors.New("injected post-rename directory sync failure")
+		}
+		return syncAuditDirectory(d)
+	}
+	sawFailure := false
+	for i := 0; i < 100; i++ {
+		err := log.Append(Event{Type: "terminal.session_closed", Outcome: "success", Reason: strings.Repeat("x", 250)})
+		if err != nil {
+			if !strings.Contains(err.Error(), "sync rotated audit directory") {
+				t.Fatalf("unexpected append error: %v", err)
+			}
+			sawFailure = true
+			break
+		}
+	}
+	if !sawFailure {
+		t.Fatal("audit rotation sync failure was not exercised")
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil || len(archive) == 0 {
+		t.Fatalf("audit archive disappeared after metadata failure: %v", err)
+	}
+	restarted, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Append(Event{Type: "pairing.request", Outcome: "pending", PeerID: "wd_aaaaaaaaaaaaaaaa"}); err != nil {
+		t.Fatalf("audit restart after uncertain rotation: %v", err)
+	}
+}
+
+func TestPendingPairingAuditDetectableAfterOneRotationAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	log, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := "wd_aaaaaaaaaaaaaaaa"
+	if err := log.Append(Event{Type: "pairing.request", Outcome: "pending", PeerID: peer}); err != nil {
+		t.Fatal(err)
+	}
+	rotated := false
+	for i := 0; i < 80; i++ {
+		if err := log.Append(Event{Type: "terminal.session_closed", Outcome: "success", Reason: strings.Repeat("x", 260)}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := os.Stat(filepath.Join(dir, archiveFileName)); err == nil {
+			rotated = true
+			break
+		}
+	}
+	if !rotated {
+		t.Fatal("audit log did not rotate")
+	}
+	archive, err := os.ReadFile(filepath.Join(dir, archiveFileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(archive), `"type":"pairing.request","outcome":"pending"`) ||
+		!strings.Contains(string(archive), peer) {
+		t.Fatal("unresolved pending pairing record missing from rotated archive")
+	}
+	restarted, err := open(filepath.Join(dir, FileName), maxEventSize+256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.Append(Event{Type: "pairing.recovery", Outcome: "pending", PeerID: peer}); err != nil {
+		t.Fatal(err)
+	}
+	// This test proves one rotation, not indefinite retention: a second
+	// rotation can evict the record. Production recovery retention is a gate.
 }
