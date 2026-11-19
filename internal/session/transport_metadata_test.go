@@ -116,10 +116,10 @@ func pairingWireRequestWithTransport(
 
 func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 	tests := []struct {
-		name             string
-		metadata         TransportMetadata
-		want             string
-		wantProvenance   string
+		name           string
+		metadata       TransportMetadata
+		want           string
+		wantProvenance string
 	}{
 		{"direct TCP", TransportMetadata{Kind: TransportDirectTCP}, "direct_tcp", "listener_adapter"},
 		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm", "listener_adapter"},

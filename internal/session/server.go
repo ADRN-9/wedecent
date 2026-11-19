@@ -212,7 +212,7 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 				Time: time.Now().UTC(), Type: "pairing.request", Outcome: "denied",
 				ActorID: s.Identity.ID, PeerID: clientID, Transport: transport,
 				TransportProvenance: transportAuditProvenance(transport),
-				AttemptID: attemptID, Reason: "invalid_pairing_secret",
+				AttemptID:           attemptID, Reason: "invalid_pairing_secret",
 			}
 			if err := pairingAudit.Append(denial); err != nil {
 				s.log().Error("pairing denial completion audit unavailable", "attempt_id", attemptID, "error", err)
