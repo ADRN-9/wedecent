@@ -1,5 +1,6 @@
 #!/usr/bin/env sh
 set -eu
+unset WEDECENT_PAIRING_SECRET || true
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)

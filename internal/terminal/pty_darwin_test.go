@@ -12,6 +12,25 @@ import (
 	"time"
 )
 
+func TestDarwinPTYDoesNotInheritPairingSecret(t *testing.T) {
+	t.Setenv("WEDECENT_PAIRING_SECRET", "canary-pairing-secret")
+	pty, err := Start("/bin/sh", 80, 24, "xterm")
+	if err != nil { t.Fatal(err) }
+	defer pty.Close()
+	command := `if [ "${WEDECENT_PAIRING_SECRET+x}" = x ]; then printf WD_PAIRING_SECRET_LEAKED; else printf WD_PAIRING_SECRET_ISOLATED; fi
+exit
+`
+	if _, err := pty.Write([]byte(command)); err != nil { t.Fatal(err) }
+	output := make(chan string, 1)
+	go func() { data, _ := io.ReadAll(pty.reader); output <- string(data) }()
+	select {
+	case text := <-output:
+		if !strings.Contains(text, "WD_PAIRING_SECRET_ISOLATED") || strings.Contains(text, "WD_PAIRING_SECRET_LEAKED") { t.Fatalf("PTY child environment was not isolated: %q", text) }
+	case <-time.After(5 * time.Second): t.Fatal("timed out waiting for PTY canary")
+	}
+	if err := pty.Wait(); err != nil { t.Fatalf("PTY child: %v", err) }
+}
+
 func TestDarwinPTYRoundTripResizeRawAndExit(t *testing.T) {
 	pty, err := Start("/bin/sh", 91, 37, "xterm-256color")
 	if err != nil {
