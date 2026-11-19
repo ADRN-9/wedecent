@@ -56,6 +56,8 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
           flow: expected.role === "authorize" ? "direct" : "relay",
           permission: grantClaims.permission,
           validatedAtMS: nowSeconds * 1000,
+          authorizationRunID: crypto.randomUUID(),
+          validationAttemptID: crypto.randomUUID(),
         },
       };
     } catch {

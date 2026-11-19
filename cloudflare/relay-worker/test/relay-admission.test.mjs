@@ -20,6 +20,8 @@ function admissionRequest(flow = "relay", override = {}) {
     flow,
     permission: "terminal.connect",
     validatedAtMS: nowMS,
+    authorizationRunID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    validationAttemptID: "b90987bf-bae6-45da-ab21-c82d049617bd",
     ...override,
   };
   const outer = new Request("https://relay.test/v1/stream/" + targetDeviceID + "?role=client", {

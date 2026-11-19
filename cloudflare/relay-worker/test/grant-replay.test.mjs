@@ -12,7 +12,10 @@ import {
   INTERNAL_GRANT_PERMISSION_HEADER,
   INTERNAL_GRANT_TARGET_HEADER,
   INTERNAL_GRANT_VALIDATED_AT_HEADER,
+  INTERNAL_GRANT_RUN_ID_HEADER,
+  INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER,
   prepareDeviceRelayRequest,
+  readConnectionGrantEvent,
   readConnectionGrantEvidence,
   replayMetadataFromRequest,
   scheduleReplayCleanup,
@@ -22,6 +25,8 @@ const jti = "76b4c468-4e39-437c-a9c8-b758c92ab89b";
 const grantID = "d90987bf-bae6-45da-ab21-c82d049617bd";
 const clientDeviceID = "wd_aaaaaaaaaaaaaaaa";
 const targetDeviceID = "wd_bbbbbbbbbbbbbbbb";
+const authorizationRunID = "d90987bf-bae6-45da-ab21-c82d049617bd";
+const validationAttemptID = "b90987bf-bae6-45da-ab21-c82d049617bd";
 const nowMS = 1_800_000_000_000;
 const exp = 1_800_000_090;
 
@@ -30,6 +35,8 @@ function replay(flow = "direct", override = {}) {
     jti, exp, grantID, clientDeviceID, targetDeviceID, flow,
     permission: "terminal.connect",
     validatedAtMS: nowMS,
+    authorizationRunID,
+    validationAttemptID,
     ...override,
   };
 }
@@ -45,6 +52,8 @@ function requestFor(metadata) {
       [INTERNAL_GRANT_FLOW_HEADER]: metadata.flow,
       [INTERNAL_GRANT_PERMISSION_HEADER]: metadata.permission,
       [INTERNAL_GRANT_VALIDATED_AT_HEADER]: String(metadata.validatedAtMS),
+      [INTERNAL_GRANT_RUN_ID_HEADER]: metadata.authorizationRunID,
+      [INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER]: metadata.validationAttemptID,
     },
   });
 }
@@ -83,6 +92,8 @@ test("parses only complete, server-generated replay metadata", () => {
   });
   assert.equal(replayMetadataFromRequest(missing), null);
   assert.equal(replayMetadataFromRequest(requestFor(replay("unknown"))), null);
+  assert.equal(replayMetadataFromRequest(requestFor(replay("direct", { authorizationRunID: "" }))), null);
+  assert.equal(replayMetadataFromRequest(requestFor(replay("direct", { validationAttemptID: "bad" }))), null);
 });
 
 test("sanitizes client-supplied replay metadata before Durable Object forwarding", () => {
@@ -107,6 +118,8 @@ test("sanitizes client-supplied replay metadata before Durable Object forwarding
   assert.equal(forwarded.headers.get(INTERNAL_GRANT_FLOW_HEADER), "relay");
   assert.equal(forwarded.headers.get(INTERNAL_GRANT_PERMISSION_HEADER), "terminal.connect");
   assert.equal(forwarded.headers.get(INTERNAL_GRANT_VALIDATED_AT_HEADER), String(nowMS));
+  assert.equal(forwarded.headers.get(INTERNAL_GRANT_RUN_ID_HEADER), authorizationRunID);
+  assert.equal(forwarded.headers.get(INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER), validationAttemptID);
   assert.equal(forwarded.headers.get("Upgrade"), "websocket");
 });
 
@@ -121,6 +134,17 @@ test("consumes a grant once and stores independently retrievable server evidence
   assert.equal(evidence.consumption_outcome, "consumed");
   assert.equal(evidence.flow, "direct");
   assert.equal(evidence.jti, jti);
+  assert.equal(evidence.authorization_run_id, authorizationRunID);
+  assert.equal(evidence.validation_attempt_id, validationAttemptID);
+  assert.match(evidence.consumption_attempt_id, /^[0-9a-f-]{36}$/);
+  assert.notEqual(evidence.validation_attempt_id, evidence.consumption_attempt_id);
+  assert.notEqual(evidence.validation_event_id, evidence.consumption_event_id);
+  assert.equal(evidence.validation_event.type, "authorization.validation");
+  assert.equal(evidence.validation_event.outcome, "accepted");
+  assert.equal(evidence.consumption_event.type, "authorization.consumption");
+  assert.equal(evidence.consumption_event.outcome, "consumed");
+  assert.deepEqual(await readConnectionGrantEvent(storage, evidence.validation_event_id), evidence.validation_event);
+  assert.deepEqual(await readConnectionGrantEvent(storage, evidence.consumption_event_id), evidence.consumption_event);
   const otherTargetStorage = new MemoryStorage();
   assert.equal(await readConnectionGrantEvidence(otherTargetStorage, jti), null);
 });

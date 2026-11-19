@@ -2,6 +2,7 @@ const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STORAGE_PREFIX = "connection-grant-jti:";
 const EVIDENCE_PREFIX = "connection-grant-evidence:";
+const EVENT_PREFIX = "connection-grant-event:";
 const CLOCK_SKEW_MS = 30_000;
 const EVIDENCE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -13,6 +14,8 @@ export const INTERNAL_GRANT_TARGET_HEADER = "X-WeDecent-Internal-Grant-Target";
 export const INTERNAL_GRANT_FLOW_HEADER = "X-WeDecent-Internal-Grant-Flow";
 export const INTERNAL_GRANT_PERMISSION_HEADER = "X-WeDecent-Internal-Grant-Permission";
 export const INTERNAL_GRANT_VALIDATED_AT_HEADER = "X-WeDecent-Internal-Grant-Validated-At";
+export const INTERNAL_GRANT_RUN_ID_HEADER = "X-WeDecent-Internal-Grant-Run-ID";
+export const INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER = "X-WeDecent-Internal-Grant-Validation-Attempt";
 
 const INTERNAL_HEADERS = [
   INTERNAL_GRANT_JTI_HEADER,
@@ -23,6 +26,8 @@ const INTERNAL_HEADERS = [
   INTERNAL_GRANT_FLOW_HEADER,
   INTERNAL_GRANT_PERMISSION_HEADER,
   INTERNAL_GRANT_VALIDATED_AT_HEADER,
+  INTERNAL_GRANT_RUN_ID_HEADER,
+  INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER,
 ];
 
 export function prepareDeviceRelayRequest(request, replay, connectionGrantHeader) {
@@ -40,6 +45,8 @@ export function prepareDeviceRelayRequest(request, replay, connectionGrantHeader
     headers.set(INTERNAL_GRANT_FLOW_HEADER, replay.flow);
     headers.set(INTERNAL_GRANT_PERMISSION_HEADER, replay.permission);
     headers.set(INTERNAL_GRANT_VALIDATED_AT_HEADER, String(replay.validatedAtMS));
+    headers.set(INTERNAL_GRANT_RUN_ID_HEADER, replay.authorizationRunID);
+    headers.set(INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER, replay.validationAttemptID);
   }
 
   return new Request(request, { headers });
@@ -55,10 +62,14 @@ export function replayMetadataFromRequest(request) {
   const flow = headers.get(INTERNAL_GRANT_FLOW_HEADER)?.trim() ?? "";
   const permission = headers.get(INTERNAL_GRANT_PERMISSION_HEADER)?.trim() ?? "";
   const validatedText = headers.get(INTERNAL_GRANT_VALIDATED_AT_HEADER)?.trim() ?? "";
+  const authorizationRunID = headers.get(INTERNAL_GRANT_RUN_ID_HEADER)?.trim() ?? "";
+  const validationAttemptID = headers.get(INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER)?.trim() ?? "";
 
   if (
     !UUID.test(jti) ||
     !UUID.test(grantID) ||
+    !UUID.test(authorizationRunID) ||
+    !UUID.test(validationAttemptID) ||
     !DEVICE_ID.test(clientDeviceID) ||
     !DEVICE_ID.test(targetDeviceID) ||
     clientDeviceID === targetDeviceID ||
@@ -72,7 +83,18 @@ export function replayMetadataFromRequest(request) {
   const validatedAtMS = Number.parseInt(validatedText, 10);
   if (!Number.isSafeInteger(exp) || exp <= 0 || !Number.isSafeInteger(validatedAtMS) || validatedAtMS <= 0) return null;
 
-  return { jti: jti.toLowerCase(), exp, grantID: grantID.toLowerCase(), clientDeviceID, targetDeviceID, flow, permission, validatedAtMS };
+  return {
+    jti: jti.toLowerCase(),
+    exp,
+    grantID: grantID.toLowerCase(),
+    clientDeviceID,
+    targetDeviceID,
+    flow,
+    permission,
+    validatedAtMS,
+    authorizationRunID: authorizationRunID.toLowerCase(),
+    validationAttemptID: validationAttemptID.toLowerCase(),
+  };
 }
 
 export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()) {
@@ -80,6 +102,8 @@ export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()
     !replay ||
     !UUID.test(replay.jti) ||
     !UUID.test(replay.grantID) ||
+    !UUID.test(replay.authorizationRunID) ||
+    !UUID.test(replay.validationAttemptID) ||
     !DEVICE_ID.test(replay.clientDeviceID) ||
     !DEVICE_ID.test(replay.targetDeviceID) ||
     replay.clientDeviceID === replay.targetDeviceID ||
@@ -100,8 +124,51 @@ export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()
   ) return { accepted: false, reason: "stale", expiresAtMS, evidence: null };
 
   const jti = replay.jti.toLowerCase();
+  const authorizationRunID = replay.authorizationRunID.toLowerCase();
+  const validationAttemptID = replay.validationAttemptID.toLowerCase();
+  const consumptionAttemptID = crypto.randomUUID();
+  const validationEventID = crypto.randomUUID();
+  const consumptionEventID = crypto.randomUUID();
+  const retainUntilMS = nowMS + EVIDENCE_RETENTION_MS;
+  const validationEvent = {
+    event_id: validationEventID,
+    run_id: authorizationRunID,
+    attempt_id: validationAttemptID,
+    type: "authorization.validation",
+    outcome: "accepted",
+    grant_id: replay.grantID.toLowerCase(),
+    jti,
+    client_device_id: replay.clientDeviceID,
+    target_device_id: replay.targetDeviceID,
+    permission: replay.permission,
+    flow: replay.flow,
+    occurred_at: new Date(replay.validatedAtMS).toISOString(),
+    retain_until_ms: retainUntilMS,
+  };
+  const consumptionEvent = {
+    event_id: consumptionEventID,
+    run_id: authorizationRunID,
+    attempt_id: consumptionAttemptID,
+    type: "authorization.consumption",
+    outcome: "consumed",
+    grant_id: replay.grantID.toLowerCase(),
+    jti,
+    client_device_id: replay.clientDeviceID,
+    target_device_id: replay.targetDeviceID,
+    permission: replay.permission,
+    flow: replay.flow,
+    occurred_at: new Date(nowMS).toISOString(),
+    retain_until_ms: retainUntilMS,
+  };
   const evidence = {
     version: 1,
+    authorization_run_id: authorizationRunID,
+    validation_attempt_id: validationAttemptID,
+    consumption_attempt_id: consumptionAttemptID,
+    validation_event_id: validationEventID,
+    consumption_event_id: consumptionEventID,
+    validation_event: validationEvent,
+    consumption_event: consumptionEvent,
     grant_id: replay.grantID.toLowerCase(),
     jti,
     client_device_id: replay.clientDeviceID,
@@ -113,7 +180,7 @@ export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()
     validated_at: new Date(replay.validatedAtMS).toISOString(),
     consumed_at: new Date(nowMS).toISOString(),
     expires_at: new Date(replay.exp * 1000).toISOString(),
-    retain_until_ms: nowMS + EVIDENCE_RETENTION_MS,
+    retain_until_ms: retainUntilMS,
   };
 
   const accepted = await storage.transaction(async (txn) => {
@@ -121,6 +188,8 @@ export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()
     if (existing !== undefined) return false;
     await txn.put(STORAGE_PREFIX + jti, expiresAtMS);
     await txn.put(EVIDENCE_PREFIX + jti, evidence);
+    await txn.put(EVENT_PREFIX + validationEventID, validationEvent);
+    await txn.put(EVENT_PREFIX + consumptionEventID, consumptionEvent);
     return true;
   });
   return { accepted, reason: accepted ? "" : "replay", expiresAtMS, evidence: accepted ? evidence : null };
@@ -128,7 +197,28 @@ export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()
 
 export async function readConnectionGrantEvidence(storage, jti) {
   if (!UUID.test(jti)) return null;
-  return (await storage.get(EVIDENCE_PREFIX + jti.toLowerCase())) ?? null;
+  const evidence = await storage.get(EVIDENCE_PREFIX + jti.toLowerCase());
+  if (!evidence) return null;
+  const [validationEvent, consumptionEvent] = await Promise.all([
+    storage.get(EVENT_PREFIX + evidence.validation_event_id),
+    storage.get(EVENT_PREFIX + evidence.consumption_event_id),
+  ]);
+  if (
+    !validationEvent ||
+    !consumptionEvent ||
+    validationEvent.event_id !== evidence.validation_event_id ||
+    consumptionEvent.event_id !== evidence.consumption_event_id ||
+    validationEvent.run_id !== evidence.authorization_run_id ||
+    consumptionEvent.run_id !== evidence.authorization_run_id ||
+    validationEvent.attempt_id !== evidence.validation_attempt_id ||
+    consumptionEvent.attempt_id !== evidence.consumption_attempt_id
+  ) return null;
+  return { ...evidence, validation_event: validationEvent, consumption_event: consumptionEvent };
+}
+
+export async function readConnectionGrantEvent(storage, eventID) {
+  if (!UUID.test(eventID)) return null;
+  return (await storage.get(EVENT_PREFIX + eventID.toLowerCase())) ?? null;
 }
 
 export async function scheduleReplayCleanup(storage, expiresAtMS) {
@@ -139,6 +229,7 @@ export async function scheduleReplayCleanup(storage, expiresAtMS) {
 export async function cleanupExpiredConnectionGrants(storage, nowMS = Date.now()) {
   const replayEntries = await storage.list({ prefix: STORAGE_PREFIX });
   const evidenceEntries = await storage.list({ prefix: EVIDENCE_PREFIX });
+  const eventEntries = await storage.list({ prefix: EVENT_PREFIX });
   let nextAlarm = null;
 
   for (const [key, value] of replayEntries) {
@@ -151,6 +242,15 @@ export async function cleanupExpiredConnectionGrants(storage, nowMS = Date.now()
   }
 
   for (const [key, value] of evidenceEntries) {
+    const retainUntilMS = Number(value?.retain_until_ms);
+    if (!Number.isSafeInteger(retainUntilMS) || retainUntilMS <= nowMS) {
+      await storage.delete(key);
+      continue;
+    }
+    if (nextAlarm === null || retainUntilMS < nextAlarm) nextAlarm = retainUntilMS;
+  }
+
+  for (const [key, value] of eventEntries) {
     const retainUntilMS = Number(value?.retain_until_ms);
     if (!Number.isSafeInteger(retainUntilMS) || retainUntilMS <= nowMS) {
       await storage.delete(key);
