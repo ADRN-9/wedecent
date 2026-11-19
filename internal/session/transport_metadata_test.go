@@ -119,6 +119,7 @@ func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 		metadata TransportMetadata
 		want     string
 	}{
+		{"direct TCP", TransportMetadata{Kind: TransportDirectTCP}, "direct_tcp"},
 		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm"},
 		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm"},
 		{"USB NCM over direct TCP", TransportMetadata{Kind: TransportDirectTCP, Underlying: UnderlyingUSBNCM}, "direct_tcp+usb_ncm"},
