@@ -252,32 +252,32 @@ func writeJSON(value any) error {
 }
 
 type serveConfig struct {
-	StateDir                  string
-	Name                      string
-	ListenAddr                string
+	StateDir                     string
+	Name                         string
+	ListenAddr                   string
 	DirectTCPUnderlyingTransport string
-	RFCOMMChannel             int
-	SerialDevice              string
-	Shell                     string
-	Discover                  bool
-	MaxConnections            int
-	SessionIdleTimeout        time.Duration
-	SessionMaxDuration        time.Duration
-	FileTransferRoot          string
-	FileTransferAllowUpload   bool
-	FileTransferAllowDownload bool
-	FileTransferMaxBytes      uint64
-	RelayAddr                 string
-	WebRelay                  string
-	RelaySlots                int
-	RelayCA                   string
-	RelayServerName           string
-	AuthorizationURL          string
-	RouteControlListenAddr    string
-	RouteControlTransport     string
-	RouteTunnelListenAddr     string
-	RouteTunnelTransport      string
-	RouteMaxConnections       int
+	RFCOMMChannel                int
+	SerialDevice                 string
+	Shell                        string
+	Discover                     bool
+	MaxConnections               int
+	SessionIdleTimeout           time.Duration
+	SessionMaxDuration           time.Duration
+	FileTransferRoot             string
+	FileTransferAllowUpload      bool
+	FileTransferAllowDownload    bool
+	FileTransferMaxBytes         uint64
+	RelayAddr                    string
+	WebRelay                     string
+	RelaySlots                   int
+	RelayCA                      string
+	RelayServerName              string
+	AuthorizationURL             string
+	RouteControlListenAddr       string
+	RouteControlTransport        string
+	RouteTunnelListenAddr        string
+	RouteTunnelTransport         string
+	RouteMaxConnections          int
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
