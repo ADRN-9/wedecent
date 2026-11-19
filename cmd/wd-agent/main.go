@@ -491,6 +491,17 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	if cfg.DirectTCPUnderlyingTransport != "" && cfg.ListenAddr == "" {
 		return serveConfig{}, errors.New("--direct-tcp-underlay requires --listen")
 	}
+	if cfg.DirectTCPUnderlyingTransport != "" {
+		host, _, err := net.SplitHostPort(cfg.ListenAddr)
+		if err != nil {
+			return serveConfig{}, errors.New("--direct-tcp-underlay requires a specific IP listen address")
+		}
+		host = strings.SplitN(host, "%", 2)[0]
+		ip := net.ParseIP(host)
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			return serveConfig{}, errors.New("--direct-tcp-underlay requires a specific non-loopback IP listen address")
+		}
+	}
 
 	if cfg.MaxConnections < 1 ||
 		cfg.MaxConnections > 1024 {

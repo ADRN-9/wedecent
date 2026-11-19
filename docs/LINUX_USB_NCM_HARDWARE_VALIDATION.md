@@ -14,7 +14,7 @@ A USB network interface, MAC address, VID/PID, IP address, or cable connection i
 
 ## Prepare the gadget
 
-Follow [Linux USB NCM networking](LINUX_USB_NCM.md). Configure the point-to-point IP addresses using the site's network manager, and bind `wd-agent serve` only to the intended gadget-side address for the isolated test.
+Follow [Linux USB NCM networking](LINUX_USB_NCM.md). Configure the point-to-point IP addresses using the site's network manager, and bind `wd-agent serve` only to the intended gadget-side address for the isolated test. With `--direct-tcp-underlay usb_ncm`, that listener address must be a specific non-loopback NCM IP; wildcard, loopback, and DNS listen addresses are rejected.
 
 ## Client hardware gate
 

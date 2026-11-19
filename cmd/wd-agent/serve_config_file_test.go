@@ -13,7 +13,7 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "agent.json")
 	contents := `{
-  "listen": "127.0.0.1:9000",
+  "listen": "192.0.2.1:9000",
   "direct_tcp_underlay": "usb_ncm",
   "rfcomm_channel": 6,
   "discover": false,
@@ -30,7 +30,7 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 
 	expanded, err := expandServeConfigArgs([]string{
 		"--config", path,
-		"--listen=127.0.0.1:9100",
+		"--listen=192.0.2.1:9100",
 		"--rfcomm-channel=7",
 		"--discover=true",
 		"--max-connections=23",
@@ -43,7 +43,7 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if cfg.ListenAddr != "127.0.0.1:9100" {
+	if cfg.ListenAddr != "192.0.2.1:9100" {
 		t.Fatalf("ListenAddr = %q", cfg.ListenAddr)
 	}
 	if cfg.DirectTCPUnderlyingTransport != "usb_ncm" {
@@ -176,12 +176,17 @@ func writeServeConfigTestFile(t *testing.T, contents string) string {
 }
 
 func TestServeConfigDirectTCPUnderlayValidation(t *testing.T) {
-	cfg, err := parseServeConfig([]string{"--listen=127.0.0.1:7443", "--direct-tcp-underlay=usb_ncm"})
+	cfg, err := parseServeConfig([]string{"--listen=192.0.2.1:7443", "--direct-tcp-underlay=usb_ncm"})
 	if err != nil || cfg.DirectTCPUnderlyingTransport != "usb_ncm" {
 		t.Fatalf("valid NCM underlay: cfg=%+v err=%v", cfg, err)
 	}
-	if _, err := parseServeConfig([]string{"--listen=127.0.0.1:7443", "--direct-tcp-underlay=bluetooth_rfcomm"}); err == nil {
+	if _, err := parseServeConfig([]string{"--listen=192.0.2.1:7443", "--direct-tcp-underlay=bluetooth_rfcomm"}); err == nil {
 		t.Fatal("invalid direct TCP underlay was accepted")
+	}
+	for _, listen := range []string{"127.0.0.1:7443", "0.0.0.0:7443", "wedecent.local:7443"} {
+		if _, err := parseServeConfig([]string{"--listen=" + listen, "--direct-tcp-underlay=usb_ncm"}); err == nil {
+			t.Fatalf("NCM underlay accepted non-specific listener %q", listen)
+		}
 	}
 	if _, err := parseServeConfig([]string{"--listen=", "--direct-tcp-underlay=usb_ncm"}); err == nil {
 		t.Fatal("NCM underlay was accepted without a TCP listener")
