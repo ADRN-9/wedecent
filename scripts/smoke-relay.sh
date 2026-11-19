@@ -69,6 +69,15 @@ GRANT_ID=d90987bf-bae6-45da-ab21-c82d049617bd
 GRANT_PAYLOAD=$(printf '{"jti":"%s","grant_id":"%s"}' "$GRANT_JTI" "$GRANT_ID" | base64 | tr -d '\n=' | tr '+/' '-_')
 printf 'header.%s.signature\n' "$GRANT_PAYLOAD" >"$TMP/grant.jwt"
 chmod 600 "$TMP/grant.jwt"
+CLIENT_ID=$("$TMP/bin/wd" identity --state "$TMP/client" | cut -f1)
+printf '{"client_device_id":"%s"}\n' "$CLIENT_ID" >"$TMP/relay-evidence.json"
+curl --fail --silent --show-error \
+  -X POST \
+  -H 'Authorization: Bearer wdt2.smoke-ticket.signature' \
+  -H 'Content-Type: application/json' \
+  -H "X-WeDecent-Connection-Grant: $(cat "$TMP/grant.jwt")" \
+  --data-binary @"$TMP/relay-evidence.json" \
+  "http://127.0.0.1:18444/v1/relay-authorize/$DEVICE"
 set +e
 printf 'printf "WEDECENT_RELAY_OK\\n"\nexit 23\n' | "$TMP/bin/wd" connect \
   --state "$TMP/client" \

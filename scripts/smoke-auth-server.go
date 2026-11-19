@@ -107,6 +107,59 @@ func main() {
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
+	mux.HandleFunc("/v1/relay-authorize/", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer wdt2.") {
+			http.Error(w, "invalid authorization proof", http.StatusUnauthorized)
+			return
+		}
+		target := strings.TrimPrefix(r.URL.Path, "/v1/relay-authorize/")
+		if !deviceIDPattern.MatchString(target) {
+			http.Error(w, "invalid target", http.StatusBadRequest)
+			return
+		}
+		var body struct {
+			ClientDeviceID string `json:"client_device_id"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !deviceIDPattern.MatchString(body.ClientDeviceID) || body.ClientDeviceID == target {
+			http.Error(w, "invalid client", http.StatusBadRequest)
+			return
+		}
+		parts := strings.Split(r.Header.Get("X-WeDecent-Connection-Grant"), ".")
+		if len(parts) != 3 {
+			http.Error(w, "invalid connection grant", http.StatusForbidden)
+			return
+		}
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err != nil {
+			http.Error(w, "invalid connection grant payload", http.StatusForbidden)
+			return
+		}
+		var claims grantClaims
+		if err := json.Unmarshal(payload, &claims); err != nil || !uuidPattern.MatchString(claims.JTI) || !uuidPattern.MatchString(claims.GrantID) {
+			http.Error(w, "invalid connection grant claims", http.StatusForbidden)
+			return
+		}
+		now := time.Now().UTC()
+		evidence := grantEvidence{
+			Version: 1, GrantID: strings.ToLower(claims.GrantID), JTI: strings.ToLower(claims.JTI),
+			ClientDeviceID: body.ClientDeviceID, TargetDeviceID: target,
+			Permission: "terminal.connect", Flow: "relay",
+			ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
+			ValidatedAt: now.Format(time.RFC3339Nano), ConsumedAt: now.Format(time.RFC3339Nano),
+			ExpiresAt: now.Add(90 * time.Second).Format(time.RFC3339Nano),
+			RetainUntilMS: now.Add(7 * 24 * time.Hour).UnixMilli(),
+		}
+		key := target + "/" + evidence.JTI
+		if _, loaded := evidenceByGrant.LoadOrStore(key, evidence); loaded {
+			http.Error(w, "connection grant already used", http.StatusConflict)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/v1/grant-evidence/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
