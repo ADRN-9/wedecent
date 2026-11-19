@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
 	"wedecent.com/wedecent/internal/meshnet"
@@ -381,6 +382,41 @@ func TestRoutedTerminalE2E(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("timed out waiting for %s runtime: %v", name, ctx.Err())
 		}
+	}
+
+	auditData, err := os.ReadFile(filepath.Join(cDir, audit.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundRoutedSession bool
+	for _, line := range strings.Split(strings.TrimSpace(string(auditData)), "\n") {
+		var event audit.Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type != "terminal.session_opened" {
+			continue
+		}
+		foundRoutedSession = true
+		if event.Transport != "routed+internet" ||
+			event.TransportProvenance != "authenticated_router_link" ||
+			event.UnderlyingTransport != string(mesh.TransportInternet) ||
+			event.RouteRouterID != bID.ID ||
+			event.PeerID != aID.ID ||
+			event.AuthorizationRunID == "" ||
+			event.ValidationAttemptID == "" ||
+			event.ConsumptionAttemptID == "" ||
+			event.ValidationEventID == "" ||
+			event.ConsumptionEventID == "" {
+			t.Fatalf("routed terminal audit lost route or authorization attribution: %+v", event)
+		}
+		if event.ValidationAttemptID == event.ConsumptionAttemptID ||
+			event.ValidationEventID == event.ConsumptionEventID {
+			t.Fatalf("authorization event IDs are not independent: %+v", event)
+		}
+	}
+	if !foundRoutedSession {
+		t.Fatal("routed terminal session audit event was not written")
 	}
 }
 
