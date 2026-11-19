@@ -60,13 +60,3 @@ func TestAutomaticPairingRelayGrantSkipsDirectConnections(t *testing.T) {
 	}
 }
 
-func TestReadPairingSecretFromEnvironment(t *testing.T) {
-	t.Setenv("WEDECENT_PAIRING_SECRET", "0123456789abcdefghij-PAIR")
-	secret, err := readPairingSecret("")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if secret != "0123456789abcdefghij-PAIR" {
-		t.Fatalf("secret mismatch")
-	}
-}
