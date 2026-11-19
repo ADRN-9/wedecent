@@ -21,75 +21,9 @@ const (
 )
 
 var (
-	eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}package audit
-
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
-)
-
-const (
-	FileName          = "audit.jsonl"
-	archiveFileName   = "audit.jsonl.1"
-	defaultMaxLogSize = 16 << 20
-	maxEventSize      = 4 << 10
-	maxFieldLength    = 512
-)
-
-)
-	auditUUIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}package audit
-
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
-)
-
-const (
-	FileName          = "audit.jsonl"
-	archiveFileName   = "audit.jsonl.1"
-	defaultMaxLogSize = 16 << 20
-	maxEventSize      = 4 << 10
-	maxFieldLength    = 512
-)
-
-)
-	routeDeviceIDPattern = regexp.MustCompile(`^wd_[a-z2-7]{16}package audit
-
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
-)
-
-const (
-	FileName          = "audit.jsonl"
-	archiveFileName   = "audit.jsonl.1"
-	defaultMaxLogSize = 16 << 20
-	maxEventSize      = 4 << 10
-	maxFieldLength    = 512
-)
-
-)
+	eventNamePattern = regexp.MustCompile("^[a-z0-9][a-z0-9_.-]{0,95}$")
+	auditUUIDPattern = regexp.MustCompile("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+	routeDeviceIDPattern = regexp.MustCompile("^wd_[a-z2-7]{16}$")
 )
 
 // Event is deliberately narrow: audit records may identify actors, peers,
@@ -97,23 +31,23 @@ const (
 // arbitrary payload field. Terminal data, pairing secrets, grants,
 // credentials, and private keys must never be written to the audit log.
 type Event struct {
-	Time                time.Time `json:"time"`
-	Type                string    `json:"type"`
-	Outcome             string    `json:"outcome"`
-	ActorID             string    `json:"actor_id,omitempty"`
-	PeerID              string    `json:"peer_id,omitempty"`
-	AttemptID             string    `json:"attempt_id,omitempty"`
-	AuthorizationRunID    string    `json:"authorization_run_id,omitempty"`
-	ValidationAttemptID   string    `json:"validation_attempt_id,omitempty"`
-	ConsumptionAttemptID  string    `json:"consumption_attempt_id,omitempty"`
-	ValidationEventID     string    `json:"validation_event_id,omitempty"`
-	ConsumptionEventID    string    `json:"consumption_event_id,omitempty"`
-	Transport             string    `json:"transport,omitempty"`
-	TransportProvenance string    `json:"transport_provenance,omitempty"`
+	Time                 time.Time `json:"time"`
+	Type                 string    `json:"type"`
+	Outcome              string    `json:"outcome"`
+	ActorID              string    `json:"actor_id,omitempty"`
+	PeerID               string    `json:"peer_id,omitempty"`
+	AttemptID            string    `json:"attempt_id,omitempty"`
+	AuthorizationRunID   string    `json:"authorization_run_id,omitempty"`
+	ValidationAttemptID  string    `json:"validation_attempt_id,omitempty"`
+	ConsumptionAttemptID string    `json:"consumption_attempt_id,omitempty"`
+	ValidationEventID    string    `json:"validation_event_id,omitempty"`
+	ConsumptionEventID   string    `json:"consumption_event_id,omitempty"`
+	Transport            string    `json:"transport,omitempty"`
+	TransportProvenance  string    `json:"transport_provenance,omitempty"`
 	UnderlyingTransport  string    `json:"underlying_transport,omitempty"`
 	RouteRouterID        string    `json:"route_router_id,omitempty"`
-	StreamID            uint32    `json:"stream_id,omitempty"`
-	Reason              string    `json:"reason,omitempty"`
+	StreamID             uint32    `json:"stream_id,omitempty"`
+	Reason               string    `json:"reason,omitempty"`
 }
 
 type Log struct {

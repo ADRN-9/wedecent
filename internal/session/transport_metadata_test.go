@@ -29,6 +29,10 @@ func TestTransportMetadataAuditLabel(t *testing.T) {
 		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm", "listener_adapter", true},
 		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm", "listener_adapter", true},
 		{"relay", TransportMetadata{Kind: TransportRelay}, "relay", "listener_adapter", true},
+		{"routed over internet", TransportMetadata{Kind: TransportRouted, Underlying: UnderlyingInternet, RouteRouterID: "wd_aaaaaaaaaaaaaaaa"}, "routed+internet", "authenticated_router_link", true},
+		{"routed without router", TransportMetadata{Kind: TransportRouted, Underlying: UnderlyingInternet}, "", "", false},
+		{"routed without underlay", TransportMetadata{Kind: TransportRouted, RouteRouterID: "wd_aaaaaaaaaaaaaaaa"}, "", "", false},
+		{"router ID on direct TCP", TransportMetadata{Kind: TransportDirectTCP, RouteRouterID: "wd_aaaaaaaaaaaaaaaa"}, "", "", false},
 		{"USB NCM underlying direct TCP", TransportMetadata{Kind: TransportDirectTCP, Underlying: UnderlyingUSBNCM}, "direct_tcp+usb_ncm", "operator_config_assertion", true},
 		{"missing kind", TransportMetadata{}, "", "", false},
 		{"unknown kind", TransportMetadata{Kind: "lan"}, "", "", false},
@@ -126,6 +130,7 @@ func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm", "listener_adapter"},
 		{"USB NCM over direct TCP", TransportMetadata{Kind: TransportDirectTCP, Underlying: UnderlyingUSBNCM}, "direct_tcp+usb_ncm", "operator_config_assertion"},
 		{"relay", TransportMetadata{Kind: TransportRelay}, "relay", "listener_adapter"},
+		{"routed over internet", TransportMetadata{Kind: TransportRouted, Underlying: UnderlyingInternet, RouteRouterID: "wd_aaaaaaaaaaaaaaaa"}, "routed+internet", "authenticated_router_link"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -174,14 +179,22 @@ func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 				}
 				if event.Type == "pairing.request" && event.Outcome == "pending" {
 					pending = true
-					if event.Transport != tt.want || event.TransportProvenance != tt.wantProvenance {
-						t.Fatalf("pending attribution = %q/%q, want %q/%q", event.Transport, event.TransportProvenance, tt.want, tt.wantProvenance)
+					if event.Transport != tt.want || event.TransportProvenance != tt.wantProvenance ||
+						event.UnderlyingTransport != string(tt.metadata.Underlying) ||
+						event.RouteRouterID != tt.metadata.RouteRouterID {
+						t.Fatalf("pending attribution = %q/%q/%q/%q, want %q/%q/%q/%q",
+							event.Transport, event.TransportProvenance, event.UnderlyingTransport, event.RouteRouterID,
+							tt.want, tt.wantProvenance, tt.metadata.Underlying, tt.metadata.RouteRouterID)
 					}
 				}
 				if event.Type == "pairing.trust_added" && event.Outcome == "success" {
 					success = true
-					if event.Transport != tt.want || event.TransportProvenance != tt.wantProvenance {
-						t.Fatalf("success attribution = %q/%q, want %q/%q", event.Transport, event.TransportProvenance, tt.want, tt.wantProvenance)
+					if event.Transport != tt.want || event.TransportProvenance != tt.wantProvenance ||
+						event.UnderlyingTransport != string(tt.metadata.Underlying) ||
+						event.RouteRouterID != tt.metadata.RouteRouterID {
+						t.Fatalf("success attribution = %q/%q/%q/%q, want %q/%q/%q/%q",
+							event.Transport, event.TransportProvenance, event.UnderlyingTransport, event.RouteRouterID,
+							tt.want, tt.wantProvenance, tt.metadata.Underlying, tt.metadata.RouteRouterID)
 					}
 				}
 			}
@@ -192,5 +205,47 @@ func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 				t.Fatalf("missing pairing audit outcomes: pending=%v success=%v", pending, success)
 			}
 		})
+	}
+}
+
+
+func TestServerTerminalAuditCarriesRouteAndGrantProvenance(t *testing.T) {
+	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Identity: serverIdentity, StateDir: t.TempDir()}
+	metadata := TransportMetadata{
+		Kind: TransportRouted, Underlying: UnderlyingInternet, RouteRouterID: "wd_aaaaaaaaaaaaaaaa",
+	}
+	evidence := &GrantConsumptionEvidence{
+		AuthorizationRunID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+		ValidationAttemptID: "b90987bf-bae6-45da-ab21-c82d049617bd",
+		ConsumptionAttemptID: "c90987bf-bae6-45da-ab21-c82d049617bd",
+		ValidationEventID: "a90987bf-bae6-45da-ab21-c82d049617bd",
+		ConsumptionEventID: "f90987bf-bae6-45da-ab21-c82d049617bd",
+	}
+	server.recordGrantAudit(metadata, audit.Event{
+		Type: "terminal.session_opened", Outcome: "success", PeerID: "wd_bbbbbbbbbbbbbbbb",
+	}, evidence)
+
+	data, err := os.ReadFile(filepath.Join(server.StateDir, audit.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var event audit.Event
+	if err := json.Unmarshal(data[:len(data)-1], &event); err != nil {
+		t.Fatal(err)
+	}
+	if event.Transport != "routed+internet" ||
+		event.TransportProvenance != "authenticated_router_link" ||
+		event.UnderlyingTransport != "internet" ||
+		event.RouteRouterID != metadata.RouteRouterID ||
+		event.AuthorizationRunID != evidence.AuthorizationRunID ||
+		event.ValidationAttemptID != evidence.ValidationAttemptID ||
+		event.ConsumptionAttemptID != evidence.ConsumptionAttemptID ||
+		event.ValidationEventID != evidence.ValidationEventID ||
+		event.ConsumptionEventID != evidence.ConsumptionEventID {
+		t.Fatalf("terminal audit lost route or grant provenance: %+v", event)
 	}
 }
