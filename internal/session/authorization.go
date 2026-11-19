@@ -197,7 +197,7 @@ func (a RelayDirectAuthorizer) VerifyConsumption(ctx context.Context, clientDevi
 		!validConnectionGrantJTI(jti) || (flow != "direct" && flow != "relay") {
 		return errors.New("grant evidence query identity is invalid")
 	}
-	origin, err := directAuthorizationOrigin(a.BaseURL)
+	origin, err := directAuthorizationOrigin(a.BaseURL, a.allowLoopbackForTests)
 	if err != nil { return err }
 	ticketSource := a.TicketSource
 	if ticketSource == nil { ticketSource = relayauth.NewTicketSource(a.Identity) }
