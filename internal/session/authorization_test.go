@@ -128,7 +128,7 @@ func TestRelayDirectAuthorizerRejectsLoopbackOutsideTestMode(t *testing.T) {
 	}
 	called := false
 	a := RelayDirectAuthorizer{
-		BaseURL: "http://127.0.0.1:17444",
+		BaseURL:  "http://127.0.0.1:17444",
 		Identity: id,
 		TicketSource: func(context.Context, string, string, string, int) (string, error) {
 			called = true
@@ -165,17 +165,17 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 			Version: 1, GrantID: "d90987bf-bae6-45da-ab21-c82d049617bd", JTI: jti,
 			ClientDeviceID: clientID, TargetDeviceID: id.ID, Permission: "terminal.connect", Flow: flow,
 			ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
-			ValidatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-			ConsumedAt: time.Now().UTC().Format(time.RFC3339Nano),
-			ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+			ValidatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
+			ConsumedAt:    time.Now().UTC().Format(time.RFC3339Nano),
+			ExpiresAt:     time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
 			RetainUntilMS: time.Now().Add(time.Hour).UnixMilli(),
 		})
 	}))
 	defer server.Close()
 
 	a := RelayDirectAuthorizer{
-		BaseURL: server.URL,
-		Identity: id,
+		BaseURL:               server.URL,
+		Identity:              id,
 		allowLoopbackForTests: true,
 		TicketSource: func(_ context.Context, baseURL, targetDeviceID, role string, slot int) (string, error) {
 			if baseURL != server.URL || targetDeviceID != id.ID || role != "authorize" || slot != 0 {

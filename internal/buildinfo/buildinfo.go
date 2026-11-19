@@ -15,22 +15,22 @@ var (
 )
 
 type Info struct {
-	Version  string
-	Commit   string
+	Version      string
+	Commit       string
 	BuiltAt      string
 	SourceSHA256 string
 	Go           string
-	Platform string
+	Platform     string
 }
 
 func Current() Info {
 	return Info{
-		Version:  normalized(Version, "dev"),
-		Commit:   normalized(Commit, "unknown"),
+		Version:      normalized(Version, "dev"),
+		Commit:       normalized(Commit, "unknown"),
 		BuiltAt:      normalized(BuiltAt, "unknown"),
 		SourceSHA256: normalized(SourceSHA256, "unknown"),
 		Go:           runtime.Version(),
-		Platform: runtime.GOOS + "/" + runtime.GOARCH,
+		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
 	}
 }
 

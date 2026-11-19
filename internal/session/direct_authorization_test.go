@@ -110,10 +110,10 @@ func TestServeConnRejectsAuthorizedSessionWithoutAuthorizer(t *testing.T) {
 }
 
 type evidenceTrackingAuthorizer struct {
-	clientID string
-	targetID string
-	jti string
-	flow string
+	clientID  string
+	targetID  string
+	jti       string
+	flow      string
 	verifyErr error
 }
 

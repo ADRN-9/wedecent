@@ -22,23 +22,23 @@ const (
 	connectionGrantHeader           = "X-WeDecent-Connection-Grant"
 	maxDirectAuthorizationBodyBytes = 1024
 	maxGrantEvidenceBodyBytes       = 4096
-	productionAuthorizationOrigin  = "https://relay.wedecent.com"
+	productionAuthorizationOrigin   = "https://relay.wedecent.com"
 )
 
 type GrantConsumptionEvidence struct {
-	Version             int    `json:"version"`
-	GrantID             string `json:"grant_id"`
-	JTI                 string `json:"jti"`
-	ClientDeviceID      string `json:"client_device_id"`
-	TargetDeviceID      string `json:"target_device_id"`
-	Permission          string `json:"permission"`
-	Flow                string `json:"flow"`
-	ValidationOutcome   string `json:"validation_outcome"`
-	ConsumptionOutcome  string `json:"consumption_outcome"`
-	ValidatedAt         string `json:"validated_at"`
-	ConsumedAt          string `json:"consumed_at"`
-	ExpiresAt           string `json:"expires_at"`
-	RetainUntilMS       int64  `json:"retain_until_ms"`
+	Version            int    `json:"version"`
+	GrantID            string `json:"grant_id"`
+	JTI                string `json:"jti"`
+	ClientDeviceID     string `json:"client_device_id"`
+	TargetDeviceID     string `json:"target_device_id"`
+	Permission         string `json:"permission"`
+	Flow               string `json:"flow"`
+	ValidationOutcome  string `json:"validation_outcome"`
+	ConsumptionOutcome string `json:"consumption_outcome"`
+	ValidatedAt        string `json:"validated_at"`
+	ConsumedAt         string `json:"consumed_at"`
+	ExpiresAt          string `json:"expires_at"`
+	RetainUntilMS      int64  `json:"retain_until_ms"`
 }
 
 type GrantEvidenceVerifier interface {
@@ -46,10 +46,10 @@ type GrantEvidenceVerifier interface {
 }
 
 type RelayDirectAuthorizer struct {
-	BaseURL      string
-	Identity     *identity.Identity
-	TicketSource relayauth.TicketSource
-	HTTP         *http.Client
+	BaseURL               string
+	Identity              *identity.Identity
+	TicketSource          relayauth.TicketSource
+	HTTP                  *http.Client
 	allowLoopbackForTests bool
 }
 
@@ -183,9 +183,13 @@ func validConnectionGrantJTI(jti string) bool {
 	for i, r := range jti {
 		switch i {
 		case 8, 13, 18, 23:
-			if r != '-' { return false }
+			if r != '-' {
+				return false
+			}
 		default:
-			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) { return false }
+			if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+				return false
+			}
 		}
 	}
 	return true
@@ -198,15 +202,23 @@ func (a RelayDirectAuthorizer) VerifyConsumption(ctx context.Context, clientDevi
 		return errors.New("grant evidence query identity is invalid")
 	}
 	origin, err := directAuthorizationOrigin(a.BaseURL, a.allowLoopbackForTests)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	ticketSource := a.TicketSource
-	if ticketSource == nil { ticketSource = relayauth.NewTicketSource(a.Identity) }
+	if ticketSource == nil {
+		ticketSource = relayauth.NewTicketSource(a.Identity)
+	}
 	ticket, err := ticketSource(ctx, origin, targetDeviceID, "authorize", 0)
-	if err != nil { return fmt.Errorf("create grant evidence proof: %w", err) }
+	if err != nil {
+		return fmt.Errorf("create grant evidence proof: %w", err)
+	}
 
 	endpoint := origin + "/v1/grant-evidence/" + targetDeviceID + "/" + strings.ToLower(jti)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
-	if err != nil { return fmt.Errorf("build grant evidence request: %w", err) }
+	if err != nil {
+		return fmt.Errorf("build grant evidence request: %w", err)
+	}
 	req.Header.Set("Authorization", "Bearer "+ticket)
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Cache-Control", "no-store")
@@ -214,17 +226,23 @@ func (a RelayDirectAuthorizer) VerifyConsumption(ctx context.Context, clientDevi
 	client := http.Client{Timeout: 10 * time.Second}
 	if a.HTTP != nil {
 		client = *a.HTTP
-		if client.Timeout == 0 { client.Timeout = 10 * time.Second }
+		if client.Timeout == 0 {
+			client.Timeout = 10 * time.Second
+		}
 	}
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
-	if err != nil { return fmt.Errorf("grant evidence request: %w", err) }
+	if err != nil {
+		return fmt.Errorf("grant evidence request: %w", err)
+	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("grant validation/consumption evidence unavailable (HTTP %d)", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGrantEvidenceBodyBytes+1))
-	if err != nil { return fmt.Errorf("read grant evidence: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read grant evidence: %w", err)
+	}
 	if len(body) == 0 || len(body) > maxGrantEvidenceBodyBytes {
 		return errors.New("grant evidence response has an invalid size")
 	}

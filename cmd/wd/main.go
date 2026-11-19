@@ -881,10 +881,10 @@ func runConnect(args []string) (int, error) {
 			return 0, errors.New("routed connection configuration unexpectedly disabled")
 		}
 		client := &session.Client{
-			Identity:        id,
-			Trust:           store,
-			Dialer:          routedDialer,
-			ConnectionGrant:          connectionGrant,
+			Identity:                  id,
+			Trust:                     store,
+			Dialer:                    routedDialer,
+			ConnectionGrant:           connectionGrant,
 			ExpectedAgentCommit:       *expectedAgentCommit,
 			ExpectedAgentSourceSHA256: *expectedAgentSourceSHA256,
 		}

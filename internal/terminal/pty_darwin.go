@@ -36,7 +36,7 @@ func Start(shell string, cols, rows uint16, term string) (*PTY, error) {
 	cmd.Stdin = slave
 	cmd.Stdout = slave
 	cmd.Stderr = slave
-	cmd.Env = childEnvironment("TERM="+safeDarwinTerm(term))
+	cmd.Env = childEnvironment("TERM=" + safeDarwinTerm(term))
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Setctty: true, Ctty: 0}
 	if err := cmd.Start(); err != nil {
 		master.Close()

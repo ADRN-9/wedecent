@@ -16,20 +16,48 @@ import (
 func TestWindowsConPTYDoesNotInheritPairingSecret(t *testing.T) {
 	t.Setenv("WEDECENT_PAIRING_SECRET", "canary-pairing-secret")
 	root := os.Getenv("SystemRoot")
-	if root == "" { root = `C:\\Windows` }
+	if root == "" {
+		root = `C:\\Windows`
+	}
 	shell := filepath.Join(root, "System32", "cmd.exe")
 	pty, err := Start(shell, 80, 24, "")
-	if err != nil { t.Fatalf("start ConPTY: %v", err) }
+	if err != nil {
+		t.Fatalf("start ConPTY: %v", err)
+	}
 	defer pty.Close()
-	if _, err := pty.Write([]byte("if defined WEDECENT_PAIRING_SECRET (set WD_RESULT=LEAKED) else (set WD_RESULT=ISOLATED)\recho WD_SECRET_%WD_RESULT%\rexit /b 0\r")); err != nil { t.Fatalf("write ConPTY canary: %v", err) }
+	if _, err := pty.Write([]byte("if defined WEDECENT_PAIRING_SECRET (set WD_RESULT=LEAKED) else (set WD_RESULT=ISOLATED)\recho WD_SECRET_%WD_RESULT%\rexit /b 0\r")); err != nil {
+		t.Fatalf("write ConPTY canary: %v", err)
+	}
 	readDone := make(chan string, 1)
-	go func() { var b strings.Builder; buf := make([]byte, 1024); for { n, readErr := pty.Read(buf); if n > 0 { b.Write(buf[:n]); if strings.Contains(b.String(), "WD_SECRET_ISOLATED") || strings.Contains(b.String(), "WD_SECRET_LEAKED") { readDone <- b.String(); return } }; if readErr != nil { readDone <- b.String(); return } } }()
+	go func() {
+		var b strings.Builder
+		buf := make([]byte, 1024)
+		for {
+			n, readErr := pty.Read(buf)
+			if n > 0 {
+				b.Write(buf[:n])
+				if strings.Contains(b.String(), "WD_SECRET_ISOLATED") || strings.Contains(b.String(), "WD_SECRET_LEAKED") {
+					readDone <- b.String()
+					return
+				}
+			}
+			if readErr != nil {
+				readDone <- b.String()
+				return
+			}
+		}
+	}()
 	select {
 	case output := <-readDone:
-		if !strings.Contains(output, "WD_SECRET_ISOLATED") || strings.Contains(output, "WD_SECRET_LEAKED") { t.Fatalf("ConPTY child environment was not isolated: %q", output) }
-	case <-time.After(10 * time.Second): t.Fatal("timed out waiting for ConPTY canary")
+		if !strings.Contains(output, "WD_SECRET_ISOLATED") || strings.Contains(output, "WD_SECRET_LEAKED") {
+			t.Fatalf("ConPTY child environment was not isolated: %q", output)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for ConPTY canary")
 	}
-	if err := pty.Wait(); err != nil { t.Fatalf("wait for ConPTY canary: %v", err) }
+	if err := pty.Wait(); err != nil {
+		t.Fatalf("wait for ConPTY canary: %v", err)
+	}
 }
 
 func TestWindowsConPTYRoundTripResizeAndExit(t *testing.T) {
