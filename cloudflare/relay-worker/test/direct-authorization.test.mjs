@@ -132,16 +132,23 @@ test("accepts a self-bound authorization ticket and matching connection grant", 
     now,
   );
   assert.equal(result.ok, true);
-  assert.deepEqual(result.replay, {
-    jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b",
-    exp: now + 90,
-    grantID: "d90987bf-bae6-45da-ab21-c82d049617bd",
-    clientDeviceID,
-    targetDeviceID: relay.claims.iss,
-    flow: "direct",
-    permission: "terminal.connect",
-    validatedAtMS: now * 1000,
-  });
+  assert.deepEqual(
+    Object.fromEntries(Object.entries(result.replay).filter(([key]) => !["authorizationRunID", "validationAttemptID"].includes(key))),
+    {
+      jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b",
+      exp: now + 90,
+      grantID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+      clientDeviceID,
+      targetDeviceID: relay.claims.iss,
+      flow: "direct",
+      permission: "terminal.connect",
+      validatedAtMS: now * 1000,
+    },
+  );
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+  assert.match(result.replay.authorizationRunID, uuid);
+  assert.match(result.replay.validationAttemptID, uuid);
+  assert.notEqual(result.replay.authorizationRunID, result.replay.validationAttemptID);
 });
 
 test("rejects direct authorization when the grant names another TLS client", async () => {

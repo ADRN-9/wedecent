@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"wedecent.com/wedecent/internal/updateinfo"
 	"wedecent.com/wedecent/internal/processenv"
+	"wedecent.com/wedecent/internal/updateinfo"
 )
 
 const maxKeyFileBytes = 96

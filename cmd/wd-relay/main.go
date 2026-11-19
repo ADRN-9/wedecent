@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"wedecent.com/wedecent/internal/relay"
 	"wedecent.com/wedecent/internal/processenv"
+	"wedecent.com/wedecent/internal/relay"
 )
 
 func main() {

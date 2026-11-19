@@ -12,9 +12,9 @@ import (
 	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/processenv"
 	"wedecent.com/wedecent/internal/routercontrol"
 	"wedecent.com/wedecent/internal/trust"
-	"wedecent.com/wedecent/internal/processenv"
 )
 
 func main() {

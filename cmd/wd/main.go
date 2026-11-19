@@ -23,13 +23,13 @@ import (
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/enrollment"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/processenv"
 	"wedecent.com/wedecent/internal/relayauth"
 	"wedecent.com/wedecent/internal/securefile"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/terminal"
 	"wedecent.com/wedecent/internal/transport"
 	"wedecent.com/wedecent/internal/trust"
-	"wedecent.com/wedecent/internal/processenv"
 )
 
 func main() {
@@ -884,11 +884,11 @@ func runConnect(args []string) (int, error) {
 			return 0, errors.New("routed connection configuration unexpectedly disabled")
 		}
 		client := &session.Client{
-			Identity:                  id,
-			Trust:                     store,
-			Dialer:                    routedDialer,
-			ConnectionGrant:           connectionGrant,
-			ExpectedAgentCommit:          *expectedAgentCommit,
+			Identity:                      id,
+			Trust:                         store,
+			Dialer:                        routedDialer,
+			ConnectionGrant:               connectionGrant,
+			ExpectedAgentCommit:           *expectedAgentCommit,
 			ExpectedAgentSourceSHA256:    *expectedAgentSourceSHA256,
 			ExpectedAgentExecutableSHA256: *expectedAgentExecutableSHA256,
 		}

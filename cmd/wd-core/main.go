@@ -13,9 +13,9 @@ import (
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/coreapi/coreprocess"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/processenv"
 	"wedecent.com/wedecent/internal/routercontrol"
 	"wedecent.com/wedecent/internal/trust"
-	"wedecent.com/wedecent/internal/processenv"
 )
 
 func main() {
