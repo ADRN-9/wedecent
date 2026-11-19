@@ -85,6 +85,10 @@ sudo bash scripts/wedecent-linux-usb-ncm.sh teardown
 
 Teardown verifies the fixed gadget still contains exactly the helper-managed single NCM function/configuration before unbinding it. Unexpected gadget layout causes a fail-closed refusal for manual inspection.
 
+## Hardware validation
+
+The reproducible host-side pairing, incorrect-fingerprint, replay, authorized-terminal, and reconnect gate is documented in [Linux USB NCM hardware validation](LINUX_USB_NCM_HARDWARE_VALIDATION.md) and implemented by `scripts/test-linux-usb-ncm-hardware.sh`. It requires a real host interface bound to `cdc_ncm`; CI or a simulated interface does not complete the milestone.
+
 ## Completion criterion
 
 Repository CI can verify script syntax and non-mutating paths but cannot prove USB enumeration. The USB-networking roadmap item remains open until a real gadget/host pair has enumerated the NCM link and completed an authorized WeDecent terminal session over the existing direct TCP transport on that link.

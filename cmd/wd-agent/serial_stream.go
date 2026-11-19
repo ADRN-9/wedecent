@@ -118,7 +118,9 @@ func serveAgentLocalTransports(
 		errCh <- listeners.serve(localCtx)
 	}()
 	go func() {
-		errCh <- serveAgentSerial(localCtx, serialEndpoint, server.ServeConn)
+		errCh <- serveAgentSerial(localCtx, serialEndpoint, func(conn net.Conn) {
+			server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportUSBCDCACM})
+		})
 	}()
 
 	firstErr := <-errCh

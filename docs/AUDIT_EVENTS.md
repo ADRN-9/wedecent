@@ -4,6 +4,20 @@ WeDecent role state directories may contain an append-only `audit.jsonl` securit
 
 The audit schema intentionally has no arbitrary payload field. Terminal input/output, pairing secrets, connection grants/JWTs, passwords, access/refresh tokens, private keys, and other credential material must never be written to this log. Typed terminal lifecycle events may include the bounded numeric protocol `stream_id`; they never include terminal contents or renderer-local identifiers.
 
+## Transport attribution
+
+New agent terminal/pairing audit records use explicit, validated metadata supplied by the local listener or transport adapter. The `transport` field uses these canonical values:
+
+- `direct_tcp` — direct TCP listener.
+- `bluetooth_rfcomm` — Bluetooth Classic RFCOMM listener.
+- `usb_cdc_acm` — explicitly configured USB CDC-ACM serial stream.
+- `relay` — authenticated relay stream.
+- `direct_tcp+usb_ncm` — direct TCP whose underlying link was explicitly identified as USB NCM.
+
+USB NCM is an underlying network medium, not a separate WeDecent identity or authorization transport. An unsupported or inconsistent metadata tuple closes the connection before TLS/session processing. The metadata is used only for audit attribution; it is never consulted for device identity, fingerprint pinning, trust, connection grants, routing authority, or authorization. IP addresses, Bluetooth MAC addresses, tty paths, USB descriptors, and relay state remain locators or diagnostics only.
+
+Older audit records may contain historical labels such as `direct`, `relay`, `lan`, or `internet`; they are not rewritten.
+
 ## Storage and bounds
 
 - active log: `<role-state>/audit.jsonl`

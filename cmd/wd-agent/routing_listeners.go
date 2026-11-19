@@ -239,7 +239,7 @@ func openAgentListeners(
 		cfg.ListenAddr,
 		cfg.MaxConnections,
 		func(_ context.Context, conn net.Conn) error {
-			server.ServeConn(conn)
+			server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportDirectTCP})
 			return nil
 		},
 	)
@@ -265,7 +265,7 @@ func openAgentListeners(
 			rfcomm,
 			cfg.MaxConnections,
 			func(_ context.Context, conn net.Conn) error {
-				server.ServeConn(conn)
+				server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportBluetoothRFCOMM})
 				return nil
 			},
 		); err != nil {

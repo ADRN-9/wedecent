@@ -45,8 +45,17 @@ type Server struct {
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 
+// ServeConn preserves the direct-TCP default for legacy callers. Production
+// transport adapters should use ServeConnWithTransport explicitly.
 func (s *Server) ServeConn(raw net.Conn) {
-	s.serveConn(raw, 15*time.Second, true)
+	s.ServeConnWithTransport(raw, TransportMetadata{Kind: TransportDirectTCP})
+}
+
+// ServeConnWithTransport accepts only locally supplied, validated transport
+// metadata. The label is audit context only; it never participates in identity
+// verification, authorization, or routing decisions.
+func (s *Server) ServeConnWithTransport(raw net.Conn, metadata TransportMetadata) {
+	s.serveConn(raw, 15*time.Second, true, metadata)
 }
 
 // ServeParkedRelayConn serves a relay connection that may sit idle until a
@@ -54,15 +63,20 @@ func (s *Server) ServeConn(raw net.Conn) {
 // responsible for parking the connection; the inner TLS handshake starts only
 // when a client arrives, so there is intentionally no pre-client deadline.
 func (s *Server) ServeParkedRelayConn(raw net.Conn) {
-	s.serveConn(raw, 0, false)
+	s.serveConn(raw, 0, false, TransportMetadata{Kind: TransportRelay})
 }
 
-func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, requireInBandAuthorization bool) {
-	defer raw.Close()
-	transport := "relay"
-	if requireInBandAuthorization {
-		transport = "direct"
+func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, requireInBandAuthorization bool, metadata TransportMetadata) {
+	if raw == nil {
+		return
 	}
+	transport, err := metadata.auditLabel()
+	if err != nil {
+		s.log().Error("invalid session transport metadata", "error", err)
+		_ = raw.Close()
+		return
+	}
+	defer raw.Close()
 	tlsConn := tls.Server(raw, identity.ServerTLS(s.Identity))
 	if handshakeTimeout > 0 {
 		_ = tlsConn.SetDeadline(time.Now().Add(handshakeTimeout))

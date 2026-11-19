@@ -791,7 +791,7 @@ func relayLoop(ctx context.Context, slot int, address string, opts transport.Rel
 			continue
 		}
 		backoff = time.Second
-		server.ServeConn(conn)
+		server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportRelay})
 	}
 }
 
