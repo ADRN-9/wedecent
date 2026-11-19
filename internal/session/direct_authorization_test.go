@@ -91,7 +91,7 @@ func TestServeConnRejectsAuthorizedSessionWithoutAuthorizer(t *testing.T) {
 	defer func() { <-done }()
 
 	payload, _ := protocol.JSON(protocol.OpenAuthorizedSession{
-		Cols: 80, Rows: 24, Term: "xterm", ConnectionGrant: "header.payload.signature",
+		Cols: 80, Rows: 24, Term: "xterm", ConnectionGrant: testConnectionGrant(),
 	})
 	if err := protocol.WriteFrame(clientConn, protocol.Frame{Type: protocol.TypeOpenAuthorizedSession, Payload: payload}); err != nil {
 		t.Fatal(err)

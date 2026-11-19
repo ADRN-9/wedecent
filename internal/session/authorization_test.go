@@ -195,7 +195,7 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 	if err := a.VerifyConsumption(context.Background(), "wd_bbbbbbbbbbbbbbbb", id.ID, jti, "relay"); err == nil {
 		t.Fatal("accepted evidence for a different client identity")
 	}
-	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "relay"); err == nil {
+	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "direct"); err == nil {
 		t.Fatal("accepted evidence for a different session flow")
 	}
 }
