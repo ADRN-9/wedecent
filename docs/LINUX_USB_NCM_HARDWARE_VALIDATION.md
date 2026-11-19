@@ -6,65 +6,76 @@ This is a real-hardware gate, not a CI smoke test. It validates the host-side US
 
 - A Linux gadget-side device with a USB Device Controller and configfs NCM support.
 - A USB cable connecting that gadget to a Linux client host.
-- The gadget configured with \`scripts/wedecent-linux-usb-ncm.sh\`.
-- The client host enumerating a real USB network interface bound to Linux \`cdc_ncm\`.
+- The gadget configured with `scripts/wedecent-linux-usb-ncm.sh`.
+- The client host enumerating a real USB network interface bound to Linux `cdc_ncm`.
 - An agent bound to the gadget-side NCM address and running the ordinary WeDecent TLS 1.3/pinned-identity path.
 
 A USB network interface, MAC address, VID/PID, IP address, or cable connection is not WeDecent identity. Obtain the expected WeDecent fingerprint independently from the target agent.
 
 ## Prepare the gadget
 
-Follow [Linux USB NCM networking](LINUX_USB_NCM.md). Configure the point-to-point IP addresses using the site's network manager, and bind \`wd-agent serve\` only to the intended gadget-side address for the isolated test.
+Follow [Linux USB NCM networking](LINUX_USB_NCM.md). Configure the point-to-point IP addresses using the site's network manager, and bind `wd-agent serve` only to the intended gadget-side address for the isolated test.
 
 ## Client hardware gate
 
 On the Linux client, from the repository root, set:
 
-\`\`\`sh
+```sh
 export WEDECENT_USB_NCM_INTERFACE='enx020000000002'
 export WEDECENT_USB_NCM_ENDPOINT='192.0.2.1:7443'
 export WEDECENT_USB_NCM_FINGERPRINT='SHA256:<independently-verified-fingerprint>'
 export WEDECENT_USB_NCM_PAIRING_SECRET='<fresh-single-use-secret>'
 # Optional expected device ID:
 export WEDECENT_USB_NCM_EXPECT_DEVICE_ID='wd_aaaaaaaaaaaaaaaa'
-\`\`\`
+```
 
-The interface must be up, resolve to a USB sysfs device, have USB vendor/product ancestry, and use the Linux \`cdc_ncm\` driver. The numeric peer endpoint must route through that exact interface. DNS names are rejected.
+The interface must be up, resolve to a USB sysfs device, have USB vendor/product ancestry, and use the Linux `cdc_ncm` driver. The numeric peer endpoint must route through that exact interface. DNS names are rejected.
 
 Run:
 
-\`\`\`sh
+```sh
 bash scripts/test-linux-usb-ncm-hardware.sh
-\`\`\`
+```
 
 The harness builds the real client, rejects an incorrect server fingerprint before the valid pairing, completes pairing using the fresh single-use secret, then uses a second client state to prove the consumed secret is rejected on replay. It emits:
 
-- \`WEDECENT_USB_NCM_WRONG_FINGERPRINT_REJECTED\`
-- \`WEDECENT_USB_NCM_PAIR_HARDWARE_OK\`
-- \`WEDECENT_USB_NCM_REPLAY_REJECTED\`
+- `WEDECENT_USB_NCM_WRONG_FINGERPRINT_REJECTED`
+- `WEDECENT_USB_NCM_PAIR_HARDWARE_OK`
+- `WEDECENT_USB_NCM_REPLAY_REJECTED`
+
+To verify that an explicitly selected transport does not silently fall back, make an alternate path to the same peer available, provision a separate fresh pairing secret, and set an intentionally unreachable numeric endpoint:
+
+```sh
+export WEDECENT_USB_NCM_FAILURE_ENDPOINT='192.0.2.254:7443'
+export WEDECENT_USB_NCM_FAILURE_PAIRING_SECRET='<separate-fresh-single-use-secret>'
+```
+
+The probe must fail on that exact endpoint and emit `WEDECENT_USB_NCM_EXPLICIT_FAILURE_NO_FALLBACK`. This is meaningful only when another route to the same device is available; otherwise the test proves only that the endpoint is unreachable.
 
 ## Authorized terminal and reconnect gates
 
 For a real authorized terminal session, supply a short-lived non-production connection grant and a terminal input file that causes the remote shell to print a marker. The marker must not occur contiguously in the input file, so local/PTY echo cannot satisfy the assertion.
 
-\`\`\`sh
+```sh
 export WEDECENT_USB_NCM_CONNECTION_GRANT_FILE='/secure/path/first-grant.jwt'
 export WEDECENT_USB_NCM_TERMINAL_INPUT_FILE='/secure/path/terminal-input.txt'
 export WEDECENT_USB_NCM_TERMINAL_MARKER='WEDECENT_USB_NCM_REMOTE_COMMAND_OK'
+printf 'printf "WEDECENT_USB_NCM_""REMOTE_COMMAND_OK\\n"\nexit\n' > "$WEDECENT_USB_NCM_TERMINAL_INPUT_FILE"
 bash scripts/test-linux-usb-ncm-hardware.sh
-\`\`\`
+```
 
-A successful remote PTY command emits \`WEDECENT_USB_NCM_TERMINAL_SESSION_HARDWARE_OK\`.
+A successful remote PTY command emits `WEDECENT_USB_NCM_TERMINAL_SESSION_HARDWARE_OK`.
 
 To prove disconnect and reconnection, supply a separate fresh connection grant and input/marker:
 
-\`\`\`sh
+```sh
 export WEDECENT_USB_NCM_RECONNECT_CONNECTION_GRANT_FILE='/secure/path/reconnect-grant.jwt'
 export WEDECENT_USB_NCM_RECONNECT_INPUT_FILE='/secure/path/reconnect-input.txt'
 export WEDECENT_USB_NCM_RECONNECT_MARKER='WEDECENT_USB_NCM_RECONNECTED_OK'
-\`\`\`
+printf 'printf "WEDECENT_USB_NCM_""RECONNECTED_OK\\n"\nexit\n' > "$WEDECENT_USB_NCM_RECONNECT_INPUT_FILE"
+```
 
-The second session emits \`WEDECENT_USB_NCM_RECONNECT_HARDWARE_OK\`. The full hardware milestone requires all three pairing/negative markers, the terminal marker, and the reconnect marker.
+The second session emits `WEDECENT_USB_NCM_RECONNECT_HARDWARE_OK`. The full hardware milestone requires all three pairing/negative markers, the terminal marker, and the reconnect marker.
 
 The harness never creates or weakens a connection grant. Do not put pairing secrets, grant contents, private keys, or terminal payloads in evidence logs.
 
