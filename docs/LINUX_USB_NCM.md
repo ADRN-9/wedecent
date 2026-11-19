@@ -62,6 +62,7 @@ Bind the agent only to the USB-link address when the USB link is intended to be 
 ```sh
 wd-agent serve \
   --listen '192.0.2.1:7443' \
+  --direct-tcp-underlay usb_ncm \
   --authorization-url '<authorization service URL>'
 ```
 

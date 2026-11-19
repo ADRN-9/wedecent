@@ -18,6 +18,7 @@ type serveFileConfig struct {
 	StateDir               *string `json:"state"`
 	Name                   *string `json:"name"`
 	ListenAddr             *string `json:"listen"`
+	DirectTCPUnderlyingTransport *string `json:"direct_tcp_underlay"`
 	RFCOMMChannel          *int    `json:"rfcomm_channel"`
 	SerialDevice           *string `json:"serial"`
 	Shell                  *string `json:"shell"`
@@ -177,6 +178,7 @@ func (cfg serveFileConfig) flagArgs() []string {
 	addString("state", cfg.StateDir)
 	addString("name", cfg.Name)
 	addString("listen", cfg.ListenAddr)
+	addString("direct-tcp-underlay", cfg.DirectTCPUnderlyingTransport)
 	addInt("rfcomm-channel", cfg.RFCOMMChannel)
 	addString("serial", cfg.SerialDevice)
 	addString("shell", cfg.Shell)

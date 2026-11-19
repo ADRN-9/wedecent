@@ -255,6 +255,7 @@ type serveConfig struct {
 	StateDir                  string
 	Name                      string
 	ListenAddr                string
+	DirectTCPUnderlyingTransport string
 	RFCOMMChannel             int
 	SerialDevice              string
 	Shell                     string
@@ -309,6 +310,12 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"listen",
 		"127.0.0.1:7443",
 		"TCP listen address; empty disables inbound TCP",
+	)
+	fs.StringVar(
+		&cfg.DirectTCPUnderlyingTransport,
+		"direct-tcp-underlay",
+		"",
+		"underlying direct TCP link for audit attribution: empty or usb_ncm",
 	)
 	fs.IntVar(
 		&cfg.RFCOMMChannel,
@@ -477,6 +484,10 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		)
 	}
 	cfg.RouteTunnelTransport = string(tunnelTransport)
+
+	if cfg.DirectTCPUnderlyingTransport != "" && cfg.DirectTCPUnderlyingTransport != string(session.UnderlyingUSBNCM) {
+		return serveConfig{}, errors.New("--direct-tcp-underlay must be empty or usb_ncm")
+	}
 
 	if cfg.MaxConnections < 1 ||
 		cfg.MaxConnections > 1024 {

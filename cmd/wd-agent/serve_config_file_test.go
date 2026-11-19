@@ -14,6 +14,7 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 	path := filepath.Join(dir, "agent.json")
 	contents := `{
   "listen": "127.0.0.1:9000",
+  "direct_tcp_underlay": "usb_ncm",
   "rfcomm_channel": 6,
   "discover": false,
   "max_connections": 17,
@@ -44,6 +45,9 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 
 	if cfg.ListenAddr != "127.0.0.1:9100" {
 		t.Fatalf("ListenAddr = %q", cfg.ListenAddr)
+	}
+	if cfg.DirectTCPUnderlyingTransport != "usb_ncm" {
+		t.Fatalf("DirectTCPUnderlyingTransport = %q", cfg.DirectTCPUnderlyingTransport)
 	}
 	if cfg.RFCOMMChannel != 7 {
 		t.Fatalf("RFCOMMChannel = %d", cfg.RFCOMMChannel)
@@ -169,4 +173,14 @@ func writeServeConfigTestFile(t *testing.T, contents string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestServeConfigDirectTCPUnderlayValidation(t *testing.T) {
+	cfg, err := parseServeConfig([]string{"--direct-tcp-underlay=usb_ncm"})
+	if err != nil || cfg.DirectTCPUnderlyingTransport != "usb_ncm" {
+		t.Fatalf("valid NCM underlay: cfg=%+v err=%v", cfg, err)
+	}
+	if _, err := parseServeConfig([]string{"--direct-tcp-underlay=bluetooth_rfcomm"}); err == nil {
+		t.Fatal("invalid direct TCP underlay was accepted")
+	}
 }
