@@ -306,7 +306,6 @@ func protocolError(payload []byte) error {
 	return fmt.Errorf("%s: %s", p.Code, p.Message)
 }
 
-
 func usesRelayGrantEvidence(endpoint string) bool {
 	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
 	return strings.HasPrefix(endpoint, "relay://") || strings.HasPrefix(endpoint, "wsrelay://")
