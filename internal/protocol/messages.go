@@ -32,16 +32,16 @@ type OpenAuthorizedSession struct {
 }
 
 type AgentBuildIdentity struct {
-	DeviceID     string `json:"device_id"`
-	Nonce        string `json:"nonce"`
-	Version      string `json:"version"`
-	Commit       string `json:"commit"`
+	DeviceID         string `json:"device_id"`
+	Nonce            string `json:"nonce"`
+	Version          string `json:"version"`
+	Commit           string `json:"commit"`
 	SourceSHA256     string `json:"source_sha256"`
 	ExecutableSHA256 string `json:"executable_sha256"`
 	BuiltAt          string `json:"built_at"`
-	Go           string `json:"go"`
-	Platform     string `json:"platform"`
-	Signature    string `json:"signature"`
+	Go               string `json:"go"`
+	Platform         string `json:"platform"`
+	Signature        string `json:"signature"`
 }
 
 type SessionAccepted struct {

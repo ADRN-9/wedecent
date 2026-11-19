@@ -23,12 +23,12 @@ import (
 )
 
 type Client struct {
-	Identity                  *identity.Identity
-	Trust                     *trust.Store
-	Dialer                    transport.Dialer
-	ConnectionGrant           string
-	ExpectedAgentCommit          string
-	ExpectedAgentSourceSHA256    string
+	Identity                      *identity.Identity
+	Trust                         *trust.Store
+	Dialer                        transport.Dialer
+	ConnectionGrant               string
+	ExpectedAgentCommit           string
+	ExpectedAgentSourceSHA256     string
 	ExpectedAgentExecutableSHA256 string
 }
 

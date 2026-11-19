@@ -44,7 +44,6 @@ func TestCurrentDoesNotExposePairingSecret(t *testing.T) {
 	}
 }
 
-
 func TestClearCurrentRemovesPairingSecretFromDescendantProcess(t *testing.T) {
 	if os.Getenv("WEDECENT_PROCESSENV_CLEAR_HELPER") == "1" {
 		ClearCurrent()

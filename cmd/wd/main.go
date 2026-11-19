@@ -889,7 +889,7 @@ func runConnect(args []string) (int, error) {
 			Dialer:                        routedDialer,
 			ConnectionGrant:               connectionGrant,
 			ExpectedAgentCommit:           *expectedAgentCommit,
-			ExpectedAgentSourceSHA256:    *expectedAgentSourceSHA256,
+			ExpectedAgentSourceSHA256:     *expectedAgentSourceSHA256,
 			ExpectedAgentExecutableSHA256: *expectedAgentExecutableSHA256,
 		}
 		return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
@@ -902,7 +902,8 @@ func runConnect(args []string) (int, error) {
 	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, webRelayGrant)}
 	client := &session.Client{
 		Identity: id, Trust: store, Dialer: dialer, ConnectionGrant: connectionGrant,
-		ExpectedAgentCommit: *expectedAgentCommit, ExpectedAgentSourceSHA256: *expectedAgentSourceSHA256,
+		ExpectedAgentCommit:           *expectedAgentCommit,
+		ExpectedAgentSourceSHA256:     *expectedAgentSourceSHA256,
 		ExpectedAgentExecutableSHA256: *expectedAgentExecutableSHA256,
 	}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
