@@ -185,7 +185,6 @@ func main() {
 		fmt.Fprintf(w, `{"unix_ms":%d}`, time.Now().UnixMilli())
 	})
 	mux.HandleFunc("/v1/direct-authorize/", authorizationHandler("direct"))
-	mux.HandleFunc("/v1/relay-authorize/", authorizationHandler("relay"))
 	mux.HandleFunc("/v1/grant-evidence/", grantEvidenceHandler())
 	log.Fatal(http.ListenAndServe(*listen, mux))
 }

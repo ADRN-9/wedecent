@@ -28,7 +28,8 @@ func TestTransportMetadataAuditLabel(t *testing.T) {
 		{"direct TCP", TransportMetadata{Kind: TransportDirectTCP}, "direct_tcp", "listener_adapter", true},
 		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm", "listener_adapter", true},
 		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm", "listener_adapter", true},
-		{"relay", TransportMetadata{Kind: TransportRelay}, "relay", "listener_adapter", true},
+		{"raw relay", TransportMetadata{Kind: TransportRawRelay}, "raw_relay", "listener_adapter", true},
+		{"WebSocket relay", TransportMetadata{Kind: TransportWebSocketRelay}, "websocket_relay", "listener_adapter", true},
 		{"routed over internet", TransportMetadata{Kind: TransportRouted, Underlying: UnderlyingInternet, RouteRouterID: "wd_aaaaaaaaaaaaaaaa"}, "routed+internet", "authenticated_router_link", true},
 		{"routed without router", TransportMetadata{Kind: TransportRouted, Underlying: UnderlyingInternet}, "", "", false},
 		{"routed without underlay", TransportMetadata{Kind: TransportRouted, RouteRouterID: "wd_aaaaaaaaaaaaaaaa"}, "", "", false},
@@ -37,7 +38,8 @@ func TestTransportMetadataAuditLabel(t *testing.T) {
 		{"missing kind", TransportMetadata{}, "", "", false},
 		{"unknown kind", TransportMetadata{Kind: "lan"}, "", "", false},
 		{"NCM cannot underlay RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM, Underlying: UnderlyingUSBNCM}, "", "", false},
-		{"NCM cannot underlay relay", TransportMetadata{Kind: TransportRelay, Underlying: UnderlyingUSBNCM}, "", "", false},
+		{"NCM cannot underlay raw relay", TransportMetadata{Kind: TransportRawRelay, Underlying: UnderlyingUSBNCM}, "", "", false},
+		{"NCM cannot underlay WebSocket relay", TransportMetadata{Kind: TransportWebSocketRelay, Underlying: UnderlyingUSBNCM}, "", "", false},
 		{"unknown underlying", TransportMetadata{Kind: TransportDirectTCP, Underlying: "ethernet"}, "", "", false},
 	}
 	for _, tt := range tests {
@@ -129,7 +131,8 @@ func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm", "listener_adapter"},
 		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm", "listener_adapter"},
 		{"USB NCM over direct TCP", TransportMetadata{Kind: TransportDirectTCP, Underlying: UnderlyingUSBNCM}, "direct_tcp+usb_ncm", "operator_config_assertion"},
-		{"relay", TransportMetadata{Kind: TransportRelay}, "relay", "listener_adapter"},
+		{"raw relay", TransportMetadata{Kind: TransportRawRelay}, "raw_relay", "listener_adapter"},
+		{"WebSocket relay", TransportMetadata{Kind: TransportWebSocketRelay}, "websocket_relay", "listener_adapter"},
 		{"routed over internet", TransportMetadata{Kind: TransportRouted, Underlying: UnderlyingInternet, RouteRouterID: "wd_aaaaaaaaaaaaaaaa"}, "routed+internet", "authenticated_router_link"},
 	}
 	for _, tt := range tests {

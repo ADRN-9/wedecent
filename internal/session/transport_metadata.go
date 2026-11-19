@@ -11,7 +11,10 @@ const (
 	TransportDirectTCP       TransportKind = "direct_tcp"
 	TransportBluetoothRFCOMM TransportKind = "bluetooth_rfcomm"
 	TransportUSBCDCACM       TransportKind = "usb_cdc_acm"
-	TransportRelay           TransportKind = "relay"
+	TransportRawRelay        TransportKind = "raw_relay"
+	TransportWebSocketRelay  TransportKind = "websocket_relay"
+	// Deprecated: use TransportRawRelay or TransportWebSocketRelay.
+	TransportRelay           TransportKind = TransportWebSocketRelay
 	TransportRouted          TransportKind = "routed"
 )
 
@@ -33,7 +36,7 @@ type TransportMetadata struct {
 
 func (m TransportMetadata) Validate() error {
 	switch m.Kind {
-	case TransportDirectTCP, TransportBluetoothRFCOMM, TransportUSBCDCACM, TransportRelay, TransportRouted:
+	case TransportDirectTCP, TransportBluetoothRFCOMM, TransportUSBCDCACM, TransportRawRelay, TransportWebSocketRelay, TransportRouted:
 	default:
 		return errors.New("session: unsupported transport kind")
 	}

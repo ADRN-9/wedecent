@@ -10,3 +10,7 @@ import (
 func newRelayDirectAuthorizer(baseURL string, id *identity.Identity) session.DirectAuthorizer {
 	return session.NewSmokeRelayDirectAuthorizer(baseURL, id)
 }
+
+func validateRelayAuthorizationOrigin(baseURL string) error {
+	return session.ValidateSmokeDirectAuthorizationOrigin(baseURL)
+}

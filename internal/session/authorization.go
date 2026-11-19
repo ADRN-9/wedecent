@@ -153,6 +153,12 @@ func (a RelayDirectAuthorizer) Authorize(ctx context.Context, clientDeviceID, ta
 	}
 }
 
+// ValidateDirectAuthorizationOrigin rejects every authorization origin except the production relay.
+func ValidateDirectAuthorizationOrigin(baseURL string) error {
+	_, err := directAuthorizationOrigin(baseURL, false)
+	return err
+}
+
 func directAuthorizationURL(baseURL, targetDeviceID string) (string, error) {
 	if !validSessionDeviceID(targetDeviceID) {
 		return "", errors.New("invalid direct authorization target device ID")

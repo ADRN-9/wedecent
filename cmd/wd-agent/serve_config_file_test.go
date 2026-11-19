@@ -274,3 +274,33 @@ func TestServeConfigDirectTCPUnderlayValidation(t *testing.T) {
 		t.Fatal("NCM underlay was accepted without a TCP listener")
 	}
 }
+
+func TestRawRelayRequiresApprovedAuthorizationOrigin(t *testing.T) {
+	base := []string{"--listen=", "--relay=127.0.0.1:18443"}
+	if _, err := parseServeConfig(base); err == nil || !strings.Contains(err.Error(), "requires an approved") {
+		t.Fatalf("raw relay without authorization origin: %v", err)
+	}
+
+	unapproved := append(append([]string{}, base...), "--authorization-url=https://relay.example.test")
+	if _, err := parseServeConfig(unapproved); err == nil {
+		t.Fatal("raw relay accepted an unapproved authorization origin")
+	}
+
+	approved := append(append([]string{}, base...), "--authorization-url=https://relay.wedecent.com")
+	cfg, err := parseServeConfig(approved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthorizationURL != "https://relay.wedecent.com" {
+		t.Fatalf("AuthorizationURL = %q", cfg.AuthorizationURL)
+	}
+
+	fromWebRelay := append(append([]string{}, base...), "--web-relay=https://relay.wedecent.com")
+	cfg, err = parseServeConfig(fromWebRelay)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AuthorizationURL != "https://relay.wedecent.com" {
+		t.Fatalf("WebSocket relay authorization origin = %q", cfg.AuthorizationURL)
+	}
+}

@@ -10,9 +10,19 @@ grep -Fq 'WEDECENT_USB_NCM_ACCEPTANCE_COMPLETE' "$harness" || {
 }
 
 work="$(mktemp -d)"
-dirty_file=""
+exclude_file=""
+exclude_backup=""
+exclude_existed=0
+injected_source=""
 cleanup() {
-  [[ -z "$dirty_file" ]] || rm -f -- "$dirty_file"
+  [[ -z "$injected_source" ]] || rm -f -- "$injected_source"
+  if [[ -n "$exclude_file" ]]; then
+    if [[ "$exclude_existed" == "1" ]]; then
+      cp -p -- "$exclude_backup" "$exclude_file" || true
+    else
+      rm -f -- "$exclude_file"
+    fi
+  fi
   rm -rf -- "$work"
 }
 trap cleanup EXIT
@@ -32,6 +42,35 @@ chmod 600 "$pairing" "$grant" "$reconnect"
 
 commit="$(git -C "$root" rev-parse --verify HEAD)"
 source_sha256="$(git -C "$root" archive --format=tar "$commit" | sha256sum | awk '{print $1}')"
+
+exclude_file="$(git -C "$root" rev-parse --git-path info/exclude)"
+[[ "$exclude_file" == /* ]] || exclude_file="$root/$exclude_file"
+exclude_backup="$work/info-exclude.backup"
+if [[ -f "$exclude_file" ]]; then
+  cp -- "$exclude_file" "$exclude_backup"
+  exclude_existed=1
+else
+  mkdir -p "$(dirname "$exclude_file")"
+  : > "$exclude_file"
+fi
+printf '\n/cmd/wd-agent/ncm-contract-injected.go\n' >> "$exclude_file"
+injected_source="$root/cmd/wd-agent/ncm-contract-injected.go"
+cat > "$injected_source" <<'INJECTED'
+package main
+func init() { this is deliberately invalid Go }
+INJECTED
+git -C "$root" check-ignore -q "$injected_source" || {
+  echo "NCM ignored-source fixture is not ignored by Git" >&2
+  exit 1
+}
+
+overlay_source="$work/overlay-poison.go"
+overlay_json="$work/go-overlay.json"
+cat > "$overlay_source" <<'OVERLAY'
+package main
+func init() { this is deliberately invalid Go }
+OVERLAY
+printf '{"Replace":{"%s":"%s"}}\n' "$root/cmd/wd-agent/main.go" "$overlay_source" > "$overlay_json"
 
 names=(
   WEDECENT_USB_NCM_INTERFACE
@@ -125,6 +164,11 @@ cat > "$fakebin/go" <<'GO'
 #!/usr/bin/env bash
 set -euo pipefail
 [[ "${WEDECENT_PAIRING_SECRET+x}" != x ]] || { echo "pairing secret leaked to go child" >&2; exit 97; }
+[[ "${GOFLAGS:-}" == "" ]] || { echo "GOFLAGS overlay reached the Go toolchain" >&2; exit 97; }
+[[ "${GOENV:-}" == "off" && "${GOWORK:-}" == "off" && "${GOTOOLCHAIN:-}" == "local" && "${CGO_ENABLED:-}" == "0" ]] || { echo "Go build environment was not sanitized" >&2; exit 97; }
+[[ "${GOOS+x}" != x && "${GOARCH+x}" != x ]] || { echo "inherited GOOS/GOARCH reached the Go toolchain" >&2; exit 97; }
+[[ -f "$PWD/go.mod" && ! -e "$PWD/.git" ]] || { echo "Go build did not run from the private Git archive" >&2; exit 97; }
+[[ ! -e "$PWD/cmd/wd-agent/ncm-contract-injected.go" ]] || { echo "ignored working-tree source reached the Go build" >&2; exit 97; }
 if [[ "$1" == "env" && "$2" == "GOVERSION" ]]; then
   echo "go1.27.0"
   exit 0
@@ -208,6 +252,7 @@ case "$command" in
         timeout) sleep 10; exit 0 ;;
         reject) echo "authorization_denied: grant evidence unavailable" >&2; exit 255 ;;
         fail) echo "synthetic terminal failure" >&2; exit 42 ;;
+        missing-marker) exit 0 ;;
       esac
       printf '%s\n' "$WEDECENT_USB_NCM_TERMINAL_MARKER"
     fi
@@ -303,12 +348,25 @@ run_failure() {
     echo "NCM harness emitted acceptance after failure case $name" >&2
     exit 1
   fi
+  if [[ "$name" == "first-session-missing-marker" ]] &&
+    grep -Fq "WEDECENT_USB_NCM_CONTRACT_FIXTURE_TERMINAL_SESSION_HARDWARE_OK" "$log"; then
+    echo "NCM harness emitted the first-session success marker without the required terminal marker" >&2
+    exit 1
+  fi
 }
 
-run_success
+run_success \
+  "GOFLAGS=-overlay=$overlay_json" \
+  "GOWORK=$work/injected.work" \
+  "GOENV=$work/injected-go.env" \
+  "GOTOOLCHAIN=auto" \
+  "GOOS=windows" \
+  "GOARCH=arm64" \
+  "CGO_ENABLED=1"
 run_failure timeout "authorized first terminal session timed out after 1s" "NCM_TEST_CONNECT_MODE=timeout"
 run_failure authorization-rejection "authorized first terminal session was rejected by server authorization or authenticated build policy" "NCM_TEST_CONNECT_MODE=reject"
 run_failure generic-session-failure "authorized first terminal session failed with exit status 42" "NCM_TEST_CONNECT_MODE=fail"
+run_failure first-session-missing-marker "authorized first terminal session completed without the expected marker" "NCM_TEST_CONNECT_MODE=missing-marker"
 run_failure reconnect-timeout "authorized reconnect session timed out after 1s" "NCM_TEST_RECONNECT_MODE=timeout"
 run_failure reconnect-authorization-rejection "authorized reconnect session was rejected by server authorization or authenticated build policy" "NCM_TEST_RECONNECT_MODE=reject"
 run_failure reconnect-generic-failure "authorized reconnect session failed with exit status 42" "NCM_TEST_RECONNECT_MODE=fail"
@@ -318,11 +376,5 @@ run_failure replay-classification "replay probe failed for a reason other than t
 run_failure nonreproducible-build "wd is not reproducible from the exact clean source commit" "NCM_TEST_NONREPRODUCIBLE=1" "NCM_TEST_COUNTER_FILE=$work/build-count"
 run_failure mismatched-commit "checked-out commit does not match WEDECENT_USB_NCM_EXPECT_COMMIT" "WEDECENT_USB_NCM_EXPECT_COMMIT=0000000000000000000000000000000000000000"
 run_failure mismatched-source "source archive SHA-256 does not match WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256" "WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256=0000000000000000000000000000000000000000000000000000000000000000"
-
-dirty_file="$root/.ncm-contract-dirty-$$"
-printf 'dirty\n' > "$dirty_file"
-run_failure dirty-source "source working tree is not clean"
-rm -f -- "$dirty_file"
-dirty_file=""
 
 echo "NCM hardware harness executable success/failure contract passed"

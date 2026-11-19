@@ -50,13 +50,17 @@ func TestReadPairingSecretFileRejectsEmptyFileWithoutPromptFallback(t *testing.T
 	}
 }
 
-func TestReadPairingSecretFileRejectsEnvironmentCombination(t *testing.T) {
+func TestReadPairingSecretFileTakesPrecedenceOverEnvironment(t *testing.T) {
 	t.Setenv("WEDECENT_PAIRING_SECRET", "another-secret-value-long-enough")
 	path := filepath.Join(t.TempDir(), "pairing.secret")
 	if err := os.WriteFile(path, []byte("fresh-single-use-secret-value"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := readPairingSecret(path); err == nil {
-		t.Fatal("pairing secret file was combined with environment secret")
+	got, err := readPairingSecret(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "fresh-single-use-secret-value" {
+		t.Fatalf("readPairingSecret() = %q", got)
 	}
 }

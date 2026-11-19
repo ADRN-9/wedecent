@@ -10,3 +10,7 @@ import (
 func newRelayDirectAuthorizer(baseURL string, id *identity.Identity) session.DirectAuthorizer {
 	return session.RelayDirectAuthorizer{BaseURL: baseURL, Identity: id}
 }
+
+func validateRelayAuthorizationOrigin(baseURL string) error {
+	return session.ValidateDirectAuthorizationOrigin(baseURL)
+}

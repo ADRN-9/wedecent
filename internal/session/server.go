@@ -64,7 +64,7 @@ func (s *Server) ServeConnWithTransport(raw net.Conn, metadata TransportMetadata
 // responsible for parking the connection; the inner TLS handshake starts only
 // when a client arrives, so there is intentionally no pre-client deadline.
 func (s *Server) ServeParkedRelayConn(raw net.Conn) {
-	s.serveConn(raw, 0, false, TransportMetadata{Kind: TransportRelay})
+	s.serveConn(raw, 0, false, TransportMetadata{Kind: TransportWebSocketRelay})
 }
 
 func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, requireInBandAuthorization bool, metadata TransportMetadata) {
@@ -320,15 +320,15 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	flow := "direct"
-	if metadata.Kind == TransportRelay {
-		flow = "relay"
-	} else if err := s.DirectAuthorizer.Authorize(ctx, clientID, s.Identity.ID, grant); err != nil {
-		s.log().Warn("direct session authorization rejected", "client_id", clientID, "error", err)
+	// Raw TCP relay is not the Worker WebSocket ingress. The target must
+	// independently submit the in-band grant to its approved authorization origin.
+	if err := s.DirectAuthorizer.Authorize(ctx, clientID, s.Identity.ID, grant); err != nil {
+		s.log().Warn("in-band session authorization rejected", "client_id", clientID, "error", err)
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "authorization_rejected"})
 		_ = sendError(conn, "authorization_denied", "connection authorization failed")
 		return
 	}
+	const flow = "direct"
 	provider, ok := s.DirectAuthorizer.(GrantEvidenceProvider)
 	if !ok {
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "grant_evidence_unavailable"})
@@ -344,7 +344,7 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	}
 	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport}, &evidence)
 
-	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, BuildNonce: req.BuildNonce, Capabilities: req.Capabilities})
+	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, GrantJTI: grantJTI, BuildNonce: req.BuildNonce, Capabilities: req.Capabilities})
 	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, metadata, &evidence)
 }
 
@@ -395,7 +395,7 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 		_ = sendError(conn, "bad_request", "invalid session request")
 		return
 	}
-	if metadata.Kind == TransportRelay {
+	if metadata.Kind == TransportWebSocketRelay {
 		if !validConnectionGrantJTI(open.GrantJTI) {
 			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "relay_grant_evidence_missing"})
 			_ = sendError(conn, "authorization_required", "relay session grant evidence is required")
@@ -418,6 +418,17 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 		}
 		authorization = &evidence
 		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: peer.ID, Transport: transport}, authorization)
+	}
+	if metadata.Kind == TransportRawRelay {
+		if !validConnectionGrantJTI(open.GrantJTI) || authorization == nil ||
+			authorization.JTI != strings.ToLower(open.GrantJTI) ||
+			authorization.ClientDeviceID != peer.ID || authorization.TargetDeviceID != s.Identity.ID ||
+			authorization.Permission != "terminal.connect" || authorization.Flow != "direct" ||
+			authorization.ValidationOutcome != "accepted" || authorization.ConsumptionOutcome != "consumed" {
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "raw_relay_grant_evidence_missing"})
+			_ = sendError(conn, "authorization_denied", "raw relay grant evidence does not match this session")
+			return
+		}
 	}
 	buildIdentity, err := s.signedBuildIdentity(open.BuildNonce)
 	if err != nil {

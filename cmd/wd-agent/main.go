@@ -569,6 +569,14 @@ func parseServeConfig(args []string) (serveConfig, error) {
 			cfg.WebRelay,
 		)
 	}
+	if strings.TrimSpace(cfg.RelayAddr) != "" {
+		if cfg.AuthorizationURL == "" {
+			return serveConfig{}, errors.New("--relay requires an approved --authorization-url or --web-relay authorization origin")
+		}
+		if err := validateRelayAuthorizationOrigin(cfg.AuthorizationURL); err != nil {
+			return serveConfig{}, fmt.Errorf("--authorization-url: %w", err)
+		}
+	}
 
 	return cfg, nil
 }
@@ -815,7 +823,7 @@ func relayLoop(ctx context.Context, slot int, address string, opts transport.Rel
 			continue
 		}
 		backoff = time.Second
-		server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportRelay})
+		server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportRawRelay})
 	}
 }
 

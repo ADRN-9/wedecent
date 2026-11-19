@@ -694,9 +694,6 @@ func readPairingSecret(path string) (string, error) {
 	path = strings.TrimSpace(path)
 	secret := ""
 	if path != "" {
-		if strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_SECRET")) != "" {
-			return "", errors.New("--pairing-secret-file cannot be combined with WEDECENT_PAIRING_SECRET")
-		}
 		data, err := securefile.ReadPrivateFile(path, 4*1024)
 		if err != nil {
 			return "", fmt.Errorf("read pairing secret file: %w", err)
@@ -706,17 +703,14 @@ func readPairingSecret(path string) (string, error) {
 		if strings.ContainsAny(secret, "\r\n\t ") {
 			return "", errors.New("pairing secret file must contain one secret without embedded whitespace")
 		}
+		if secret == "" {
+			return "", errors.New("pairing secret file is empty")
+		}
 	} else {
-		secret = strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_SECRET"))
-	}
-	if secret == "" && path != "" {
-		return "", errors.New("pairing secret file is empty")
-	}
-	if secret == "" {
 		fmt.Fprint(os.Stderr, "Pairing secret: ")
 		tty, err := openPasswordTTY()
 		if err != nil {
-			return "", errors.New("no interactive terminal is available for secure pairing-secret entry; set WEDECENT_PAIRING_SECRET only for controlled automation")
+			return "", errors.New("no interactive terminal is available for secure pairing-secret entry; provide --pairing-secret-file")
 		}
 		readSecret, readErr := terminal.ReadPassword(tty)
 		closeErr := tty.Close()

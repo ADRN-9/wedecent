@@ -2,7 +2,7 @@
 set -euo pipefail
 unset WEDECENT_PAIRING_SECRET || true
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 SYSFS_ROOT="/sys"
 GO_BIN="${GO:-go}"
 
@@ -13,7 +13,7 @@ fail() {
 
 [[ "$(uname -s)" == "Linux" ]] || fail "Linux is required"
 
-for command in awk cmp date dirname git grep id ip mktemp readlink sed sha256sum stat timeout tr; do
+for command in awk cmp date dirname env git grep id ip mktemp readlink sed sha256sum stat tar timeout tr; do
   command -v "$command" >/dev/null 2>&1 || fail "$command is required"
 done
 command -v "$GO_BIN" >/dev/null 2>&1 || fail "$GO_BIN is required"
@@ -34,14 +34,12 @@ command -v "$GO_BIN" >/dev/null 2>&1 || fail "$GO_BIN is required"
 [[ "$WEDECENT_USB_NCM_EXPECT_COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "expected source commit must be a full lowercase 40-character Git SHA"
 [[ "$WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "expected source archive SHA-256 must be 64 lowercase hex characters"
 
-git_status="$(git -C "$ROOT" status --porcelain --untracked-files=all)" || fail "cannot inspect source working tree"
-[[ -z "$git_status" ]] || fail "source working tree is not clean; exact source provenance requires a clean checkout"
+repo_root="$(git -C "$ROOT" rev-parse --show-toplevel)" || fail "cannot resolve Git repository root"
+repo_root="$(cd "$repo_root" && pwd -P)" || fail "cannot canonicalize Git repository root"
+[[ "$repo_root" == "$ROOT" ]] || fail "harness path does not resolve to the verified Git repository root"
 commit="$(git -C "$ROOT" rev-parse --verify HEAD)" || fail "cannot resolve source HEAD"
 [[ "$commit" == "$WEDECENT_USB_NCM_EXPECT_COMMIT" ]] || fail "checked-out commit does not match WEDECENT_USB_NCM_EXPECT_COMMIT"
-source_sha256="$(git -C "$ROOT" archive --format=tar "$commit" | sha256sum | awk '{print $1}')" || fail "cannot hash exact source archive"
-[[ "$source_sha256" == "$WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256" ]] || fail "source archive SHA-256 does not match WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256"
-export WEDECENT_USB_NCM_EXPECT_COMMIT="$commit"
-export WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256="$source_sha256"
+git -C "$ROOT" cat-file -e "$commit^{commit}" || fail "expected source object is not a commit"
 
 validate_private_file() {
   local path="$1" label="$2" owner mode mode_value
@@ -121,25 +119,69 @@ fi
 
 manufacturer="$(cat "$usb_node/manufacturer" 2>/dev/null || true)"
 product_name="$(cat "$usb_node/product" 2>/dev/null || true)"
-commit_epoch="$(git -C "$ROOT" show -s --format=%ct "$commit")"
-built_at="$(date -u -d "@$commit_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
-version="$(tr -d '\r\n' < "$ROOT/VERSION")"
-go_version="$("$GO_BIN" env GOVERSION)"
-ldflags="-buildid= -X=wedecent.com/wedecent/internal/buildinfo.Version=$version -X=wedecent.com/wedecent/internal/buildinfo.Commit=$commit -X=wedecent.com/wedecent/internal/buildinfo.BuiltAt=$built_at -X=wedecent.com/wedecent/internal/buildinfo.SourceSHA256=$source_sha256"
-
-work="$(mktemp -d)"
+work="$(mktemp -d)" || fail "cannot create private build directory"
 cleanup() {
   rm -rf -- "$work"
 }
 trap cleanup EXIT
 chmod 700 "$work"
-mkdir -m 700 "$work/bin" "$work/state" "$work/wrong-fingerprint" "$work/replay" "$work/build-a" "$work/build-b"
+mkdir -m 700 "$work/home" "$work/gocache" "$work/gomodcache" "$work/source" "$work/bin" "$work/state" "$work/wrong-fingerprint" "$work/replay" "$work/build-a" "$work/build-b"
+
+archive="$work/source.tar"
+git -C "$ROOT" archive --format=tar "$commit" > "$archive" || fail "cannot create exact source Git archive"
+source_sha256="$(sha256sum "$archive" | awk '{print $1}')"
+[[ "$source_sha256" == "$WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256" ]] || fail "source archive SHA-256 does not match WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256"
+tar -xf "$archive" -C "$work/source" || fail "cannot extract verified source archive"
+SOURCE_ROOT="$work/source"
+[[ -f "$SOURCE_ROOT/go.mod" && -f "$SOURCE_ROOT/VERSION" && ! -e "$SOURCE_ROOT/.git" ]] || fail "verified archive does not contain the expected repository root"
+export WEDECENT_USB_NCM_EXPECT_COMMIT="$commit"
+export WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256="$source_sha256"
+
 printf '%s' 'not-the-real-pairing-secret-for-fingerprint-probe' > "$work/wrong-fingerprint.secret"
 chmod 600 "$work/wrong-fingerprint.secret"
 
+GO_BIN_PATH="$(command -v "$GO_BIN")" || fail "cannot resolve selected Go toolchain"
+case "$GO_BIN_PATH" in
+  /*) ;;
+  *) GO_BIN_PATH="$(cd "$(dirname "$GO_BIN_PATH")" && pwd -P)/$(basename "$GO_BIN_PATH")" ;;
+esac
+[[ -f "$GO_BIN_PATH" && -x "$GO_BIN_PATH" ]] || fail "selected Go toolchain is not an executable file"
+go_binary_sha256="$(sha256sum "$GO_BIN_PATH" | awk '{print $1}')"
+
+run_go() {
+  local test_env=()
+  if [[ -n "${NCM_TEST_NONREPRODUCIBLE:-}" ]]; then
+    test_env+=("NCM_TEST_NONREPRODUCIBLE=${NCM_TEST_NONREPRODUCIBLE}")
+  fi
+  if [[ -n "${NCM_TEST_COUNTER_FILE:-}" ]]; then
+    test_env+=("NCM_TEST_COUNTER_FILE=${NCM_TEST_COUNTER_FILE}")
+  fi
+  env -i \
+    PATH="$PATH" \
+    HOME="$work/home" \
+    TMPDIR="$work" \
+    GOFLAGS= \
+    GOENV=off \
+    GOWORK=off \
+    GOTOOLCHAIN=local \
+    GOCACHE="$work/gocache" \
+    GOMODCACHE="$work/gomodcache" \
+    GOPROXY="https://proxy.golang.org,direct" \
+    GOSUMDB="sum.golang.org" \
+    CGO_ENABLED=0 \
+    "${test_env[@]}" \
+    "$GO_BIN_PATH" "$@"
+}
+
+commit_epoch="$(git -C "$ROOT" show -s --format=%ct "$commit")"
+built_at="$(date -u -d "@$commit_epoch" '+%Y-%m-%dT%H:%M:%SZ')"
+version="$(tr -d '\r\n' < "$SOURCE_ROOT/VERSION")"
+go_version="$(cd "$SOURCE_ROOT" && run_go env GOVERSION)"
+ldflags="-buildid= -X=wedecent.com/wedecent/internal/buildinfo.Version=$version -X=wedecent.com/wedecent/internal/buildinfo.Commit=$commit -X=wedecent.com/wedecent/internal/buildinfo.BuiltAt=$built_at -X=wedecent.com/wedecent/internal/buildinfo.SourceSHA256=$source_sha256"
+
 build_one() {
   local package="$1" output="$2"
-  (cd "$ROOT" && CGO_ENABLED=0 "$GO_BIN" build -mod=readonly -trimpath -buildvcs=false -ldflags "$ldflags" -o "$output" "$package")
+  (cd "$SOURCE_ROOT" && run_go build -mod=readonly -trimpath -buildvcs=false -ldflags "$ldflags" -o "$output" "$package")
 }
 for build_dir in "$work/build-a" "$work/build-b"; do
   build_one ./cmd/wd "$build_dir/wd"
@@ -162,7 +204,7 @@ chmod 700 "$work/bin/wd"
 printf 'Host OS/kernel: %s\n' "$(uname -srmo)"
 printf 'WeDecent source commit: %s\n' "$commit"
 printf 'Source archive SHA-256: %s\n' "$source_sha256"
-printf 'Go toolchain: %s\n' "$go_version"
+printf 'Go toolchain: %s binary=%s sha256=%s\n' "$go_version" "$GO_BIN_PATH" "$go_binary_sha256"
 printf 'USB NCM interface: %s driver=cdc_ncm manufacturer=%s product=%s VID:PID=%s:%s\n' "$WEDECENT_USB_NCM_INTERFACE" "$manufacturer" "$product_name" "$vendor" "$product"
 printf 'Peer endpoint: %s (selected transport=direct_tcp+usb_ncm; route verified through selected USB NCM interface)\n' "$WEDECENT_USB_NCM_ENDPOINT"
 printf 'Expected WeDecent fingerprint: %s\n' "$WEDECENT_USB_NCM_FINGERPRINT"
@@ -247,7 +289,7 @@ run_terminal_session "authorized first terminal session" "$work/terminal.out" "$
   --expected-agent-commit "$commit" --expected-agent-source-sha256 "$source_sha256" \
   --expected-agent-executable-sha256 "$agent_sha256" \
   --connection-grant-file "$WEDECENT_USB_NCM_CONNECTION_GRANT_FILE" "$paired_device_id" < "$WEDECENT_USB_NCM_TERMINAL_INPUT_FILE"
-grep -Fq "$WEDECENT_USB_NCM_TERMINAL_MARKER" "$work/terminal.out" || fail "remote PTY did not emit the expected first-session marker"
+grep -Fq "$WEDECENT_USB_NCM_TERMINAL_MARKER" "$work/terminal.out" || fail "authorized first terminal session completed without the expected marker"
 echo "WEDECENT_USB_NCM_AGENT_BUILD_IDENTITY_VERIFIED"
 echo "WEDECENT_USB_NCM_AGENT_EXECUTABLE_SHA256_VERIFIED"
 echo "WEDECENT_USB_NCM_GRANT_EVIDENCE_VERIFIED"
