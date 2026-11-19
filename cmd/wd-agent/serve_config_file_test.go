@@ -176,11 +176,14 @@ func writeServeConfigTestFile(t *testing.T, contents string) string {
 }
 
 func TestServeConfigDirectTCPUnderlayValidation(t *testing.T) {
-	cfg, err := parseServeConfig([]string{"--direct-tcp-underlay=usb_ncm"})
+	cfg, err := parseServeConfig([]string{"--listen=127.0.0.1:7443", "--direct-tcp-underlay=usb_ncm"})
 	if err != nil || cfg.DirectTCPUnderlyingTransport != "usb_ncm" {
 		t.Fatalf("valid NCM underlay: cfg=%+v err=%v", cfg, err)
 	}
-	if _, err := parseServeConfig([]string{"--direct-tcp-underlay=bluetooth_rfcomm"}); err == nil {
+	if _, err := parseServeConfig([]string{"--listen=127.0.0.1:7443", "--direct-tcp-underlay=bluetooth_rfcomm"}); err == nil {
 		t.Fatal("invalid direct TCP underlay was accepted")
+	}
+	if _, err := parseServeConfig([]string{"--listen=", "--direct-tcp-underlay=usb_ncm"}); err == nil {
+		t.Fatal("NCM underlay was accepted without a TCP listener")
 	}
 }

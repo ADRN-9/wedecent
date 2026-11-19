@@ -488,6 +488,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	if cfg.DirectTCPUnderlyingTransport != "" && cfg.DirectTCPUnderlyingTransport != string(session.UnderlyingUSBNCM) {
 		return serveConfig{}, errors.New("--direct-tcp-underlay must be empty or usb_ncm")
 	}
+	if cfg.DirectTCPUnderlyingTransport != "" && cfg.ListenAddr == "" {
+		return serveConfig{}, errors.New("--direct-tcp-underlay requires --listen")
+	}
 
 	if cfg.MaxConnections < 1 ||
 		cfg.MaxConnections > 1024 {
