@@ -15,7 +15,7 @@ trap cleanup EXIT INT TERM
 
 mkdir -p "$TMP/bin"
 go build -o "$TMP/bin/wd" "$ROOT/cmd/wd"
-go build -tags smoke -o "$TMP/bin/wd-agent" "$ROOT/cmd/wd-agent"
+go build -tags wedecent_smoke_test -o "$TMP/bin/wd-agent" "$ROOT/cmd/wd-agent"
 go build -o "$TMP/bin/wd-relay" "$ROOT/cmd/wd-relay"
 go build -o "$TMP/bin/auth-server" "$ROOT/scripts/smoke-auth-server.go"
 

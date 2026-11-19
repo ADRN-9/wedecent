@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 unset WEDECENT_PAIRING_SECRET || true
+export GOFLAGS=
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO_BIN="${GO:-go}"

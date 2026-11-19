@@ -1,4 +1,4 @@
-//go:build smoke
+//go:build wedecent_smoke_test
 
 package session
 
