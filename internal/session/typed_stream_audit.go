@@ -10,14 +10,20 @@ import (
 type typedTerminalAuditTracker struct {
 	mu        sync.Mutex
 	peerID    string
+	sessionID string
 	transport string
 	open      map[uint32]struct{}
 	record    func(audit.Event)
 }
 
-func newTypedTerminalAuditTracker(peerID, transport string, record func(audit.Event)) *typedTerminalAuditTracker {
+func newTypedTerminalAuditTracker(peerID, transport string, record func(audit.Event), sessionIDs ...string) *typedTerminalAuditTracker {
+	sessionID := ""
+	if len(sessionIDs) != 0 {
+		sessionID = sessionIDs[0]
+	}
 	return &typedTerminalAuditTracker{
 		peerID:    peerID,
+		sessionID: sessionID,
 		transport: transport,
 		open:      make(map[uint32]struct{}),
 		record:    record,
@@ -75,6 +81,7 @@ func (t *typedTerminalAuditTracker) opened(streamID uint32) {
 		Type:      "terminal.stream_opened",
 		Outcome:   "success",
 		PeerID:    t.peerID,
+		SessionID: t.sessionID,
 		Transport: t.transport,
 		StreamID:  streamID,
 	})
@@ -92,6 +99,7 @@ func (t *typedTerminalAuditTracker) closed(streamID uint32, reason string) {
 		Type:      "terminal.stream_closed",
 		Outcome:   "success",
 		PeerID:    t.peerID,
+		SessionID: t.sessionID,
 		Transport: t.transport,
 		StreamID:  streamID,
 		Reason:    reason,
@@ -114,6 +122,7 @@ func (t *typedTerminalAuditTracker) closeAll(reason string) {
 			Type:      "terminal.stream_closed",
 			Outcome:   "success",
 			PeerID:    t.peerID,
+			SessionID: t.sessionID,
 			Transport: t.transport,
 			StreamID:  id,
 			Reason:    reason,

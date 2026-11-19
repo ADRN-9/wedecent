@@ -16,7 +16,6 @@ import (
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/protocol"
-	"wedecent.com/wedecent/internal/terminal"
 	"wedecent.com/wedecent/internal/trust"
 )
 
@@ -33,16 +32,21 @@ type DirectAuthorizer interface {
 }
 
 type Server struct {
-	Identity         *identity.Identity
-	Trust            *trust.Store
-	StateDir         string
-	Shell            string
-	Logger           *slog.Logger
-	DirectAuthorizer DirectAuthorizer
-	FileTransfer     *FileTransferRuntime
-	Policy           SessionPolicy
+	Identity               *identity.Identity
+	Trust                  *trust.Store
+	StateDir               string
+	Shell                  string
+	Logger                 *slog.Logger
+	DirectAuthorizer       DirectAuthorizer
+	FileTransfer           *FileTransferRuntime
+	Policy                 SessionPolicy
+	terminalStart          terminalPTYStarter
+	activeSessionsMu       sync.Mutex
+	activeSessions         map[string]*activeTerminalSession
+	activeSessionsRunning  bool
 
 	// This per-server fault seam is nil in production.
+	beforeSessionAdmission func()
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 
@@ -283,13 +287,28 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 		_ = sendError(conn, "unauthorized", "invalid client certificate")
 		return
 	}
-	peer, ok := s.Trust.FindByFingerprint(fp)
+	if !validSessionDeviceID(clientID) {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_identity_mismatch"})
+		_ = sendError(conn, "unauthorized", "client identity mismatch")
+		return
+	}
+	peer, ok, trustErr := s.Trust.Lookup(clientID)
+	if trustErr != nil {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "trust_store_unavailable"})
+		_ = sendError(conn, "authorization_unavailable", "terminal client trust is unavailable")
+		return
+	}
 	if !ok {
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_not_paired"})
 		_ = sendError(conn, "unauthorized", "client is not paired")
 		return
 	}
-	if clientID == "" || peer.ID != clientID {
+	if peer.Generation == "" {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "trust_store_unavailable"})
+		_ = sendError(conn, "authorization_unavailable", "terminal client trust metadata is unavailable")
+		return
+	}
+	if peer.Fingerprint != fp {
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_identity_mismatch"})
 		_ = sendError(conn, "unauthorized", "client identity mismatch")
 		return
@@ -377,10 +396,30 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 		_ = sendError(conn, "unauthorized", "invalid client certificate")
 		return
 	}
-	peer, ok := s.Trust.FindByFingerprint(fp)
+	if !validSessionDeviceID(clientID) {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_identity_mismatch"})
+		_ = sendError(conn, "unauthorized", "client identity mismatch")
+		return
+	}
+	peer, ok, trustErr := s.Trust.Lookup(clientID)
+	if trustErr != nil {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "trust_store_unavailable"})
+		_ = sendError(conn, "authorization_unavailable", "terminal client trust is unavailable")
+		return
+	}
 	if !ok {
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_not_paired"})
 		_ = sendError(conn, "unauthorized", "client is not paired")
+		return
+	}
+	if peer.Generation == "" {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "trust_store_unavailable"})
+		_ = sendError(conn, "authorization_unavailable", "terminal client trust metadata is unavailable")
+		return
+	}
+	if peer.Fingerprint != fp {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_identity_mismatch"})
+		_ = sendError(conn, "unauthorized", "client identity mismatch")
 		return
 	}
 	if err := s.Policy.Validate(); err != nil {
@@ -439,7 +478,25 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 	fileReady := s.FileTransfer != nil && s.FileTransfer.Ready()
 	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady)
 	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
-		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, metadata, capabilities, buildIdentity, authorization)
+		accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
+		if err != nil {
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "session_accept_encode_failed"})
+			return
+		}
+		if s.beforeSessionAdmission != nil {
+			s.beforeSessionAdmission()
+		}
+		active, err := s.admitTerminalSession(peer.ID, fp, transport, conn, nil, func(string) error {
+			return writeSessionAccepted(conn, accepted)
+		})
+		if err != nil {
+			code, reason := sessionAdmissionFailure(err)
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: reason})
+			_ = sendError(conn, code, "terminal session authorization is unavailable")
+			return
+		}
+		defer active.finish()
+		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, metadata, capabilities, buildIdentity, authorization, active)
 		return
 	}
 	if open.Cols == 0 {
@@ -448,25 +505,46 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 	if open.Rows == 0 {
 		open.Rows = 24
 	}
-	pty, err := terminal.Start(s.Shell, open.Cols, open.Rows, open.Term)
+	pty, err := s.startTerminal(s.Shell, open.Cols, open.Rows, open.Term)
 	if err != nil {
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "pty_start_failed"})
 		_ = sendError(conn, "pty_error", err.Error())
 		return
 	}
-	defer pty.Close()
 	accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
 	if err != nil {
+		_ = pty.Close()
 		_ = sendError(conn, "server_error", "session acceptance metadata could not be encoded")
 		return
 	}
-	if err := protocol.WriteFrame(conn, accepted); err != nil {
+	if s.beforeSessionAdmission != nil {
+		s.beforeSessionAdmission()
+	}
+	active, err := s.admitTerminalSession(peer.ID, fp, transport, conn, func() {
+		if err := pty.Close(); err != nil {
+			s.log().Error("terminal PTY close failed during session revocation", "client_id", peer.ID, "transport", transport, "error", err)
+		}
+	}, func(string) error {
+		return writeSessionAccepted(conn, accepted)
+	})
+	if err != nil {
+		_ = pty.Close()
+		code, reason := sessionAdmissionFailure(err)
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: reason})
+		_ = sendError(conn, code, "terminal session authorization is unavailable")
 		return
 	}
-	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, Transport: transport}, authorization)
+	defer active.finish()
+	defer pty.Close()
+	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
+	if active.isTerminated() {
+		closeReason = active.reasonOr("client_revoked")
+		return
+	}
 	defer func() {
-		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, Transport: transport, Reason: closeReason}, authorization)
+		closeReason = active.reasonOr(closeReason)
+		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport, Reason: closeReason}, authorization)
 	}()
 	s.log().Info("terminal opened", "client_id", peer.ID, "client_name", peer.Name)
 
@@ -711,21 +789,28 @@ func transportAuditEvent(metadata TransportMetadata, event audit.Event) audit.Ev
 	return event
 }
 
-func (s *Server) recordAudit(event audit.Event) {
+func (s *Server) appendAudit(event audit.Event) error {
 	if event.TransportProvenance == "" {
 		event.TransportProvenance = transportAuditProvenance(event.Transport)
 	}
 	if strings.TrimSpace(s.StateDir) == "" {
-		return
+		return errors.New("audit state directory is unavailable")
 	}
 	if event.ActorID == "" && s.Identity != nil {
 		event.ActorID = s.Identity.ID
 	}
 	log, err := audit.Open(s.StateDir)
-	if err == nil {
-		err = log.Append(event)
-	}
 	if err != nil {
+		return err
+	}
+	return log.Append(event)
+}
+
+func (s *Server) recordAudit(event audit.Event) {
+	if strings.TrimSpace(s.StateDir) == "" {
+		return
+	}
+	if err := s.appendAudit(event); err != nil {
 		s.log().Warn("persistent audit event failed", "event_type", event.Type, "error", err)
 	}
 }

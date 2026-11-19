@@ -51,6 +51,16 @@ func TestAppendWritesStructuredJSONL(t *testing.T) {
 	}
 }
 
+func TestAppendRejectsMalformedSessionID(t *testing.T) {
+	log, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := log.Append(Event{Type: "terminal.session_terminated", Outcome: "success", SessionID: "not-a-uuid"}); err == nil {
+		t.Fatal("malformed session ID was accepted")
+	}
+}
+
 func TestAppendRejectsControlCharacters(t *testing.T) {
 	log, err := Open(t.TempDir())
 	if err != nil {

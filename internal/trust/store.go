@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -9,6 +10,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -17,6 +19,8 @@ type Peer struct {
 	ID          string    `json:"id"`
 	Name        string    `json:"name"`
 	Fingerprint string    `json:"fingerprint"`
+	// Generation identifies one trust enrollment and is not device identity.
+	Generation  string    `json:"generation,omitempty"`
 	Endpoint    string    `json:"endpoint,omitempty"`
 	TrustedAt   time.Time `json:"trusted_at"`
 }
@@ -25,7 +29,10 @@ const maxStoreSize = 1 << 20
 
 // ErrTrustStoreDurability means pairing cannot prove that an attempted
 // replacement is durable, even when the new snapshot is readable on disk.
-var ErrTrustStoreDurability = errors.New("trust store namespace durability uncertain")
+var (
+	ErrTrustStoreDurability = errors.New("trust store namespace durability uncertain")
+	ErrPeerIdentityMismatch = errors.New("trusted peer fingerprint mismatch")
+)
 
 // This private marker can be produced only after the pairing directory sync.
 // A readable snapshot on its own never establishes durability.
@@ -51,7 +58,69 @@ func Open(path string) (*Store, error) {
 	if err := s.reloadLocked(); err != nil {
 		return nil, err
 	}
+	if err := s.migratePeerGenerations(); err != nil {
+		return nil, fmt.Errorf("migrate trusted peer generations: %w", err)
+	}
 	return s, nil
+}
+
+func newPeerGeneration() (string, error) {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(raw[:]), nil
+}
+
+func (s *Store) migratePeerGenerations() error {
+	unlock, err := lockStoreFile(s.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
+	changed := false
+	for id, peer := range s.Peers {
+		if peer.Generation != "" {
+			continue
+		}
+		generation, err := newPeerGeneration()
+		if err != nil {
+			return err
+		}
+		peer.Generation = generation
+		s.Peers[id] = peer
+		changed = true
+	}
+	if changed {
+		return s.saveLocked(false)
+	}
+	return nil
+}
+
+func validPeerGeneration(generation string) bool {
+	if len(generation) != 32 {
+		return false
+	}
+	_, err := hex.DecodeString(generation)
+	return err == nil
+}
+
+func validTerminalPeerID(id string) bool {
+	if len(id) != 19 || !strings.HasPrefix(id, "wd_") {
+		return false
+	}
+	for _, r := range id[3:] {
+		if (r < 'a' || r > 'z') && (r < '2' || r > '7') {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Store) Get(id string) (Peer, bool) {
@@ -76,6 +145,75 @@ func (s *Store) FindByFingerprint(fp string) (Peer, bool) {
 		}
 	}
 	return Peer{}, false
+}
+
+// Lookup reloads the authoritative terminal-client trust snapshot and
+// returns read/parse failures separately from an absent peer.
+func (s *Store) Lookup(id string) (Peer, bool, error) {
+	if s == nil {
+		return Peer{}, false, errors.New("trust store is nil")
+	}
+	if !validTerminalPeerID(id) {
+		return Peer{}, false, errors.New("invalid WeDecent device ID")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return Peer{}, false, err
+	}
+	peer, ok := s.Peers[id]
+	return peer, ok, nil
+}
+
+// Snapshot returns a fresh copy of the current terminal-client trust set.
+func (s *Store) Snapshot() (map[string]Peer, error) {
+	if s == nil {
+		return nil, errors.New("trust store is nil")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return nil, err
+	}
+	snapshot := make(map[string]Peer, len(s.Peers))
+	for id, peer := range s.Peers {
+		snapshot[id] = peer
+	}
+	return snapshot, nil
+}
+
+// WithTrustedPeer serializes session admission with cross-process revocation.
+// The callback runs while the trust-store mutation lock is held; callers must
+// keep it short and must not perform unrelated storage operations.
+func (s *Store) WithTrustedPeer(id, fingerprint string, fn func(Peer) error) error {
+	if s == nil {
+		return errors.New("trust store is nil")
+	}
+	if !validTerminalPeerID(id) || strings.TrimSpace(fingerprint) == "" || fn == nil {
+		return errors.New("invalid trusted peer admission request")
+	}
+	unlock, err := lockStoreFile(s.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return err
+	}
+	peer, ok := s.Peers[id]
+	if !ok {
+		return fmt.Errorf("%w: %s", ErrPeerNotFound, id)
+	}
+	if subtle.ConstantTimeCompare([]byte(peer.Fingerprint), []byte(fingerprint)) != 1 {
+		return ErrPeerIdentityMismatch
+	}
+	if !validPeerGeneration(peer.Generation) {
+		return errors.New("trusted peer generation is unavailable or malformed")
+	}
+	return fn(peer)
 }
 
 func (s *Store) Put(p Peer) error {
@@ -105,6 +243,14 @@ func (s *Store) put(p Peer, pairingDurable bool) error {
 		p.TrustedAt = time.Now().UTC()
 	}
 	previous, existed := s.Peers[p.ID]
+	if existed && previous.Fingerprint == p.Fingerprint && previous.Generation != "" {
+		p.Generation = previous.Generation
+	} else {
+		p.Generation, err = newPeerGeneration()
+		if err != nil {
+			return fmt.Errorf("create trusted peer generation: %w", err)
+		}
+	}
 	s.Peers[p.ID] = p
 	if err := s.saveLocked(pairingDurable); err != nil {
 		if existed {
@@ -186,6 +332,11 @@ func (s *Store) reloadLocked() error {
 	}
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		return fmt.Errorf("parse trust store: %w", err)
+	}
+	for id, peer := range snapshot.Peers {
+		if peer.Generation != "" && !validPeerGeneration(peer.Generation) {
+			return fmt.Errorf("trust store peer %q has an invalid generation", id)
+		}
 	}
 	if snapshot.Peers == nil {
 		snapshot.Peers = map[string]Peer{}
