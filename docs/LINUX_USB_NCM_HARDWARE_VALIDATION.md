@@ -31,8 +31,10 @@ export WEDECENT_USB_NCM_TERMINAL_MARKER='WEDECENT_USB_NCM_REMOTE_COMMAND_OK'
 export WEDECENT_USB_NCM_RECONNECT_CONNECTION_GRANT_FILE='/secure/path/reconnect-grant.jwt'
 export WEDECENT_USB_NCM_RECONNECT_INPUT_FILE='/secure/path/reconnect-input.txt'
 export WEDECENT_USB_NCM_RECONNECT_MARKER='WEDECENT_USB_NCM_RECONNECTED_OK'
-export WEDECENT_USB_NCM_EXPECT_COMMIT='<full-40-character-clean-commit-sha>'
-export WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256='<64-character-git-archive-sha256>'
+# Run only from a clean checkout; the remote agent must have this exact build identity.
+test -z "$(git status --porcelain --untracked-files=all)"
+export WEDECENT_USB_NCM_EXPECT_COMMIT="$(git rev-parse --verify HEAD)"
+export WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256="$(git archive --format=tar "$WEDECENT_USB_NCM_EXPECT_COMMIT" | sha256sum | awk '{print $1}')"
 # Optional expected device ID:
 export WEDECENT_USB_NCM_EXPECT_DEVICE_ID='wd_aaaaaaaaaaaaaaaa'
 ```
@@ -51,7 +53,7 @@ Run only after all required files and environment variables are prepared:
 bash scripts/test-linux-usb-ncm-hardware.sh
 ```
 
-The harness builds the real client, derives a valid but incorrect fingerprint and requires the precise `device fingerprint mismatch` rejection, completes pairing using the private single-use secret file, then uses a second client state and requires the precise `invalid or already consumed pairing secret` rejection on replay. It emits:
+The harness checks the exact clean commit and git-archive SHA-256, builds the client and target agent twice with deterministic build metadata, and requires identical binary hashes. The target-side agent must already be installed from that same commit and source hash; the client verifies its signed build identity during each session. The harness then derives a valid but incorrect fingerprint and requires the precise `device fingerprint mismatch` rejection, completes pairing using the private single-use secret file, then uses a second client state and requires the precise `invalid or already consumed pairing secret` rejection on replay. It emits:
 
 - `WEDECENT_USB_NCM_WRONG_FINGERPRINT_REJECTED`
 - `WEDECENT_USB_NCM_PAIR_HARDWARE_OK`
@@ -67,7 +69,7 @@ The first terminal command must print `WEDECENT_USB_NCM_REMOTE_COMMAND_OK` remot
 
 The second command must use the separate fresh reconnect grant, print `WEDECENT_USB_NCM_RECONNECTED_OK` remotely, and exit successfully. It emits `WEDECENT_USB_NCM_RECONNECT_HARDWARE_OK`.
 
-The script emits `WEDECENT_USB_NCM_ACCEPTANCE_COMPLETE` only after both authorized sessions and all negative pairing checks succeed. Incomplete acceptance never exits successfully.
+The script emits `WEDECENT_USB_NCM_ACCEPTANCE_COMPLETE` only after both authorized sessions and all negative pairing checks succeed. Incomplete acceptance never exits successfully. The CI contract fixture runs the same harness against fake sysfs and fake executables; its fixture markers are renamed and are not physical-hardware acceptance.
 
 The harness never creates or weakens a connection grant. Do not put pairing secrets, grant contents, private keys, or terminal payloads in evidence logs.
 
