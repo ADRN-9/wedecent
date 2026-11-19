@@ -57,7 +57,7 @@ func TestRelayDirectAuthorizerUsesDedicatedHeadersAndBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := RelayDirectAuthorizer{BaseURL: server.URL, Identity: id, HTTP: server.Client()}
+	a := RelayDirectAuthorizer{BaseURL: server.URL, Identity: id, HTTP: server.Client(), allowLoopbackForTests: true}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := a.Authorize(ctx, clientDeviceID, id.ID, grant); err != nil {
@@ -87,7 +87,7 @@ func TestRelayDirectAuthorizerRejectsRedirect(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := RelayDirectAuthorizer{BaseURL: server.URL, Identity: id}
+	a := RelayDirectAuthorizer{BaseURL: server.URL, Identity: id, allowLoopbackForTests: true}
 	err = a.Authorize(context.Background(), "wd_aaaaaaaaaaaaaaaa", id.ID, "header.payload.signature")
 	if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
 		t.Fatalf("error = %v", err)
@@ -109,6 +109,8 @@ func TestDirectAuthorizationURLRequiresExactProductionOrigin(t *testing.T) {
 		"https://relay.wedecent.com.evil.example",
 		"https://relay.wedecent.com:8443",
 		"wss://relay.wedecent.com",
+		"http://127.0.0.1:17444",
+		"http://localhost:17444",
 		"https://user@relay.wedecent.com",
 		"https://relay.wedecent.com/path",
 		"https://relay.wedecent.com?redirect=evil",
@@ -119,6 +121,31 @@ func TestDirectAuthorizationURLRequiresExactProductionOrigin(t *testing.T) {
 	}
 }
 
+func TestRelayDirectAuthorizerRejectsLoopbackOutsideTestMode(t *testing.T) {
+	id, err := identity.Ensure(t.TempDir(), "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	a := RelayDirectAuthorizer{
+		BaseURL: "http://127.0.0.1:17444",
+		Identity: id,
+		TicketSource: func(context.Context, string, string, string, int) (string, error) {
+			called = true
+			return "wdt2.test-ticket.signature", nil
+		},
+	}
+	if err := a.Authorize(context.Background(), "wd_aaaaaaaaaaaaaaaa", id.ID, "header.payload.signature"); err == nil {
+		t.Fatal("accepted loopback authorization origin without test-only opt-in")
+	}
+	if called {
+		t.Fatal("requested an authorization ticket before validating the origin")
+	}
+	if err := a.VerifyConsumption(context.Background(), "wd_aaaaaaaaaaaaaaaa", id.ID, "76b4c468-4e39-437c-a9c8-b758c92ab89b", "direct"); err == nil {
+		t.Fatal("accepted loopback evidence origin without test-only opt-in")
+	}
+}
+
 func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 	id, err := identity.Ensure(t.TempDir(), "agent")
 	if err != nil {
@@ -126,6 +153,7 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 	}
 	clientID := "wd_aaaaaaaaaaaaaaaa"
 	jti := "76b4c468-4e39-437c-a9c8-b758c92ab89b"
+	flow := "direct"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/grant-evidence/"+id.ID+"/"+jti {
 			t.Fatalf("unexpected evidence request: %s %s", r.Method, r.URL.Path)
@@ -135,7 +163,7 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 		}
 		_ = json.NewEncoder(w).Encode(GrantConsumptionEvidence{
 			Version: 1, GrantID: "d90987bf-bae6-45da-ab21-c82d049617bd", JTI: jti,
-			ClientDeviceID: clientID, TargetDeviceID: id.ID, Permission: "terminal.connect", Flow: "direct",
+			ClientDeviceID: clientID, TargetDeviceID: id.ID, Permission: "terminal.connect", Flow: flow,
 			ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
 			ValidatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 			ConsumedAt: time.Now().UTC().Format(time.RFC3339Nano),
@@ -148,6 +176,7 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 	a := RelayDirectAuthorizer{
 		BaseURL: server.URL,
 		Identity: id,
+		allowLoopbackForTests: true,
 		TicketSource: func(_ context.Context, baseURL, targetDeviceID, role string, slot int) (string, error) {
 			if baseURL != server.URL || targetDeviceID != id.ID || role != "authorize" || slot != 0 {
 				t.Fatalf("unexpected ticket source request: %q %q %q %d", baseURL, targetDeviceID, role, slot)
@@ -159,7 +188,11 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "direct"); err != nil {
 		t.Fatal(err)
 	}
-	if err := a.VerifyConsumption(context.Background(), "wd_bbbbbbbbbbbbbbbb", id.ID, jti, "direct"); err == nil {
+	flow = "relay"
+	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "relay"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.VerifyConsumption(context.Background(), "wd_bbbbbbbbbbbbbbbb", id.ID, jti, "relay"); err == nil {
 		t.Fatal("accepted evidence for a different client identity")
 	}
 	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "relay"); err == nil {

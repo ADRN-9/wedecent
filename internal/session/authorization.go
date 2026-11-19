@@ -50,6 +50,7 @@ type RelayDirectAuthorizer struct {
 	Identity     *identity.Identity
 	TicketSource relayauth.TicketSource
 	HTTP         *http.Client
+	allowLoopbackForTests bool
 }
 
 func (a RelayDirectAuthorizer) Authorize(ctx context.Context, clientDeviceID, targetDeviceID, connectionGrant string) error {
@@ -64,7 +65,7 @@ func (a RelayDirectAuthorizer) Authorize(ctx context.Context, clientDeviceID, ta
 		return errors.New("direct authorization grant is invalid")
 	}
 
-	origin, err := directAuthorizationOrigin(a.BaseURL)
+	origin, err := directAuthorizationOrigin(a.BaseURL, a.allowLoopbackForTests)
 	if err != nil {
 		return err
 	}
@@ -129,14 +130,14 @@ func directAuthorizationURL(baseURL, targetDeviceID string) (string, error) {
 	if !validSessionDeviceID(targetDeviceID) {
 		return "", errors.New("invalid direct authorization target device ID")
 	}
-	origin, err := directAuthorizationOrigin(baseURL)
+	origin, err := directAuthorizationOrigin(baseURL, false)
 	if err != nil {
 		return "", err
 	}
 	return origin + "/v1/direct-authorize/" + targetDeviceID, nil
 }
 
-func directAuthorizationOrigin(baseURL string) (string, error) {
+func directAuthorizationOrigin(baseURL string, allowLoopbackForTests bool) (string, error) {
 	u, err := url.Parse(strings.TrimSpace(baseURL))
 	if err != nil || u == nil || u.Host == "" || u.Opaque != "" || u.User != nil ||
 		u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
@@ -151,7 +152,7 @@ func directAuthorizationOrigin(baseURL string) (string, error) {
 
 	ip := net.ParseIP(host)
 	loopback := strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback())
-	if loopback && (u.Scheme == "http" || u.Scheme == "https") && port != "" {
+	if allowLoopbackForTests && loopback && (u.Scheme == "http" || u.Scheme == "https") && port != "" {
 		return u.Scheme + "://" + u.Host, nil
 	}
 	return "", errors.New("direct authorization service must use the approved HTTPS origin https://relay.wedecent.com; only explicit loopback URLs are allowed for local testing")

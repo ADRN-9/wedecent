@@ -109,12 +109,80 @@ func TestServeConnRejectsAuthorizedSessionWithoutAuthorizer(t *testing.T) {
 	}
 }
 
+type evidenceTrackingAuthorizer struct {
+	clientID string
+	targetID string
+	jti string
+	flow string
+	verifyErr error
+}
+
+func (a *evidenceTrackingAuthorizer) Authorize(_ context.Context, clientID, targetID, _ string) error {
+	a.clientID, a.targetID = clientID, targetID
+	return nil
+}
+
+func (a *evidenceTrackingAuthorizer) VerifyConsumption(_ context.Context, clientID, targetID, jti, flow string) error {
+	a.clientID, a.targetID, a.jti, a.flow = clientID, targetID, jti, flow
+	return a.verifyErr
+}
+
+func TestTerminalSessionsRequireIndependentServerGrantEvidence(t *testing.T) {
+	for _, flow := range []string{"direct", "relay"} {
+		t.Run(flow, func(t *testing.T) {
+			auth := &evidenceTrackingAuthorizer{verifyErr: errors.New("grant evidence unavailable")}
+			var server *Server
+			var clientConn *tls.Conn
+			var done <-chan struct{}
+			if flow == "relay" {
+				server, clientConn, done = relaySessionTestPair(t, auth)
+			} else {
+				server, clientConn, done = directSessionTestPair(t, auth)
+			}
+			defer clientConn.Close()
+			defer func() { <-done }()
+
+			var frame protocol.Frame
+			if flow == "relay" {
+				payload, _ := protocol.JSON(protocol.OpenSession{Cols: 80, Rows: 24, Term: "xterm", GrantJTI: "76b4c468-4e39-437c-a9c8-b758c92ab89b"})
+				frame = protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}
+			} else {
+				payload, _ := protocol.JSON(protocol.OpenAuthorizedSession{Cols: 80, Rows: 24, Term: "xterm", ConnectionGrant: testConnectionGrant()})
+				frame = protocol.Frame{Type: protocol.TypeOpenAuthorizedSession, Payload: payload}
+			}
+			if err := protocol.WriteFrame(clientConn, frame); err != nil {
+				t.Fatal(err)
+			}
+			response, err := protocol.ReadFrame(clientConn)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var msg protocol.Error
+			if response.Type != protocol.TypeError || protocol.ParseJSON(response.Payload, &msg) != nil || msg.Code != "authorization_denied" {
+				t.Fatalf("response = %#v, error = %#v", response, msg)
+			}
+			if auth.clientID == "" || auth.targetID != server.Identity.ID ||
+				auth.jti != "76b4c468-4e39-437c-a9c8-b758c92ab89b" || auth.flow != flow {
+				t.Fatalf("evidence verification inputs = %#v", auth)
+			}
+		})
+	}
+}
+
 func testConnectionGrant() string {
 	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"jti":"76b4c468-4e39-437c-a9c8-b758c92ab89b"}`))
 	return "header." + payload + ".signature"
 }
 
 func directSessionTestPair(t *testing.T, auth DirectAuthorizer) (*Server, *tls.Conn, <-chan struct{}) {
+	return sessionTestPair(t, auth, false)
+}
+
+func relaySessionTestPair(t *testing.T, auth DirectAuthorizer) (*Server, *tls.Conn, <-chan struct{}) {
+	return sessionTestPair(t, auth, true)
+}
+
+func sessionTestPair(t *testing.T, auth DirectAuthorizer, relay bool) (*Server, *tls.Conn, <-chan struct{}) {
 	t.Helper()
 	serverID, err := identity.Ensure(t.TempDir(), "server")
 	if err != nil {
@@ -145,7 +213,11 @@ func directSessionTestPair(t *testing.T, auth DirectAuthorizer) (*Server, *tls.C
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		server.ServeConn(serverSide)
+		if relay {
+			server.ServeParkedRelayConn(serverSide)
+		} else {
+			server.ServeConn(serverSide)
+		}
 	}()
 
 	clientConn := tls.Client(clientSide, identity.ClientTLS(clientID, serverFP))
