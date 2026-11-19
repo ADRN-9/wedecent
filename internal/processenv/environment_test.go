@@ -20,6 +20,18 @@ func TestWithoutPairingSecretRemovesEveryCaseInsensitiveEntry(t *testing.T) {
 	}
 }
 
+func TestClearCurrentRemovesPairingSecret(t *testing.T) {
+	t.Setenv(PairingSecretVariable, "process-canary")
+	t.Setenv(strings.ToLower(PairingSecretVariable), "lowercase-canary")
+	ClearCurrent()
+	for _, entry := range Current() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, PairingSecretVariable) {
+			t.Fatalf("ClearCurrent() left pairing secret variable %q in the process environment", name)
+		}
+	}
+}
+
 func TestCurrentDoesNotExposePairingSecret(t *testing.T) {
 	t.Setenv(PairingSecretVariable, "process-canary")
 	for _, entry := range Current() {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"wedecent.com/wedecent/internal/processenv"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -17,6 +18,7 @@ import (
 )
 
 func main() {
+	processenv.ClearCurrent()
 	fs := flag.NewFlagSet("wd-relay", flag.ExitOnError)
 	listenAddr := fs.String("listen", ":443", "TLS listen address")
 	certFile := fs.String("cert", "", "TLS certificate PEM")

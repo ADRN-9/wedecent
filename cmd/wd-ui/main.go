@@ -1,6 +1,7 @@
 package main
 
 import (
+	"wedecent.com/wedecent/internal/processenv"
 	"context"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 var errUIUsage = errors.New("usage: wd-ui [version|autostart <enable|disable|status>]")
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "version":

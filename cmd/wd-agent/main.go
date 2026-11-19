@@ -1,6 +1,7 @@
 package main
 
 import (
+	"wedecent.com/wedecent/internal/processenv"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -32,6 +33,7 @@ import (
 )
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)

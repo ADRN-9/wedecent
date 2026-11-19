@@ -1,6 +1,7 @@
 package main
 
 import (
+	"wedecent.com/wedecent/internal/processenv"
 	"bufio"
 	"bytes"
 	"context"
@@ -85,6 +86,7 @@ type serveResponse struct {
 }
 
 func main() {
+	processenv.ClearCurrent()
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, nil); err != nil {
 		fmt.Fprintln(os.Stderr, "wd-desktop-bridge:", publicError(err))
 		os.Exit(1)

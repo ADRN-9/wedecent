@@ -1,6 +1,7 @@
 package main
 
 import (
+	"wedecent.com/wedecent/internal/processenv"
 	"context"
 	"errors"
 	"flag"
@@ -18,6 +19,7 @@ import (
 )
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) > 1 && os.Args[1] == "version" {
 		if err := buildinfo.Write(os.Stdout, "wd-core"); err != nil {
 			fmt.Fprintln(os.Stderr, "wd-core:", err)

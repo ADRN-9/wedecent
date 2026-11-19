@@ -1,6 +1,7 @@
 package main
 
 import (
+	"wedecent.com/wedecent/internal/processenv"
 	"errors"
 	"flag"
 	"fmt"
@@ -17,6 +18,7 @@ import (
 )
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) > 1 && os.Args[1] == "version" {
 		if err := buildinfo.Write(os.Stdout, "wd-routerctl"); err != nil {
 			fmt.Fprintln(os.Stderr, "wd-routerctl:", err)
