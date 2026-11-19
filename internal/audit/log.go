@@ -21,52 +21,8 @@ const (
 )
 
 var (
-	eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}package audit
-
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
-)
-
-const (
-	FileName          = "audit.jsonl"
-	archiveFileName   = "audit.jsonl.1"
-	defaultMaxLogSize = 16 << 20
-	maxEventSize      = 4 << 10
-	maxFieldLength    = 512
-)
-
-)
-	auditUUIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}package audit
-
-import (
-	"encoding/json"
-	"errors"
-	"fmt"
-	"os"
-	"path/filepath"
-	"regexp"
-	"strings"
-	"sync"
-	"time"
-)
-
-const (
-	FileName          = "audit.jsonl"
-	archiveFileName   = "audit.jsonl.1"
-	defaultMaxLogSize = 16 << 20
-	maxEventSize      = 4 << 10
-	maxFieldLength    = 512
-)
-
-)
+	eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}$`)
+	auditUUIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`)
 )
 
 // Event is deliberately narrow: audit records may identify actors, peers,

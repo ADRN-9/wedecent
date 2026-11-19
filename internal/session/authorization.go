@@ -224,7 +224,7 @@ func validConnectionGrantJTI(jti string) bool {
 
 func (a RelayDirectAuthorizer) VerifyConsumption(ctx context.Context, clientDeviceID, targetDeviceID, jti, flow string) error {
 	_, err := a.VerifyConsumptionEvidence(ctx, clientDeviceID, targetDeviceID, jti, flow)
-	return GrantConsumptionEvidence{}, err
+	return err
 }
 
 func (a RelayDirectAuthorizer) VerifyConsumptionEvidence(ctx context.Context, clientDeviceID, targetDeviceID, jti, flow string) (GrantConsumptionEvidence, error) {

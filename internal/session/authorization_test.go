@@ -154,6 +154,7 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 	clientID := "wd_aaaaaaaaaaaaaaaa"
 	jti := "76b4c468-4e39-437c-a9c8-b758c92ab89b"
 	flow := "direct"
+	tamperEvent := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/v1/grant-evidence/"+id.ID+"/"+jti {
 			t.Fatalf("unexpected evidence request: %s %s", r.Method, r.URL.Path)
@@ -161,14 +162,40 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer wdt2.") {
 			t.Fatal("evidence request is missing its target authorization ticket")
 		}
+		constGrantID := "d90987bf-bae6-45da-ab21-c82d049617bd"
+		constRunID := "e90987bf-bae6-45da-ab21-c82d049617bd"
+		constValidationAttemptID := "b90987bf-bae6-45da-ab21-c82d049617bd"
+		constConsumptionAttemptID := "c90987bf-bae6-45da-ab21-c82d049617bd"
+		constValidationEventID := "a90987bf-bae6-45da-ab21-c82d049617bd"
+		constConsumptionEventID := "f90987bf-bae6-45da-ab21-c82d049617bd"
+		validatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+		consumedAt := time.Now().UTC().Format(time.RFC3339Nano)
+		retainUntil := time.Now().Add(time.Hour).UnixMilli()
+		validationEvent := GrantEventEvidence{
+			EventID: constValidationEventID, RunID: constRunID, AttemptID: constValidationAttemptID,
+			Type: "authorization.validation", Outcome: "accepted", GrantID: constGrantID, JTI: jti,
+			ClientDeviceID: clientID, TargetDeviceID: id.ID, Permission: "terminal.connect",
+			Flow: flow, OccurredAt: validatedAt, RetainUntilMS: retainUntil,
+		}
+		consumptionEvent := GrantEventEvidence{
+			EventID: constConsumptionEventID, RunID: constRunID, AttemptID: constConsumptionAttemptID,
+			Type: "authorization.consumption", Outcome: "consumed", GrantID: constGrantID, JTI: jti,
+			ClientDeviceID: clientID, TargetDeviceID: id.ID, Permission: "terminal.connect",
+			Flow: flow, OccurredAt: consumedAt, RetainUntilMS: retainUntil,
+		}
+		if tamperEvent {
+			consumptionEvent.AttemptID = constValidationAttemptID
+		}
 		_ = json.NewEncoder(w).Encode(GrantConsumptionEvidence{
-			Version: 1, GrantID: "d90987bf-bae6-45da-ab21-c82d049617bd", JTI: jti,
-			ClientDeviceID: clientID, TargetDeviceID: id.ID, Permission: "terminal.connect", Flow: flow,
-			ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
-			ValidatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
-			ConsumedAt:    time.Now().UTC().Format(time.RFC3339Nano),
-			ExpiresAt:     time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
-			RetainUntilMS: time.Now().Add(time.Hour).UnixMilli(),
+			Version: 1, AuthorizationRunID: constRunID,
+			ValidationAttemptID: constValidationAttemptID, ConsumptionAttemptID: constConsumptionAttemptID,
+			ValidationEventID: constValidationEventID, ConsumptionEventID: constConsumptionEventID,
+			ValidationEvent: validationEvent, ConsumptionEvent: consumptionEvent,
+			GrantID: constGrantID, JTI: jti, ClientDeviceID: clientID, TargetDeviceID: id.ID,
+			Permission: "terminal.connect", Flow: flow, ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
+			ValidatedAt: validatedAt, ConsumedAt: consumedAt,
+			ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+			RetainUntilMS: retainUntil,
 		})
 	}))
 	defer server.Close()
@@ -197,6 +224,11 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 	}
 	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "direct"); err == nil {
 		t.Fatal("accepted evidence for a different session flow")
+	}
+	flow = "direct"
+	tamperEvent = true
+	if _, err := a.VerifyConsumptionEvidence(context.Background(), clientID, id.ID, jti, "direct"); err == nil {
+		t.Fatal("accepted a consumption event attributed to the validation attempt")
 	}
 }
 
