@@ -100,10 +100,11 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 	}
 	grantJTI := ""
 	if !inBandAuthorization {
-		grantJTI, err = ConnectionGrantJTI(grant)
+		parsedJTI, err := ConnectionGrantJTI(grant)
 		if err != nil {
 			return 0, fmt.Errorf("relay connection grant: %w", err)
 		}
+		grantJTI = parsedJTI
 	}
 
 	raw, err := c.dial(ctx, peer.Endpoint)

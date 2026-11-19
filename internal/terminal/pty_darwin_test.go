@@ -17,7 +17,8 @@ func TestDarwinPTYDoesNotInheritPairingSecret(t *testing.T) {
 	pty, err := Start("/bin/sh", 80, 24, "xterm")
 	if err != nil { t.Fatal(err) }
 	defer pty.Close()
-	command := `if [ "${WEDECENT_PAIRING_SECRET+x}" = x ]; then printf WD_PAIRING_SECRET_LEAKED; else printf WD_PAIRING_SECRET_ISOLATED; fi
+	command := `if [ "${WEDECENT_PAIRING_SECRET+x}" = x ]; then WD_RESULT=LEAKED; else WD_RESULT=ISOLATED; fi
+printf 'WD_SECRET_%s' "$WD_RESULT"
 exit
 `
 	if _, err := pty.Write([]byte(command)); err != nil { t.Fatal(err) }
@@ -25,7 +26,7 @@ exit
 	go func() { data, _ := io.ReadAll(pty.reader); output <- string(data) }()
 	select {
 	case text := <-output:
-		if !strings.Contains(text, "WD_PAIRING_SECRET_ISOLATED") || strings.Contains(text, "WD_PAIRING_SECRET_LEAKED") { t.Fatalf("PTY child environment was not isolated: %q", text) }
+		if !strings.Contains(text, "WD_SECRET_ISOLATED") || strings.Contains(text, "WD_SECRET_LEAKED") { t.Fatalf("PTY child environment was not isolated: %q", text) }
 	case <-time.After(5 * time.Second): t.Fatal("timed out waiting for PTY canary")
 	}
 	if err := pty.Wait(); err != nil { t.Fatalf("PTY child: %v", err) }

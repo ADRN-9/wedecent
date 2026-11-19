@@ -3,6 +3,7 @@ package buildinfo
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
 	"testing"
 
 	"wedecent.com/wedecent/internal/protocol"

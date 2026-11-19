@@ -2,12 +2,9 @@ import { DurableObject } from "cloudflare:workers";
 import { authorizeGrantEvidence, authorizeStream, CONNECTION_GRANT_HEADER } from "./stream-auth.js";
 import {
   cleanupExpiredConnectionGrants,
-  consumeConnectionGrant,
-  readConnectionGrantEvidence,
   prepareDeviceRelayRequest,
-  replayMetadataFromRequest,
-  scheduleReplayCleanup,
 } from "./grant-replay.js";
+import { consumeRelayAdmission, readRelayGrantEvidence } from "./relay-admission.js";
 import {
   emitRelayTrace,
   healthProbeRequest,
@@ -304,15 +301,10 @@ export class DeviceRelay extends DurableObject {
     if (request.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
     }
-    const replay = replayMetadataFromRequest(request);
-    if (!replay) {
-      return new Response("Connection grant replay metadata missing", { status: 403 });
+    const admission = await consumeRelayAdmission(this.ctx.storage, request);
+    if (!admission.accepted) {
+      return new Response(admission.message, { status: admission.status });
     }
-    const consumption = await consumeConnectionGrant(this.ctx.storage, replay);
-    if (!consumption.accepted) {
-      return new Response("Connection grant already used", { status: 409 });
-    }
-    await scheduleReplayCleanup(this.ctx.storage, Math.min(consumption.expiresAtMS, consumption.evidence.retain_until_ms));
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
   }
 
@@ -322,7 +314,7 @@ export class DeviceRelay extends DurableObject {
     if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jti)) {
       return new Response("Invalid grant evidence identifier", { status: 400 });
     }
-    const evidence = await readConnectionGrantEvidence(this.ctx.storage, jti);
+    const evidence = await readRelayGrantEvidence(this.ctx.storage, jti);
     if (!evidence) return new Response("Grant evidence not found", { status: 404 });
     return Response.json(evidence, { headers: { "Cache-Control": "no-store" } });
   }
@@ -402,16 +394,10 @@ export class DeviceRelay extends DurableObject {
       });
     }
 
-    const replay = replayMetadataFromRequest(request);
-    if (!replay) {
-      return new Response("Connection grant replay metadata missing", { status: 403 });
+    const admission = await consumeRelayAdmission(this.ctx.storage, request);
+    if (!admission.accepted) {
+      return new Response(admission.message, { status: admission.status });
     }
-
-    const consumption = await consumeConnectionGrant(this.ctx.storage, replay.jti, replay.exp);
-    if (!consumption.accepted) {
-      return new Response("Connection grant already used", { status: 409 });
-    }
-    await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);

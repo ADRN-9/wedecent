@@ -121,7 +121,8 @@ test("consumes a grant once and stores independently retrievable server evidence
   assert.equal(evidence.consumption_outcome, "consumed");
   assert.equal(evidence.flow, "direct");
   assert.equal(evidence.jti, jti);
-  assert.equal(await readConnectionGrantEvidence(storage, jti, clientDeviceID), null);
+  const otherTargetStorage = new MemoryStorage();
+  assert.equal(await readConnectionGrantEvidence(otherTargetStorage, jti), null);
 });
 
 test("simultaneous consumption has exactly one winner and one evidence record", async () => {

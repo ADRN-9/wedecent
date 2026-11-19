@@ -224,7 +224,7 @@ test("one replay store enforces single use across direct and websocket admission
     assert.equal(second.accepted, false, `${secondName} should see the grant as already used`);
     const evidence = await readConnectionGrantEvidence(storage, "76b4c468-4e39-437c-a9c8-b758c92ab89b");
     assert.ok(evidence, "consumption evidence should be independently retrievable");
-    assert.equal(evidence.flow, firstName);
+    assert.equal(evidence.flow, firstName === "websocket" ? "relay" : "direct");
     assert.equal(evidence.validation_outcome, "accepted");
     assert.equal(evidence.consumption_outcome, "consumed");
     assert.equal(evidence.client_device_id, client.claims.iss);

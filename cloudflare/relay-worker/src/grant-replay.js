@@ -97,7 +97,7 @@ export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()
     expiresAtMS < nowMS ||
     replay.validatedAtMS > nowMS + CLOCK_SKEW_MS ||
     nowMS - replay.validatedAtMS > CLOCK_SKEW_MS
-  ) return { accepted: false, expiresAtMS, evidence: null };
+  ) return { accepted: false, reason: "stale", expiresAtMS, evidence: null };
 
   const jti = replay.jti.toLowerCase();
   const evidence = {
@@ -123,7 +123,7 @@ export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()
     await txn.put(EVIDENCE_PREFIX + jti, evidence);
     return true;
   });
-  return { accepted, expiresAtMS, evidence: accepted ? evidence : null };
+  return { accepted, reason: accepted ? "" : "replay", expiresAtMS, evidence: accepted ? evidence : null };
 }
 
 export async function readConnectionGrantEvidence(storage, jti) {

@@ -17,7 +17,8 @@ func TestLinuxPTYDoesNotInheritPairingSecret(t *testing.T) {
 	}
 	defer pty.Close()
 
-	command := `if [ "${WEDECENT_PAIRING_SECRET+x}" = x ]; then printf WD_PAIRING_SECRET_LEAKED; else printf WD_PAIRING_SECRET_ISOLATED; fi
+	command := `if [ "${WEDECENT_PAIRING_SECRET+x}" = x ]; then WD_RESULT=LEAKED; else WD_RESULT=ISOLATED; fi
+printf 'WD_SECRET_%s' "$WD_RESULT"
 exit
 `
 	if _, err := pty.Write([]byte(command)); err != nil {
@@ -30,7 +31,7 @@ exit
 	}()
 	select {
 	case output := <-done:
-		if !strings.Contains(output, "WD_PAIRING_SECRET_ISOLATED") || strings.Contains(output, "WD_PAIRING_SECRET_LEAKED") {
+		if !strings.Contains(output, "WD_SECRET_ISOLATED") || strings.Contains(output, "WD_SECRET_LEAKED") {
 			t.Fatalf("PTY child environment was not isolated: %q", output)
 		}
 	case <-time.After(5 * time.Second):
