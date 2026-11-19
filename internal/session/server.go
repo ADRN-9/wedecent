@@ -320,7 +320,10 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := s.DirectAuthorizer.Authorize(ctx, clientID, s.Identity.ID, grant); err != nil {
+	flow := "direct"
+	if metadata.Kind == TransportRelay {
+		flow = "relay"
+	} else if err := s.DirectAuthorizer.Authorize(ctx, clientID, s.Identity.ID, grant); err != nil {
 		s.log().Warn("direct session authorization rejected", "client_id", clientID, "error", err)
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "authorization_rejected"})
 		_ = sendError(conn, "authorization_denied", "connection authorization failed")
@@ -332,7 +335,7 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 		_ = sendError(conn, "authorization_unavailable", "server-side grant evidence is unavailable")
 		return
 	}
-	evidence, err := provider.VerifyConsumptionEvidence(ctx, clientID, s.Identity.ID, grantJTI, "direct")
+	evidence, err := provider.VerifyConsumptionEvidence(ctx, clientID, s.Identity.ID, grantJTI, flow)
 	if err != nil {
 		s.log().Warn("direct session grant evidence rejected", "client_id", clientID, "error", err)
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "grant_evidence_rejected"})
