@@ -3,6 +3,7 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)
+umask 077
 cleanup() {
   if [ -n "${AGENT_PID:-}" ]; then kill "$AGENT_PID" 2>/dev/null || true; fi
   if [ -n "${RELAY_PID:-}" ]; then kill "$RELAY_PID" 2>/dev/null || true; fi
@@ -33,6 +34,9 @@ INIT=$($TMP/bin/wd-agent init --state "$TMP/agent" --name relay-smoke-agent)
 FP=$(printf '%s\n' "$INIT" | awk -F'  +' '/Fingerprint:/ {print $2}')
 SECRET=$(printf '%s\n' "$INIT" | awk -F'  +' '/Pair secret:/ {print $2}')
 DEVICE=$(printf '%s\n' "$INIT" | awk -F'  +' '/Device ID:/ {print $2}')
+printf '%s\n' "$SECRET" >"$TMP/pairing.secret"
+chmod 600 "$TMP/pairing.secret"
+unset SECRET INIT
 
 "$TMP/bin/wd-agent" serve \
   --state "$TMP/agent" \
@@ -49,16 +53,18 @@ AGENT_PID=$!
 # Allow the outbound relay slots to register.
 sleep 1
 
-WEDECENT_PAIRING_SECRET=$SECRET "$TMP/bin/wd" pair \
+"$TMP/bin/wd" pair \
   --state "$TMP/client" \
   --name relay-smoke-client \
   --relay 127.0.0.1:18443 \
   --relay-ca "$TMP/certs/ca.crt" \
   --relay-server-name localhost \
   --device-id "$DEVICE" \
-  --fingerprint "$FP"
+  --fingerprint "$FP" \
+  --pairing-secret-file "$TMP/pairing.secret"
 
 printf '%s\n' 'header.payload.signature' >"$TMP/grant.jwt"
+chmod 600 "$TMP/grant.jwt"
 set +e
 printf 'printf "WEDECENT_RELAY_OK\\n"\nexit 23\n' | "$TMP/bin/wd" connect \
   --state "$TMP/client" \
