@@ -4,7 +4,7 @@ WeDecent can reuse its existing direct TCP transport over a point-to-point USB n
 
 The repository includes `scripts/wedecent-linux-usb-ncm.sh` for a deliberately narrow Linux configfs NCM gadget. The helper creates the USB network function only. It does **not** assign IP addresses, start DHCP, install routes, change DNS, modify firewall rules, or configure WeDecent trust.
 
-For audit attribution, `wd-agent serve --direct-tcp-underlay usb_ncm` is an explicit operator assertion that the direct TCP listener is on the USB NCM link. It requires a specific non-loopback IP listen address; wildcard, loopback, and DNS listen addresses are rejected. This label is audit-only and never changes device identity or authorization.
+For audit attribution, `wd-agent serve --direct-tcp-underlay usb_ncm` is an explicit operator assertion that the direct TCP listener is on the USB NCM link. It requires a specific non-loopback IP listen address; wildcard, loopback, and DNS listen addresses are rejected. This label is audit-only and never changes device identity or authorization. If a config file supplies `direct_tcp_underlay=usb_ncm` and the command line changes `--listen`, the NCM assertion is cleared unless the operator explicitly repeats `--direct-tcp-underlay usb_ncm` on that command line. At startup, the bound TCP listener IP is also checked against the configured IP. Audit provenance records this as `operator_config_assertion`, not hardware attestation.
 
 ## Why NCM
 

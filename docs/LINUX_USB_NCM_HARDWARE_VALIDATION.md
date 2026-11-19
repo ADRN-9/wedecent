@@ -24,20 +24,32 @@ On the Linux client, from the repository root, set:
 export WEDECENT_USB_NCM_INTERFACE='enx020000000002'
 export WEDECENT_USB_NCM_ENDPOINT='192.0.2.1:7443'
 export WEDECENT_USB_NCM_FINGERPRINT='SHA256:<independently-verified-fingerprint>'
-export WEDECENT_USB_NCM_PAIRING_SECRET='<fresh-single-use-secret>'
+export WEDECENT_USB_NCM_PAIRING_SECRET_FILE='/secure/path/pairing-secret.txt'
+export WEDECENT_USB_NCM_CONNECTION_GRANT_FILE='/secure/path/first-grant.jwt'
+export WEDECENT_USB_NCM_TERMINAL_INPUT_FILE='/secure/path/terminal-input.txt'
+export WEDECENT_USB_NCM_TERMINAL_MARKER='WEDECENT_USB_NCM_REMOTE_COMMAND_OK'
+export WEDECENT_USB_NCM_RECONNECT_CONNECTION_GRANT_FILE='/secure/path/reconnect-grant.jwt'
+export WEDECENT_USB_NCM_RECONNECT_INPUT_FILE='/secure/path/reconnect-input.txt'
+export WEDECENT_USB_NCM_RECONNECT_MARKER='WEDECENT_USB_NCM_RECONNECTED_OK'
 # Optional expected device ID:
 export WEDECENT_USB_NCM_EXPECT_DEVICE_ID='wd_aaaaaaaaaaaaaaaa'
 ```
 
 The interface must be up, resolve to a USB sysfs device, have USB vendor/product ancestry, and use the Linux `cdc_ncm` driver. The numeric peer endpoint must route through that exact interface. DNS names are rejected.
 
-Run:
+Before running, obtain the pairing secret from the target agent through a secure out-of-band channel and place it in a private file owned by the client user (mode 0600 or stricter). Do not put the secret in an environment variable or command-line argument. For example, on the agent, write the output of `wd-agent pairing-secret --state <agent-state>` directly to a protected file and transfer that file securely. The client reads it through `--pairing-secret-file`, which rejects symlinks, non-regular files, unsafe permissions, and incorrect ownership.
+
+Both connection-grant files must be private, current-user-owned, non-symlink files containing different short-lived JWTs. The harness rejects identical grant contents before pairing. The server remains authoritative for grant signature, expiry, audience, permission, and replay validation.
+
+Create two terminal input files that print their respective markers remotely and then exit. Neither marker may appear contiguously in its input file.
+
+Run only after all required files and environment variables are prepared:
 
 ```sh
 bash scripts/test-linux-usb-ncm-hardware.sh
 ```
 
-The harness builds the real client, rejects an incorrect server fingerprint before the valid pairing, completes pairing using the fresh single-use secret, then uses a second client state to prove the consumed secret is rejected on replay. It emits:
+The harness builds the real client, derives a valid but incorrect fingerprint and requires the precise `device fingerprint mismatch` rejection, completes pairing using the private single-use secret file, then uses a second client state and requires the precise `invalid or already consumed pairing secret` rejection on replay. It emits:
 
 - `WEDECENT_USB_NCM_WRONG_FINGERPRINT_REJECTED`
 - `WEDECENT_USB_NCM_PAIR_HARDWARE_OK`
@@ -47,28 +59,13 @@ For each transport, separately verify that an explicitly selected transport fail
 
 ## Authorized terminal and reconnect gates
 
-For a real authorized terminal session, supply a short-lived non-production connection grant and a terminal input file that causes the remote shell to print a marker. The marker must not occur contiguously in the input file, so local/PTY echo cannot satisfy the assertion.
+Authorized terminal execution and reconnection are mandatory acceptance conditions, not optional extensions. The harness fails before pairing if either grant, either input file, or either marker is missing. It also rejects reuse of the first grant for reconnection.
 
-```sh
-export WEDECENT_USB_NCM_CONNECTION_GRANT_FILE='/secure/path/first-grant.jwt'
-export WEDECENT_USB_NCM_TERMINAL_INPUT_FILE='/secure/path/terminal-input.txt'
-export WEDECENT_USB_NCM_TERMINAL_MARKER='WEDECENT_USB_NCM_REMOTE_COMMAND_OK'
-printf 'printf "WEDECENT_USB_NCM_""REMOTE_COMMAND_OK\\n"\nexit\n' > "$WEDECENT_USB_NCM_TERMINAL_INPUT_FILE"
-bash scripts/test-linux-usb-ncm-hardware.sh
-```
+The first terminal command must print `WEDECENT_USB_NCM_REMOTE_COMMAND_OK` remotely and exit successfully. Its input file must not contain that marker contiguously, so local/PTY echo cannot satisfy the assertion. The first `wd connect` must finish and close before the second command is attempted.
 
-A successful remote PTY command emits `WEDECENT_USB_NCM_TERMINAL_SESSION_HARDWARE_OK`.
+The second command must use the separate fresh reconnect grant, print `WEDECENT_USB_NCM_RECONNECTED_OK` remotely, and exit successfully. It emits `WEDECENT_USB_NCM_RECONNECT_HARDWARE_OK`.
 
-To prove disconnect and reconnection, supply a separate fresh connection grant and input/marker:
-
-```sh
-export WEDECENT_USB_NCM_RECONNECT_CONNECTION_GRANT_FILE='/secure/path/reconnect-grant.jwt'
-export WEDECENT_USB_NCM_RECONNECT_INPUT_FILE='/secure/path/reconnect-input.txt'
-export WEDECENT_USB_NCM_RECONNECT_MARKER='WEDECENT_USB_NCM_RECONNECTED_OK'
-printf 'printf "WEDECENT_USB_NCM_""RECONNECTED_OK\\n"\nexit\n' > "$WEDECENT_USB_NCM_RECONNECT_INPUT_FILE"
-```
-
-The second session emits `WEDECENT_USB_NCM_RECONNECT_HARDWARE_OK`. The full hardware milestone requires all three pairing/negative markers, the terminal marker, and the reconnect marker.
+The script emits `WEDECENT_USB_NCM_ACCEPTANCE_COMPLETE` only after both authorized sessions and all negative pairing checks succeed. Incomplete acceptance never exits successfully.
 
 The harness never creates or weakens a connection grant. Do not put pairing secrets, grant contents, private keys, or terminal payloads in evidence logs.
 

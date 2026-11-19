@@ -4,8 +4,34 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestClientTLSReportsPreciseFingerprintMismatch(t *testing.T) {
+	id, err := Ensure(t.TempDir(), "fingerprint-mismatch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprint, err := FingerprintPublicKey(id.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrong := []byte(fingerprint)
+	if wrong[len("SHA256:")] == '0' {
+		wrong[len("SHA256:")] = '1'
+	} else {
+		wrong[len("SHA256:")] = '0'
+	}
+	state := tls.ConnectionState{
+		NegotiatedProtocol: "wedecent/1",
+		PeerCertificates:   []*x509.Certificate{id.Leaf},
+	}
+	err = ClientTLS(id, string(wrong)).VerifyConnection(state)
+	if err == nil || !strings.Contains(err.Error(), "device fingerprint mismatch") {
+		t.Fatalf("wrong fingerprint error = %v", err)
+	}
+}
 
 func TestProtocolVersionCompatibilityTerminalTLS(t *testing.T) {
 	id, err := Ensure(t.TempDir(), "compat-device")

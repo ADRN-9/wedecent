@@ -14,7 +14,7 @@ New agent terminal/pairing audit records use explicit, validated metadata suppli
 - `relay` — authenticated relay stream.
 - `direct_tcp+usb_ncm` — direct TCP whose underlying link was explicitly identified as USB NCM.
 
-For an agent TCP listener on an explicitly configured USB NCM link, set `--direct-tcp-underlay usb_ncm` (or JSON config key `direct_tcp_underlay`). The default is empty and records `direct_tcp`.
+For an agent TCP listener on an explicitly configured USB NCM link, set `--direct-tcp-underlay usb_ncm` (or JSON config key `direct_tcp_underlay`). The default is empty and records `direct_tcp`. The audit record also carries `transport_provenance`: `listener_adapter` for adapter-selected transports and `operator_config_assertion` for `direct_tcp+usb_ncm`. The latter is an operator assertion only; the agent does not independently attest the USB interface or route.
 
 USB NCM is an underlying network medium, not a separate WeDecent identity or authorization transport. An unsupported or inconsistent metadata tuple closes the connection before TLS/session processing. The metadata is used only for audit attribution; it is never consulted for device identity, fingerprint pinning, trust, connection grants, routing authority, or authorization. IP addresses, Bluetooth MAC addresses, tty paths, USB descriptors, and relay state remain locators or diagnostics only.
 

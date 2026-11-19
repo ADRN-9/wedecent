@@ -31,6 +31,7 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 	expanded, err := expandServeConfigArgs([]string{
 		"--config", path,
 		"--listen=192.0.2.1:9100",
+		"--direct-tcp-underlay=usb_ncm",
 		"--rfcomm-channel=7",
 		"--discover=true",
 		"--max-connections=23",
@@ -173,6 +174,87 @@ func writeServeConfigTestFile(t *testing.T, contents string) string {
 		t.Fatal(err)
 	}
 	return path
+}
+
+func TestServeConfigListenerOverrideClearsStaleNCMAssertion(t *testing.T) {
+	path := writeServeConfigTestFile(t, `{"listen":"192.0.2.1:7443","direct_tcp_underlay":"usb_ncm"}`)
+	expanded, err := expandServeConfigArgs([]string{"--config", path, "--listen=192.0.2.2:7443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseServeConfig(expanded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.ListenAddr != "192.0.2.2:7443" || cfg.DirectTCPUnderlyingTransport != "" {
+		t.Fatalf("listener override retained stale NCM assertion: listen=%q underlay=%q", cfg.ListenAddr, cfg.DirectTCPUnderlyingTransport)
+	}
+
+	expanded, err = expandServeConfigArgs([]string{
+		"--config", path,
+		"--listen=192.0.2.2:7443",
+		"--direct-tcp-underlay=usb_ncm",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = parseServeConfig(expanded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectTCPUnderlyingTransport != "usb_ncm" {
+		t.Fatalf("explicit NCM reassertion was cleared: %q", cfg.DirectTCPUnderlyingTransport)
+	}
+}
+
+func TestServeConfigClearsNCMAssertionBeforeArgumentTerminator(t *testing.T) {
+	path := writeServeConfigTestFile(t, `{"listen":"192.0.2.1:7443","direct_tcp_underlay":"usb_ncm"}`)
+	expanded, err := expandServeConfigArgs([]string{"--config", path, "--listen=192.0.2.2:7443", "--", "ignored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearIndex, terminatorIndex := -1, -1
+	for i, arg := range expanded {
+		if arg == "--direct-tcp-underlay=" {
+			clearIndex = i
+		}
+		if arg == "--" {
+			terminatorIndex = i
+		}
+	}
+	if clearIndex < 0 || terminatorIndex < 0 || clearIndex >= terminatorIndex {
+		t.Fatalf("NCM clear flag was not placed before argument terminator: %q", expanded)
+	}
+}
+
+func TestServeConfigSingleDashListenerOverrideClearsNCMAssertion(t *testing.T) {
+	path := writeServeConfigTestFile(t, `{"listen":"192.0.2.1:7443","direct_tcp_underlay":"usb_ncm"}`)
+	expanded, err := expandServeConfigArgs([]string{"--config", path, "-listen=192.0.2.2:7443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseServeConfig(expanded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectTCPUnderlyingTransport != "" {
+		t.Fatalf("single-dash listener override retained stale NCM assertion: %q", cfg.DirectTCPUnderlyingTransport)
+	}
+}
+
+func TestServeConfigSameListenerOverridePreservesNCMAssertion(t *testing.T) {
+	path := writeServeConfigTestFile(t, `{"listen":"192.0.2.1:7443","direct_tcp_underlay":"usb_ncm"}`)
+	expanded, err := expandServeConfigArgs([]string{"--config", path, "--listen=192.0.2.1:7443"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := parseServeConfig(expanded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DirectTCPUnderlyingTransport != "usb_ncm" {
+		t.Fatalf("unchanged listener unexpectedly cleared NCM assertion: %q", cfg.DirectTCPUnderlyingTransport)
+	}
 }
 
 func TestServeConfigDirectTCPUnderlayValidation(t *testing.T) {

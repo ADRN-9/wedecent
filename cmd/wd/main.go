@@ -24,6 +24,7 @@ import (
 	"wedecent.com/wedecent/internal/enrollment"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/relayauth"
+	"wedecent.com/wedecent/internal/securefile"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/terminal"
 	"wedecent.com/wedecent/internal/transport"
@@ -614,6 +615,7 @@ func runPair(args []string) error {
 	webRelay := fs.String("web-relay", "", "serverless WebSocket relay URL, e.g. https://relay.wedecent.com")
 	deviceID := fs.String("device-id", "", "target device ID for relay or LAN discovery pairing")
 	fingerprint := fs.String("fingerprint", "", "independently verified expected SHA256 device public-key fingerprint")
+	pairingSecretFile := fs.String("pairing-secret-file", "", "path to a private file containing the single-use pairing secret")
 	discoverLAN := fs.Bool("discover-lan", false, "discover a direct LAN endpoint for --device-id")
 	discoverTimeout := fs.Duration("discover-timeout", 6*time.Second, "LAN discovery window for --discover-lan")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
@@ -655,10 +657,11 @@ func runPair(args []string) error {
 		fmt.Fprintf(os.Stderr, "WeDecent: selected discovered LAN routing hint %s; trust still requires the expected fingerprint and pairing secret\n", locator)
 	}
 
-	secret, err := readPairingSecret()
+	secret, err := readPairingSecret(*pairingSecretFile)
 	if err != nil {
 		return err
 	}
+	defer func() { secret = "" }()
 
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
@@ -677,6 +680,7 @@ func runPair(args []string) error {
 	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, pairingGrant)}
 	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	peer, err := client.Pair(ctx, locator, fp, secret)
+	secret = ""
 	if err != nil {
 		return err
 	}
@@ -684,8 +688,28 @@ func runPair(args []string) error {
 	return nil
 }
 
-func readPairingSecret() (string, error) {
-	secret := strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_SECRET"))
+func readPairingSecret(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	secret := ""
+	if path != "" {
+		if strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_SECRET")) != "" {
+			return "", errors.New("--pairing-secret-file cannot be combined with WEDECENT_PAIRING_SECRET")
+		}
+		data, err := securefile.ReadPrivateFile(path, 4*1024)
+		if err != nil {
+			return "", fmt.Errorf("read pairing secret file: %w", err)
+		}
+		secret = strings.TrimSpace(string(data))
+		clear(data)
+		if strings.ContainsAny(secret, "\r\n\t ") {
+			return "", errors.New("pairing secret file must contain one secret without embedded whitespace")
+		}
+	} else {
+		secret = strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_SECRET"))
+	}
+	if secret == "" && path != "" {
+		return "", errors.New("pairing secret file is empty")
+	}
 	if secret == "" {
 		fmt.Fprint(os.Stderr, "Pairing secret: ")
 		tty, err := openPasswordTTY()
@@ -915,10 +939,11 @@ func readConnectionGrantFile(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := securefile.ReadPrivateFile(path, 16*1024)
 	if err != nil {
 		return "", fmt.Errorf("read connection grant file: %w", err)
 	}
+	defer clear(data)
 	if len(data) == 0 || len(data) > 16*1024 {
 		return "", errors.New("connection grant file has an invalid size")
 	}

@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+func TestValidateEventRejectsUnknownTransportProvenance(t *testing.T) {
+	event := Event{Type: "terminal.session_opened", Outcome: "success", Transport: "direct_tcp", TransportProvenance: "guessed"}
+	if err := validateEvent(&event); err == nil {
+		t.Fatal("unknown transport provenance was accepted")
+	}
+}
+
 func TestAppendWritesStructuredJSONL(t *testing.T) {
 	dir := t.TempDir()
 	log, err := Open(dir)

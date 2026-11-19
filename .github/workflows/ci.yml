@@ -50,7 +50,9 @@ jobs:
       - name: Vet
         run: go vet ./...
       - name: Syntax-check Linux transport hardware gates
-        run: bash -n scripts/test-linux-rfcomm-hardware.sh scripts/test-linux-cdc-acm-hardware.sh scripts/test-linux-usb-ncm-hardware.sh scripts/wedecent-linux-usb-ncm.sh scripts/wedecent-linux-usb-gadget.sh
+        run: bash -n scripts/test-linux-rfcomm-hardware.sh scripts/test-linux-cdc-acm-hardware.sh scripts/test-linux-usb-ncm-hardware.sh scripts/test-linux-usb-ncm-harness-contract.sh scripts/wedecent-linux-usb-ncm.sh scripts/wedecent-linux-usb-gadget.sh
+      - name: Test NCM hardware harness fail-closed contract
+        run: bash ./scripts/test-linux-usb-ncm-harness-contract.sh
       - name: Test Unix service packaging
         run: sh ./scripts/test-unix-service-packaging.sh
       - name: Test protocol version compatibility
@@ -59,6 +61,8 @@ jobs:
         run: |
           go test ./internal/protocol -run '^$' -fuzz '^FuzzReadFrame$' -fuzztime=5s
           go test ./internal/relayproto -run '^$' -fuzz '^FuzzRead$' -fuzztime=5s
+      - name: Test all Go packages
+        run: go test ./...
       - name: Test with race detector
         run: go test -race ./...
       - name: Direct transport smoke test

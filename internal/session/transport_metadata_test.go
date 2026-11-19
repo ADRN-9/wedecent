@@ -19,21 +19,22 @@ import (
 
 func TestTransportMetadataAuditLabel(t *testing.T) {
 	tests := []struct {
-		name string
-		in   TransportMetadata
-		want string
-		ok   bool
+		name           string
+		in             TransportMetadata
+		want           string
+		wantProvenance string
+		ok             bool
 	}{
-		{"direct TCP", TransportMetadata{Kind: TransportDirectTCP}, "direct_tcp", true},
-		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm", true},
-		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm", true},
-		{"relay", TransportMetadata{Kind: TransportRelay}, "relay", true},
-		{"USB NCM underlying direct TCP", TransportMetadata{Kind: TransportDirectTCP, Underlying: UnderlyingUSBNCM}, "direct_tcp+usb_ncm", true},
-		{"missing kind", TransportMetadata{}, "", false},
-		{"unknown kind", TransportMetadata{Kind: "lan"}, "", false},
-		{"NCM cannot underlay RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM, Underlying: UnderlyingUSBNCM}, "", false},
-		{"NCM cannot underlay relay", TransportMetadata{Kind: TransportRelay, Underlying: UnderlyingUSBNCM}, "", false},
-		{"unknown underlying", TransportMetadata{Kind: TransportDirectTCP, Underlying: "ethernet"}, "", false},
+		{"direct TCP", TransportMetadata{Kind: TransportDirectTCP}, "direct_tcp", "listener_adapter", true},
+		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm", "listener_adapter", true},
+		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm", "listener_adapter", true},
+		{"relay", TransportMetadata{Kind: TransportRelay}, "relay", "listener_adapter", true},
+		{"USB NCM underlying direct TCP", TransportMetadata{Kind: TransportDirectTCP, Underlying: UnderlyingUSBNCM}, "direct_tcp+usb_ncm", "operator_config_assertion", true},
+		{"missing kind", TransportMetadata{}, "", "", false},
+		{"unknown kind", TransportMetadata{Kind: "lan"}, "", "", false},
+		{"NCM cannot underlay RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM, Underlying: UnderlyingUSBNCM}, "", "", false},
+		{"NCM cannot underlay relay", TransportMetadata{Kind: TransportRelay, Underlying: UnderlyingUSBNCM}, "", "", false},
+		{"unknown underlying", TransportMetadata{Kind: TransportDirectTCP, Underlying: "ethernet"}, "", "", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -115,15 +116,16 @@ func pairingWireRequestWithTransport(
 
 func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 	tests := []struct {
-		name     string
-		metadata TransportMetadata
-		want     string
+		name             string
+		metadata         TransportMetadata
+		want             string
+		wantProvenance   string
 	}{
-		{"direct TCP", TransportMetadata{Kind: TransportDirectTCP}, "direct_tcp"},
-		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm"},
-		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm"},
-		{"USB NCM over direct TCP", TransportMetadata{Kind: TransportDirectTCP, Underlying: UnderlyingUSBNCM}, "direct_tcp+usb_ncm"},
-		{"relay", TransportMetadata{Kind: TransportRelay}, "relay"},
+		{"direct TCP", TransportMetadata{Kind: TransportDirectTCP}, "direct_tcp", "listener_adapter"},
+		{"Bluetooth RFCOMM", TransportMetadata{Kind: TransportBluetoothRFCOMM}, "bluetooth_rfcomm", "listener_adapter"},
+		{"USB CDC-ACM", TransportMetadata{Kind: TransportUSBCDCACM}, "usb_cdc_acm", "listener_adapter"},
+		{"USB NCM over direct TCP", TransportMetadata{Kind: TransportDirectTCP, Underlying: UnderlyingUSBNCM}, "direct_tcp+usb_ncm", "operator_config_assertion"},
+		{"relay", TransportMetadata{Kind: TransportRelay}, "relay", "listener_adapter"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -172,14 +174,14 @@ func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 				}
 				if event.Type == "pairing.request" && event.Outcome == "pending" {
 					pending = true
-					if event.Transport != tt.want {
-						t.Fatalf("pending transport = %q, want %q", event.Transport, tt.want)
+					if event.Transport != tt.want || event.TransportProvenance != tt.wantProvenance {
+						t.Fatalf("pending attribution = %q/%q, want %q/%q", event.Transport, event.TransportProvenance, tt.want, tt.wantProvenance)
 					}
 				}
 				if event.Type == "pairing.trust_added" && event.Outcome == "success" {
 					success = true
-					if event.Transport != tt.want {
-						t.Fatalf("success transport = %q, want %q", event.Transport, tt.want)
+					if event.Transport != tt.want || event.TransportProvenance != tt.wantProvenance {
+						t.Fatalf("success attribution = %q/%q, want %q/%q", event.Transport, event.TransportProvenance, tt.want, tt.wantProvenance)
 					}
 				}
 			}

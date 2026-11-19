@@ -27,15 +27,16 @@ var eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}$`)
 // arbitrary payload field. Terminal data, pairing secrets, grants,
 // credentials, and private keys must never be written to the audit log.
 type Event struct {
-	Time      time.Time `json:"time"`
-	Type      string    `json:"type"`
-	Outcome   string    `json:"outcome"`
-	ActorID   string    `json:"actor_id,omitempty"`
-	PeerID    string    `json:"peer_id,omitempty"`
-	AttemptID string    `json:"attempt_id,omitempty"`
-	Transport string    `json:"transport,omitempty"`
-	StreamID  uint32    `json:"stream_id,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
+	Time                time.Time `json:"time"`
+	Type                string    `json:"type"`
+	Outcome             string    `json:"outcome"`
+	ActorID             string    `json:"actor_id,omitempty"`
+	PeerID              string    `json:"peer_id,omitempty"`
+	AttemptID           string    `json:"attempt_id,omitempty"`
+	Transport           string    `json:"transport,omitempty"`
+	TransportProvenance string    `json:"transport_provenance,omitempty"`
+	StreamID            uint32    `json:"stream_id,omitempty"`
+	Reason              string    `json:"reason,omitempty"`
 }
 
 type Log struct {
@@ -137,6 +138,12 @@ func validateEvent(event *Event) error {
 		return errors.New("audit pairing attempt ID is invalid")
 	}
 	event.Transport = strings.TrimSpace(event.Transport)
+	event.TransportProvenance = strings.TrimSpace(event.TransportProvenance)
+	switch event.TransportProvenance {
+	case "", "listener_adapter", "operator_config_assertion":
+	default:
+		return errors.New("audit transport provenance is invalid")
+	}
 	event.Reason = strings.TrimSpace(event.Reason)
 	if !eventNamePattern.MatchString(event.Type) {
 		return errors.New("audit event type is invalid")
@@ -146,7 +153,8 @@ func validateEvent(event *Event) error {
 	}
 	for name, value := range map[string]string{
 		"actor_id": event.ActorID, "peer_id": event.PeerID,
-		"transport": event.Transport, "reason": event.Reason,
+		"transport": event.Transport, "transport_provenance": event.TransportProvenance,
+		"reason": event.Reason,
 	} {
 		if len(value) > maxFieldLength {
 			return fmt.Errorf("audit field %s exceeds size limit", name)

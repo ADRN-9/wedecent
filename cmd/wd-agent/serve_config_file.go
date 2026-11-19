@@ -66,7 +66,69 @@ func expandServeConfigArgs(args []string) ([]string, error) {
 	}
 	// File-derived arguments come first so explicitly supplied command-line
 	// flags retain their existing override behavior in flag.FlagSet.
-	return append(configArgs, cliArgs...), nil
+	// Changing the listener invalidates a config-file NCM assertion unless
+	// the operator explicitly reasserts the underlay on the command line.
+	configUnderlay, hasConfigUnderlay, err := serveFlagValue(configArgs, "direct-tcp-underlay")
+	if err != nil {
+		return nil, err
+	}
+	configListen, hasConfigListen, err := serveFlagValue(configArgs, "listen")
+	if err != nil {
+		return nil, err
+	}
+	cliListen, hasCLIListen, err := serveFlagValue(cliArgs, "listen")
+	if err != nil {
+		return nil, err
+	}
+	_, hasCLIUnderlay, err := serveFlagValue(cliArgs, "direct-tcp-underlay")
+	if err != nil {
+		return nil, err
+	}
+	expanded := append(append([]string(nil), configArgs...), cliArgs...)
+	if hasConfigUnderlay && strings.TrimSpace(configUnderlay) == "usb_ncm" &&
+		hasConfigListen && hasCLIListen &&
+		strings.TrimSpace(cliListen) != strings.TrimSpace(configListen) && !hasCLIUnderlay {
+		insertAt := len(expanded)
+		for i := len(configArgs); i < len(expanded); i++ {
+			if expanded[i] == "--" {
+				insertAt = i
+				break
+			}
+		}
+		expanded = append(expanded, "")
+		copy(expanded[insertAt+1:], expanded[insertAt:])
+		expanded[insertAt] = "--direct-tcp-underlay="
+	}
+	return expanded, nil
+}
+
+func serveFlagValue(args []string, name string) (string, bool, error) {
+	flagNames := []string{"--" + name, "-" + name}
+	var value string
+	found := false
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if arg == "--" {
+			break
+		}
+		for _, flagName := range flagNames {
+			if arg == flagName {
+				if i+1 >= len(args) {
+					return "", false, fmt.Errorf("%s requires a value", flagName)
+				}
+				i++
+				value = args[i]
+				found = true
+				break
+			}
+			if strings.HasPrefix(arg, flagName+"=") {
+				value = strings.TrimPrefix(arg, flagName+"=")
+				found = true
+				break
+			}
+		}
+	}
+	return value, found, nil
 }
 
 func extractServeConfigArg(args []string) (string, []string, bool, error) {

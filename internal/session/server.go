@@ -578,6 +578,14 @@ func waitForPeerClose(frameCh <-chan protocol.Frame, readErrCh <-chan error, tim
 }
 
 func (s *Server) recordAudit(event audit.Event) {
+	// USB NCM attribution is an operator configuration assertion, not
+	// hardware attestation. Ordinary transports come from the local adapter.
+	switch {
+	case strings.HasSuffix(event.Transport, "+usb_ncm"):
+		event.TransportProvenance = "operator_config_assertion"
+	case event.Transport != "":
+		event.TransportProvenance = "listener_adapter"
+	}
 	if strings.TrimSpace(s.StateDir) == "" {
 		return
 	}

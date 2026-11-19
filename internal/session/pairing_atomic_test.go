@@ -64,6 +64,18 @@ func pairingErrorCode(t *testing.T, frame protocol.Frame) string {
 	return msg.Code
 }
 
+func pairingErrorMessage(t *testing.T, frame protocol.Frame) string {
+	t.Helper()
+	if frame.Type != protocol.TypeError {
+		t.Fatalf("frame type %d is not an error", frame.Type)
+	}
+	var msg protocol.Error
+	if err := protocol.ParseJSON(frame.Payload, &msg); err != nil {
+		t.Fatal(err)
+	}
+	return msg.Message
+}
+
 func TestServerPairingAtomicIdentityAndAudit(t *testing.T) {
 	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
 	if err != nil {
@@ -122,6 +134,9 @@ func TestServerPairingAtomicIdentityAndAudit(t *testing.T) {
 	}
 	if code := pairingErrorCode(t, frame); code != "pairing_denied" {
 		t.Fatalf("replayed pairing error = %q", code)
+	}
+	if message := pairingErrorMessage(t, frame); message != "invalid or already consumed pairing secret" {
+		t.Fatalf("replayed pairing message = %q", message)
 	}
 	if _, ok := store.Get(second.ID); ok {
 		t.Fatal("replayed client inserted into trusted clients")
