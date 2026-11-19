@@ -38,6 +38,7 @@ type routedE2EDirectAuthorizer struct {
 	source      string
 	destination string
 	grant       string
+	jti         string
 }
 
 func (a routedE2EDirectAuthorizer) Authorize(
@@ -51,6 +52,22 @@ func (a routedE2EDirectAuthorizer) Authorize(
 	}
 	if source != a.source || destination != a.destination || grant != a.grant {
 		return errors.New("unexpected routed terminal authorization")
+	}
+	return nil
+}
+
+func (a routedE2EDirectAuthorizer) VerifyConsumption(
+	ctx context.Context,
+	clientID string,
+	destination string,
+	jti string,
+	flow string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if clientID != a.source || destination != a.destination || jti != a.jti || flow != "direct" {
+		return errors.New("unexpected routed terminal grant evidence")
 	}
 	return nil
 }
@@ -114,7 +131,9 @@ func TestRoutedTerminalE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const connectionGrant = "route-e2e.connection.grant"
+	const grantJTI = "76b4c468-4e39-437c-a9c8-b758c92ab89b"
+	grantPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"jti":"76b4c468-4e39-437c-a9c8-b758c92ab89b"}`))
+	connectionGrant := "header." + grantPayload + ".signature"
 	endpointServer := &session.Server{
 		Identity: aNilIdentity(cID),
 		Trust:    terminalTrust,
@@ -124,6 +143,7 @@ func TestRoutedTerminalE2E(t *testing.T) {
 			source:      aID.ID,
 			destination: cID.ID,
 			grant:       connectionGrant,
+			jti:         grantJTI,
 		},
 	}
 
