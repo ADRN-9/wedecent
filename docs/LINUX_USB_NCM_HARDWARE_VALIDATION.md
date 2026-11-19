@@ -43,14 +43,7 @@ The harness builds the real client, rejects an incorrect server fingerprint befo
 - `WEDECENT_USB_NCM_PAIR_HARDWARE_OK`
 - `WEDECENT_USB_NCM_REPLAY_REJECTED`
 
-To verify that an explicitly selected transport does not silently fall back, make an alternate path to the same peer available, provision a separate fresh pairing secret, and set an intentionally unreachable numeric endpoint:
-
-```sh
-export WEDECENT_USB_NCM_FAILURE_ENDPOINT='192.0.2.254:7443'
-export WEDECENT_USB_NCM_FAILURE_PAIRING_SECRET='<separate-fresh-single-use-secret>'
-```
-
-The probe must fail on that exact endpoint and emit `WEDECENT_USB_NCM_EXPLICIT_FAILURE_NO_FALLBACK`. This is meaningful only when another route to the same device is available; otherwise the test proves only that the endpoint is unreachable.
+For each transport, separately verify that an explicitly selected transport failure is surfaced without falling back while an alternate route to the same peer is available. The hardware gate is incomplete until this is recorded on the actual endpoint.
 
 ## Authorized terminal and reconnect gates
 

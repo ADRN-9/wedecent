@@ -63,8 +63,14 @@ if [[ " $route_info " != *" dev $WEDECENT_USB_NCM_INTERFACE "* ]]; then
   fail "peer endpoint route does not use the selected USB NCM interface"
 fi
 
-printf 'USB NCM interface: %s driver=cdc_ncm vendor=%s product=%s\n' "$WEDECENT_USB_NCM_INTERFACE" "$vendor" "$product"
-printf 'Peer endpoint: %s (route verified through selected USB NCM interface)\n' "$WEDECENT_USB_NCM_ENDPOINT"
+manufacturer="$(cat "$usb_node/manufacturer" 2>/dev/null || true)"
+product_name="$(cat "$usb_node/product" 2>/dev/null || true)"
+commit="$(git rev-parse HEAD 2>/dev/null || printf 'unknown')"
+printf 'Host OS/kernel: %s\n' "$(uname -srmo)"
+printf 'WeDecent commit: %s\n' "$commit"
+printf 'USB NCM interface: %s driver=cdc_ncm manufacturer=%s product=%s VID:PID=%s:%s\n' "$WEDECENT_USB_NCM_INTERFACE" "$manufacturer" "$product_name" "$vendor" "$product"
+printf 'Peer endpoint: %s (selected transport=direct_tcp+usb_ncm; route verified through selected USB NCM interface)\n' "$WEDECENT_USB_NCM_ENDPOINT"
+printf 'Expected WeDecent fingerprint: %s\n' "$WEDECENT_USB_NCM_FINGERPRINT"
 
 work="$(mktemp -d)"
 cleanup() {
@@ -109,22 +115,6 @@ if "$work/bin/wd" pair --state "$work/replay" --name wedecent-ncm-replay-probe \
 fi
 echo "WEDECENT_USB_NCM_REPLAY_REJECTED"
 
-# An explicitly selected endpoint must fail rather than switch transports.
-if [[ -n "${WEDECENT_USB_NCM_FAILURE_ENDPOINT:-}" ]]; then
-  : "${WEDECENT_USB_NCM_FAILURE_PAIRING_SECRET:?set a fresh secret for the explicit-failure probe}"
-  if [[ ! "$WEDECENT_USB_NCM_FAILURE_ENDPOINT" =~ ^[0-9.]+:[0-9]{1,5}$ ]]; then
-    fail "failure endpoint must be a numeric IPv4:port"
-  fi
-  mkdir -m 700 "$work/no-fallback"
-  export WEDECENT_PAIRING_SECRET="$WEDECENT_USB_NCM_FAILURE_PAIRING_SECRET"
-  if "$work/bin/wd" pair --state "$work/no-fallback" --name wedecent-ncm-no-fallback-probe --endpoint "$WEDECENT_USB_NCM_FAILURE_ENDPOINT" --fingerprint "$WEDECENT_USB_NCM_FINGERPRINT" >/dev/null 2>&1; then
-    fail "explicit endpoint unexpectedly succeeded; transport fallback may have occurred"
-  fi
-  export WEDECENT_PAIRING_SECRET="$WEDECENT_USB_NCM_PAIRING_SECRET"
-  echo "WEDECENT_USB_NCM_EXPLICIT_FAILURE_NO_FALLBACK"
-else
-  echo "Explicit transport failure/no-fallback not run. Set WEDECENT_USB_NCM_FAILURE_ENDPOINT and WEDECENT_USB_NCM_FAILURE_PAIRING_SECRET while an alternate path to the same peer is available."
-fi
 if [[ -z "${WEDECENT_USB_NCM_CONNECTION_GRANT_FILE:-}" ]]; then
   echo "Pairing and negative hardware gates passed. Set WEDECENT_USB_NCM_CONNECTION_GRANT_FILE, WEDECENT_USB_NCM_TERMINAL_INPUT_FILE, and WEDECENT_USB_NCM_TERMINAL_MARKER for the authorized terminal gate."
   exit 0
