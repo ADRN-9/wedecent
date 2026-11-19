@@ -760,6 +760,7 @@ func runConnect(args []string) (int, error) {
 	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT")
 	expectedAgentCommit := fs.String("expected-agent-commit", "", "require this authenticated target-agent source commit")
 	expectedAgentSourceSHA256 := fs.String("expected-agent-source-sha256", "", "require this authenticated target-agent source archive SHA-256")
+	expectedAgentExecutableSHA256 := fs.String("expected-agent-executable-sha256", "", "require this authenticated target-agent executable SHA-256")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
 	routeRouter := fs.String("route-router", "", "explicit one-hop router device ID")
@@ -887,8 +888,9 @@ func runConnect(args []string) (int, error) {
 			Trust:                     store,
 			Dialer:                    routedDialer,
 			ConnectionGrant:           connectionGrant,
-			ExpectedAgentCommit:       *expectedAgentCommit,
-			ExpectedAgentSourceSHA256: *expectedAgentSourceSHA256,
+			ExpectedAgentCommit:          *expectedAgentCommit,
+			ExpectedAgentSourceSHA256:    *expectedAgentSourceSHA256,
+			ExpectedAgentExecutableSHA256: *expectedAgentExecutableSHA256,
 		}
 		return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
 	}
@@ -901,6 +903,7 @@ func runConnect(args []string) (int, error) {
 	client := &session.Client{
 		Identity: id, Trust: store, Dialer: dialer, ConnectionGrant: connectionGrant,
 		ExpectedAgentCommit: *expectedAgentCommit, ExpectedAgentSourceSHA256: *expectedAgentSourceSHA256,
+		ExpectedAgentExecutableSHA256: *expectedAgentExecutableSHA256,
 	}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
 }

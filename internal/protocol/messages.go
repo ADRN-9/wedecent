@@ -36,8 +36,9 @@ type AgentBuildIdentity struct {
 	Nonce        string `json:"nonce"`
 	Version      string `json:"version"`
 	Commit       string `json:"commit"`
-	SourceSHA256 string `json:"source_sha256"`
-	BuiltAt      string `json:"built_at"`
+	SourceSHA256     string `json:"source_sha256"`
+	ExecutableSHA256 string `json:"executable_sha256"`
+	BuiltAt          string `json:"built_at"`
 	Go           string `json:"go"`
 	Platform     string `json:"platform"`
 	Signature    string `json:"signature"`

@@ -27,8 +27,9 @@ type Client struct {
 	Trust                     *trust.Store
 	Dialer                    transport.Dialer
 	ConnectionGrant           string
-	ExpectedAgentCommit       string
-	ExpectedAgentSourceSHA256 string
+	ExpectedAgentCommit          string
+	ExpectedAgentSourceSHA256    string
+	ExpectedAgentExecutableSHA256 string
 }
 
 // Probe verifies that peer.Endpoint is reachable and presents the already
@@ -95,8 +96,9 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 	if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
 		return 0, errors.New("a valid connection grant is required for this transport")
 	}
-	if (c.ExpectedAgentCommit == "") != (c.ExpectedAgentSourceSHA256 == "") {
-		return 0, errors.New("expected agent commit and source SHA-256 must be supplied together")
+	if (c.ExpectedAgentCommit == "") != (c.ExpectedAgentSourceSHA256 == "") ||
+		(c.ExpectedAgentCommit == "") != (c.ExpectedAgentExecutableSHA256 == "") {
+		return 0, errors.New("expected agent commit, source SHA-256, and executable SHA-256 must be supplied together")
 	}
 	grantJTI := ""
 	if !inBandAuthorization {
@@ -171,7 +173,9 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 				return 0, err
 			}
 			if c.ExpectedAgentCommit != "" &&
-				(accepted.BuildIdentity.Commit != c.ExpectedAgentCommit || accepted.BuildIdentity.SourceSHA256 != c.ExpectedAgentSourceSHA256) {
+				(accepted.BuildIdentity.Commit != c.ExpectedAgentCommit ||
+					accepted.BuildIdentity.SourceSHA256 != c.ExpectedAgentSourceSHA256 ||
+					accepted.BuildIdentity.ExecutableSHA256 != c.ExpectedAgentExecutableSHA256) {
 				return 0, errors.New("target agent build identity does not match the expected source commit")
 			}
 		} else if c.ExpectedAgentCommit != "" {
