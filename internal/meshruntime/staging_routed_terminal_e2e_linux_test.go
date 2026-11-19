@@ -74,6 +74,50 @@ func (a stagingRoutedGrantAuthorizer) Authorize(
 	return nil
 }
 
+func (a stagingRoutedGrantAuthorizer) VerifyConsumptionEvidence(
+	ctx context.Context,
+	source, destination, jti, flow string,
+) (session.GrantConsumptionEvidence, error) {
+	if err := a.Authorize(ctx, source, destination, a.grant); err != nil {
+		return session.GrantConsumptionEvidence{}, err
+	}
+	if jti == "" || flow != "direct" {
+		return session.GrantConsumptionEvidence{}, errors.New("unexpected staging grant evidence query")
+	}
+	validatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	consumedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	retainUntil := time.Now().Add(time.Hour).UnixMilli()
+	const runID = "d90987bf-bae6-45da-ab21-c82d049617bd"
+	const validationAttemptID = "b90987bf-bae6-45da-ab21-c82d049617bd"
+	const consumptionAttemptID = "c90987bf-bae6-45da-ab21-c82d049617bd"
+	const validationEventID = "a90987bf-bae6-45da-ab21-c82d049617bd"
+	const consumptionEventID = "f90987bf-bae6-45da-ab21-c82d049617bd"
+	grantID := "e90987bf-bae6-45da-ab21-c82d049617bd"
+	validationEvent := session.GrantEventEvidence{
+		EventID: validationEventID, RunID: runID, AttemptID: validationAttemptID,
+		Type: "authorization.validation", Outcome: "accepted", GrantID: grantID, JTI: jti,
+		ClientDeviceID: source, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, OccurredAt: validatedAt, RetainUntilMS: retainUntil,
+	}
+	consumptionEvent := session.GrantEventEvidence{
+		EventID: consumptionEventID, RunID: runID, AttemptID: consumptionAttemptID,
+		Type: "authorization.consumption", Outcome: "consumed", GrantID: grantID, JTI: jti,
+		ClientDeviceID: source, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, OccurredAt: consumedAt, RetainUntilMS: retainUntil,
+	}
+	return session.GrantConsumptionEvidence{
+		Version: 1, AuthorizationRunID: runID, ValidationAttemptID: validationAttemptID,
+		ConsumptionAttemptID: consumptionAttemptID, ValidationEventID: validationEventID,
+		ConsumptionEventID: consumptionEventID, ValidationEvent: validationEvent,
+		ConsumptionEvent: consumptionEvent, GrantID: grantID, JTI: jti,
+		ClientDeviceID: source, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
+		ValidatedAt: validatedAt, ConsumedAt: consumedAt,
+		ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+		RetainUntilMS: retainUntil,
+	}, nil
+}
+
 // TestStagingRoutedTerminalE2E is deliberately opt-in. It uses the hosted
 // WeDecent Staging control plane for login, persistent device enrollment,
 // connection-grant issuance, and route-capability issuance while exercising

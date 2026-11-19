@@ -249,3 +249,28 @@ func TestServerTerminalAuditCarriesRouteAndGrantProvenance(t *testing.T) {
 		t.Fatalf("terminal audit lost route or grant provenance: %+v", event)
 	}
 }
+
+
+type routedTransportAttributionTestConn struct {
+	net.Conn
+}
+
+func (routedTransportAttributionTestConn) WeDecentTransportAttribution() (string, string, string) {
+	return "routed", "internet", "wd_aaaaaaaaaaaaaaaa"
+}
+
+func TestTransportMetadataFromConnPreservesAuthenticatedRoute(t *testing.T) {
+	local, peer := net.Pipe()
+	defer local.Close()
+	defer peer.Close()
+
+	metadata := transportMetadataFromConn(routedTransportAttributionTestConn{Conn: local})
+	if err := metadata.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if metadata.Kind != TransportRouted ||
+		metadata.Underlying != UnderlyingInternet ||
+		metadata.RouteRouterID != "wd_aaaaaaaaaaaaaaaa" {
+		t.Fatalf("route metadata lost at endpoint ingress: %+v", metadata)
+	}
+}
