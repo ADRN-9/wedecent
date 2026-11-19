@@ -12,13 +12,13 @@ import (
 	"wedecent.com/wedecent/internal/protocol"
 )
 
-func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, transport string, capabilities []protocol.Capability) {
+func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, transport string, capabilities []protocol.Capability, buildIdentity *protocol.AgentBuildIdentity) {
 	fileNegotiated := hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1)
 	if fileNegotiated && (s.FileTransfer == nil || !s.FileTransfer.Ready()) {
 		// Capability negotiation must never outrun the authoritative runtime.
 		return
 	}
-	accepted, err := sessionAcceptedFrame(capabilities)
+	accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
 	if err != nil {
 		return
 	}

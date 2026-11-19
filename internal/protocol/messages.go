@@ -17,6 +17,8 @@ type OpenSession struct {
 	Cols         uint16       `json:"cols"`
 	Rows         uint16       `json:"rows"`
 	Term         string       `json:"term"`
+	GrantJTI     string       `json:"grant_jti,omitempty"`
+	BuildNonce   string       `json:"build_nonce,omitempty"`
 	Capabilities []Capability `json:"capabilities,omitempty"`
 }
 
@@ -25,11 +27,25 @@ type OpenAuthorizedSession struct {
 	Rows            uint16       `json:"rows"`
 	Term            string       `json:"term"`
 	ConnectionGrant string       `json:"connection_grant"`
+	BuildNonce      string       `json:"build_nonce,omitempty"`
 	Capabilities    []Capability `json:"capabilities,omitempty"`
 }
 
+type AgentBuildIdentity struct {
+	DeviceID     string `json:"device_id"`
+	Nonce        string `json:"nonce"`
+	Version      string `json:"version"`
+	Commit       string `json:"commit"`
+	SourceSHA256 string `json:"source_sha256"`
+	BuiltAt      string `json:"built_at"`
+	Go           string `json:"go"`
+	Platform     string `json:"platform"`
+	Signature    string `json:"signature"`
+}
+
 type SessionAccepted struct {
-	Capabilities []Capability `json:"capabilities,omitempty"`
+	Capabilities  []Capability        `json:"capabilities,omitempty"`
+	BuildIdentity *AgentBuildIdentity `json:"build_identity,omitempty"`
 }
 
 type Resize struct {

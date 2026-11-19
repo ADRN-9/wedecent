@@ -756,6 +756,8 @@ func runConnect(args []string) (int, error) {
 	webRelay := fs.String("web-relay", "", "override with a serverless WebSocket relay URL")
 	lanTimeout := fs.Duration("lan-timeout", 1500*time.Millisecond, "trusted LAN discovery window; 0 disables automatic LAN selection")
 	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT")
+	expectedAgentCommit := fs.String("expected-agent-commit", "", "require this authenticated target-agent source commit")
+	expectedAgentSourceSHA256 := fs.String("expected-agent-source-sha256", "", "require this authenticated target-agent source archive SHA-256")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
 	routeRouter := fs.String("route-router", "", "explicit one-hop router device ID")
@@ -882,7 +884,9 @@ func runConnect(args []string) (int, error) {
 			Identity:        id,
 			Trust:           store,
 			Dialer:          routedDialer,
-			ConnectionGrant: connectionGrant,
+			ConnectionGrant:          connectionGrant,
+			ExpectedAgentCommit:       *expectedAgentCommit,
+			ExpectedAgentSourceSHA256: *expectedAgentSourceSHA256,
 		}
 		return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
 	}
@@ -892,7 +896,10 @@ func runConnect(args []string) (int, error) {
 		webRelayGrant = connectionGrant
 	}
 	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, webRelayGrant)}
-	client := &session.Client{Identity: id, Trust: store, Dialer: dialer, ConnectionGrant: connectionGrant}
+	client := &session.Client{
+		Identity: id, Trust: store, Dialer: dialer, ConnectionGrant: connectionGrant,
+		ExpectedAgentCommit: *expectedAgentCommit, ExpectedAgentSourceSHA256: *expectedAgentSourceSHA256,
+	}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
 }
 

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"wedecent.com/wedecent/internal/audit"
+	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/protocol"
 	"wedecent.com/wedecent/internal/terminal"
@@ -300,6 +301,12 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 		_ = sendError(conn, "authorization_denied", "connection authorization failed")
 		return
 	}
+	grantJTI, err := ConnectionGrantJTI(grant)
+	if err != nil {
+		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_connection_grant"})
+		_ = sendError(conn, "authorization_denied", "connection authorization failed")
+		return
+	}
 	if s.DirectAuthorizer == nil {
 		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "authorizer_unavailable"})
 		_ = sendError(conn, "authorization_unavailable", "direct connection authorization is not configured")
@@ -313,10 +320,36 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 		_ = sendError(conn, "authorization_denied", "connection authorization failed")
 		return
 	}
+	verifier, ok := s.DirectAuthorizer.(GrantEvidenceVerifier)
+	if !ok {
+		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "grant_evidence_unavailable"})
+		_ = sendError(conn, "authorization_unavailable", "server-side grant evidence is unavailable")
+		return
+	}
+	if err := verifier.VerifyConsumption(ctx, clientID, s.Identity.ID, grantJTI, "direct"); err != nil {
+		s.log().Warn("direct session grant evidence rejected", "client_id", clientID, "error", err)
+		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "grant_evidence_rejected"})
+		_ = sendError(conn, "authorization_denied", "connection authorization evidence could not be verified")
+		return
+	}
 	s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport})
 
-	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, Capabilities: req.Capabilities})
+	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, BuildNonce: req.BuildNonce, Capabilities: req.Capabilities})
 	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport)
+}
+
+func (s *Server) signedBuildIdentity(nonce string) (*protocol.AgentBuildIdentity, error) {
+	if nonce == "" {
+		return nil, nil
+	}
+	if s.Identity == nil {
+		return nil, errors.New("agent identity is unavailable")
+	}
+	attestation, err := buildinfo.SignIdentity(s.Identity.ID, s.Identity.PrivateKey, nonce)
+	if err != nil {
+		return nil, err
+	}
+	return &attestation, nil
 }
 
 func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
@@ -351,10 +384,38 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		_ = sendError(conn, "bad_request", "invalid session request")
 		return
 	}
+	if transport == "relay" {
+		if !validConnectionGrantJTI(open.GrantJTI) {
+			s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "relay_grant_evidence_missing"})
+			_ = sendError(conn, "authorization_required", "relay session grant evidence is required")
+			return
+		}
+		verifier, ok := s.DirectAuthorizer.(GrantEvidenceVerifier)
+		if !ok {
+			s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "grant_evidence_unavailable"})
+			_ = sendError(conn, "authorization_unavailable", "server-side grant evidence is unavailable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		err := verifier.VerifyConsumption(ctx, peer.ID, s.Identity.ID, open.GrantJTI, "relay")
+		cancel()
+		if err != nil {
+			s.log().Warn("relay session grant evidence rejected", "client_id", peer.ID, "error", err)
+			s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "grant_evidence_rejected"})
+			_ = sendError(conn, "authorization_denied", "connection authorization evidence could not be verified")
+			return
+		}
+	}
+	buildIdentity, err := s.signedBuildIdentity(open.BuildNonce)
+	if err != nil {
+		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "build_identity_failed"})
+		_ = sendError(conn, "server_error", "agent build identity could not be signed")
+		return
+	}
 	fileReady := s.FileTransfer != nil && s.FileTransfer.Ready()
 	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady)
 	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
-		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities)
+		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities, buildIdentity)
 		return
 	}
 	if open.Cols == 0 {
@@ -370,7 +431,12 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		return
 	}
 	defer pty.Close()
-	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeSessionAccepted}); err != nil {
+	accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
+	if err != nil {
+		_ = sendError(conn, "server_error", "session acceptance metadata could not be encoded")
+		return
+	}
+	if err := protocol.WriteFrame(conn, accepted); err != nil {
 		return
 	}
 	s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, Transport: transport})
