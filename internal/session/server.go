@@ -100,7 +100,7 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 			_ = sendError(tlsConn, "authorization_required", "this transport requires an authorized session request")
 			return
 		}
-		s.handleTerminal(tlsConn, first, transport)
+		s.handleTerminal(tlsConn, first, transport, nil)
 	case protocol.TypeOpenAuthorizedSession:
 		if !requireInBandAuthorization {
 			s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "unexpected_authorized_request"})
@@ -320,22 +320,23 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 		_ = sendError(conn, "authorization_denied", "connection authorization failed")
 		return
 	}
-	verifier, ok := s.DirectAuthorizer.(GrantEvidenceVerifier)
+	provider, ok := s.DirectAuthorizer.(GrantEvidenceProvider)
 	if !ok {
 		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "grant_evidence_unavailable"})
 		_ = sendError(conn, "authorization_unavailable", "server-side grant evidence is unavailable")
 		return
 	}
-	if err := verifier.VerifyConsumption(ctx, clientID, s.Identity.ID, grantJTI, "direct"); err != nil {
+	evidence, err := provider.VerifyConsumptionEvidence(ctx, clientID, s.Identity.ID, grantJTI, "direct")
+	if err != nil {
 		s.log().Warn("direct session grant evidence rejected", "client_id", clientID, "error", err)
 		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "grant_evidence_rejected"})
 		_ = sendError(conn, "authorization_denied", "connection authorization evidence could not be verified")
 		return
 	}
-	s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport})
+	s.recordGrantAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport}, &evidence)
 
 	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, BuildNonce: req.BuildNonce, Capabilities: req.Capabilities})
-	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport)
+	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport, &evidence)
 }
 
 func (s *Server) signedBuildIdentity(nonce string) (*protocol.AgentBuildIdentity, error) {
@@ -352,7 +353,7 @@ func (s *Server) signedBuildIdentity(nonce string) (*protocol.AgentBuildIdentity
 	return &attestation, nil
 }
 
-func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport string, authorization *GrantConsumptionEvidence) {
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
@@ -390,14 +391,14 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 			_ = sendError(conn, "authorization_required", "relay session grant evidence is required")
 			return
 		}
-		verifier, ok := s.DirectAuthorizer.(GrantEvidenceVerifier)
+		provider, ok := s.DirectAuthorizer.(GrantEvidenceProvider)
 		if !ok {
 			s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "grant_evidence_unavailable"})
 			_ = sendError(conn, "authorization_unavailable", "server-side grant evidence is unavailable")
 			return
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		err := verifier.VerifyConsumption(ctx, peer.ID, s.Identity.ID, open.GrantJTI, "relay")
+		evidence, err := provider.VerifyConsumptionEvidence(ctx, peer.ID, s.Identity.ID, open.GrantJTI, "relay")
 		cancel()
 		if err != nil {
 			s.log().Warn("relay session grant evidence rejected", "client_id", peer.ID, "error", err)
@@ -405,6 +406,8 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 			_ = sendError(conn, "authorization_denied", "connection authorization evidence could not be verified")
 			return
 		}
+		authorization = &evidence
+		s.recordGrantAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: peer.ID, Transport: transport}, authorization)
 	}
 	buildIdentity, err := s.signedBuildIdentity(open.BuildNonce)
 	if err != nil {
@@ -415,7 +418,7 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 	fileReady := s.FileTransfer != nil && s.FileTransfer.Ready()
 	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady)
 	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
-		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities, buildIdentity)
+		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities, buildIdentity, authorization)
 		return
 	}
 	if open.Cols == 0 {
@@ -439,10 +442,10 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 	if err := protocol.WriteFrame(conn, accepted); err != nil {
 		return
 	}
-	s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, Transport: transport})
+	s.recordGrantAudit(audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
 	defer func() {
-		s.recordAudit(audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, Transport: transport, Reason: closeReason})
+		s.recordGrantAudit(audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, Transport: transport, Reason: closeReason}, authorization)
 	}()
 	s.log().Info("terminal opened", "client_id", peer.ID, "client_name", peer.Name)
 
@@ -656,6 +659,17 @@ func transportAuditProvenance(transport string) string {
 	default:
 		return ""
 	}
+}
+
+func (s *Server) recordGrantAudit(event audit.Event, evidence *GrantConsumptionEvidence) {
+	if evidence != nil {
+		event.AuthorizationRunID = evidence.AuthorizationRunID
+		event.ValidationAttemptID = evidence.ValidationAttemptID
+		event.ConsumptionAttemptID = evidence.ConsumptionAttemptID
+		event.ValidationEventID = evidence.ValidationEventID
+		event.ConsumptionEventID = evidence.ConsumptionEventID
+	}
+	s.recordAudit(event)
 }
 
 func (s *Server) recordAudit(event audit.Event) {

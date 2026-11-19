@@ -20,7 +20,54 @@ const (
 	maxFieldLength    = 512
 )
 
-var eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}$`)
+var (
+	eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}package audit
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	FileName          = "audit.jsonl"
+	archiveFileName   = "audit.jsonl.1"
+	defaultMaxLogSize = 16 << 20
+	maxEventSize      = 4 << 10
+	maxFieldLength    = 512
+)
+
+)
+	auditUUIDPattern = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}package audit
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strings"
+	"sync"
+	"time"
+)
+
+const (
+	FileName          = "audit.jsonl"
+	archiveFileName   = "audit.jsonl.1"
+	defaultMaxLogSize = 16 << 20
+	maxEventSize      = 4 << 10
+	maxFieldLength    = 512
+)
+
+)
+)
 
 // Event is deliberately narrow: audit records may identify actors, peers,
 // transports, typed-stream IDs, and stable reason codes, but they have no
@@ -32,8 +79,13 @@ type Event struct {
 	Outcome             string    `json:"outcome"`
 	ActorID             string    `json:"actor_id,omitempty"`
 	PeerID              string    `json:"peer_id,omitempty"`
-	AttemptID           string    `json:"attempt_id,omitempty"`
-	Transport           string    `json:"transport,omitempty"`
+	AttemptID             string    `json:"attempt_id,omitempty"`
+	AuthorizationRunID    string    `json:"authorization_run_id,omitempty"`
+	ValidationAttemptID   string    `json:"validation_attempt_id,omitempty"`
+	ConsumptionAttemptID  string    `json:"consumption_attempt_id,omitempty"`
+	ValidationEventID     string    `json:"validation_event_id,omitempty"`
+	ConsumptionEventID    string    `json:"consumption_event_id,omitempty"`
+	Transport             string    `json:"transport,omitempty"`
 	TransportProvenance string    `json:"transport_provenance,omitempty"`
 	StreamID            uint32    `json:"stream_id,omitempty"`
 	Reason              string    `json:"reason,omitempty"`
@@ -134,8 +186,33 @@ func validateEvent(event *Event) error {
 	event.Outcome = strings.TrimSpace(event.Outcome)
 	event.ActorID = strings.TrimSpace(event.ActorID)
 	event.PeerID = strings.TrimSpace(event.PeerID)
+	event.AuthorizationRunID = strings.TrimSpace(event.AuthorizationRunID)
+	event.ValidationAttemptID = strings.TrimSpace(event.ValidationAttemptID)
+	event.ConsumptionAttemptID = strings.TrimSpace(event.ConsumptionAttemptID)
+	event.ValidationEventID = strings.TrimSpace(event.ValidationEventID)
+	event.ConsumptionEventID = strings.TrimSpace(event.ConsumptionEventID)
 	if event.AttemptID != "" && !pairingAttemptPattern.MatchString(event.AttemptID) {
 		return errors.New("audit pairing attempt ID is invalid")
+	}
+	authorizationIDs := []string{
+		event.AuthorizationRunID, event.ValidationAttemptID, event.ConsumptionAttemptID,
+		event.ValidationEventID, event.ConsumptionEventID,
+	}
+	presentAuthorizationIDs := 0
+	for _, id := range authorizationIDs {
+		if id != "" {
+			presentAuthorizationIDs++
+			if !auditUUIDPattern.MatchString(id) {
+				return errors.New("audit authorization provenance identifier is invalid")
+			}
+		}
+	}
+	if presentAuthorizationIDs != 0 && presentAuthorizationIDs != len(authorizationIDs) {
+		return errors.New("audit authorization provenance identifiers must be complete")
+	}
+	if presentAuthorizationIDs == len(authorizationIDs) &&
+		(event.ValidationAttemptID == event.ConsumptionAttemptID || event.ValidationEventID == event.ConsumptionEventID) {
+		return errors.New("audit authorization event identifiers are not independent")
 	}
 	event.Transport = strings.TrimSpace(event.Transport)
 	event.TransportProvenance = strings.TrimSpace(event.TransportProvenance)
@@ -153,6 +230,11 @@ func validateEvent(event *Event) error {
 	}
 	for name, value := range map[string]string{
 		"actor_id": event.ActorID, "peer_id": event.PeerID,
+		"authorization_run_id": event.AuthorizationRunID,
+		"validation_attempt_id": event.ValidationAttemptID,
+		"consumption_attempt_id": event.ConsumptionAttemptID,
+		"validation_event_id": event.ValidationEventID,
+		"consumption_event_id": event.ConsumptionEventID,
 		"transport": event.Transport, "transport_provenance": event.TransportProvenance,
 		"reason": event.Reason,
 	} {

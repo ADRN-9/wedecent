@@ -127,6 +127,10 @@ func (a *evidenceTrackingAuthorizer) VerifyConsumption(_ context.Context, client
 	return a.verifyErr
 }
 
+func (a *evidenceTrackingAuthorizer) VerifyConsumptionEvidence(ctx context.Context, clientID, targetID, jti, flow string) (GrantConsumptionEvidence, error) {
+	return GrantConsumptionEvidence{}, a.VerifyConsumption(ctx, clientID, targetID, jti, flow)
+}
+
 func TestTerminalSessionsRequireIndependentServerGrantEvidence(t *testing.T) {
 	for _, flow := range []string{"direct", "relay"} {
 		t.Run(flow, func(t *testing.T) {

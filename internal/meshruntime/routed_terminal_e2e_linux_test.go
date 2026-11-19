@@ -72,6 +72,47 @@ func (a routedE2EDirectAuthorizer) VerifyConsumption(
 	return nil
 }
 
+func (a routedE2EDirectAuthorizer) VerifyConsumptionEvidence(
+	ctx context.Context,
+	clientID, destination, jti, flow string,
+) (session.GrantConsumptionEvidence, error) {
+	if err := a.VerifyConsumption(ctx, clientID, destination, jti, flow); err != nil {
+		return session.GrantConsumptionEvidence{}, err
+	}
+	validatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	consumedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	retainUntil := time.Now().Add(time.Hour).UnixMilli()
+	const runID = "d90987bf-bae6-45da-ab21-c82d049617bd"
+	const validationAttemptID = "b90987bf-bae6-45da-ab21-c82d049617bd"
+	const consumptionAttemptID = "c90987bf-bae6-45da-ab21-c82d049617bd"
+	const validationEventID = "e90987bf-bae6-45da-ab21-c82d049617bd"
+	const consumptionEventID = "f90987bf-bae6-45da-ab21-c82d049617bd"
+	grantID := "d90987bf-bae6-45da-ab21-c82d049617bd"
+	validationEvent := session.GrantEventEvidence{
+		EventID: validationEventID, RunID: runID, AttemptID: validationAttemptID,
+		Type: "authorization.validation", Outcome: "accepted", GrantID: grantID, JTI: jti,
+		ClientDeviceID: clientID, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, OccurredAt: validatedAt, RetainUntilMS: retainUntil,
+	}
+	consumptionEvent := session.GrantEventEvidence{
+		EventID: consumptionEventID, RunID: runID, AttemptID: consumptionAttemptID,
+		Type: "authorization.consumption", Outcome: "consumed", GrantID: grantID, JTI: jti,
+		ClientDeviceID: clientID, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, OccurredAt: consumedAt, RetainUntilMS: retainUntil,
+	}
+	return session.GrantConsumptionEvidence{
+		Version: 1, AuthorizationRunID: runID, ValidationAttemptID: validationAttemptID,
+		ConsumptionAttemptID: consumptionAttemptID, ValidationEventID: validationEventID,
+		ConsumptionEventID: consumptionEventID, ValidationEvent: validationEvent,
+		ConsumptionEvent: consumptionEvent, GrantID: grantID, JTI: jti,
+		ClientDeviceID: clientID, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
+		ValidatedAt: validatedAt, ConsumedAt: consumedAt,
+		ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+		RetainUntilMS: retainUntil,
+	}, nil
+}
+
 func TestRoutedTerminalE2E(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()

@@ -25,24 +25,51 @@ const (
 	productionAuthorizationOrigin   = "https://relay.wedecent.com"
 )
 
+type GrantEventEvidence struct {
+	EventID        string `json:"event_id"`
+	RunID          string `json:"run_id"`
+	AttemptID      string `json:"attempt_id"`
+	Type           string `json:"type"`
+	Outcome        string `json:"outcome"`
+	GrantID        string `json:"grant_id"`
+	JTI            string `json:"jti"`
+	ClientDeviceID string `json:"client_device_id"`
+	TargetDeviceID string `json:"target_device_id"`
+	Permission     string `json:"permission"`
+	Flow           string `json:"flow"`
+	OccurredAt     string `json:"occurred_at"`
+	RetainUntilMS  int64  `json:"retain_until_ms"`
+}
+
 type GrantConsumptionEvidence struct {
-	Version            int    `json:"version"`
-	GrantID            string `json:"grant_id"`
-	JTI                string `json:"jti"`
-	ClientDeviceID     string `json:"client_device_id"`
-	TargetDeviceID     string `json:"target_device_id"`
-	Permission         string `json:"permission"`
-	Flow               string `json:"flow"`
-	ValidationOutcome  string `json:"validation_outcome"`
-	ConsumptionOutcome string `json:"consumption_outcome"`
-	ValidatedAt        string `json:"validated_at"`
-	ConsumedAt         string `json:"consumed_at"`
-	ExpiresAt          string `json:"expires_at"`
-	RetainUntilMS      int64  `json:"retain_until_ms"`
+	Version               int                `json:"version"`
+	AuthorizationRunID    string             `json:"authorization_run_id"`
+	ValidationAttemptID   string             `json:"validation_attempt_id"`
+	ConsumptionAttemptID  string             `json:"consumption_attempt_id"`
+	ValidationEventID     string             `json:"validation_event_id"`
+	ConsumptionEventID    string             `json:"consumption_event_id"`
+	ValidationEvent       GrantEventEvidence `json:"validation_event"`
+	ConsumptionEvent      GrantEventEvidence `json:"consumption_event"`
+	GrantID               string             `json:"grant_id"`
+	JTI                   string             `json:"jti"`
+	ClientDeviceID        string             `json:"client_device_id"`
+	TargetDeviceID        string             `json:"target_device_id"`
+	Permission            string             `json:"permission"`
+	Flow                  string             `json:"flow"`
+	ValidationOutcome     string             `json:"validation_outcome"`
+	ConsumptionOutcome    string             `json:"consumption_outcome"`
+	ValidatedAt           string             `json:"validated_at"`
+	ConsumedAt            string             `json:"consumed_at"`
+	ExpiresAt             string             `json:"expires_at"`
+	RetainUntilMS         int64              `json:"retain_until_ms"`
 }
 
 type GrantEvidenceVerifier interface {
 	VerifyConsumption(context.Context, string, string, string, string) error
+}
+
+type GrantEvidenceProvider interface {
+	VerifyConsumptionEvidence(context.Context, string, string, string, string) (GrantConsumptionEvidence, error)
 }
 
 type RelayDirectAuthorizer struct {
@@ -196,14 +223,19 @@ func validConnectionGrantJTI(jti string) bool {
 }
 
 func (a RelayDirectAuthorizer) VerifyConsumption(ctx context.Context, clientDeviceID, targetDeviceID, jti, flow string) error {
+	_, err := a.VerifyConsumptionEvidence(ctx, clientDeviceID, targetDeviceID, jti, flow)
+	return GrantConsumptionEvidence{}, err
+}
+
+func (a RelayDirectAuthorizer) VerifyConsumptionEvidence(ctx context.Context, clientDeviceID, targetDeviceID, jti, flow string) (GrantConsumptionEvidence, error) {
 	if a.Identity == nil || targetDeviceID != a.Identity.ID ||
 		!validSessionDeviceID(clientDeviceID) || !validSessionDeviceID(targetDeviceID) ||
 		!validConnectionGrantJTI(jti) || (flow != "direct" && flow != "relay") {
-		return errors.New("grant evidence query identity is invalid")
+		return GrantConsumptionEvidence{}, errors.New("grant evidence query identity is invalid")
 	}
 	origin, err := directAuthorizationOrigin(a.BaseURL, a.allowLoopbackForTests)
 	if err != nil {
-		return err
+		return GrantConsumptionEvidence{}, err
 	}
 	ticketSource := a.TicketSource
 	if ticketSource == nil {
@@ -211,13 +243,13 @@ func (a RelayDirectAuthorizer) VerifyConsumption(ctx context.Context, clientDevi
 	}
 	ticket, err := ticketSource(ctx, origin, targetDeviceID, "authorize", 0)
 	if err != nil {
-		return fmt.Errorf("create grant evidence proof: %w", err)
+		return GrantConsumptionEvidence{}, fmt.Errorf("create grant evidence proof: %w", err)
 	}
 
 	endpoint := origin + "/v1/grant-evidence/" + targetDeviceID + "/" + strings.ToLower(jti)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
-		return fmt.Errorf("build grant evidence request: %w", err)
+		return GrantConsumptionEvidence{}, fmt.Errorf("build grant evidence request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+ticket)
 	req.Header.Set("Accept", "application/json")
@@ -233,36 +265,49 @@ func (a RelayDirectAuthorizer) VerifyConsumption(ctx context.Context, clientDevi
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }
 	resp, err := client.Do(req)
 	if err != nil {
-		return fmt.Errorf("grant evidence request: %w", err)
+		return GrantConsumptionEvidence{}, fmt.Errorf("grant evidence request: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("grant validation/consumption evidence unavailable (HTTP %d)", resp.StatusCode)
+		return GrantConsumptionEvidence{}, fmt.Errorf("grant validation/consumption evidence unavailable (HTTP %d)", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxGrantEvidenceBodyBytes+1))
 	if err != nil {
-		return fmt.Errorf("read grant evidence: %w", err)
+		return GrantConsumptionEvidence{}, fmt.Errorf("read grant evidence: %w", err)
 	}
 	if len(body) == 0 || len(body) > maxGrantEvidenceBodyBytes {
-		return errors.New("grant evidence response has an invalid size")
+		return GrantConsumptionEvidence{}, errors.New("grant evidence response has an invalid size")
 	}
 	var evidence GrantConsumptionEvidence
 	if err := json.Unmarshal(body, &evidence); err != nil {
-		return errors.New("grant evidence response is malformed")
+		return GrantConsumptionEvidence{}, errors.New("grant evidence response is malformed")
 	}
 	if evidence.Version != 1 || evidence.JTI != strings.ToLower(jti) ||
 		evidence.ClientDeviceID != clientDeviceID || evidence.TargetDeviceID != targetDeviceID ||
 		evidence.Permission != "terminal.connect" || evidence.Flow != flow ||
 		evidence.ValidationOutcome != "accepted" || evidence.ConsumptionOutcome != "consumed" ||
-		evidence.GrantID == "" || evidence.RetainUntilMS <= time.Now().UnixMilli() {
-		return errors.New("grant validation/consumption evidence does not match this session")
+		evidence.GrantID == "" || evidence.RetainUntilMS <= time.Now().UnixMilli() ||
+		!validConnectionGrantJTI(evidence.AuthorizationRunID) ||
+		!validConnectionGrantJTI(evidence.ValidationAttemptID) ||
+		!validConnectionGrantJTI(evidence.ConsumptionAttemptID) ||
+		!validConnectionGrantJTI(evidence.ValidationEventID) ||
+		!validConnectionGrantJTI(evidence.ConsumptionEventID) ||
+		evidence.ValidationAttemptID == evidence.ConsumptionAttemptID ||
+		evidence.ValidationEventID == evidence.ConsumptionEventID {
+		return GrantConsumptionEvidence{}, errors.New("grant validation/consumption evidence does not match this session")
+	}
+	if !grantEventMatches(evidence.ValidationEvent, evidence, evidence.ValidationEventID,
+		evidence.ValidationAttemptID, "authorization.validation", "accepted", evidence.ValidatedAt) ||
+		!grantEventMatches(evidence.ConsumptionEvent, evidence, evidence.ConsumptionEventID,
+			evidence.ConsumptionAttemptID, "authorization.consumption", "consumed", evidence.ConsumedAt) {
+		return GrantConsumptionEvidence{}, errors.New("grant validation/consumption event records are incomplete or inconsistent")
 	}
 	for _, stamp := range []string{evidence.ValidatedAt, evidence.ConsumedAt, evidence.ExpiresAt} {
 		if _, err := time.Parse(time.RFC3339Nano, stamp); err != nil {
-			return errors.New("grant evidence timestamps are invalid")
+			return GrantConsumptionEvidence{}, errors.New("grant evidence timestamps are invalid")
 		}
 	}
-	return nil
+	return evidence, nil
 }
 
 func validSessionDeviceID(s string) bool {
@@ -275,4 +320,25 @@ func validSessionDeviceID(s string) bool {
 		}
 	}
 	return true
+}
+
+func grantEventMatches(
+	event GrantEventEvidence,
+	evidence GrantConsumptionEvidence,
+	eventID, attemptID, eventType, outcome, occurredAt string,
+) bool {
+	return validConnectionGrantJTI(event.EventID) &&
+		event.EventID == eventID &&
+		event.RunID == evidence.AuthorizationRunID &&
+		event.AttemptID == attemptID &&
+		event.Type == eventType &&
+		event.Outcome == outcome &&
+		event.GrantID == evidence.GrantID &&
+		event.JTI == evidence.JTI &&
+		event.ClientDeviceID == evidence.ClientDeviceID &&
+		event.TargetDeviceID == evidence.TargetDeviceID &&
+		event.Permission == evidence.Permission &&
+		event.Flow == evidence.Flow &&
+		event.OccurredAt == occurredAt &&
+		event.RetainUntilMS == evidence.RetainUntilMS
 }
