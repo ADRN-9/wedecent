@@ -93,6 +93,8 @@ grep -Fq "separate fresh connection grant" "$log" || {
   echo "NCM harness did not identify the reused reconnect grant" >&2
   exit 1
 }
+printf '%s' 'header.second.payload' > "$reconnect"
+chmod 600 "$reconnect"
 
 fakebin="$work/fakebin"
 mkdir -m 700 "$fakebin"
