@@ -24,6 +24,16 @@ type EndpointConnHandler interface {
 	ServeConn(net.Conn)
 }
 
+type routeAttributedConn struct {
+	net.Conn
+	routerID   string
+	underlying string
+}
+
+func (c routeAttributedConn) WeDecentTransportAttribution() (kind, underlying, routerID string) {
+	return "routed", c.underlying, c.routerID
+}
+
 // DestinationIngress authenticates a B -> C route-tunnel connection before
 // handing its decrypted outer stream to C's endpoint-session handler.
 //
@@ -81,7 +91,9 @@ func (i DestinationIngress) Serve(
 	// Ownership is scoped to this call. session.Server.ServeConn also closes
 	// its input when it returns; closing twice is harmless and guarantees that
 	// alternate handlers cannot leak the authenticated outer connection.
-	i.Handler.ServeConn(link)
+	i.Handler.ServeConn(routeAttributedConn{
+		Conn: link, routerID: string(link.Remote()), underlying: string(link.Transport()),
+	})
 
 	return nil
 }
