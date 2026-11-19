@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"net"
 	"testing"
@@ -54,12 +55,13 @@ func TestServeConnRejectsLegacyOpenSessionBeforePTY(t *testing.T) {
 
 func TestServeConnBindsAuthorizationToTLSClientIdentity(t *testing.T) {
 	auth := &rejectingAuthorizer{}
+	grant := testConnectionGrant()
 	server, clientConn, done := directSessionTestPair(t, auth)
 	defer clientConn.Close()
 	defer func() { <-done }()
 
 	payload, _ := protocol.JSON(protocol.OpenAuthorizedSession{
-		Cols: 80, Rows: 24, Term: "xterm", ConnectionGrant: "header.payload.signature",
+		Cols: 80, Rows: 24, Term: "xterm", ConnectionGrant: grant,
 	})
 	if err := protocol.WriteFrame(clientConn, protocol.Frame{Type: protocol.TypeOpenAuthorizedSession, Payload: payload}); err != nil {
 		t.Fatal(err)
@@ -78,7 +80,7 @@ func TestServeConnBindsAuthorizationToTLSClientIdentity(t *testing.T) {
 	if msg.Code != "authorization_denied" {
 		t.Fatalf("error code = %q", msg.Code)
 	}
-	if auth.clientID == "" || auth.targetID != server.Identity.ID || auth.grant != "header.payload.signature" {
+	if auth.clientID == "" || auth.targetID != server.Identity.ID || auth.grant != grant {
 		t.Fatalf("authorization inputs = client:%q target:%q grant:%q", auth.clientID, auth.targetID, auth.grant)
 	}
 }
@@ -105,6 +107,11 @@ func TestServeConnRejectsAuthorizedSessionWithoutAuthorizer(t *testing.T) {
 	if msg.Code != "authorization_unavailable" {
 		t.Fatalf("error code = %q", msg.Code)
 	}
+}
+
+func testConnectionGrant() string {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"jti":"76b4c468-4e39-437c-a9c8-b758c92ab89b"}`))
+	return "header." + payload + ".signature"
 }
 
 func directSessionTestPair(t *testing.T, auth DirectAuthorizer) (*Server, *tls.Conn, <-chan struct{}) {

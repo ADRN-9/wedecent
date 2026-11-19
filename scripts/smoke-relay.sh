@@ -64,7 +64,10 @@ sleep 1
   --fingerprint "$FP" \
   --pairing-secret-file "$TMP/pairing.secret"
 
-printf '%s\n' 'header.payload.signature' >"$TMP/grant.jwt"
+GRANT_JTI=76b4c468-4e39-437c-a9c8-b758c92ab89b
+GRANT_ID=d90987bf-bae6-45da-ab21-c82d049617bd
+GRANT_PAYLOAD=$(printf '{"jti":"%s","grant_id":"%s"}' "$GRANT_JTI" "$GRANT_ID" | base64 | tr -d '\n=' | tr '+/' '-_')
+printf 'header.%s.signature\n' "$GRANT_PAYLOAD" >"$TMP/grant.jwt"
 chmod 600 "$TMP/grant.jwt"
 set +e
 printf 'printf "WEDECENT_RELAY_OK\\n"\nexit 23\n' | "$TMP/bin/wd" connect \
