@@ -166,7 +166,7 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		if err == nil {
 			err = pairingAudit.Append(audit.Event{
 				Type: "pairing.request", Outcome: "pending", ActorID: s.Identity.ID,
-				PeerID: clientID, Transport: transport, AttemptID: attemptID,
+				PeerID: clientID, Transport: transport, TransportProvenance: transportAuditProvenance(transport), AttemptID: attemptID,
 			})
 		}
 		if err == nil {
@@ -211,6 +211,7 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 			denial := audit.Event{
 				Time: time.Now().UTC(), Type: "pairing.request", Outcome: "denied",
 				ActorID: s.Identity.ID, PeerID: clientID, Transport: transport,
+				TransportProvenance: transportAuditProvenance(transport),
 				AttemptID: attemptID, Reason: "invalid_pairing_secret",
 			}
 			if err := pairingAudit.Append(denial); err != nil {
@@ -238,7 +239,8 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 	}
 	completion := audit.Event{
 		Time: time.Now().UTC(), Type: "pairing.trust_added", Outcome: "success", ActorID: s.Identity.ID,
-		PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason,
+		PeerID: clientID, Transport: transport, TransportProvenance: transportAuditProvenance(transport),
+		AttemptID: attemptID, Reason: reason,
 	}
 	appendCompletion := pairingAudit.Append
 	if s.pairingCompletionAudit != nil {
@@ -577,15 +579,21 @@ func waitForPeerClose(frameCh <-chan protocol.Frame, readErrCh <-chan error, tim
 	}
 }
 
-func (s *Server) recordAudit(event audit.Event) {
+func transportAuditProvenance(transport string) string {
 	// USB NCM attribution is an operator configuration assertion, not
 	// hardware attestation. Ordinary transports come from the local adapter.
 	switch {
-	case strings.HasSuffix(event.Transport, "+usb_ncm"):
-		event.TransportProvenance = "operator_config_assertion"
-	case event.Transport != "":
-		event.TransportProvenance = "listener_adapter"
+	case strings.HasSuffix(transport, "+usb_ncm"):
+		return "operator_config_assertion"
+	case transport != "":
+		return "listener_adapter"
+	default:
+		return ""
 	}
+}
+
+func (s *Server) recordAudit(event audit.Event) {
+	event.TransportProvenance = transportAuditProvenance(event.Transport)
 	if strings.TrimSpace(s.StateDir) == "" {
 		return
 	}

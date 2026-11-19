@@ -13,7 +13,8 @@ import (
 )
 
 // ReadPrivateFile reads a bounded regular file without following a reparse
-// point. The file must be owned by the current user and have a narrow DACL.
+// point. The file must be owned by the current user or a trusted Windows
+// service principal, and must have a narrow DACL.
 func ReadPrivateFile(path string, maxBytes int64) ([]byte, error) {
 	if path == "" || maxBytes < 1 {
 		return nil, errors.New("private file path and positive size limit are required")
@@ -106,10 +107,13 @@ func validatePrivateFileSecurity(path string) error {
 }
 
 func validatePrivateFileOwner(owner, current string) error {
-	if owner == "" || current == "" || owner != current {
-		return errors.New("private file must be owned by the current user")
+	if current == "" {
+		return errors.New("current Windows user SID is unavailable")
 	}
-	return nil
+	if owner == current || owner == "S-1-5-18" || owner == "S-1-5-32-544" {
+		return nil
+	}
+	return errors.New("private file must be owned by the current user, LocalSystem, or Administrators")
 }
 
 func validatePrivateFileDACL(sddl, currentSID string) error {

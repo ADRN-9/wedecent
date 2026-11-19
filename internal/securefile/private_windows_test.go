@@ -20,6 +20,11 @@ func TestValidatePrivateFileOwner(t *testing.T) {
 	if err := validatePrivateFileOwner("S-1-5-21-1-2-3-1002", sid.String()); err == nil {
 		t.Fatal("mismatched owner was accepted")
 	}
+	for _, trustedOwner := range []string{"S-1-5-18", "S-1-5-32-544"} {
+		if err := validatePrivateFileOwner(trustedOwner, sid.String()); err != nil {
+			t.Fatalf("trusted service owner %s rejected: %v", trustedOwner, err)
+		}
+	}
 }
 
 func TestValidatePrivateFileDACL(t *testing.T) {
