@@ -91,7 +91,7 @@ func (c *Client) Pair(ctx context.Context, endpoint, expectedFingerprint, secret
 }
 
 func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.File, out io.Writer) (int, error) {
-	inBandAuthorization := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(peer.Endpoint)), "wsrelay://")
+	inBandAuthorization := !usesRelayGrantEvidence(peer.Endpoint)
 	grant := strings.TrimSpace(c.ConnectionGrant)
 	if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
 		return 0, errors.New("a valid connection grant is required for this transport")
@@ -304,4 +304,10 @@ func protocolError(payload []byte) error {
 		return errors.New("remote protocol error")
 	}
 	return fmt.Errorf("%s: %s", p.Code, p.Message)
+}
+
+
+func usesRelayGrantEvidence(endpoint string) bool {
+	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	return strings.HasPrefix(endpoint, "relay://") || strings.HasPrefix(endpoint, "wsrelay://")
 }
