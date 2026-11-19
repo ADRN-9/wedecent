@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -110,6 +113,7 @@ func Start(shell string, cols, rows uint16, _ string) (*PTY, error) {
 	// the pseudoconsole attribute supplies the child's console attachment.
 	si.Flags = windows.STARTF_USESTDHANDLES
 
+	envBlock := childEnvironmentBlock()
 	cmdLine, err := windows.UTF16PtrFromString(syscall.EscapeArg(shell))
 	if err != nil {
 		procClosePseudoConsole.Call(hpc)
@@ -126,7 +130,7 @@ func Start(shell string, cols, rows uint16, _ string) (*PTY, error) {
 		nil,
 		false,
 		windows.EXTENDED_STARTUPINFO_PRESENT|windows.CREATE_UNICODE_ENVIRONMENT,
-		nil,
+		&envBlock[0],
 		nil,
 		&si.StartupInfo,
 		&pi,
@@ -178,6 +182,17 @@ func Start(shell string, cols, rows uint16, _ string) (*PTY, error) {
 		return nil
 	}
 	return p, nil
+}
+
+func childEnvironmentBlock() []uint16 {
+	env := childEnvironment()
+	sort.SliceStable(env, func(i, j int) bool {
+		ki, _, _ := strings.Cut(env[i], "=")
+		kj, _, _ := strings.Cut(env[j], "=")
+		return strings.ToUpper(ki) < strings.ToUpper(kj)
+	})
+	block := strings.Join(env, "\x00") + "\x00\x00"
+	return utf16.Encode([]rune(block))
 }
 
 func packCoord(cols, rows uint16) uint32 {
