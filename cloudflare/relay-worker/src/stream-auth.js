@@ -3,11 +3,21 @@ import { verifyRelayTicket } from "./relay-auth.js";
 
 export const CONNECTION_GRANT_HEADER = "X-WeDecent-Connection-Grant";
 
+export async function authorizeGrantEvidence(request, targetDeviceID, nowSeconds = Math.floor(Date.now() / 1000)) {
+  const token = bearerToken(request);
+  if (!token) return { ok: false, status: 401 };
+  try {
+    const claims = await verifyRelayTicket(token, { deviceId: targetDeviceID, role: "authorize", slot: null }, nowSeconds);
+    if (claims.iss !== targetDeviceID || claims.sub !== targetDeviceID) return { ok: false, status: 401 };
+    return { ok: true };
+  } catch {
+    return { ok: false, status: 401 };
+  }
+}
+
 export async function authorizeStream(request, env, expected, nowSeconds = Math.floor(Date.now() / 1000)) {
   const token = bearerToken(request);
-  if (!token) {
-    return { ok: false, status: 401, message: "Unauthorized" };
-  }
+  if (!token) return { ok: false, status: 401, message: "Unauthorized" };
 
   if (token.startsWith("wdt2.")) {
     let relayClaims;
@@ -17,14 +27,10 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
       return { ok: false, status: 401, message: "Unauthorized" };
     }
 
-    if (expected.role === "agent") {
-      return { ok: true };
-    }
+    if (expected.role === "agent") return { ok: true };
 
     const grant = request.headers.get(CONNECTION_GRANT_HEADER)?.trim();
-    if (!grant) {
-      return { ok: false, status: 403, message: "Connection grant required" };
-    }
+    if (!grant) return { ok: false, status: 403, message: "Connection grant required" };
     if (!env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64) {
       return { ok: false, status: 503, message: "Connection grant verifier is not configured" };
     }
@@ -35,25 +41,29 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
     try {
       const grantClaims = await verifyConnectionGrant(
         grant,
-        {
-          clientDeviceID,
-          targetDeviceID: expected.deviceId,
-          permission: "terminal.connect",
-        },
+        { clientDeviceID, targetDeviceID: expected.deviceId, permission: "terminal.connect" },
         env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64,
         nowSeconds,
       );
-      return { ok: true, replay: { jti: grantClaims.jti, exp: grantClaims.exp } };
+      return {
+        ok: true,
+        replay: {
+          jti: grantClaims.jti,
+          exp: grantClaims.exp,
+          grantID: grantClaims.grant_id,
+          clientDeviceID,
+          targetDeviceID: expected.deviceId,
+          flow: expected.role === "authorize" ? "direct" : "relay",
+          permission: grantClaims.permission,
+          validatedAtMS: nowSeconds * 1000,
+        },
+      };
     } catch {
       return { ok: false, status: 403, message: "Connection grant rejected" };
     }
   }
 
-  // The shared relay token remains only as an agent migration credential.
-  // Allowing it for clients would bypass account-scoped connection grants.
-  if (expected.role === "agent" && env.RELAY_ACCESS_TOKEN && token === env.RELAY_ACCESS_TOKEN) {
-    return { ok: true };
-  }
+  if (expected.role === "agent" && env.RELAY_ACCESS_TOKEN && token === env.RELAY_ACCESS_TOKEN) return { ok: true };
   return { ok: false, status: 401, message: "Unauthorized" };
 }
 

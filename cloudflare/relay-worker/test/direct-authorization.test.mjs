@@ -6,11 +6,18 @@ import {
   consumeConnectionGrant,
   INTERNAL_GRANT_EXP_HEADER,
   INTERNAL_GRANT_JTI_HEADER,
+  INTERNAL_GRANT_ID_HEADER,
+  INTERNAL_GRANT_CLIENT_HEADER,
+  INTERNAL_GRANT_TARGET_HEADER,
+  INTERNAL_GRANT_FLOW_HEADER,
+  INTERNAL_GRANT_PERMISSION_HEADER,
+  INTERNAL_GRANT_VALIDATED_AT_HEADER,
   prepareDeviceRelayRequest,
+  readConnectionGrantEvidence,
   replayMetadataFromRequest,
 } from "../src/grant-replay.js";
 import { deviceIDFromPublicKey } from "../src/relay-auth.js";
-import { authorizeStream, CONNECTION_GRANT_HEADER } from "../src/stream-auth.js";
+import { authorizeGrantEvidence, authorizeStream, CONNECTION_GRANT_HEADER } from "../src/stream-auth.js";
 
 const now = 1_800_000_000;
 const userID = "0b7729e9-95bf-4591-80f4-3f0616e57751";
@@ -104,19 +111,14 @@ function websocketRequest(ticket, grant, targetDeviceID) {
 }
 
 function directReplayRequest(replay) {
-  return new Request("https://wedecent.internal/authorize", {
-    method: "POST",
-    headers: {
-      [INTERNAL_GRANT_JTI_HEADER]: replay.jti,
-      [INTERNAL_GRANT_EXP_HEADER]: String(replay.exp),
-    },
-  });
+  const forwarded = prepareDeviceRelayRequest(directRequest("ticket", "grant"), replay, CONNECTION_GRANT_HEADER);
+  return new Request("https://wedecent.internal/authorize", { method: "POST", headers: forwarded.headers });
 }
 
 async function consumeReplayRequest(storage, request) {
-  const replay = replayMetadataFromRequest(request);
-  assert.ok(replay, "trusted replay metadata should be present");
-  return consumeConnectionGrant(storage, replay.jti, replay.exp, now * 1000);
+  const metadata = replayMetadataFromRequest(request);
+  assert.ok(metadata, "trusted replay metadata should be present");
+  return consumeConnectionGrant(storage, metadata, now * 1000);
 }
 
 const env = { WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: publicSPKIB64 };
@@ -130,7 +132,16 @@ test("accepts a self-bound authorization ticket and matching connection grant", 
     now,
   );
   assert.equal(result.ok, true);
-  assert.deepEqual(result.replay, { jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b", exp: now + 90 });
+  assert.deepEqual(result.replay, {
+    jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b",
+    exp: now + 90,
+    grantID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    clientDeviceID,
+    targetDeviceID: relay.claims.iss,
+    flow: "direct",
+    permission: "terminal.connect",
+    validatedAtMS: now * 1000,
+  });
 });
 
 test("rejects direct authorization when the grant names another TLS client", async () => {
@@ -155,6 +166,23 @@ test("rejects a non-self-bound authorization ticket", async () => {
   );
   assert.equal(result.ok, false);
   assert.equal(result.status, 401);
+});
+
+test("grant evidence reads require a self-bound target authorization ticket", async () => {
+  const target = await issueAuthorizationTicket();
+  const authorized = await authorizeGrantEvidence(
+    new Request("https://relay.test/v1/grant-evidence", { headers: { Authorization: "Bearer " + target.token } }),
+    target.claims.iss,
+    now,
+  );
+  assert.deepEqual(authorized, { ok: true });
+
+  const denied = await authorizeGrantEvidence(
+    new Request("https://relay.test/v1/grant-evidence", { headers: { Authorization: "Bearer " + target.token } }),
+    otherClientDeviceID,
+    now,
+  );
+  assert.deepEqual(denied, { ok: false, status: 401 });
 });
 
 test("one replay store enforces single use across direct and websocket admission paths", async () => {
@@ -194,6 +222,13 @@ test("one replay store enforces single use across direct and websocket admission
     const second = await consumeReplayRequest(storage, secondRequest);
     assert.equal(first.accepted, true, `${firstName} should consume the fresh grant`);
     assert.equal(second.accepted, false, `${secondName} should see the grant as already used`);
+    const evidence = await readConnectionGrantEvidence(storage, "76b4c468-4e39-437c-a9c8-b758c92ab89b");
+    assert.ok(evidence, "consumption evidence should be independently retrievable");
+    assert.equal(evidence.flow, firstName);
+    assert.equal(evidence.validation_outcome, "accepted");
+    assert.equal(evidence.consumption_outcome, "consumed");
+    assert.equal(evidence.client_device_id, client.claims.iss);
+    assert.equal(evidence.target_device_id, target.claims.iss);
   }
 });
 
@@ -207,6 +242,10 @@ class FakeStorage {
       get: async (key) => this.data.get(key),
       put: async (key, value) => this.data.set(key, value),
     });
+  }
+
+  async get(key) {
+    return this.data.get(key);
   }
 }
 

@@ -73,7 +73,16 @@ test("accepts a client only when relay ticket and connection grant scopes match"
     now,
   );
   assert.equal(result.ok, true);
-  assert.deepEqual(result.replay, { jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b", exp: now + 90 });
+  assert.deepEqual(result.replay, {
+    jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b",
+    exp: now + 90,
+    grantID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    clientDeviceID: relay.claims.iss,
+    targetDeviceID,
+    flow: "relay",
+    permission: "terminal.connect",
+    validatedAtMS: now * 1000,
+  });
 });
 
 test("rejects a client with no connection grant", async () => {
