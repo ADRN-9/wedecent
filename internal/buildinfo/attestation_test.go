@@ -26,6 +26,9 @@ func TestAgentBuildIdentitySignatureBindsDeviceAndNonce(t *testing.T) {
 	if err := VerifyIdentity(publicKey, "wd_aaaaaaaaaaaaaaaa", nonce, attestation); err != nil {
 		t.Fatal(err)
 	}
+	if !validSHA256(attestation.ExecutableSHA256) {
+		t.Fatalf("executable SHA-256 is malformed: %q", attestation.ExecutableSHA256)
+	}
 	if err := VerifyIdentity(publicKey, "wd_bbbbbbbbbbbbbbbb", nonce, attestation); err == nil {
 		t.Fatal("accepted build identity for another device")
 	}
@@ -35,6 +38,11 @@ func TestAgentBuildIdentitySignatureBindsDeviceAndNonce(t *testing.T) {
 	attestation.Commit = "tampered"
 	if err := VerifyIdentity(publicKey, "wd_aaaaaaaaaaaaaaaa", nonce, attestation); err == nil {
 		t.Fatal("accepted tampered build metadata")
+	}
+	attestation.Commit = Current().Commit
+	attestation.ExecutableSHA256 = "not-a-sha256"
+	if err := VerifyIdentity(publicKey, "wd_aaaaaaaaaaaaaaaa", nonce, attestation); err == nil {
+		t.Fatal("accepted malformed executable SHA-256")
 	}
 }
 
