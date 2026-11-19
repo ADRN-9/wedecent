@@ -1,6 +1,8 @@
 package processenv
 
 import (
+	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -39,5 +41,45 @@ func TestCurrentDoesNotExposePairingSecret(t *testing.T) {
 		if strings.EqualFold(name, PairingSecretVariable) {
 			t.Fatalf("Current() leaked pairing secret environment entry %q", entry)
 		}
+	}
+}
+
+
+func TestClearCurrentRemovesPairingSecretFromDescendantProcess(t *testing.T) {
+	if os.Getenv("WEDECENT_PROCESSENV_CLEAR_HELPER") == "1" {
+		ClearCurrent()
+		cmd := exec.Command(os.Args[0], "-test.run=^TestPairingSecretAbsentInGrandchild$")
+		cmd.Env = append(os.Environ(), "WEDECENT_PROCESSENV_GRANDCHILD=1")
+		if output, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("grandchild inherited a cleared pairing secret: %v: %s", err, output)
+		}
+		return
+	}
+
+	cmd := exec.Command(os.Args[0], "-test.run=^TestClearCurrentRemovesPairingSecretFromDescendantProcess$")
+	cmd.Env = append(
+		WithoutPairingSecret(os.Environ()),
+		PairingSecretVariable+"=parent-canary",
+		strings.ToLower(PairingSecretVariable)+"=lowercase-canary",
+		"WEDECENT_PROCESSENV_CLEAR_HELPER=1",
+		"WEDECENT_PROCESSENV_KEEP=preserved",
+	)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("subprocess pairing-secret isolation failed: %v: %s", err, output)
+	}
+}
+
+func TestPairingSecretAbsentInGrandchild(t *testing.T) {
+	if os.Getenv("WEDECENT_PROCESSENV_GRANDCHILD") != "1" {
+		return
+	}
+	for _, entry := range os.Environ() {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, PairingSecretVariable) {
+			t.Fatalf("pairing secret reached descendant process through %q", name)
+		}
+	}
+	if os.Getenv("WEDECENT_PROCESSENV_KEEP") != "preserved" {
+		t.Fatal("pairing-secret filtering removed unrelated process environment")
 	}
 }

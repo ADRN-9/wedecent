@@ -1,4 +1,4 @@
-//go:build wedecent_smoke_test
+//go:build wedecent_smoke_test && !wedecent_release
 
 package session
 

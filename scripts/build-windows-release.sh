@@ -51,6 +51,7 @@ build_one() {
         -mod=readonly \
         -trimpath \
         -buildvcs=false \
+        -tags=wedecent_release \
         -ldflags "$LDFLAGS" \
         -o "$OUT_DIR/$output" \
         "$package"

@@ -179,26 +179,36 @@ case "$command" in
     grant_file=""
     expected_commit=""
     expected_source=""
+    expected_executable=""
     while (($#)); do
       case "$1" in
         --connection-grant-file) grant_file="$2"; shift 2 ;;
         --expected-agent-commit) expected_commit="$2"; shift 2 ;;
         --expected-agent-source-sha256) expected_source="$2"; shift 2 ;;
+        --expected-agent-executable-sha256) expected_executable="$2"; shift 2 ;;
         *) shift ;;
       esac
     done
-    [[ "$expected_commit" == "$WEDECENT_USB_NCM_EXPECT_COMMIT" && "$expected_source" == "$WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256" ]] || {
+    [[ "$expected_commit" == "$WEDECENT_USB_NCM_EXPECT_COMMIT" &&
+       "$expected_source" == "$WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256" &&
+       "$expected_executable" == "$WEDECENT_USB_NCM_ACTUAL_AGENT_SHA256" ]] || {
       echo "target agent build identity mismatch" >&2
       exit 255
     }
-    case "${NCM_TEST_CONNECT_MODE:-success}" in
-      timeout) sleep 10; exit 0 ;;
-      reject) echo "authorization_denied: grant evidence unavailable" >&2; exit 255 ;;
-      fail) echo "synthetic terminal failure" >&2; exit 42 ;;
-    esac
     if [[ "$grant_file" == "$WEDECENT_USB_NCM_RECONNECT_CONNECTION_GRANT_FILE" ]]; then
+      case "${NCM_TEST_RECONNECT_MODE:-success}" in
+        timeout) sleep 10; exit 0 ;;
+        reject) echo "authorization_denied: reconnect grant evidence unavailable" >&2; exit 255 ;;
+        fail) echo "synthetic reconnect terminal failure" >&2; exit 42 ;;
+        missing-marker) exit 0 ;;
+      esac
       printf '%s\n' "$WEDECENT_USB_NCM_RECONNECT_MARKER"
     else
+      case "${NCM_TEST_CONNECT_MODE:-success}" in
+        timeout) sleep 10; exit 0 ;;
+        reject) echo "authorization_denied: grant evidence unavailable" >&2; exit 255 ;;
+        fail) echo "synthetic terminal failure" >&2; exit 42 ;;
+      esac
       printf '%s\n' "$WEDECENT_USB_NCM_TERMINAL_MARKER"
     fi
     ;;
@@ -254,9 +264,11 @@ run_success() {
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_PAIR_HARDWARE_OK
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_REPLAY_REJECTED
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_AGENT_BUILD_IDENTITY_VERIFIED
+    WEDECENT_USB_NCM_CONTRACT_FIXTURE_AGENT_EXECUTABLE_SHA256_VERIFIED
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_GRANT_EVIDENCE_VERIFIED
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_TERMINAL_SESSION_HARDWARE_OK
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_RECONNECT_AGENT_BUILD_IDENTITY_VERIFIED
+    WEDECENT_USB_NCM_CONTRACT_FIXTURE_RECONNECT_EXECUTABLE_SHA256_VERIFIED
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_RECONNECT_GRANT_EVIDENCE_VERIFIED
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_RECONNECT_HARDWARE_OK
     WEDECENT_USB_NCM_CONTRACT_FIXTURE_ACCEPTANCE_COMPLETE
@@ -297,6 +309,10 @@ run_success
 run_failure timeout "authorized first terminal session timed out after 1s" "NCM_TEST_CONNECT_MODE=timeout"
 run_failure authorization-rejection "authorized first terminal session was rejected by server authorization or authenticated build policy" "NCM_TEST_CONNECT_MODE=reject"
 run_failure generic-session-failure "authorized first terminal session failed with exit status 42" "NCM_TEST_CONNECT_MODE=fail"
+run_failure reconnect-timeout "authorized reconnect session timed out after 1s" "NCM_TEST_RECONNECT_MODE=timeout"
+run_failure reconnect-authorization-rejection "authorized reconnect session was rejected by server authorization or authenticated build policy" "NCM_TEST_RECONNECT_MODE=reject"
+run_failure reconnect-generic-failure "authorized reconnect session failed with exit status 42" "NCM_TEST_RECONNECT_MODE=fail"
+run_failure reconnect-missing-marker "reconnected remote PTY did not emit the expected marker" "NCM_TEST_RECONNECT_MODE=missing-marker"
 run_failure wrong-fingerprint-classification "wrong fingerprint probe failed for a reason other than the precise device fingerprint mismatch" "NCM_TEST_REJECTION_MODE=wrong-fingerprint-generic"
 run_failure replay-classification "replay probe failed for a reason other than the precise consumed-secret rejection" "NCM_TEST_REJECTION_MODE=replay-generic"
 run_failure nonreproducible-build "wd is not reproducible from the exact clean source commit" "NCM_TEST_NONREPRODUCIBLE=1" "NCM_TEST_COUNTER_FILE=$work/build-count"

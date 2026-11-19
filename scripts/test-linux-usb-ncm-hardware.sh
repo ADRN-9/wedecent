@@ -151,6 +151,9 @@ for binary in wd wd-agent; do
   [[ "$hash_a" == "$hash_b" ]] || fail "$binary is not reproducible from the exact clean source commit"
   printf 'Reproducible %s SHA-256: %s\n' "$binary" "$hash_a"
 done
+agent_sha256="$(sha256sum "$work/build-a/wd-agent" | awk '{print $1}')"
+[[ "$agent_sha256" =~ ^[0-9a-f]{64}$ ]] || fail "target agent executable SHA-256 is malformed"
+export WEDECENT_USB_NCM_ACTUAL_AGENT_SHA256="$agent_sha256"
 "$work/build-a/wd-agent" version > "$work/agent-build-info.txt"
 grep -Fxq "commit: $commit" "$work/agent-build-info.txt" || fail "local target-agent build does not report the exact source commit"
 grep -Fxq "source_sha256: $source_sha256" "$work/agent-build-info.txt" || fail "local target-agent build does not report the exact source archive SHA-256"
@@ -242,18 +245,22 @@ run_terminal_session() {
 run_terminal_session "authorized first terminal session" "$work/terminal.out" "$work/terminal.err" "$work/bin/wd" connect \
   --state "$work/state" --endpoint "$WEDECENT_USB_NCM_ENDPOINT" --lan-timeout 0 \
   --expected-agent-commit "$commit" --expected-agent-source-sha256 "$source_sha256" \
+  --expected-agent-executable-sha256 "$agent_sha256" \
   --connection-grant-file "$WEDECENT_USB_NCM_CONNECTION_GRANT_FILE" "$paired_device_id" < "$WEDECENT_USB_NCM_TERMINAL_INPUT_FILE"
 grep -Fq "$WEDECENT_USB_NCM_TERMINAL_MARKER" "$work/terminal.out" || fail "remote PTY did not emit the expected first-session marker"
 echo "WEDECENT_USB_NCM_AGENT_BUILD_IDENTITY_VERIFIED"
+echo "WEDECENT_USB_NCM_AGENT_EXECUTABLE_SHA256_VERIFIED"
 echo "WEDECENT_USB_NCM_GRANT_EVIDENCE_VERIFIED"
 echo "WEDECENT_USB_NCM_TERMINAL_SESSION_HARDWARE_OK"
 
 run_terminal_session "authorized reconnect session" "$work/reconnect.out" "$work/reconnect.err" "$work/bin/wd" connect \
   --state "$work/state" --endpoint "$WEDECENT_USB_NCM_ENDPOINT" --lan-timeout 0 \
   --expected-agent-commit "$commit" --expected-agent-source-sha256 "$source_sha256" \
+  --expected-agent-executable-sha256 "$agent_sha256" \
   --connection-grant-file "$WEDECENT_USB_NCM_RECONNECT_CONNECTION_GRANT_FILE" "$paired_device_id" < "$WEDECENT_USB_NCM_RECONNECT_INPUT_FILE"
 grep -Fq "$WEDECENT_USB_NCM_RECONNECT_MARKER" "$work/reconnect.out" || fail "reconnected remote PTY did not emit the expected marker"
 echo "WEDECENT_USB_NCM_RECONNECT_AGENT_BUILD_IDENTITY_VERIFIED"
+echo "WEDECENT_USB_NCM_RECONNECT_EXECUTABLE_SHA256_VERIFIED"
 echo "WEDECENT_USB_NCM_RECONNECT_GRANT_EVIDENCE_VERIFIED"
 echo "WEDECENT_USB_NCM_RECONNECT_HARDWARE_OK"
 echo "WEDECENT_USB_NCM_ACCEPTANCE_COMPLETE"
