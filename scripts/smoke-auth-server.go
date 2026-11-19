@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -163,6 +164,15 @@ func loadGrantEvidence(key string) (grantEvidence, grantEventEvidence, grantEven
 func main() {
 	listen := flag.String("listen", "127.0.0.1:17444", "loopback listen address")
 	flag.Parse()
+
+	host, _, err := net.SplitHostPort(*listen)
+	if err != nil {
+		log.Fatalf("invalid smoke authorization listen address: %v", err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		log.Fatal("smoke authorization server must listen on a loopback IP address")
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/time", func(w http.ResponseWriter, r *http.Request) {
