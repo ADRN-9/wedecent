@@ -208,6 +208,8 @@ jobs:
         working-directory: cloudflare/relay-worker
         run: |
           node --check src/index.js
+          node --check src/grant-replay.js
+          node --check src/relay-admission.js
           node --check src/relay-auth.js
           node --check src/rate-limit.js
       - name: Test relay authentication and admission

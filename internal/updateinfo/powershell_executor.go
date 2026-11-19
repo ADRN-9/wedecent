@@ -7,6 +7,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 type installerCommandRunner func(context.Context, string, string, []string) error
@@ -100,6 +102,7 @@ func (e PowerShellInstallerExecutor) runScript(ctx context.Context, powershell, 
 	}
 	commandArgs = append(commandArgs, args...)
 	cmd := exec.CommandContext(ctx, powershell, commandArgs...)
+	cmd.Env = processenv.Current()
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard

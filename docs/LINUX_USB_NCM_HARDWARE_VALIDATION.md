@@ -31,6 +31,8 @@ export WEDECENT_USB_NCM_TERMINAL_MARKER='WEDECENT_USB_NCM_REMOTE_COMMAND_OK'
 export WEDECENT_USB_NCM_RECONNECT_CONNECTION_GRANT_FILE='/secure/path/reconnect-grant.jwt'
 export WEDECENT_USB_NCM_RECONNECT_INPUT_FILE='/secure/path/reconnect-input.txt'
 export WEDECENT_USB_NCM_RECONNECT_MARKER='WEDECENT_USB_NCM_RECONNECTED_OK'
+export WEDECENT_USB_NCM_EXPECT_COMMIT='<full-40-character-clean-commit-sha>'
+export WEDECENT_USB_NCM_EXPECT_SOURCE_SHA256='<64-character-git-archive-sha256>'
 # Optional expected device ID:
 export WEDECENT_USB_NCM_EXPECT_DEVICE_ID='wd_aaaaaaaaaaaaaaaa'
 ```

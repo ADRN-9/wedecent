@@ -16,6 +16,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/windows"
+
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 const (
@@ -496,6 +498,12 @@ func (r *serviceRunner) finish(err error) {
 	}
 }
 
+func runICACLS(args ...string) ([]byte, error) {
+	cmd := exec.Command("icacls.exe", args...)
+	cmd.Env = processenv.Current()
+	return cmd.CombinedOutput()
+}
+
 func qualifyAccountForLookup(account, computerName string) string {
 	account = strings.TrimSpace(account)
 	if strings.HasPrefix(account, `.\`) {
@@ -584,7 +592,7 @@ func RestrictDirectory(path, account string) error {
 		{children, "/inheritance:e", "/T"},
 		{children, "/reset", "/T"},
 	} {
-		out, err := exec.Command("icacls.exe", args...).CombinedOutput()
+		out, err := runICACLS(args...)
 		if err != nil {
 			return fmt.Errorf("propagate state directory ACL: %w: %s", err, strings.TrimSpace(string(out)))
 		}
@@ -594,7 +602,7 @@ func RestrictDirectory(path, account string) error {
 	// object's DACL even if access appears restricted. Set the directory and
 	// all provisioned children to the explicit dedicated service SID. This
 	// requires elevated installer rights and must never be silently skipped.
-	out, err = exec.Command("icacls.exe", clean, "/setowner", principal, "/T").CombinedOutput()
+	out, err = runICACLS(clean, "/setowner", principal, "/T")
 	if err != nil {
 		return fmt.Errorf("set dedicated service state owner: %w: %s", err, strings.TrimSpace(string(out)))
 	}
