@@ -603,10 +603,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	var directAuthorizer session.DirectAuthorizer
 
 	if strings.TrimSpace(cfg.AuthorizationURL) != "" {
-		directAuthorizer = session.RelayDirectAuthorizer{
-			BaseURL:  cfg.AuthorizationURL,
-			Identity: id,
-		}
+		directAuthorizer = newRelayDirectAuthorizer(cfg.AuthorizationURL, id)
 	}
 
 	fileTransferRuntime, err := openAgentFileTransferRuntime(cfg)
