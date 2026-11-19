@@ -1,7 +1,6 @@
 package main
 
 import (
-	"wedecent.com/wedecent/internal/processenv"
 	"context"
 	"errors"
 	"fmt"
@@ -10,6 +9,7 @@ import (
 	"wedecent.com/wedecent/internal/buildinfo"
 	coreclient "wedecent.com/wedecent/internal/coreapi/client"
 	"wedecent.com/wedecent/internal/guiapp"
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 var errUIUsage = errors.New("usage: wd-ui [version|autostart <enable|disable|status>]")

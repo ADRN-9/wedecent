@@ -1,7 +1,6 @@
 package main
 
 import (
-	"wedecent.com/wedecent/internal/processenv"
 	"context"
 	"crypto/ed25519"
 	"encoding/base64"
@@ -30,6 +29,7 @@ import (
 	"wedecent.com/wedecent/internal/terminal"
 	"wedecent.com/wedecent/internal/transport"
 	"wedecent.com/wedecent/internal/trust"
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 func main() {

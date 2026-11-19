@@ -1,7 +1,6 @@
 package main
 
 import (
-	"wedecent.com/wedecent/internal/processenv"
 	"bufio"
 	"bytes"
 	"context"
@@ -15,6 +14,7 @@ import (
 	"wedecent.com/wedecent/internal/buildinfo"
 	coreclient "wedecent.com/wedecent/internal/coreapi/client"
 	"wedecent.com/wedecent/internal/desktopbridge"
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 const (

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"wedecent.com/wedecent/internal/processenv"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"wedecent.com/wedecent/internal/relay"
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 func main() {

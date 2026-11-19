@@ -1,7 +1,6 @@
 package main
 
 import (
-	"wedecent.com/wedecent/internal/processenv"
 	"errors"
 	"flag"
 	"fmt"
@@ -15,6 +14,7 @@ import (
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/routercontrol"
 	"wedecent.com/wedecent/internal/trust"
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 func main() {

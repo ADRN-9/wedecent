@@ -1,7 +1,6 @@
 package main
 
 import (
-	"wedecent.com/wedecent/internal/processenv"
 	"errors"
 	"flag"
 	"fmt"
@@ -11,6 +10,7 @@ import (
 	"strconv"
 
 	"wedecent.com/wedecent/internal/updateinfo"
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 const maxKeyFileBytes = 96
