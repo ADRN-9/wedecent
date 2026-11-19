@@ -9,7 +9,7 @@ func TestChildEnvironmentDoesNotInheritPairingSecret(t *testing.T) {
 	t.Setenv("WEDECENT_PAIRING_SECRET", "canary-pairing-secret")
 	t.Setenv("TERM", "parent-term")
 
-	env := childEnvironment("TERM=xterm-256color")
+	env := childEnvironment("TERM=xterm-256color", "wedecent_pairing_secret=extra-canary")
 	for _, entry := range env {
 		name, _, _ := strings.Cut(entry, "=")
 		if strings.EqualFold(name, "WEDECENT_PAIRING_SECRET") {

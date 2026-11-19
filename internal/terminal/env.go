@@ -17,5 +17,12 @@ func childEnvironment(extra ...string) []string {
 		}
 		filtered = append(filtered, entry)
 	}
-	return append(filtered, extra...)
+	for _, entry := range extra {
+		name, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(name, processenv.PairingSecretVariable) {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
