@@ -18,7 +18,7 @@ For an agent TCP listener on an explicitly configured USB NCM link, set `--direc
 
 USB NCM is an underlying network medium, not a separate WeDecent identity or authorization transport. An unsupported or inconsistent metadata tuple closes the connection before TLS/session processing. The metadata is used only for audit attribution; it is never consulted for device identity, fingerprint pinning, trust, connection grants, routing authority, or authorization. IP addresses, Bluetooth MAC addresses, tty paths, USB descriptors, and relay state remain locators or diagnostics only.
 
-Older audit records may contain historical labels such as `direct`, `relay`, `lan`, or `internet`; they are not rewritten.
+Older terminal audit records may contain historical labels such as `direct` or `relay`; route-control/tunnel events may separately use route labels such as `lan` or `internet`. These values are not reinterpreted as terminal transport metadata.
 
 ## Storage and bounds
 
