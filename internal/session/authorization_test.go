@@ -194,7 +194,7 @@ func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
 			GrantID: constGrantID, JTI: jti, ClientDeviceID: clientID, TargetDeviceID: id.ID,
 			Permission: "terminal.connect", Flow: flow, ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
 			ValidatedAt: validatedAt, ConsumedAt: consumedAt,
-			ExpiresAt: time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+			ExpiresAt:     time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
 			RetainUntilMS: retainUntil,
 		})
 	}))

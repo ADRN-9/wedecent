@@ -270,15 +270,14 @@ func TestPendingPairingAuditDetectableAfterOneRotationAndRestart(t *testing.T) {
 	// rotation can evict the record. Production recovery retention is a gate.
 }
 
-
 func TestValidateEventRequiresIndependentAuthorizationProvenance(t *testing.T) {
 	event := Event{
 		Type: "terminal.authorization", Outcome: "success",
-		AuthorizationRunID: "d90987bf-bae6-45da-ab21-c82d049617bd",
-		ValidationAttemptID: "b90987bf-bae6-45da-ab21-c82d049617bd",
+		AuthorizationRunID:   "d90987bf-bae6-45da-ab21-c82d049617bd",
+		ValidationAttemptID:  "b90987bf-bae6-45da-ab21-c82d049617bd",
 		ConsumptionAttemptID: "c90987bf-bae6-45da-ab21-c82d049617bd",
-		ValidationEventID: "a90987bf-bae6-45da-ab21-c82d049617bd",
-		ConsumptionEventID: "f90987bf-bae6-45da-ab21-c82d049617bd",
+		ValidationEventID:    "a90987bf-bae6-45da-ab21-c82d049617bd",
+		ConsumptionEventID:   "f90987bf-bae6-45da-ab21-c82d049617bd",
 	}
 	if err := validateEvent(&event); err != nil {
 		t.Fatalf("valid independent authorization provenance rejected: %v", err)

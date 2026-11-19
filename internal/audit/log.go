@@ -21,8 +21,8 @@ const (
 )
 
 var (
-	eventNamePattern = regexp.MustCompile("^[a-z0-9][a-z0-9_.-]{0,95}$")
-	auditUUIDPattern = regexp.MustCompile("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+	eventNamePattern     = regexp.MustCompile("^[a-z0-9][a-z0-9_.-]{0,95}$")
+	auditUUIDPattern     = regexp.MustCompile("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
 	routeDeviceIDPattern = regexp.MustCompile("^wd_[a-z2-7]{16}$")
 )
 
@@ -212,12 +212,12 @@ func validateEvent(event *Event) error {
 	}
 	for name, value := range map[string]string{
 		"actor_id": event.ActorID, "peer_id": event.PeerID,
-		"authorization_run_id": event.AuthorizationRunID,
-		"validation_attempt_id": event.ValidationAttemptID,
+		"authorization_run_id":   event.AuthorizationRunID,
+		"validation_attempt_id":  event.ValidationAttemptID,
 		"consumption_attempt_id": event.ConsumptionAttemptID,
-		"validation_event_id": event.ValidationEventID,
-		"consumption_event_id": event.ConsumptionEventID,
-		"transport": event.Transport, "transport_provenance": event.TransportProvenance,
+		"validation_event_id":    event.ValidationEventID,
+		"consumption_event_id":   event.ConsumptionEventID,
+		"transport":              event.Transport, "transport_provenance": event.TransportProvenance,
 		"underlying_transport": event.UnderlyingTransport, "route_router_id": event.RouteRouterID,
 		"reason": event.Reason,
 	} {

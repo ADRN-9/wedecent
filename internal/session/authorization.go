@@ -42,26 +42,26 @@ type GrantEventEvidence struct {
 }
 
 type GrantConsumptionEvidence struct {
-	Version               int                `json:"version"`
-	AuthorizationRunID    string             `json:"authorization_run_id"`
-	ValidationAttemptID   string             `json:"validation_attempt_id"`
-	ConsumptionAttemptID  string             `json:"consumption_attempt_id"`
-	ValidationEventID     string             `json:"validation_event_id"`
-	ConsumptionEventID    string             `json:"consumption_event_id"`
-	ValidationEvent       GrantEventEvidence `json:"validation_event"`
-	ConsumptionEvent      GrantEventEvidence `json:"consumption_event"`
-	GrantID               string             `json:"grant_id"`
-	JTI                   string             `json:"jti"`
-	ClientDeviceID        string             `json:"client_device_id"`
-	TargetDeviceID        string             `json:"target_device_id"`
-	Permission            string             `json:"permission"`
-	Flow                  string             `json:"flow"`
-	ValidationOutcome     string             `json:"validation_outcome"`
-	ConsumptionOutcome    string             `json:"consumption_outcome"`
-	ValidatedAt           string             `json:"validated_at"`
-	ConsumedAt            string             `json:"consumed_at"`
-	ExpiresAt             string             `json:"expires_at"`
-	RetainUntilMS         int64              `json:"retain_until_ms"`
+	Version              int                `json:"version"`
+	AuthorizationRunID   string             `json:"authorization_run_id"`
+	ValidationAttemptID  string             `json:"validation_attempt_id"`
+	ConsumptionAttemptID string             `json:"consumption_attempt_id"`
+	ValidationEventID    string             `json:"validation_event_id"`
+	ConsumptionEventID   string             `json:"consumption_event_id"`
+	ValidationEvent      GrantEventEvidence `json:"validation_event"`
+	ConsumptionEvent     GrantEventEvidence `json:"consumption_event"`
+	GrantID              string             `json:"grant_id"`
+	JTI                  string             `json:"jti"`
+	ClientDeviceID       string             `json:"client_device_id"`
+	TargetDeviceID       string             `json:"target_device_id"`
+	Permission           string             `json:"permission"`
+	Flow                 string             `json:"flow"`
+	ValidationOutcome    string             `json:"validation_outcome"`
+	ConsumptionOutcome   string             `json:"consumption_outcome"`
+	ValidatedAt          string             `json:"validated_at"`
+	ConsumedAt           string             `json:"consumed_at"`
+	ExpiresAt            string             `json:"expires_at"`
+	RetainUntilMS        int64              `json:"retain_until_ms"`
 }
 
 type GrantEvidenceVerifier interface {
