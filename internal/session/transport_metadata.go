@@ -18,16 +18,16 @@ const (
 type UnderlyingTransport string
 
 const (
-	UnderlyingUSBNCM    UnderlyingTransport = "usb_ncm"
-	UnderlyingLAN       UnderlyingTransport = "lan"
-	UnderlyingInternet  UnderlyingTransport = "internet"
+	UnderlyingUSBNCM   UnderlyingTransport = "usb_ncm"
+	UnderlyingLAN      UnderlyingTransport = "lan"
+	UnderlyingInternet UnderlyingTransport = "internet"
 )
 
 // TransportMetadata is supplied by the local listener or authenticated route
 // ingress. It is audit context only; it never grants identity or authority.
 type TransportMetadata struct {
-	Kind       TransportKind
-	Underlying UnderlyingTransport
+	Kind          TransportKind
+	Underlying    UnderlyingTransport
 	RouteRouterID string
 }
 

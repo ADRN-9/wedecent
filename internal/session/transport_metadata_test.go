@@ -208,7 +208,6 @@ func TestServerPairingAuditUsesExplicitTransportMetadata(t *testing.T) {
 	}
 }
 
-
 func TestServerTerminalAuditCarriesRouteAndGrantProvenance(t *testing.T) {
 	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
 	if err != nil {
@@ -219,11 +218,11 @@ func TestServerTerminalAuditCarriesRouteAndGrantProvenance(t *testing.T) {
 		Kind: TransportRouted, Underlying: UnderlyingInternet, RouteRouterID: "wd_aaaaaaaaaaaaaaaa",
 	}
 	evidence := &GrantConsumptionEvidence{
-		AuthorizationRunID: "d90987bf-bae6-45da-ab21-c82d049617bd",
-		ValidationAttemptID: "b90987bf-bae6-45da-ab21-c82d049617bd",
+		AuthorizationRunID:   "d90987bf-bae6-45da-ab21-c82d049617bd",
+		ValidationAttemptID:  "b90987bf-bae6-45da-ab21-c82d049617bd",
 		ConsumptionAttemptID: "c90987bf-bae6-45da-ab21-c82d049617bd",
-		ValidationEventID: "a90987bf-bae6-45da-ab21-c82d049617bd",
-		ConsumptionEventID: "f90987bf-bae6-45da-ab21-c82d049617bd",
+		ValidationEventID:    "a90987bf-bae6-45da-ab21-c82d049617bd",
+		ConsumptionEventID:   "f90987bf-bae6-45da-ab21-c82d049617bd",
 	}
 	server.recordGrantAudit(metadata, audit.Event{
 		Type: "terminal.session_opened", Outcome: "success", PeerID: "wd_bbbbbbbbbbbbbbbb",
@@ -249,7 +248,6 @@ func TestServerTerminalAuditCarriesRouteAndGrantProvenance(t *testing.T) {
 		t.Fatalf("terminal audit lost route or grant provenance: %+v", event)
 	}
 }
-
 
 type routedTransportAttributionTestConn struct {
 	net.Conn
