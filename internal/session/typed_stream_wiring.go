@@ -6,12 +6,12 @@ import (
 	"wedecent.com/wedecent/internal/protocol"
 )
 
-func sessionAcceptedFrame(capabilities []protocol.Capability) (protocol.Frame, error) {
+func sessionAcceptedFrame(capabilities []protocol.Capability, buildIdentity *protocol.AgentBuildIdentity) (protocol.Frame, error) {
 	frame := protocol.Frame{Type: protocol.TypeSessionAccepted}
-	if len(capabilities) == 0 {
+	if len(capabilities) == 0 && buildIdentity == nil {
 		return frame, nil
 	}
-	payload, err := protocol.JSON(protocol.SessionAccepted{Capabilities: capabilities})
+	payload, err := protocol.JSON(protocol.SessionAccepted{Capabilities: capabilities, BuildIdentity: buildIdentity})
 	if err != nil {
 		return protocol.Frame{}, err
 	}

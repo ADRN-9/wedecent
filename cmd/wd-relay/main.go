@@ -13,10 +13,12 @@ import (
 	"syscall"
 	"time"
 
+	"wedecent.com/wedecent/internal/processenv"
 	"wedecent.com/wedecent/internal/relay"
 )
 
 func main() {
+	processenv.ClearCurrent()
 	fs := flag.NewFlagSet("wd-relay", flag.ExitOnError)
 	listenAddr := fs.String("listen", ":443", "TLS listen address")
 	certFile := fs.String("cert", "", "TLS certificate PEM")

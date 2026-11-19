@@ -8,26 +8,29 @@ import (
 )
 
 var (
-	Version = "dev"
-	Commit  = "unknown"
-	BuiltAt = "unknown"
+	Version      = "dev"
+	Commit       = "unknown"
+	BuiltAt      = "unknown"
+	SourceSHA256 = "unknown"
 )
 
 type Info struct {
-	Version  string
-	Commit   string
-	BuiltAt  string
-	Go       string
-	Platform string
+	Version      string
+	Commit       string
+	BuiltAt      string
+	SourceSHA256 string
+	Go           string
+	Platform     string
 }
 
 func Current() Info {
 	return Info{
-		Version:  normalized(Version, "dev"),
-		Commit:   normalized(Commit, "unknown"),
-		BuiltAt:  normalized(BuiltAt, "unknown"),
-		Go:       runtime.Version(),
-		Platform: runtime.GOOS + "/" + runtime.GOARCH,
+		Version:      normalized(Version, "dev"),
+		Commit:       normalized(Commit, "unknown"),
+		BuiltAt:      normalized(BuiltAt, "unknown"),
+		SourceSHA256: normalized(SourceSHA256, "unknown"),
+		Go:           runtime.Version(),
+		Platform:     runtime.GOOS + "/" + runtime.GOARCH,
 	}
 }
 
@@ -41,8 +44,8 @@ func Write(w io.Writer, product string) error {
 	}
 	info := Current()
 	_, err := fmt.Fprintf(w,
-		"%s %s\ncommit: %s\nbuilt: %s\ngo: %s\nplatform: %s\n",
-		product, info.Version, info.Commit, info.BuiltAt, info.Go, info.Platform,
+		"%s %s\ncommit: %s\nbuilt: %s\nsource_sha256: %s\ngo: %s\nplatform: %s\n",
+		product, info.Version, info.Commit, info.BuiltAt, info.SourceSHA256, info.Go, info.Platform,
 	)
 	return err
 }

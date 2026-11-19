@@ -9,7 +9,7 @@ import (
 
 func TestTypedTerminalAuditTrackerRecordsLifecycleOnce(t *testing.T) {
 	var events []audit.Event
-	tracker := newTypedTerminalAuditTracker("wd_peer", "direct", func(event audit.Event) {
+	tracker := newTypedTerminalAuditTracker("wd_peer", "direct_tcp", func(event audit.Event) {
 		events = append(events, event)
 	})
 
@@ -31,7 +31,7 @@ func TestTypedTerminalAuditTrackerRecordsLifecycleOnce(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("events = %#v", events)
 	}
-	if events[0].Type != "terminal.stream_opened" || events[0].Outcome != "success" || events[0].PeerID != "wd_peer" || events[0].Transport != "direct" || events[0].StreamID != 2 {
+	if events[0].Type != "terminal.stream_opened" || events[0].Outcome != "success" || events[0].PeerID != "wd_peer" || events[0].Transport != "direct_tcp" || events[0].StreamID != 2 {
 		t.Fatalf("open event = %#v", events[0])
 	}
 	if events[1].Type != "terminal.stream_closed" || events[1].Outcome != "success" || events[1].StreamID != 2 || events[1].Reason != "process_exit" {

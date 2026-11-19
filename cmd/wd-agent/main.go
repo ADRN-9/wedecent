@@ -25,6 +25,7 @@ import (
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/enrollment"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/processenv"
 	"wedecent.com/wedecent/internal/relayauth"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/transport"
@@ -32,6 +33,7 @@ import (
 )
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -252,31 +254,32 @@ func writeJSON(value any) error {
 }
 
 type serveConfig struct {
-	StateDir                  string
-	Name                      string
-	ListenAddr                string
-	RFCOMMChannel             int
-	SerialDevice              string
-	Shell                     string
-	Discover                  bool
-	MaxConnections            int
-	SessionIdleTimeout        time.Duration
-	SessionMaxDuration        time.Duration
-	FileTransferRoot          string
-	FileTransferAllowUpload   bool
-	FileTransferAllowDownload bool
-	FileTransferMaxBytes      uint64
-	RelayAddr                 string
-	WebRelay                  string
-	RelaySlots                int
-	RelayCA                   string
-	RelayServerName           string
-	AuthorizationURL          string
-	RouteControlListenAddr    string
-	RouteControlTransport     string
-	RouteTunnelListenAddr     string
-	RouteTunnelTransport      string
-	RouteMaxConnections       int
+	StateDir                     string
+	Name                         string
+	ListenAddr                   string
+	DirectTCPUnderlyingTransport string
+	RFCOMMChannel                int
+	SerialDevice                 string
+	Shell                        string
+	Discover                     bool
+	MaxConnections               int
+	SessionIdleTimeout           time.Duration
+	SessionMaxDuration           time.Duration
+	FileTransferRoot             string
+	FileTransferAllowUpload      bool
+	FileTransferAllowDownload    bool
+	FileTransferMaxBytes         uint64
+	RelayAddr                    string
+	WebRelay                     string
+	RelaySlots                   int
+	RelayCA                      string
+	RelayServerName              string
+	AuthorizationURL             string
+	RouteControlListenAddr       string
+	RouteControlTransport        string
+	RouteTunnelListenAddr        string
+	RouteTunnelTransport         string
+	RouteMaxConnections          int
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
@@ -310,6 +313,12 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"127.0.0.1:7443",
 		"TCP listen address; empty disables inbound TCP",
 	)
+	fs.StringVar(
+		&cfg.DirectTCPUnderlyingTransport,
+		"direct-tcp-underlay",
+		"",
+		"underlying direct TCP link for audit attribution: empty or usb_ncm",
+	)
 	fs.IntVar(
 		&cfg.RFCOMMChannel,
 		"rfcomm-channel",
@@ -320,7 +329,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		&cfg.SerialDevice,
 		"serial",
 		"",
-		"Linux serial device path, e.g. /dev/ttyACM0; empty disables serial",
+		"Linux USB CDC-ACM gadget-side serial path, e.g. /dev/ttyGS0; empty disables serial",
 	)
 	fs.StringVar(
 		&cfg.Shell,
@@ -478,6 +487,24 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	}
 	cfg.RouteTunnelTransport = string(tunnelTransport)
 
+	if cfg.DirectTCPUnderlyingTransport != "" && cfg.DirectTCPUnderlyingTransport != string(session.UnderlyingUSBNCM) {
+		return serveConfig{}, errors.New("--direct-tcp-underlay must be empty or usb_ncm")
+	}
+	if cfg.DirectTCPUnderlyingTransport != "" && cfg.ListenAddr == "" {
+		return serveConfig{}, errors.New("--direct-tcp-underlay requires --listen")
+	}
+	if cfg.DirectTCPUnderlyingTransport != "" {
+		host, _, err := net.SplitHostPort(cfg.ListenAddr)
+		if err != nil {
+			return serveConfig{}, errors.New("--direct-tcp-underlay requires a specific IP listen address")
+		}
+		host = strings.SplitN(host, "%", 2)[0]
+		ip := net.ParseIP(host)
+		if ip == nil || ip.IsLoopback() || ip.IsUnspecified() {
+			return serveConfig{}, errors.New("--direct-tcp-underlay requires a specific non-loopback IP listen address")
+		}
+	}
+
 	if cfg.MaxConnections < 1 ||
 		cfg.MaxConnections > 1024 {
 		return serveConfig{}, errors.New(
@@ -542,6 +569,14 @@ func parseServeConfig(args []string) (serveConfig, error) {
 			cfg.WebRelay,
 		)
 	}
+	if strings.TrimSpace(cfg.RelayAddr) != "" {
+		if cfg.AuthorizationURL == "" {
+			return serveConfig{}, errors.New("--relay requires an approved --authorization-url or --web-relay authorization origin")
+		}
+		if err := validateRelayAuthorizationOrigin(cfg.AuthorizationURL); err != nil {
+			return serveConfig{}, fmt.Errorf("--authorization-url: %w", err)
+		}
+	}
 
 	return cfg, nil
 }
@@ -578,10 +613,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	var directAuthorizer session.DirectAuthorizer
 
 	if strings.TrimSpace(cfg.AuthorizationURL) != "" {
-		directAuthorizer = session.RelayDirectAuthorizer{
-			BaseURL:  cfg.AuthorizationURL,
-			Identity: id,
-		}
+		directAuthorizer = newRelayDirectAuthorizer(cfg.AuthorizationURL, id)
 	}
 
 	fileTransferRuntime, err := openAgentFileTransferRuntime(cfg)
@@ -791,7 +823,7 @@ func relayLoop(ctx context.Context, slot int, address string, opts transport.Rel
 			continue
 		}
 		backoff = time.Second
-		server.ServeConn(conn)
+		server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportRawRelay})
 	}
 }
 

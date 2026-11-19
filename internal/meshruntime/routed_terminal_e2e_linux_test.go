@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
 	"wedecent.com/wedecent/internal/meshnet"
@@ -38,6 +39,7 @@ type routedE2EDirectAuthorizer struct {
 	source      string
 	destination string
 	grant       string
+	jti         string
 }
 
 func (a routedE2EDirectAuthorizer) Authorize(
@@ -53,6 +55,63 @@ func (a routedE2EDirectAuthorizer) Authorize(
 		return errors.New("unexpected routed terminal authorization")
 	}
 	return nil
+}
+
+func (a routedE2EDirectAuthorizer) VerifyConsumption(
+	ctx context.Context,
+	clientID string,
+	destination string,
+	jti string,
+	flow string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if clientID != a.source || destination != a.destination || jti != a.jti || flow != "direct" {
+		return errors.New("unexpected routed terminal grant evidence")
+	}
+	return nil
+}
+
+func (a routedE2EDirectAuthorizer) VerifyConsumptionEvidence(
+	ctx context.Context,
+	clientID, destination, jti, flow string,
+) (session.GrantConsumptionEvidence, error) {
+	if err := a.VerifyConsumption(ctx, clientID, destination, jti, flow); err != nil {
+		return session.GrantConsumptionEvidence{}, err
+	}
+	validatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	consumedAt := time.Now().UTC().Format(time.RFC3339Nano)
+	retainUntil := time.Now().Add(time.Hour).UnixMilli()
+	const runID = "d90987bf-bae6-45da-ab21-c82d049617bd"
+	const validationAttemptID = "b90987bf-bae6-45da-ab21-c82d049617bd"
+	const consumptionAttemptID = "c90987bf-bae6-45da-ab21-c82d049617bd"
+	const validationEventID = "e90987bf-bae6-45da-ab21-c82d049617bd"
+	const consumptionEventID = "f90987bf-bae6-45da-ab21-c82d049617bd"
+	grantID := "d90987bf-bae6-45da-ab21-c82d049617bd"
+	validationEvent := session.GrantEventEvidence{
+		EventID: validationEventID, RunID: runID, AttemptID: validationAttemptID,
+		Type: "authorization.validation", Outcome: "accepted", GrantID: grantID, JTI: jti,
+		ClientDeviceID: clientID, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, OccurredAt: validatedAt, RetainUntilMS: retainUntil,
+	}
+	consumptionEvent := session.GrantEventEvidence{
+		EventID: consumptionEventID, RunID: runID, AttemptID: consumptionAttemptID,
+		Type: "authorization.consumption", Outcome: "consumed", GrantID: grantID, JTI: jti,
+		ClientDeviceID: clientID, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, OccurredAt: consumedAt, RetainUntilMS: retainUntil,
+	}
+	return session.GrantConsumptionEvidence{
+		Version: 1, AuthorizationRunID: runID, ValidationAttemptID: validationAttemptID,
+		ConsumptionAttemptID: consumptionAttemptID, ValidationEventID: validationEventID,
+		ConsumptionEventID: consumptionEventID, ValidationEvent: validationEvent,
+		ConsumptionEvent: consumptionEvent, GrantID: grantID, JTI: jti,
+		ClientDeviceID: clientID, TargetDeviceID: destination, Permission: "terminal.connect",
+		Flow: flow, ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
+		ValidatedAt: validatedAt, ConsumedAt: consumedAt,
+		ExpiresAt:     time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+		RetainUntilMS: retainUntil,
+	}, nil
 }
 
 func TestRoutedTerminalE2E(t *testing.T) {
@@ -114,7 +173,9 @@ func TestRoutedTerminalE2E(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	const connectionGrant = "route-e2e.connection.grant"
+	const grantJTI = "76b4c468-4e39-437c-a9c8-b758c92ab89b"
+	grantPayload := base64.RawURLEncoding.EncodeToString([]byte(`{"jti":"76b4c468-4e39-437c-a9c8-b758c92ab89b"}`))
+	connectionGrant := "header." + grantPayload + ".signature"
 	endpointServer := &session.Server{
 		Identity: aNilIdentity(cID),
 		Trust:    terminalTrust,
@@ -124,6 +185,7 @@ func TestRoutedTerminalE2E(t *testing.T) {
 			source:      aID.ID,
 			destination: cID.ID,
 			grant:       connectionGrant,
+			jti:         grantJTI,
 		},
 	}
 
@@ -320,6 +382,41 @@ func TestRoutedTerminalE2E(t *testing.T) {
 		case <-ctx.Done():
 			t.Fatalf("timed out waiting for %s runtime: %v", name, ctx.Err())
 		}
+	}
+
+	auditData, err := os.ReadFile(filepath.Join(cDir, audit.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var foundRoutedSession bool
+	for _, line := range strings.Split(strings.TrimSpace(string(auditData)), "\n") {
+		var event audit.Event
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type != "terminal.session_opened" {
+			continue
+		}
+		foundRoutedSession = true
+		if event.Transport != "routed+internet" ||
+			event.TransportProvenance != "authenticated_router_link" ||
+			event.UnderlyingTransport != string(mesh.TransportInternet) ||
+			event.RouteRouterID != bID.ID ||
+			event.PeerID != aID.ID ||
+			event.AuthorizationRunID == "" ||
+			event.ValidationAttemptID == "" ||
+			event.ConsumptionAttemptID == "" ||
+			event.ValidationEventID == "" ||
+			event.ConsumptionEventID == "" {
+			t.Fatalf("routed terminal audit lost route or authorization attribution: %+v", event)
+		}
+		if event.ValidationAttemptID == event.ConsumptionAttemptID ||
+			event.ValidationEventID == event.ConsumptionEventID {
+			t.Fatalf("authorization event IDs are not independent: %+v", event)
+		}
+	}
+	if !foundRoutedSession {
+		t.Fatal("routed terminal session audit event was not written")
 	}
 }
 

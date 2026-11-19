@@ -13,11 +13,13 @@ import (
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/coreapi/coreprocess"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/processenv"
 	"wedecent.com/wedecent/internal/routercontrol"
 	"wedecent.com/wedecent/internal/trust"
 )
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) > 1 && os.Args[1] == "version" {
 		if err := buildinfo.Write(os.Stdout, "wd-core"); err != nil {
 			fmt.Fprintln(os.Stderr, "wd-core:", err)

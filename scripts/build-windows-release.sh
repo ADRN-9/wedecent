@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
+unset WEDECENT_PAIRING_SECRET || true
+export GOFLAGS=
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 GO_BIN="${GO:-go}"
@@ -15,25 +17,21 @@ fail() {
 VERSION="$(tr -d '\r\n' < "$VERSION_FILE")"
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] || fail "VERSION is not release-like: $VERSION"
 
-COMMIT="${WEDECENT_BUILD_COMMIT:-$(git -C "$ROOT" rev-parse HEAD)}"
-DIRTY=0
-if ! git -C "$ROOT" diff --quiet --ignore-submodules -- || ! git -C "$ROOT" diff --cached --quiet --ignore-submodules --; then
-  DIRTY=1
+HEAD_COMMIT="$(git -C "$ROOT" rev-parse --verify HEAD)" || fail "cannot resolve source HEAD"
+COMMIT="${WEDECENT_BUILD_COMMIT:-$HEAD_COMMIT}"
+[[ "$COMMIT" == "$HEAD_COMMIT" ]] || fail "WEDECENT_BUILD_COMMIT must match the exact checked-out HEAD"
+[[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || fail "source commit must be a full lowercase 40-character Git SHA"
+git_status="$(git -C "$ROOT" status --porcelain --untracked-files=all)" || fail "cannot inspect source working tree"
+[[ -z "$git_status" ]] || fail "working tree is dirty; reproducible release builds require a clean checkout"
+SOURCE_SHA256="$(git -C "$ROOT" archive --format=tar "$COMMIT" | sha256sum | awk '{print $1}')" || fail "cannot hash exact source archive"
+[[ "$SOURCE_SHA256" =~ ^[0-9a-f]{64}$ ]] || fail "source archive SHA-256 is malformed"
+COMMIT_EPOCH="$(git -C "$ROOT" show -s --format=%ct "$COMMIT")"
+if [[ -n "${SOURCE_DATE_EPOCH:-}" && "$SOURCE_DATE_EPOCH" != "$COMMIT_EPOCH" ]]; then
+  fail "SOURCE_DATE_EPOCH must equal the exact source commit timestamp"
 fi
-if [[ -n "$(git -C "$ROOT" ls-files --others --exclude-standard)" ]]; then
-  DIRTY=1
-fi
-if [[ "$DIRTY" == 1 ]]; then
-  [[ "${WEDECENT_ALLOW_DIRTY:-0}" == 1 ]] || fail "working tree is dirty; commit/stash changes or set WEDECENT_ALLOW_DIRTY=1 for a local diagnostic build"
-  COMMIT="${COMMIT}-dirty"
-fi
-
-if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
-  SOURCE_DATE_EPOCH="$(git -C "$ROOT" show -s --format=%ct HEAD)"
-fi
-[[ "$SOURCE_DATE_EPOCH" =~ ^[0-9]+$ ]] || fail "SOURCE_DATE_EPOCH must be an integer Unix timestamp"
+SOURCE_DATE_EPOCH="$COMMIT_EPOCH"
 BUILT_AT="$(date -u -d "@$SOURCE_DATE_EPOCH" '+%Y-%m-%dT%H:%M:%SZ')"
-GO_VERSION="$($GO_BIN env GOVERSION)"
+GO_VERSION="$("$GO_BIN" env GOVERSION)"
 
 case "$OUT_DIR" in
   ""|"/") fail "unsafe OUT_DIR: $OUT_DIR" ;;
@@ -41,7 +39,7 @@ esac
 rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR"
 
-LDFLAGS="-buildid= -X=wedecent.com/wedecent/internal/buildinfo.Version=$VERSION -X=wedecent.com/wedecent/internal/buildinfo.Commit=$COMMIT -X=wedecent.com/wedecent/internal/buildinfo.BuiltAt=$BUILT_AT"
+LDFLAGS="-buildid= -X=wedecent.com/wedecent/internal/buildinfo.Version=$VERSION -X=wedecent.com/wedecent/internal/buildinfo.Commit=$COMMIT -X=wedecent.com/wedecent/internal/buildinfo.BuiltAt=$BUILT_AT -X=wedecent.com/wedecent/internal/buildinfo.SourceSHA256=$SOURCE_SHA256"
 
 build_one() {
   local package="$1"
@@ -53,6 +51,7 @@ build_one() {
         -mod=readonly \
         -trimpath \
         -buildvcs=false \
+        -tags=wedecent_release \
         -ldflags "$LDFLAGS" \
         -o "$OUT_DIR/$output" \
         "$package"
@@ -69,6 +68,7 @@ cat > "$OUT_DIR/VERSION.txt" <<EOF_VERSION
 version=$VERSION
 commit=$COMMIT
 built_at=$BUILT_AT
+source_sha256=$SOURCE_SHA256
 go=$GO_VERSION
 platform=windows/amd64
 EOF_VERSION

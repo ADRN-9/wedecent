@@ -4,6 +4,8 @@ WeDecent can reuse its existing direct TCP transport over a point-to-point USB n
 
 The repository includes `scripts/wedecent-linux-usb-ncm.sh` for a deliberately narrow Linux configfs NCM gadget. The helper creates the USB network function only. It does **not** assign IP addresses, start DHCP, install routes, change DNS, modify firewall rules, or configure WeDecent trust.
 
+For audit attribution, `wd-agent serve --direct-tcp-underlay usb_ncm` is an explicit operator assertion that the direct TCP listener is on the USB NCM link. It requires a specific non-loopback IP listen address; wildcard, loopback, and DNS listen addresses are rejected. This label is audit-only and never changes device identity or authorization. If a config file supplies `direct_tcp_underlay=usb_ncm` and the command line changes `--listen`, the NCM assertion is cleared unless the operator explicitly repeats `--direct-tcp-underlay usb_ncm` on that command line. At startup, the bound TCP listener IP is also checked against the configured IP. Audit provenance records this as `operator_config_assertion`, not hardware attestation.
+
 ## Why NCM
 
 Linux configfs exposes NCM as the `ncm` gadget function and provides explicit gadget-side and host-side MAC address attributes. The kernel creates a network interface for the function. Network addressing is intentionally kept outside this helper so operators can integrate the link with their existing network policy.
@@ -62,6 +64,7 @@ Bind the agent only to the USB-link address when the USB link is intended to be 
 ```sh
 wd-agent serve \
   --listen '192.0.2.1:7443' \
+  --direct-tcp-underlay usb_ncm \
   --authorization-url '<authorization service URL>'
 ```
 
@@ -84,6 +87,10 @@ sudo bash scripts/wedecent-linux-usb-ncm.sh teardown
 ```
 
 Teardown verifies the fixed gadget still contains exactly the helper-managed single NCM function/configuration before unbinding it. Unexpected gadget layout causes a fail-closed refusal for manual inspection.
+
+## Hardware validation
+
+The reproducible host-side pairing, incorrect-fingerprint, replay, authorized-terminal, and reconnect gate is documented in [Linux USB NCM hardware validation](LINUX_USB_NCM_HARDWARE_VALIDATION.md) and implemented by `scripts/test-linux-usb-ncm-hardware.sh`. It requires a real host interface bound to `cdc_ncm`; CI or a simulated interface does not complete the milestone.
 
 ## Completion criterion
 

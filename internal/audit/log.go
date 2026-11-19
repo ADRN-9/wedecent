@@ -20,22 +20,34 @@ const (
 	maxFieldLength    = 512
 )
 
-var eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}$`)
+var (
+	eventNamePattern     = regexp.MustCompile("^[a-z0-9][a-z0-9_.-]{0,95}$")
+	auditUUIDPattern     = regexp.MustCompile("(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+	routeDeviceIDPattern = regexp.MustCompile("^wd_[a-z2-7]{16}$")
+)
 
 // Event is deliberately narrow: audit records may identify actors, peers,
 // transports, typed-stream IDs, and stable reason codes, but they have no
 // arbitrary payload field. Terminal data, pairing secrets, grants,
 // credentials, and private keys must never be written to the audit log.
 type Event struct {
-	Time      time.Time `json:"time"`
-	Type      string    `json:"type"`
-	Outcome   string    `json:"outcome"`
-	ActorID   string    `json:"actor_id,omitempty"`
-	PeerID    string    `json:"peer_id,omitempty"`
-	AttemptID string    `json:"attempt_id,omitempty"`
-	Transport string    `json:"transport,omitempty"`
-	StreamID  uint32    `json:"stream_id,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
+	Time                 time.Time `json:"time"`
+	Type                 string    `json:"type"`
+	Outcome              string    `json:"outcome"`
+	ActorID              string    `json:"actor_id,omitempty"`
+	PeerID               string    `json:"peer_id,omitempty"`
+	AttemptID            string    `json:"attempt_id,omitempty"`
+	AuthorizationRunID   string    `json:"authorization_run_id,omitempty"`
+	ValidationAttemptID  string    `json:"validation_attempt_id,omitempty"`
+	ConsumptionAttemptID string    `json:"consumption_attempt_id,omitempty"`
+	ValidationEventID    string    `json:"validation_event_id,omitempty"`
+	ConsumptionEventID   string    `json:"consumption_event_id,omitempty"`
+	Transport            string    `json:"transport,omitempty"`
+	TransportProvenance  string    `json:"transport_provenance,omitempty"`
+	UnderlyingTransport  string    `json:"underlying_transport,omitempty"`
+	RouteRouterID        string    `json:"route_router_id,omitempty"`
+	StreamID             uint32    `json:"stream_id,omitempty"`
+	Reason               string    `json:"reason,omitempty"`
 }
 
 type Log struct {
@@ -133,10 +145,64 @@ func validateEvent(event *Event) error {
 	event.Outcome = strings.TrimSpace(event.Outcome)
 	event.ActorID = strings.TrimSpace(event.ActorID)
 	event.PeerID = strings.TrimSpace(event.PeerID)
+	event.AuthorizationRunID = strings.TrimSpace(event.AuthorizationRunID)
+	event.ValidationAttemptID = strings.TrimSpace(event.ValidationAttemptID)
+	event.ConsumptionAttemptID = strings.TrimSpace(event.ConsumptionAttemptID)
+	event.ValidationEventID = strings.TrimSpace(event.ValidationEventID)
+	event.ConsumptionEventID = strings.TrimSpace(event.ConsumptionEventID)
 	if event.AttemptID != "" && !pairingAttemptPattern.MatchString(event.AttemptID) {
 		return errors.New("audit pairing attempt ID is invalid")
 	}
+	authorizationIDs := []string{
+		event.AuthorizationRunID, event.ValidationAttemptID, event.ConsumptionAttemptID,
+		event.ValidationEventID, event.ConsumptionEventID,
+	}
+	presentAuthorizationIDs := 0
+	for _, id := range authorizationIDs {
+		if id != "" {
+			presentAuthorizationIDs++
+			if !auditUUIDPattern.MatchString(id) {
+				return errors.New("audit authorization provenance identifier is invalid")
+			}
+		}
+	}
+	if presentAuthorizationIDs != 0 && presentAuthorizationIDs != len(authorizationIDs) {
+		return errors.New("audit authorization provenance identifiers must be complete")
+	}
+	if presentAuthorizationIDs == len(authorizationIDs) &&
+		(event.ValidationAttemptID == event.ConsumptionAttemptID || event.ValidationEventID == event.ConsumptionEventID) {
+		return errors.New("audit authorization event identifiers are not independent")
+	}
 	event.Transport = strings.TrimSpace(event.Transport)
+	event.TransportProvenance = strings.TrimSpace(event.TransportProvenance)
+	event.UnderlyingTransport = strings.TrimSpace(event.UnderlyingTransport)
+	event.RouteRouterID = strings.TrimSpace(event.RouteRouterID)
+	switch event.TransportProvenance {
+	case "", "listener_adapter", "operator_config_assertion", "authenticated_router_link":
+	default:
+		return errors.New("audit transport provenance is invalid")
+	}
+	switch event.UnderlyingTransport {
+	case "", "usb_ncm", "lan", "internet":
+	default:
+		return errors.New("audit underlying transport is invalid")
+	}
+	isRouted := strings.HasPrefix(event.Transport, "routed+")
+	if isRouted {
+		if !routeDeviceIDPattern.MatchString(event.RouteRouterID) ||
+			event.TransportProvenance != "authenticated_router_link" ||
+			(event.UnderlyingTransport != "lan" && event.UnderlyingTransport != "internet") {
+			return errors.New("audit routed transport attribution is incomplete")
+		}
+	} else if event.RouteRouterID != "" || event.TransportProvenance == "authenticated_router_link" {
+		return errors.New("audit router identity is only valid for authenticated routed transport")
+	}
+	if event.UnderlyingTransport == "usb_ncm" && event.Transport != "direct_tcp+usb_ncm" {
+		return errors.New("audit USB NCM underlay is inconsistent")
+	}
+	if (event.UnderlyingTransport == "lan" || event.UnderlyingTransport == "internet") && !isRouted {
+		return errors.New("audit network underlay is only valid for routed transport")
+	}
 	event.Reason = strings.TrimSpace(event.Reason)
 	if !eventNamePattern.MatchString(event.Type) {
 		return errors.New("audit event type is invalid")
@@ -146,7 +212,14 @@ func validateEvent(event *Event) error {
 	}
 	for name, value := range map[string]string{
 		"actor_id": event.ActorID, "peer_id": event.PeerID,
-		"transport": event.Transport, "reason": event.Reason,
+		"authorization_run_id":   event.AuthorizationRunID,
+		"validation_attempt_id":  event.ValidationAttemptID,
+		"consumption_attempt_id": event.ConsumptionAttemptID,
+		"validation_event_id":    event.ValidationEventID,
+		"consumption_event_id":   event.ConsumptionEventID,
+		"transport":              event.Transport, "transport_provenance": event.TransportProvenance,
+		"underlying_transport": event.UnderlyingTransport, "route_router_id": event.RouteRouterID,
+		"reason": event.Reason,
 	} {
 		if len(value) > maxFieldLength {
 			return fmt.Errorf("audit field %s exceeds size limit", name)

@@ -45,6 +45,18 @@ func TestDestinationIngressAuthenticatesRouterBeforeHandoff(t *testing.T) {
 		TrustedRouters: destinationTrust,
 		Transport:      mesh.TransportInternet,
 		Handler: endpointConnHandlerFunc(func(conn net.Conn) {
+			attribution, ok := conn.(interface {
+				WeDecentTransportAttribution() (string, string, string)
+			})
+			if !ok {
+				handlerDone <- errors.New("destination ingress omitted authenticated route attribution")
+				return
+			}
+			kind, underlay, authenticatedRouterID := attribution.WeDecentTransportAttribution()
+			if kind != "routed" || underlay != string(mesh.TransportInternet) || authenticatedRouterID != routerID.ID {
+				handlerDone <- fmt.Errorf("route attribution = %q/%q/%q", kind, underlay, authenticatedRouterID)
+				return
+			}
 			buf := make([]byte, len(request))
 			if _, err := io.ReadFull(conn, buf); err != nil {
 				handlerDone <- fmt.Errorf("handler read: %w", err)

@@ -12,13 +12,14 @@ import (
 	"wedecent.com/wedecent/internal/protocol"
 )
 
-func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, transport string, capabilities []protocol.Capability) {
+func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName string, metadata TransportMetadata, capabilities []protocol.Capability, buildIdentity *protocol.AgentBuildIdentity, authorization *GrantConsumptionEvidence) {
+	transport, _ := metadata.auditLabel()
 	fileNegotiated := hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1)
 	if fileNegotiated && (s.FileTransfer == nil || !s.FileTransfer.Ready()) {
 		// Capability negotiation must never outrun the authoritative runtime.
 		return
 	}
-	accepted, err := sessionAcceptedFrame(capabilities)
+	accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
 	if err != nil {
 		return
 	}
@@ -33,10 +34,10 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		return
 	}
 
-	s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peerID, Transport: transport})
+	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peerID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
 	defer func() {
-		s.recordAudit(audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peerID, Transport: transport, Reason: closeReason})
+		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peerID, Transport: transport, Reason: closeReason}, authorization)
 	}()
 	s.log().Info("typed terminal session opened", "client_id", peerID, "client_name", peerName)
 
@@ -53,7 +54,9 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 	sessionCtx, cancelSession := context.WithCancel(context.Background())
 	defer cancelSession()
 	registry := newTypedParentStreamRegistry()
-	streamAudit := newTypedTerminalAuditTracker(peerID, transport, s.recordAudit)
+	streamAudit := newTypedTerminalAuditTracker(peerID, transport, func(event audit.Event) {
+		s.recordGrantAudit(metadata, event, authorization)
+	})
 	typedServer := newTypedTerminalServerWithRegistry(s.Shell, func(frame protocol.Frame) error {
 		if err := writeFrame(frame); err != nil {
 			return err

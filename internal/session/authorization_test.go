@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -56,7 +57,7 @@ func TestRelayDirectAuthorizerUsesDedicatedHeadersAndBody(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := RelayDirectAuthorizer{BaseURL: server.URL, Identity: id, HTTP: server.Client()}
+	a := RelayDirectAuthorizer{BaseURL: server.URL, Identity: id, HTTP: server.Client(), allowLoopbackForTests: true}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := a.Authorize(ctx, clientDeviceID, id.ID, grant); err != nil {
@@ -86,27 +87,159 @@ func TestRelayDirectAuthorizerRejectsRedirect(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := RelayDirectAuthorizer{BaseURL: server.URL, Identity: id}
+	a := RelayDirectAuthorizer{BaseURL: server.URL, Identity: id, allowLoopbackForTests: true}
 	err = a.Authorize(context.Background(), "wd_aaaaaaaaaaaaaaaa", id.ID, "header.payload.signature")
 	if err == nil || !strings.Contains(err.Error(), "HTTP 307") {
 		t.Fatalf("error = %v", err)
 	}
 }
 
-func TestDirectAuthorizationURLRejectsRemotePlaintext(t *testing.T) {
-	_, err := directAuthorizationURL("http://relay.example", "wd_aaaaaaaaaaaaaaaa")
-	if err == nil || !strings.Contains(err.Error(), "requires HTTPS") {
-		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestDirectAuthorizationURLConvertsWebSocketScheme(t *testing.T) {
-	got, err := directAuthorizationURL("wss://relay.wedecent.com/v1/stream/ignored?x=1", "wd_aaaaaaaaaaaaaaaa")
+func TestDirectAuthorizationURLRequiresExactProductionOrigin(t *testing.T) {
+	got, err := directAuthorizationURL("https://relay.wedecent.com", "wd_aaaaaaaaaaaaaaaa")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got != "https://relay.wedecent.com/v1/direct-authorize/wd_aaaaaaaaaaaaaaaa" {
 		t.Fatalf("got %q", got)
+	}
+
+	for _, rejected := range []string{
+		"http://relay.example",
+		"https://relay.example",
+		"https://relay.wedecent.com.evil.example",
+		"https://relay.wedecent.com:8443",
+		"wss://relay.wedecent.com",
+		"http://127.0.0.1:17444",
+		"http://localhost:17444",
+		"https://user@relay.wedecent.com",
+		"https://relay.wedecent.com/path",
+		"https://relay.wedecent.com?redirect=evil",
+	} {
+		if _, err := directAuthorizationURL(rejected, "wd_aaaaaaaaaaaaaaaa"); err == nil {
+			t.Fatalf("accepted unapproved authorization origin %q", rejected)
+		}
+	}
+}
+
+func TestRelayDirectAuthorizerRejectsLoopbackOutsideTestMode(t *testing.T) {
+	id, err := identity.Ensure(t.TempDir(), "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	a := RelayDirectAuthorizer{
+		BaseURL:  "http://127.0.0.1:17444",
+		Identity: id,
+		TicketSource: func(context.Context, string, string, string, int) (string, error) {
+			called = true
+			return "wdt2.test-ticket.signature", nil
+		},
+	}
+	if err := a.Authorize(context.Background(), "wd_aaaaaaaaaaaaaaaa", id.ID, "header.payload.signature"); err == nil {
+		t.Fatal("accepted loopback authorization origin without test-only opt-in")
+	}
+	if called {
+		t.Fatal("requested an authorization ticket before validating the origin")
+	}
+	if err := a.VerifyConsumption(context.Background(), "wd_aaaaaaaaaaaaaaaa", id.ID, "76b4c468-4e39-437c-a9c8-b758c92ab89b", "direct"); err == nil {
+		t.Fatal("accepted loopback evidence origin without test-only opt-in")
+	}
+}
+
+func TestRelayDirectAuthorizerVerifiesIndependentGrantEvidence(t *testing.T) {
+	id, err := identity.Ensure(t.TempDir(), "agent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientID := "wd_aaaaaaaaaaaaaaaa"
+	jti := "76b4c468-4e39-437c-a9c8-b758c92ab89b"
+	flow := "direct"
+	tamperEvent := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/grant-evidence/"+id.ID+"/"+jti {
+			t.Fatalf("unexpected evidence request: %s %s", r.Method, r.URL.Path)
+		}
+		if !strings.HasPrefix(r.Header.Get("Authorization"), "Bearer wdt2.") {
+			t.Fatal("evidence request is missing its target authorization ticket")
+		}
+		constGrantID := "d90987bf-bae6-45da-ab21-c82d049617bd"
+		constRunID := "e90987bf-bae6-45da-ab21-c82d049617bd"
+		constValidationAttemptID := "b90987bf-bae6-45da-ab21-c82d049617bd"
+		constConsumptionAttemptID := "c90987bf-bae6-45da-ab21-c82d049617bd"
+		constValidationEventID := "a90987bf-bae6-45da-ab21-c82d049617bd"
+		constConsumptionEventID := "f90987bf-bae6-45da-ab21-c82d049617bd"
+		validatedAt := time.Now().UTC().Format(time.RFC3339Nano)
+		consumedAt := time.Now().UTC().Format(time.RFC3339Nano)
+		retainUntil := time.Now().Add(time.Hour).UnixMilli()
+		validationEvent := GrantEventEvidence{
+			EventID: constValidationEventID, RunID: constRunID, AttemptID: constValidationAttemptID,
+			Type: "authorization.validation", Outcome: "accepted", GrantID: constGrantID, JTI: jti,
+			ClientDeviceID: clientID, TargetDeviceID: id.ID, Permission: "terminal.connect",
+			Flow: flow, OccurredAt: validatedAt, RetainUntilMS: retainUntil,
+		}
+		consumptionEvent := GrantEventEvidence{
+			EventID: constConsumptionEventID, RunID: constRunID, AttemptID: constConsumptionAttemptID,
+			Type: "authorization.consumption", Outcome: "consumed", GrantID: constGrantID, JTI: jti,
+			ClientDeviceID: clientID, TargetDeviceID: id.ID, Permission: "terminal.connect",
+			Flow: flow, OccurredAt: consumedAt, RetainUntilMS: retainUntil,
+		}
+		if tamperEvent {
+			consumptionEvent.AttemptID = constValidationAttemptID
+		}
+		_ = json.NewEncoder(w).Encode(GrantConsumptionEvidence{
+			Version: 1, AuthorizationRunID: constRunID,
+			ValidationAttemptID: constValidationAttemptID, ConsumptionAttemptID: constConsumptionAttemptID,
+			ValidationEventID: constValidationEventID, ConsumptionEventID: constConsumptionEventID,
+			ValidationEvent: validationEvent, ConsumptionEvent: consumptionEvent,
+			GrantID: constGrantID, JTI: jti, ClientDeviceID: clientID, TargetDeviceID: id.ID,
+			Permission: "terminal.connect", Flow: flow, ValidationOutcome: "accepted", ConsumptionOutcome: "consumed",
+			ValidatedAt: validatedAt, ConsumedAt: consumedAt,
+			ExpiresAt:     time.Now().Add(time.Minute).UTC().Format(time.RFC3339Nano),
+			RetainUntilMS: retainUntil,
+		})
+	}))
+	defer server.Close()
+
+	a := RelayDirectAuthorizer{
+		BaseURL:               server.URL,
+		Identity:              id,
+		allowLoopbackForTests: true,
+		TicketSource: func(_ context.Context, baseURL, targetDeviceID, role string, slot int) (string, error) {
+			if baseURL != server.URL || targetDeviceID != id.ID || role != "authorize" || slot != 0 {
+				t.Fatalf("unexpected ticket source request: %q %q %q %d", baseURL, targetDeviceID, role, slot)
+			}
+			return "wdt2.target-ticket.signature", nil
+		},
+		HTTP: server.Client(),
+	}
+	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "direct"); err != nil {
+		t.Fatal(err)
+	}
+	flow = "relay"
+	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "relay"); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.VerifyConsumption(context.Background(), "wd_bbbbbbbbbbbbbbbb", id.ID, jti, "relay"); err == nil {
+		t.Fatal("accepted evidence for a different client identity")
+	}
+	if err := a.VerifyConsumption(context.Background(), clientID, id.ID, jti, "direct"); err == nil {
+		t.Fatal("accepted evidence for a different session flow")
+	}
+	flow = "direct"
+	tamperEvent = true
+	if _, err := a.VerifyConsumptionEvidence(context.Background(), clientID, id.ID, jti, "direct"); err == nil {
+		t.Fatal("accepted a consumption event attributed to the validation attempt")
+	}
+}
+
+func TestConnectionGrantJTIRequiresStructuredPayload(t *testing.T) {
+	payload := base64.RawURLEncoding.EncodeToString([]byte(`{"jti":"76b4c468-4e39-437c-a9c8-b758c92ab89b"}`))
+	got, err := ConnectionGrantJTI("eyJhbGciOiJFZERTQSJ9." + payload + ".signature")
+	if err != nil || got != "76b4c468-4e39-437c-a9c8-b758c92ab89b" {
+		t.Fatalf("ConnectionGrantJTI = %q, %v", got, err)
+	}
+	if _, err := ConnectionGrantJTI("header.payload.signature"); err == nil {
+		t.Fatal("accepted malformed connection grant payload")
 	}
 }
 
@@ -117,11 +250,11 @@ func TestAuthorizeTicketSourceRole(t *testing.T) {
 	}
 	called := false
 	a := RelayDirectAuthorizer{
-		BaseURL:  "https://relay.example",
+		BaseURL:  productionAuthorizationOrigin,
 		Identity: id,
 		TicketSource: func(_ context.Context, baseURL, targetDeviceID, role string, slot int) (string, error) {
 			called = true
-			if baseURL != "https://relay.example" || targetDeviceID != id.ID || role != "authorize" || slot != 0 {
+			if baseURL != productionAuthorizationOrigin || targetDeviceID != id.ID || role != "authorize" || slot != 0 {
 				t.Fatalf("unexpected ticket request: %q %q %q %d", baseURL, targetDeviceID, role, slot)
 			}
 			return "wdt2.payload.signature", nil

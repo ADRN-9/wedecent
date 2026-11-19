@@ -239,7 +239,7 @@ func openAgentListeners(
 		cfg.ListenAddr,
 		cfg.MaxConnections,
 		func(_ context.Context, conn net.Conn) error {
-			server.ServeConn(conn)
+			server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportDirectTCP, Underlying: session.UnderlyingTransport(cfg.DirectTCPUnderlyingTransport)})
 			return nil
 		},
 	)
@@ -248,6 +248,16 @@ func openAgentListeners(
 		return nil, err
 	}
 	set.direct = direct
+	if cfg.DirectTCPUnderlyingTransport != "" {
+		if direct == nil {
+			set.close()
+			return nil, errors.New("wd-agent: USB NCM attribution requires an active direct TCP listener")
+		}
+		if err := validateNCMListenerBinding(cfg.ListenAddr, direct.Addr()); err != nil {
+			set.close()
+			return nil, err
+		}
+	}
 
 	if cfg.RFCOMMChannel != 0 {
 		rfcomm, err := listenRFCOMM(cfg.RFCOMMChannel)
@@ -265,7 +275,7 @@ func openAgentListeners(
 			rfcomm,
 			cfg.MaxConnections,
 			func(_ context.Context, conn net.Conn) error {
-				server.ServeConn(conn)
+				server.ServeConnWithTransport(conn, session.TransportMetadata{Kind: session.TransportBluetoothRFCOMM})
 				return nil
 			},
 		); err != nil {
@@ -344,6 +354,28 @@ func openAgentListeners(
 	}
 
 	return set, nil
+}
+
+func validateNCMListenerBinding(configured string, actual net.Addr) error {
+	host, _, err := net.SplitHostPort(configured)
+	if err != nil {
+		return errors.New("wd-agent: USB NCM attribution requires a specific IP listener")
+	}
+	zone := ""
+	if index := strings.LastIndex(host, "%"); index >= 0 {
+		zone = host[index+1:]
+		host = host[:index]
+	}
+	expectedIP := net.ParseIP(host)
+	actualTCP, ok := actual.(*net.TCPAddr)
+	if expectedIP == nil || !ok || actualTCP.IP == nil ||
+		actualTCP.IP.IsUnspecified() || !actualTCP.IP.Equal(expectedIP) {
+		return errors.New("wd-agent: bound TCP listener does not match the configured USB NCM IP")
+	}
+	if zone != "" && actualTCP.Zone != zone {
+		return errors.New("wd-agent: bound TCP listener zone does not match the configured USB NCM interface")
+	}
+	return nil
 }
 
 func (s *agentListenerSet) printAddresses() {

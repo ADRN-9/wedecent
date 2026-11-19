@@ -8,7 +8,7 @@ import (
 )
 
 func TestSessionAcceptedFramePreservesLegacyEmptyPayload(t *testing.T) {
-	frame, err := sessionAcceptedFrame(nil)
+	frame, err := sessionAcceptedFrame(nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -21,7 +21,7 @@ func TestSessionAcceptedFramePreservesLegacyEmptyPayload(t *testing.T) {
 }
 
 func TestSessionAcceptedFrameCarriesNegotiatedTypedStreams(t *testing.T) {
-	frame, err := sessionAcceptedFrame([]protocol.Capability{protocol.CapabilityTypedStreamsV1})
+	frame, err := sessionAcceptedFrame([]protocol.Capability{protocol.CapabilityTypedStreamsV1}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

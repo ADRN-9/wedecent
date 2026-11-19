@@ -21,7 +21,7 @@ func TestRecordAuditPersistsActorAndStableFields(t *testing.T) {
 		Type:      "terminal.authorization",
 		Outcome:   "denied",
 		PeerID:    "wd_ponmlkjihgfedcba",
-		Transport: "direct",
+		Transport: "direct_tcp",
 		Reason:    "authorization_rejected",
 	})
 
@@ -38,7 +38,7 @@ func TestRecordAuditPersistsActorAndStableFields(t *testing.T) {
 	if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
 		t.Fatal(err)
 	}
-	if event.ActorID != server.Identity.ID || event.PeerID != "wd_ponmlkjihgfedcba" || event.Type != "terminal.authorization" || event.Outcome != "denied" || event.Transport != "direct" || event.Reason != "authorization_rejected" {
+	if event.ActorID != server.Identity.ID || event.PeerID != "wd_ponmlkjihgfedcba" || event.Type != "terminal.authorization" || event.Outcome != "denied" || event.Transport != "direct_tcp" || event.Reason != "authorization_rejected" {
 		t.Fatalf("unexpected event: %+v", event)
 	}
 }

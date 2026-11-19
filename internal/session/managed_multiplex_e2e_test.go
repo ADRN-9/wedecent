@@ -133,7 +133,7 @@ func TestManagedMultiplexLiveParentKeepsSiblingAfterChildClose(t *testing.T) {
 		}
 
 		capabilities := []protocol.Capability{protocol.CapabilityTypedStreamsV1}
-		accepted, err := sessionAcceptedFrame(capabilities)
+		accepted, err := sessionAcceptedFrame(capabilities, nil)
 		if err != nil {
 			serverErr <- err
 			return
@@ -301,7 +301,7 @@ func TestManagedMultiplexLiveMalformedTypedFrameFailsParent(t *testing.T) {
 			serverErr <- err
 			return
 		}
-		accepted, err := sessionAcceptedFrame([]protocol.Capability{protocol.CapabilityTypedStreamsV1})
+		accepted, err := sessionAcceptedFrame([]protocol.Capability{protocol.CapabilityTypedStreamsV1}, nil)
 		if err != nil {
 			serverErr <- err
 			return

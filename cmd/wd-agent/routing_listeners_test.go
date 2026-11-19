@@ -275,6 +275,29 @@ func TestOpenAgentListenersBindsSeparateRoutingSockets(
 	}
 }
 
+func TestValidateNCMListenerBinding(t *testing.T) {
+	tests := []struct {
+		name       string
+		configured string
+		actual     net.Addr
+		wantErr    bool
+	}{
+		{"matching IPv4", "192.0.2.10:7443", &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 7443}, false},
+		{"changed listener IP", "192.0.2.11:7443", &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 7443}, true},
+		{"wildcard actual listener", "192.0.2.10:7443", &net.TCPAddr{IP: net.IPv4zero, Port: 7443}, true},
+		{"non-IP configured listener", "wedecent.local:7443", &net.TCPAddr{IP: net.ParseIP("192.0.2.10"), Port: 7443}, true},
+		{"non-TCP listener", "192.0.2.10:7443", &net.UnixAddr{Name: "/tmp/test", Net: "unix"}, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateNCMListenerBinding(tt.configured, tt.actual)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateNCMListenerBinding() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestAgentListenerSetStopsOnCancellation(
 	t *testing.T,
 ) {

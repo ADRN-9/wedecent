@@ -2,7 +2,10 @@ package session
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -11,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/protocol"
 	"wedecent.com/wedecent/internal/terminal"
@@ -19,10 +23,13 @@ import (
 )
 
 type Client struct {
-	Identity        *identity.Identity
-	Trust           *trust.Store
-	Dialer          transport.Dialer
-	ConnectionGrant string
+	Identity                      *identity.Identity
+	Trust                         *trust.Store
+	Dialer                        transport.Dialer
+	ConnectionGrant               string
+	ExpectedAgentCommit           string
+	ExpectedAgentSourceSHA256     string
+	ExpectedAgentExecutableSHA256 string
 }
 
 // Probe verifies that peer.Endpoint is reachable and presents the already
@@ -84,12 +91,22 @@ func (c *Client) Pair(ctx context.Context, endpoint, expectedFingerprint, secret
 }
 
 func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.File, out io.Writer) (int, error) {
-	inBandAuthorization := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(peer.Endpoint)), "wsrelay://")
-	if inBandAuthorization {
-		grant := strings.TrimSpace(c.ConnectionGrant)
-		if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
-			return 0, errors.New("a valid connection grant is required for this transport")
+	inBandAuthorization := usesInBandAuthorization(peer.Endpoint)
+	grant := strings.TrimSpace(c.ConnectionGrant)
+	if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
+		return 0, errors.New("a valid connection grant is required for this transport")
+	}
+	if (c.ExpectedAgentCommit == "") != (c.ExpectedAgentSourceSHA256 == "") ||
+		(c.ExpectedAgentCommit == "") != (c.ExpectedAgentExecutableSHA256 == "") {
+		return 0, errors.New("expected agent commit, source SHA-256, and executable SHA-256 must be supplied together")
+	}
+	grantJTI := ""
+	if !inBandAuthorization {
+		parsedJTI, err := ConnectionGrantJTI(grant)
+		if err != nil {
+			return 0, fmt.Errorf("relay connection grant: %w", err)
 		}
+		grantJTI = parsedJTI
 	}
 
 	raw, err := c.dial(ctx, peer.Endpoint)
@@ -110,15 +127,20 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 			cols, rows = c2, r2
 		}
 	}
+	nonceBytes := make([]byte, 32)
+	if _, err := rand.Read(nonceBytes); err != nil {
+		return 0, fmt.Errorf("create agent build identity challenge: %w", err)
+	}
+	buildNonce := base64.RawURLEncoding.EncodeToString(nonceBytes)
 	frameType := protocol.TypeOpenSession
 	var payload []byte
 	if inBandAuthorization {
 		frameType = protocol.TypeOpenAuthorizedSession
 		payload, _ = protocol.JSON(protocol.OpenAuthorizedSession{
-			Cols: cols, Rows: rows, Term: os.Getenv("TERM"), ConnectionGrant: strings.TrimSpace(c.ConnectionGrant),
+			Cols: cols, Rows: rows, Term: os.Getenv("TERM"), ConnectionGrant: grant, BuildNonce: buildNonce,
 		})
 	} else {
-		payload, _ = protocol.JSON(protocol.OpenSession{Cols: cols, Rows: rows, Term: os.Getenv("TERM")})
+		payload, _ = protocol.JSON(protocol.OpenSession{Cols: cols, Rows: rows, Term: os.Getenv("TERM"), GrantJTI: grantJTI, BuildNonce: buildNonce})
 	}
 	if err := protocol.WriteFrame(conn, protocol.Frame{Type: frameType, Payload: payload}); err != nil {
 		return 0, err
@@ -132,6 +154,35 @@ func (c *Client) ConnectTerminal(ctx context.Context, peer trust.Peer, in *os.Fi
 	}
 	if first.Type != protocol.TypeSessionAccepted {
 		return 0, errors.New("session was not accepted")
+	}
+	if len(first.Payload) > 0 {
+		var accepted protocol.SessionAccepted
+		if err := protocol.ParseJSON(first.Payload, &accepted); err != nil {
+			return 0, errors.New("session acceptance metadata is malformed")
+		}
+		if accepted.BuildIdentity != nil {
+			peerCert, err := identity.PeerCertificate(conn.ConnectionState())
+			if err != nil {
+				return 0, err
+			}
+			publicKey, ok := peerCert.PublicKey.(ed25519.PublicKey)
+			if !ok || identity.CertificateDeviceID(peerCert) != peer.ID {
+				return 0, errors.New("agent build identity certificate does not match the trusted device")
+			}
+			if err := buildinfo.VerifyIdentity(publicKey, peer.ID, buildNonce, *accepted.BuildIdentity); err != nil {
+				return 0, err
+			}
+			if c.ExpectedAgentCommit != "" &&
+				(accepted.BuildIdentity.Commit != c.ExpectedAgentCommit ||
+					accepted.BuildIdentity.SourceSHA256 != c.ExpectedAgentSourceSHA256 ||
+					accepted.BuildIdentity.ExecutableSHA256 != c.ExpectedAgentExecutableSHA256) {
+				return 0, errors.New("target agent build identity does not match the expected source commit")
+			}
+		} else if c.ExpectedAgentCommit != "" {
+			return 0, errors.New("target agent did not provide an authenticated build identity")
+		}
+	} else if c.ExpectedAgentCommit != "" {
+		return 0, errors.New("target agent did not provide an authenticated build identity")
 	}
 
 	var rawState *terminal.RawState
@@ -253,4 +304,9 @@ func protocolError(payload []byte) error {
 		return errors.New("remote protocol error")
 	}
 	return fmt.Errorf("%s: %s", p.Code, p.Message)
+}
+
+func usesInBandAuthorization(endpoint string) bool {
+	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	return !strings.HasPrefix(endpoint, "wsrelay://")
 }

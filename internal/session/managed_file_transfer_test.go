@@ -270,7 +270,7 @@ func serveManagedFileTestParent(raw net.Conn, serverID *identity.Identity, peerI
 		return
 	}
 	capabilities := []protocol.Capability{protocol.CapabilityTypedStreamsV1, protocol.CapabilityFileTransferV1}
-	accepted, err := sessionAcceptedFrame(capabilities)
+	accepted, err := sessionAcceptedFrame(capabilities, nil)
 	if err != nil {
 		serverErr <- err
 		return

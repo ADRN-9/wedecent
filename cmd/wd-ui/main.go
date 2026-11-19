@@ -9,11 +9,13 @@ import (
 	"wedecent.com/wedecent/internal/buildinfo"
 	coreclient "wedecent.com/wedecent/internal/coreapi/client"
 	"wedecent.com/wedecent/internal/guiapp"
+	"wedecent.com/wedecent/internal/processenv"
 )
 
 var errUIUsage = errors.New("usage: wd-ui [version|autostart <enable|disable|status>]")
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
 		case "version":

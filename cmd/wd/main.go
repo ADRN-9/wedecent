@@ -23,7 +23,9 @@ import (
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/enrollment"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/processenv"
 	"wedecent.com/wedecent/internal/relayauth"
+	"wedecent.com/wedecent/internal/securefile"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/terminal"
 	"wedecent.com/wedecent/internal/transport"
@@ -31,6 +33,7 @@ import (
 )
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) < 2 {
 		usage()
 		os.Exit(2)
@@ -614,6 +617,7 @@ func runPair(args []string) error {
 	webRelay := fs.String("web-relay", "", "serverless WebSocket relay URL, e.g. https://relay.wedecent.com")
 	deviceID := fs.String("device-id", "", "target device ID for relay or LAN discovery pairing")
 	fingerprint := fs.String("fingerprint", "", "independently verified expected SHA256 device public-key fingerprint")
+	pairingSecretFile := fs.String("pairing-secret-file", "", "path to a private file containing the single-use pairing secret")
 	discoverLAN := fs.Bool("discover-lan", false, "discover a direct LAN endpoint for --device-id")
 	discoverTimeout := fs.Duration("discover-timeout", 6*time.Second, "LAN discovery window for --discover-lan")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
@@ -655,10 +659,11 @@ func runPair(args []string) error {
 		fmt.Fprintf(os.Stderr, "WeDecent: selected discovered LAN routing hint %s; trust still requires the expected fingerprint and pairing secret\n", locator)
 	}
 
-	secret, err := readPairingSecret()
+	secret, err := readPairingSecret(*pairingSecretFile)
 	if err != nil {
 		return err
 	}
+	defer func() { secret = "" }()
 
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
@@ -677,6 +682,7 @@ func runPair(args []string) error {
 	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, pairingGrant)}
 	client := &session.Client{Identity: id, Trust: store, Dialer: dialer}
 	peer, err := client.Pair(ctx, locator, fp, secret)
+	secret = ""
 	if err != nil {
 		return err
 	}
@@ -684,13 +690,27 @@ func runPair(args []string) error {
 	return nil
 }
 
-func readPairingSecret() (string, error) {
-	secret := strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_SECRET"))
-	if secret == "" {
+func readPairingSecret(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	secret := ""
+	if path != "" {
+		data, err := securefile.ReadPrivateFile(path, 4*1024)
+		if err != nil {
+			return "", fmt.Errorf("read pairing secret file: %w", err)
+		}
+		secret = strings.TrimSpace(string(data))
+		clear(data)
+		if strings.ContainsAny(secret, "\r\n\t ") {
+			return "", errors.New("pairing secret file must contain one secret without embedded whitespace")
+		}
+		if secret == "" {
+			return "", errors.New("pairing secret file is empty")
+		}
+	} else {
 		fmt.Fprint(os.Stderr, "Pairing secret: ")
 		tty, err := openPasswordTTY()
 		if err != nil {
-			return "", errors.New("no interactive terminal is available for secure pairing-secret entry; set WEDECENT_PAIRING_SECRET only for controlled automation")
+			return "", errors.New("no interactive terminal is available for secure pairing-secret entry; provide --pairing-secret-file")
 		}
 		readSecret, readErr := terminal.ReadPassword(tty)
 		closeErr := tty.Close()
@@ -732,6 +752,9 @@ func runConnect(args []string) (int, error) {
 	webRelay := fs.String("web-relay", "", "override with a serverless WebSocket relay URL")
 	lanTimeout := fs.Duration("lan-timeout", 1500*time.Millisecond, "trusted LAN discovery window; 0 disables automatic LAN selection")
 	connectionGrantFile := fs.String("connection-grant-file", "", "path to a short-lived connection grant JWT")
+	expectedAgentCommit := fs.String("expected-agent-commit", "", "require this authenticated target-agent source commit")
+	expectedAgentSourceSHA256 := fs.String("expected-agent-source-sha256", "", "require this authenticated target-agent source archive SHA-256")
+	expectedAgentExecutableSHA256 := fs.String("expected-agent-executable-sha256", "", "require this authenticated target-agent executable SHA-256")
 	relayCA := fs.String("relay-ca", "", "optional PEM CA bundle for a private/dev relay")
 	relayServerName := fs.String("relay-server-name", "", "optional TLS server-name override for the relay")
 	routeRouter := fs.String("route-router", "", "explicit one-hop router device ID")
@@ -855,10 +878,13 @@ func runConnect(args []string) (int, error) {
 			return 0, errors.New("routed connection configuration unexpectedly disabled")
 		}
 		client := &session.Client{
-			Identity:        id,
-			Trust:           store,
-			Dialer:          routedDialer,
-			ConnectionGrant: connectionGrant,
+			Identity:                      id,
+			Trust:                         store,
+			Dialer:                        routedDialer,
+			ConnectionGrant:               connectionGrant,
+			ExpectedAgentCommit:           *expectedAgentCommit,
+			ExpectedAgentSourceSHA256:     *expectedAgentSourceSHA256,
+			ExpectedAgentExecutableSHA256: *expectedAgentExecutableSHA256,
 		}
 		return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
 	}
@@ -868,7 +894,12 @@ func runConnect(args []string) (int, error) {
 		webRelayGrant = connectionGrant
 	}
 	dialer := transport.MultiDialer{Relay: transport.RelayOptions{CAFile: *relayCA, ServerName: *relayServerName, Timeout: 10 * time.Second}, WebRelay: clientWebRelayOptionsWithGrant(id, webRelayGrant)}
-	client := &session.Client{Identity: id, Trust: store, Dialer: dialer, ConnectionGrant: connectionGrant}
+	client := &session.Client{
+		Identity: id, Trust: store, Dialer: dialer, ConnectionGrant: connectionGrant,
+		ExpectedAgentCommit:           *expectedAgentCommit,
+		ExpectedAgentSourceSHA256:     *expectedAgentSourceSHA256,
+		ExpectedAgentExecutableSHA256: *expectedAgentExecutableSHA256,
+	}
 	return client.ConnectTerminal(context.Background(), peer, os.Stdin, os.Stdout)
 }
 
@@ -915,10 +946,11 @@ func readConnectionGrantFile(path string) (string, error) {
 	if path == "" {
 		return "", nil
 	}
-	data, err := os.ReadFile(path)
+	data, err := securefile.ReadPrivateFile(path, 16*1024)
 	if err != nil {
 		return "", fmt.Errorf("read connection grant file: %w", err)
 	}
+	defer clear(data)
 	if len(data) == 0 || len(data) > 16*1024 {
 		return "", errors.New("connection grant file has an invalid size")
 	}

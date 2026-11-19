@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"wedecent.com/wedecent/internal/audit"
+	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/protocol"
 	"wedecent.com/wedecent/internal/terminal"
@@ -45,8 +46,17 @@ type Server struct {
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 
+// ServeConn preserves the direct-TCP default for legacy callers. Production
+// transport adapters should use ServeConnWithTransport explicitly.
 func (s *Server) ServeConn(raw net.Conn) {
-	s.serveConn(raw, 15*time.Second, true)
+	s.ServeConnWithTransport(raw, transportMetadataFromConn(raw))
+}
+
+// ServeConnWithTransport accepts only locally supplied, validated transport
+// metadata. The label is audit context only; it never participates in identity
+// verification, authorization, or routing decisions.
+func (s *Server) ServeConnWithTransport(raw net.Conn, metadata TransportMetadata) {
+	s.serveConn(raw, 15*time.Second, true, metadata)
 }
 
 // ServeParkedRelayConn serves a relay connection that may sit idle until a
@@ -54,15 +64,20 @@ func (s *Server) ServeConn(raw net.Conn) {
 // responsible for parking the connection; the inner TLS handshake starts only
 // when a client arrives, so there is intentionally no pre-client deadline.
 func (s *Server) ServeParkedRelayConn(raw net.Conn) {
-	s.serveConn(raw, 0, false)
+	s.serveConn(raw, 0, false, TransportMetadata{Kind: TransportWebSocketRelay})
 }
 
-func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, requireInBandAuthorization bool) {
-	defer raw.Close()
-	transport := "relay"
-	if requireInBandAuthorization {
-		transport = "direct"
+func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, requireInBandAuthorization bool, metadata TransportMetadata) {
+	if raw == nil {
+		return
 	}
+	transport, err := metadata.auditLabel()
+	if err != nil {
+		s.log().Error("invalid session transport metadata", "error", err)
+		_ = raw.Close()
+		return
+	}
+	defer raw.Close()
 	tlsConn := tls.Server(raw, identity.ServerTLS(s.Identity))
 	if handshakeTimeout > 0 {
 		_ = tlsConn.SetDeadline(time.Now().Add(handshakeTimeout))
@@ -78,48 +93,49 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 	}
 	switch first.Type {
 	case protocol.TypePairRequest:
-		s.handlePair(tlsConn, first, transport)
+		s.handlePair(tlsConn, first, metadata)
 	case protocol.TypeOpenSession:
 		if requireInBandAuthorization {
-			s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "authorization_required"})
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "authorization_required"})
 			_ = sendError(tlsConn, "authorization_required", "this transport requires an authorized session request")
 			return
 		}
-		s.handleTerminal(tlsConn, first, transport)
+		s.handleTerminal(tlsConn, first, metadata, nil)
 	case protocol.TypeOpenAuthorizedSession:
 		if !requireInBandAuthorization {
-			s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "unexpected_authorized_request"})
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "unexpected_authorized_request"})
 			_ = sendError(tlsConn, "unexpected_message", "authorized session requests are not valid on this transport")
 			return
 		}
-		s.handleAuthorizedTerminal(tlsConn, first, transport)
+		s.handleAuthorizedTerminal(tlsConn, first, metadata)
 	default:
 		_ = sendError(tlsConn, "unexpected_message", "expected pairing or session request")
 	}
 }
 
-func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport string) {
+func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, metadata TransportMetadata) {
+	transport, _ := metadata.auditLabel()
 	peer, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "pairing.request", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
 		_ = sendError(conn, "client_certificate_required", err.Error())
 		return
 	}
 	var req protocol.PairRequest
 	if err := protocol.ParseJSON(first.Payload, &req); err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", Transport: transport, Reason: "invalid_request"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "pairing.request", Outcome: "denied", Transport: transport, Reason: "invalid_request"})
 		_ = sendError(conn, "bad_request", "invalid pair request")
 		return
 	}
 	fp, err := identity.FingerprintPublicKey(peer.PublicKey)
 	if err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "invalid_client_key"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "invalid_client_key"})
 		_ = sendError(conn, "pairing_denied", "invalid client key")
 		return
 	}
 	clientID := identity.CertificateDeviceID(peer)
 	if clientID == "" || req.ClientID != clientID {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "client_identity_mismatch"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "client_identity_mismatch"})
 		_ = sendError(conn, "pairing_denied", "client identity mismatch")
 		return
 	}
@@ -136,7 +152,7 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		return
 	}
 	if !valid {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_pairing_secret"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_pairing_secret"})
 		_ = sendError(conn, "pairing_denied", "invalid or already consumed pairing secret")
 		return
 	}
@@ -150,10 +166,11 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		var pairingAudit *audit.Log
 		pairingAudit, err = audit.Open(s.StateDir)
 		if err == nil {
-			err = pairingAudit.Append(audit.Event{
+			pending := transportAuditEvent(metadata, audit.Event{
 				Type: "pairing.request", Outcome: "pending", ActorID: s.Identity.ID,
-				PeerID: clientID, Transport: transport, AttemptID: attemptID,
+				PeerID: clientID, AttemptID: attemptID,
 			})
+			err = pairingAudit.Append(pending)
 		}
 		if err == nil {
 			err = recovery.Begin(audit.PairingOutcome{
@@ -162,7 +179,7 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 			})
 		}
 		if err == nil {
-			s.handlePairCommit(conn, transport, clientID, name, fp, req.PairingSecret, attemptID, pairingAudit, recovery)
+			s.handlePairCommit(conn, metadata, clientID, name, fp, req.PairingSecret, attemptID, pairingAudit, recovery)
 			return
 		}
 	}
@@ -171,7 +188,8 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 }
 
 // handlePairCommit runs only after both independent pending records are durable.
-func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp, secret, attemptID string, pairingAudit *audit.Log, recovery *audit.PairingRecovery) {
+func (s *Server) handlePairCommit(conn *tls.Conn, metadata TransportMetadata, clientID, name, fp, secret, attemptID string, pairingAudit *audit.Log, recovery *audit.PairingRecovery) {
+	transport, _ := metadata.auditLabel()
 	// Identity and fingerprint were verified before the durable transaction.
 	pairErr := trust.PairClientWithSecret(s.StateDir, secret, s.Trust, trust.Peer{
 		ID: clientID, Name: name, Fingerprint: fp,
@@ -197,8 +215,10 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 			denial := audit.Event{
 				Time: time.Now().UTC(), Type: "pairing.request", Outcome: "denied",
 				ActorID: s.Identity.ID, PeerID: clientID, Transport: transport,
-				AttemptID: attemptID, Reason: "invalid_pairing_secret",
+				TransportProvenance: transportAuditProvenance(transport),
+				AttemptID:           attemptID, Reason: "invalid_pairing_secret",
 			}
+			denial = transportAuditEvent(metadata, denial)
 			if err := pairingAudit.Append(denial); err != nil {
 				s.log().Error("pairing denial completion audit unavailable", "attempt_id", attemptID, "error", err)
 			} else if err := recovery.ConfirmCompletion(pairingAudit, attemptID, denial); err != nil {
@@ -214,7 +234,7 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 		case errors.Is(pairErr, trust.ErrPairingTrustUncertain):
 			reason = "trust_commit_uncertain"
 		}
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason})
+		s.recordTransportAudit(metadata, audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason})
 		_ = sendError(conn, "server_error", "pairing state unavailable; operator review and new secret required")
 		return
 	}
@@ -224,7 +244,8 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 	}
 	completion := audit.Event{
 		Time: time.Now().UTC(), Type: "pairing.trust_added", Outcome: "success", ActorID: s.Identity.ID,
-		PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason,
+		PeerID: clientID, Transport: transport, TransportProvenance: transportAuditProvenance(transport),
+		AttemptID: attemptID, Reason: reason,
 	}
 	appendCompletion := pairingAudit.Append
 	if s.pairingCompletionAudit != nil {
@@ -232,6 +253,7 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 			return s.pairingCompletionAudit(pairingAudit, event)
 		}
 	}
+	completion = transportAuditEvent(metadata, completion)
 	if err := appendCompletion(completion); err != nil {
 		// Trust is already committed. Do not fabricate denial or audit proof.
 		s.log().Error("pairing success audit could not be completed", "peer_id", clientID, "error", err)
@@ -246,99 +268,178 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 	s.log().Info("paired client", "client_id", clientID, "client_name", name)
 }
 
-func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, metadata TransportMetadata) {
+	transport, _ := metadata.auditLabel()
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
-		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
 		_ = sendError(conn, "unauthorized", "client certificate required")
 		return
 	}
 	clientID := identity.CertificateDeviceID(peerCert)
 	fp, err := identity.FingerprintPublicKey(peerCert.PublicKey)
 	if err != nil {
-		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_client_certificate"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_client_certificate"})
 		_ = sendError(conn, "unauthorized", "invalid client certificate")
 		return
 	}
 	peer, ok := s.Trust.FindByFingerprint(fp)
 	if !ok {
-		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_not_paired"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_not_paired"})
 		_ = sendError(conn, "unauthorized", "client is not paired")
 		return
 	}
 	if clientID == "" || peer.ID != clientID {
-		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_identity_mismatch"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_identity_mismatch"})
 		_ = sendError(conn, "unauthorized", "client identity mismatch")
 		return
 	}
 
 	var req protocol.OpenAuthorizedSession
 	if err := protocol.ParseJSON(first.Payload, &req); err != nil {
-		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_request"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_request"})
 		_ = sendError(conn, "bad_request", "invalid authorized session request")
 		return
 	}
 	grant := strings.TrimSpace(req.ConnectionGrant)
 	if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
-		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_connection_grant"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_connection_grant"})
+		_ = sendError(conn, "authorization_denied", "connection authorization failed")
+		return
+	}
+	grantJTI, err := ConnectionGrantJTI(grant)
+	if err != nil {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_connection_grant"})
 		_ = sendError(conn, "authorization_denied", "connection authorization failed")
 		return
 	}
 	if s.DirectAuthorizer == nil {
-		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "authorizer_unavailable"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "authorizer_unavailable"})
 		_ = sendError(conn, "authorization_unavailable", "direct connection authorization is not configured")
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
+	// Raw TCP relay is not the Worker WebSocket ingress. The target must
+	// independently submit the in-band grant to its approved authorization origin.
 	if err := s.DirectAuthorizer.Authorize(ctx, clientID, s.Identity.ID, grant); err != nil {
-		s.log().Warn("direct session authorization rejected", "client_id", clientID, "error", err)
-		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "authorization_rejected"})
+		s.log().Warn("in-band session authorization rejected", "client_id", clientID, "error", err)
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "authorization_rejected"})
 		_ = sendError(conn, "authorization_denied", "connection authorization failed")
 		return
 	}
-	s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport})
+	const flow = "direct"
+	provider, ok := s.DirectAuthorizer.(GrantEvidenceProvider)
+	if !ok {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "grant_evidence_unavailable"})
+		_ = sendError(conn, "authorization_unavailable", "server-side grant evidence is unavailable")
+		return
+	}
+	evidence, err := provider.VerifyConsumptionEvidence(ctx, clientID, s.Identity.ID, grantJTI, flow)
+	if err != nil {
+		s.log().Warn("direct session grant evidence rejected", "client_id", clientID, "error", err)
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "grant_evidence_rejected"})
+		_ = sendError(conn, "authorization_denied", "connection authorization evidence could not be verified")
+		return
+	}
+	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport}, &evidence)
 
-	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, Capabilities: req.Capabilities})
-	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport)
+	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, GrantJTI: grantJTI, BuildNonce: req.BuildNonce, Capabilities: req.Capabilities})
+	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, metadata, &evidence)
 }
 
-func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+func (s *Server) signedBuildIdentity(nonce string) (*protocol.AgentBuildIdentity, error) {
+	if nonce == "" {
+		return nil, nil
+	}
+	if s.Identity == nil {
+		return nil, errors.New("agent identity is unavailable")
+	}
+	attestation, err := buildinfo.SignIdentity(s.Identity.ID, s.Identity.PrivateKey, nonce)
+	if err != nil {
+		return nil, err
+	}
+	return &attestation, nil
+}
+
+func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata TransportMetadata, authorization *GrantConsumptionEvidence) {
+	transport, _ := metadata.auditLabel()
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
-		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
 		_ = sendError(conn, "unauthorized", "client certificate required")
 		return
 	}
 	clientID := identity.CertificateDeviceID(peerCert)
 	fp, err := identity.FingerprintPublicKey(peerCert.PublicKey)
 	if err != nil {
-		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_client_certificate"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_client_certificate"})
 		_ = sendError(conn, "unauthorized", "invalid client certificate")
 		return
 	}
 	peer, ok := s.Trust.FindByFingerprint(fp)
 	if !ok {
-		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_not_paired"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "client_not_paired"})
 		_ = sendError(conn, "unauthorized", "client is not paired")
 		return
 	}
 	if err := s.Policy.Validate(); err != nil {
 		s.log().Error("invalid terminal session policy", "error", err)
-		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "session_policy_invalid"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "session_policy_invalid"})
 		_ = sendError(conn, "server_error", "terminal session policy is invalid")
 		return
 	}
 	var open protocol.OpenSession
 	if err := protocol.ParseJSON(first.Payload, &open); err != nil {
-		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "invalid_request"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "invalid_request"})
 		_ = sendError(conn, "bad_request", "invalid session request")
+		return
+	}
+	if metadata.Kind == TransportWebSocketRelay {
+		if !validConnectionGrantJTI(open.GrantJTI) {
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "relay_grant_evidence_missing"})
+			_ = sendError(conn, "authorization_required", "relay session grant evidence is required")
+			return
+		}
+		provider, ok := s.DirectAuthorizer.(GrantEvidenceProvider)
+		if !ok {
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "grant_evidence_unavailable"})
+			_ = sendError(conn, "authorization_unavailable", "server-side grant evidence is unavailable")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		evidence, err := provider.VerifyConsumptionEvidence(ctx, peer.ID, s.Identity.ID, open.GrantJTI, "relay")
+		cancel()
+		if err != nil {
+			s.log().Warn("relay session grant evidence rejected", "client_id", peer.ID, "error", err)
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "grant_evidence_rejected"})
+			_ = sendError(conn, "authorization_denied", "connection authorization evidence could not be verified")
+			return
+		}
+		authorization = &evidence
+		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: peer.ID, Transport: transport}, authorization)
+	}
+	if metadata.Kind == TransportRawRelay {
+		if !validConnectionGrantJTI(open.GrantJTI) || authorization == nil ||
+			authorization.JTI != strings.ToLower(open.GrantJTI) ||
+			authorization.ClientDeviceID != peer.ID || authorization.TargetDeviceID != s.Identity.ID ||
+			authorization.Permission != "terminal.connect" || authorization.Flow != "direct" ||
+			authorization.ValidationOutcome != "accepted" || authorization.ConsumptionOutcome != "consumed" {
+			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "raw_relay_grant_evidence_missing"})
+			_ = sendError(conn, "authorization_denied", "raw relay grant evidence does not match this session")
+			return
+		}
+	}
+	buildIdentity, err := s.signedBuildIdentity(open.BuildNonce)
+	if err != nil {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "build_identity_failed"})
+		_ = sendError(conn, "server_error", "agent build identity could not be signed")
 		return
 	}
 	fileReady := s.FileTransfer != nil && s.FileTransfer.Ready()
 	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady)
 	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
-		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities)
+		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, metadata, capabilities, buildIdentity, authorization)
 		return
 	}
 	if open.Cols == 0 {
@@ -349,18 +450,23 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 	}
 	pty, err := terminal.Start(s.Shell, open.Cols, open.Rows, open.Term)
 	if err != nil {
-		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "pty_start_failed"})
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "pty_start_failed"})
 		_ = sendError(conn, "pty_error", err.Error())
 		return
 	}
 	defer pty.Close()
-	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeSessionAccepted}); err != nil {
+	accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
+	if err != nil {
+		_ = sendError(conn, "server_error", "session acceptance metadata could not be encoded")
 		return
 	}
-	s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, Transport: transport})
+	if err := protocol.WriteFrame(conn, accepted); err != nil {
+		return
+	}
+	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
 	defer func() {
-		s.recordAudit(audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, Transport: transport, Reason: closeReason})
+		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, Transport: transport, Reason: closeReason}, authorization)
 	}()
 	s.log().Info("terminal opened", "client_id", peer.ID, "client_name", peer.Name)
 
@@ -563,7 +669,52 @@ func waitForPeerClose(frameCh <-chan protocol.Frame, readErrCh <-chan error, tim
 	}
 }
 
+func transportAuditProvenance(transport string) string {
+	// USB NCM attribution is an operator configuration assertion, not
+	// hardware attestation. Ordinary transports come from the local adapter.
+	switch {
+	case strings.HasPrefix(transport, "routed+"):
+		return "authenticated_router_link"
+	case strings.HasSuffix(transport, "+usb_ncm"):
+		return "operator_config_assertion"
+	case transport != "":
+		return "listener_adapter"
+	default:
+		return ""
+	}
+}
+
+func (s *Server) recordGrantAudit(metadata TransportMetadata, event audit.Event, evidence *GrantConsumptionEvidence) {
+	if evidence != nil {
+		event.AuthorizationRunID = evidence.AuthorizationRunID
+		event.ValidationAttemptID = evidence.ValidationAttemptID
+		event.ConsumptionAttemptID = evidence.ConsumptionAttemptID
+		event.ValidationEventID = evidence.ValidationEventID
+		event.ConsumptionEventID = evidence.ConsumptionEventID
+	}
+	s.recordTransportAudit(metadata, event)
+}
+
+func (s *Server) recordTransportAudit(metadata TransportMetadata, event audit.Event) {
+	s.recordAudit(transportAuditEvent(metadata, event))
+}
+
+func transportAuditEvent(metadata TransportMetadata, event audit.Event) audit.Event {
+	label, err := metadata.auditLabel()
+	if err != nil {
+		return event
+	}
+	event.Transport = label
+	event.TransportProvenance = transportAuditProvenance(label)
+	event.UnderlyingTransport = string(metadata.Underlying)
+	event.RouteRouterID = metadata.RouteRouterID
+	return event
+}
+
 func (s *Server) recordAudit(event audit.Event) {
+	if event.TransportProvenance == "" {
+		event.TransportProvenance = transportAuditProvenance(event.Transport)
+	}
 	if strings.TrimSpace(s.StateDir) == "" {
 		return
 	}

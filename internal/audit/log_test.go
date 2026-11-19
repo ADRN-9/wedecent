@@ -11,6 +11,13 @@ import (
 	"time"
 )
 
+func TestValidateEventRejectsUnknownTransportProvenance(t *testing.T) {
+	event := Event{Type: "terminal.session_opened", Outcome: "success", Transport: "direct_tcp", TransportProvenance: "guessed"}
+	if err := validateEvent(&event); err == nil {
+		t.Fatal("unknown transport provenance was accepted")
+	}
+}
+
 func TestAppendWritesStructuredJSONL(t *testing.T) {
 	dir := t.TempDir()
 	log, err := Open(dir)
@@ -261,4 +268,52 @@ func TestPendingPairingAuditDetectableAfterOneRotationAndRestart(t *testing.T) {
 	}
 	// This test proves one rotation, not indefinite retention: a second
 	// rotation can evict the record. Production recovery retention is a gate.
+}
+
+func TestValidateEventRequiresIndependentAuthorizationProvenance(t *testing.T) {
+	event := Event{
+		Type: "terminal.authorization", Outcome: "success",
+		AuthorizationRunID:   "d90987bf-bae6-45da-ab21-c82d049617bd",
+		ValidationAttemptID:  "b90987bf-bae6-45da-ab21-c82d049617bd",
+		ConsumptionAttemptID: "c90987bf-bae6-45da-ab21-c82d049617bd",
+		ValidationEventID:    "a90987bf-bae6-45da-ab21-c82d049617bd",
+		ConsumptionEventID:   "f90987bf-bae6-45da-ab21-c82d049617bd",
+	}
+	if err := validateEvent(&event); err != nil {
+		t.Fatalf("valid independent authorization provenance rejected: %v", err)
+	}
+
+	incomplete := event
+	incomplete.ConsumptionEventID = ""
+	if err := validateEvent(&incomplete); err == nil {
+		t.Fatal("incomplete authorization provenance was accepted")
+	}
+
+	duplicate := event
+	duplicate.ConsumptionAttemptID = duplicate.ValidationAttemptID
+	if err := validateEvent(&duplicate); err == nil {
+		t.Fatal("duplicate validation/consumption attempt ID was accepted")
+	}
+}
+
+func TestValidateEventRequiresAuthenticatedRoutedAttribution(t *testing.T) {
+	event := Event{
+		Type: "terminal.session_opened", Outcome: "success",
+		Transport: "routed+internet", TransportProvenance: "authenticated_router_link",
+		UnderlyingTransport: "internet", RouteRouterID: "wd_aaaaaaaaaaaaaaaa",
+	}
+	if err := validateEvent(&event); err != nil {
+		t.Fatalf("valid routed attribution rejected: %v", err)
+	}
+
+	missingRouter := event
+	missingRouter.RouteRouterID = ""
+	if err := validateEvent(&missingRouter); err == nil {
+		t.Fatal("routed event without authenticated router identity was accepted")
+	}
+	wrongProvenance := event
+	wrongProvenance.TransportProvenance = "listener_adapter"
+	if err := validateEvent(&wrongProvenance); err == nil {
+		t.Fatal("routed event with unauthenticated provenance was accepted")
+	}
 }

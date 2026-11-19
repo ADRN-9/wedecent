@@ -12,11 +12,13 @@ import (
 	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/processenv"
 	"wedecent.com/wedecent/internal/routercontrol"
 	"wedecent.com/wedecent/internal/trust"
 )
 
 func main() {
+	processenv.ClearCurrent()
 	if len(os.Args) > 1 && os.Args[1] == "version" {
 		if err := buildinfo.Write(os.Stdout, "wd-routerctl"); err != nil {
 			fmt.Fprintln(os.Stderr, "wd-routerctl:", err)

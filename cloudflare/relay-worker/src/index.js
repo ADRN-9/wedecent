@@ -1,14 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
-import { authorizeStream, CONNECTION_GRANT_HEADER } from "./stream-auth.js";
+import { authorizeGrantEvidence, authorizeStream, CONNECTION_GRANT_HEADER } from "./stream-auth.js";
 import {
   cleanupExpiredConnectionGrants,
-  consumeConnectionGrant,
-  INTERNAL_GRANT_EXP_HEADER,
-  INTERNAL_GRANT_JTI_HEADER,
   prepareDeviceRelayRequest,
-  replayMetadataFromRequest,
-  scheduleReplayCleanup,
 } from "./grant-replay.js";
+import { consumeRelayAdmission, readRelayGrantEvidence } from "./relay-admission.js";
 import {
   emitRelayTrace,
   healthProbeRequest,
@@ -29,6 +25,7 @@ const STREAM_PREFIX = "/v1/stream/";
 const STATUS_PREFIX = "/v1/status/";
 const TIME_PATH = "/v1/time";
 const DIRECT_AUTHORIZE_PREFIX = "/v1/direct-authorize/";
+const GRANT_EVIDENCE_PREFIX = "/v1/grant-evidence/";
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
 const HEALTH_VERSION = 11;
 
@@ -89,6 +86,10 @@ async function handleRelayRequest(request, env) {
 
   if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
     return authorizeDirectRequest(request, env, url);
+  }
+
+  if (url.pathname.startsWith(GRANT_EVIDENCE_PREFIX)) {
+    return grantEvidenceRequest(request, env, url);
   }
 
   if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
@@ -194,12 +195,26 @@ async function authorizeDirectRequest(request, env, url) {
     return new Response(authorization.message, { status: authorization.status });
   }
 
-  const headers = new Headers();
-  headers.set(INTERNAL_GRANT_JTI_HEADER, authorization.replay.jti);
-  headers.set(INTERNAL_GRANT_EXP_HEADER, String(authorization.replay.exp));
+  const forwarded = prepareDeviceRelayRequest(request, authorization.replay, CONNECTION_GRANT_HEADER);
   const objectId = env.DEVICE_RELAY.idFromName(targetDeviceID);
   return env.DEVICE_RELAY.get(objectId).fetch(
-    new Request("https://wedecent.internal/authorize", { method: "POST", headers }),
+    new Request("https://wedecent.internal/authorize", { method: "POST", headers: forwarded.headers }),
+  );
+}
+
+async function grantEvidenceRequest(request, env, url) {
+  if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+  const parts = url.pathname.slice(GRANT_EVIDENCE_PREFIX.length).split("/");
+  if (parts.length !== 2) return new Response("Invalid grant evidence path", { status: 400 });
+  const [targetDeviceID, jti] = parts;
+  if (!DEVICE_ID.test(targetDeviceID) || !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jti)) {
+    return new Response("Invalid grant evidence identifier", { status: 400 });
+  }
+  const authorization = await authorizeGrantEvidence(request, targetDeviceID);
+  if (!authorization.ok) return new Response("Unauthorized", { status: authorization.status });
+  const objectId = env.DEVICE_RELAY.idFromName(targetDeviceID);
+  return env.DEVICE_RELAY.get(objectId).fetch(
+    new Request("https://wedecent.internal/grant-evidence/" + jti, { method: "GET" }),
   );
 }
 
@@ -268,6 +283,9 @@ export class DeviceRelay extends DurableObject {
     if (url.pathname === "/authorize") {
       return this.#authorizeDirect(request);
     }
+    if (url.pathname.startsWith("/grant-evidence/")) {
+      return this.#grantEvidence(request, url);
+    }
 
     const role = url.searchParams.get("role");
     if (role === "agent") {
@@ -283,16 +301,22 @@ export class DeviceRelay extends DurableObject {
     if (request.method !== "POST") {
       return new Response("Method not allowed", { status: 405 });
     }
-    const replay = replayMetadataFromRequest(request);
-    if (!replay) {
-      return new Response("Connection grant replay metadata missing", { status: 403 });
+    const admission = await consumeRelayAdmission(this.ctx.storage, request);
+    if (!admission.accepted) {
+      return new Response(admission.message, { status: admission.status });
     }
-    const consumption = await consumeConnectionGrant(this.ctx.storage, replay.jti, replay.exp);
-    if (!consumption.accepted) {
-      return new Response("Connection grant already used", { status: 409 });
-    }
-    await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
+  }
+
+  async #grantEvidence(request, url) {
+    if (request.method !== "GET") return new Response("Method not allowed", { status: 405 });
+    const jti = url.pathname.slice("/grant-evidence/".length);
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(jti)) {
+      return new Response("Invalid grant evidence identifier", { status: 400 });
+    }
+    const evidence = await readRelayGrantEvidence(this.ctx.storage, jti);
+    if (!evidence) return new Response("Grant evidence not found", { status: 404 });
+    return Response.json(evidence, { headers: { "Cache-Control": "no-store" } });
   }
 
   #acceptAgent(url) {
@@ -370,16 +394,10 @@ export class DeviceRelay extends DurableObject {
       });
     }
 
-    const replay = replayMetadataFromRequest(request);
-    if (!replay) {
-      return new Response("Connection grant replay metadata missing", { status: 403 });
+    const admission = await consumeRelayAdmission(this.ctx.storage, request);
+    if (!admission.accepted) {
+      return new Response(admission.message, { status: admission.status });
     }
-
-    const consumption = await consumeConnectionGrant(this.ctx.storage, replay.jti, replay.exp);
-    if (!consumption.accepted) {
-      return new Response("Connection grant already used", { status: 409 });
-    }
-    await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);

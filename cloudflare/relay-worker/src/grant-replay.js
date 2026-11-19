@@ -1,85 +1,263 @@
+const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STORAGE_PREFIX = "connection-grant-jti:";
+const EVIDENCE_PREFIX = "connection-grant-evidence:";
+const EVENT_PREFIX = "connection-grant-event:";
 const CLOCK_SKEW_MS = 30_000;
+const EVIDENCE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 export const INTERNAL_GRANT_JTI_HEADER = "X-WeDecent-Internal-Grant-JTI";
 export const INTERNAL_GRANT_EXP_HEADER = "X-WeDecent-Internal-Grant-Exp";
+export const INTERNAL_GRANT_ID_HEADER = "X-WeDecent-Internal-Grant-ID";
+export const INTERNAL_GRANT_CLIENT_HEADER = "X-WeDecent-Internal-Grant-Client";
+export const INTERNAL_GRANT_TARGET_HEADER = "X-WeDecent-Internal-Grant-Target";
+export const INTERNAL_GRANT_FLOW_HEADER = "X-WeDecent-Internal-Grant-Flow";
+export const INTERNAL_GRANT_PERMISSION_HEADER = "X-WeDecent-Internal-Grant-Permission";
+export const INTERNAL_GRANT_VALIDATED_AT_HEADER = "X-WeDecent-Internal-Grant-Validated-At";
+export const INTERNAL_GRANT_RUN_ID_HEADER = "X-WeDecent-Internal-Grant-Run-ID";
+export const INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER = "X-WeDecent-Internal-Grant-Validation-Attempt";
 
+const INTERNAL_HEADERS = [
+  INTERNAL_GRANT_JTI_HEADER,
+  INTERNAL_GRANT_EXP_HEADER,
+  INTERNAL_GRANT_ID_HEADER,
+  INTERNAL_GRANT_CLIENT_HEADER,
+  INTERNAL_GRANT_TARGET_HEADER,
+  INTERNAL_GRANT_FLOW_HEADER,
+  INTERNAL_GRANT_PERMISSION_HEADER,
+  INTERNAL_GRANT_VALIDATED_AT_HEADER,
+  INTERNAL_GRANT_RUN_ID_HEADER,
+  INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER,
+];
 
 export function prepareDeviceRelayRequest(request, replay, connectionGrantHeader) {
   const headers = new Headers(request.headers);
-  headers.delete(INTERNAL_GRANT_JTI_HEADER);
-  headers.delete(INTERNAL_GRANT_EXP_HEADER);
+  for (const name of INTERNAL_HEADERS) headers.delete(name);
   headers.delete(connectionGrantHeader);
   headers.delete("Authorization");
 
   if (replay) {
     headers.set(INTERNAL_GRANT_JTI_HEADER, replay.jti);
     headers.set(INTERNAL_GRANT_EXP_HEADER, String(replay.exp));
+    headers.set(INTERNAL_GRANT_ID_HEADER, replay.grantID);
+    headers.set(INTERNAL_GRANT_CLIENT_HEADER, replay.clientDeviceID);
+    headers.set(INTERNAL_GRANT_TARGET_HEADER, replay.targetDeviceID);
+    headers.set(INTERNAL_GRANT_FLOW_HEADER, replay.flow);
+    headers.set(INTERNAL_GRANT_PERMISSION_HEADER, replay.permission);
+    headers.set(INTERNAL_GRANT_VALIDATED_AT_HEADER, String(replay.validatedAtMS));
+    headers.set(INTERNAL_GRANT_RUN_ID_HEADER, replay.authorizationRunID);
+    headers.set(INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER, replay.validationAttemptID);
   }
 
   return new Request(request, { headers });
 }
 
 export function replayMetadataFromRequest(request) {
-  const jti = request.headers.get(INTERNAL_GRANT_JTI_HEADER)?.trim() ?? "";
-  const expText = request.headers.get(INTERNAL_GRANT_EXP_HEADER)?.trim() ?? "";
-  if (!UUID.test(jti) || !/^[0-9]{1,12}$/.test(expText)) {
-    return null;
-  }
+  const headers = request.headers;
+  const jti = headers.get(INTERNAL_GRANT_JTI_HEADER)?.trim() ?? "";
+  const expText = headers.get(INTERNAL_GRANT_EXP_HEADER)?.trim() ?? "";
+  const grantID = headers.get(INTERNAL_GRANT_ID_HEADER)?.trim() ?? "";
+  const clientDeviceID = headers.get(INTERNAL_GRANT_CLIENT_HEADER)?.trim() ?? "";
+  const targetDeviceID = headers.get(INTERNAL_GRANT_TARGET_HEADER)?.trim() ?? "";
+  const flow = headers.get(INTERNAL_GRANT_FLOW_HEADER)?.trim() ?? "";
+  const permission = headers.get(INTERNAL_GRANT_PERMISSION_HEADER)?.trim() ?? "";
+  const validatedText = headers.get(INTERNAL_GRANT_VALIDATED_AT_HEADER)?.trim() ?? "";
+  const authorizationRunID = headers.get(INTERNAL_GRANT_RUN_ID_HEADER)?.trim() ?? "";
+  const validationAttemptID = headers.get(INTERNAL_GRANT_VALIDATION_ATTEMPT_HEADER)?.trim() ?? "";
+
+  if (
+    !UUID.test(jti) ||
+    !UUID.test(grantID) ||
+    !UUID.test(authorizationRunID) ||
+    !UUID.test(validationAttemptID) ||
+    !DEVICE_ID.test(clientDeviceID) ||
+    !DEVICE_ID.test(targetDeviceID) ||
+    clientDeviceID === targetDeviceID ||
+    (flow !== "direct" && flow !== "relay") ||
+    permission !== "terminal.connect" ||
+    !/^[0-9]{1,12}$/.test(expText) ||
+    !/^[0-9]{1,16}$/.test(validatedText)
+  ) return null;
+
   const exp = Number.parseInt(expText, 10);
-  if (!Number.isSafeInteger(exp) || exp <= 0) {
-    return null;
-  }
-  return { jti: jti.toLowerCase(), exp };
+  const validatedAtMS = Number.parseInt(validatedText, 10);
+  if (!Number.isSafeInteger(exp) || exp <= 0 || !Number.isSafeInteger(validatedAtMS) || validatedAtMS <= 0) return null;
+
+  return {
+    jti: jti.toLowerCase(),
+    exp,
+    grantID: grantID.toLowerCase(),
+    clientDeviceID,
+    targetDeviceID,
+    flow,
+    permission,
+    validatedAtMS,
+    authorizationRunID: authorizationRunID.toLowerCase(),
+    validationAttemptID: validationAttemptID.toLowerCase(),
+  };
 }
 
-export async function consumeConnectionGrant(storage, jti, expSeconds, nowMS = Date.now()) {
-  if (!UUID.test(jti) || !Number.isSafeInteger(expSeconds) || expSeconds <= 0 || !Number.isSafeInteger(nowMS)) {
-    throw new Error("invalid connection grant replay metadata");
-  }
+export async function consumeConnectionGrant(storage, replay, nowMS = Date.now()) {
+  if (
+    !replay ||
+    !UUID.test(replay.jti) ||
+    !UUID.test(replay.grantID) ||
+    !UUID.test(replay.authorizationRunID) ||
+    !UUID.test(replay.validationAttemptID) ||
+    !DEVICE_ID.test(replay.clientDeviceID) ||
+    !DEVICE_ID.test(replay.targetDeviceID) ||
+    replay.clientDeviceID === replay.targetDeviceID ||
+    (replay.flow !== "direct" && replay.flow !== "relay") ||
+    replay.permission !== "terminal.connect" ||
+    !Number.isSafeInteger(replay.exp) ||
+    replay.exp <= 0 ||
+    !Number.isSafeInteger(replay.validatedAtMS) ||
+    !Number.isSafeInteger(nowMS)
+  ) throw new Error("invalid connection grant replay metadata");
 
-  const expiresAtMS = expSeconds * 1000 + CLOCK_SKEW_MS;
-  if (!Number.isSafeInteger(expiresAtMS) || expiresAtMS < nowMS) {
-    return { accepted: false, expiresAtMS };
-  }
+  const expiresAtMS = replay.exp * 1000 + CLOCK_SKEW_MS;
+  if (
+    !Number.isSafeInteger(expiresAtMS) ||
+    expiresAtMS < nowMS ||
+    replay.validatedAtMS > nowMS + CLOCK_SKEW_MS ||
+    nowMS - replay.validatedAtMS > CLOCK_SKEW_MS
+  ) return { accepted: false, reason: "stale", expiresAtMS, evidence: null };
 
-  const key = STORAGE_PREFIX + jti.toLowerCase();
+  const jti = replay.jti.toLowerCase();
+  const authorizationRunID = replay.authorizationRunID.toLowerCase();
+  const validationAttemptID = replay.validationAttemptID.toLowerCase();
+  const consumptionAttemptID = crypto.randomUUID();
+  const validationEventID = crypto.randomUUID();
+  const consumptionEventID = crypto.randomUUID();
+  const retainUntilMS = nowMS + EVIDENCE_RETENTION_MS;
+  const validationEvent = {
+    event_id: validationEventID,
+    run_id: authorizationRunID,
+    attempt_id: validationAttemptID,
+    type: "authorization.validation",
+    outcome: "accepted",
+    grant_id: replay.grantID.toLowerCase(),
+    jti,
+    client_device_id: replay.clientDeviceID,
+    target_device_id: replay.targetDeviceID,
+    permission: replay.permission,
+    flow: replay.flow,
+    occurred_at: new Date(replay.validatedAtMS).toISOString(),
+    retain_until_ms: retainUntilMS,
+  };
+  const consumptionEvent = {
+    event_id: consumptionEventID,
+    run_id: authorizationRunID,
+    attempt_id: consumptionAttemptID,
+    type: "authorization.consumption",
+    outcome: "consumed",
+    grant_id: replay.grantID.toLowerCase(),
+    jti,
+    client_device_id: replay.clientDeviceID,
+    target_device_id: replay.targetDeviceID,
+    permission: replay.permission,
+    flow: replay.flow,
+    occurred_at: new Date(nowMS).toISOString(),
+    retain_until_ms: retainUntilMS,
+  };
+  const evidence = {
+    version: 1,
+    authorization_run_id: authorizationRunID,
+    validation_attempt_id: validationAttemptID,
+    consumption_attempt_id: consumptionAttemptID,
+    validation_event_id: validationEventID,
+    consumption_event_id: consumptionEventID,
+    validation_event: validationEvent,
+    consumption_event: consumptionEvent,
+    grant_id: replay.grantID.toLowerCase(),
+    jti,
+    client_device_id: replay.clientDeviceID,
+    target_device_id: replay.targetDeviceID,
+    permission: replay.permission,
+    flow: replay.flow,
+    validation_outcome: "accepted",
+    consumption_outcome: "consumed",
+    validated_at: new Date(replay.validatedAtMS).toISOString(),
+    consumed_at: new Date(nowMS).toISOString(),
+    expires_at: new Date(replay.exp * 1000).toISOString(),
+    retain_until_ms: retainUntilMS,
+  };
+
   const accepted = await storage.transaction(async (txn) => {
-    const existing = await txn.get(key);
-    if (existing !== undefined) {
-      return false;
-    }
-    await txn.put(key, expiresAtMS);
+    const existing = await txn.get(STORAGE_PREFIX + jti);
+    if (existing !== undefined) return false;
+    await txn.put(STORAGE_PREFIX + jti, expiresAtMS);
+    await txn.put(EVIDENCE_PREFIX + jti, evidence);
+    await txn.put(EVENT_PREFIX + validationEventID, validationEvent);
+    await txn.put(EVENT_PREFIX + consumptionEventID, consumptionEvent);
     return true;
   });
+  return { accepted, reason: accepted ? "" : "replay", expiresAtMS, evidence: accepted ? evidence : null };
+}
 
-  return { accepted, expiresAtMS };
+export async function readConnectionGrantEvidence(storage, jti) {
+  if (!UUID.test(jti)) return null;
+  const evidence = await storage.get(EVIDENCE_PREFIX + jti.toLowerCase());
+  if (!evidence) return null;
+  const [validationEvent, consumptionEvent] = await Promise.all([
+    storage.get(EVENT_PREFIX + evidence.validation_event_id),
+    storage.get(EVENT_PREFIX + evidence.consumption_event_id),
+  ]);
+  if (
+    !validationEvent ||
+    !consumptionEvent ||
+    validationEvent.event_id !== evidence.validation_event_id ||
+    consumptionEvent.event_id !== evidence.consumption_event_id ||
+    validationEvent.run_id !== evidence.authorization_run_id ||
+    consumptionEvent.run_id !== evidence.authorization_run_id ||
+    validationEvent.attempt_id !== evidence.validation_attempt_id ||
+    consumptionEvent.attempt_id !== evidence.consumption_attempt_id
+  ) return null;
+  return { ...evidence, validation_event: validationEvent, consumption_event: consumptionEvent };
+}
+
+export async function readConnectionGrantEvent(storage, eventID) {
+  if (!UUID.test(eventID)) return null;
+  return (await storage.get(EVENT_PREFIX + eventID.toLowerCase())) ?? null;
 }
 
 export async function scheduleReplayCleanup(storage, expiresAtMS) {
   const current = await storage.getAlarm();
-  if (current === null || expiresAtMS < current) {
-    await storage.setAlarm(expiresAtMS);
-  }
+  if (current === null || expiresAtMS < current) await storage.setAlarm(expiresAtMS);
 }
 
 export async function cleanupExpiredConnectionGrants(storage, nowMS = Date.now()) {
-  const entries = await storage.list({ prefix: STORAGE_PREFIX });
+  const replayEntries = await storage.list({ prefix: STORAGE_PREFIX });
+  const evidenceEntries = await storage.list({ prefix: EVIDENCE_PREFIX });
+  const eventEntries = await storage.list({ prefix: EVENT_PREFIX });
   let nextAlarm = null;
 
-  for (const [key, value] of entries) {
+  for (const [key, value] of replayEntries) {
     const expiresAtMS = Number(value);
     if (!Number.isSafeInteger(expiresAtMS) || expiresAtMS <= nowMS) {
       await storage.delete(key);
       continue;
     }
-    if (nextAlarm === null || expiresAtMS < nextAlarm) {
-      nextAlarm = expiresAtMS;
-    }
+    if (nextAlarm === null || expiresAtMS < nextAlarm) nextAlarm = expiresAtMS;
   }
 
-  if (nextAlarm !== null) {
-    await storage.setAlarm(nextAlarm);
+  for (const [key, value] of evidenceEntries) {
+    const retainUntilMS = Number(value?.retain_until_ms);
+    if (!Number.isSafeInteger(retainUntilMS) || retainUntilMS <= nowMS) {
+      await storage.delete(key);
+      continue;
+    }
+    if (nextAlarm === null || retainUntilMS < nextAlarm) nextAlarm = retainUntilMS;
   }
+
+  for (const [key, value] of eventEntries) {
+    const retainUntilMS = Number(value?.retain_until_ms);
+    if (!Number.isSafeInteger(retainUntilMS) || retainUntilMS <= nowMS) {
+      await storage.delete(key);
+      continue;
+    }
+    if (nextAlarm === null || retainUntilMS < nextAlarm) nextAlarm = retainUntilMS;
+  }
+
+  if (nextAlarm !== null) await storage.setAlarm(nextAlarm);
 }
