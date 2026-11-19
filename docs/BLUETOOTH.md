@@ -30,13 +30,13 @@ No RFCOMM implementation performs Bluetooth discovery, SDP lookup, trust inferen
 
 Linux uses native `AF_BLUETOOTH` / `BTPROTO_RFCOMM` sockets through the repository's pinned `golang.org/x/sys/unix` dependency. It does not execute `bluetoothctl`, `rfcomm`, shell commands, or PATH-resolved helpers in the production transport and does not add CGO or a dynamic BlueZ-library dependency.
 
-Both outbound dialing and `wd-agent` listener/accept paths are implemented. `wd-agent serve --rfcomm-channel N` binds the configured channel and feeds accepted connections into the normal listener supervisor and `session.Server.ServeConn` path.
+Both outbound dialing and `wd-agent` listener/accept paths are implemented. `wd-agent serve --rfcomm-channel N` binds the configured channel and feeds accepted connections into the normal listener supervisor and `session.Server.ServeConnWithTransport` path with the explicit `bluetooth_rfcomm` audit label.
 
 ## Windows implementation
 
 Windows uses native Winsock Bluetooth sockets with `AF_BTH`, `SOCK_STREAM`, and `BTHPROTO_RFCOMM`. Both outbound dialing and listener/accept are implemented without shell helpers, SDP discovery, or an alternate trust path.
 
-The Windows transport uses nonblocking sockets with bounded readiness polling so connection setup honors context deadlines and `net.Conn` read/write deadlines. Accepted connections are passed to the same `wd-agent` listener supervisor and `session.Server.ServeConn` path used by Linux and direct TCP.
+The Windows transport uses nonblocking sockets with bounded readiness polling so connection setup honors context deadlines and `net.Conn` read/write deadlines. Accepted connections are passed to the same `wd-agent` listener supervisor and `session.Server.ServeConnWithTransport` path used by Linux and direct TCP, with explicit `bluetooth_rfcomm` audit attribution.
 
 `wd-agent serve --rfcomm-channel N` therefore enables the RFCOMM server path on both Linux and Windows. The channel remains explicit and is never inferred from Bluetooth pairing state or device metadata.
 

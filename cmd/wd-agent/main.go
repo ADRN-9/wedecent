@@ -327,7 +327,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		&cfg.SerialDevice,
 		"serial",
 		"",
-		"Linux serial device path, e.g. /dev/ttyACM0; empty disables serial",
+		"Linux USB CDC-ACM gadget-side serial path, e.g. /dev/ttyGS0; empty disables serial",
 	)
 	fs.StringVar(
 		&cfg.Shell,
