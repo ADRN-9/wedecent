@@ -14,8 +14,8 @@ const (
 	TransportRawRelay        TransportKind = "raw_relay"
 	TransportWebSocketRelay  TransportKind = "websocket_relay"
 	// Deprecated: use TransportRawRelay or TransportWebSocketRelay.
-	TransportRelay           TransportKind = TransportWebSocketRelay
-	TransportRouted          TransportKind = "routed"
+	TransportRelay  TransportKind = TransportWebSocketRelay
+	TransportRouted TransportKind = "routed"
 )
 
 type UnderlyingTransport string

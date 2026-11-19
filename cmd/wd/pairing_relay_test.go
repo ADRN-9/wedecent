@@ -59,4 +59,3 @@ func TestAutomaticPairingRelayGrantSkipsDirectConnections(t *testing.T) {
 		t.Fatalf("grant = %q", grant)
 	}
 }
-
