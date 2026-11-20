@@ -314,6 +314,22 @@ func readRevocationAudit(t *testing.T, stateDir string) []audit.Event {
 	return events
 }
 
+func waitRevocationSessionsIdle(t *testing.T, server *Server) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		server.activeSessionsMu.Lock()
+		activeCount := len(server.activeSessions)
+		watcherRunning := server.activeSessionsRunning
+		server.activeSessionsMu.Unlock()
+		if activeCount == 0 && !watcherRunning {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("active terminal session watcher did not stop after all sessions finished")
+}
+
 func waitRevocationAuditEvents(t *testing.T, stateDir string, ready func([]audit.Event) bool) []audit.Event {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
@@ -443,6 +459,7 @@ func TestRevocationTerminatesOnlyTargetClientAcrossTerminalTransports(t *testing
 			t.Fatalf("missing matching session-closed audit for %s: %+v", sessionID, closeEvent)
 		}
 	}
+	waitRevocationSessionsIdle(t, rig.server)
 }
 
 func TestRevocationClosesTypedTerminalPTYs(t *testing.T) {
@@ -490,6 +507,7 @@ func TestRevocationClosesTypedTerminalPTYs(t *testing.T) {
 	if !found {
 		t.Fatal("typed terminal stream termination was not audited")
 	}
+	waitRevocationSessionsIdle(t, rig.server)
 }
 
 func TestRevocationIsNotMissedWhenClientIsRepairedImmediately(t *testing.T) {
@@ -535,6 +553,7 @@ func TestRevocationIsNotMissedWhenClientIsRepairedImmediately(t *testing.T) {
 	if !found {
 		t.Fatal("immediate re-pair kept an established session alive")
 	}
+	waitRevocationSessionsIdle(t, rig.server)
 }
 
 func TestTrustStoreReadFailuresTerminateActiveSessions(t *testing.T) {
@@ -579,6 +598,7 @@ func TestTrustStoreReadFailuresTerminateActiveSessions(t *testing.T) {
 			if !found {
 				t.Fatal("trust-store read failure did not produce a fail-closed termination audit")
 			}
+			waitRevocationSessionsIdle(t, rig.server)
 		})
 	}
 }
