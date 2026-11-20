@@ -32,18 +32,18 @@ type DirectAuthorizer interface {
 }
 
 type Server struct {
-	Identity               *identity.Identity
-	Trust                  *trust.Store
-	StateDir               string
-	Shell                  string
-	Logger                 *slog.Logger
-	DirectAuthorizer       DirectAuthorizer
-	FileTransfer           *FileTransferRuntime
-	Policy                 SessionPolicy
-	terminalStart          terminalPTYStarter
-	activeSessionsMu       sync.Mutex
-	activeSessions         map[string]*activeTerminalSession
-	activeSessionsRunning  bool
+	Identity              *identity.Identity
+	Trust                 *trust.Store
+	StateDir              string
+	Shell                 string
+	Logger                *slog.Logger
+	DirectAuthorizer      DirectAuthorizer
+	FileTransfer          *FileTransferRuntime
+	Policy                SessionPolicy
+	terminalStart         terminalPTYStarter
+	activeSessionsMu      sync.Mutex
+	activeSessions        map[string]*activeTerminalSession
+	activeSessionsRunning bool
 
 	// This per-server fault seam is nil in production.
 	beforeSessionAdmission func()

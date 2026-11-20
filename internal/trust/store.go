@@ -16,13 +16,13 @@ import (
 )
 
 type Peer struct {
-	ID          string    `json:"id"`
-	Name        string    `json:"name"`
-	Fingerprint string    `json:"fingerprint"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Fingerprint string `json:"fingerprint"`
 	// Generation identifies one trust enrollment and is not device identity.
-	Generation  string    `json:"generation,omitempty"`
-	Endpoint    string    `json:"endpoint,omitempty"`
-	TrustedAt   time.Time `json:"trusted_at"`
+	Generation string    `json:"generation,omitempty"`
+	Endpoint   string    `json:"endpoint,omitempty"`
+	TrustedAt  time.Time `json:"trusted_at"`
 }
 
 const maxStoreSize = 1 << 20

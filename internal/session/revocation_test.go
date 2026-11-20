@@ -481,7 +481,6 @@ func TestRevocationClosesTypedTerminalPTYs(t *testing.T) {
 	}
 }
 
-
 func TestRevocationIsNotMissedWhenClientIsRepairedImmediately(t *testing.T) {
 	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
 	client := rig.addClient("repair-race-client")
