@@ -221,10 +221,13 @@ func (a *activeTerminalSession) terminate(reason string) {
 	cleanup := a.cleanup
 	a.mu.Unlock()
 
-	_ = a.conn.Close()
+	// Tear down the PTY/ConPTY before closing TLS. In particular, TLS
+	// close_notify can wait for the peer to read; resource cleanup must not
+	// depend on transport shutdown completing first.
 	if cleanup != nil {
 		cleanup()
 	}
+	_ = a.conn.Close()
 	if err := a.server.appendAudit(audit.Event{
 		Type:      "terminal.session_terminated",
 		Outcome:   "success",

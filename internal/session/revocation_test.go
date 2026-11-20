@@ -266,9 +266,17 @@ func revocationTestGrant() string {
 func waitRevocationConnectionClosed(t *testing.T, conn *tls.Conn) {
 	t.Helper()
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	_, err := protocol.ReadFrame(conn)
-	if err == nil {
-		t.Fatal("revoked terminal connection remained open")
+	for {
+		_, err := protocol.ReadFrame(conn)
+		if err == nil {
+			// A PTY may finish concurrently and emit its final close frame.
+			continue
+		}
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
+			t.Fatal("revoked terminal connection remained open")
+		}
+		return
 	}
 }
 
@@ -347,9 +355,12 @@ func TestRevocationTerminatesOnlyTargetClientAcrossTerminalTransports(t *testing
 	if _, err := trust.Revoke(rig.trustPath, clientA.ID); err != nil {
 		t.Fatal(err)
 	}
+	if _, ok, err := rig.server.Trust.Lookup(clientA.ID); err != nil || ok {
+		t.Fatalf("revoked client remained in the server trust snapshot: trusted=%v err=%v", ok, err)
+	}
 	for _, item := range sessions {
-		waitRevocationConnectionClosed(t, item.conn)
 		waitRevocationPTYClosed(t, item.pty)
+		waitRevocationConnectionClosed(t, item.conn)
 		_ = item.conn.Close()
 	}
 
