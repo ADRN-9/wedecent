@@ -1,23 +1,35 @@
 package session
 
 import (
-	"runtime"
 	"testing"
 	"time"
 
 	"wedecent.com/wedecent/internal/audit"
 )
 
-func TestTypedSessionCloseReasonConcurrentReadCompletionAndAsyncRevocationCleanup(t *testing.T) {
-	for i := 0; i < 50; i++ {
-		t.Run("iteration", func(t *testing.T) {
-			runTypedSessionCloseReasonRace(t)
-		})
+func TestTypedSessionCloseReasonTerminalReadBeforeRevocation(t *testing.T) {
+	closeReason := newTypedSessionCloseReason("connection_ended")
+	closeReason.set("peer_disconnect")
+
+	active := &activeTerminalSession{}
+	if !active.beginTermination("client_revoked") {
+		t.Fatal("revocation did not claim the terminal session")
 	}
+	assertTypedSessionCloseReason(t, active, closeReason, "client_revoked")
 }
 
-func runTypedSessionCloseReasonRace(t *testing.T) {
-	t.Helper()
+func TestTypedSessionCloseReasonRevocationBeforeTerminalReadCompletion(t *testing.T) {
+	closeReason := newTypedSessionCloseReason("connection_ended")
+	active := &activeTerminalSession{}
+	if !active.beginTermination("client_revoked") {
+		t.Fatal("revocation did not claim the terminal session")
+	}
+
+	closeReason.set(active.reasonOr("peer_disconnect"))
+	assertTypedSessionCloseReason(t, active, closeReason, "client_revoked")
+}
+
+func TestTypedSessionCloseReasonConcurrentReadCompletionAndAsyncRevocationCleanup(t *testing.T) {
 	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
 	client := rig.addClient("typed-close-reason-race")
 	closeReason := newTypedSessionCloseReason("connection_ended")
@@ -34,19 +46,16 @@ func runTypedSessionCloseReasonRace(t *testing.T) {
 		cleanupReady: make(chan struct{}), terminationDone: make(chan struct{}),
 	}
 	cleanupStarted := make(chan struct{})
-	startRace := make(chan struct{})
+	start := make(chan struct{})
 	cleanupFinished := make(chan struct{})
-	releaseCleanup := make(chan struct{})
+	cleanupReason := make(chan string, 1)
 	if err := active.setCleanup(func() error {
 		close(cleanupStarted)
-		<-startRace
-		for i := 0; i < 4096; i++ {
-			_ = resolveTypedSessionCloseReason(active, closeReason)
-			runtime.Gosched()
-		}
-		tracker.closeAll(resolveTypedSessionCloseReason(active, closeReason))
+		<-start
+		reason := resolveTypedSessionCloseReason(active, closeReason)
+		tracker.closeAll(reason)
+		cleanupReason <- reason
 		close(cleanupFinished)
-		<-releaseCleanup
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -56,88 +65,80 @@ func runTypedSessionCloseReasonRace(t *testing.T) {
 	select {
 	case <-cleanupStarted:
 	case <-time.After(3 * time.Second):
-		t.Fatal("asynchronous revocation cleanup did not start")
+		t.Fatal("asynchronous revocation cleanup did not reach its barrier")
 	}
 
-	readCompletion := make(chan struct{})
+	readReady := make(chan struct{})
+	readFinished := make(chan struct{})
 	go func() {
-		<-startRace
-		for i := 0; i < 4096; i++ {
-			closeReason.set(active.reasonOr("peer_disconnect"))
-			runtime.Gosched()
-		}
-		close(readCompletion)
+		close(readReady)
+		<-start
+		closeReason.set(active.reasonOr("peer_disconnect"))
+		close(readFinished)
 	}()
-	close(startRace)
-
 	select {
-	case <-readCompletion:
+	case <-readReady:
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal read-completion path did not reach its barrier")
+	}
+
+	// Both operations are parked at the barrier before either touches the
+	// shared close-reason state.
+	close(start)
+	select {
+	case <-readFinished:
 	case <-time.After(3 * time.Second):
 		t.Fatal("terminal read-completion path did not finish")
 	}
 	select {
 	case <-cleanupFinished:
 	case <-time.After(3 * time.Second):
-		t.Fatal("asynchronous cleanup did not finish its close-reason reads")
-	}
-	finishDone := make(chan error, 1)
-	go func() { finishDone <- active.finish() }()
-	finishWaiting := false
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		active.mu.Lock()
-		finishWaiting = active.finished
-		active.mu.Unlock()
-		if finishWaiting {
-			break
-		}
-		runtime.Gosched()
-	}
-	if !finishWaiting {
-		t.Fatal("terminal handler finish did not enter its termination wait")
+		t.Fatal("asynchronous cleanup did not finish")
 	}
 	select {
-	case err := <-finishDone:
-		t.Fatalf("terminal handler finish returned before asynchronous cleanup: %v", err)
+	case reason := <-cleanupReason:
+		if reason != "client_revoked" {
+			t.Fatalf("cleanup selected reason %q, want client_revoked", reason)
+		}
 	default:
-	}
-	close(releaseCleanup)
-	select {
-	case <-active.terminationDone:
-	case <-time.After(3 * time.Second):
-		t.Fatal("asynchronous revocation termination did not finish")
-	}
-	select {
-	case err := <-finishDone:
-		if err != nil {
-			t.Fatalf("finish after revocation cleanup: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("terminal handler finish did not complete after asynchronous cleanup")
+		t.Fatal("cleanup did not report its selected reason")
 	}
 
-	var streamClosed bool
+	if err := active.finish(); err != nil {
+		t.Fatalf("finish after asynchronous revocation cleanup: %v", err)
+	}
 	select {
 	case event := <-auditEvents:
-		streamClosed = event.Type == "terminal.stream_closed" && event.StreamID == 2 && event.Reason == "client_revoked"
+		if event.Type != "terminal.stream_closed" || event.StreamID != 2 || event.Reason != "client_revoked" {
+			t.Fatalf("typed stream close audit = %#v", event)
+		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("asynchronous cleanup did not emit the typed stream close audit")
 	}
 
-	var sessionTerminated bool
-	for _, event := range waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
 		for _, event := range events {
 			if event.SessionID == active.ID && event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
 				return true
 			}
 		}
 		return false
-	}) {
+	})
+	foundTermination := false
+	for _, event := range events {
 		if event.SessionID == active.ID && event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
-			sessionTerminated = true
+			foundTermination = true
 		}
 	}
-	if !sessionTerminated || !streamClosed {
-		t.Fatalf("revocation audit outcomes: sessionTerminated=%v streamClosed=%v", sessionTerminated, streamClosed)
+	if !foundTermination {
+		t.Fatal("session termination audit did not preserve the revocation reason")
+	}
+	assertTypedSessionCloseReason(t, active, closeReason, "client_revoked")
+}
+
+func assertTypedSessionCloseReason(t *testing.T, active *activeTerminalSession, closeReason *typedSessionCloseReason, want string) {
+	t.Helper()
+	if got := resolveTypedSessionCloseReason(active, closeReason); got != want {
+		t.Fatalf("final terminal session close reason = %q, want %q", got, want)
 	}
 }

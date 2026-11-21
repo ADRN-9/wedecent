@@ -1202,21 +1202,36 @@ func TestRevocationClosesTypedTerminalPTYs(t *testing.T) {
 	_ = conn.Close()
 
 	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		streamClosed := false
+		sessionClosed := false
 		for _, event := range events {
-			if event.Type == "terminal.stream_closed" && event.PeerID == client.ID && event.Reason == "client_revoked" && event.StreamID == 2 {
-				return true
+			if event.PeerID != client.ID || event.Reason != "client_revoked" {
+				continue
+			}
+			if event.Type == "terminal.stream_closed" && event.StreamID == 2 {
+				streamClosed = true
+			}
+			if event.Type == "terminal.session_closed" {
+				sessionClosed = true
 			}
 		}
-		return false
+		return streamClosed && sessionClosed
 	})
-	found := false
+	streamClosed := false
+	sessionClosed := false
 	for _, event := range events {
-		if event.Type == "terminal.stream_closed" && event.PeerID == client.ID && event.Reason == "client_revoked" && event.StreamID == 2 {
-			found = true
+		if event.PeerID != client.ID || event.Reason != "client_revoked" {
+			continue
+		}
+		if event.Type == "terminal.stream_closed" && event.StreamID == 2 {
+			streamClosed = true
+		}
+		if event.Type == "terminal.session_closed" {
+			sessionClosed = true
 		}
 	}
-	if !found {
-		t.Fatal("typed terminal stream termination was not audited")
+	if !streamClosed || !sessionClosed {
+		t.Fatalf("revocation close audits: stream_closed=%v session_closed=%v", streamClosed, sessionClosed)
 	}
 	waitRevocationSessionsIdle(t, rig.server)
 }
