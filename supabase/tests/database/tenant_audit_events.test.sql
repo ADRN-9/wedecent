@@ -462,7 +462,7 @@ select throws_ok(
 );
 
 select throws_ok(
-    $ truncate table public.organization_audit_events $,
+    $$ truncate table public.organization_audit_events $$,
     '55000',
     'tenant audit events are append-only',
     'database rejects audit truncation even for the table owner'
