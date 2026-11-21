@@ -36,6 +36,7 @@ func runTypedSessionCloseReasonRace(t *testing.T) {
 	cleanupStarted := make(chan struct{})
 	startRace := make(chan struct{})
 	cleanupFinished := make(chan struct{})
+	releaseCleanup := make(chan struct{})
 	if err := active.setCleanup(func() error {
 		close(cleanupStarted)
 		<-startRace
@@ -45,6 +46,7 @@ func runTypedSessionCloseReasonRace(t *testing.T) {
 		}
 		tracker.closeAll(resolveTypedSessionCloseReason(active, closeReason))
 		close(cleanupFinished)
+		<-releaseCleanup
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -78,10 +80,40 @@ func runTypedSessionCloseReasonRace(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("asynchronous cleanup did not finish its close-reason reads")
 	}
+	finishDone := make(chan error, 1)
+	go func() { finishDone <- active.finish() }()
+	finishWaiting := false
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		active.mu.Lock()
+		finishWaiting = active.finished
+		active.mu.Unlock()
+		if finishWaiting {
+			break
+		}
+		runtime.Gosched()
+	}
+	if !finishWaiting {
+		t.Fatal("terminal handler finish did not enter its termination wait")
+	}
+	select {
+	case err := <-finishDone:
+		t.Fatalf("terminal handler finish returned before asynchronous cleanup: %v", err)
+	default:
+	}
+	close(releaseCleanup)
 	select {
 	case <-active.terminationDone:
 	case <-time.After(3 * time.Second):
 		t.Fatal("asynchronous revocation termination did not finish")
+	}
+	select {
+	case err := <-finishDone:
+		if err != nil {
+			t.Fatalf("finish after revocation cleanup: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("terminal handler finish did not complete after asynchronous cleanup")
 	}
 
 	var streamClosed bool
