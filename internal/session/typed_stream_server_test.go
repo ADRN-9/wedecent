@@ -327,3 +327,104 @@ func TestTypedTerminalServerParentCleanupWaitsForInFlightStreamClose(t *testing.
 		t.Fatalf("parent cleanup error = %v, want retained PTY cleanup failure", err)
 	}
 }
+
+func waitTypedTerminalServerClosed(t *testing.T, server *typedTerminalServer) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		server.mu.Lock()
+		closed := server.closed
+		server.mu.Unlock()
+		if closed {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("parent cleanup did not close the typed terminal server")
+}
+
+func TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen(t *testing.T) {
+	closeFailure := errors.New("injected late PTY close failure")
+	pty := newFakeTypedPTY()
+	pty.closeErr = closeFailure
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseStart) }) }
+	defer release()
+	sink := &typedFrameSink{}
+	server := newTypedTerminalServerWithStarter("/bin/sh", sink.write, func(string, uint16, uint16, string) (typedTerminalPTY, error) {
+		close(startEntered)
+		<-releaseStart
+		return pty, nil
+	})
+	var events []audit.Event
+	tracker := newTypedTerminalAuditTracker("wd_peer", "direct_tcp", func(event audit.Event) {
+		events = append(events, event)
+	}, "session-123")
+	server.setCloseObserver(tracker.closed)
+
+	openDone := make(chan error, 1)
+	go func() {
+		openDone <- server.Handle(protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: 2, Payload: typedOpenPayload(t, 64<<10)})
+	}()
+	select {
+	case <-startEntered:
+	case <-time.After(time.Second):
+		t.Fatal("stream open did not enter PTY startup")
+	}
+
+	cleanupDone := make(chan error, 1)
+	go func() { cleanupDone <- server.CloseAllWithReason("client_revoked") }()
+	waitTypedTerminalServerClosed(t, server)
+	select {
+	case err := <-cleanupDone:
+		t.Fatalf("parent cleanup returned before the in-flight PTY starter completed: %v", err)
+	default:
+	}
+
+	release()
+	openErr := <-openDone
+	if !errors.Is(openErr, errTypedStreamCleanup) || !errors.Is(openErr, closeFailure) {
+		t.Fatalf("late stream-open error = %v, want retained PTY cleanup failure", openErr)
+	}
+	cleanupErr := <-cleanupDone
+	if !errors.Is(cleanupErr, closeFailure) {
+		t.Fatalf("parent cleanup omitted late PTY close failure: %v", cleanupErr)
+	}
+	select {
+	case <-pty.closed:
+	case <-time.After(time.Second):
+		t.Fatal("late PTY was not closed before parent cleanup completed")
+	}
+	if server.states.isOpen(2) {
+		t.Fatal("late stream reservation remained open after parent cleanup")
+	}
+	if frames := sink.snapshot(); len(frames) != 0 {
+		t.Fatalf("late stream was accepted after parent cleanup began: %#v", frames)
+	}
+	if len(events) != 0 {
+		t.Fatalf("unaccepted stream unexpectedly emitted lifecycle audit events: %#v", events)
+	}
+}
+
+func TestTypedTerminalServerRejectsBufferedOpenAfterParentCleanup(t *testing.T) {
+	starts := 0
+	server := newTypedTerminalServerWithStarter("/bin/sh", func(protocol.Frame) error { return nil }, func(string, uint16, uint16, string) (typedTerminalPTY, error) {
+		starts++
+		return newFakeTypedPTY(), nil
+	})
+	if err := server.CloseAllWithReason("client_revoked"); err != nil {
+		t.Fatal(err)
+	}
+
+	// This frame models a StreamOpen already buffered by the session reader
+	// before revocation, but not dispatched until after parent cleanup.
+	err := server.Handle(protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: 2, Payload: typedOpenPayload(t, 64<<10)})
+	if !errors.Is(err, errTypedStreamProtocol) {
+		t.Fatalf("post-cleanup buffered StreamOpen error = %v", err)
+	}
+	if starts != 0 {
+		t.Fatalf("post-cleanup buffered StreamOpen started %d PTYs", starts)
+	}
+}

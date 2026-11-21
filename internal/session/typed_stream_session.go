@@ -174,7 +174,10 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			}
 			return
 		case frame := <-frameCh:
-			handled, err := routeTypedApplicationFrame(sessionCtx, capabilities, registry, typedServer, fileServer, frame)
+			handled, err := dispatchTypedSessionFrame(active, closeReason, sessionCtx, capabilities, registry, typedServer, fileServer, frame)
+			if errors.Is(err, errTypedSessionTerminated) {
+				return
+			}
 			if handled {
 				if err != nil {
 					if errors.Is(err, errTypedStreamCleanup) {
