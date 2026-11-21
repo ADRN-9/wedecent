@@ -79,3 +79,7 @@ Router administration records:
 - `router.policy_set` — authenticated router-policy mutation attempts and their success/failure result. `actor_id` is derived from the already-authenticated controller certificate and `peer_id` identifies the agent whose authoritative runtime is being changed. Policy request payloads are intentionally not copied into the audit record.
 
 Runtime pairing/session audit writes are best-effort after the security decision: an audit I/O failure is emitted to the normal operator log but does not tear down an already-authorized terminal session. Router policy and explicit trust mutation attempts are fail-closed if the pre-mutation audit record cannot be persisted; result-event failures are warned without silently undoing a mutation that may already have committed.
+
+## Tenant control-plane audit
+
+The database-backed, tenant-scoped security-audit foundation is documented in [TENANT_AUDIT_EVENTS.md](TENANT_AUDIT_EVENTS.md). It complements this local role-state event log; it does not replace local terminal lifecycle auditing or provide the separate tenant session-history API.
