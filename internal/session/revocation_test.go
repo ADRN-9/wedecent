@@ -207,7 +207,7 @@ func tls13KeyUpdateRequest(t *testing.T, state tls.ConnectionState, secret []byt
 	case tls.TLS_AES_256_GCM_SHA384:
 		hashFunc, keyLength = sha512.New384, 32
 	default:
-		t.Skipf("TLS 1.3 cipher suite %x is not supported by the KeyUpdate test helper", state.CipherSuite)
+		t.Fatalf("TLS 1.3 cipher suite %x is not supported by the KeyUpdate test helper", state.CipherSuite)
 	}
 	key := hkdfExpandLabel(secret, "key", hashFunc, keyLength)
 	iv := hkdfExpandLabel(secret, "iv", hashFunc, 12)
