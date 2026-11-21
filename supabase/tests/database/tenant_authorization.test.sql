@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(24);
+select plan(26);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -54,7 +54,8 @@ insert into public.device_enrollment_challenges (
 values
     ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'wd_aaaaaaaaaaaaaaaa', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
     ('30000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'wd_dddddddddddddddd', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
-    ('30000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000002', 'wd_eeeeeeeeeeeeeeee', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes');
+    ('30000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000002', 'wd_eeeeeeeeeeeeeeee', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
+    ('30000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001', 'wd_aaaaaaaaaaaaaaaa', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes');
 
 select ok(
     not pg_catalog.has_table_privilege(
@@ -206,7 +207,36 @@ select throws_ok(
 );
 
 select throws_ok(
-    $$
+    $
+        select public.complete_device_enrollment(
+            '30000000-0000-4000-8000-000000000004',
+            '10000000-0000-4000-8000-000000000001',
+            'wd_aaaaaaaaaaaaaaaa',
+            null,
+            'client',
+            'A client',
+            null,
+            repeat('00', 32)
+        )
+    $,
+    '22023',
+    'invalid enrollment parameters',
+    'enrollment RPC rejects a missing public key before changing device or challenge state'
+);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_enrollment_challenges
+         where id = '30000000-0000-4000-8000-000000000004'
+           and consumed_at is null
+    ),
+    1::bigint,
+    'malformed enrollment input does not consume the one-time challenge'
+);
+
+select throws_ok(
+    $
         select public.complete_device_enrollment(
             '30000000-0000-4000-8000-000000000002',
             '10000000-0000-4000-8000-000000000001',
