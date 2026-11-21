@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"encoding/json"
 	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/trust"
 )
 
@@ -25,6 +29,31 @@ func TestRunClientsRevokeRemovesClientTrust(t *testing.T) {
 	}
 	if _, ok := store.Get(peer.ID); ok {
 		t.Fatal("client remained trusted after revoke")
+	}
+	file, err := os.Open(filepath.Join(state, audit.FileName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	outcomes := map[string]int{}
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		var event audit.Event
+		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Type == "trust.client_revoke" && event.PeerID == peer.ID {
+			if event.ActorID != "local_cli" {
+				t.Fatalf("revocation actor = %q, want local_cli", event.ActorID)
+			}
+			outcomes[event.Outcome]++
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if outcomes["attempt"] != 1 || outcomes["success"] != 1 {
+		t.Fatalf("revocation audit outcomes = %#v, want one attempt and one success", outcomes)
 	}
 }
 

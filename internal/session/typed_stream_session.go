@@ -12,15 +12,14 @@ import (
 	"wedecent.com/wedecent/internal/protocol"
 )
 
-func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName string, metadata TransportMetadata, capabilities []protocol.Capability, buildIdentity *protocol.AgentBuildIdentity, authorization *GrantConsumptionEvidence) {
+func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName string, metadata TransportMetadata, capabilities []protocol.Capability, buildIdentity *protocol.AgentBuildIdentity, authorization *GrantConsumptionEvidence, active *activeTerminalSession) {
 	transport, _ := metadata.auditLabel()
 	fileNegotiated := hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1)
 	if fileNegotiated && (s.FileTransfer == nil || !s.FileTransfer.Ready()) {
 		// Capability negotiation must never outrun the authoritative runtime.
 		return
 	}
-	accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
-	if err != nil {
+	if active == nil {
 		return
 	}
 
@@ -30,16 +29,17 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 		defer writeMu.Unlock()
 		return protocol.WriteFrame(conn, frame)
 	}
-	if err := writeFrame(accepted); err != nil {
-		return
-	}
-
-	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peerID, Transport: transport}, authorization)
+	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peerID, SessionID: active.ID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
 	defer func() {
-		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peerID, Transport: transport, Reason: closeReason}, authorization)
+		closeReason = active.reasonOr(closeReason)
+		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peerID, SessionID: active.ID, Transport: transport, Reason: closeReason}, authorization)
 	}()
 	s.log().Info("typed terminal session opened", "client_id", peerID, "client_name", peerName)
+	if active.isTerminated() {
+		closeReason = active.reasonOr("client_revoked")
+		return
+	}
 
 	policyTimers := newSessionPolicyTimers(s.Policy)
 	defer policyTimers.Stop()
@@ -56,14 +56,16 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 	registry := newTypedParentStreamRegistry()
 	streamAudit := newTypedTerminalAuditTracker(peerID, transport, func(event audit.Event) {
 		s.recordGrantAudit(metadata, event, authorization)
-	})
-	typedServer := newTypedTerminalServerWithRegistry(s.Shell, func(frame protocol.Frame) error {
+	}, active.ID)
+	typedServer := newTypedTerminalServerWithStarterAndRegistry(s.Shell, func(frame protocol.Frame) error {
 		if err := writeFrame(frame); err != nil {
 			return err
 		}
 		streamAudit.observeOutgoing(frame)
 		signalActivity()
 		return nil
+	}, func(shell string, cols, rows uint16, term string) (typedTerminalPTY, error) {
+		return s.startTerminal(shell, cols, rows, term)
 	}, registry)
 	var fileServer *typedFileServer
 	if fileNegotiated {
@@ -75,7 +77,15 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			return nil
 		})
 	}
+	active.setCleanup(func() {
+		cancelSession()
+		if fileServer != nil {
+			fileServer.CloseAll()
+		}
+		typedServer.CloseAll()
+	})
 	defer func() {
+		closeReason = active.reasonOr(closeReason)
 		cancelSession()
 		if fileServer != nil {
 			fileServer.CloseAll()
@@ -121,7 +131,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 	for {
 		select {
 		case err := <-readErrCh:
-			closeReason = "peer_disconnect"
+			closeReason = active.reasonOr("peer_disconnect")
 			if !errors.Is(err, io.EOF) {
 				s.log().Debug("typed session read ended", "error", err)
 			}

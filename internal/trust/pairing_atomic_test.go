@@ -205,10 +205,7 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	unlockStore, err := lockStoreFile(filepath.Join(dir, "trusted-clients.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	var unlockStore func()
 	defer func() {
 		if unlockStore != nil {
 			unlockStore()
@@ -222,7 +219,7 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 	start := filepath.Join(dir, "interrupted-start")
 	ready := filepath.Join(dir, "interrupted-ready")
 	child := exec.Command(exe, "-test.run=^TestPairingAtomicChildProcess$")
-	var output bytes.Buffer
+	var output pairingTestOutput
 	child.Stdout, child.Stderr = &output, &output
 	child.Env = append(os.Environ(),
 		"WEDECENT_PAIRING_TEST_CHILD=1",
@@ -235,9 +232,12 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 	if err := child.Start(); err != nil {
 		t.Fatal(err)
 	}
+	waited := false
 	defer func() {
-		_ = child.Process.Kill()
-		_ = child.Wait()
+		if !waited {
+			_ = child.Process.Kill()
+			_ = child.Wait()
+		}
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for {
@@ -248,6 +248,12 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 			t.Fatalf("interrupted helper not ready: %s", output.String())
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+	// The child must finish Open (including legacy-generation migration) before
+	// the parent holds the trust-store lock. It then waits at the start gate.
+	unlockStore, err = lockStoreFile(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	if err := os.WriteFile(start, []byte("go"), 0o600); err != nil {
 		t.Fatal(err)
@@ -263,9 +269,13 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	if err := child.Process.Kill(); err != nil {
-		t.Fatal(err)
+		t.Fatalf("terminate interrupted pairing helper: %v", err)
 	}
-	_ = child.Wait()
+	waitErr := child.Wait()
+	waited = true
+	if waitErr == nil {
+		t.Fatal("interrupted pairing helper exited successfully while trust persistence was blocked")
+	}
 	unlockStore()
 	unlockStore = nil
 	// Re-open after process death to prove persistent trust was not modified.
@@ -280,6 +290,23 @@ func TestPairingAtomicInterruptedAfterConsumption(t *testing.T) {
 	if err := PairClientWithSecret(dir, secret, reopened, peer); !errors.Is(err, ErrPairingSecretInvalid) {
 		t.Fatalf("interrupted operation left reusable secret: %v", err)
 	}
+}
+
+type pairingTestOutput struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (o *pairingTestOutput) Write(data []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.Write(data)
+}
+
+func (o *pairingTestOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buf.String()
 }
 
 func TestPairingAtomicChildProcess(t *testing.T) {
