@@ -228,7 +228,7 @@ func writeCertificateFile(path string, data []byte, replaceExisting bool) error 
 		if !os.SameFile(existing, current) {
 			return errIdentityCertificateChanged
 		}
-		if err := os.Rename(tmpPath, path); err != nil {
+		if err := replaceCertificateFile(tmpPath, path); err != nil {
 			return fmt.Errorf("publish identity certificate replacement: %w", err)
 		}
 	} else if err := os.Link(tmpPath, path); err != nil {
