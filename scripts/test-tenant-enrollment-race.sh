@@ -94,8 +94,7 @@ delete from public.devices
 delete from public.organizations
  where id in (
    '50000000-0000-4000-8000-000000000001',
-   '50000000-0000-4000-8000-000000000002',
-   '50000000-0000-4000-8000-000000000003'
+   '50000000-0000-4000-8000-000000000002'
  );
 delete from auth.users
  where id in (
@@ -113,13 +112,17 @@ values
 insert into public.organizations (id, name, slug, created_by)
 values
   ('50000000-0000-4000-8000-000000000001', 'WD CP01 Race A', 'wd-cp01-race-a', '40000000-0000-4000-8000-000000000001'),
-  ('50000000-0000-4000-8000-000000000002', 'WD CP01 Race B', 'wd-cp01-race-b', '40000000-0000-4000-8000-000000000002'),
-  ('50000000-0000-4000-8000-000000000003', 'WD CP01 Race C', 'wd-cp01-race-c', '40000000-0000-4000-8000-000000000003');
+  ('50000000-0000-4000-8000-000000000002', 'WD CP01 Race B', 'wd-cp01-race-b', '40000000-0000-4000-8000-000000000002');
 
-update public.organization_memberships
-   set role = 'member'
- where organization_id = '50000000-0000-4000-8000-000000000003'
-   and user_id = '40000000-0000-4000-8000-000000000003';
+insert into public.organization_memberships (
+  organization_id, user_id, role, created_by
+)
+values (
+  '50000000-0000-4000-8000-000000000002',
+  '40000000-0000-4000-8000-000000000003',
+  'member',
+  '40000000-0000-4000-8000-000000000002'
+);
 
 insert into public.device_enrollment_challenges (
   id, user_id, device_id, challenge_sha256, expires_at
@@ -229,7 +232,7 @@ begin;
 set role service_role;
 select organization_id
   from public.organization_memberships
- where organization_id = '50000000-0000-4000-8000-000000000003'
+ where organization_id = '50000000-0000-4000-8000-000000000002'
    and user_id = '40000000-0000-4000-8000-000000000003'
  for update;
 select pg_sleep($HOLD_SECONDS);
@@ -249,7 +252,7 @@ select public.complete_device_enrollment(
   repeat('C', 43),
   'client',
   'Race C device',
-  '50000000-0000-4000-8000-000000000003',
+  '50000000-0000-4000-8000-000000000002',
   repeat('00', 32)
 );
 commit;
