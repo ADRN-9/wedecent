@@ -221,6 +221,25 @@ jobs:
         working-directory: cloudflare/relay-worker
         run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wedecent-relay-worker-dry-run"
 
+  relay-worker-process-e2e:
+    needs: [relay-worker]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - name: Install pinned Worker tooling
+        working-directory: cloudflare/relay-worker
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Exercise local Worker, SQLite Durable Object, and independent Go processes
+        run: go run ./scripts/cloudflare-worker-process-e2e.go
+
   control-plane:
     runs-on: ubuntu-latest
     timeout-minutes: 10
