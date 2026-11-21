@@ -14,22 +14,12 @@ WAIT_SECONDS="${WEDECENT_RACE_WAIT_SECONDS:-30}"
 [[ "$HOLD_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'WEDECENT_RACE_HOLD_SECONDS must be a positive integer'
 [[ "$WAIT_SECONDS" =~ ^[1-9][0-9]*$ ]] || fail 'WEDECENT_RACE_WAIT_SECONDS must be a positive integer'
 
-DB_CONTAINER="${WEDECENT_SUPABASE_DB_CONTAINER:-}"
-if [[ -z "$DB_CONTAINER" ]]; then
-  mapfile -t db_containers < <(docker ps --format '{{.Names}}' | grep '^supabase_db_' || true)
-  if (("${#db_containers[@]}" == 1)); then
-    DB_CONTAINER="${db_containers[0]}"
-  else
-    expected="supabase_db_wedecent-local"
-    for candidate in "${db_containers[@]}"; do
-      if [[ "$candidate" == "$expected" ]]; then
-        DB_CONTAINER="$candidate"
-        break
-      fi
-    done
-  fi
-fi
-[[ -n "$DB_CONTAINER" ]] || fail 'could not identify the disposable Supabase database container'
+EXPECTED_DB_CONTAINER="supabase_db_wedecent-local"
+DB_CONTAINER="${WEDECENT_SUPABASE_DB_CONTAINER:-$EXPECTED_DB_CONTAINER}"
+[[ "$DB_CONTAINER" == "$EXPECTED_DB_CONTAINER" ]] ||
+  fail "refusing unexpected database container '$DB_CONTAINER'; expected '$EXPECTED_DB_CONTAINER'"
+docker ps --format '{{.Names}}' | grep -Fx "$DB_CONTAINER" >/dev/null ||
+  fail "disposable database container is not running: $DB_CONTAINER"
 docker inspect "$DB_CONTAINER" >/dev/null 2>&1 || fail "database container is not running: $DB_CONTAINER"
 
 WORK="$(mktemp -d)"
@@ -41,6 +31,18 @@ cleanup() {
   rm -rf -- "$WORK"
 }
 trap cleanup EXIT
+
+forget_pid() {
+  local finished_pid="$1"
+  local active_pid
+  local -a remaining=()
+  for active_pid in "${PIDS[@]}"; do
+    if [[ "$active_pid" != "$finished_pid" ]]; then
+      remaining+=("$active_pid")
+    fi
+  done
+  PIDS=("${remaining[@]}")
+}
 
 db_psql() {
   docker exec -u postgres -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres "$@"
@@ -72,6 +74,7 @@ wait_for_exit() {
   wait "$pid"
   status=$?
   set -e
+  forget_pid "$pid"
   if [[ "$expected" == "success" && "$status" -ne 0 ]]; then
     fail "session $pid failed unexpectedly (exit $status); see its log"
   fi
