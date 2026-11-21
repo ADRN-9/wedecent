@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(23);
+select plan(24);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -55,6 +55,15 @@ values
     ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'wd_aaaaaaaaaaaaaaaa', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
     ('30000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'wd_dddddddddddddddd', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
     ('30000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000002', 'wd_eeeeeeeeeeeeeeee', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes');
+
+select ok(
+    not pg_catalog.has_table_privilege(
+        'authenticated',
+        'public.route_authorization_grants',
+        'SELECT'
+    ),
+    'authenticated users cannot read server-only route authorization grants'
+);
 
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
