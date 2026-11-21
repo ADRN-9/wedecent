@@ -36,10 +36,8 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			s.log().Error("typed terminal session cleanup failed",
 				"client_id", peerID, "session_id", active.ID, "error", finishErr)
 		}
-		if err := s.recordGrantAudit(metadata, audit.Event{
-			Type: "terminal.session_closed", Outcome: outcome, PeerID: peerID,
-			SessionID: active.ID, Transport: transport, Reason: finalCloseReason,
-		}, authorization); err != nil {
+		closedEvent := typedSessionClosedAuditEvent(peerID, active.ID, transport, finalCloseReason, finishErr)
+		if err := s.recordGrantAudit(metadata, closedEvent, authorization); err != nil {
 			s.log().Error("typed terminal session close audit failed",
 				"client_id", peerID, "session_id", active.ID, "error", err)
 		}
@@ -212,5 +210,23 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			expireSession("session maximum duration reached")
 			return
 		}
+	}
+}
+
+
+// typedSessionClosedAuditEvent keeps the close-reason and cleanup outcome
+// mapping shared by the production defer and its concurrency regression.
+func typedSessionClosedAuditEvent(peerID, sessionID, transport, reason string, finishErr error) audit.Event {
+	outcome := "success"
+	if finishErr != nil {
+		outcome = "failed"
+	}
+	return audit.Event{
+		Type:      "terminal.session_closed",
+		Outcome:   outcome,
+		PeerID:    peerID,
+		SessionID: sessionID,
+		Transport: transport,
+		Reason:    reason,
 	}
 }

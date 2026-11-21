@@ -201,7 +201,9 @@ func run() error {
 	if output, err := runCommand(ctx, root, nil, "go", "build", "-trimpath", "-buildvcs=false", "-o", wd, "./cmd/wd"); err != nil {
 		return fmt.Errorf("build wd: %w\n%s", err, output)
 	}
-	if output, err := runCommand(ctx, root, nil, "go", "build", "-trimpath", "-buildvcs=false", "-o", agentBinary, "./cmd/wd-agent"); err != nil {
+	// This disposable integration agent needs the build-tagged loopback authorization origin
+// to verify evidence from the local Worker. Production builds keep the strict origin allowlist.
+if output, err := runCommand(ctx, root, nil, "go", "build", "-trimpath", "-buildvcs=false", "-tags", "wedecent_smoke_test", "-o", agentBinary, "./cmd/wd-agent"); err != nil {
 		return fmt.Errorf("build wd-agent: %w\n%s", err, output)
 	}
 
