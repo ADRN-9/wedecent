@@ -13,7 +13,10 @@ import (
 
 const typedTerminalReceiveWindow uint32 = 256 << 10
 
-var errTypedStreamProtocol = errors.New("typed terminal stream protocol violation")
+var (
+	errTypedStreamProtocol = errors.New("typed terminal stream protocol violation")
+	errTypedStreamCleanup  = errors.New("typed terminal stream cleanup failed")
+)
 
 type typedTerminalPTY interface {
 	Read([]byte) (int, error)
@@ -43,10 +46,13 @@ type typedTerminalServer struct {
 	start typedTerminalStarter
 	write typedTerminalFrameWriter
 
-	mu      sync.Mutex
-	writeMu sync.Mutex
-	states  *typedTerminalStreamSet
-	streams map[uint32]*typedTerminalChild
+	mu            sync.Mutex
+	writeMu       sync.Mutex
+	states        *typedTerminalStreamSet
+	streams       map[uint32]*typedTerminalChild
+	closeObserver func(uint32, string, error)
+	closeWG       sync.WaitGroup
+	cleanupErr    error
 }
 
 func newTypedTerminalServer(shell string, write typedTerminalFrameWriter) *typedTerminalServer {
@@ -63,6 +69,29 @@ func newTypedTerminalServerWithStarter(shell string, write typedTerminalFrameWri
 		states:  newTypedTerminalStreamSet(),
 		streams: make(map[uint32]*typedTerminalChild),
 	}
+}
+
+func (s *typedTerminalServer) setCloseObserver(observer func(uint32, string, error)) {
+	s.mu.Lock()
+	s.closeObserver = observer
+	s.mu.Unlock()
+}
+
+func (s *typedTerminalServer) recordClose(streamID uint32, reason string, cleanupErr error) error {
+	var result error
+	if cleanupErr != nil {
+		result = fmt.Errorf("%w: close typed terminal PTY stream %d: %w", errTypedStreamCleanup, streamID, cleanupErr)
+	}
+	s.mu.Lock()
+	if cleanupErr != nil {
+		s.cleanupErr = errors.Join(s.cleanupErr, fmt.Errorf("close typed terminal PTY stream %d: %w", streamID, cleanupErr))
+	}
+	observer := s.closeObserver
+	s.mu.Unlock()
+	if observer != nil {
+		observer(streamID, reason, cleanupErr)
+	}
+	return result
 }
 
 func (s *typedTerminalServer) Handle(frame protocol.Frame) error {
@@ -355,16 +384,15 @@ func (s *typedTerminalServer) closeStream(streamID uint32, reason string, sendCl
 	}
 	_ = s.states.close(streamID)
 	delete(s.streams, streamID)
+	s.closeWG.Add(1)
 	s.mu.Unlock()
+	defer s.closeWG.Done()
 
 	child.closeOnce.Do(func() {
 		close(child.done)
 		child.closeErr = child.pty.Close()
 	})
-	var closeErr error
-	if child.closeErr != nil {
-		closeErr = fmt.Errorf("close typed terminal PTY: %w", child.closeErr)
-	}
+	closeErr := s.recordClose(streamID, reason, child.closeErr)
 	if !sendClose {
 		return closeErr
 	}
@@ -399,6 +427,10 @@ func (s *typedTerminalServer) markClosed(streamID uint32) {
 }
 
 func (s *typedTerminalServer) CloseAll() error {
+	return s.CloseAllWithReason("session_closed")
+}
+
+func (s *typedTerminalServer) CloseAllWithReason(reason string) error {
 	s.mu.Lock()
 	children := make(map[uint32]*typedTerminalChild, len(s.streams))
 	for streamID, child := range s.streams {
@@ -406,19 +438,23 @@ func (s *typedTerminalServer) CloseAll() error {
 	}
 	s.streams = make(map[uint32]*typedTerminalChild)
 	s.states.closeAll()
+	s.closeWG.Add(len(children))
 	s.mu.Unlock()
 
-	var closeErrors []error
 	for streamID, child := range children {
-		child.closeOnce.Do(func() {
-			close(child.done)
-			child.closeErr = child.pty.Close()
-		})
-		if child.closeErr != nil {
-			closeErrors = append(closeErrors, fmt.Errorf("close typed terminal PTY stream %d: %w", streamID, child.closeErr))
-		}
+		func() {
+			defer s.closeWG.Done()
+			child.closeOnce.Do(func() {
+				close(child.done)
+				child.closeErr = child.pty.Close()
+			})
+			_ = s.recordClose(streamID, reason, child.closeErr)
+		}()
 	}
-	return errors.Join(closeErrors...)
+	s.closeWG.Wait()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cleanupErr
 }
 
 func (s *typedTerminalServer) writeFrame(frame protocol.Frame) error {

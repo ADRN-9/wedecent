@@ -1650,6 +1650,118 @@ func TestRevocationPTYCleanupFailureMarksTerminationAndCloseAuditFailed(t *testi
 	}
 }
 
+func TestTypedHandlerPTYCleanupFailureAuditsStreamTerminationAndSessionClose(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("typed-handler-pty-cleanup-failure")
+	pty := newRevocationTestPTY()
+	pty.closeErr = errors.New("injected typed handler PTY close failure")
+	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
+		rig.mu.Lock()
+		rig.ptys = append(rig.ptys, pty)
+		rig.mu.Unlock()
+		return pty, nil
+	}
+	conn, err := rig.open(client, TransportDirectTCP, true)
+	if err != nil {
+		t.Fatalf("open production typed terminal session: %v", err)
+	}
+	openPayload := typedOpenPayload(t, 64<<10)
+	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: 2, Payload: openPayload}); err != nil {
+		t.Fatalf("open typed terminal stream: %v", err)
+	}
+	accepted, err := protocol.ReadFrame(conn)
+	if err != nil {
+		t.Fatalf("read typed stream acceptance: %v", err)
+	}
+	if accepted.Type != protocol.TypeStreamAccepted || accepted.StreamID != 2 {
+		t.Fatalf("typed stream acceptance = %#v", accepted)
+	}
+	waitRevocationPTYClosedAfter := func() {
+		t.Helper()
+		select {
+		case <-pty.closed:
+		case <-time.After(3 * time.Second):
+			t.Fatal("revocation did not close typed PTY")
+		}
+	}
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatalf("revoke typed session client: %v", err)
+	}
+	waitRevocationPTYClosedAfter()
+	waitRevocationConnectionClosed(t, conn)
+	_ = conn.Close()
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		opened, streamClosed, terminated, closed := false, false, false, false
+		for _, event := range events {
+			if event.PeerID != client.ID || event.SessionID == "" {
+				continue
+			}
+			switch event.Type {
+			case "terminal.stream_opened":
+				opened = true
+			case "terminal.stream_closed":
+				streamClosed = true
+			case "terminal.session_terminated":
+				terminated = true
+			case "terminal.session_closed":
+				closed = true
+			}
+		}
+		return opened && streamClosed && terminated && closed
+	})
+	sessionID := ""
+	positions := map[string]int{}
+	for index, event := range events {
+		if event.PeerID != client.ID || event.SessionID == "" {
+			continue
+		}
+		if sessionID == "" && event.Type == "terminal.session_opened" {
+			sessionID = event.SessionID
+		}
+		if event.SessionID != sessionID && sessionID != "" {
+			continue
+		}
+		switch event.Type {
+		case "terminal.stream_opened":
+			if event.Outcome != "success" || event.StreamID != 2 {
+				t.Fatalf("stream-open audit = %#v", event)
+			}
+			positions[event.Type] = index
+		case "terminal.stream_closed":
+			if event.Outcome != "failed" || event.Reason != "client_revoked" || event.StreamID != 2 {
+				t.Fatalf("stream-close audit = %#v", event)
+			}
+			positions[event.Type] = index
+		case "terminal.session_terminated":
+			if event.Outcome != "failed" || event.Reason != "client_revoked" {
+				t.Fatalf("session-terminated audit = %#v", event)
+			}
+			positions[event.Type] = index
+		case "terminal.session_closed":
+			if event.Outcome != "failed" || event.Reason != "client_revoked" {
+				t.Fatalf("session-closed audit = %#v", event)
+			}
+			positions[event.Type] = index
+		}
+		if event.Type == "terminal.stream_opened" || event.Type == "terminal.stream_closed" ||
+			event.Type == "terminal.session_terminated" || event.Type == "terminal.session_closed" {
+			if event.Transport != "direct_tcp" || event.SessionID == "" {
+				t.Fatalf("audit attribution = %#v", event)
+			}
+		}
+	}
+	if sessionID == "" {
+		t.Fatal("production typed session did not persist its session ID")
+	}
+	if positions["terminal.stream_opened"] >= positions["terminal.stream_closed"] ||
+		positions["terminal.stream_closed"] >= positions["terminal.session_terminated"] ||
+		positions["terminal.session_terminated"] >= positions["terminal.session_closed"] {
+		t.Fatalf("audit ordering = %#v", positions)
+	}
+}
+
 type revocationAdmissionFailureConn struct {
 	net.Conn
 	mu          sync.Mutex
