@@ -1860,3 +1860,129 @@ func TestTypedStreamAdmissionWriteFailureAbortsWithoutErrorFrame(t *testing.T) {
 	}
 	t.Fatal("typed admission failure audit event missing")
 }
+
+func TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("typed-handler-inflight-stream-open-revocation")
+	closeFailure := errors.New("injected in-flight stream-open PTY close failure")
+	pty := newRevocationTestPTY()
+	pty.closeErr = closeFailure
+	startEntered := make(chan struct{})
+	releaseStart := make(chan struct{})
+	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
+		close(startEntered)
+		<-releaseStart
+		rig.mu.Lock()
+		rig.ptys = append(rig.ptys, pty)
+		rig.mu.Unlock()
+		return pty, nil
+	}
+
+	conn, err := rig.open(client, TransportDirectTCP, true)
+	if err != nil {
+		t.Fatalf("open production typed terminal session: %v", err)
+	}
+	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: 2, Payload: typedOpenPayload(t, 64<<10)}); err != nil {
+		t.Fatalf("send in-flight typed StreamOpen: %v", err)
+	}
+	select {
+	case <-startEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("typed StreamOpen did not reach the PTY startup barrier")
+	}
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatalf("revoke typed session client: %v", err)
+	}
+	waitRevocationConnectionClosed(t, conn)
+
+	// Wait until the watcher has marked this parent terminated before allowing
+	// the in-flight starter to return its PTY.
+	deadline := time.Now().Add(3 * time.Second)
+	terminated := false
+	for time.Now().Before(deadline) {
+		rig.server.activeSessionsMu.Lock()
+		for _, active := range rig.server.activeSessions {
+			if active.clientID == client.ID && active.isTerminated() {
+				terminated = true
+				break
+			}
+		}
+		rig.server.activeSessionsMu.Unlock()
+		if terminated {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !terminated {
+		t.Fatal("revocation did not mark the in-flight parent session terminated")
+	}
+
+	close(releaseStart)
+	select {
+	case <-pty.closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("parent cleanup did not close the PTY returned by the in-flight starter")
+	}
+	_ = conn.Close()
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		terminatedEvent, closedEvent := false, false
+		for _, event := range events {
+			if event.PeerID == client.ID {
+				switch event.Type {
+				case "terminal.session_terminated":
+					terminatedEvent = true
+				case "terminal.session_closed":
+					closedEvent = true
+				}
+			}
+		}
+		return terminatedEvent && closedEvent
+	})
+	sessionID := ""
+	positions := map[string]int{}
+	for index, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		if event.Type == "terminal.session_opened" {
+			sessionID = event.SessionID
+		}
+		if sessionID != "" && event.SessionID != sessionID {
+			continue
+		}
+		switch event.Type {
+		case "terminal.session_opened":
+			if event.Outcome != "success" || event.Transport != "direct_tcp" {
+				t.Fatalf("session-open audit = %#v", event)
+			}
+			positions[event.Type] = index
+		case "terminal.session_terminated":
+			if event.Outcome != "failed" || event.Reason != "client_revoked" || event.Transport != "direct_tcp" {
+				t.Fatalf("session-terminated audit = %#v", event)
+			}
+			positions[event.Type] = index
+		case "terminal.session_closed":
+			if event.Outcome != "failed" || event.Reason != "client_revoked" || event.Transport != "direct_tcp" {
+				t.Fatalf("session-closed audit = %#v", event)
+			}
+			positions[event.Type] = index
+		case "terminal.stream_opened", "terminal.stream_closed":
+			t.Fatalf("unaccepted in-flight stream emitted lifecycle audit: %#v", event)
+		}
+		if event.Type == "terminal.session_opened" || event.Type == "terminal.session_terminated" || event.Type == "terminal.session_closed" {
+			if event.SessionID == "" {
+				t.Fatalf("missing session attribution: %#v", event)
+			}
+		}
+	}
+	if sessionID == "" {
+		t.Fatal("production typed session did not persist its session ID")
+	}
+	if positions["terminal.session_opened"] >= positions["terminal.session_terminated"] ||
+		positions["terminal.session_terminated"] >= positions["terminal.session_closed"] {
+		t.Fatalf("session audit ordering = %#v", positions)
+	}
+}
