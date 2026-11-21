@@ -1650,7 +1650,6 @@ func TestRevocationPTYCleanupFailureMarksTerminationAndCloseAuditFailed(t *testi
 	}
 }
 
-
 func TestTypedHandlerPTYCleanupFailureAuditsStreamTerminationAndSessionClose(t *testing.T) {
 	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
 	client := rig.addClient("typed-handler-pty-cleanup-failure")

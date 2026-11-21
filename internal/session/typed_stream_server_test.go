@@ -13,13 +13,13 @@ import (
 )
 
 type fakeTypedPTY struct {
-	mu        sync.Mutex
-	written   bytes.Buffer
-	cols      uint16
-	rows      uint16
-	resizeErr error
-	writeErr  error
-	closed    chan struct{}
+	mu             sync.Mutex
+	written        bytes.Buffer
+	cols           uint16
+	rows           uint16
+	resizeErr      error
+	writeErr       error
+	closed         chan struct{}
 	closeOne       sync.Once
 	closeErr       error
 	closeStarted   chan struct{}
