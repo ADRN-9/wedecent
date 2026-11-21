@@ -53,6 +53,11 @@ func ensure(dir, name string, scope keyProtectionScope) (*Identity, error) {
 	if err != nil {
 		return nil, err
 	}
+	unlockCertificate, err := lockIdentityCertificate(certPath, true)
+	if err != nil {
+		return nil, fmt.Errorf("lock identity certificate for update: %w", err)
+	}
+	defer unlockCertificate()
 	pub := priv.Public().(ed25519.PublicKey)
 	id := DeviceID(pub)
 
@@ -148,7 +153,7 @@ func readCertificateFile(path string) ([]byte, error) {
 		return nil, errors.New("identity certificate must be a regular file")
 	}
 
-	f, err := openCertificateFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open identity certificate: %w", err)
 	}

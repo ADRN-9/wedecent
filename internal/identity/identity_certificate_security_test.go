@@ -148,44 +148,37 @@ func TestEnsureConcurrentCertificateCreationConverges(t *testing.T) {
 	}
 }
 
-func TestOpenCertificateFileAllowsAtomicReplacement(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "identity.crt")
-	if err := os.WriteFile(path, []byte("old certificate"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	reader, err := openCertificateFile(path)
+func TestIdentityCertificateLockSerializesReadersAndWriters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.crt")
+	unlockReader, err := lockIdentityCertificate(path, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer reader.Close()
-
-	tmp, err := os.CreateTemp(dir, ".identity.crt.tmp-*")
-	if err != nil {
+	acquired := make(chan struct{})
+	errs := make(chan error, 1)
+	go func() {
+		unlockWriter, err := lockIdentityCertificate(path, true)
+		if err != nil {
+			errs <- err
+			return
+		}
+		close(acquired)
+		unlockWriter()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("exclusive identity certificate lock acquired while a reader held the shared lock")
+	case err := <-errs:
 		t.Fatal(err)
+	case <-time.After(100 * time.Millisecond):
 	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	if _, err := tmp.Write([]byte("new certificate")); err != nil {
-		tmp.Close()
+	unlockReader()
+	select {
+	case <-acquired:
+	case err := <-errs:
 		t.Fatal(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		t.Fatal(err)
-	}
-	if err := tmp.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := replaceCertificateFile(tmpPath, path); err != nil {
-		t.Fatalf("replace certificate while read handle remains open: %v", err)
-	}
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "new certificate" {
-		t.Fatalf("replacement content = %q, want new certificate", got)
+	case <-time.After(3 * time.Second):
+		t.Fatal("exclusive identity certificate lock did not acquire after reader release")
 	}
 }
 
