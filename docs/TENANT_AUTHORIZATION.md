@@ -26,6 +26,7 @@ Before WD-CP01, the Edge Function checked that the authenticated user was an own
 
 The replacement RPC:
 
+- rejects missing or malformed enrollment identity parameters, including a null public key;
 - rejects a missing authenticated-user context;
 - requires current owner/admin membership in the destination organization;
 - requires current owner/admin membership in the existing organization before moving or unassigning an organization device;
