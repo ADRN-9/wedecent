@@ -11,12 +11,11 @@ const (
 	concurrentCertificateLoadRetryDelay = 5 * time.Millisecond
 )
 
-// loadConcurrentlyCreatedCertificate is used only after this process lost an
-// exclusive first-creation race for identity.crt. The winning creator opens the
-// final path before writing and syncing the small certificate, so a loser can
-// briefly observe an incomplete file. Reconcile for a short bounded window;
-// every attempt still goes through the normal strict PEM, self-signature and
-// path-identity checks in loadCertificate.
+// loadConcurrentlyCreatedCertificate is used after this process loses an
+// exclusive first-creation race for identity.crt. The winner publishes a fully
+// synced temporary file atomically; the bounded retry also tolerates delayed
+// visibility on filesystems that do not immediately expose the new directory
+// entry. Every attempt still uses strict PEM, self-signature and path checks.
 func loadConcurrentlyCreatedCertificate(path string) (*x509.Certificate, error) {
 	var lastErr error
 	for attempt := 0; attempt < concurrentCertificateLoadAttempts; attempt++ {

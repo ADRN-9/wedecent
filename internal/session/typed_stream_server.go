@@ -35,6 +35,7 @@ type typedTerminalChild struct {
 	creditCh   chan struct{}
 	done       chan struct{}
 	closeOnce  sync.Once
+	closeErr   error
 }
 
 type typedTerminalServer struct {
@@ -358,20 +359,24 @@ func (s *typedTerminalServer) closeStream(streamID uint32, reason string, sendCl
 
 	child.closeOnce.Do(func() {
 		close(child.done)
-		_ = child.pty.Close()
+		child.closeErr = child.pty.Close()
 	})
+	var closeErr error
+	if child.closeErr != nil {
+		closeErr = fmt.Errorf("close typed terminal PTY: %w", child.closeErr)
+	}
 	if !sendClose {
-		return nil
+		return closeErr
 	}
 	closeMessage := protocol.StreamClose{Reason: reason}
 	if err := protocol.ValidateStreamClose(streamID, closeMessage); err != nil {
-		return err
+		return errors.Join(closeErr, err)
 	}
 	payload, err := protocol.JSON(closeMessage)
 	if err != nil {
-		return err
+		return errors.Join(closeErr, err)
 	}
-	return s.writeFrame(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: streamID, Payload: payload})
+	return errors.Join(closeErr, s.writeFrame(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: streamID, Payload: payload}))
 }
 
 func (s *typedTerminalServer) sendStreamError(streamID uint32, code, message string) error {
@@ -393,22 +398,27 @@ func (s *typedTerminalServer) markClosed(streamID uint32) {
 	s.mu.Unlock()
 }
 
-func (s *typedTerminalServer) CloseAll() {
+func (s *typedTerminalServer) CloseAll() error {
 	s.mu.Lock()
-	children := make([]*typedTerminalChild, 0, len(s.streams))
-	for _, child := range s.streams {
-		children = append(children, child)
+	children := make(map[uint32]*typedTerminalChild, len(s.streams))
+	for streamID, child := range s.streams {
+		children[streamID] = child
 	}
 	s.streams = make(map[uint32]*typedTerminalChild)
 	s.states.closeAll()
 	s.mu.Unlock()
 
-	for _, child := range children {
+	var closeErrors []error
+	for streamID, child := range children {
 		child.closeOnce.Do(func() {
 			close(child.done)
-			_ = child.pty.Close()
+			child.closeErr = child.pty.Close()
 		})
+		if child.closeErr != nil {
+			closeErrors = append(closeErrors, fmt.Errorf("close typed terminal PTY stream %d: %w", streamID, child.closeErr))
+		}
 	}
+	return errors.Join(closeErrors...)
 }
 
 func (s *typedTerminalServer) writeFrame(frame protocol.Frame) error {

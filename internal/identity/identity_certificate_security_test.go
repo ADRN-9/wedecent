@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestEnsureRejectsSymlinkedCertificateWithoutTouchingTarget(t *testing.T) {
@@ -145,5 +146,96 @@ func TestEnsureConcurrentCertificateCreationConverges(t *testing.T) {
 	}
 	if _, err := Load(dir); err != nil {
 		t.Fatalf("Load() after concurrent certificate creation: %v", err)
+	}
+}
+
+func TestIdentityCertificateLockSerializesReadersAndWriters(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "identity.crt")
+	unlockReader, err := lockIdentityCertificate(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acquired := make(chan struct{})
+	errs := make(chan error, 1)
+	go func() {
+		unlockWriter, err := lockIdentityCertificate(path, true)
+		if err != nil {
+			errs <- err
+			return
+		}
+		close(acquired)
+		unlockWriter()
+	}()
+	select {
+	case <-acquired:
+		t.Fatal("exclusive identity certificate lock acquired while a reader held the shared lock")
+	case err := <-errs:
+		t.Fatal(err)
+	case <-time.After(100 * time.Millisecond):
+	}
+	unlockReader()
+	select {
+	case <-acquired:
+	case err := <-errs:
+		t.Fatal(err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("exclusive identity certificate lock did not acquire after reader release")
+	}
+}
+
+func TestEnsureConcurrentCertificateRepairConverges(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Ensure(dir, "test-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath := filepath.Join(dir, "identity.crt")
+	if err := os.WriteFile(certPath, []byte("invalid certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 32
+	start := make(chan struct{})
+	ids := make(chan string, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			id, err := Ensure(dir, "test-device")
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- id.ID
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(ids)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("concurrent Ensure() repair error = %v", err)
+	}
+	count := 0
+	for id := range ids {
+		count++
+		if id != first.ID {
+			t.Fatalf("concurrent Ensure() repair returned identity %q, want %q", id, first.ID)
+		}
+	}
+	if count != callers {
+		t.Fatalf("successful concurrent repairs = %d, want %d", count, callers)
+	}
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() after concurrent certificate repair: %v", err)
+	}
+	if loaded.ID != first.ID {
+		t.Fatalf("Load() after concurrent repair returned identity %q, want %q", loaded.ID, first.ID)
 	}
 }

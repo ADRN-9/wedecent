@@ -2,13 +2,26 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha1"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"hash"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,14 +32,16 @@ import (
 	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/protocol"
+	"wedecent.com/wedecent/internal/transport"
 	"wedecent.com/wedecent/internal/trust"
 )
 
 const revocationTestJTI = "00000000-0000-4000-8000-000000000001"
 
 type revocationTestPTY struct {
-	closed chan struct{}
-	once   sync.Once
+	closed   chan struct{}
+	once     sync.Once
+	closeErr error
 }
 
 func newRevocationTestPTY() *revocationTestPTY {
@@ -56,7 +71,170 @@ func (p *revocationTestPTY) Wait() error {
 
 func (p *revocationTestPTY) Close() error {
 	p.once.Do(func() { close(p.closed) })
+	return p.closeErr
+}
+
+type revocationObservedConn struct {
+	net.Conn
+	mu                sync.Mutex
+	armed             bool
+	firstWrite        chan struct{}
+	firstOnce         sync.Once
+	firstWriteBytes   []byte
+	writeReturned     chan struct{}
+	writeReturnedOnce sync.Once
+}
+
+func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
+	return &revocationObservedConn{
+		Conn: conn, firstWrite: make(chan struct{}), writeReturned: make(chan struct{}),
+	}
+}
+
+func (c *revocationObservedConn) arm() {
+	c.mu.Lock()
+	c.armed = true
+	c.firstWriteBytes = nil
+	c.mu.Unlock()
+}
+
+func (c *revocationObservedConn) firstRecord() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.firstWriteBytes...)
+}
+
+func (c *revocationObservedConn) Write(buffer []byte) (int, error) {
+	first := false
+	c.mu.Lock()
+	if c.armed {
+		c.firstOnce.Do(func() {
+			first = true
+			c.firstWriteBytes = append([]byte(nil), buffer...)
+			close(c.firstWrite)
+		})
+	}
+	c.mu.Unlock()
+	n, err := c.Conn.Write(buffer)
+	if first {
+		c.writeReturnedOnce.Do(func() { close(c.writeReturned) })
+	}
+	return n, err
+}
+
+type tlsRecordCounterConn struct {
+	net.Conn
+	mu      sync.Mutex
+	enabled bool
+	pending []byte
+	records uint64
+}
+
+func (c *tlsRecordCounterConn) enable() {
+	c.mu.Lock()
+	c.enabled = true
+	c.mu.Unlock()
+}
+
+func (c *tlsRecordCounterConn) recordCount() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.records
+}
+
+func (c *tlsRecordCounterConn) Write(buffer []byte) (int, error) {
+	n, err := c.Conn.Write(buffer)
+	if n > 0 {
+		c.mu.Lock()
+		if c.enabled {
+			c.pending = append(c.pending, buffer[:n]...)
+			for len(c.pending) >= 5 {
+				recordLength := int(binary.BigEndian.Uint16(c.pending[3:5]))
+				if len(c.pending) < 5+recordLength {
+					break
+				}
+				if c.pending[0] == 23 {
+					c.records++
+				}
+				c.pending = c.pending[5+recordLength:]
+			}
+		}
+		c.mu.Unlock()
+	}
+	return n, err
+}
+
+func clientTrafficSecret(t *testing.T, keyLog *bytes.Buffer) []byte {
+	t.Helper()
+	for _, line := range strings.Split(keyLog.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "CLIENT_TRAFFIC_SECRET_0" {
+			secret, err := hex.DecodeString(fields[2])
+			if err != nil {
+				t.Fatal(err)
+			}
+			return secret
+		}
+	}
+	t.Fatal("TLS key log did not contain CLIENT_TRAFFIC_SECRET_0")
 	return nil
+}
+
+func hkdfExpandLabel(secret []byte, label string, hashFunc func() hash.Hash, length int) []byte {
+	fullLabel := "tls13 " + label
+	info := make([]byte, 2+1+len(fullLabel)+1)
+	binary.BigEndian.PutUint16(info[:2], uint16(length))
+	info[2] = byte(len(fullLabel))
+	copy(info[3:], fullLabel)
+	info[3+len(fullLabel)] = 0
+
+	var output, previous []byte
+	for counter := byte(1); len(output) < length; counter++ {
+		mac := hmac.New(hashFunc, secret)
+		_, _ = mac.Write(previous)
+		_, _ = mac.Write(info)
+		_, _ = mac.Write([]byte{counter})
+		previous = mac.Sum(nil)
+		output = append(output, previous...)
+	}
+	return output[:length]
+}
+
+func tls13KeyUpdateRequest(t *testing.T, state tls.ConnectionState, secret []byte, sequence uint64) []byte {
+	t.Helper()
+	var hashFunc func() hash.Hash
+	keyLength := 0
+	switch state.CipherSuite {
+	case tls.TLS_AES_128_GCM_SHA256:
+		hashFunc, keyLength = sha256.New, 16
+	case tls.TLS_AES_256_GCM_SHA384:
+		hashFunc, keyLength = sha512.New384, 32
+	default:
+		t.Fatalf("TLS 1.3 cipher suite %x is not supported by the KeyUpdate test helper", state.CipherSuite)
+	}
+	key := hkdfExpandLabel(secret, "key", hashFunc, keyLength)
+	iv := hkdfExpandLabel(secret, "iv", hashFunc, 12)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := append([]byte(nil), iv...)
+	var sequenceBytes [8]byte
+	binary.BigEndian.PutUint64(sequenceBytes[:], sequence)
+	for i := range sequenceBytes {
+		nonce[len(nonce)-len(sequenceBytes)+i] ^= sequenceBytes[i]
+	}
+
+	// TLS 1.3 KeyUpdate(request_update=1), followed by the inner handshake type.
+	plaintext := []byte{24, 0, 0, 1, 1, 22}
+	recordLength := len(plaintext) + aead.Overhead()
+	header := []byte{23, 3, 3, byte(recordLength >> 8), byte(recordLength)}
+	ciphertext := aead.Seal(nil, nonce, plaintext, header)
+	return append(header, ciphertext...)
 }
 
 type revocationTestAuthorizer struct {
@@ -241,6 +419,13 @@ func (r *revocationTestRig) open(client *identity.Identity, kind TransportKind, 
 	return conn, nil
 }
 
+func (r *revocationTestRig) ptyCount() int {
+	r.t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.ptys)
+}
+
 func (r *revocationTestRig) ptyAt(index int) *revocationTestPTY {
 	r.t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -342,6 +527,524 @@ func waitRevocationAuditEvents(t *testing.T, stateDir string, ready func([]audit
 	}
 	t.Fatal("expected revocation audit events were not persisted")
 	return nil
+}
+
+type revocationAbortCountingConn struct {
+	net.Conn
+	mu        sync.Mutex
+	abortCall int
+	closeCall int
+}
+
+func (c *revocationAbortCountingConn) Abort() error {
+	c.mu.Lock()
+	c.abortCall++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func (c *revocationAbortCountingConn) Close() error {
+	c.mu.Lock()
+	c.closeCall++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func TestAbortSessionTransportUnwrapsNestedTLSWrappers(t *testing.T) {
+	local, peer := net.Pipe()
+	defer peer.Close()
+	counted := &revocationAbortCountingConn{Conn: local}
+	inner := tls.Client(counted, &tls.Config{MinVersion: tls.VersionTLS13})
+	outer := tls.Client(inner, &tls.Config{MinVersion: tls.VersionTLS13})
+
+	if err := abortSessionTransport(outer); err != nil {
+		t.Fatalf("abort nested raw-relay TLS wrappers: %v", err)
+	}
+	counted.mu.Lock()
+	abortCalls, closeCalls := counted.abortCall, counted.closeCall
+	counted.mu.Unlock()
+	if abortCalls != 1 || closeCalls != 0 {
+		t.Fatalf("underlying transport calls: Abort=%d Close=%d, want Abort=1 Close=0", abortCalls, closeCalls)
+	}
+}
+
+type revocationDeadlineFailureConn struct {
+	net.Conn
+}
+
+func (c *revocationDeadlineFailureConn) SetWriteDeadline(time.Time) error {
+	return errors.New("write deadline unsupported")
+}
+
+func TestWriteSessionAcceptedFailsClosedWhenDeadlineCannotBeSet(t *testing.T) {
+	local, peer := net.Pipe()
+	defer local.Close()
+	defer peer.Close()
+	conn := &revocationDeadlineFailureConn{Conn: local}
+	if err := writeSessionAccepted(conn, protocol.Frame{Type: protocol.TypeSessionAccepted}); err == nil {
+		t.Fatal("session acceptance succeeded without a bounded write deadline")
+	}
+}
+
+type revocationRelayPeer struct {
+	conn   net.Conn
+	reader *bufio.Reader
+}
+
+type revocationWebSocketRelay struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
+	agents    chan *revocationRelayPeer
+	clients   chan *revocationRelayPeer
+	mu        sync.Mutex
+	peers     []*revocationRelayPeer
+	closeOnce sync.Once
+}
+
+func newRevocationWebSocketRelay() *revocationWebSocketRelay {
+	ctx, cancel := context.WithCancel(context.Background())
+	relay := &revocationWebSocketRelay{
+		ctx:     ctx,
+		cancel:  cancel,
+		agents:  make(chan *revocationRelayPeer, 1),
+		clients: make(chan *revocationRelayPeer, 1),
+	}
+	go relay.pair()
+	return relay
+}
+
+func (r *revocationWebSocketRelay) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	role := request.URL.Query().Get("role")
+	if role != "agent" && role != "client" {
+		http.Error(w, "invalid relay role", http.StatusBadRequest)
+		return
+	}
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "WebSocket hijacking unavailable", http.StatusInternalServerError)
+		return
+	}
+	raw, rw, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	digest := sha1.Sum([]byte(
+		request.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
+	))
+	accept := base64.StdEncoding.EncodeToString(digest[:])
+	if _, err := fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept); err != nil {
+		_ = raw.Close()
+		return
+	}
+	if err := rw.Flush(); err != nil {
+		_ = raw.Close()
+		return
+	}
+	peer := &revocationRelayPeer{conn: raw, reader: rw.Reader}
+	r.mu.Lock()
+	r.peers = append(r.peers, peer)
+	r.mu.Unlock()
+
+	channel := r.clients
+	if role == "agent" {
+		channel = r.agents
+	}
+	select {
+	case channel <- peer:
+	case <-r.ctx.Done():
+		_ = raw.Close()
+	}
+}
+
+func (r *revocationWebSocketRelay) pair() {
+	var agent, client *revocationRelayPeer
+	select {
+	case agent = <-r.agents:
+	case <-r.ctx.Done():
+		return
+	}
+	select {
+	case client = <-r.clients:
+	case <-r.ctx.Done():
+		return
+	}
+	go r.forward(agent, client)
+	go r.forward(client, agent)
+}
+
+func (r *revocationWebSocketRelay) forward(source, destination *revocationRelayPeer) {
+	for {
+		opcode, payload, err := readRevocationWebSocketFrame(source.reader)
+		if err != nil {
+			r.closePeers()
+			return
+		}
+		if err := writeRevocationWebSocketFrame(destination.conn, opcode, payload); err != nil {
+			r.closePeers()
+			return
+		}
+		if opcode == 0x8 {
+			r.closePeers()
+			return
+		}
+	}
+}
+
+func (r *revocationWebSocketRelay) closePeers() {
+	r.closeOnce.Do(func() {
+		r.cancel()
+		r.mu.Lock()
+		peers := append([]*revocationRelayPeer(nil), r.peers...)
+		r.mu.Unlock()
+		for _, peer := range peers {
+			_ = peer.conn.Close()
+		}
+	})
+}
+
+func (r *revocationWebSocketRelay) Close() {
+	r.closePeers()
+}
+
+func readRevocationWebSocketFrame(reader *bufio.Reader) (byte, []byte, error) {
+	var header [2]byte
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
+		return 0, nil, err
+	}
+	length := uint64(header[1] & 0x7f)
+	switch length {
+	case 126:
+		var extended [2]byte
+		if _, err := io.ReadFull(reader, extended[:]); err != nil {
+			return 0, nil, err
+		}
+		length = uint64(binary.BigEndian.Uint16(extended[:]))
+	case 127:
+		var extended [8]byte
+		if _, err := io.ReadFull(reader, extended[:]); err != nil {
+			return 0, nil, err
+		}
+		length = binary.BigEndian.Uint64(extended[:])
+	}
+	if length > 32<<20 {
+		return 0, nil, errors.New("test relay frame exceeds limit")
+	}
+	masked := header[1]&0x80 != 0
+	var mask [4]byte
+	if masked {
+		if _, err := io.ReadFull(reader, mask[:]); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload := make([]byte, int(length))
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return 0, nil, err
+	}
+	if masked {
+		for index := range payload {
+			payload[index] ^= mask[index&3]
+		}
+	}
+	return header[0] & 0x0f, payload, nil
+}
+
+func writeRevocationWebSocketFrame(writer io.Writer, opcode byte, payload []byte) error {
+	var header [10]byte
+	header[0] = 0x80 | opcode
+	headerLength := 2
+	switch {
+	case len(payload) < 126:
+		header[1] = byte(len(payload))
+	case len(payload) <= 65535:
+		header[1] = 126
+		binary.BigEndian.PutUint16(header[2:4], uint16(len(payload)))
+		headerLength = 4
+	default:
+		header[1] = 127
+		binary.BigEndian.PutUint64(header[2:10], uint64(len(payload)))
+		headerLength = 10
+	}
+	if err := writeRevocationAll(writer, header[:headerLength]); err != nil {
+		return err
+	}
+	return writeRevocationAll(writer, payload)
+}
+
+func writeRevocationAll(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		written, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	return nil
+}
+
+func TestRevocationAbortsEstablishedSessionThroughWebRelayGoAdapter(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("web-relay-revocation-client")
+	relay := newRevocationWebSocketRelay()
+	server := httptest.NewServer(relay)
+	defer server.Close()
+	defer relay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	agentConn, err := transport.WaitWebRelaySession(ctx, server.URL, transport.WebRelayOptions{
+		Token:             "agent-ticket",
+		Timeout:           5 * time.Second,
+		KeepAliveInterval: -1,
+	}, rig.serverID.ID, 1)
+	if err != nil {
+		t.Fatalf("wait for WebSocket relay session: %v", err)
+	}
+	go rig.server.ServeParkedRelayConn(agentConn)
+
+	clientRaw, err := (transport.WebRelayDialer{
+		BaseURL:        server.URL,
+		TargetDeviceID: rig.serverID.ID,
+		Options: transport.WebRelayOptions{
+			Token:             "client-ticket",
+			Timeout:           5 * time.Second,
+			ConnectionGrant:   "header.payload.signature",
+			KeepAliveInterval: -1,
+		},
+	}).Dial(ctx)
+	if err != nil {
+		t.Fatalf("dial WebSocket relay client: %v", err)
+	}
+	conn := tls.Client(clientRaw, identity.ClientTLS(client, rig.serverFingerprint))
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Handshake(); err != nil {
+		t.Fatalf("inner terminal TLS handshake through WebSocket adapter: %v", err)
+	}
+	if err := rig.sendOpen(conn, TransportWebSocketRelay, false); err != nil {
+		t.Fatalf("open terminal session through WebSocket adapter: %v", err)
+	}
+	if err := rig.readAccepted(conn); err != nil {
+		t.Fatalf("read WebSocket terminal session acceptance: %v", err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	pty := rig.ptyAt(0)
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitRevocationPTYClosed(t, pty)
+	waitRevocationConnectionClosed(t, conn)
+	_ = conn.Close()
+	_ = clientRaw.Close()
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		terminated, closed := 0, 0
+		for _, event := range events {
+			if event.PeerID != client.ID {
+				continue
+			}
+			if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+				terminated++
+			}
+			if event.Type == "terminal.session_closed" && event.Reason == "client_revoked" {
+				closed++
+			}
+		}
+		return terminated == 1 && closed == 1
+	})
+	terminated, closed := 0, 0
+	terminatedAt, closedAt := -1, -1
+	for index, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+			terminated++
+			terminatedAt = index
+		}
+		if event.Type == "terminal.session_closed" && event.Reason == "client_revoked" {
+			closed++
+			closedAt = index
+		}
+	}
+	if terminated != 1 || closed != 1 || terminatedAt >= closedAt {
+		t.Fatalf("WebSocket revocation audit: terminated=%d at %d, closed=%d at %d", terminated, terminatedAt, closed, closedAt)
+	}
+	waitRevocationSessionsIdle(t, rig.server)
+}
+
+func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("blocked-tls13-client")
+	firstPTY := newRevocationTestPTY()
+	secondPTY := newRevocationTestPTY()
+	var startMu sync.Mutex
+	starts := 0
+	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
+		startMu.Lock()
+		defer startMu.Unlock()
+		starts++
+		if starts == 1 {
+			rig.mu.Lock()
+			rig.ptys = append(rig.ptys, firstPTY)
+			rig.mu.Unlock()
+			return firstPTY, nil
+		}
+		rig.mu.Lock()
+		rig.ptys = append(rig.ptys, secondPTY)
+		rig.mu.Unlock()
+		return secondPTY, nil
+	}
+
+	clientRaw, serverRaw := net.Pipe()
+	observedServer := newRevocationObservedConn(serverRaw)
+	go rig.server.ServeConnWithTransport(observedServer, TransportMetadata{Kind: TransportDirectTCP})
+	clientTransport := &tlsRecordCounterConn{Conn: clientRaw}
+	keyLog := &bytes.Buffer{}
+	clientConfig := identity.ClientTLS(client, rig.serverFingerprint)
+	clientConfig.MinVersion = tls.VersionTLS13
+	clientConfig.MaxVersion = tls.VersionTLS13
+	clientConfig.KeyLogWriter = keyLog
+	conn := tls.Client(clientTransport, clientConfig)
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	clientTransport.enable()
+	hookEntered := make(chan struct{})
+	releaseHook := make(chan struct{})
+	var hookMu sync.Mutex
+	hookCalls := 0
+	rig.server.afterSessionAccepted = func() {
+		hookMu.Lock()
+		hookCalls++
+		call := hookCalls
+		hookMu.Unlock()
+		if call == 1 {
+			close(hookEntered)
+			<-releaseHook
+		}
+	}
+	if err := rig.sendOpen(conn, TransportDirectTCP, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.readAccepted(conn); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	select {
+	case <-hookEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first session did not reach the post-acceptance barrier")
+	}
+
+	other, err := rig.open(client, TransportDirectTCP, false)
+	if err != nil {
+		t.Fatalf("open independent session before KeyUpdate: %v", err)
+	}
+	startMu.Lock()
+	startedCount := starts
+	startMu.Unlock()
+	if startedCount != 2 {
+		t.Fatalf("PTY starts = %d, want two independent sessions", startedCount)
+	}
+
+	// No PTY output or application write is active. After releasing the
+	// barrier, the next TLS record written by the server is the KeyUpdate reply.
+	observedServer.arm()
+	close(releaseHook)
+	state := conn.ConnectionState()
+	if state.Version != tls.VersionTLS13 {
+		t.Fatalf("negotiated TLS version = %x, want TLS 1.3", state.Version)
+	}
+	sequence := clientTransport.recordCount()
+	if sequence == 0 {
+		t.Fatal("client application record sequence was not captured")
+	}
+	secret := clientTrafficSecret(t, keyLog)
+	keyUpdate := tls13KeyUpdateRequest(t, state, secret, sequence)
+	if err := clientRaw.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientRaw.Write(keyUpdate); err != nil {
+		t.Fatalf("send TLS 1.3 KeyUpdate request: %v", err)
+	}
+	_ = clientRaw.SetWriteDeadline(time.Time{})
+
+	select {
+	case <-observedServer.firstWrite:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not attempt a TLS 1.3 KeyUpdate response")
+	}
+	responseRecord := observedServer.firstRecord()
+	if len(responseRecord) != 27 || responseRecord[0] != 23 ||
+		int(binary.BigEndian.Uint16(responseRecord[3:5])) != 22 {
+		t.Fatalf("blocked server TLS record = %x (length %d), want 27-byte encrypted KeyUpdate response", responseRecord, len(responseRecord))
+	}
+	select {
+	case <-observedServer.writeReturned:
+		t.Fatal("TLS KeyUpdate response write returned before the peer read it")
+	default:
+	}
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitRevocationPTYClosed(t, firstPTY)
+	waitRevocationPTYClosed(t, secondPTY)
+	waitRevocationConnectionClosed(t, conn)
+	waitRevocationConnectionClosed(t, other)
+	select {
+	case <-observedServer.writeReturned:
+	case <-time.After(time.Second):
+		t.Fatal("transport abort did not release the blocked TLS KeyUpdate response write")
+	}
+	_ = conn.Close()
+	_ = other.Close()
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		terminated, closed := 0, 0
+		for _, event := range events {
+			if event.PeerID == client.ID && event.Type == "terminal.session_terminated" {
+				terminated++
+			}
+			if event.PeerID == client.ID && event.Type == "terminal.session_closed" {
+				closed++
+			}
+		}
+		return terminated == 2 && closed == 2
+	})
+	terminated, closed := 0, 0
+	terminatedIndex := make(map[string]int)
+	closedIndex := make(map[string]int)
+	for index, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+			terminated++
+			terminatedIndex[event.SessionID] = index
+		}
+		if event.Type == "terminal.session_closed" && event.Reason == "client_revoked" {
+			closed++
+			closedIndex[event.SessionID] = index
+		}
+	}
+	if terminated != 2 || closed != 2 {
+		t.Fatalf("revocation audit counts: terminated=%d closed=%d, want two each", terminated, closed)
+	}
+	for sessionID, terminatedAt := range terminatedIndex {
+		if closedAt, ok := closedIndex[sessionID]; !ok || terminatedAt >= closedAt {
+			t.Fatalf("session %s audit order: terminated at %d, closed at %d", sessionID, terminatedAt, closedAt)
+		}
+	}
+	waitRevocationSessionsIdle(t, rig.server)
 }
 
 func TestRevocationTerminatesOnlyTargetClientAcrossTerminalTransports(t *testing.T) {
@@ -622,7 +1325,9 @@ func TestRevocationDuringSessionAdmissionFailsClosed(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("session did not reach the final admission boundary")
 	}
-	pty := rig.ptyAt(0)
+	if rig.ptyCount() != 0 {
+		t.Fatal("PTY or shell started before final serialized authorization")
+	}
 	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -630,7 +1335,9 @@ func TestRevocationDuringSessionAdmissionFailsClosed(t *testing.T) {
 	if err := rig.readAccepted(conn); err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Fatalf("session admission after concurrent revoke = %v, want unauthorized", err)
 	}
-	waitRevocationPTYClosed(t, pty)
+	if got := rig.ptyCount(); got != 0 {
+		t.Fatalf("rejected session started %d PTYs", got)
+	}
 	_ = conn.Close()
 
 	rig.server.activeSessionsMu.Lock()
@@ -639,4 +1346,382 @@ func TestRevocationDuringSessionAdmissionFailsClosed(t *testing.T) {
 	if activeCount != 0 {
 		t.Fatalf("failed admission left %d active session records", activeCount)
 	}
+}
+
+func TestAdmissionReservationFirstThenRevocationCleansEstablishedSession(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("admission-first-client")
+	ptyStarted := make(chan struct{})
+	release := make(chan struct{})
+	rig.server.afterSessionAccepted = func() {
+		close(ptyStarted)
+		<-release
+	}
+
+	conn := rig.dial(client, TransportDirectTCP)
+	if err := rig.sendOpen(conn, TransportDirectTCP, false); err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan error, 1)
+	go func() { accepted <- rig.readAccepted(conn) }()
+	select {
+	case <-ptyStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not reserve admission and start its PTY")
+	}
+	if err := <-accepted; err != nil {
+		t.Fatalf("admission-first session was not accepted: %v", err)
+	}
+	if rig.ptyCount() != 1 {
+		t.Fatalf("PTY count after admission-first reservation = %d, want 1", rig.ptyCount())
+	}
+	rig.server.activeSessionsMu.Lock()
+	activeCount := len(rig.server.activeSessions)
+	rig.server.activeSessionsMu.Unlock()
+	if activeCount != 1 {
+		t.Fatalf("admission reservation count = %d, want 1", activeCount)
+	}
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	pty := rig.ptyAt(0)
+	waitRevocationPTYClosed(t, pty)
+	waitRevocationConnectionClosed(t, conn)
+	close(release)
+	_ = conn.Close()
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		opened, terminated, closed := 0, 0, 0
+		for _, event := range events {
+			if event.PeerID != client.ID {
+				continue
+			}
+			switch event.Type {
+			case "terminal.session_opened":
+				opened++
+			case "terminal.session_terminated":
+				terminated++
+			case "terminal.session_closed":
+				closed++
+			}
+		}
+		return opened == 1 && terminated == 1 && closed == 1
+	})
+	opened, terminated, closed := 0, 0, 0
+	for _, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		switch event.Type {
+		case "terminal.session_opened":
+			opened++
+		case "terminal.session_terminated":
+			if event.Reason == "client_revoked" {
+				terminated++
+			}
+		case "terminal.session_closed":
+			if event.Reason == "client_revoked" {
+				closed++
+			}
+		}
+	}
+	if opened != 1 || terminated != 1 || closed != 1 {
+		t.Fatalf("admission-first audit counts: opened=%d terminated=%d closed=%d", opened, terminated, closed)
+	}
+}
+
+type revocationAbortFailureConn struct {
+	net.Conn
+	abortErr error
+}
+
+func (c *revocationAbortFailureConn) Abort() error {
+	_ = c.Conn.Close()
+	return c.abortErr
+}
+
+func TestRevocationDuringPTYStartupAbortsBeforeAcceptance(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("revocation-during-pty-startup")
+	startupPTY := newRevocationTestPTY()
+	startupEntered := make(chan struct{})
+	releaseStartup := make(chan struct{})
+	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
+		close(startupEntered)
+		<-releaseStartup
+		rig.mu.Lock()
+		rig.ptys = append(rig.ptys, startupPTY)
+		rig.mu.Unlock()
+		return startupPTY, nil
+	}
+
+	conn := rig.dial(client, TransportDirectTCP)
+	if err := rig.sendOpen(conn, TransportDirectTCP, false); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	select {
+	case <-startupEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("PTY startup did not reach its synchronization barrier")
+	}
+	rig.server.activeSessionsMu.Lock()
+	reserved := len(rig.server.activeSessions)
+	rig.server.activeSessionsMu.Unlock()
+	if reserved != 1 {
+		t.Fatalf("active session reservations during PTY startup = %d, want 1", reserved)
+	}
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitRevocationConnectionClosed(t, conn)
+	close(releaseStartup)
+	pty := rig.ptyAt(0)
+	waitRevocationPTYClosed(t, pty)
+	if err := rig.readAccepted(conn); err == nil {
+		t.Fatal("revoked session received an acceptance frame after PTY startup")
+	}
+	_ = conn.Close()
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		for _, event := range events {
+			if event.PeerID == client.ID && event.Type == "terminal.session_terminated" {
+				return true
+			}
+		}
+		return false
+	})
+	terminated := 0
+	for _, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		switch event.Type {
+		case "terminal.session_terminated":
+			terminated++
+			if event.Outcome != "success" || event.Reason != "client_revoked" {
+				t.Fatalf("startup revocation outcome/reason = %q/%q", event.Outcome, event.Reason)
+			}
+		case "terminal.session_opened", "terminal.session_closed":
+			t.Fatalf("session emitted %s despite never being accepted: %+v", event.Type, event)
+		}
+	}
+	if terminated != 1 {
+		t.Fatalf("termination audit count = %d, want one", terminated)
+	}
+}
+
+func TestTerminationPropagatesAbortAndPTYCleanupErrors(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("termination-cleanup-error")
+	abortErr := errors.New("injected transport abort failure")
+	ptyErr := errors.New("injected PTY close failure")
+	clientConn, peerConn := net.Pipe()
+	defer peerConn.Close()
+	rawConn := &revocationAbortFailureConn{Conn: clientConn, abortErr: abortErr}
+	fingerprint, err := identity.FingerprintPublicKey(client.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := rig.server.admitTerminalSession(client.ID,
+		fingerprint, "direct_tcp", rawConn, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pty := newRevocationTestPTY()
+	pty.closeErr = ptyErr
+	if err := active.setCleanup(pty.Close); err != nil {
+		t.Fatal(err)
+	}
+	terminationErr := active.terminate("client_revoked")
+	if !errors.Is(terminationErr, abortErr) || !errors.Is(terminationErr, ptyErr) {
+		t.Fatalf("termination error = %v, want both abort and PTY close errors", terminationErr)
+	}
+	if err := active.finish(); !errors.Is(err, abortErr) || !errors.Is(err, ptyErr) {
+		t.Fatalf("finish error = %v, want propagated termination failures", err)
+	}
+	waitRevocationPTYClosed(t, pty)
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		for _, event := range events {
+			if event.Type == "terminal.session_terminated" && event.PeerID == client.ID {
+				return true
+			}
+		}
+		return false
+	})
+	for _, event := range events {
+		if event.Type == "terminal.session_terminated" && event.PeerID == client.ID {
+			if event.Outcome != "failed" {
+				t.Fatalf("termination audit outcome = %q, want failed", event.Outcome)
+			}
+			return
+		}
+	}
+	t.Fatal("termination audit event missing")
+}
+
+func TestRevocationPTYCleanupFailureMarksTerminationAndCloseAuditFailed(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("revocation-pty-close-error")
+	pty := newRevocationTestPTY()
+	pty.closeErr = errors.New("injected PTY close failure")
+	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
+		rig.mu.Lock()
+		rig.ptys = append(rig.ptys, pty)
+		rig.mu.Unlock()
+		return pty, nil
+	}
+	conn, err := rig.open(client, TransportDirectTCP, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitRevocationPTYClosed(t, pty)
+	waitRevocationConnectionClosed(t, conn)
+	_ = conn.Close()
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		terminated, closed := false, false
+		for _, event := range events {
+			if event.PeerID != client.ID {
+				continue
+			}
+			if event.Type == "terminal.session_terminated" && event.Outcome == "failed" {
+				terminated = true
+			}
+			if event.Type == "terminal.session_closed" && event.Outcome == "failed" {
+				closed = true
+			}
+		}
+		return terminated && closed
+	})
+	terminatedAt, closedAt := -1, -1
+	for index, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		if event.Type == "terminal.session_terminated" {
+			if event.Outcome != "failed" {
+				t.Fatalf("termination audit outcome = %q, want failed", event.Outcome)
+			}
+			terminatedAt = index
+		}
+		if event.Type == "terminal.session_closed" {
+			if event.Outcome != "failed" {
+				t.Fatalf("session-closed audit outcome = %q, want failed", event.Outcome)
+			}
+			closedAt = index
+		}
+	}
+	if terminatedAt < 0 || closedAt <= terminatedAt {
+		t.Fatalf("audit ordering: terminated at %d, session closed at %d", terminatedAt, closedAt)
+	}
+}
+
+type revocationAdmissionFailureConn struct {
+	net.Conn
+	mu          sync.Mutex
+	failWrite   bool
+	abortCalls  int
+	abortCalled chan struct{}
+	abortOnce   sync.Once
+}
+
+func (c *revocationAdmissionFailureConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	fail := c.failWrite
+	c.mu.Unlock()
+	if fail {
+		return errors.New("injected admission write-deadline failure")
+	}
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
+func (c *revocationAdmissionFailureConn) Abort() error {
+	c.mu.Lock()
+	c.abortCalls++
+	c.mu.Unlock()
+	c.abortOnce.Do(func() { close(c.abortCalled) })
+	return c.Conn.Close()
+}
+
+func (c *revocationAdmissionFailureConn) failAdmissionWrites() {
+	c.mu.Lock()
+	c.failWrite = true
+	c.mu.Unlock()
+}
+
+func TestTypedStreamAdmissionWriteFailureAbortsWithoutErrorFrame(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("typed-admission-write-failure")
+	clientRaw, serverRaw := net.Pipe()
+	observed := &revocationAdmissionFailureConn{
+		Conn: serverRaw, abortCalled: make(chan struct{}),
+	}
+	go rig.server.ServeConnWithTransport(observed, TransportMetadata{Kind: TransportDirectTCP})
+
+	conn := tls.Client(clientRaw, identity.ClientTLS(client, rig.serverFingerprint))
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	observed.failAdmissionWrites()
+	if err := rig.sendOpen(conn, TransportDirectTCP, true); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	frame, readErr := protocol.ReadFrame(conn)
+	if readErr == nil {
+		t.Fatalf("typed admission failure sent a follow-up frame type %d; want raw transport abort", frame.Type)
+	}
+	select {
+	case <-observed.abortCalled:
+	case <-time.After(time.Second):
+		t.Fatal("typed admission write failure did not immediately abort the raw transport")
+	}
+	observed.mu.Lock()
+	abortCalls := observed.abortCalls
+	observed.mu.Unlock()
+	if abortCalls != 1 {
+		t.Fatalf("raw transport Abort calls = %d, want one", abortCalls)
+	}
+	_ = conn.Close()
+
+	rig.server.activeSessionsMu.Lock()
+	activeCount := len(rig.server.activeSessions)
+	rig.server.activeSessionsMu.Unlock()
+	if activeCount != 0 {
+		t.Fatalf("failed typed admission left %d active session reservations", activeCount)
+	}
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		for _, event := range events {
+			if event.PeerID == client.ID && event.Type == "terminal.session_opened" {
+				return true
+			}
+		}
+		return false
+	})
+	for _, event := range events {
+		if event.PeerID == client.ID && event.Type == "terminal.session_opened" {
+			if event.Outcome != "failed" || event.Reason != "session_accept_failed" {
+				t.Fatalf("typed admission failure audit = %q/%q", event.Outcome, event.Reason)
+			}
+			return
+		}
+	}
+	t.Fatal("typed admission failure audit event missing")
 }
