@@ -238,7 +238,7 @@ jobs:
         working-directory: cloudflare/relay-worker
         run: npm install --ignore-scripts --no-audit --no-fund
       - name: Exercise local Worker, SQLite Durable Object, and independent Go processes
-        run: go run ./scripts/cloudflare-worker-process-e2e.go
+        run: go run ./scripts/cloudflare-worker-process-e2e
 
   control-plane:
     runs-on: ubuntu-latest
