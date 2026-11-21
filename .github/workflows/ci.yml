@@ -236,6 +236,10 @@ jobs:
         run: node --test supabase/functions/_shared/route-authorization.test.mjs
       - name: Type-check route authorization Edge Function
         run: deno check supabase/functions/route-authorization/index.ts
+      - name: Test bounded database RPC retry policy
+        run: deno test supabase/functions/_shared/database-rpc-retry.test.ts
+      - name: Type-check device-access RPC retry helper and Edge Function
+        run: deno check supabase/functions/_shared/database-rpc-retry.ts supabase/functions/device-access/index.ts
 
   supabase-db:
     runs-on: ubuntu-latest
@@ -249,9 +253,11 @@ jobs:
         run: ./scripts/test-start-supabase-db-ci.sh
       - name: Start disposable local Supabase database
         run: ./scripts/start-supabase-db-ci.sh
-      - name: Syntax-check tenant enrollment race test
-        run: bash -n scripts/test-tenant-enrollment-race.sh
+      - name: Syntax-check tenant and device-access concurrency tests
+        run: bash -n scripts/test-tenant-enrollment-race.sh scripts/test-device-access-grant-race.sh
       - name: Run database pgTAP tests
         run: env -u SUPABASE_INTERNAL_IMAGE_REGISTRY supabase test db
       - name: Test concurrent tenant membership revocation and enrollment
         run: bash ./scripts/test-tenant-enrollment-race.sh
+      - name: Test concurrent device-access grant authorization
+        run: bash ./scripts/test-device-access-grant-race.sh
