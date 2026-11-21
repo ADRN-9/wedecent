@@ -124,6 +124,7 @@ enroll_app="wd-cp01-enroll-first"
 revoke_app="wd-cp01-revoke-after"
 docker exec -u postgres -i -e "PGAPPNAME=$enroll_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/enroll-first.log" 2>&1 <<SQL &
 begin;
+set role service_role;
 select public.complete_device_enrollment(
   '60000000-0000-4000-8000-000000000001',
   '40000000-0000-4000-8000-000000000001',
@@ -179,6 +180,7 @@ wait_for_activity "$revoke_first_app" "wait_event = 'PgSleep'"
 
 docker exec -u postgres -i -e "PGAPPNAME=$enroll_after_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/enroll-after.log" 2>&1 <<'SQL' &
 begin;
+set role service_role;
 select public.complete_device_enrollment(
   '60000000-0000-4000-8000-000000000002',
   '40000000-0000-4000-8000-000000000002',
