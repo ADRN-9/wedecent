@@ -57,59 +57,56 @@ Only the disposable E2E agent binary is built with the `wedecent_smoke_test` bui
 
 The Node Worker/DO regression remains a separate component-level test with in-memory runtime doubles. It complements the real local Worker/SQLite Durable Object process test and is not represented as a substitute for it.
 
+## Worker integration startup and cleanup hardening
+
+The Worker process E2E harness allocates loopback ports for both Wrangler and the independent Go agent by asking the OS for an ephemeral port. Because the temporary listener must be closed before Wrangler or the agent can bind it, the allocation-to-bind interval cannot be made atomic through the existing command-line interfaces.
+
+The harness now retries startup up to five times when readiness output identifies an address-in-use collision. Each attempt obtains a fresh ephemeral port. Only recognized address-in-use failures are retried; invalid configuration, missing executables, TLS errors, readiness timeouts without a bind collision, and other failures remain fatal. No authentication, pairing, grant validation, or authorization behavior is bypassed.
+
+A failed startup process is interrupted, given three seconds to exit, then killed if necessary and waited on again. Failure to stop a failed process is fatal rather than allowing a retry to proceed with a potentially live listener. Normal process cleanup is also checked: failure to stop the Worker, agent, or clients, remove the temporary verifier file, or remove the per-run temporary directory is returned as an integration failure. The Worker persistence and agent/client state remain under a unique per-run temporary directory. The temporary `.dev.vars` file is created exclusively, so a concurrent invocation cannot overwrite an existing run's verifier configuration.
+
+The retry helper has unit coverage for successful retry after a collision, immediate failure for non-collision errors, and the five-attempt bound in `scripts/cloudflare-worker-process-e2e/main_test.go`. The actual Worker/SQLite/Go process integration remains the end-to-end authority.
+
 ## Verification commands
 
-- `go test ./internal/session ./internal/trust ./internal/transport -count=1`
-- `go test -race ./internal/session ./internal/trust -count=1`
-- `go test ./...`
-- `go test -race ./...`
-- `go test -race ./internal/session -run '^TestTypedSessionCloseReasonConcurrentReadCompletionAndAsyncRevocationCleanup
-The session regression set includes TestRevocationDuringPTYStartupAbortsBeforeAcceptance, TestTypedStreamAdmissionWriteFailureAbortsWithoutErrorFrame, TestTerminationPropagatesAbortAndPTYCleanupErrors, TestRevocationPTYCleanupFailureMarksTerminationAndCloseAuditFailed, and the blocked WebSocket/TLS 1.3 KeyUpdate tests.
-- `cd cloudflare/relay-worker && npm test` (Worker/DO component tests with in-memory runtime doubles)
-- Wrangler `deploy --dry-run` (bundle/configuration validation, not runtime revocation)
-- `supabase test db`
-- `./scripts/test-connection-grant-expiration.sh` (separate-session lock-wait regression)
+The Linux CI job runs:
 
-These are validation requirements. Results must be attributed to the exact tested commit and CI run; source changes alone are not proof.
+    go test ./...
+    go test -race ./...
+    go test -race ./internal/session -run "^(TestDispatchTypedSessionFrameRejectsBufferedOpenAfterRevocation|TestTypedTerminalServerRejectsBufferedOpenAfterParentCleanup|TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen|TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure)$" -count=20
+    go test -race ./internal/session -run '^TestTypedSessionCloseReason' -count=50
+    go run ./scripts/cloudflare-worker-process-e2e
 
-## Repository governance observations (2026-11-21)
+The focused parent-termination command is a dedicated Linux CI step, independently visible in the job log. The process harness package's port retry tests are included in `go test ./...`. The process-level integration uses local Wrangler and SQLite Durable Object persistence, independent Go processes, separate single-use pairing secrets, connection grants, replay rejection, selective revocation, and post-restart reconnection.
 
-The repository-level active ruleset `Protect main` (ID `21507567`) targets only the default branch. Its pull-request rule currently sets:
+Other relevant CI gates include Windows agent tests/builds, macOS agent tests/builds, Windows release packaging/signing-boundary tests, Worker component tests, route E2E, control-plane checks, Supabase pgTAP tests, and the Linux/Windows/macOS desktop-shell workflows. None of these software checks is physical Bluetooth/USB hardware acceptance or production Cloudflare validation.
 
-- `required_approving_review_count = 0`;
-- no required reviewers;
-- code-owner review disabled;
-- last-push approval disabled;
-- stale-review dismissal disabled.
+Results must be attributed to the exact tested HEAD and workflow run. A command listed here is not evidence of a passing result until the corresponding CI job is completed successfully.
 
-Its required status checks are `route-capability-client`, `route-e2e`, `linux`, `windows-agent`, `windows-release`, `relay-worker`, `control-plane`, and `supabase-db`. It does not require `macos-agent` or the Linux, Windows, and macOS desktop-shell jobs (`linux-tauri-check`, `windows-tauri-check`, `macos-tauri-check`).
+## Repository governance observations — 2026-11-21
 
-The visible ruleset does not target PR #179's stacked feature branch. The classic branch-protection endpoint returned HTTP 403 to the repository integration, so any additional classic protection could not be independently verified. No ruleset or repository-wide protection setting was changed by this remediation.
+The only active repository ruleset returned by the GitHub API is `Protect main` (ID `21507567`), targeting `~DEFAULT_BRANCH` only. It does not protect the stacked `security/*` branches.
 
-Before merging the stacked production branch, repository administrators should require at least one independent approval and require all supported platform gates, including macOS agent and all three desktop-shell jobs. This PR remains draft and unmerged pending that independent review and governance remediation.
- -count=50`
-- `go run ./scripts/cloudflare-worker-process-e2e`
-
-The session regression set includes TestRevocationDuringPTYStartupAbortsBeforeAcceptance, TestTypedStreamAdmissionWriteFailureAbortsWithoutErrorFrame, TestTerminationPropagatesAbortAndPTYCleanupErrors, TestRevocationPTYCleanupFailureMarksTerminationAndCloseAuditFailed, and the blocked WebSocket/TLS 1.3 KeyUpdate tests.
-- `cd cloudflare/relay-worker && npm test` (Worker/DO component tests with in-memory runtime doubles)
-- Wrangler `deploy --dry-run` (bundle/configuration validation, not runtime revocation)
-- `supabase test db`
-- `./scripts/test-connection-grant-expiration.sh` (separate-session lock-wait regression)
-
-These are validation requirements. Results must be attributed to the exact tested commit and CI run; source changes alone are not proof.
-
-## Repository governance observations (2026-11-21)
-
-The repository-level active ruleset `Protect main` (ID `21507567`) targets only the default branch. Its pull-request rule currently sets:
+The active ruleset currently has:
 
 - `required_approving_review_count = 0`;
-- no required reviewers;
-- code-owner review disabled;
+- no required reviewers and code-owner review disabled;
+- stale-review dismissal disabled;
 - last-push approval disabled;
-- stale-review dismissal disabled.
+- strict required-status-check policy disabled;
+- no bypass actors.
 
-Its required status checks are `route-capability-client`, `route-e2e`, `linux`, `windows-agent`, `windows-release`, `relay-worker`, `control-plane`, and `supabase-db`. It does not require `macos-agent` or the Linux, Windows, and macOS desktop-shell jobs (`linux-tauri-check`, `windows-tauri-check`, `macos-tauri-check`).
+The required status-check contexts are `route-capability-client`, `route-e2e`, `linux`, `windows-agent`, `windows-release`, `relay-worker`, `control-plane`, and `supabase-db`. The ruleset omits `macos-agent`, `relay-worker-process-e2e`, and the desktop checks `linux-tauri-check`, `windows-tauri-check`, and `macos-tauri-check`.
 
-The visible ruleset does not target PR #179's stacked feature branch. The classic branch-protection endpoint returned HTTP 403 to the repository integration, so any additional classic protection could not be independently verified. No ruleset or repository-wide protection setting was changed by this remediation.
+Repository metadata reports `admin: true` for the connected identity, but the classic branch-protection read endpoint returns HTTP 403 (`Resource not accessible by integration`). The available GitHub integration exposes ruleset and branch-protection reads but no mutation action for these administrative settings. No protection was weakened or bypassed, and no ruleset change was made.
 
-Before merging the stacked production branch, repository administrators should require at least one independent approval and require all supported platform gates, including macOS agent and all three desktop-shell jobs. This PR remains draft and unmerged pending that independent review and governance remediation.
+Required administrator action before merging the stack:
+
+1. Apply an active ruleset to the stacked security branches (at minimum the explicit branches for PRs #179–#182, preferably a tightly scoped `security/*` pattern).
+2. Require at least one independent approval; require approval after the latest push or otherwise prevent the latest pusher from approving their own changes.
+3. Dismiss stale approvals when new commits are pushed.
+4. Enable strict required-status-check enforcement.
+5. Require `route-capability-client`, `route-e2e`, `linux`, `windows-agent`, `macos-agent`, `windows-release`, `relay-worker`, `relay-worker-process-e2e`, `control-plane`, `supabase-db`, `linux-tauri-check`, `windows-tauri-check`, and `macos-tauri-check`.
+6. Keep bypass actors empty or explicitly restricted to the minimum emergency role.
+
+No PR was merged. PRs #179–#182 remain open and draft pending independent review and enforceable repository governance.
