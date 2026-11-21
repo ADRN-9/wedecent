@@ -434,6 +434,7 @@ func run() error {
 
 	agent.stop()
 	worker.stop()
+	clientB.stop()
 
 	if countFiles(persistDir) == 0 {
 		return errors.New("Wrangler did not persist any local Durable Object storage files")
