@@ -68,7 +68,15 @@ begin
        or p_public_key is null
        or p_kind is null
        or p_name is null
-       or p_device_id !~ '^wd_[a-z2-7]{16}
+       or p_device_id !~ '^wd_[a-z2-7]{16}$'
+       or p_public_key !~ '^[A-Za-z0-9_-]{43}$'
+       or char_length(btrim(p_name)) not between 1 and 128 then
+        raise exception 'invalid enrollment parameters'
+            using errcode = '22023';
+    end if;
+
+    if p_challenge_sha256_hex is null
+       or p_challenge_sha256_hex !~ '^[0-9a-fA-F]{64}$' then
         raise exception 'invalid enrollment challenge digest'
             using errcode = '22023';
     end if;
