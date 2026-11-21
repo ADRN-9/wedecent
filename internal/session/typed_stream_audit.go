@@ -34,35 +34,8 @@ func (t *typedTerminalAuditTracker) observeOutgoing(frame protocol.Frame) {
 	if t == nil {
 		return
 	}
-	switch frame.Type {
-	case protocol.TypeStreamAccepted:
+	if frame.Type == protocol.TypeStreamAccepted {
 		t.opened(frame.StreamID)
-	case protocol.TypeStreamClose:
-		reason := "stream_close"
-		var message protocol.StreamClose
-		if protocol.ParseTypedStreamJSON(frame.Payload, &message) == nil && protocol.ValidateStreamClose(frame.StreamID, message) == nil && message.Reason != "" {
-			reason = message.Reason
-		}
-		t.closed(frame.StreamID, reason)
-	case protocol.TypeStreamError:
-		reason := "stream_error"
-		var message protocol.StreamError
-		if protocol.ParseTypedStreamJSON(frame.Payload, &message) == nil && protocol.ValidateStreamError(frame.StreamID, message) == nil && message.Code != "" {
-			reason = message.Code
-		}
-		t.closed(frame.StreamID, reason)
-	}
-}
-
-func (t *typedTerminalAuditTracker) observeIncoming(frame protocol.Frame) {
-	if t == nil {
-		return
-	}
-	switch frame.Type {
-	case protocol.TypeStreamClose:
-		t.closed(frame.StreamID, "peer_close")
-	case protocol.TypeStreamError:
-		t.closed(frame.StreamID, "peer_error")
 	}
 }
 
@@ -87,7 +60,7 @@ func (t *typedTerminalAuditTracker) opened(streamID uint32) {
 	})
 }
 
-func (t *typedTerminalAuditTracker) closed(streamID uint32, reason string) {
+func (t *typedTerminalAuditTracker) closed(streamID uint32, reason string, cleanupErr error) {
 	t.mu.Lock()
 	if _, exists := t.open[streamID]; !exists {
 		t.mu.Unlock()
@@ -95,9 +68,13 @@ func (t *typedTerminalAuditTracker) closed(streamID uint32, reason string) {
 	}
 	delete(t.open, streamID)
 	t.mu.Unlock()
+	outcome := "success"
+	if cleanupErr != nil {
+		outcome = "failed"
+	}
 	t.emit(audit.Event{
 		Type:      "terminal.stream_closed",
-		Outcome:   "success",
+		Outcome:   outcome,
 		PeerID:    t.peerID,
 		SessionID: t.sessionID,
 		Transport: t.transport,
@@ -115,18 +92,9 @@ func (t *typedTerminalAuditTracker) closeAll(reason string) {
 	for id := range t.open {
 		ids = append(ids, id)
 	}
-	t.open = make(map[uint32]struct{})
 	t.mu.Unlock()
 	for _, id := range ids {
-		t.emit(audit.Event{
-			Type:      "terminal.stream_closed",
-			Outcome:   "success",
-			PeerID:    t.peerID,
-			SessionID: t.sessionID,
-			Transport: t.transport,
-			StreamID:  id,
-			Reason:    reason,
-		})
+		t.closed(id, reason, nil)
 	}
 }
 

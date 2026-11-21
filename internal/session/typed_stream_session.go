@@ -92,6 +92,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 	}, func(shell string, cols, rows uint16, term string) (typedTerminalPTY, error) {
 		return s.startTerminal(shell, cols, rows, term)
 	}, registry)
+	typedServer.setCloseObserver(streamAudit.closed)
 	var fileServer *typedFileServer
 	if fileNegotiated {
 		fileServer = newTypedFileServer(s.FileTransfer, peerID, registry, func(frame protocol.Frame) error {
@@ -113,10 +114,11 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 					closeErrors = append(closeErrors, err)
 				}
 			}
-			if err := typedServer.CloseAll(); err != nil {
+			finalReason := resolveTypedSessionCloseReason(active, closeReason)
+			if err := typedServer.CloseAllWithReason(finalReason); err != nil {
 				closeErrors = append(closeErrors, err)
 			}
-			streamAudit.closeAll(resolveTypedSessionCloseReason(active, closeReason))
+			streamAudit.closeAll(finalReason)
 			resourceCleanupErr = errors.Join(closeErrors...)
 		})
 		return resourceCleanupErr
@@ -175,11 +177,16 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			handled, err := routeTypedApplicationFrame(sessionCtx, capabilities, registry, typedServer, fileServer, frame)
 			if handled {
 				if err != nil {
+					if errors.Is(err, errTypedStreamCleanup) {
+						closeReason.set("typed_stream_cleanup_failed")
+						s.log().Error("typed terminal stream cleanup failed",
+							"client_id", peerID, "session_id", active.ID, "error", err)
+						return
+					}
 					closeReason.set("typed_stream_protocol_error")
 					_ = writeFrame(protocol.Frame{Type: protocol.TypeError, Payload: mustJSON(protocol.Error{Code: "protocol_error", Message: "invalid typed stream operation"})})
 					return
 				}
-				streamAudit.observeIncoming(frame)
 				policyTimers.Activity()
 				continue
 			}
