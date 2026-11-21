@@ -254,7 +254,7 @@ select is(
 select ok(
     not pg_catalog.has_function_privilege(
         'authenticated',
-        'wedecent_private.lock_device_access_authority(text)',
+        'wedecent_private.lock_device_access_authority(text, boolean)',
         'EXECUTE'
     ),
     'authenticated users cannot invoke the internal lock helper'
