@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"wedecent.com/wedecent/internal/relayproto"
 )
 
 func TestWebRelayURL(t *testing.T) {
@@ -398,6 +400,21 @@ func TestWaitWebRelaySessionExposesForceAbortForEstablishedSocket(t *testing.T) 
 			return
 		}
 		defer raw.Close()
+		for _, message := range []relayproto.Message{
+			{Type: relayproto.TypeChallenge, Challenge: "challenge"},
+			{Type: relayproto.TypeWaiting},
+			{Type: relayproto.TypeReady},
+		} {
+			var control bytes.Buffer
+			if err := relayproto.Write(&control, message); err != nil {
+				t.Error(err)
+				return
+			}
+			if err := writeServerBinaryFrame(raw, control.Bytes()); err != nil {
+				t.Error(err)
+				return
+			}
+		}
 		_, _ = io.Copy(io.Discard, raw)
 		close(peerClosed)
 	}))
