@@ -231,7 +231,7 @@ select throws_ok(
 );
 
 select throws_ok(
-    $
+    $$
         select public.complete_device_enrollment(
             '30000000-0000-4000-8000-000000000004',
             '10000000-0000-4000-8000-000000000001',
@@ -260,7 +260,7 @@ select is(
 );
 
 select throws_ok(
-    $
+    $$
         select public.complete_device_enrollment(
             '30000000-0000-4000-8000-000000000002',
             '10000000-0000-4000-8000-000000000001',
