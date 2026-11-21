@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(38);
+select plan(39);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -459,6 +459,13 @@ select throws_ok(
     '55000',
     'tenant audit events are append-only',
     'database rejects audit event deletion even for the table owner'
+);
+
+select throws_ok(
+    $ truncate table public.organization_audit_events $,
+    '55000',
+    'tenant audit events are append-only',
+    'database rejects audit truncation even for the table owner'
 );
 
 select * from finish();
