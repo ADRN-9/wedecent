@@ -18,11 +18,11 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 	if active == nil {
 		return
 	}
-	closeReason := "connection_ended"
+	closeReason := newTypedSessionCloseReason("connection_ended")
 	sessionOpened := false
 	defer func() {
 		finishErr := active.finish()
-		closeReason = active.reasonOr(closeReason)
+		finalCloseReason := resolveTypedSessionCloseReason(active, closeReason)
 		if !sessionOpened {
 			if finishErr != nil {
 				s.log().Error("typed terminal session cleanup failed before acceptance",
@@ -38,7 +38,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 		}
 		if err := s.recordGrantAudit(metadata, audit.Event{
 			Type: "terminal.session_closed", Outcome: outcome, PeerID: peerID,
-			SessionID: active.ID, Transport: transport, Reason: closeReason,
+			SessionID: active.ID, Transport: transport, Reason: finalCloseReason,
 		}, authorization); err != nil {
 			s.log().Error("typed terminal session close audit failed",
 				"client_id", peerID, "session_id", active.ID, "error", err)
@@ -46,7 +46,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 	}()
 	if fileNegotiated && (s.FileTransfer == nil || !s.FileTransfer.Ready()) {
 		// Capability negotiation must never outrun the authoritative runtime.
-		closeReason = "file_transfer_runtime_unavailable"
+		closeReason.set("file_transfer_runtime_unavailable")
 		_ = abortSessionTransport(active.rawConn)
 		return
 	}
@@ -58,7 +58,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 		return protocol.WriteFrame(conn, frame)
 	}
 	if err := s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peerID, SessionID: active.ID, Transport: transport}, authorization); err != nil {
-		closeReason = "session_open_audit_failed"
+		closeReason.set("session_open_audit_failed")
 		s.log().Error("typed terminal session open audit failed",
 			"client_id", peerID, "session_id", active.ID, "error", err)
 		_ = abortSessionTransport(active.rawConn)
@@ -67,7 +67,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 	sessionOpened = true
 	s.log().Info("typed terminal session opened", "client_id", peerID, "client_name", peerName)
 	if active.isTerminated() {
-		closeReason = active.reasonOr("client_revoked")
+		closeReason.set(active.reasonOr("client_revoked"))
 		return
 	}
 
@@ -120,13 +120,13 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			if err := typedServer.CloseAll(); err != nil {
 				closeErrors = append(closeErrors, err)
 			}
-			streamAudit.closeAll(active.reasonOr(closeReason))
+			streamAudit.closeAll(resolveTypedSessionCloseReason(active, closeReason))
 			resourceCleanupErr = errors.Join(closeErrors...)
 		})
 		return resourceCleanupErr
 	}
 	if err := active.setCleanup(closeResources); err != nil {
-		closeReason = "session_cleanup_registration_failed"
+		closeReason.set("session_cleanup_registration_failed")
 		if cleanupErr := closeResources(); cleanupErr != nil {
 			s.log().Error("typed terminal session cleanup registration failed",
 				"client_id", peerID, "session_id", active.ID, "error", errors.Join(err, cleanupErr))
@@ -158,7 +158,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 
 	expireSession := func(reason string) {
 		if err := closeResources(); err != nil {
-			closeReason = "session_cleanup_failed"
+			closeReason.set("session_cleanup_failed")
 			s.log().Error("typed terminal session cleanup failed during policy expiration",
 				"client_id", peerID, "session_id", active.ID, "error", err)
 		}
@@ -170,7 +170,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 	for {
 		select {
 		case err := <-readErrCh:
-			closeReason = active.reasonOr("peer_disconnect")
+			closeReason.set(active.reasonOr("peer_disconnect"))
 			if !errors.Is(err, io.EOF) {
 				s.log().Debug("typed session read ended", "error", err)
 			}
@@ -179,7 +179,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			handled, err := routeTypedApplicationFrame(sessionCtx, capabilities, registry, typedServer, fileServer, frame)
 			if handled {
 				if err != nil {
-					closeReason = "typed_stream_protocol_error"
+					closeReason.set("typed_stream_protocol_error")
 					_ = writeFrame(protocol.Frame{Type: protocol.TypeError, Payload: mustJSON(protocol.Error{Code: "protocol_error", Message: "invalid typed stream operation"})})
 					return
 				}
@@ -190,25 +190,25 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			switch frame.Type {
 			case protocol.TypePing:
 				if err := writeFrame(protocol.Frame{Type: protocol.TypePong}); err != nil {
-					closeReason = "transport_write_failed"
+					closeReason.set("transport_write_failed")
 					return
 				}
 			case protocol.TypeClose:
-				closeReason = "peer_close"
+				closeReason.set("peer_close")
 				return
 			default:
-				closeReason = "unexpected_message"
+				closeReason.set("unexpected_message")
 				_ = writeFrame(protocol.Frame{Type: protocol.TypeError, Payload: mustJSON(protocol.Error{Code: "unexpected_message", Message: "unexpected frame in typed terminal session"})})
 				return
 			}
 		case <-activityCh:
 			policyTimers.Activity()
 		case <-policyTimers.idleC:
-			closeReason = "policy_idle_timeout"
+			closeReason.set("policy_idle_timeout")
 			expireSession("session idle timeout")
 			return
 		case <-policyTimers.maxC:
-			closeReason = "policy_max_duration"
+			closeReason.set("policy_max_duration")
 			expireSession("session maximum duration reached")
 			return
 		}
