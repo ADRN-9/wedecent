@@ -116,22 +116,48 @@ func TestTypedSessionCloseReasonConcurrentReadCompletionAndAsyncRevocationCleanu
 		t.Fatal("asynchronous cleanup did not emit the typed stream close audit")
 	}
 
+	closedEvent := typedSessionClosedAuditEvent(
+		client.ID, active.ID, string(TransportDirectTCP),
+		resolveTypedSessionCloseReason(active, closeReason), nil,
+	)
+	if err := rig.server.recordGrantAudit(TransportMetadata{Kind: TransportDirectTCP}, closedEvent, nil); err != nil {
+		t.Fatalf("record terminal.session_closed audit: %v", err)
+	}
+
 	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		terminated, closed := false, false
 		for _, event := range events {
-			if event.SessionID == active.ID && event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
-				return true
+			if event.SessionID != active.ID || event.PeerID != client.ID || event.Reason != "client_revoked" {
+				continue
 			}
+			terminated = terminated || event.Type == "terminal.session_terminated"
+			closed = closed || event.Type == "terminal.session_closed"
 		}
-		return false
+		return terminated && closed
 	})
-	foundTermination := false
+	foundTermination, foundSessionClosed := false, false
 	for _, event := range events {
-		if event.SessionID == active.ID && event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+		if event.SessionID != active.ID || event.PeerID != client.ID {
+			continue
+		}
+		switch event.Type {
+		case "terminal.session_terminated":
+			if event.Outcome != "success" || event.Reason != "client_revoked" {
+				t.Fatalf("session termination audit = %#v", event)
+			}
 			foundTermination = true
+		case "terminal.session_closed":
+			if event.Outcome != "success" || event.Reason != "client_revoked" {
+				t.Fatalf("terminal.session_closed audit = %#v", event)
+			}
+			foundSessionClosed = true
 		}
 	}
 	if !foundTermination {
 		t.Fatal("session termination audit did not preserve the revocation reason")
+	}
+	if !foundSessionClosed {
+		t.Fatal("terminal.session_closed audit did not preserve the revocation reason")
 	}
 	assertTypedSessionCloseReason(t, active, closeReason, "client_revoked")
 }
