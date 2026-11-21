@@ -51,8 +51,11 @@ type typedTerminalServer struct {
 	states        *typedTerminalStreamSet
 	streams       map[uint32]*typedTerminalChild
 	closeObserver func(uint32, string, error)
+	openingWG     sync.WaitGroup
 	closeWG       sync.WaitGroup
 	cleanupErr    error
+	closed        bool
+	closeReason   string
 }
 
 func newTypedTerminalServer(shell string, write typedTerminalFrameWriter) *typedTerminalServer {
@@ -88,9 +91,13 @@ func (s *typedTerminalServer) recordClose(streamID uint32, reason string, cleanu
 	}
 	observer := s.closeObserver
 	s.mu.Unlock()
+	// Serialize lifecycle audit callbacks with successful StreamAccepted writes.
+	// A close callback must never overtake the corresponding open callback.
+	s.writeMu.Lock()
 	if observer != nil {
 		observer(streamID, reason, cleanupErr)
 	}
+	s.writeMu.Unlock()
 	return result
 }
 
@@ -122,29 +129,49 @@ func (s *typedTerminalServer) open(frame protocol.Frame) error {
 		return fmt.Errorf("%w: %v", errTypedStreamProtocol, err)
 	}
 
+	// Reserve the opening operation while holding the same lock used by
+	// CloseAllWithReason. Once parent cleanup marks the server closed, no new
+	// reservation can begin. Cleanup waits for every reservation already made.
 	s.mu.Lock()
+	if s.closed {
+		reason := s.closeReason
+		if reason == "" {
+			reason = "session_closed"
+		}
+		s.mu.Unlock()
+		return fmt.Errorf("%w: parent terminal session is closed (%s)", errTypedStreamProtocol, reason)
+	}
 	if err := s.states.reserve(frame.StreamID); err != nil {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: %v", errTypedStreamProtocol, err)
 	}
+	s.openingWG.Add(1)
 	s.mu.Unlock()
+	defer s.openingWG.Done()
 
 	pty, err := s.start(s.shell, open.Cols, open.Rows, open.Term)
 	if err != nil {
 		s.markClosed(frame.StreamID)
+		s.mu.Lock()
+		closed, reason := s.closed, s.closeReason
+		s.mu.Unlock()
+		if closed {
+			if reason == "" {
+				reason = "session_closed"
+			}
+			return fmt.Errorf("%w: parent terminal session is closed (%s)", errTypedStreamProtocol, reason)
+		}
 		return s.sendStreamError(frame.StreamID, "pty_start_failed", "terminal stream could not start")
 	}
 	sendCredit, err := newTypedStreamCredit(open.InitialWindow)
 	if err != nil {
-		_ = pty.Close()
-		s.markClosed(frame.StreamID)
-		return fmt.Errorf("%w: %v", errTypedStreamProtocol, err)
+		cleanupErr := s.closeUnacceptedPTY(frame.StreamID, "stream_open_failed", pty)
+		return errors.Join(fmt.Errorf("%w: %v", errTypedStreamProtocol, err), cleanupErr)
 	}
 	recvCredit, err := newTypedStreamCredit(typedTerminalReceiveWindow)
 	if err != nil {
-		_ = pty.Close()
-		s.markClosed(frame.StreamID)
-		return err
+		cleanupErr := s.closeUnacceptedPTY(frame.StreamID, "stream_open_failed", pty)
+		return errors.Join(fmt.Errorf("%w: %v", errTypedStreamProtocol, err), cleanupErr)
 	}
 	child := &typedTerminalChild{
 		pty:        pty,
@@ -155,12 +182,21 @@ func (s *typedTerminalServer) open(frame protocol.Frame) error {
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		reason := s.closeReason
+		if reason == "" {
+			reason = "session_closed"
+		}
+		s.mu.Unlock()
+		cleanupErr := s.closeUnacceptedPTY(frame.StreamID, reason, pty)
+		return errors.Join(fmt.Errorf("%w: parent terminal session is closed (%s)", errTypedStreamProtocol, reason), cleanupErr)
+	}
 	s.streams[frame.StreamID] = child
 	if err := s.states.accept(frame.StreamID); err != nil {
 		delete(s.streams, frame.StreamID)
 		s.mu.Unlock()
-		_ = pty.Close()
-		return err
+		cleanupErr := s.closeUnacceptedPTY(frame.StreamID, "internal_validation_failed", pty)
+		return errors.Join(fmt.Errorf("%w: %v", errTypedStreamProtocol, err), cleanupErr)
 	}
 	s.mu.Unlock()
 
@@ -174,7 +210,7 @@ func (s *typedTerminalServer) open(frame protocol.Frame) error {
 		_ = s.closeStream(frame.StreamID, "encode_failed", false)
 		return err
 	}
-	if err := s.writeFrame(protocol.Frame{Type: protocol.TypeStreamAccepted, StreamID: frame.StreamID, Payload: payload}); err != nil {
+	if err := s.writeAcceptedFrame(protocol.Frame{Type: protocol.TypeStreamAccepted, StreamID: frame.StreamID, Payload: payload}); err != nil {
 		_ = s.closeStream(frame.StreamID, "transport_write_failed", false)
 		return err
 	}
@@ -426,12 +462,29 @@ func (s *typedTerminalServer) markClosed(streamID uint32) {
 	s.mu.Unlock()
 }
 
+func (s *typedTerminalServer) closeUnacceptedPTY(streamID uint32, reason string, pty typedTerminalPTY) error {
+	cleanupErr := pty.Close()
+	s.markClosed(streamID)
+	return s.recordClose(streamID, reason, cleanupErr)
+}
+
 func (s *typedTerminalServer) CloseAll() error {
 	return s.CloseAllWithReason("session_closed")
 }
 
 func (s *typedTerminalServer) CloseAllWithReason(reason string) error {
+	if reason == "" {
+		reason = "session_closed"
+	}
 	s.mu.Lock()
+	if !s.closed {
+		s.closed = true
+		s.closeReason = reason
+	}
+	reason = s.closeReason
+	if reason == "" {
+		reason = "session_closed"
+	}
 	children := make(map[uint32]*typedTerminalChild, len(s.streams))
 	for streamID, child := range s.streams {
 		children[streamID] = child
@@ -451,10 +504,28 @@ func (s *typedTerminalServer) CloseAllWithReason(reason string) error {
 			_ = s.recordClose(streamID, reason, child.closeErr)
 		}()
 	}
+	// No new opening reservation can be added after closed is set under mu.
+	// Wait for pre-existing starters to either publish a child before closure
+	// (already captured above) or close their late PTY and retain its error.
+	s.openingWG.Wait()
 	s.closeWG.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cleanupErr
+}
+
+func (s *typedTerminalServer) writeAcceptedFrame(frame protocol.Frame) error {
+	if s.write == nil {
+		return errors.New("typed terminal frame writer is unavailable")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("%w: parent terminal session is closed", errTypedStreamProtocol)
+	}
+	return s.write(frame)
 }
 
 func (s *typedTerminalServer) writeFrame(frame protocol.Frame) error {
