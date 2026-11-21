@@ -39,8 +39,9 @@ import (
 const revocationTestJTI = "00000000-0000-4000-8000-000000000001"
 
 type revocationTestPTY struct {
-	closed chan struct{}
-	once   sync.Once
+	closed   chan struct{}
+	once     sync.Once
+	closeErr error
 }
 
 func newRevocationTestPTY() *revocationTestPTY {
@@ -70,20 +71,24 @@ func (p *revocationTestPTY) Wait() error {
 
 func (p *revocationTestPTY) Close() error {
 	p.once.Do(func() { close(p.closed) })
-	return nil
+	return p.closeErr
 }
 
 type revocationObservedConn struct {
 	net.Conn
-	mu              sync.Mutex
-	armed           bool
-	firstWrite      chan struct{}
-	firstOnce       sync.Once
-	firstWriteBytes []byte
+	mu               sync.Mutex
+	armed            bool
+	firstWrite       chan struct{}
+	firstOnce        sync.Once
+	firstWriteBytes  []byte
+	writeReturned    chan struct{}
+	writeReturnedOnce sync.Once
 }
 
 func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
-	return &revocationObservedConn{Conn: conn, firstWrite: make(chan struct{})}
+	return &revocationObservedConn{
+		Conn: conn, firstWrite: make(chan struct{}), writeReturned: make(chan struct{}),
+	}
 }
 
 func (c *revocationObservedConn) arm() {
@@ -100,15 +105,21 @@ func (c *revocationObservedConn) firstRecord() []byte {
 }
 
 func (c *revocationObservedConn) Write(buffer []byte) (int, error) {
+	first := false
 	c.mu.Lock()
 	if c.armed {
 		c.firstOnce.Do(func() {
+			first = true
 			c.firstWriteBytes = append([]byte(nil), buffer...)
 			close(c.firstWrite)
 		})
 	}
 	c.mu.Unlock()
-	return c.Conn.Write(buffer)
+	n, err := c.Conn.Write(buffer)
+	if first {
+		c.writeReturnedOnce.Do(func() { close(c.writeReturned) })
+	}
+	return n, err
 }
 
 type tlsRecordCounterConn struct {
@@ -976,6 +987,11 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 		int(binary.BigEndian.Uint16(responseRecord[3:5])) != 22 {
 		t.Fatalf("blocked server TLS record = %x (length %d), want 27-byte encrypted KeyUpdate response", responseRecord, len(responseRecord))
 	}
+	select {
+	case <-observedServer.writeReturned:
+		t.Fatal("TLS KeyUpdate response write returned before the peer read it")
+	default:
+	}
 
 	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
 		t.Fatal(err)
@@ -984,6 +1000,11 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 	waitRevocationPTYClosed(t, secondPTY)
 	waitRevocationConnectionClosed(t, conn)
 	waitRevocationConnectionClosed(t, other)
+	select {
+	case <-observedServer.writeReturned:
+	case <-time.After(time.Second):
+		t.Fatal("transport abort did not release the blocked TLS KeyUpdate response write")
+	}
 	_ = conn.Close()
 	_ = other.Close()
 
@@ -1410,3 +1431,299 @@ func TestAdmissionReservationFirstThenRevocationCleansEstablishedSession(t *test
 		t.Fatalf("admission-first audit counts: opened=%d terminated=%d closed=%d", opened, terminated, closed)
 	}
 }
+
+
+type revocationAbortFailureConn struct {
+	net.Conn
+	abortErr error
+}
+
+func (c *revocationAbortFailureConn) Abort() error {
+	_ = c.Conn.Close()
+	return c.abortErr
+}
+
+func TestRevocationDuringPTYStartupAbortsBeforeAcceptance(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("revocation-during-pty-startup")
+	pty := newRevocationTestPTY()
+	startupEntered := make(chan struct{})
+	releaseStartup := make(chan struct{})
+	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
+		close(startupEntered)
+		<-releaseStartup
+		rig.mu.Lock()
+		rig.ptys = append(rig.ptys, pty)
+		rig.mu.Unlock()
+		return pty, nil
+	}
+
+	conn := rig.dial(client, TransportDirectTCP)
+	if err := rig.sendOpen(conn, TransportDirectTCP, false); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	select {
+	case <-startupEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("PTY startup did not reach its synchronization barrier")
+	}
+	rig.server.activeSessionsMu.Lock()
+	reserved := len(rig.server.activeSessions)
+	rig.server.activeSessionsMu.Unlock()
+	if reserved != 1 {
+		t.Fatalf("active session reservations during PTY startup = %d, want 1", reserved)
+	}
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitRevocationConnectionClosed(t, conn)
+	close(releaseStartup)
+	pty = rig.ptyAt(0)
+	waitRevocationPTYClosed(t, pty)
+	if err := rig.readAccepted(conn); err == nil {
+		t.Fatal("revoked session received an acceptance frame after PTY startup")
+	}
+	_ = conn.Close()
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		for _, event := range events {
+			if event.PeerID == client.ID && event.Type == "terminal.session_terminated" {
+				return true
+			}
+		}
+		return false
+	})
+	terminated := 0
+	for _, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		switch event.Type {
+		case "terminal.session_terminated":
+			terminated++
+			if event.Outcome != "success" || event.Reason != "client_revoked" {
+				t.Fatalf("startup revocation outcome/reason = %q/%q", event.Outcome, event.Reason)
+			}
+		case "terminal.session_opened", "terminal.session_closed":
+			t.Fatalf("session emitted %s despite never being accepted: %+v", event.Type, event)
+		}
+	}
+	if terminated != 1 {
+		t.Fatalf("termination audit count = %d, want one", terminated)
+	}
+}
+
+func TestTerminationPropagatesAbortAndPTYCleanupErrors(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("termination-cleanup-error")
+	abortErr := errors.New("injected transport abort failure")
+	ptyErr := errors.New("injected PTY close failure")
+	clientConn, peerConn := net.Pipe()
+	defer peerConn.Close()
+	rawConn := &revocationAbortFailureConn{Conn: clientConn, abortErr: abortErr}
+	fingerprint, err := identity.FingerprintPublicKey(client.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := rig.server.admitTerminalSession(client.ID,
+		fingerprint, "direct_tcp", rawConn, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pty := newRevocationTestPTY()
+	pty.closeErr = ptyErr
+	if err := active.setCleanup(pty.Close); err != nil {
+		t.Fatal(err)
+	}
+	terminationErr := active.terminate("client_revoked")
+	if !errors.Is(terminationErr, abortErr) || !errors.Is(terminationErr, ptyErr) {
+		t.Fatalf("termination error = %v, want both abort and PTY close errors", terminationErr)
+	}
+	if err := active.finish(); !errors.Is(err, abortErr) || !errors.Is(err, ptyErr) {
+		t.Fatalf("finish error = %v, want propagated termination failures", err)
+	}
+	waitRevocationPTYClosed(t, pty)
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		for _, event := range events {
+			if event.Type == "terminal.session_terminated" && event.PeerID == client.ID {
+				return true
+			}
+		}
+		return false
+	})
+	for _, event := range events {
+		if event.Type == "terminal.session_terminated" && event.PeerID == client.ID {
+			if event.Outcome != "failed" {
+				t.Fatalf("termination audit outcome = %q, want failed", event.Outcome)
+			}
+			return
+		}
+	}
+	t.Fatal("termination audit event missing")
+}
+
+func TestRevocationPTYCleanupFailureMarksTerminationAndCloseAuditFailed(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("revocation-pty-close-error")
+	pty := newRevocationTestPTY()
+	pty.closeErr = errors.New("injected PTY close failure")
+	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
+		rig.mu.Lock()
+		rig.ptys = append(rig.ptys, pty)
+		rig.mu.Unlock()
+		return pty, nil
+	}
+	conn, err := rig.open(client, TransportDirectTCP, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitRevocationPTYClosed(t, pty)
+	waitRevocationConnectionClosed(t, conn)
+	_ = conn.Close()
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		terminated, closed := false, false
+		for _, event := range events {
+			if event.PeerID != client.ID {
+				continue
+			}
+			if event.Type == "terminal.session_terminated" && event.Outcome == "failed" {
+				terminated = true
+			}
+			if event.Type == "terminal.session_closed" && event.Outcome == "failed" {
+				closed = true
+			}
+		}
+		return terminated && closed
+	})
+	terminatedAt, closedAt := -1, -1
+	for index, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		if event.Type == "terminal.session_terminated" {
+			if event.Outcome != "failed" {
+				t.Fatalf("termination audit outcome = %q, want failed", event.Outcome)
+			}
+			terminatedAt = index
+		}
+		if event.Type == "terminal.session_closed" {
+			if event.Outcome != "failed" {
+				t.Fatalf("session-closed audit outcome = %q, want failed", event.Outcome)
+			}
+			closedAt = index
+		}
+	}
+	if terminatedAt < 0 || closedAt <= terminatedAt {
+		t.Fatalf("audit ordering: terminated at %d, session closed at %d", terminatedAt, closedAt)
+	}
+}
+
+type revocationAdmissionFailureConn struct {
+	net.Conn
+	mu          sync.Mutex
+	failWrite   bool
+	abortCalls  int
+	abortCalled chan struct{}
+	abortOnce   sync.Once
+}
+
+func (c *revocationAdmissionFailureConn) SetWriteDeadline(deadline time.Time) error {
+	c.mu.Lock()
+	fail := c.failWrite
+	c.mu.Unlock()
+	if fail {
+		return errors.New("injected admission write-deadline failure")
+	}
+	return c.Conn.SetWriteDeadline(deadline)
+}
+
+func (c *revocationAdmissionFailureConn) Abort() error {
+	c.mu.Lock()
+	c.abortCalls++
+	c.mu.Unlock()
+	c.abortOnce.Do(func() { close(c.abortCalled) })
+	return c.Conn.Close()
+}
+
+func (c *revocationAdmissionFailureConn) failAdmissionWrites() {
+	c.mu.Lock()
+	c.failWrite = true
+	c.mu.Unlock()
+}
+
+func TestTypedStreamAdmissionWriteFailureAbortsWithoutErrorFrame(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("typed-admission-write-failure")
+	clientRaw, serverRaw := net.Pipe()
+	observed := &revocationAdmissionFailureConn{
+		Conn: serverRaw, abortCalled: make(chan struct{}),
+	}
+	go rig.server.ServeConnWithTransport(observed, TransportMetadata{Kind: TransportDirectTCP})
+
+	conn := tls.Client(clientRaw, identity.ClientTLS(client, rig.serverFingerprint))
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	observed.failAdmissionWrites()
+	if err := rig.sendOpen(conn, TransportDirectTCP, true); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	frame, readErr := protocol.ReadFrame(conn)
+	if readErr == nil {
+		t.Fatalf("typed admission failure sent a follow-up frame type %d; want raw transport abort", frame.Type)
+	}
+	select {
+	case <-observed.abortCalled:
+	case <-time.After(time.Second):
+		t.Fatal("typed admission write failure did not immediately abort the raw transport")
+	}
+	observed.mu.Lock()
+	abortCalls := observed.abortCalls
+	observed.mu.Unlock()
+	if abortCalls != 1 {
+		t.Fatalf("raw transport Abort calls = %d, want one", abortCalls)
+	}
+	_ = conn.Close()
+
+	rig.server.activeSessionsMu.Lock()
+	activeCount := len(rig.server.activeSessions)
+	rig.server.activeSessionsMu.Unlock()
+	if activeCount != 0 {
+		t.Fatalf("failed typed admission left %d active session reservations", activeCount)
+	}
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		for _, event := range events {
+			if event.PeerID == client.ID && event.Type == "terminal.session_opened" {
+				return true
+			}
+		}
+		return false
+	})
+	for _, event := range events {
+		if event.PeerID == client.ID && event.Type == "terminal.session_opened" {
+			if event.Outcome != "failed" || event.Reason != "session_accept_failed" {
+				t.Fatalf("typed admission failure audit = %q/%q", event.Outcome, event.Reason)
+			}
+			return
+		}
+	}
+	t.Fatal("typed admission failure audit event missing")
+}
+

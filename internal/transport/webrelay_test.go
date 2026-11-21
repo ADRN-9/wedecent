@@ -292,13 +292,17 @@ func TestDialWebSocketRoundTrip(t *testing.T) {
 
 type wsAbortObservedConn struct {
 	net.Conn
-	started chan struct{}
-	once    sync.Once
+	started       chan struct{}
+	returned      chan struct{}
+	once          sync.Once
+	returnedOnce  sync.Once
 }
 
 func (c *wsAbortObservedConn) Write(p []byte) (int, error) {
 	c.once.Do(func() { close(c.started) })
-	return c.Conn.Write(p)
+	n, err := c.Conn.Write(p)
+	c.returnedOnce.Do(func() { close(c.returned) })
+	return n, err
 }
 
 type wsAbortCountingConn struct {
@@ -325,7 +329,7 @@ func (c *wsAbortCountingConn) Close() error {
 func TestWSNetConnAbortUnblocksBlockedWriterWithoutWriteMutex(t *testing.T) {
 	client, peer := net.Pipe()
 	defer peer.Close()
-	observed := &wsAbortObservedConn{Conn: client, started: make(chan struct{})}
+	observed := &wsAbortObservedConn{Conn: client, started: make(chan struct{}), returned: make(chan struct{})}
 	conn := &wsNetConn{raw: observed, br: bufio.NewReader(observed), done: make(chan struct{})}
 
 	writeDone := make(chan error, 1)
@@ -337,6 +341,11 @@ func TestWSNetConnAbortUnblocksBlockedWriterWithoutWriteMutex(t *testing.T) {
 	case <-observed.started:
 	case <-time.After(time.Second):
 		t.Fatal("WebSocket writer did not reach the blocked underlying write")
+	}
+	select {
+	case <-observed.returned:
+		t.Fatal("WebSocket writer returned before the peer consumed the frame")
+	default:
 	}
 
 	abortDone := make(chan error, 1)

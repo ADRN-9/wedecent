@@ -42,14 +42,18 @@ type activeTerminalSession struct {
 	transport   string
 	rawConn     net.Conn
 
-	mu              sync.Mutex
-	finished        bool
-	terminated      bool
-	reason          string
-	cleanup         func()
-	done            chan struct{}
-	terminationDone chan struct{}
-	finishOnce      sync.Once
+	mu               sync.Mutex
+	finished         bool
+	terminated       bool
+	reason           string
+	cleanup          func() error
+	done             chan struct{}
+	cleanupReady     chan struct{}
+	cleanupReadyOnce sync.Once
+	terminationDone  chan struct{}
+	terminationErr   error
+	finishErr        error
+	finishOnce       sync.Once
 }
 
 func (s *Server) startTerminal(shell string, cols, rows uint16, term string) (terminalSessionPTY, error) {
@@ -64,7 +68,7 @@ func (s *Server) startTerminal(shell string, cols, rows uint16, term string) (te
 // watcher releases activeSessionsMu before reading the trust snapshot, so it
 // never acquires these locks in reverse order. A nil accept callback creates a
 // reservation that callers may initialize (for example, start a PTY) afterward.
-func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, rawConn net.Conn, cleanup func(), accept func(string) error) (*activeTerminalSession, error) {
+func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, rawConn net.Conn, cleanup func() error, accept func(string) error) (*activeTerminalSession, error) {
 	if s == nil || s.Trust == nil {
 		return nil, errors.New("terminal trust store is unavailable")
 	}
@@ -88,6 +92,7 @@ func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, r
 			rawConn:         rawConn,
 			cleanup:         cleanup,
 			done:            make(chan struct{}),
+			cleanupReady:    make(chan struct{}),
 			terminationDone: make(chan struct{}),
 		}
 		s.activeSessionsMu.Lock()
@@ -99,8 +104,13 @@ func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, r
 
 		if accept != nil {
 			if err := accept(sessionID); err != nil {
-				active.finish()
-				return fmt.Errorf("%w: %v", errSessionAdmissionWrite, err)
+				abortErr := abortSessionTransport(rawConn)
+				finishErr := active.finish()
+				return errors.Join(
+					fmt.Errorf("%w: %w", errSessionAdmissionWrite, err),
+					wrapSessionCleanupError("abort failed terminal admission transport", abortErr),
+					wrapSessionCleanupError("finish failed terminal admission", finishErr),
+				)
 			}
 		}
 		return nil
@@ -203,77 +213,110 @@ func (s *Server) watchActiveSessions() {
 	}
 }
 
-func (a *activeTerminalSession) setCleanup(cleanup func()) {
-	if a == nil || cleanup == nil {
-		return
+func (a *activeTerminalSession) setCleanup(cleanup func() error) error {
+	if a == nil {
+		return nil
 	}
 	a.mu.Lock()
 	if a.finished {
 		a.mu.Unlock()
-		return
+		return errors.New("terminal session cleanup registered after finish")
 	}
-	if a.terminated {
+	if a.cleanup != nil {
 		a.mu.Unlock()
-		cleanup()
-		return
+		return errors.New("terminal session cleanup already registered")
 	}
 	a.cleanup = cleanup
 	a.mu.Unlock()
+	a.cleanupReadyOnce.Do(func() { close(a.cleanupReady) })
+	return nil
 }
 
-func (a *activeTerminalSession) beginTermination(reason string) (func(), bool) {
+func (a *activeTerminalSession) beginTermination(reason string) bool {
 	if a == nil {
-		return nil, false
+		return false
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.finished || a.terminated {
-		return nil, false
+		return false
 	}
 	a.terminated = true
 	a.reason = reason
-	cleanup := a.cleanup
-	a.cleanup = nil
-	return cleanup, true
+	return true
 }
 
-func (a *activeTerminalSession) terminate(reason string) {
-	cleanup, ok := a.beginTermination(reason)
-	if ok {
-		a.closeAndAudit(reason, cleanup)
+func (a *activeTerminalSession) terminate(reason string) error {
+	if !a.beginTermination(reason) {
+		return a.waitTermination()
 	}
+	return a.closeAndAudit(reason)
 }
 
 func (a *activeTerminalSession) terminateAsync(reason string) {
-	cleanup, ok := a.beginTermination(reason)
-	if !ok {
+	if !a.beginTermination(reason) {
 		return
 	}
-	go a.closeAndAudit(reason, cleanup)
+	go func() {
+		if err := a.closeAndAudit(reason); err != nil {
+			a.server.log().Error("terminal session termination failed",
+				"client_id", a.clientID, "session_id", a.ID, "error", err)
+		}
+	}()
 }
 
-func (a *activeTerminalSession) closeAndAudit(reason string, cleanup func()) {
+func (a *activeTerminalSession) closeAndAudit(reason string) (result error) {
 	if a.terminationDone != nil {
 		defer close(a.terminationDone)
 	}
-	// Abort unwraps TLS and WebSocket adapters to the transport socket. It
-	// never acquires their write mutexes or sends graceful close records.
+
+	// Abort first so blocked TLS/WebSocket writes cannot delay PTY cleanup.
 	if a.rawConn != nil {
-		_ = abortSessionTransport(a.rawConn)
+		if err := abortSessionTransport(a.rawConn); err != nil {
+			result = errors.Join(result, fmt.Errorf("abort terminal session transport: %w", err))
+		}
 	}
+	if a.cleanupReady != nil {
+		<-a.cleanupReady
+	}
+	a.mu.Lock()
+	cleanup := a.cleanup
+	a.cleanup = nil
+	a.mu.Unlock()
 	if cleanup != nil {
-		cleanup()
+		if err := cleanup(); err != nil {
+			result = errors.Join(result, fmt.Errorf("clean up terminal session resources: %w", err))
+		}
 	}
-	if err := a.server.appendAudit(audit.Event{
+
+	outcome := "success"
+	if result != nil {
+		outcome = "failed"
+	}
+	if a.server == nil {
+		result = errors.Join(result, errors.New("terminal session server is unavailable"))
+	} else if err := a.server.appendAudit(audit.Event{
 		Type:      "terminal.session_terminated",
-		Outcome:   "success",
+		Outcome:   outcome,
 		PeerID:    a.clientID,
 		SessionID: a.ID,
 		Transport: a.transport,
 		Reason:    reason,
 	}); err != nil {
-		a.server.log().Error("terminal session termination audit failed", "client_id", a.clientID, "session_id", a.ID, "error", err)
+		result = errors.Join(result, fmt.Errorf("append terminal session termination audit: %w", err))
 	}
+
+	a.mu.Lock()
+	a.terminationErr = result
+	a.mu.Unlock()
+	return result
+}
+
+func wrapSessionCleanupError(message string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 // abortSessionTransport bypasses graceful TLS shutdown and any adapter-level
@@ -291,25 +334,70 @@ func abortSessionTransport(conn net.Conn) error {
 	return conn.Close()
 }
 
-func (a *activeTerminalSession) finish() {
+func (a *activeTerminalSession) finish() error {
 	if a == nil {
-		return
+		return nil
 	}
 	a.finishOnce.Do(func() {
 		a.mu.Lock()
 		a.finished = true
 		terminated := a.terminated
-		terminationDone := a.terminationDone
-		a.cleanup = nil
-		a.mu.Unlock()
-		if terminated && terminationDone != nil {
-			<-terminationDone
+		var cleanup func() error
+		if !terminated {
+			cleanup = a.cleanup
+			a.cleanup = nil
 		}
-		close(a.done)
-		a.server.activeSessionsMu.Lock()
-		delete(a.server.activeSessions, a.ID)
-		a.server.activeSessionsMu.Unlock()
+		a.mu.Unlock()
+		a.cleanupReadyOnce.Do(func() { close(a.cleanupReady) })
+
+		var finishErr error
+		if terminated {
+			if a.terminationDone != nil {
+				<-a.terminationDone
+			}
+			a.mu.Lock()
+			finishErr = a.terminationErr
+			a.mu.Unlock()
+		} else if cleanup != nil {
+			if err := cleanup(); err != nil {
+				finishErr = fmt.Errorf("clean up terminal session resources: %w", err)
+			}
+		}
+		a.mu.Lock()
+		a.finishErr = finishErr
+		a.mu.Unlock()
+
+		if a.done != nil {
+			close(a.done)
+		}
+		if a.server != nil {
+			a.server.activeSessionsMu.Lock()
+			delete(a.server.activeSessions, a.ID)
+			a.server.activeSessionsMu.Unlock()
+		}
 	})
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.finishErr
+}
+
+func (a *activeTerminalSession) waitTermination() error {
+	if a == nil {
+		return nil
+	}
+	a.mu.Lock()
+	terminated := a.terminated
+	finished := a.finished
+	a.mu.Unlock()
+	if terminated && a.terminationDone != nil {
+		<-a.terminationDone
+	}
+	if finished && a.done != nil {
+		<-a.done
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return errors.Join(a.terminationErr, a.finishErr)
 }
 
 func (a *activeTerminalSession) reasonOr(fallback string) string {
