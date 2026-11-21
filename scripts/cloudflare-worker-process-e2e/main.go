@@ -343,7 +343,8 @@ func run() error {
 	defer clientA.stop()
 	auditPath := filepath.Join(agentState, "audit.jsonl")
 	if _, err := waitForAudit(auditPath, func(events []audit.Event) bool {
-		return hasEvent(events, "terminal.session_opened", clientAID, "")
+		return hasEvent(events, "terminal.session_opened", clientAID, "") &&
+			hasEvent(events, "terminal.stream_opened", clientAID, "")
 	}, 20*time.Second); err != nil {
 		return fmt.Errorf("client A did not establish a terminal session: %w\n%s", err, clientA.output.String())
 	}
@@ -369,7 +370,9 @@ func run() error {
 	defer clientB.stop()
 	if _, err := waitForAudit(auditPath, func(events []audit.Event) bool {
 		return hasEvent(events, "terminal.session_opened", clientAID, "") &&
-			hasEvent(events, "terminal.session_opened", clientBID, "")
+			hasEvent(events, "terminal.stream_opened", clientAID, "") &&
+			hasEvent(events, "terminal.session_opened", clientBID, "") &&
+			hasEvent(events, "terminal.stream_opened", clientBID, "")
 	}, 20*time.Second); err != nil {
 		return fmt.Errorf("two independent terminal sessions were not established: %w\nA=%s\nB=%s", err, clientA.output.String(), clientB.output.String())
 	}
@@ -406,7 +409,8 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("revocation audit outcomes are incomplete: %w", err)
 	}
-	if hasEvent(events, "terminal.session_closed", clientBID, "") {
+	if hasEvent(events, "terminal.session_closed", clientBID, "") ||
+		hasEvent(events, "terminal.stream_closed", clientBID, "client_revoked") {
 		return errors.New("independent client B was closed during client A revocation")
 	}
 
