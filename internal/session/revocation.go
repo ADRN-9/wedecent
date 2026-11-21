@@ -2,6 +2,7 @@ package session
 
 import (
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -33,21 +34,22 @@ type terminalSessionPTY interface {
 type terminalPTYStarter func(string, uint16, uint16, string) (terminalSessionPTY, error)
 
 type activeTerminalSession struct {
-	server      *Server
-	ID          string
-	clientID    string
-	fingerprint string
-	generation  string
-	transport   string
-	rawConn     net.Conn
+	server          *Server
+	ID              string
+	clientID        string
+	fingerprint     string
+	generation      string
+	transport       string
+	rawConn         net.Conn
 
-	mu         sync.Mutex
-	finished   bool
-	terminated bool
-	reason     string
-	cleanup    func()
-	done       chan struct{}
-	finishOnce sync.Once
+	mu              sync.Mutex
+	finished        bool
+	terminated      bool
+	reason          string
+	cleanup         func()
+	done            chan struct{}
+	terminationDone chan struct{}
+	finishOnce      sync.Once
 }
 
 func (s *Server) startTerminal(shell string, cols, rows uint16, term string) (terminalSessionPTY, error) {
@@ -84,8 +86,9 @@ func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, r
 			generation:  peer.Generation,
 			transport:   transport,
 			rawConn:     rawConn,
-			cleanup:     cleanup,
-			done:        make(chan struct{}),
+			cleanup:         cleanup,
+			done:            make(chan struct{}),
+			terminationDone: make(chan struct{}),
 		}
 		s.activeSessionsMu.Lock()
 		if s.activeSessions == nil {
@@ -129,10 +132,18 @@ func writeSessionAccepted(conn net.Conn, frame protocol.Frame) error {
 	if conn == nil {
 		return errors.New("terminal connection is unavailable")
 	}
-	_ = conn.SetWriteDeadline(time.Now().Add(sessionAdmissionWriteTimeout))
-	err := protocol.WriteFrame(conn, frame)
-	_ = conn.SetWriteDeadline(time.Time{})
-	return err
+	if err := conn.SetWriteDeadline(time.Now().Add(sessionAdmissionWriteTimeout)); err != nil {
+		return fmt.Errorf("set terminal session admission write deadline: %w", err)
+	}
+	writeErr := protocol.WriteFrame(conn, frame)
+	clearErr := conn.SetWriteDeadline(time.Time{})
+	if writeErr != nil {
+		return writeErr
+	}
+	if clearErr != nil {
+		return fmt.Errorf("clear terminal session admission write deadline: %w", clearErr)
+	}
+	return nil
 }
 
 func newTerminalSessionID() (string, error) {
@@ -221,7 +232,9 @@ func (a *activeTerminalSession) beginTermination(reason string) (func(), bool) {
 	}
 	a.terminated = true
 	a.reason = reason
-	return a.cleanup, true
+	cleanup := a.cleanup
+	a.cleanup = nil
+	return cleanup, true
 }
 
 func (a *activeTerminalSession) terminate(reason string) {
@@ -240,11 +253,13 @@ func (a *activeTerminalSession) terminateAsync(reason string) {
 }
 
 func (a *activeTerminalSession) closeAndAudit(reason string, cleanup func()) {
-	// Close the underlying transport directly. tls.Conn.Close may need the TLS
-	// write lock to emit close_notify, which can be held by a blocked write or
-	// a TLS 1.3 KeyUpdate response to a non-reading peer.
+	if a.terminationDone != nil {
+		defer close(a.terminationDone)
+	}
+	// Abort unwraps TLS and WebSocket adapters to the transport socket. It
+	// never acquires their write mutexes or sends graceful close records.
 	if a.rawConn != nil {
-		_ = a.rawConn.Close()
+		_ = abortSessionTransport(a.rawConn)
 	}
 	if cleanup != nil {
 		cleanup()
@@ -261,6 +276,21 @@ func (a *activeTerminalSession) closeAndAudit(reason string, cleanup func()) {
 	}
 }
 
+// abortSessionTransport bypasses graceful TLS shutdown and any adapter-level
+// write locks. TLS wrappers expose their underlying transport through NetConn.
+func abortSessionTransport(conn net.Conn) error {
+	if conn == nil {
+		return nil
+	}
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		return abortSessionTransport(tlsConn.NetConn())
+	}
+	if aborter, ok := conn.(interface{ Abort() error }); ok {
+		return aborter.Abort()
+	}
+	return conn.Close()
+}
+
 func (a *activeTerminalSession) finish() {
 	if a == nil {
 		return
@@ -268,8 +298,13 @@ func (a *activeTerminalSession) finish() {
 	a.finishOnce.Do(func() {
 		a.mu.Lock()
 		a.finished = true
+		terminated := a.terminated
+		terminationDone := a.terminationDone
 		a.cleanup = nil
 		a.mu.Unlock()
+		if terminated && terminationDone != nil {
+			<-terminationDone
+		}
 		close(a.done)
 		a.server.activeSessionsMu.Lock()
 		delete(a.server.activeSessions, a.ID)

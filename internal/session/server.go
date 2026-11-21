@@ -552,6 +552,7 @@ func (s *Server) handleTerminal(rawConn net.Conn, conn *tls.Conn, first protocol
 	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
 	defer func() {
+		active.finish()
 		closeReason = active.reasonOr(closeReason)
 		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport, Reason: closeReason}, authorization)
 	}()

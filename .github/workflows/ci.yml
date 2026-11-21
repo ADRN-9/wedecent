@@ -251,3 +251,5 @@ jobs:
         run: ./scripts/start-supabase-db-ci.sh
       - name: Run database pgTAP tests
         run: env -u SUPABASE_INTERNAL_IMAGE_REGISTRY supabase test db
+      - name: Verify connection-grant expiry after a device lock wait
+        run: ./scripts/test-connection-grant-expiration.sh

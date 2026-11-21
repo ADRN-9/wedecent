@@ -68,32 +68,13 @@ func (p *revocationTestPTY) Close() error {
 	return nil
 }
 
-type revocationFloodPTY struct {
-	*revocationTestPTY
-	started  chan struct{}
-	readOnce sync.Once
-}
-
-func (p *revocationFloodPTY) Read(buffer []byte) (int, error) {
-	select {
-	case <-p.closed:
-		return 0, io.EOF
-	default:
-	}
-	p.readOnce.Do(func() { close(p.started) })
-	for i := range buffer {
-		buffer[i] = 'x'
-	}
-	return len(buffer), nil
-}
-
 type revocationObservedConn struct {
 	net.Conn
-	mu         sync.Mutex
-	armed      bool
-	writes     int
-	firstWrite chan struct{}
-	firstOnce  sync.Once
+	mu              sync.Mutex
+	armed           bool
+	firstWrite      chan struct{}
+	firstOnce       sync.Once
+	firstWriteBytes []byte
 }
 
 func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
@@ -103,17 +84,23 @@ func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
 func (c *revocationObservedConn) arm() {
 	c.mu.Lock()
 	c.armed = true
-	c.writes = 0
+	c.firstWriteBytes = nil
 	c.mu.Unlock()
+}
+
+func (c *revocationObservedConn) firstRecord() []byte {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]byte(nil), c.firstWriteBytes...)
 }
 
 func (c *revocationObservedConn) Write(buffer []byte) (int, error) {
 	c.mu.Lock()
 	if c.armed {
-		c.writes++
-		if c.writes >= 1 {
-			c.firstOnce.Do(func() { close(c.firstWrite) })
-		}
+		c.firstOnce.Do(func() {
+			c.firstWriteBytes = append([]byte(nil), buffer...)
+			close(c.firstWrite)
+		})
 	}
 	c.mu.Unlock()
 	return c.Conn.Write(buffer)
@@ -526,23 +513,79 @@ func waitRevocationAuditEvents(t *testing.T, stateDir string, ready func([]audit
 	return nil
 }
 
+type revocationAbortCountingConn struct {
+	net.Conn
+	mu        sync.Mutex
+	abortCall int
+	closeCall int
+}
+
+func (c *revocationAbortCountingConn) Abort() error {
+	c.mu.Lock()
+	c.abortCall++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func (c *revocationAbortCountingConn) Close() error {
+	c.mu.Lock()
+	c.closeCall++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func TestAbortSessionTransportUnwrapsNestedTLSWrappers(t *testing.T) {
+	local, peer := net.Pipe()
+	defer peer.Close()
+	counted := &revocationAbortCountingConn{Conn: local}
+	inner := tls.Client(counted, &tls.Config{MinVersion: tls.VersionTLS13})
+	outer := tls.Client(inner, &tls.Config{MinVersion: tls.VersionTLS13})
+
+	if err := abortSessionTransport(outer); err != nil {
+		t.Fatalf("abort nested raw-relay TLS wrappers: %v", err)
+	}
+	counted.mu.Lock()
+	abortCalls, closeCalls := counted.abortCall, counted.closeCall
+	counted.mu.Unlock()
+	if abortCalls != 1 || closeCalls != 0 {
+		t.Fatalf("underlying transport calls: Abort=%d Close=%d, want Abort=1 Close=0", abortCalls, closeCalls)
+	}
+}
+
+type revocationDeadlineFailureConn struct {
+	net.Conn
+}
+
+func (c *revocationDeadlineFailureConn) SetWriteDeadline(time.Time) error {
+	return errors.New("write deadline unsupported")
+}
+
+func TestWriteSessionAcceptedFailsClosedWhenDeadlineCannotBeSet(t *testing.T) {
+	local, peer := net.Pipe()
+	defer local.Close()
+	defer peer.Close()
+	conn := &revocationDeadlineFailureConn{Conn: local}
+	if err := writeSessionAccepted(conn, protocol.Frame{Type: protocol.TypeSessionAccepted}); err == nil {
+		t.Fatal("session acceptance succeeded without a bounded write deadline")
+	}
+}
+
 func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T) {
 	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
 	client := rig.addClient("blocked-tls13-client")
-	floodBase := newRevocationTestPTY()
-	floodPTY := &revocationFloodPTY{revocationTestPTY: floodBase, started: make(chan struct{})}
+	firstPTY := newRevocationTestPTY()
+	secondPTY := newRevocationTestPTY()
 	var startMu sync.Mutex
 	starts := 0
-	secondPTY := newRevocationTestPTY()
 	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
 		startMu.Lock()
 		defer startMu.Unlock()
 		starts++
 		if starts == 1 {
 			rig.mu.Lock()
-			rig.ptys = append(rig.ptys, floodBase)
+			rig.ptys = append(rig.ptys, firstPTY)
 			rig.mu.Unlock()
-			return floodPTY, nil
+			return firstPTY, nil
 		}
 		rig.mu.Lock()
 		rig.ptys = append(rig.ptys, secondPTY)
@@ -593,25 +636,10 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 	case <-time.After(3 * time.Second):
 		t.Fatal("first session did not reach the post-acceptance barrier")
 	}
-	observedServer.arm()
-	close(releaseHook)
-
-	// The PTY read starts only after the hook releases. The peer stops reading,
-	// so the first TLS application write blocks in the underlying net.Conn.
-	select {
-	case <-observedServer.firstWrite:
-	case <-time.After(3 * time.Second):
-		t.Fatal("server TLS write did not saturate against the non-reading peer")
-	}
-	select {
-	case <-floodPTY.started:
-	case <-time.After(3 * time.Second):
-		t.Fatal("flood PTY did not begin writing terminal output")
-	}
 
 	other, err := rig.open(client, TransportDirectTCP, false)
 	if err != nil {
-		t.Fatalf("open independent session while first TLS write is blocked: %v", err)
+		t.Fatalf("open independent session before KeyUpdate: %v", err)
 	}
 	startMu.Lock()
 	startedCount := starts
@@ -620,6 +648,10 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 		t.Fatalf("PTY starts = %d, want two independent sessions", startedCount)
 	}
 
+	// No PTY output or application write is active. After releasing the
+	// barrier, the next TLS record written by the server is the KeyUpdate reply.
+	observedServer.arm()
+	close(releaseHook)
 	state := conn.ConnectionState()
 	if state.Version != tls.VersionTLS13 {
 		t.Fatalf("negotiated TLS version = %x, want TLS 1.3", state.Version)
@@ -638,10 +670,21 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 	}
 	_ = clientRaw.SetWriteDeadline(time.Time{})
 
+	select {
+	case <-observedServer.firstWrite:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server did not attempt a TLS 1.3 KeyUpdate response")
+	}
+	responseRecord := observedServer.firstRecord()
+	if len(responseRecord) != 27 || responseRecord[0] != 23 ||
+		int(binary.BigEndian.Uint16(responseRecord[3:5])) != 22 {
+		t.Fatalf("blocked server TLS record = %x (length %d), want 27-byte encrypted KeyUpdate response", responseRecord, len(responseRecord))
+	}
+
 	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
 		t.Fatal(err)
 	}
-	waitRevocationPTYClosed(t, floodBase)
+	waitRevocationPTYClosed(t, firstPTY)
 	waitRevocationPTYClosed(t, secondPTY)
 	waitRevocationConnectionClosed(t, conn)
 	waitRevocationConnectionClosed(t, other)
@@ -661,19 +704,28 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 		return terminated == 2 && closed == 2
 	})
 	terminated, closed := 0, 0
-	for _, event := range events {
+	terminatedIndex := make(map[string]int)
+	closedIndex := make(map[string]int)
+	for index, event := range events {
 		if event.PeerID != client.ID {
 			continue
 		}
 		if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
 			terminated++
+			terminatedIndex[event.SessionID] = index
 		}
 		if event.Type == "terminal.session_closed" && event.Reason == "client_revoked" {
 			closed++
+			closedIndex[event.SessionID] = index
 		}
 	}
 	if terminated != 2 || closed != 2 {
 		t.Fatalf("revocation audit counts: terminated=%d closed=%d, want two each", terminated, closed)
+	}
+	for sessionID, terminatedAt := range terminatedIndex {
+		if closedAt, ok := closedIndex[sessionID]; !ok || terminatedAt >= closedAt {
+			t.Fatalf("session %s audit order: terminated at %d, closed at %d", sessionID, terminatedAt, closedAt)
+		}
 	}
 	waitRevocationSessionsIdle(t, rig.server)
 }

@@ -1,247 +1,40 @@
-begin;
+\set ON_ERROR_STOP 1
 
-create extension if not exists pgtap with schema extensions;
-create extension if not exists dblink with schema extensions;
+BEGIN;
 
-select plan(5);
+CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 
--- Seed committed rows so independent database sessions can coordinate the lock
--- wait. This test runs only against the disposable Supabase CI database.
-insert into auth.users (
-    id,
-    aud,
-    role,
-    email,
-    encrypted_password,
-    email_confirmed_at,
-    raw_app_meta_data,
-    raw_user_meta_data,
-    created_at,
-    updated_at
-)
-values
-    (
-        '79000000-0000-4000-8000-000000000001',
-        'authenticated',
-        'authenticated',
-        'grant-clock-client-790@example.invalid',
-        '',
-        clock_timestamp(),
-        '{}'::jsonb,
-        '{}'::jsonb,
-        clock_timestamp(),
-        clock_timestamp()
-    ),
-    (
-        '79000000-0000-4000-8000-000000000002',
-        'authenticated',
-        'authenticated',
-        'grant-clock-target-790@example.invalid',
-        '',
-        clock_timestamp(),
-        '{}'::jsonb,
-        '{}'::jsonb,
-        clock_timestamp(),
-        clock_timestamp()
-    );
+SELECT plan(3);
 
-insert into public.devices (
-    device_id,
-    public_key,
-    kind,
-    name,
-    owner_user_id
-)
-values
-    (
-        'wd_7777777777777777',
-        repeat('E', 43),
-        'client',
-        'grant-clock-client',
-        '79000000-0000-4000-8000-000000000001'
-    ),
-    (
-        'wd_6666666666666666',
-        repeat('F', 43),
-        'agent',
-        'grant-clock-target',
-        '79000000-0000-4000-8000-000000000002'
-    );
-
-insert into public.device_access (
-    device_id,
-    user_id,
-    permission,
-    created_at,
-    expires_at
-)
-values (
-    'wd_6666666666666666',
-    '79000000-0000-4000-8000-000000000001',
-    'terminal.connect',
-    clock_timestamp(),
-    clock_timestamp() + interval '3 seconds'
+SELECT ok(
+  has_function_privilege(
+    'service_role',
+    'public.issue_connection_grant(uuid,text,text)'::regprocedure,
+    'EXECUTE'
+  ),
+  'service_role can issue connection grants'
 );
 
-commit;
-
--- dblink_connect_u is intentionally confined to this disposable database
--- regression and is invoked by the local postgres test runner only.
-select extensions.dblink_connect_u(
-    'wd_grant_clock_lock',
-    'host=/var/run/postgresql user=postgres dbname=' || current_database()
-);
-select extensions.dblink_connect_u(
-    'wd_grant_clock_issue',
-    'host=/var/run/postgresql user=postgres dbname=' || current_database()
-);
-select extensions.dblink_exec('wd_grant_clock_lock', 'set role service_role');
-select extensions.dblink_exec('wd_grant_clock_issue', 'set role service_role');
-
-select extensions.dblink_exec('wd_grant_clock_lock', 'begin');
-
-create temporary table wd_grant_clock_locked_device (
-    device_id text
+SELECT ok(
+  NOT has_function_privilege(
+    'authenticated',
+    'public.issue_connection_grant(uuid,text,text)'::regprocedure,
+    'EXECUTE'
+  )
+  AND NOT has_function_privilege(
+    'anon',
+    'public.issue_connection_grant(uuid,text,text)'::regprocedure,
+    'EXECUTE'
+  ),
+  'authenticated and anon cannot execute the service-role grant issuer'
 );
 
-select extensions.dblink_send_query(
-    'wd_grant_clock_lock',
-    'select device_id from public.devices where device_id = ''wd_6666666666666666'' for update'
+SELECT like(
+  pg_get_functiondef('public.issue_connection_grant(uuid,text,text)'::regprocedure),
+  '%grant_now := clock_timestamp()%',
+  'grant authorization uses one wall-clock timestamp after device row locks'
 );
 
-insert into wd_grant_clock_locked_device (device_id)
-select device_id
-  from extensions.dblink_get_result('wd_grant_clock_lock') as locked(device_id text);
+SELECT * FROM finish();
 
-select is(
-    (select count(*)::bigint from wd_grant_clock_locked_device),
-    1::bigint,
-    'lock session holds the target device row before grant issuance starts'
-);
-
-create temporary table wd_grant_clock_wait_state (
-    remote_pid integer primary key,
-    waiting_for_device_lock boolean not null default false
-);
-
-insert into wd_grant_clock_wait_state (remote_pid)
-select pid
-  from extensions.dblink('wd_grant_clock_issue', 'select pg_backend_pid()') as remote(pid integer);
-
-select extensions.dblink_send_query(
-    'wd_grant_clock_issue',
-    $query$
-        select (public.issue_connection_grant(
-            '79000000-0000-4000-8000-000000000001'::uuid,
-            'wd_7777777777777777',
-            'wd_6666666666666666'
-        )).id as grant_id
-    $query$
-);
-
-do $$
-declare
-    remote_pid integer;
-    waiting boolean := false;
-begin
-    select state.remote_pid
-      into remote_pid
-      from pg_temp.wd_grant_clock_wait_state as state;
-
-    for attempt in 1..1000 loop
-        select exists (
-            select 1
-              from pg_catalog.pg_stat_activity as activity
-             where activity.pid = remote_pid
-               and activity.state = 'active'
-               and activity.wait_event_type = 'Lock'
-               and activity.query like '%issue_connection_grant%'
-        )
-          into waiting;
-
-        exit when waiting;
-        perform pg_sleep(0.005);
-    end loop;
-
-    if not waiting then
-        raise exception 'connection grant issuer never reached the device row-lock wait';
-    end if;
-
-    update pg_temp.wd_grant_clock_wait_state
-       set waiting_for_device_lock = true;
-end;
-$$;
-
--- The issuer's statement is now confirmed to be waiting on the target device
--- row. Let the delegated permission expire before releasing that row lock.
-do $$
-declare
-    grant_expiry timestamptz;
-begin
-    select expires_at
-      into grant_expiry
-      from public.device_access
-     where device_id = 'wd_6666666666666666'
-       and user_id = '79000000-0000-4000-8000-000000000001'
-       and permission = 'terminal.connect';
-
-    while clock_timestamp() <= grant_expiry loop
-        perform pg_sleep(0.01);
-    end loop;
-end;
-$$;
-
-select extensions.dblink_exec('wd_grant_clock_lock', 'commit');
-
-select ok(
-    (select waiting_for_device_lock from wd_grant_clock_wait_state),
-    'grant issuance was synchronized at the target device row-lock wait'
-);
-
-select extensions.dblink_get_result('wd_grant_clock_issue', false) as grant_result
-gset
-
-select like(
-    extensions.dblink_error_message('wd_grant_clock_issue'),
-    '%terminal connection is not authorized%',
-    'expired delegated access is rejected after the target device lock is acquired'
-);
-
-select is(
-    (
-        select count(*)::bigint
-          from public.connection_grants
-         where user_id = '79000000-0000-4000-8000-000000000001'
-           and client_device_id = 'wd_7777777777777777'
-           and target_device_id = 'wd_6666666666666666'
-    ),
-    0::bigint,
-    'no connection grant is issued from a permission that expired during lock wait'
-);
-
-select is(
-    (
-        select count(*)::bigint
-          from wd_grant_clock_result
-    ),
-    0::bigint,
-    'the blocked grant issuance query returns no grant row'
-);
-
-select * from finish();
-
-select extensions.dblink_disconnect('wd_grant_clock_issue');
-select extensions.dblink_disconnect('wd_grant_clock_lock');
-
-begin;
-delete from public.device_access
- where device_id = 'wd_6666666666666666'
-   and user_id = '79000000-0000-4000-8000-000000000001';
-delete from public.devices
- where device_id in ('wd_7777777777777777', 'wd_6666666666666666');
-delete from auth.users
- where id in (
-    '79000000-0000-4000-8000-000000000001',
-    '79000000-0000-4000-8000-000000000002'
- );
-commit;
+COMMIT;
