@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(29);
+select plan(30);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -55,7 +55,8 @@ values
     ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'wd_aaaaaaaaaaaaaaaa', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
     ('30000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'wd_dddddddddddddddd', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
     ('30000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000002', 'wd_eeeeeeeeeeeeeeee', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
-    ('30000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001', 'wd_aaaaaaaaaaaaaaaa', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes');
+    ('30000000-0000-4000-8000-000000000004', '10000000-0000-4000-8000-000000000001', 'wd_aaaaaaaaaaaaaaaa', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
+    ('30000000-0000-4000-8000-000000000005', '10000000-0000-4000-8000-000000000001', 'wd_ffffffffffffffff', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes');
 
 select ok(
     not pg_catalog.has_table_privilege(
@@ -199,8 +200,18 @@ select is(
 reset role;
 set local role service_role;
 
+insert into public.organization_memberships (
+    organization_id, user_id, role, created_by
+)
+values (
+    '20000000-0000-4000-8000-000000000001',
+    '10000000-0000-4000-8000-000000000001',
+    'member',
+    '10000000-0000-4000-8000-000000000002'
+);
+
 select throws_ok(
-    $$
+    $
         select public.issue_connection_grant(
             '10000000-0000-4000-8000-000000000001',
             'wd_aaaaaaaaaaaaaaaa',
@@ -260,7 +271,25 @@ select is(
 );
 
 select throws_ok(
-    $$
+    $
+        select public.complete_device_enrollment(
+            '30000000-0000-4000-8000-000000000005',
+            '10000000-0000-4000-8000-000000000001',
+            'wd_ffffffffffffffff',
+            repeat('F', 43),
+            'client',
+            'Member device',
+            '20000000-0000-4000-8000-000000000001',
+            repeat('00', 32)
+        )
+    $,
+    '42501',
+    'target organization enrollment is not authorized',
+    'ordinary organization member cannot enroll a device into the organization'
+);
+
+select throws_ok(
+    $
         select public.complete_device_enrollment(
             '30000000-0000-4000-8000-000000000002',
             '10000000-0000-4000-8000-000000000001',
