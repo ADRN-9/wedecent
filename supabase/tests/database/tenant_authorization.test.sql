@@ -211,7 +211,7 @@ values (
 );
 
 select throws_ok(
-    $
+    $$
         select public.issue_connection_grant(
             '10000000-0000-4000-8000-000000000001',
             'wd_aaaaaaaaaaaaaaaa',
@@ -271,7 +271,7 @@ select is(
 );
 
 select throws_ok(
-    $
+    $$
         select public.complete_device_enrollment(
             '30000000-0000-4000-8000-000000000005',
             '10000000-0000-4000-8000-000000000001',
@@ -282,14 +282,14 @@ select throws_ok(
             '20000000-0000-4000-8000-000000000001',
             repeat('00', 32)
         )
-    $,
+    $$,
     '42501',
     'target organization enrollment is not authorized',
     'ordinary organization member cannot enroll a device into the organization'
 );
 
 select throws_ok(
-    $
+    $$
         select public.complete_device_enrollment(
             '30000000-0000-4000-8000-000000000002',
             '10000000-0000-4000-8000-000000000001',
