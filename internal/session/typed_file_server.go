@@ -33,6 +33,7 @@ type typedFileChild struct {
 	creditCh   chan struct{}
 	done       chan struct{}
 	closeOnce  sync.Once
+	closeErr   error
 }
 
 type typedFileServer struct {
@@ -430,7 +431,7 @@ func (s *typedFileServer) forwardDownload(streamID uint32, child *typedFileChild
 	}
 }
 
-func (s *typedFileServer) closeChild(streamID uint32) {
+func (s *typedFileServer) closeChild(streamID uint32) error {
 	s.mu.Lock()
 	child := s.streams[streamID]
 	if child != nil {
@@ -441,18 +442,28 @@ func (s *typedFileServer) closeChild(streamID uint32) {
 	}
 	s.mu.Unlock()
 	if child == nil {
-		return
+		return nil
 	}
-	_ = s.registry.close(streamID, child.kind)
+	var registryErr error
+	if err := s.registry.close(streamID, child.kind); err != nil {
+		registryErr = fmt.Errorf("close typed file stream registry entry %d: %w", streamID, err)
+	}
 	child.closeOnce.Do(func() {
 		close(child.done)
+		var closeErrors []error
 		if child.upload != nil {
-			_ = child.upload.Cancel()
+			if err := child.upload.Cancel(); err != nil {
+				closeErrors = append(closeErrors, fmt.Errorf("cancel typed file upload %d: %w", streamID, err))
+			}
 		}
 		if child.download != nil {
-			_ = child.download.Close()
+			if err := child.download.Close(); err != nil {
+				closeErrors = append(closeErrors, fmt.Errorf("close typed file download %d: %w", streamID, err))
+			}
 		}
+		child.closeErr = errors.Join(closeErrors...)
 	})
+	return errors.Join(registryErr, child.closeErr)
 }
 
 func (s *typedFileServer) sendStreamError(streamID uint32, code, message string) error {
@@ -488,14 +499,18 @@ func (s *typedFileServer) writeFrame(frame protocol.Frame) error {
 	return s.write(frame)
 }
 
-func (s *typedFileServer) CloseAll() {
+func (s *typedFileServer) CloseAll() error {
 	s.mu.Lock()
 	ids := make([]uint32, 0, len(s.streams))
 	for id := range s.streams {
 		ids = append(ids, id)
 	}
 	s.mu.Unlock()
+	var closeErrors []error
 	for _, id := range ids {
-		s.closeChild(id)
+		if err := s.closeChild(id); err != nil {
+			closeErrors = append(closeErrors, err)
+		}
 	}
+	return errors.Join(closeErrors...)
 }

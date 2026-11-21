@@ -349,20 +349,48 @@ func (c *wsNetConn) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (c *wsNetConn) Close() error {
+func (c *wsNetConn) markClosed() bool {
 	c.closeMu.Lock()
+	defer c.closeMu.Unlock()
 	if c.closed {
-		c.closeMu.Unlock()
-		return nil
+		return false
 	}
 	c.closed = true
-	close(c.done)
-	c.closeMu.Unlock()
+	if c.done != nil {
+		close(c.done)
+	}
+	return true
+}
 
+func (c *wsNetConn) Close() error {
+	if !c.markClosed() {
+		return nil
+	}
 	c.writeMu.Lock()
 	_ = c.writeFrame(0x8, []byte{0x03, 0xE8})
 	c.writeMu.Unlock()
 	return c.raw.Close()
+}
+
+// Abort is the force-close path used by session revocation. It deliberately
+// bypasses writeMu and recursively unwraps TLS so a blocked writer cannot
+// prevent the underlying TCP socket from being closed.
+func (c *wsNetConn) Abort() error {
+	c.markClosed()
+	return abortTransport(c.raw)
+}
+
+func abortTransport(conn net.Conn) error {
+	if conn == nil {
+		return nil
+	}
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		return abortTransport(tlsConn.NetConn())
+	}
+	if aborter, ok := conn.(interface{ Abort() error }); ok {
+		return aborter.Abort()
+	}
+	return conn.Close()
 }
 
 func (c *wsNetConn) LocalAddr() net.Addr                { return c.raw.LocalAddr() }

@@ -47,6 +47,7 @@ type Server struct {
 
 	// This per-server fault seam is nil in production.
 	beforeSessionAdmission func()
+	afterSessionAccepted   func()
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 
@@ -104,14 +105,14 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 			_ = sendError(tlsConn, "authorization_required", "this transport requires an authorized session request")
 			return
 		}
-		s.handleTerminal(tlsConn, first, metadata, nil)
+		s.handleTerminal(raw, tlsConn, first, metadata, nil)
 	case protocol.TypeOpenAuthorizedSession:
 		if !requireInBandAuthorization {
 			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "unexpected_authorized_request"})
 			_ = sendError(tlsConn, "unexpected_message", "authorized session requests are not valid on this transport")
 			return
 		}
-		s.handleAuthorizedTerminal(tlsConn, first, metadata)
+		s.handleAuthorizedTerminal(raw, tlsConn, first, metadata)
 	default:
 		_ = sendError(tlsConn, "unexpected_message", "expected pairing or session request")
 	}
@@ -272,7 +273,7 @@ func (s *Server) handlePairCommit(conn *tls.Conn, metadata TransportMetadata, cl
 	s.log().Info("paired client", "client_id", clientID, "client_name", name)
 }
 
-func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, metadata TransportMetadata) {
+func (s *Server) handleAuthorizedTerminal(rawConn net.Conn, conn *tls.Conn, first protocol.Frame, metadata TransportMetadata) {
 	transport, _ := metadata.auditLabel()
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
@@ -364,7 +365,7 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport}, &evidence)
 
 	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, GrantJTI: grantJTI, BuildNonce: req.BuildNonce, Capabilities: req.Capabilities})
-	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, metadata, &evidence)
+	s.handleTerminal(rawConn, conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, metadata, &evidence)
 }
 
 func (s *Server) signedBuildIdentity(nonce string) (*protocol.AgentBuildIdentity, error) {
@@ -381,7 +382,7 @@ func (s *Server) signedBuildIdentity(nonce string) (*protocol.AgentBuildIdentity
 	return &attestation, nil
 }
 
-func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata TransportMetadata, authorization *GrantConsumptionEvidence) {
+func (s *Server) handleTerminal(rawConn net.Conn, conn *tls.Conn, first protocol.Frame, metadata TransportMetadata, authorization *GrantConsumptionEvidence) {
 	transport, _ := metadata.auditLabel()
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
@@ -486,16 +487,21 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 		if s.beforeSessionAdmission != nil {
 			s.beforeSessionAdmission()
 		}
-		active, err := s.admitTerminalSession(peer.ID, fp, transport, conn, nil, func(string) error {
+		active, err := s.admitTerminalSession(peer.ID, fp, transport, rawConn, nil, func(string) error {
 			return writeSessionAccepted(conn, accepted)
 		})
 		if err != nil {
+			if errors.Is(err, errSessionAdmissionWrite) {
+				s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "session_accept_failed"})
+				s.log().Warn("typed terminal session acceptance failed; transport aborted",
+					"client_id", peer.ID, "error", err)
+				return
+			}
 			code, reason := sessionAdmissionFailure(err)
 			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: reason})
 			_ = sendError(conn, code, "terminal session authorization is unavailable")
 			return
 		}
-		defer active.finish()
 		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, metadata, capabilities, buildIdentity, authorization, active)
 		return
 	}
@@ -505,47 +511,101 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 	if open.Rows == 0 {
 		open.Rows = 24
 	}
-	pty, err := s.startTerminal(s.Shell, open.Cols, open.Rows, open.Term)
-	if err != nil {
-		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "pty_start_failed"})
-		_ = sendError(conn, "pty_error", err.Error())
-		return
-	}
 	accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
 	if err != nil {
-		_ = pty.Close()
 		_ = sendError(conn, "server_error", "session acceptance metadata could not be encoded")
 		return
 	}
 	if s.beforeSessionAdmission != nil {
 		s.beforeSessionAdmission()
 	}
-	active, err := s.admitTerminalSession(peer.ID, fp, transport, conn, func() {
-		if err := pty.Close(); err != nil {
-			s.log().Error("terminal PTY close failed during session revocation", "client_id", peer.ID, "transport", transport, "error", err)
-		}
-	}, func(string) error {
-		return writeSessionAccepted(conn, accepted)
-	})
+
+	// Reserve admission under the trust-store lock before starting a shell.
+	// A revocation that wins this boundary prevents PTY creation and shell init.
+	active, err := s.admitTerminalSession(peer.ID, fp, transport, rawConn, nil, nil)
 	if err != nil {
-		_ = pty.Close()
 		code, reason := sessionAdmissionFailure(err)
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: reason})
 		_ = sendError(conn, code, "terminal session authorization is unavailable")
 		return
 	}
-	defer active.finish()
-	defer pty.Close()
-	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
+	sessionOpened := false
+	defer func() {
+		finishErr := active.finish()
+		closeReason = active.reasonOr(closeReason)
+		if !sessionOpened {
+			if finishErr != nil {
+				s.log().Error("terminal session cleanup failed before acceptance",
+					"client_id", peer.ID, "session_id", active.ID, "error", finishErr)
+			}
+			return
+		}
+		outcome := "success"
+		if finishErr != nil {
+			outcome = "failed"
+			s.log().Error("terminal session cleanup failed",
+				"client_id", peer.ID, "session_id", active.ID, "error", finishErr)
+		}
+		if err := s.recordGrantAudit(metadata, audit.Event{
+			Type: "terminal.session_closed", Outcome: outcome, PeerID: peer.ID,
+			SessionID: active.ID, Transport: transport, Reason: closeReason,
+		}, authorization); err != nil {
+			s.log().Error("terminal session close audit failed",
+				"client_id", peer.ID, "session_id", active.ID, "error", err)
+		}
+	}()
+	if active.isTerminated() {
+		return
+	}
+
+	pty, err := s.startTerminal(s.Shell, open.Cols, open.Rows, open.Term)
+	if err != nil {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "pty_start_failed"})
+		_ = sendError(conn, "pty_error", err.Error())
+		return
+	}
+	var ptyCloseOnce sync.Once
+	var ptyCloseErr error
+	closePTY := func() error {
+		ptyCloseOnce.Do(func() { ptyCloseErr = pty.Close() })
+		return ptyCloseErr
+	}
+	if err := active.setCleanup(closePTY); err != nil {
+		s.log().Error("register terminal PTY cleanup failed",
+			"client_id", peer.ID, "session_id", active.ID, "error", err)
+		_ = closePTY()
+		_ = abortSessionTransport(rawConn)
+		return
+	}
+	if active.isTerminated() {
+		return
+	}
+	if err := writeSessionAccepted(conn, accepted); err != nil {
+		abortErr := abortSessionTransport(rawConn)
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "session_accept_failed"})
+		if abortErr != nil {
+			s.log().Error("abort terminal transport after acceptance failure failed",
+				"client_id", peer.ID, "session_id", active.ID, "error", abortErr)
+		}
+		return
+	}
+
+	if err := s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport}, authorization); err != nil {
+		closeReason = "session_open_audit_failed"
+		s.log().Error("terminal session open audit failed",
+			"client_id", peer.ID, "session_id", active.ID, "error", err)
+		_ = abortSessionTransport(rawConn)
+		return
+	}
+	sessionOpened = true
+	if s.afterSessionAccepted != nil {
+		s.afterSessionAccepted()
+	}
 	if active.isTerminated() {
 		closeReason = active.reasonOr("client_revoked")
 		return
 	}
-	defer func() {
-		closeReason = active.reasonOr(closeReason)
-		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport, Reason: closeReason}, authorization)
-	}()
 	s.log().Info("terminal opened", "client_id", peer.ID, "client_name", peer.Name)
 
 	var writeMu sync.Mutex
@@ -609,7 +669,11 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 		// write deadline first unblocks a PTY forwarding goroutine stuck on a
 		// peer that stopped reading.
 		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		_ = pty.Close()
+		if err := closePTY(); err != nil {
+			closeReason = "pty_cleanup_failed"
+			s.log().Error("terminal PTY close failed during policy expiration",
+				"client_id", peer.ID, "session_id", active.ID, "error", err)
+		}
 		if ptyReadDone != nil {
 			drainTimer := time.NewTimer(500 * time.Millisecond)
 			select {
@@ -762,7 +826,7 @@ func transportAuditProvenance(transport string) string {
 	}
 }
 
-func (s *Server) recordGrantAudit(metadata TransportMetadata, event audit.Event, evidence *GrantConsumptionEvidence) {
+func (s *Server) recordGrantAudit(metadata TransportMetadata, event audit.Event, evidence *GrantConsumptionEvidence) error {
 	if evidence != nil {
 		event.AuthorizationRunID = evidence.AuthorizationRunID
 		event.ValidationAttemptID = evidence.ValidationAttemptID
@@ -770,11 +834,15 @@ func (s *Server) recordGrantAudit(metadata TransportMetadata, event audit.Event,
 		event.ValidationEventID = evidence.ValidationEventID
 		event.ConsumptionEventID = evidence.ConsumptionEventID
 	}
-	s.recordTransportAudit(metadata, event)
+	return s.recordTransportAudit(metadata, event)
 }
 
-func (s *Server) recordTransportAudit(metadata TransportMetadata, event audit.Event) {
-	s.recordAudit(transportAuditEvent(metadata, event))
+func (s *Server) recordTransportAudit(metadata TransportMetadata, event audit.Event) error {
+	err := s.appendAudit(transportAuditEvent(metadata, event))
+	if err != nil {
+		s.log().Warn("persistent transport audit event failed", "event_type", event.Type, "error", err)
+	}
+	return err
 }
 
 func transportAuditEvent(metadata TransportMetadata, event audit.Event) audit.Event {

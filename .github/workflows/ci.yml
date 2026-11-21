@@ -255,3 +255,5 @@ jobs:
         run: env -u SUPABASE_INTERNAL_IMAGE_REGISTRY supabase test db
       - name: Test concurrent tenant membership revocation and enrollment
         run: bash ./scripts/test-tenant-enrollment-race.sh
+      - name: Verify connection-grant expiry after a device lock wait
+        run: ./scripts/test-connection-grant-expiration.sh

@@ -21,6 +21,14 @@ func Load(dir string) (*Identity, error) {
 	if err := requireRegularFile(certPath, "identity certificate"); err != nil {
 		return nil, err
 	}
+	unlockCertificate, err := lockIdentityCertificate(certPath, false)
+	if err != nil {
+		return nil, fmt.Errorf("lock identity certificate for load: %w", err)
+	}
+	defer unlockCertificate()
+	if err := requireRegularFile(certPath, "identity certificate"); err != nil {
+		return nil, err
+	}
 
 	priv, err := loadExistingPrivateKey(dir)
 	if err != nil {
