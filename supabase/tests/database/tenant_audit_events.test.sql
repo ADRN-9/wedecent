@@ -13,6 +13,7 @@ values
     ('41000000-0000-4000-8000-000000000005', 'authenticated', 'authenticated', 'audit-former-member@example.test');
 
 select set_config('request.jwt.claim.sub', '41000000-0000-4000-8000-000000000001', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 select set_config('request.jwt.claim.role', 'authenticated', true);
 
 insert into public.organizations (id, name, slug, created_by)
@@ -143,14 +144,10 @@ select set_config('request.jwt.claim.sub', '41000000-0000-4000-8000-000000000001
 
 select lives_ok(
     $$
-        insert into public.device_access (
-            device_id, user_id, permission, granted_by, expires_at
-        )
-        values (
+        select public.create_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '41000000-0000-4000-8000-000000000003',
             'terminal.connect',
-            '41000000-0000-4000-8000-000000000001',
             now() + interval '1 minute'
         )
     $$,
@@ -159,21 +156,23 @@ select lives_ok(
 
 select lives_ok(
     $$
-        update public.device_access
-           set expires_at = now() + interval '2 minutes'
-         where device_id = 'wd_aaaaaaaaaaaaaaaa'
-           and user_id = '41000000-0000-4000-8000-000000000003'
-           and permission = 'terminal.connect'
+        select public.update_device_access_grant_expiry(
+            'wd_aaaaaaaaaaaaaaaa',
+            '41000000-0000-4000-8000-000000000003',
+            'terminal.connect',
+            now() + interval '2 minutes'
+        )
     $$,
     'organization owner can update device access expiry'
 );
 
 select lives_ok(
     $$
-        delete from public.device_access
-         where device_id = 'wd_aaaaaaaaaaaaaaaa'
-           and user_id = '41000000-0000-4000-8000-000000000003'
-           and permission = 'terminal.connect'
+        select public.revoke_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '41000000-0000-4000-8000-000000000003',
+            'terminal.connect'
+        )
     $$,
     'organization owner can revoke device access'
 );

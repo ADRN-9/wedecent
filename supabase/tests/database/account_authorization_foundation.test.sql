@@ -177,8 +177,8 @@ select is(
               'connection_grants'
           )
     ),
-    14::bigint,
-    'expected account-authorization RLS policy set is installed'
+    11::bigint,
+    'expected account-authorization policy set excludes direct device-access writes'
 );
 
 select * from finish();
