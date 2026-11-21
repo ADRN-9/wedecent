@@ -25,10 +25,13 @@ LOCK_PID=""
 ISSUER_PID=""
 TMP_DIR="$(mktemp -d)"
 
+PSQL_ARGS=(
+  -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME"
+  -X -q -v ON_ERROR_STOP=1
+)
+
 psql_test() {
-  PGPASSWORD="$DB_PASSWORD" psql \
-    -h "$DB_HOST" -p "$DB_PORT" -U "$DB_USER" -d "$DB_NAME" \
-    -X -q -v ON_ERROR_STOP=1 "$@"
+  PGPASSWORD="$DB_PASSWORD" psql "${PSQL_ARGS[@]}" "$@"
 }
 
 cleanup_fixture() {
@@ -91,7 +94,7 @@ psql_test -c "
 "
 
 # Hold the target row lock in a separate psql session.
-psql_test -Atc "
+PGPASSWORD="$DB_PASSWORD" psql "${PSQL_ARGS[@]}" -Atc "
   BEGIN;
   SELECT device_id FROM public.devices WHERE device_id = '$TARGET_DEVICE' FOR UPDATE;
   SELECT 'WD_GRANT_LOCK_HELD';
@@ -115,7 +118,7 @@ done
 [[ "$lock_held" == true ]] || fail 'timed out waiting for target device row lock'
 
 # The grant issuer must be observed waiting on that exact device-row lock.
-PGAPPNAME="$ISSUER_APP" psql_test -c "
+PGPASSWORD="$DB_PASSWORD" PGAPPNAME="$ISSUER_APP" psql "${PSQL_ARGS[@]}" -c "
   SET ROLE service_role;
   SELECT (public.issue_connection_grant(
     '$CLIENT_USER'::uuid, '$CLIENT_DEVICE', '$TARGET_DEVICE'

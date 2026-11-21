@@ -29,9 +29,9 @@ SELECT ok(
   'authenticated and anon cannot execute the service-role grant issuer'
 );
 
-SELECT like(
-  pg_get_functiondef('public.issue_connection_grant(uuid,text,text)'::regprocedure),
-  '%grant_now := clock_timestamp()%',
+SELECT ok(
+  pg_get_functiondef('public.issue_connection_grant(uuid,text,text)'::regprocedure)
+    LIKE '%grant_now := clock_timestamp()%',
   'grant authorization uses one wall-clock timestamp after device row locks'
 );
 

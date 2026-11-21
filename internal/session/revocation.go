@@ -34,13 +34,13 @@ type terminalSessionPTY interface {
 type terminalPTYStarter func(string, uint16, uint16, string) (terminalSessionPTY, error)
 
 type activeTerminalSession struct {
-	server          *Server
-	ID              string
-	clientID        string
-	fingerprint     string
-	generation      string
-	transport       string
-	rawConn         net.Conn
+	server      *Server
+	ID          string
+	clientID    string
+	fingerprint string
+	generation  string
+	transport   string
+	rawConn     net.Conn
 
 	mu              sync.Mutex
 	finished        bool
