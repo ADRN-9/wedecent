@@ -142,7 +142,7 @@ select throws_ok(
         )
     $$,
     '42501',
-    null,
+    'new row violates row-level security policy for table "organization_memberships"',
     'former creator cannot add members to another organization'
 );
 
@@ -159,7 +159,7 @@ select throws_ok(
         )
     $$,
     '42501',
-    null,
+    'new row violates row-level security policy for table "device_access"',
     'former creator cannot grant access to another organization device'
 );
 
@@ -323,7 +323,7 @@ select throws_ok(
         )
     $$,
     '42501',
-    null,
+    'new row violates row-level security policy for table "organization_memberships"',
     'organization owner cannot administer another organization memberships'
 );
 
