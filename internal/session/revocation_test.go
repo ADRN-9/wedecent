@@ -92,12 +92,12 @@ type revocationObservedConn struct {
 	mu sync.Mutex
 	armed bool
 	writes int
-	secondWrite chan struct{}
-	secondOnce sync.Once
+	firstWrite chan struct{}
+	firstOnce sync.Once
 }
 
 func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
-	return &revocationObservedConn{Conn: conn, secondWrite: make(chan struct{})}
+	return &revocationObservedConn{Conn: conn, firstWrite: make(chan struct{})}
 }
 
 func (c *revocationObservedConn) arm() {
@@ -111,8 +111,8 @@ func (c *revocationObservedConn) Write(buffer []byte) (int, error) {
 	c.mu.Lock()
 	if c.armed {
 		c.writes++
-		if c.writes >= 2 {
-			c.secondOnce.Do(func() { close(c.secondWrite) })
+		if c.writes >= 1 {
+			c.firstOnce.Do(func() { close(c.firstWrite) })
 		}
 	}
 	c.mu.Unlock()
@@ -417,6 +417,13 @@ func (r *revocationTestRig) open(client *identity.Identity, kind TransportKind, 
 	return conn, nil
 }
 
+func (r *revocationTestRig) ptyCount() int {
+	r.t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.ptys)
+}
+
 func (r *revocationTestRig) ptyAt(index int) *revocationTestPTY {
 	r.t.Helper()
 	deadline := time.Now().Add(2 * time.Second)
@@ -561,7 +568,20 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 		t.Fatal(err)
 	}
 	clientTransport.enable()
-	observedServer.arm()
+	hookEntered := make(chan struct{})
+	releaseHook := make(chan struct{})
+	var hookMu sync.Mutex
+	hookCalls := 0
+	rig.server.afterSessionAccepted = func() {
+		hookMu.Lock()
+		hookCalls++
+		call := hookCalls
+		hookMu.Unlock()
+		if call == 1 {
+			close(hookEntered)
+			<-releaseHook
+		}
+	}
 	if err := rig.sendOpen(conn, TransportDirectTCP, false); err != nil {
 		t.Fatal(err)
 	}
@@ -569,17 +589,24 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 		t.Fatal(err)
 	}
 	_ = conn.SetDeadline(time.Time{})
-
-	// The first post-handshake server write is SessionAccepted. The second is
-	// the flood PTY output; with this TLS 1.3 peer no longer reading, it blocks.
 	select {
-	case <-observedServer.secondWrite:
+	case <-hookEntered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("first session did not reach the post-acceptance barrier")
+	}
+	observedServer.arm()
+	close(releaseHook)
+
+	// The PTY read starts only after the hook releases. The peer stops reading,
+	// so the first TLS application write blocks in the underlying net.Conn.
+	select {
+	case <-observedServer.firstWrite:
 	case <-time.After(3 * time.Second):
 		t.Fatal("server TLS write did not saturate against the non-reading peer")
 	}
 	select {
 	case <-floodPTY.started:
-	default:
+	case <-time.After(3 * time.Second):
 		t.Fatal("flood PTY did not begin writing terminal output")
 	}
 
@@ -930,7 +957,9 @@ func TestRevocationDuringSessionAdmissionFailsClosed(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("session did not reach the final admission boundary")
 	}
-	pty := rig.ptyAt(0)
+	if rig.ptyCount() != 0 {
+		t.Fatal("PTY or shell started before final serialized authorization")
+	}
 	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -938,7 +967,9 @@ func TestRevocationDuringSessionAdmissionFailsClosed(t *testing.T) {
 	if err := rig.readAccepted(conn); err == nil || !strings.Contains(err.Error(), "unauthorized") {
 		t.Fatalf("session admission after concurrent revoke = %v, want unauthorized", err)
 	}
-	waitRevocationPTYClosed(t, pty)
+	if got := rig.ptyCount(); got != 0 {
+		t.Fatalf("rejected session started %d PTYs", got)
+	}
 	_ = conn.Close()
 
 	rig.server.activeSessionsMu.Lock()
@@ -946,5 +977,85 @@ func TestRevocationDuringSessionAdmissionFailsClosed(t *testing.T) {
 	rig.server.activeSessionsMu.Unlock()
 	if activeCount != 0 {
 		t.Fatalf("failed admission left %d active session records", activeCount)
+	}
+}
+
+func TestAdmissionReservationFirstThenRevocationCleansEstablishedSession(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("admission-first-client")
+	ptyStarted := make(chan struct{})
+	release := make(chan struct{})
+	rig.server.afterSessionAccepted = func() {
+		close(ptyStarted)
+		<-release
+	}
+
+	conn := rig.dial(client, TransportDirectTCP)
+	if err := rig.sendOpen(conn, TransportDirectTCP, false); err != nil {
+		t.Fatal(err)
+	}
+	accepted := make(chan error, 1)
+	go func() { accepted <- rig.readAccepted(conn) }()
+	select {
+	case <-ptyStarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("session did not reserve admission and start its PTY")
+	}
+	if err := <-accepted; err != nil {
+		t.Fatalf("admission-first session was not accepted: %v", err)
+	}
+	if rig.ptyCount() != 1 {
+		t.Fatalf("PTY count after admission-first reservation = %d, want 1", rig.ptyCount())
+	}
+	rig.server.activeSessionsMu.Lock()
+	activeCount := len(rig.server.activeSessions)
+	rig.server.activeSessionsMu.Unlock()
+	if activeCount != 1 {
+		t.Fatalf("admission reservation count = %d, want 1", activeCount)
+	}
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	pty := rig.ptyAt(0)
+	waitRevocationPTYClosed(t, pty)
+	waitRevocationConnectionClosed(t, conn)
+	close(release)
+	_ = conn.Close()
+	waitRevocationSessionsIdle(t, rig.server)
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		opened, terminated, closed := 0, 0, 0
+		for _, event := range events {
+			if event.PeerID != client.ID {
+				continue
+			}
+			switch event.Type {
+			case "terminal.session_opened":
+				opened++
+			case "terminal.session_terminated":
+				terminated++
+			case "terminal.session_closed":
+				closed++
+			}
+		}
+		return opened == 1 && terminated == 1 && closed == 1
+	})
+	opened, terminated, closed := 0, 0, 0
+	for _, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		switch event.Type {
+		case "terminal.session_opened":
+			opened++
+		case "terminal.session_terminated":
+				if event.Reason == "client_revoked" { terminated++ }
+		case "terminal.session_closed":
+				if event.Reason == "client_revoked" { closed++ }
+		}
+	}
+	if opened != 1 || terminated != 1 || closed != 1 {
+		t.Fatalf("admission-first audit counts: opened=%d terminated=%d closed=%d", opened, terminated, closed)
 	}
 }

@@ -47,7 +47,7 @@ type Server struct {
 
 	// This per-server fault seam is nil in production.
 	beforeSessionAdmission func()
-	afterPTYStart          func()
+	afterSessionAccepted    func()
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 
@@ -541,9 +541,6 @@ func (s *Server) handleTerminal(rawConn net.Conn, conn *tls.Conn, first protocol
 		}
 	})
 	defer pty.Close()
-	if s.afterPTYStart != nil {
-		s.afterPTYStart()
-	}
 	if active.isTerminated() {
 		return
 	}
@@ -554,14 +551,17 @@ func (s *Server) handleTerminal(rawConn net.Conn, conn *tls.Conn, first protocol
 
 	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
-	if active.isTerminated() {
-		closeReason = active.reasonOr("client_revoked")
-		return
-	}
 	defer func() {
 		closeReason = active.reasonOr(closeReason)
 		s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_closed", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport, Reason: closeReason}, authorization)
 	}()
+	if s.afterSessionAccepted != nil {
+		s.afterSessionAccepted()
+	}
+	if active.isTerminated() {
+		closeReason = active.reasonOr("client_revoked")
+		return
+	}
 	s.log().Info("terminal opened", "client_id", peer.ID, "client_name", peer.Name)
 
 	var writeMu sync.Mutex
