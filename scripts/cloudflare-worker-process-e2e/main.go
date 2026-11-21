@@ -509,7 +509,7 @@ const maxPortStartAttempts = 5
 func startWithPortRetry(
 	allocatePort func() (int, error),
 	start func(int) (*managedProcess, error),
-	ready func(*managedProcess) error,
+	ready func(int, *managedProcess) error,
 ) (*managedProcess, int, error) {
 	var lastErr error
 	for attempt := 1; attempt <= maxPortStartAttempts; attempt++ {
@@ -522,7 +522,7 @@ func startWithPortRetry(
 			if process == nil {
 				return nil, 0, errors.New("process starter returned a nil process without an error")
 			}
-			err = ready(process)
+			err = ready(port, process)
 			if err == nil {
 				return process, port, nil
 			}
@@ -560,8 +560,8 @@ func startWorkerWithRetry(wrangler, workerDir, keyPath, certPath, persistDir str
 		func(port int) (*managedProcess, error) {
 			return startWorker(wrangler, workerDir, port, keyPath, certPath, persistDir)
 		},
-		func(worker *managedProcess) error {
-			return waitWorkerReady(client, "", worker, 30*time.Second)
+		func(port int, worker *managedProcess) error {
+			return waitWorkerReady(client, fmt.Sprintf("https://127.0.0.1:%d", port), worker, 30*time.Second)
 		},
 	)
 }
@@ -576,7 +576,7 @@ func startAgentWithRetry(agentBinary, agentState, root string, env []string, rel
 				"--web-relay", relayURL, "--relay-slots", "2", "--shell", "/bin/sh",
 			}, root, env, false)
 		},
-		func(agent *managedProcess) error {
+		func(_ int, agent *managedProcess) error {
 			return agent.waitForOutputCount("web relay slot parked", 2, 30*time.Second)
 		},
 	)

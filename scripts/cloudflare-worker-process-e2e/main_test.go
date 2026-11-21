@@ -32,7 +32,7 @@ func TestStartWithPortRetryRetriesAddressInUse(t *testing.T) {
 			started++
 			return testProcess(""), nil
 		},
-		func(*managedProcess) error {
+		func(_ int, *managedProcess) error {
 			if started == 1 {
 				return fmt.Errorf("listen tcp 127.0.0.1:%d: bind: address already in use", ports[0])
 			}
