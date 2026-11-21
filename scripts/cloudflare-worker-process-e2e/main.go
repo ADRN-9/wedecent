@@ -447,6 +447,19 @@ func run() error {
 	if err := waitWorkerReady(tlsClient, relayURL, worker, 30*time.Second); err != nil {
 		return fmt.Errorf("restarted Worker did not become ready: %w", err)
 	}
+	// Restart the independent agent against the restarted Worker, then prove
+	// that the still-authorized unrelated device can establish a fresh session.
+	agent, err = startManagedProcess(agentBinary, []string{
+		"serve", "--state", agentState, "--name", "worker-process-agent",
+		"--listen", net.JoinHostPort("127.0.0.1", strconv.Itoa(agentPort)),
+		"--web-relay", relayURL, "--relay-slots", "2", "--shell", "/bin/sh",
+	}, root, agentEnv, false)
+	if err != nil {
+		return fmt.Errorf("restart independent Go agent process: %w", err)
+	}
+	if err := agent.waitForOutputCount("web relay slot parked", 2, 30*time.Second); err != nil {
+		return fmt.Errorf("restarted agent did not register Worker relay slots: %w", err)
+	}
 	if err := verifyGrantEvidence(tlsClient, relayURL, agentIdentity, agentID, clientAID, grantA); err != nil {
 		return fmt.Errorf("client A Durable Object evidence did not survive Worker restart: %w", err)
 	}
@@ -464,19 +477,6 @@ func run() error {
 		return fmt.Errorf("replayed client B grant was accepted after Worker restart: %w", err)
 	}
 
-	// Restart the independent agent against the restarted Worker, then prove
-	// that the still-authorized unrelated device can establish a fresh session.
-	agent, err = startManagedProcess(agentBinary, []string{
-		"serve", "--state", agentState, "--name", "worker-process-agent",
-		"--listen", net.JoinHostPort("127.0.0.1", strconv.Itoa(agentPort)),
-		"--web-relay", relayURL, "--relay-slots", "2", "--shell", "/bin/sh",
-	}, root, agentEnv, false)
-	if err != nil {
-		return fmt.Errorf("restart independent Go agent process: %w", err)
-	}
-	if err := agent.waitForOutputCount("web relay slot parked", 2, 30*time.Second); err != nil {
-		return fmt.Errorf("restarted agent did not register Worker relay slots: %w", err)
-	}
 	grantB2, err := issueConnectionGrant(grantPrivate, grantKID, clientBID, agentID)
 	if err != nil {
 		return fmt.Errorf("issue fresh post-restart grant for unrelated client B: %w", err)

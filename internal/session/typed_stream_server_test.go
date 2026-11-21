@@ -279,7 +279,7 @@ func TestTypedTerminalServerPTYCleanupFailureClosesStreamAndPersistsError(t *tes
 		t.Fatal("stream remained logically open after PTY close failure")
 	}
 	if len(events) != 2 || events[1].Type != "terminal.stream_closed" ||
-		events[1].Outcome != "failed" || events[1].Reason != "client_revoked" {
+		events[1].Outcome != "failed" || events[1].Reason != "peer_close" {
 		t.Fatalf("stream audit events = %#v", events)
 	}
 	if err := server.CloseAllWithReason("client_revoked"); !errors.Is(err, closeFailure) {
