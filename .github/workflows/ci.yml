@@ -71,6 +71,8 @@ jobs:
         run: go test ./...
       - name: Test with race detector
         run: go test -race ./...
+      - name: Repeat typed-session close-reason race regressions
+        run: go test -race ./internal/session -run '^TestTypedSessionCloseReason' -count=50
       - name: Direct transport smoke test
         run: ./scripts/smoke-direct.sh
       - name: Outbound-only relay smoke test
