@@ -101,75 +101,21 @@ Only the disposable E2E agent binary is built with the wedecent_smoke_test build
 
 ## Verification commands
 
-The current Linux CI job executes the following commands successfully on each exact PR head in the verification snapshot below:
+The current Linux CI job executes the following commands successfully on the exact implementation heads listed below:
 
     go test ./...
     go test -race ./...
     go test -race ./internal/session -run '^TestTypedSessionCloseReason' -count=50
     go run ./scripts/cloudflare-worker-process-e2e
 
-The complete focused close-reason race command is:
+The PTY cleanup, buffered StreamOpen, in-flight reservation, and production-handler audit regressions are included in both full Go test commands. The isolated parent-admission reproductions are:
 
-    go test -race ./internal/session -run '^TestTypedSessionCloseReason' -count=50
+    go test -race ./internal/session -run TestDispatchTypedSessionFrameRejectsBufferedOpenAfterRevocation -count=1
+    go test -race ./internal/session -run TestTypedTerminalServerRejectsBufferedOpenAfterParentCleanup -count=1
+    go test -race ./internal/session -run TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen -count=1
+    go test -race ./internal/session -run TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure -count=1
 
-It runs all typed-session close-reason regressions 50 times. The PTY cleanup and production-handler audit regressions are included in both full Go test commands. For an isolated reproduction, run:
-
-    go test -race ./internal/session -run '^(TestTypedTerminalAuditTrackerReportsPTYCleanupFailure|TestTypedTerminalServerPTYCleanupFailureClosesStreamAndPersistsError|TestTypedTerminalServerParentCleanupWaitsForInFlightStreamClose|TestTypedHandlerPTYCleanupFailureAuditsStreamTerminationAndSessionClose|TestRevocationPTYCleanupFailureMarksTerminationAndCloseAuditFailed)$' -count=1
-
-For isolated reproduction of the new parent-session admission race regressions, run:
-
-    go test -race ./internal/session -run '^(TestDispatchTypedSessionFrameRejectsBufferedOpenAfterRevocation|TestTypedTerminalServerRejectsBufferedOpenAfterParentCleanup|TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen|TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure)
-
-    cd cloudflare/relay-worker && npm test
-    npx wrangler deploy --dry-run
-    supabase test db
-    ./scripts/test-connection-grant-expiration.sh
-
-The Wrangler dry-run and in-memory Worker tests are not substitutes for the local process integration, and none of these commands constitutes production Cloudflare or physical/offline real-hardware validation. Results must be attributed to the exact tested commit and workflow run; source changes alone are not proof.
-
-## Exact-head PR stack verification snapshot — 2026-11-21
-
-The following implementation and documentation heads were checked in this remediation cycle. CI workflow ID is `342513994`; desktop-shell workflow ID is `367426414`. Each listed CI run completed 10/10 jobs, and each listed desktop run completed all three platform jobs.
-
-| PR | Verified HEAD | Base HEAD | CI run | Desktop run |
-|---|---|---|---|---|
-| #179 | `20e1b1842df9577e34d42827d2efce8bf817b6e0` | `ed0bb462d829430eb50c7b2a6a74161854f62c73` | [44955760142](https://github.com/ADRN-9/wedecent/actions/runs/44955760142) | [44955760172](https://github.com/ADRN-9/wedecent/actions/runs/44955760172) |
-| #180 | `424e3e75cff6204d826a108f0b8aa7b61014e8ce` | `20e1b1842df9577e34d42827d2efce8bf817b6e0` | [44956153046](https://github.com/ADRN-9/wedecent/actions/runs/44956153046) | [44956153051](https://github.com/ADRN-9/wedecent/actions/runs/44956153051) |
-| #181 | `84e855f4791fb1523cdffccf366253c7fb2d254a` | `424e3e75cff6204d826a108f0b8aa7b61014e8ce` | [44956173311](https://github.com/ADRN-9/wedecent/actions/runs/44956173311) | [44956173301](https://github.com/ADRN-9/wedecent/actions/runs/44956173301) |
-| #182 | `e378fade5109ca38bd32dc4802f9897ec1e7243e` | `84e855f4791fb1523cdffccf366253c7fb2d254a` | [44956300342](https://github.com/ADRN-9/wedecent/actions/runs/44956300342) | [44956300369](https://github.com/ADRN-9/wedecent/actions/runs/44956300369) |
-
-The PR #182 row is the exact head before this final documentation snapshot refresh. This subsequent documentation-only commit is validated by its own exact-head CI and desktop runs, which are recorded in the current PR #182 description.
-
-## Repository governance findings — 2026-11-21
-
-The repository-level active ruleset Protect main (ID 21507567) targets only the default branch (~DEFAULT_BRANCH). It does not target the stacked feature branches used by PRs #179–#182.
-
-The visible ruleset's pull-request rule currently sets:
-
-- required_approving_review_count = 0;
-- no required reviewers;
-- code-owner review disabled;
-- last-push approval disabled;
-- stale-review dismissal disabled;
-- required review-thread resolution enabled.
-
-Its required status checks are route-capability-client, route-e2e, linux, windows-agent, windows-release, relay-worker, control-plane, and supabase-db. Strict required-status-check policy is disabled. The ruleset does not require macos-agent, relay-worker-process-e2e, or the desktop-shell checks linux-tauri-check, windows-tauri-check, and macos-tauri-check.
-
-The classic branch-protection endpoint returned HTTP 403 (Resource not accessible by integration) for the default branch and the PR #179 base branch. The repository metadata response reports admin permission, but the connected GitHub tool exposes no branch-protection/ruleset mutation action and the classic protection read is forbidden. The other stacked target branches therefore cannot be verified for classic protection through this connection. No ruleset or branch-protection change was made.
-
-Independent approval is not enforced by the visible ruleset. Complete required-check enforcement is not present. Because the ruleset only applies to the default branch and classic protection on stacked targets could not be inspected, safe merging of the stacked PRs without bypassing protection cannot be established.
-
-Required administrator configuration before merging:
-
-1. Apply a ruleset to the stacked branches (for example, the explicit security/* branches used by this release stack).
-2. Require at least one independent approval and disallow approval by the last pusher; dismiss stale approvals after pushes.
-3. Require strict status checks for Linux, Windows, macOS agent, Windows release, relay Worker, Worker process E2E, route capability, route E2E, control plane, Supabase DB, and all three desktop-shell platform checks.
-4. Keep bypass actors empty or explicitly restricted to the minimum emergency role.
-
-No PR was merged. PRs #179–#182 remain open, draft, and unmerged. No production infrastructure, database, credential, trust-anchor, signing, or deployment operation was performed.
- -count=1
-
-These four regressions ran as part of the full `go test ./...` and `go test -race ./...` suites on each exact implementation head above. The isolated command was not separately recorded as a standalone CI step.
+These isolated commands are provided for reproduction; they were not separately recorded as standalone CI steps. The four regressions did run within the full \`go test ./...\` and \`go test -race ./...\` suites on the exact implementation heads below.
 
 Other relevant verification commands:
 
@@ -182,40 +128,40 @@ The Wrangler dry-run and in-memory Worker tests are not substitutes for the loca
 
 ## Exact-head PR stack verification snapshot — 2026-11-21
 
-The following implementation and documentation heads were checked in this remediation cycle. CI workflow ID is `342513994`; desktop-shell workflow ID is `367426414`. Each listed CI run completed 10/10 jobs, and each listed desktop run completed all three platform jobs.
+The following implementation and documentation heads were verified in this remediation cycle. CI workflow ID is \`342513994\`; desktop-shell workflow ID is \`367426414\`. Each listed CI run completed 10/10 jobs, and each listed desktop run completed all three platform jobs.
 
 | PR | Verified HEAD | Base HEAD | CI run | Desktop run |
 |---|---|---|---|---|
-| #179 | `20e1b1842df9577e34d42827d2efce8bf817b6e0` | `ed0bb462d829430eb50c7b2a6a74161854f62c73` | [44955760142](https://github.com/ADRN-9/wedecent/actions/runs/44955760142) | [44955760172](https://github.com/ADRN-9/wedecent/actions/runs/44955760172) |
-| #180 | `424e3e75cff6204d826a108f0b8aa7b61014e8ce` | `20e1b1842df9577e34d42827d2efce8bf817b6e0` | [44956153046](https://github.com/ADRN-9/wedecent/actions/runs/44956153046) | [44956153051](https://github.com/ADRN-9/wedecent/actions/runs/44956153051) |
-| #181 | `84e855f4791fb1523cdffccf366253c7fb2d254a` | `424e3e75cff6204d826a108f0b8aa7b61014e8ce` | [44956173311](https://github.com/ADRN-9/wedecent/actions/runs/44956173311) | [44956173301](https://github.com/ADRN-9/wedecent/actions/runs/44956173301) |
-| #182 | `e378fade5109ca38bd32dc4802f9897ec1e7243e` | `84e855f4791fb1523cdffccf366253c7fb2d254a` | [44956300342](https://github.com/ADRN-9/wedecent/actions/runs/44956300342) | [44956300369](https://github.com/ADRN-9/wedecent/actions/runs/44956300369) |
+| #179 | \`20e1b1842df9577e34d42827d2efce8bf817b6e0\` | \`ed0bb462d829430eb50c7b2a6a74161854f62c73\` | [44955760142](https://github.com/ADRN-9/wedecent/actions/runs/44955760142) | [44955760172](https://github.com/ADRN-9/wedecent/actions/runs/44955760172) |
+| #180 | \`424e3e75cff6204d826a108f0b8aa7b61014e8ce\` | \`20e1b1842df9577e34d42827d2efce8bf817b6e0\` | [44956153046](https://github.com/ADRN-9/wedecent/actions/runs/44956153046) | [44956153051](https://github.com/ADRN-9/wedecent/actions/runs/44956153051) |
+| #181 | \`84e855f4791fb1523cdffccf366253c7fb2d254a\` | \`424e3e75cff6204d826a108f0b8aa7b61014e8ce\` | [44956173311](https://github.com/ADRN-9/wedecent/actions/runs/44956173311) | [44956173301](https://github.com/ADRN-9/wedecent/actions/runs/44956173301) |
+| #182 | \`e378fade5109ca38bd32dc4802f9897ec1e7243e\` | \`84e855f4791fb1523cdffccf366253c7fb2d254a\` | [44956300342](https://github.com/ADRN-9/wedecent/actions/runs/44956300342) | [44956300369](https://github.com/ADRN-9/wedecent/actions/runs/44956300369) |
 
-The PR #182 row is the exact head before this final documentation snapshot refresh. This subsequent documentation-only commit is validated by its own exact-head CI and desktop runs, which are recorded in the current PR #182 description.
+The PR #182 row is the implementation/documentation HEAD before this final documentation-only cleanup. The cleanup commit's exact HEAD and its own CI/desktop runs are recorded in the current PR #182 description.
 
 ## Repository governance findings — 2026-11-21
 
-The repository-level active ruleset Protect main (ID 21507567) targets only the default branch (~DEFAULT_BRANCH). It does not target the stacked feature branches used by PRs #179–#182.
+The only active repository ruleset returned by the GitHub API is \`Protect main\` (ID \`21507567\`), targeting only the default branch (\`~DEFAULT_BRANCH\`). It does not target the stacked feature branches used by PRs #179–#182.
 
 The visible ruleset's pull-request rule currently sets:
 
-- required_approving_review_count = 0;
-- no required reviewers;
-- code-owner review disabled;
+- \`required_approving_review_count = 0\`;
+- no required reviewers and code-owner review disabled;
 - last-push approval disabled;
 - stale-review dismissal disabled;
-- required review-thread resolution enabled.
+- required review-thread resolution enabled;
+- strict required-status-check policy disabled.
 
-Its required status checks are route-capability-client, route-e2e, linux, windows-agent, windows-release, relay-worker, control-plane, and supabase-db. Strict required-status-check policy is disabled. The ruleset does not require macos-agent, relay-worker-process-e2e, or the desktop-shell checks linux-tauri-check, windows-tauri-check, and macos-tauri-check.
+The ruleset has no bypass actors, and the integration reports \`current_user_can_bypass=never\` for this default-branch ruleset. Its required status checks are \`route-capability-client\`, \`route-e2e\`, \`linux\`, \`windows-agent\`, \`windows-release\`, \`relay-worker\`, \`control-plane\`, and \`supabase-db\`. It does not require \`macos-agent\`, \`relay-worker-process-e2e\`, or the desktop-shell checks \`linux-tauri-check\`, \`windows-tauri-check\`, and \`macos-tauri-check\`.
 
-The classic branch-protection endpoint returned HTTP 403 (Resource not accessible by integration) for the default branch and the PR #179 base branch. The repository metadata response reports admin permission, but the connected GitHub tool exposes no branch-protection/ruleset mutation action and the classic protection read is forbidden. The other stacked target branches therefore cannot be verified for classic protection through this connection. No ruleset or branch-protection change was made.
+The classic branch-protection endpoint returned HTTP 403 (\`Resource not accessible by integration\`) for the default branch and PR #179's target branch. Repository metadata reports admin permission, but the connected GitHub integration exposes no ruleset/branch-protection mutation action and the classic protection read is forbidden. Protection on the other stacked target branches therefore cannot be verified through this connection. No ruleset or branch-protection change was made.
 
-Independent approval is not enforced by the visible ruleset. Complete required-check enforcement is not present. Because the ruleset only applies to the default branch and classic protection on stacked targets could not be inspected, safe merging of the stacked PRs without bypassing protection cannot be established.
+Independent approval is not enforced by the visible ruleset, and complete Linux/Windows/macOS/integration/desktop status-check enforcement is absent. Because the ruleset does not apply to the stack branches and classic protection could not be inspected, safe merging without bypass cannot be established.
 
 Required administrator configuration before merging:
 
-1. Apply a ruleset to the stacked branches (for example, the explicit security/* branches used by this release stack).
-2. Require at least one independent approval and disallow approval by the last pusher; dismiss stale approvals after pushes.
+1. Apply a ruleset to the stacked branches (for example, the explicit \`security/*\` branches used by this release stack).
+2. Require at least one independent approval, disallow approval by the last pusher, and dismiss stale approvals after pushes.
 3. Require strict status checks for Linux, Windows, macOS agent, Windows release, relay Worker, Worker process E2E, route capability, route E2E, control plane, Supabase DB, and all three desktop-shell platform checks.
 4. Keep bypass actors empty or explicitly restricted to the minimum emergency role.
 
