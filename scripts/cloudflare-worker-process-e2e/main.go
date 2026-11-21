@@ -201,7 +201,9 @@ func run() error {
 	if output, err := runCommand(ctx, root, nil, "go", "build", "-trimpath", "-buildvcs=false", "-o", wd, "./cmd/wd"); err != nil {
 		return fmt.Errorf("build wd: %w\n%s", err, output)
 	}
-	if output, err := runCommand(ctx, root, nil, "go", "build", "-trimpath", "-buildvcs=false", "-o", agentBinary, "./cmd/wd-agent"); err != nil {
+	// This disposable integration agent needs the build-tagged loopback authorization origin
+	// to verify evidence from the local Worker. Production builds keep the strict origin allowlist.
+	if output, err := runCommand(ctx, root, nil, "go", "build", "-trimpath", "-buildvcs=false", "-tags", "wedecent_smoke_test", "-o", agentBinary, "./cmd/wd-agent"); err != nil {
 		return fmt.Errorf("build wd-agent: %w\n%s", err, output)
 	}
 
@@ -343,8 +345,10 @@ func run() error {
 	defer clientA.stop()
 	auditPath := filepath.Join(agentState, "audit.jsonl")
 	if _, err := waitForAudit(auditPath, func(events []audit.Event) bool {
-		return hasEvent(events, "terminal.session_opened", clientAID, "") &&
-			hasEvent(events, "terminal.stream_opened", clientAID, "")
+		// wd connect currently uses the legacy terminal protocol, so assert its
+		// session authorization/open audits rather than typed-stream events.
+		return hasAuditEvent(events, "terminal.authorization", clientAID, "success", "") &&
+			hasAuditEvent(events, "terminal.session_opened", clientAID, "success", "")
 	}, 20*time.Second); err != nil {
 		return fmt.Errorf("client A did not establish a terminal session: %w\n%s", err, clientA.output.String())
 	}
@@ -369,10 +373,10 @@ func run() error {
 	}
 	defer clientB.stop()
 	if _, err := waitForAudit(auditPath, func(events []audit.Event) bool {
-		return hasEvent(events, "terminal.session_opened", clientAID, "") &&
-			hasEvent(events, "terminal.stream_opened", clientAID, "") &&
-			hasEvent(events, "terminal.session_opened", clientBID, "") &&
-			hasEvent(events, "terminal.stream_opened", clientBID, "")
+		return hasAuditEvent(events, "terminal.authorization", clientAID, "success", "") &&
+			hasAuditEvent(events, "terminal.session_opened", clientAID, "success", "") &&
+			hasAuditEvent(events, "terminal.authorization", clientBID, "success", "") &&
+			hasAuditEvent(events, "terminal.session_opened", clientBID, "success", "")
 	}, 20*time.Second); err != nil {
 		return fmt.Errorf("two independent terminal sessions were not established: %w\nA=%s\nB=%s", err, clientA.output.String(), clientB.output.String())
 	}
@@ -402,15 +406,14 @@ func run() error {
 
 	events, err := waitForAudit(auditPath, func(events []audit.Event) bool {
 		return hasEvent(events, "trust.client_revoke", clientAID, "success") &&
-			hasEvent(events, "terminal.stream_closed", clientAID, "client_revoked") &&
-			hasEvent(events, "terminal.session_terminated", clientAID, "client_revoked") &&
-			hasEvent(events, "terminal.session_closed", clientAID, "client_revoked")
+			hasAuditEvent(events, "terminal.session_terminated", clientAID, "success", "client_revoked") &&
+			hasAuditEvent(events, "terminal.session_closed", clientAID, "success", "client_revoked")
 	}, 20*time.Second)
 	if err != nil {
 		return fmt.Errorf("revocation audit outcomes are incomplete: %w", err)
 	}
-	if hasEvent(events, "terminal.session_closed", clientBID, "") ||
-		hasEvent(events, "terminal.stream_closed", clientBID, "client_revoked") {
+	if hasAuditType(events, "terminal.session_terminated", clientBID) ||
+		hasAuditType(events, "terminal.session_closed", clientBID) {
 		return errors.New("independent client B was closed during client A revocation")
 	}
 
@@ -731,6 +734,25 @@ func hasEvent(events []audit.Event, eventType, peerID, reasonOrOutcome string) b
 			continue
 		}
 		if event.Reason == reasonOrOutcome {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAuditEvent(events []audit.Event, eventType, peerID, outcome, reason string) bool {
+	for _, event := range events {
+		if event.Type == eventType && event.PeerID == peerID &&
+			event.Outcome == outcome && event.Reason == reason {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAuditType(events []audit.Event, eventType, peerID string) bool {
+	for _, event := range events {
+		if event.Type == eventType && event.PeerID == peerID {
 			return true
 		}
 	}
