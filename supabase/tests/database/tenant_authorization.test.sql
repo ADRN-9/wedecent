@@ -327,21 +327,17 @@ select throws_ok(
     'organization owner cannot administer another organization memberships'
 );
 
-select is(
-    (
-        with changed as (
-            update public.organizations
-               set name = 'Cross-tenant rename'
-             where id = '20000000-0000-4000-8000-000000000001'
-            returning 1
-        )
-        select count(*)::bigint from changed
-    ),
-    0::bigint,
-    'organization owner cannot update another organization'
-);
+update public.organizations
+   set name = 'Cross-tenant rename'
+ where id = '20000000-0000-4000-8000-000000000001';
 
 reset role;
+
+select is(
+    (select name from public.organizations where id = '20000000-0000-4000-8000-000000000001'),
+    'Organization A',
+    'organization owner cannot update another organization'
+);
 
 select * from finish();
 rollback;
