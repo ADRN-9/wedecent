@@ -69,6 +69,9 @@ The repository also does not yet provide an organization-level SSO/RBAC-group/se
 - cross-tenant terminal grant denial;
 - organization-device unassignment and enrollment denial without current owner/admin membership;
 - successful enrollment by a current organization owner;
-- preservation of the documented direct device-owner visibility path.
+- preservation of the documented direct device-owner visibility path;
+- explicit execute-privilege checks proving `anon` and `authenticated` cannot execute the enrollment RPC and `service_role` can.
 
-The test suite must run through the repository's disposable Supabase database CI job on the exact PR head before the remediation is considered verified. No hosted/production Supabase database is modified by this change.
+The pgTAP file has 29 assertion calls and declares `plan(29)`. Its eight dollar-quote delimiters are paired `$` tokens.
+
+A separate `scripts/test-tenant-enrollment-race.sh` harness uses two independent PostgreSQL sessions and waits on `pg_stat_activity` lock/sleep wait events to test both serialization orders: enrollment locks membership first and revocation waits, and revocation deletes membership first and enrollment waits then fails closed without consuming its challenge. The `supabase-db` CI job runs this harness against the disposable local Supabase database after pgTAP. This worker cannot run Docker/psql/Supabase locally, so the harness remains unverified until that exact-head CI job completes. No hosted/production Supabase database is modified by this change.
