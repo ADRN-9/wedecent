@@ -20,10 +20,10 @@ type fakeTypedPTY struct {
 	resizeErr error
 	writeErr  error
 	closed    chan struct{}
-	closeOne  sync.Once
-	closeErr     error
-	closeStarted chan struct{}
-	closeRelease chan struct{}
+	closeOne       sync.Once
+	closeErr       error
+	closeStarted   chan struct{}
+	closeRelease   chan struct{}
 	closeStartOnce sync.Once
 }
 

@@ -444,10 +444,10 @@ func (s *typedTerminalServer) CloseAllWithReason(reason string) error {
 	for streamID, child := range children {
 		func() {
 			defer s.closeWG.Done()
-		child.closeOnce.Do(func() {
-			close(child.done)
-			child.closeErr = child.pty.Close()
-		})
+			child.closeOnce.Do(func() {
+				close(child.done)
+				child.closeErr = child.pty.Close()
+			})
 			_ = s.recordClose(streamID, reason, child.closeErr)
 		}()
 	}
