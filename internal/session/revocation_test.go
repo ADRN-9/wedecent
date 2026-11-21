@@ -78,7 +78,6 @@ type revocationObservedConn struct {
 	net.Conn
 	mu                sync.Mutex
 	armed             bool
-	firstWrite        chan struct{}
 	writeBlocked      chan struct{}
 	firstOnce         sync.Once
 	firstWriteBytes   []byte
@@ -90,7 +89,7 @@ type revocationObservedConn struct {
 
 func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
 	return &revocationObservedConn{
-		Conn: conn, firstWrite: make(chan struct{}), writeBlocked: make(chan struct{}),
+		Conn: conn, writeBlocked: make(chan struct{}),
 		writeReturned: make(chan struct{}), closed: make(chan struct{}),
 	}
 }
@@ -114,7 +113,6 @@ func (c *revocationObservedConn) Write(buffer []byte) (int, error) {
 	if armed {
 		c.firstOnce.Do(func() {
 			c.firstWriteBytes = append([]byte(nil), buffer...)
-			close(c.firstWrite)
 			close(c.writeBlocked)
 		})
 	}

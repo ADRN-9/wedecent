@@ -292,7 +292,6 @@ func TestDialWebSocketRoundTrip(t *testing.T) {
 
 type wsAbortObservedConn struct {
 	net.Conn
-	started      chan struct{}
 	blocked      chan struct{}
 	returned     chan struct{}
 	closed       chan struct{}
@@ -303,7 +302,6 @@ type wsAbortObservedConn struct {
 
 func (c *wsAbortObservedConn) Write(p []byte) (int, error) {
 	c.once.Do(func() {
-		close(c.started)
 		close(c.blocked)
 	})
 	<-c.closed
@@ -340,7 +338,7 @@ func (c *wsAbortCountingConn) Close() error {
 func TestWSNetConnAbortUnblocksBlockedWriterWithoutWriteMutex(t *testing.T) {
 	client, peer := net.Pipe()
 	defer peer.Close()
-	observed := &wsAbortObservedConn{Conn: client, started: make(chan struct{}), blocked: make(chan struct{}), returned: make(chan struct{}), closed: make(chan struct{})}
+	observed := &wsAbortObservedConn{Conn: client, blocked: make(chan struct{}), returned: make(chan struct{}), closed: make(chan struct{})}
 	conn := &wsNetConn{raw: observed, br: bufio.NewReader(observed), done: make(chan struct{})}
 
 	writeDone := make(chan error, 1)
