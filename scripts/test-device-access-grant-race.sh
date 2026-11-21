@@ -100,6 +100,8 @@ ADMIN_ID="$(new_uuid)"
 GRANTEE_FIRST_ID="$(new_uuid)"
 GRANTEE_DOWNGRADE_ID="$(new_uuid)"
 GRANTEE_REMOVE_ID="$(new_uuid)"
+GRANTEE_REVOKE_FIRST_ID="$(new_uuid)"
+GRANTEE_GRANT_FIRST_ID="$(new_uuid)"
 ORG_ID="$(new_uuid)"
 DEVICE_ID="$(new_device_id)"
 SLUG_TAG="$(printf '%s' "$DEVICE_ID" | cut -c4-)"
@@ -114,7 +116,9 @@ values
   ('$ADMIN_ID', 'authenticated', 'authenticated', 'wd-access-race-admin-$SLUG_TAG@example.test'),
   ('$GRANTEE_FIRST_ID', 'authenticated', 'authenticated', 'wd-access-race-first-$SLUG_TAG@example.test'),
   ('$GRANTEE_DOWNGRADE_ID', 'authenticated', 'authenticated', 'wd-access-race-downgrade-$SLUG_TAG@example.test'),
-  ('$GRANTEE_REMOVE_ID', 'authenticated', 'authenticated', 'wd-access-race-remove-$SLUG_TAG@example.test');
+  ('$GRANTEE_REMOVE_ID', 'authenticated', 'authenticated', 'wd-access-race-remove-$SLUG_TAG@example.test'),
+  ('$GRANTEE_REVOKE_FIRST_ID', 'authenticated', 'authenticated', 'wd-access-race-revoke-first-$SLUG_TAG@example.test'),
+  ('$GRANTEE_GRANT_FIRST_ID', 'authenticated', 'authenticated', 'wd-access-race-grant-first-$SLUG_TAG@example.test');
 
 insert into public.organizations (id, name, slug, created_by)
 values ('$ORG_ID', 'Device Access Grant Race $SLUG_TAG', '$ORG_SLUG', '$OWNER_ID');
@@ -286,4 +290,121 @@ grep -q 'device access grant is not authorized' "$WORK/grant-after-remove.log" |
 [[ "$(scalar "select count(*) from public.device_access where device_id = '$DEVICE_ID' and user_id = '$GRANTEE_REMOVE_ID'")" == "0" ]] ||
   fail 'grant after membership removal unexpectedly created a device_access row'
 
-printf 'Device-access grant creation serialized with membership downgrade and removal.\n'
+# Restore the admin membership for device-revocation ordering tests.
+db_psql <<SQL
+insert into public.organization_memberships (
+  organization_id, user_id, role, created_by
+)
+values ('$ORG_ID', '$ADMIN_ID', 'admin', '$OWNER_ID');
+SQL
+
+# Case 4: trusted device revocation holds the device row first. Grant creation
+# waits for the device lock, then revalidates revoked_at and fails closed.
+device_revoke_first_app="wd-access-device-revoke-first-$SLUG_TAG"
+grant_after_device_revoke_app="wd-access-grant-after-device-revoke-$SLUG_TAG"
+
+docker exec -u postgres -i -e "PGAPPNAME=$device_revoke_first_app" "$DB_CONTAINER" \
+  psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/device-revoke-first.log" 2>&1 <<SQL &
+begin;
+update public.devices
+   set revoked_at = clock_timestamp()
+ where device_id = '$DEVICE_ID';
+select pg_sleep($HOLD_SECONDS);
+commit;
+SQL
+device_revoke_first_pid=$!
+PIDS+=("$device_revoke_first_pid")
+wait_for_activity "$device_revoke_first_app" "wait_event = 'PgSleep'"
+
+docker exec -u postgres -i -e "PGAPPNAME=$grant_after_device_revoke_app" "$DB_CONTAINER" \
+  psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/grant-after-device-revoke.log" 2>&1 <<SQL &
+begin;
+set role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '$ADMIN_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
+select public.create_device_access_grant(
+  '$DEVICE_ID',
+  '$GRANTEE_REVOKE_FIRST_ID',
+  'mesh.forward',
+  now() + interval '10 minutes'
+);
+commit;
+SQL
+grant_after_device_revoke_pid=$!
+PIDS+=("$grant_after_device_revoke_pid")
+wait_for_activity "$grant_after_device_revoke_app" "wait_event_type = 'Lock'"
+wait_for_exit "$device_revoke_first_pid" success
+wait_for_exit "$grant_after_device_revoke_pid" failure
+
+grep -q 'device is revoked' "$WORK/grant-after-device-revoke.log" ||
+  fail 'grant creation after device revocation did not fail closed'
+[[ "$(scalar "select count(*) from public.device_access where device_id = '$DEVICE_ID' and user_id = '$GRANTEE_REVOKE_FIRST_ID'")" == "0" ]] ||
+  fail 'grant after device revocation unexpectedly created a device_access row'
+
+# Restore the device to exercise the inverse ordering.
+db_psql -c "update public.devices set revoked_at = null where device_id = '$DEVICE_ID'"
+
+# Case 5: grant creation locks the device first. Trusted revocation waits until
+# the authorized grant commits; an admin can then explicitly clean up that row.
+grant_first_device_revoke_app="wd-access-grant-first-device-revoke-$SLUG_TAG"
+device_revoke_after_grant_app="wd-access-device-revoke-after-grant-$SLUG_TAG"
+
+docker exec -u postgres -i -e "PGAPPNAME=$grant_first_device_revoke_app" "$DB_CONTAINER" \
+  psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/grant-first-device-revoke.log" 2>&1 <<SQL &
+begin;
+set role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '$ADMIN_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
+select public.create_device_access_grant(
+  '$DEVICE_ID',
+  '$GRANTEE_GRANT_FIRST_ID',
+  'mesh.forward',
+  null
+);
+select pg_sleep($HOLD_SECONDS);
+commit;
+SQL
+grant_first_device_revoke_pid=$!
+PIDS+=("$grant_first_device_revoke_pid")
+wait_for_activity "$grant_first_device_revoke_app" "wait_event = 'PgSleep'"
+
+docker exec -u postgres -i -e "PGAPPNAME=$device_revoke_after_grant_app" "$DB_CONTAINER" \
+  psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/device-revoke-after-grant.log" 2>&1 <<SQL &
+begin;
+update public.devices
+   set revoked_at = clock_timestamp()
+ where device_id = '$DEVICE_ID';
+commit;
+SQL
+device_revoke_after_grant_pid=$!
+PIDS+=("$device_revoke_after_grant_pid")
+wait_for_activity "$device_revoke_after_grant_app" "wait_event_type = 'Lock'"
+wait_for_exit "$grant_first_device_revoke_pid" success
+wait_for_exit "$device_revoke_after_grant_pid" success
+
+[[ "$(scalar "select count(*) from public.device_access where device_id = '$DEVICE_ID' and user_id = '$GRANTEE_GRANT_FIRST_ID' and permission = 'mesh.forward'")" == "1" ]] ||
+  fail 'grant-first ordering did not preserve the authorized routing grant'
+[[ "$(scalar "select count(*) from public.devices where device_id = '$DEVICE_ID' and revoked_at is not null")" == "1" ]] ||
+  fail 'device revocation did not complete after grant creation'
+
+docker exec -u postgres -i "$DB_CONTAINER" \
+  psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/revoked-device-cleanup.log" 2>&1 <<SQL
+begin;
+set role authenticated;
+select set_config('request.jwt.claim.role', 'authenticated', true);
+select set_config('request.jwt.claim.sub', '$ADMIN_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
+select public.revoke_device_access_grant(
+  '$DEVICE_ID',
+  '$GRANTEE_GRANT_FIRST_ID',
+  'mesh.forward'
+);
+commit;
+SQL
+
+[[ "$(scalar "select count(*) from public.device_access where device_id = '$DEVICE_ID' and user_id = '$GRANTEE_GRANT_FIRST_ID'")" == "0" ]] ||
+  fail 'administrator could not clean up the grant after device revocation'
+
+printf 'Device-access grant creation serialized with membership changes and device revocation; revoked-device cleanup verified.\n'

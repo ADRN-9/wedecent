@@ -16,9 +16,11 @@ The only supported authenticated mutation interfaces are:
 
 Every RPC requires a non-null auth.uid(), an authenticated JWT role, and an explicit is_anonymous=false claim; missing or anonymous claims fail closed. No RPC accepts an actor ID or granted_by; inserts derive granted_by from the verified JWT subject. The device-access Edge Function verifies the bearer token with Supabase Auth and forwards that same bearer token to the authenticated RPC. Its service credential is used only for auth.getUser, not for grant-table writes.
 
-Device owners retain their existing direct device-management authority. Otherwise, the caller must have a current owner or admin membership in the device's organization. Ordinary members and users from other tenants are denied. Revoked devices are not grantable or manageable.
+The only supported permissions are `terminal.connect` and `mesh.forward`. They are independent, exact grants: neither implies the other, and each RPC receives the permission being created, updated, or revoked. Device owners retain their existing direct device-management authority. Otherwise, the caller must have a current owner or admin membership in the device's organization. Ordinary members and users from other tenants are denied.
 
-A NULL expires_at continues to mean a permanent grant. Finite expirations must be in the future when evaluated after the relevant locks are acquired. Expired grants cannot be revived through the expiry-update RPC, but an expired row may still be revoked.
+Revoked devices cannot receive new grants or have grant expirations changed. Existing `device_access` rows are not silently deleted when a device is revoked. A current organization owner/admin (or the device owner) may still explicitly revoke an existing grant on a revoked device; this cleanup operation only removes authority and is recorded by the existing audit trigger. This policy keeps stale authorization records manageable without making a revoked device usable again.
+
+A NULL expires_at continues to mean a permanent grant. Non-NULL expirations must be finite PostgreSQL timestamps and in the future when evaluated after the relevant locks are acquired. Both positive and negative timestamp infinities are rejected by the RPC boundary. Expired grants cannot be revived through the expiry-update RPC, but an expired row may still be revoked.
 
 ## Locking and audit
 
@@ -53,11 +55,11 @@ The device-access Edge Function retries only explicit PostgreSQL transaction-abo
 
 The database pgTAP suite covers:
 - RLS, table/column privileges, service-role read-only access, RPC ownership, SECURITY DEFINER, empty search_path, and execute ACLs;
-- owner, administrator, ordinary member, device-owner (including organization-managed devices), anonymous/missing-claim rejection, and cross-tenant authorization;
-- missing authentication, actor spoofing, malformed IDs, revoked devices, expired requests, duplicates, and missing grant rows;
+- owner, administrator, ordinary member, device-owner (including organization-managed devices), anonymous/missing-claim rejection, and cross-tenant authorization for both permission types;
+- independent `terminal.connect`/`mesh.forward` creation, update, revocation, and permission separation; existing permanent routing-grant management; positive-infinity rejection for create/update; revoked-device cleanup policy; missing authentication, actor spoofing, malformed IDs, revoked-device create/update denial, expired requests, duplicates, and missing grant rows;
 - audit actor attribution, permanent-grant semantics, rollback of both grant and audit rows, and expired-row revocation.
 
-A disposable-database two-session harness verifies grant-first versus membership downgrade, downgrade-first versus grant creation, and membership-removal-first versus grant creation. Deno tests exercise the bounded retry helper. These tests run in the repository's GitHub Actions CI; they are not claimed as locally executed by this worker.
+A disposable-database two-session harness verifies grant-first versus membership downgrade, downgrade-first versus grant creation, membership-removal-first versus grant creation, and both orderings between grant creation and trusted device revocation. It also verifies that an administrator can clean up a grant after device revocation. Deno tests exercise the bounded retry helper. These tests run in the repository's GitHub Actions CI; they are not claimed as locally executed by this worker.
 
 ## Scope exclusions and limitations
 

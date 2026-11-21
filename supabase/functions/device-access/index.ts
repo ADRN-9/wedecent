@@ -1,5 +1,6 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
 import { withBoundedDatabaseRetry } from "../_shared/database-rpc-retry.ts";
+import { parseDeviceAccessPermission } from "../_shared/device-access-permission.ts";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -100,12 +101,13 @@ Deno.serve(async (req) => {
 
     const deviceID = parseDeviceID(rawBody.device_id);
     const granteeID = parseGranteeID(rawBody.grantee_user_id);
-    if (rawBody.permission !== "terminal.connect") throw new Error("invalid permission");
+    const permission = parseDeviceAccessPermission(rawBody.permission);
+    if (permission === null) throw new Error("invalid permission");
 
     const args = {
       p_device_id: deviceID,
       p_grantee_user_id: granteeID,
-      p_permission: "terminal.connect",
+      p_permission: permission,
     };
 
     let rpcName: string;

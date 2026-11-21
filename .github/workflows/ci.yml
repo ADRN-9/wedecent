@@ -238,8 +238,10 @@ jobs:
         run: deno check supabase/functions/route-authorization/index.ts
       - name: Test bounded database RPC retry policy
         run: deno test supabase/functions/_shared/database-rpc-retry.test.ts
+      - name: Test explicit device-access permission allowlist
+        run: deno test supabase/functions/_shared/device-access-permission.test.ts
       - name: Type-check device-access RPC retry helper and Edge Function
-        run: deno check supabase/functions/_shared/database-rpc-retry.ts supabase/functions/device-access/index.ts
+        run: deno check supabase/functions/_shared/database-rpc-retry.ts supabase/functions/_shared/device-access-permission.ts supabase/functions/device-access/index.ts
 
   supabase-db:
     runs-on: ubuntu-latest

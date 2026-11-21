@@ -6,8 +6,11 @@
 
 begin;
 
+drop function if exists wedecent_private.lock_device_access_authority(text);
+
 create or replace function wedecent_private.lock_device_access_authority(
-    p_device_id text
+    p_device_id text,
+    p_allow_revoked boolean
 )
 returns public.devices
 language plpgsql
@@ -78,7 +81,13 @@ begin
             using errcode = '40001';
     end if;
 
-    if device_row.revoked_at is not null then
+    -- Only the explicit revoke RPC may manage stale grants on a revoked device.
+    if p_allow_revoked is null then
+        raise exception 'invalid device access operation'
+            using errcode = '22023';
+    end if;
+
+    if device_row.revoked_at is not null and not p_allow_revoked then
         raise exception 'device is revoked'
             using errcode = '22023';
     end if;
@@ -110,10 +119,10 @@ begin
 end;
 $$;
 
-alter function wedecent_private.lock_device_access_authority(text)
+alter function wedecent_private.lock_device_access_authority(text, boolean)
     owner to postgres;
 
-revoke all on function wedecent_private.lock_device_access_authority(text)
+revoke all on function wedecent_private.lock_device_access_authority(text, boolean)
     from public, anon, authenticated, service_role;
 
 create or replace function public.create_device_access_grant(
@@ -140,12 +149,15 @@ begin
     end if;
 
     if p_grantee_user_id is null
-       or p_permission is distinct from 'terminal.connect'::public.device_permission then
+       or (
+            p_permission is distinct from 'terminal.connect'::public.device_permission
+            and p_permission is distinct from 'mesh.forward'::public.device_permission
+        ) then
         raise exception 'invalid device access grant parameters'
             using errcode = '22023';
     end if;
 
-    perform wedecent_private.lock_device_access_authority(p_device_id);
+    perform wedecent_private.lock_device_access_authority(p_device_id, false);
 
     -- Lock 4: existing grant row. The device lock above also serializes
     -- concurrent inserts for this device before checking the unique key.
@@ -160,6 +172,12 @@ begin
     if found then
         raise exception 'device access grant already exists'
             using errcode = '23505';
+    end if;
+
+    -- PostgreSQL accepts timestamp infinities; grant expirations must be finite.
+    if p_expires_at is not null and not pg_catalog.isfinite(p_expires_at) then
+        raise exception 'grant expiration must be finite'
+            using errcode = '22023';
     end if;
 
     -- Evaluate expiry after all authorization locks have been acquired.
@@ -217,12 +235,15 @@ begin
     end if;
 
     if p_grantee_user_id is null
-       or p_permission is distinct from 'terminal.connect'::public.device_permission then
+       or (
+            p_permission is distinct from 'terminal.connect'::public.device_permission
+            and p_permission is distinct from 'mesh.forward'::public.device_permission
+        ) then
         raise exception 'invalid device access grant parameters'
             using errcode = '22023';
     end if;
 
-    perform wedecent_private.lock_device_access_authority(p_device_id);
+    perform wedecent_private.lock_device_access_authority(p_device_id, false);
 
     -- Lock 4: the grant record. Its expiry is checked only after this lock.
     select a.*
@@ -243,6 +264,11 @@ begin
     if existing_grant.expires_at is not null
        and existing_grant.expires_at <= checked_at then
         raise exception 'device access grant has expired'
+            using errcode = '22023';
+    end if;
+
+    if p_expires_at is not null and not pg_catalog.isfinite(p_expires_at) then
+        raise exception 'grant expiration must be finite'
             using errcode = '22023';
     end if;
 
@@ -290,12 +316,15 @@ begin
     end if;
 
     if p_grantee_user_id is null
-       or p_permission is distinct from 'terminal.connect'::public.device_permission then
+       or (
+            p_permission is distinct from 'terminal.connect'::public.device_permission
+            and p_permission is distinct from 'mesh.forward'::public.device_permission
+        ) then
         raise exception 'invalid device access grant parameters'
             using errcode = '22023';
     end if;
 
-    perform wedecent_private.lock_device_access_authority(p_device_id);
+    perform wedecent_private.lock_device_access_authority(p_device_id, true);
 
     -- Lock 4: the grant record. Expiry is deliberately re-read here; revoking
     -- an expired row is still allowed because revocation only removes authority.
@@ -373,7 +402,7 @@ comment on table public.device_access is
 comment on function public.create_device_access_grant(
     text, uuid, public.device_permission, timestamptz
 ) is
-'Creates a terminal grant for the target user. Actor and granted_by are derived from auth.uid(); organization, device, membership, and grant locks are acquired in a fixed order.';
+'Creates an explicit terminal.connect or mesh.forward grant for the target user. The permissions are independent; actor and granted_by are derived from auth.uid().' ;
 
 comment on function public.update_device_access_grant_expiry(
     text, uuid, public.device_permission, timestamptz
@@ -383,6 +412,6 @@ comment on function public.update_device_access_grant_expiry(
 comment on function public.revoke_device_access_grant(
     text, uuid, public.device_permission
 ) is
-'Revokes an existing grant. Expired rows may still be removed; authorization and all relevant locks are revalidated first.';
+'Revokes an existing terminal.connect or mesh.forward grant. Current owners/admins may explicitly clean up grants on revoked devices; creation and expiry updates remain denied there.';
 
 commit;

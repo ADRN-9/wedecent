@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(59);
+select plan(87);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -49,6 +49,29 @@ values (
     now() - interval '5 minutes',
     now() - interval '1 minute'
 );
+
+-- Existing permanent routing grant and stale grant on a revoked device are
+-- retained until an authorized manager explicitly changes or removes them.
+insert into public.device_access (
+    device_id, user_id, permission, granted_by, created_at, expires_at
+)
+values
+    (
+        'wd_aaaaaaaaaaaaaaaa',
+        '71000000-0000-4000-8000-000000000007',
+        'mesh.forward',
+        '71000000-0000-4000-8000-000000000001',
+        now() - interval '5 minutes',
+        null
+    ),
+    (
+        'wd_cccccccccccccccc',
+        '71000000-0000-4000-8000-000000000004',
+        'mesh.forward',
+        '71000000-0000-4000-8000-000000000001',
+        now() - interval '5 minutes',
+        null
+    );
 
 select ok(
     (select c.relrowsecurity
@@ -750,6 +773,351 @@ select throws_ok(
     'device access grant does not exist',
     'revocation rejects a missing grant'
 );
+
+-- Routing permission is a distinct explicit grant; it never implies terminal access.
+select lives_ok(
+    $
+        select public.create_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000004',
+            'mesh.forward',
+            now() + interval '1 hour'
+        )
+    $,
+    'device owner can create an explicit mesh.forward grant'
+);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000004'
+           and permission = 'mesh.forward'
+    ),
+    1::bigint,
+    'mesh.forward creation persists only the routing permission'
+);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000004'
+           and permission = 'terminal.connect'
+    ),
+    0::bigint,
+    'mesh.forward does not create a terminal.connect grant'
+);
+
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000004', true);
+
+select ok(
+    not wedecent_private.can_connect_device('wd_aaaaaaaaaaaaaaaa'),
+    'mesh.forward alone does not authorize a terminal connection'
+);
+
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
+
+select lives_ok(
+    $
+        select public.update_device_access_grant_expiry(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000004',
+            'mesh.forward',
+            now() + interval '2 hours'
+        )
+    $,
+    'device owner can update a mesh.forward grant expiry'
+);
+
+select ok(
+    (
+        select expires_at > now() + interval '1 hour'
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000004'
+           and permission = 'mesh.forward'
+    ),
+    'mesh.forward expiry update is persisted'
+);
+
+select throws_ok(
+    $
+        select public.update_device_access_grant_expiry(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000004',
+            'mesh.forward',
+            'infinity'::timestamptz
+        )
+    $,
+    '22023',
+    'grant expiration must be finite',
+    'expiry update rejects PostgreSQL positive infinity'
+);
+
+select lives_ok(
+    $
+        select public.revoke_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000004',
+            'mesh.forward'
+        )
+    $,
+    'device owner can revoke a mesh.forward grant'
+);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000004'
+           and permission = 'mesh.forward'
+    ),
+    0::bigint,
+    'mesh.forward revocation removes only the routing grant'
+);
+
+select ok(
+    exists (
+        select 1
+          from public.organization_audit_events
+         where event_type = 'device_access.revoked'
+           and target_id = 'wd_aaaaaaaaaaaaaaaa:71000000-0000-4000-8000-000000000004:mesh.forward'
+    ),
+    'mesh.forward revocation is recorded in tenant audit history'
+);
+
+select lives_ok(
+    $
+        select public.create_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000004',
+            'terminal.connect',
+            now() + interval '1 hour'
+        )
+    $,
+    'terminal.connect remains independently grantable'
+);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000004'
+           and permission = 'mesh.forward'
+    ),
+    0::bigint,
+    'terminal.connect does not create a mesh.forward grant'
+);
+
+select lives_ok(
+    $
+        select public.revoke_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000004',
+            'terminal.connect'
+        )
+    $,
+    'terminal.connect can be revoked independently of routing permission'
+);
+
+select throws_ok(
+    $
+        select public.create_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000008',
+            'mesh.forward',
+            'infinity'::timestamptz
+        )
+    $,
+    '22023',
+    'grant expiration must be finite',
+    'grant creation rejects PostgreSQL positive infinity'
+);
+
+-- The routing grant below predates this RPC migration and is permanent.
+-- Managers must still be able to update and explicitly revoke it.
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000002', true);
+
+select is(
+    (
+        select expires_at is null
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000007'
+           and permission = 'mesh.forward'
+    ),
+    true,
+    'pre-existing permanent mesh.forward grant remains present'
+);
+
+select lives_ok(
+    $
+        select public.update_device_access_grant_expiry(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000007',
+            'mesh.forward',
+            now() + interval '1 hour'
+        )
+    $,
+    'administrator can update an existing permanent mesh.forward grant'
+);
+
+select ok(
+    (
+        select expires_at > now()
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000007'
+           and permission = 'mesh.forward'
+    ),
+    'existing permanent routing grant can receive a finite expiry'
+);
+
+select lives_ok(
+    $
+        select public.update_device_access_grant_expiry(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000007',
+            'mesh.forward',
+            null
+        )
+    $,
+    'administrator can restore an existing routing grant to permanent'
+);
+
+select is(
+    (
+        select expires_at is null
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000007'
+           and permission = 'mesh.forward'
+    ),
+    true,
+    'permanent mesh.forward expiry remains represented by NULL'
+);
+
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000005', true);
+
+select throws_ok(
+    $
+        select public.create_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000008',
+            'mesh.forward',
+            now() + interval '1 hour'
+        )
+    $,
+    '42501',
+    'device access grant is not authorized',
+    'cross-tenant routing grant creation is denied'
+);
+
+select throws_ok(
+    $
+        select public.update_device_access_grant_expiry(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000007',
+            'mesh.forward',
+            now() + interval '2 hours'
+        )
+    $,
+    '42501',
+    'device access grant is not authorized',
+    'cross-tenant routing grant expiry updates are denied'
+);
+
+select throws_ok(
+    $
+        select public.revoke_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000007',
+            'mesh.forward'
+        )
+    $,
+    '42501',
+    'device access grant is not authorized',
+    'cross-tenant routing grant revocation is denied'
+);
+
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000002', true);
+
+select lives_ok(
+    $
+        select public.revoke_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000007',
+            'mesh.forward'
+        )
+    $,
+    'administrator can revoke a pre-existing permanent mesh.forward grant'
+);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_access
+         where device_id = 'wd_aaaaaaaaaaaaaaaa'
+           and user_id = '71000000-0000-4000-8000-000000000007'
+           and permission = 'mesh.forward'
+    ),
+    0::bigint,
+    'explicit revocation removes the pre-existing permanent routing grant'
+);
+
+select throws_ok(
+    $
+        select public.update_device_access_grant_expiry(
+            'wd_cccccccccccccccc',
+            '71000000-0000-4000-8000-000000000004',
+            'mesh.forward',
+            now() + interval '1 hour'
+        )
+    $,
+    '22023',
+    'device is revoked',
+    'administrators cannot update grants on revoked devices'
+);
+
+select lives_ok(
+    $
+        select public.revoke_device_access_grant(
+            'wd_cccccccccccccccc',
+            '71000000-0000-4000-8000-000000000004',
+            'mesh.forward'
+        )
+    $,
+    'administrator can explicitly clean up a grant on a revoked device'
+);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_access
+         where device_id = 'wd_cccccccccccccccc'
+           and user_id = '71000000-0000-4000-8000-000000000004'
+           and permission = 'mesh.forward'
+    ),
+    0::bigint,
+    'revoked-device grant cleanup removes the stale authorization record'
+);
+
+select ok(
+    exists (
+        select 1
+          from public.organization_audit_events
+         where event_type = 'device_access.revoked'
+           and target_id = 'wd_cccccccccccccccc:71000000-0000-4000-8000-000000000004:mesh.forward'
+    ),
+    'revoked-device grant cleanup is audited'
+);
+
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
 
 savepoint device_access_rpc_rollback;
 
