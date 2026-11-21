@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestEnsureRejectsSymlinkedCertificateWithoutTouchingTarget(t *testing.T) {
