@@ -60,6 +60,11 @@ as $$
 declare
     challenge public.device_enrollment_challenges%rowtype;
     device public.devices%rowtype;
+    membership_row record;
+    target_membership_role public.organization_role;
+    source_membership_role public.organization_role;
+    target_membership_found boolean := false;
+    source_membership_found boolean := false;
     device_exists boolean := false;
 begin
     if p_challenge_id is null
@@ -144,32 +149,45 @@ begin
         end if;
     end if;
 
-    -- Lock every relevant owner/admin membership in deterministic order.
-    -- A concurrent role change or membership deletion must wait until this
-    -- transaction commits; a stale preflight check cannot authorize enrollment.
-    perform m.organization_id
-      from public.organization_memberships as m
-     where m.user_id = p_user_id
-       and m.role in ('owner', 'admin')
-       and (
-           m.organization_id = p_organization_id
-           or (
-               device_exists
-               and device.organization_id is not null
-               and device.organization_id is distinct from p_organization_id
-               and m.organization_id = device.organization_id
+    -- Lock and capture every existing relevant membership row in deterministic
+    -- order, including non-manager roles. Check the captured row values from this
+    -- statement snapshot: a later statement must not authorize a concurrently
+    -- inserted/promoted membership without holding its row lock through commit.
+    for membership_row in
+        select m.organization_id, m.role
+          from public.organization_memberships as m
+         where m.user_id = p_user_id
+           and (
+               (p_organization_id is not null and m.organization_id = p_organization_id)
+               or (
+                   device_exists
+                   and device.organization_id is not null
+                   and device.organization_id is distinct from p_organization_id
+                   and m.organization_id = device.organization_id
+               )
            )
-       )
-     order by m.organization_id
-     for share;
+         order by m.organization_id
+         for share
+    loop
+        if p_organization_id is not null
+           and membership_row.organization_id = p_organization_id then
+            target_membership_role := membership_row.role;
+            target_membership_found := true;
+        end if;
+
+        if device_exists
+           and device.organization_id is not null
+           and device.organization_id is distinct from p_organization_id
+           and membership_row.organization_id = device.organization_id then
+            source_membership_role := membership_row.role;
+            source_membership_found := true;
+        end if;
+    end loop;
 
     if p_organization_id is not null
-       and not exists (
-           select 1
-             from public.organization_memberships as m
-            where m.organization_id = p_organization_id
-              and m.user_id = p_user_id
-              and m.role in ('owner', 'admin')
+       and (
+           not target_membership_found
+           or target_membership_role not in ('owner', 'admin')
        ) then
         raise exception 'target organization enrollment is not authorized'
             using errcode = '42501';
@@ -178,12 +196,9 @@ begin
     if device_exists
        and device.organization_id is not null
        and device.organization_id is distinct from p_organization_id
-       and not exists (
-           select 1
-             from public.organization_memberships as m
-            where m.organization_id = device.organization_id
-              and m.user_id = p_user_id
-              and m.role in ('owner', 'admin')
+       and (
+           not source_membership_found
+           or source_membership_role not in ('owner', 'admin')
        ) then
         raise exception 'device organization reassignment is not authorized'
             using errcode = '42501';
