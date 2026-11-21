@@ -78,16 +78,19 @@ type revocationObservedConn struct {
 	net.Conn
 	mu                sync.Mutex
 	armed             bool
-	firstWrite        chan struct{}
+	writeBlocked      chan struct{}
 	firstOnce         sync.Once
 	firstWriteBytes   []byte
 	writeReturned     chan struct{}
 	writeReturnedOnce sync.Once
+	closed            chan struct{}
+	closeOnce         sync.Once
 }
 
 func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
 	return &revocationObservedConn{
-		Conn: conn, firstWrite: make(chan struct{}), writeReturned: make(chan struct{}),
+		Conn: conn, writeBlocked: make(chan struct{}),
+		writeReturned: make(chan struct{}), closed: make(chan struct{}),
 	}
 }
 
@@ -105,21 +108,26 @@ func (c *revocationObservedConn) firstRecord() []byte {
 }
 
 func (c *revocationObservedConn) Write(buffer []byte) (int, error) {
-	first := false
 	c.mu.Lock()
-	if c.armed {
+	armed := c.armed
+	if armed {
 		c.firstOnce.Do(func() {
-			first = true
 			c.firstWriteBytes = append([]byte(nil), buffer...)
-			close(c.firstWrite)
+			close(c.writeBlocked)
 		})
 	}
 	c.mu.Unlock()
-	n, err := c.Conn.Write(buffer)
-	if first {
+	if armed {
+		<-c.closed
 		c.writeReturnedOnce.Do(func() { close(c.writeReturned) })
+		return 0, net.ErrClosed
 	}
-	return n, err
+	return c.Conn.Write(buffer)
+}
+
+func (c *revocationObservedConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
 }
 
 type tlsRecordCounterConn struct {
@@ -978,9 +986,9 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 	_ = clientRaw.SetWriteDeadline(time.Time{})
 
 	select {
-	case <-observedServer.firstWrite:
+	case <-observedServer.writeBlocked:
 	case <-time.After(3 * time.Second):
-		t.Fatal("server did not attempt a TLS 1.3 KeyUpdate response")
+		t.Fatal("server TLS 1.3 KeyUpdate response did not reach the blocked-write barrier")
 	}
 	responseRecord := observedServer.firstRecord()
 	if len(responseRecord) != 27 || responseRecord[0] != 23 ||
