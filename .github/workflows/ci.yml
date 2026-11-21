@@ -72,8 +72,7 @@ jobs:
       - name: Test with race detector
         run: go test -race ./...
       - name: Repeat typed-stream parent-termination admission regressions
-        run: |
-          go test -race ./internal/session -run "^(TestDispatchTypedSessionFrameRejectsBufferedOpenAfterRevocation|TestTypedTerminalServerRejectsBufferedOpenAfterParentCleanup|TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen|TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure)$" -count=20
+        run: bash ./scripts/test-typed-stream-parent-termination-races.sh
       - name: Direct transport smoke test
         run: ./scripts/smoke-direct.sh
       - name: Outbound-only relay smoke test
