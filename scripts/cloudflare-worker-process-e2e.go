@@ -21,6 +21,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -352,12 +353,12 @@ func run() error {
 		return fmt.Errorf("client A terminal did not execute its marker: %w", err)
 	}
 
-	replayOutput, replayErr := runCommand(ctx, root, agentEnv, wd,
-		"connect", "--state", clientAState, "--web-relay", relayURL,
-		"--connection-grant-file", grantAPath, "--lan-timeout", "0", agentID,
-	)
-	if replayErr == nil || !strings.Contains(replayOutput, "Connection grant already used") {
-		return fmt.Errorf("Worker Durable Object did not reject replay: err=%v output=%s", replayErr, replayOutput)
+	clientAIdentity, err := identity.Ensure(clientAState, "worker-process-client-a")
+	if err != nil {
+		return fmt.Errorf("load client A identity for replay proof: %w", err)
+	}
+	if err := assertWorkerReplayRejected(relayURL, agentID, clientAIdentity, grantA, roots); err != nil {
+		return fmt.Errorf("Worker Durable Object replay rejection: %w", err)
 	}
 
 	clientB, err := startClient(wd, root, clientBState, relayURL, grantBPath, agentID, certPath)
@@ -468,7 +469,7 @@ func waitWorkerReady(client *http.Client, relayURL string, worker *managedProces
 			worker.mu.Unlock()
 			return fmt.Errorf("Wrangler exited before readiness: %v\n%s", err, worker.output.String())
 		}
-		request, _ := http.NewRequest(http.MethodGet, relayURL+"/readyz", nil)
+		request, _ := http.NewRequest(http.MethodGet, relayURL+"/healthz", nil)
 		response, err := client.Do(request)
 		if err == nil {
 			response.Body.Close()
@@ -744,6 +745,49 @@ type grantEvidence struct {
 		Type string `json:"type"`
 		Outcome string `json:"outcome"`
 	} `json:"consumption_event"`
+}
+
+func assertWorkerReplayRejected(relayURL, targetID string, clientIdentity *identity.Identity, grant issuedGrant, roots *x509.CertPool) error {
+	ticket, err := relayauth.Issue(clientIdentity, targetID, "client", 0, time.Now())
+	if err != nil {
+		return err
+	}
+	u, err := url.Parse(relayURL)
+	if err != nil || u.Host == "" {
+		return errors.New("invalid local Worker URL")
+	}
+	conn, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", u.Host, &tls.Config{
+		RootCAs: roots, ServerName: u.Hostname(), MinVersion: tls.VersionTLS13,
+	})
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	var nonce [16]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return err
+	}
+	key := base64.StdEncoding.EncodeToString(nonce[:])
+	request := fmt.Sprintf(
+		"GET /v1/stream/%s?role=client HTTP/1.1\\r\\nHost: %s\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Key: %s\\r\\nSec-WebSocket-Version: 13\\r\\nAuthorization: Bearer %s\\r\\nX-WeDecent-Connection-Grant: %s\\r\\n\\r\\n",
+		targetID, u.Host, key, ticket, grant.Token,
+	)
+	if _, err := io.WriteString(conn, request); err != nil {
+		return err
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), &http.Request{Method: http.MethodGet})
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(response.Body, 2048))
+	if err != nil {
+		return err
+	}
+	if response.StatusCode != http.StatusConflict || !strings.Contains(string(body), "Connection grant already used") {
+		return fmt.Errorf("replayed grant returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(body)))
+	}
+	return nil
 }
 
 func verifyGrantEvidence(client *http.Client, relayURL string, agentIdentity *identity.Identity, targetID, expectedClientID string, grant issuedGrant) error {
