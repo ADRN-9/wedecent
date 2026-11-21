@@ -116,6 +116,61 @@ It runs all typed-session close-reason regressions 50 times. The PTY cleanup and
 
     go test -race ./internal/session -run '^(TestTypedTerminalAuditTrackerReportsPTYCleanupFailure|TestTypedTerminalServerPTYCleanupFailureClosesStreamAndPersistsError|TestTypedTerminalServerParentCleanupWaitsForInFlightStreamClose|TestTypedHandlerPTYCleanupFailureAuditsStreamTerminationAndSessionClose|TestRevocationPTYCleanupFailureMarksTerminationAndCloseAuditFailed)$' -count=1
 
+For isolated reproduction of the new parent-session admission race regressions, run:
+
+    go test -race ./internal/session -run '^(TestDispatchTypedSessionFrameRejectsBufferedOpenAfterRevocation|TestTypedTerminalServerRejectsBufferedOpenAfterParentCleanup|TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen|TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure)
+
+    cd cloudflare/relay-worker && npm test
+    npx wrangler deploy --dry-run
+    supabase test db
+    ./scripts/test-connection-grant-expiration.sh
+
+The Wrangler dry-run and in-memory Worker tests are not substitutes for the local process integration, and none of these commands constitutes production Cloudflare or physical/offline real-hardware validation. Results must be attributed to the exact tested commit and workflow run; source changes alone are not proof.
+
+## Exact-head PR stack verification snapshot — 2026-11-21
+
+The following implementation and documentation heads were checked in this remediation cycle. CI workflow ID is `342513994`; desktop-shell workflow ID is `367426414`. Each listed CI run completed 10/10 jobs, and each listed desktop run completed all three platform jobs.
+
+| PR | Verified HEAD | Base HEAD | CI run | Desktop run |
+|---|---|---|---|---|
+| #179 | `20e1b1842df9577e34d42827d2efce8bf817b6e0` | `ed0bb462d829430eb50c7b2a6a74161854f62c73` | [44955760142](https://github.com/ADRN-9/wedecent/actions/runs/44955760142) | [44955760172](https://github.com/ADRN-9/wedecent/actions/runs/44955760172) |
+| #180 | `424e3e75cff6204d826a108f0b8aa7b61014e8ce` | `20e1b1842df9577e34d42827d2efce8bf817b6e0` | [44956153046](https://github.com/ADRN-9/wedecent/actions/runs/44956153046) | [44956153051](https://github.com/ADRN-9/wedecent/actions/runs/44956153051) |
+| #181 | `84e855f4791fb1523cdffccf366253c7fb2d254a` | `424e3e75cff6204d826a108f0b8aa7b61014e8ce` | [44956173311](https://github.com/ADRN-9/wedecent/actions/runs/44956173311) | [44956173301](https://github.com/ADRN-9/wedecent/actions/runs/44956173301) |
+| #182 | `e378fade5109ca38bd32dc4802f9897ec1e7243e` | `84e855f4791fb1523cdffccf366253c7fb2d254a` | [44956300342](https://github.com/ADRN-9/wedecent/actions/runs/44956300342) | [44956300369](https://github.com/ADRN-9/wedecent/actions/runs/44956300369) |
+
+The PR #182 row is the exact head before this final documentation snapshot refresh. This subsequent documentation-only commit is validated by its own exact-head CI and desktop runs, which are recorded in the current PR #182 description.
+
+## Repository governance findings — 2026-11-21
+
+The repository-level active ruleset Protect main (ID 21507567) targets only the default branch (~DEFAULT_BRANCH). It does not target the stacked feature branches used by PRs #179–#182.
+
+The visible ruleset's pull-request rule currently sets:
+
+- required_approving_review_count = 0;
+- no required reviewers;
+- code-owner review disabled;
+- last-push approval disabled;
+- stale-review dismissal disabled;
+- required review-thread resolution enabled.
+
+Its required status checks are route-capability-client, route-e2e, linux, windows-agent, windows-release, relay-worker, control-plane, and supabase-db. Strict required-status-check policy is disabled. The ruleset does not require macos-agent, relay-worker-process-e2e, or the desktop-shell checks linux-tauri-check, windows-tauri-check, and macos-tauri-check.
+
+The classic branch-protection endpoint returned HTTP 403 (Resource not accessible by integration) for the default branch and the PR #179 base branch. The repository metadata response reports admin permission, but the connected GitHub tool exposes no branch-protection/ruleset mutation action and the classic protection read is forbidden. The other stacked target branches therefore cannot be verified for classic protection through this connection. No ruleset or branch-protection change was made.
+
+Independent approval is not enforced by the visible ruleset. Complete required-check enforcement is not present. Because the ruleset only applies to the default branch and classic protection on stacked targets could not be inspected, safe merging of the stacked PRs without bypassing protection cannot be established.
+
+Required administrator configuration before merging:
+
+1. Apply a ruleset to the stacked branches (for example, the explicit security/* branches used by this release stack).
+2. Require at least one independent approval and disallow approval by the last pusher; dismiss stale approvals after pushes.
+3. Require strict status checks for Linux, Windows, macOS agent, Windows release, relay Worker, Worker process E2E, route capability, route E2E, control plane, Supabase DB, and all three desktop-shell platform checks.
+4. Keep bypass actors empty or explicitly restricted to the minimum emergency role.
+
+No PR was merged. PRs #179–#182 remain open, draft, and unmerged. No production infrastructure, database, credential, trust-anchor, signing, or deployment operation was performed.
+ -count=1
+
+These four regressions ran as part of the full `go test ./...` and `go test -race ./...` suites on each exact implementation head above. The isolated command was not separately recorded as a standalone CI step.
+
 Other relevant verification commands:
 
     cd cloudflare/relay-worker && npm test
@@ -127,18 +182,16 @@ The Wrangler dry-run and in-memory Worker tests are not substitutes for the loca
 
 ## Exact-head PR stack verification snapshot — 2026-11-21
 
-The following table records the implementation heads tested before this documentation-only follow-up was added to PR #182. Each CI run completed 10/10 jobs successfully; each desktop workflow completed all three platform jobs successfully.
+The following implementation and documentation heads were checked in this remediation cycle. CI workflow ID is `342513994`; desktop-shell workflow ID is `367426414`. Each listed CI run completed 10/10 jobs, and each listed desktop run completed all three platform jobs.
 
-| PR | Implementation HEAD | Synthetic merge commit | CI run | Desktop run |
+| PR | Verified HEAD | Base HEAD | CI run | Desktop run |
 |---|---|---|---|---|
-| #179 | 8a85ab0020c9f745bad22a451947d60fded8f07e | c90533af45095a43012991ef1d2264fa76be9ed7 | [44950879169](https://github.com/ADRN-9/wedecent/actions/runs/44950879169) | [44950879038](https://github.com/ADRN-9/wedecent/actions/runs/44950879038) |
-| #180 | 3b740dbb1a52646910a7fdf8be9ecac085cae233 | 0a22b5faf7a66f9ce18a84c4eb8e7c741b8a06f8 | [44951380383](https://github.com/ADRN-9/wedecent/actions/runs/44951380383) | [44951380362](https://github.com/ADRN-9/wedecent/actions/runs/44951380362) |
-| #181 | 2a147c7a9dbc55e42546011816f30b2a7e9fc90c | c01e9ba4bb133d157d0fc64a617d26185d71fefb | [44951416248](https://github.com/ADRN-9/wedecent/actions/runs/44951416248) | [44951416323](https://github.com/ADRN-9/wedecent/actions/runs/44951416323) |
-| #182 | 16eec24700667cd0168166d682837dcdbd0dc145 | e6c12876f9f43f82590579e042d21991a0e296fd | [44951444033](https://github.com/ADRN-9/wedecent/actions/runs/44951444033) | [44951444076](https://github.com/ADRN-9/wedecent/actions/runs/44951444076) |
+| #179 | `20e1b1842df9577e34d42827d2efce8bf817b6e0` | `ed0bb462d829430eb50c7b2a6a74161854f62c73` | [44955760142](https://github.com/ADRN-9/wedecent/actions/runs/44955760142) | [44955760172](https://github.com/ADRN-9/wedecent/actions/runs/44955760172) |
+| #180 | `424e3e75cff6204d826a108f0b8aa7b61014e8ce` | `20e1b1842df9577e34d42827d2efce8bf817b6e0` | [44956153046](https://github.com/ADRN-9/wedecent/actions/runs/44956153046) | [44956153051](https://github.com/ADRN-9/wedecent/actions/runs/44956153051) |
+| #181 | `84e855f4791fb1523cdffccf366253c7fb2d254a` | `424e3e75cff6204d826a108f0b8aa7b61014e8ce` | [44956173311](https://github.com/ADRN-9/wedecent/actions/runs/44956173311) | [44956173301](https://github.com/ADRN-9/wedecent/actions/runs/44956173301) |
+| #182 | `e378fade5109ca38bd32dc4802f9897ec1e7243e` | `84e855f4791fb1523cdffccf366253c7fb2d254a` | [44956300342](https://github.com/ADRN-9/wedecent/actions/runs/44956300342) | [44956300369](https://github.com/ADRN-9/wedecent/actions/runs/44956300369) |
 
-Workflow IDs: CI 342513994; Desktop shell 367426414.
-
-The documentation-only follow-up is committed on top of PR #182 after this snapshot. Its exact resulting PR HEAD and its own CI/desktop run IDs are recorded in the current PR #182 verification description after those workflows complete.
+The PR #182 row is the exact head before this final documentation snapshot refresh. This subsequent documentation-only commit is validated by its own exact-head CI and desktop runs, which are recorded in the current PR #182 description.
 
 ## Repository governance findings — 2026-11-21
 
