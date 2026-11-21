@@ -458,40 +458,40 @@ select lives_ok(
 select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000006', true);
 
 select lives_ok(
-    $
+    $$
         select public.create_device_access_grant(
             'wd_dddddddddddddddd',
             '71000000-0000-4000-8000-000000000007',
             'terminal.connect',
             null
         )
-    $,
+    $$,
     'device owner retains direct grant authority without organization membership'
 );
 
 select lives_ok(
-    $
+    $$
         select public.create_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000008',
             'terminal.connect',
             now() + interval '1 hour'
         )
-    $,
+    $$,
     'device owner retains direct grant authority for an organization-managed device'
 );
 
 select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":true}', true);
 
 select throws_ok(
-    $
+    $$
         select public.create_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000005',
             'terminal.connect',
             now() + interval '1 hour'
         )
-    $,
+    $$,
     '42501',
     'authenticated identity required',
     'anonymous identity cannot mutate grants even when it owns the device'
@@ -500,14 +500,14 @@ select throws_ok(
 select set_config('request.jwt.claims', '{"role":"authenticated"}', true);
 
 select throws_ok(
-    $
+    $$
         select public.create_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000005',
             'terminal.connect',
             now() + interval '1 hour'
         )
-    $,
+    $$,
     '42501',
     'authenticated identity required',
     'missing anonymous identity claim fails closed'
