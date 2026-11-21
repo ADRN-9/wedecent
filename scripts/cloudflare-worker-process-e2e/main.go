@@ -523,7 +523,7 @@ func run() error {
 		return errors.New("persistent agent audit lost revocation or unrelated-session outcomes after Worker restart")
 	}
 
-	fmt.Printf("Worker/DO process integration passed: agent=%s clients=%s,%s replay=pre_and_post_restart_rejected selective_revocation=verified unrelated_session=operational_after_restart do_storage=persistent\\n", agentID, clientAID, clientBID)
+	fmt.Printf("Worker/DO process integration passed: agent=%s clients=%s,%s replay=pre_and_post_restart_rejected selective_revocation=verified unrelated_session=operational_after_restart do_storage=persistent\n", agentID, clientAID, clientBID)
 	return nil
 }
 

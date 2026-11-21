@@ -46,12 +46,13 @@ type typedTerminalServer struct {
 	start typedTerminalStarter
 	write typedTerminalFrameWriter
 
-	mu           sync.Mutex
-	writeMu      sync.Mutex
-	states       *typedTerminalStreamSet
-	streams      map[uint32]*typedTerminalChild
+	mu            sync.Mutex
+	writeMu       sync.Mutex
+	states        *typedTerminalStreamSet
+	streams       map[uint32]*typedTerminalChild
 	closeObserver func(uint32, string, error)
-	cleanupErr   error
+	closeWG       sync.WaitGroup
+	cleanupErr    error
 }
 
 func newTypedTerminalServer(shell string, write typedTerminalFrameWriter) *typedTerminalServer {
@@ -383,7 +384,9 @@ func (s *typedTerminalServer) closeStream(streamID uint32, reason string, sendCl
 	}
 	_ = s.states.close(streamID)
 	delete(s.streams, streamID)
+	s.closeWG.Add(1)
 	s.mu.Unlock()
+	defer s.closeWG.Done()
 
 	child.closeOnce.Do(func() {
 		close(child.done)
@@ -435,15 +438,20 @@ func (s *typedTerminalServer) CloseAllWithReason(reason string) error {
 	}
 	s.streams = make(map[uint32]*typedTerminalChild)
 	s.states.closeAll()
+	s.closeWG.Add(len(children))
 	s.mu.Unlock()
 
 	for streamID, child := range children {
+		func() {
+			defer s.closeWG.Done()
 		child.closeOnce.Do(func() {
 			close(child.done)
 			child.closeErr = child.pty.Close()
 		})
-		_ = s.recordClose(streamID, reason, child.closeErr)
+			_ = s.recordClose(streamID, reason, child.closeErr)
+		}()
 	}
+	s.closeWG.Wait()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cleanupErr

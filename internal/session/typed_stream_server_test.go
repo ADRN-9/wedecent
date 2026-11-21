@@ -21,14 +21,25 @@ type fakeTypedPTY struct {
 	writeErr  error
 	closed    chan struct{}
 	closeOne  sync.Once
-	closeErr  error
+	closeErr     error
+	closeStarted chan struct{}
+	closeRelease chan struct{}
+	closeStartOnce sync.Once
 }
 
 func newFakeTypedPTY() *fakeTypedPTY             { return &fakeTypedPTY{closed: make(chan struct{})} }
 func (p *fakeTypedPTY) Read([]byte) (int, error) { <-p.closed; return 0, io.EOF }
 func (p *fakeTypedPTY) Wait() error              { <-p.closed; return nil }
 func (p *fakeTypedPTY) Close() error {
-	p.closeOne.Do(func() { close(p.closed) })
+	p.closeOne.Do(func() {
+		if p.closeStarted != nil {
+			p.closeStartOnce.Do(func() { close(p.closeStarted) })
+		}
+		if p.closeRelease != nil {
+			<-p.closeRelease
+		}
+		close(p.closed)
+	})
 	return p.closeErr
 }
 func (p *fakeTypedPTY) Write(data []byte) (int, error) {
@@ -276,5 +287,43 @@ func TestTypedTerminalServerPTYCleanupFailureClosesStreamAndPersistsError(t *tes
 	}
 	if len(events) != 2 {
 		t.Fatalf("repeated parent cleanup emitted duplicate close events: %#v", events)
+	}
+}
+
+func TestTypedTerminalServerParentCleanupWaitsForInFlightStreamClose(t *testing.T) {
+	closeFailure := errors.New("injected in-flight PTY close failure")
+	pty := newFakeTypedPTY()
+	pty.closeErr = closeFailure
+	pty.closeStarted = make(chan struct{})
+	pty.closeRelease = make(chan struct{})
+	server := newTypedTerminalServerWithStarter("/bin/sh", func(protocol.Frame) error { return nil }, func(string, uint16, uint16, string) (typedTerminalPTY, error) {
+		return pty, nil
+	})
+	if err := server.Handle(protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: 2, Payload: typedOpenPayload(t, 64<<10)}); err != nil {
+		t.Fatal(err)
+	}
+	peerClose, _ := protocol.JSON(protocol.StreamClose{Reason: "peer_close"})
+	streamCloseDone := make(chan error, 1)
+	go func() {
+		streamCloseDone <- server.Handle(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: 2, Payload: peerClose})
+	}()
+	select {
+	case <-pty.closeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("stream close did not enter PTY cleanup")
+	}
+	parentCleanupDone := make(chan error, 1)
+	go func() { parentCleanupDone <- server.CloseAllWithReason("client_revoked") }()
+	select {
+	case err := <-parentCleanupDone:
+		t.Fatalf("parent cleanup returned before in-flight PTY close completed: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(pty.closeRelease)
+	if err := <-streamCloseDone; !errors.Is(err, errTypedStreamCleanup) || !errors.Is(err, closeFailure) {
+		t.Fatalf("stream close error = %v, want retained PTY cleanup failure", err)
+	}
+	if err := <-parentCleanupDone; !errors.Is(err, closeFailure) {
+		t.Fatalf("parent cleanup error = %v, want retained PTY cleanup failure", err)
 	}
 }
