@@ -76,12 +76,12 @@ func (p *revocationTestPTY) Close() error {
 
 type revocationObservedConn struct {
 	net.Conn
-	mu               sync.Mutex
-	armed            bool
-	firstWrite       chan struct{}
-	firstOnce        sync.Once
-	firstWriteBytes  []byte
-	writeReturned    chan struct{}
+	mu                sync.Mutex
+	armed             bool
+	firstWrite        chan struct{}
+	firstOnce         sync.Once
+	firstWriteBytes   []byte
+	writeReturned     chan struct{}
 	writeReturnedOnce sync.Once
 }
 
@@ -1432,7 +1432,6 @@ func TestAdmissionReservationFirstThenRevocationCleansEstablishedSession(t *test
 	}
 }
 
-
 type revocationAbortFailureConn struct {
 	net.Conn
 	abortErr error
@@ -1726,4 +1725,3 @@ func TestTypedStreamAdmissionWriteFailureAbortsWithoutErrorFrame(t *testing.T) {
 	}
 	t.Fatal("typed admission failure audit event missing")
 }
-

@@ -292,10 +292,10 @@ func TestDialWebSocketRoundTrip(t *testing.T) {
 
 type wsAbortObservedConn struct {
 	net.Conn
-	started       chan struct{}
-	returned      chan struct{}
-	once          sync.Once
-	returnedOnce  sync.Once
+	started      chan struct{}
+	returned     chan struct{}
+	once         sync.Once
+	returnedOnce sync.Once
 }
 
 func (c *wsAbortObservedConn) Write(p []byte) (int, error) {
