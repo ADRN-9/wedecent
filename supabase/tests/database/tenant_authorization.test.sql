@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(26);
+select plan(29);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -64,6 +64,33 @@ select ok(
         'SELECT'
     ),
     'authenticated users cannot read server-only route authorization grants'
+);
+
+select ok(
+    not pg_catalog.has_function_privilege(
+        'anon',
+        'public.complete_device_enrollment(uuid, uuid, text, text, public.device_kind, text, uuid, text)',
+        'EXECUTE'
+    ),
+    'anonymous users cannot execute device enrollment'
+);
+
+select ok(
+    not pg_catalog.has_function_privilege(
+        'authenticated',
+        'public.complete_device_enrollment(uuid, uuid, text, text, public.device_kind, text, uuid, text)',
+        'EXECUTE'
+    ),
+    'authenticated users cannot execute device enrollment'
+);
+
+select ok(
+    pg_catalog.has_function_privilege(
+        'service_role',
+        'public.complete_device_enrollment(uuid, uuid, text, text, public.device_kind, text, uuid, text)',
+        'EXECUTE'
+    ),
+    'service role can execute device enrollment'
 );
 
 set local role authenticated;
