@@ -438,6 +438,11 @@ before update or delete on public.organization_audit_events
 for each row
 execute function wedecent_private.reject_tenant_audit_mutation();
 
+create trigger organization_audit_events_no_truncate
+before truncate on public.organization_audit_events
+for each statement
+execute function wedecent_private.reject_tenant_audit_mutation();
+
 revoke all on function wedecent_private.audit_actor_user_id()
     from public, anon, authenticated, service_role;
 revoke all on function wedecent_private.append_tenant_audit_event(uuid, text, text, text, jsonb)
