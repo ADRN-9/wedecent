@@ -93,14 +93,15 @@ psql_test -c "
   );
 "
 
-# Hold the target row lock in a separate psql session.
-PGPASSWORD="$DB_PASSWORD" psql "${PSQL_ARGS[@]}" -Atc "
-  BEGIN;
-  SELECT device_id FROM public.devices WHERE device_id = '$TARGET_DEVICE' FOR UPDATE;
-  SELECT 'WD_GRANT_LOCK_HELD';
-  SELECT pg_sleep(15);
-  COMMIT;
-" >"$TMP_DIR/lock.log" 2>&1 &
+# Hold the target row lock in a separate psql session. Feed each command
+# separately so the lock-held marker is flushed before the sleep completes.
+PGPASSWORD="$DB_PASSWORD" psql "${PSQL_ARGS[@]}" -At >"$TMP_DIR/lock.log" 2>&1 <<SQL &
+BEGIN;
+SELECT device_id FROM public.devices WHERE device_id = '$TARGET_DEVICE' FOR UPDATE;
+SELECT 'WD_GRANT_LOCK_HELD';
+SELECT pg_sleep(15);
+COMMIT;
+SQL
 LOCK_PID=$!
 
 lock_held=false
@@ -115,7 +116,10 @@ for ((attempt = 0; attempt < 200; attempt++)); do
   fi
   sleep 0.05
 done
-[[ "$lock_held" == true ]] || fail 'timed out waiting for target device row lock'
+if [[ "$lock_held" != true ]]; then
+  cat "$TMP_DIR/lock.log" >&2
+  fail 'timed out waiting for target device row lock'
+fi
 
 # The grant issuer must be observed waiting on that exact device-row lock.
 PGPASSWORD="$DB_PASSWORD" PGAPPNAME="$ISSUER_APP" psql "${PSQL_ARGS[@]}" -c "

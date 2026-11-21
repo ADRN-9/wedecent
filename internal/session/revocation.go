@@ -79,13 +79,13 @@ func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, r
 			return err
 		}
 		active = &activeTerminalSession{
-			server:      s,
-			ID:          sessionID,
-			clientID:    peer.ID,
-			fingerprint: peer.Fingerprint,
-			generation:  peer.Generation,
-			transport:   transport,
-			rawConn:     rawConn,
+			server:          s,
+			ID:              sessionID,
+			clientID:        peer.ID,
+			fingerprint:     peer.Fingerprint,
+			generation:      peer.Generation,
+			transport:       transport,
+			rawConn:         rawConn,
 			cleanup:         cleanup,
 			done:            make(chan struct{}),
 			terminationDone: make(chan struct{}),
