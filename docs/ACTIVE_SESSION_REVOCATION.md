@@ -28,7 +28,7 @@ The deterministic database regression uses two independent local database connec
 
 ## Worker/Durable Object relay cleanup
 
-An established relay is paired inside the `DeviceRelay` Durable Object. When the target agent's WebSocket closes because its local TLS session was revoked, the Durable Object's `webSocketClose` handler closes only the paired client socket. Other agent/client pairs remain open. The regression exercises the Durable Object's actual `fetch` and WebSocket event handlers, reuses the same JTI to verify replay rejection, and confirms a second pair can still exchange data.
+An established relay is paired inside the `DeviceRelay` Durable Object. When the target agent's WebSocket closes because its local TLS session was revoked, the Durable Object's `webSocketClose` handler closes only the paired client socket. Other agent/client pairs remain open. The regression submits signed relay tickets and connection grants through the Worker's actual `fetch` route, rate limiter, stream authorization, and request-forwarding path before exercising the Durable Object's `fetch` and WebSocket event handlers. It reuses the same connection-grant JTI to verify replay rejection and confirms a second pair can still exchange data.
 
 ## Verification commands
 

@@ -3,7 +3,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 create extension if not exists dblink with schema extensions;
 
-select plan(4);
+select plan(5);
 
 -- Seed committed rows so independent database sessions can coordinate the lock
 -- wait. This test runs only against the disposable Supabase CI database.
@@ -95,9 +95,24 @@ select extensions.dblink_connect(
 );
 
 select extensions.dblink_exec('wd_grant_clock_lock', 'begin');
-select extensions.dblink_exec(
+
+create temporary table wd_grant_clock_locked_device (
+    device_id text
+);
+
+select extensions.dblink_send_query(
     'wd_grant_clock_lock',
-    'update public.devices set name = name where device_id = ''wd_6666666666666666'''
+    'select device_id from public.devices where device_id = ''wd_6666666666666666'' for update'
+);
+
+insert into wd_grant_clock_locked_device (device_id)
+select device_id
+  from extensions.dblink_get_result('wd_grant_clock_lock') as locked(device_id text);
+
+select is(
+    (select count(*)::bigint from wd_grant_clock_locked_device),
+    1::bigint,
+    'lock session holds the target device row before grant issuance starts'
 );
 
 create temporary table wd_grant_clock_wait_state (
