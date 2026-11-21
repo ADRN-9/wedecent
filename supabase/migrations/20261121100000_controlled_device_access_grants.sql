@@ -22,7 +22,8 @@ declare
     device_row public.devices%rowtype;
 begin
     if actor_id is null
-       or auth.role() is distinct from 'authenticated' then
+       or (auth.jwt() ->> 'role') is distinct from 'authenticated'
+       or coalesce((auth.jwt() ->> 'is_anonymous')::boolean, true) then
         raise exception 'authenticated identity required'
             using errcode = '42501';
     end if;
@@ -132,7 +133,8 @@ declare
     created_grant public.device_access%rowtype;
 begin
     if actor_id is null
-       or auth.role() is distinct from 'authenticated' then
+       or (auth.jwt() ->> 'role') is distinct from 'authenticated'
+       or coalesce((auth.jwt() ->> 'is_anonymous')::boolean, true) then
         raise exception 'authenticated identity required'
             using errcode = '42501';
     end if;
@@ -208,7 +210,8 @@ declare
     checked_at timestamptz;
 begin
     if auth.uid() is null
-       or auth.role() is distinct from 'authenticated' then
+       or (auth.jwt() ->> 'role') is distinct from 'authenticated'
+       or coalesce((auth.jwt() ->> 'is_anonymous')::boolean, true) then
         raise exception 'authenticated identity required'
             using errcode = '42501';
     end if;
@@ -278,10 +281,10 @@ as $$
 declare
     existing_grant public.device_access%rowtype;
     revoked_grant public.device_access%rowtype;
-    checked_at timestamptz;
 begin
     if auth.uid() is null
-       or auth.role() is distinct from 'authenticated' then
+       or (auth.jwt() ->> 'role') is distinct from 'authenticated'
+       or coalesce((auth.jwt() ->> 'is_anonymous')::boolean, true) then
         raise exception 'authenticated identity required'
             using errcode = '42501';
     end if;
@@ -309,12 +312,7 @@ begin
             using errcode = 'P0002';
     end if;
 
-    checked_at := pg_catalog.clock_timestamp();
-    if existing_grant.expires_at is not null
-       and existing_grant.expires_at <= checked_at then
-        null;
-    end if;
-
+    -- Expiry does not block revocation: this operation only removes authority.
     delete from public.device_access as a
      where a.device_id = p_device_id
        and a.user_id = p_grantee_user_id

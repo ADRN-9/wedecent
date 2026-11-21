@@ -14,7 +14,7 @@ The only supported authenticated mutation interfaces are:
 - public.update_device_access_grant_expiry(device_id, grantee_user_id, permission, expires_at)
 - public.revoke_device_access_grant(device_id, grantee_user_id, permission)
 
-Every RPC requires auth.uid() and an authenticated JWT role. No RPC accepts an actor ID or granted_by; inserts derive granted_by from the verified JWT subject. The device-access Edge Function verifies the bearer token with Supabase Auth and forwards that same bearer token to the authenticated RPC. Its service credential is used only for auth.getUser, not for grant-table writes.
+Every RPC requires a non-null auth.uid(), an authenticated JWT role, and an explicit is_anonymous=false claim; missing or anonymous claims fail closed. No RPC accepts an actor ID or granted_by; inserts derive granted_by from the verified JWT subject. The device-access Edge Function verifies the bearer token with Supabase Auth and forwards that same bearer token to the authenticated RPC. Its service credential is used only for auth.getUser, not for grant-table writes.
 
 Device owners retain their existing direct device-management authority. Otherwise, the caller must have a current owner or admin membership in the device's organization. Ordinary members and users from other tenants are denied. Revoked devices are not grantable or manageable.
 
@@ -53,7 +53,7 @@ The device-access Edge Function retries only explicit PostgreSQL transaction-abo
 
 The database pgTAP suite covers:
 - RLS, table/column privileges, service-role read-only access, RPC ownership, SECURITY DEFINER, empty search_path, and execute ACLs;
-- owner, administrator, ordinary member, device-owner, and cross-tenant authorization;
+- owner, administrator, ordinary member, device-owner (including organization-managed devices), anonymous/missing-claim rejection, and cross-tenant authorization;
 - missing authentication, actor spoofing, malformed IDs, revoked devices, expired requests, duplicates, and missing grant rows;
 - audit actor attribution, permanent-grant semantics, rollback of both grant and audit rows, and expired-row revocation.
 

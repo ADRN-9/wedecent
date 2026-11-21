@@ -148,6 +148,7 @@ begin;
 set role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '$ADMIN_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 select public.create_device_access_grant(
   '$DEVICE_ID',
   '$GRANTEE_FIRST_ID',
@@ -167,6 +168,7 @@ begin;
 set role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '$OWNER_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 update public.organization_memberships
    set role = 'member'
  where organization_id = '$ORG_ID'
@@ -198,6 +200,7 @@ begin;
 set role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '$OWNER_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 update public.organization_memberships
    set role = 'member'
  where organization_id = '$ORG_ID'
@@ -215,6 +218,7 @@ begin;
 set role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '$ADMIN_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 select public.create_device_access_grant(
   '$DEVICE_ID',
   '$GRANTEE_DOWNGRADE_ID',
@@ -245,6 +249,7 @@ begin;
 set role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '$OWNER_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 delete from public.organization_memberships
  where organization_id = '$ORG_ID'
    and user_id = '$ADMIN_ID';
@@ -261,6 +266,7 @@ begin;
 set role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '$ADMIN_ID', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 select public.create_device_access_grant(
   '$DEVICE_ID',
   '$GRANTEE_REMOVE_ID',

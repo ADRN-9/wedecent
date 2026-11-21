@@ -13,6 +13,7 @@ values
     ('41000000-0000-4000-8000-000000000005', 'authenticated', 'authenticated', 'audit-former-member@example.test');
 
 select set_config('request.jwt.claim.sub', '41000000-0000-4000-8000-000000000001', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 select set_config('request.jwt.claim.role', 'authenticated', true);
 
 insert into public.organizations (id, name, slug, created_by)

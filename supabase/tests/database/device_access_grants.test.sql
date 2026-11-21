@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(56);
+select plan(59);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -12,7 +12,8 @@ values
     ('71000000-0000-4000-8000-000000000004', 'authenticated', 'authenticated', 'wd-access-grantee@example.test'),
     ('71000000-0000-4000-8000-000000000005', 'authenticated', 'authenticated', 'wd-access-other-owner@example.test'),
     ('71000000-0000-4000-8000-000000000006', 'authenticated', 'authenticated', 'wd-access-device-owner@example.test'),
-    ('71000000-0000-4000-8000-000000000007', 'authenticated', 'authenticated', 'wd-access-spare@example.test');
+    ('71000000-0000-4000-8000-000000000007', 'authenticated', 'authenticated', 'wd-access-spare@example.test'),
+    ('71000000-0000-4000-8000-000000000008', 'authenticated', 'authenticated', 'wd-access-spare-two@example.test');
 
 insert into public.organizations (id, name, slug, created_by)
 values
@@ -256,6 +257,7 @@ select ok(
 set local role authenticated;
 select set_config('request.jwt.claim.role', 'authenticated', true);
 select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 
 select throws_ok(
     $$
@@ -456,16 +458,62 @@ select lives_ok(
 select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000006', true);
 
 select lives_ok(
-    $$
+    $
         select public.create_device_access_grant(
             'wd_dddddddddddddddd',
             '71000000-0000-4000-8000-000000000007',
             'terminal.connect',
             null
         )
-    $$,
+    $,
     'device owner retains direct grant authority without organization membership'
 );
+
+select lives_ok(
+    $
+        select public.create_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000008',
+            'terminal.connect',
+            now() + interval '1 hour'
+        )
+    $,
+    'device owner retains direct grant authority for an organization-managed device'
+);
+
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":true}', true);
+
+select throws_ok(
+    $
+        select public.create_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000005',
+            'terminal.connect',
+            now() + interval '1 hour'
+        )
+    $,
+    '42501',
+    'authenticated identity required',
+    'anonymous identity cannot mutate grants even when it owns the device'
+);
+
+select set_config('request.jwt.claims', '{"role":"authenticated"}', true);
+
+select throws_ok(
+    $
+        select public.create_device_access_grant(
+            'wd_aaaaaaaaaaaaaaaa',
+            '71000000-0000-4000-8000-000000000005',
+            'terminal.connect',
+            now() + interval '1 hour'
+        )
+    $,
+    '42501',
+    'authenticated identity required',
+    'missing anonymous identity claim fails closed'
+);
+
+select set_config('request.jwt.claims', '{"role":"authenticated","is_anonymous":false}', true);
 
 select set_config('request.jwt.claim.sub', '', true);
 

@@ -76,6 +76,9 @@ Deno.serve(async (req) => {
     });
     const { data: authData, error: authError } = await admin.auth.getUser(token);
     if (authError || !authData.user) return json({ error: "invalid user session" }, 401);
+    if (authData.user.is_anonymous) {
+      return json({ error: "permanent authenticated identity required" }, 403);
+    }
 
     const rawBody = await req.json();
     if (!isRecord(rawBody)) return json({ error: "invalid request body" }, 400);
