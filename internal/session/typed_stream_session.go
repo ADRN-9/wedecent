@@ -187,7 +187,6 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 					_ = writeFrame(protocol.Frame{Type: protocol.TypeError, Payload: mustJSON(protocol.Error{Code: "protocol_error", Message: "invalid typed stream operation"})})
 					return
 				}
-				streamAudit.observeIncoming(frame)
 				policyTimers.Activity()
 				continue
 			}
