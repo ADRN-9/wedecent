@@ -30,9 +30,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 			}
 			return
 		}
-		outcome := "success"
 		if finishErr != nil {
-			outcome = "failed"
 			s.log().Error("typed terminal session cleanup failed",
 				"client_id", peerID, "session_id", active.ID, "error", finishErr)
 		}
@@ -212,7 +210,6 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName str
 		}
 	}
 }
-
 
 // typedSessionClosedAuditEvent keeps the close-reason and cleanup outcome
 // mapping shared by the production defer and its concurrency regression.
