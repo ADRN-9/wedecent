@@ -151,6 +151,9 @@ func (p *managedProcess) waitForOutputCount(value string, count int, timeout tim
 		if strings.Count(p.output.String(), value) >= count {
 			return nil
 		}
+		if isAddressInUse(p.output.String()) {
+			return fmt.Errorf("process could not bind a loopback listener: %s", p.output.String())
+		}
 		if p.exited() {
 			p.mu.Lock()
 			err := p.waitErr
@@ -217,15 +220,6 @@ func run() error {
 			TLSClientConfig: &tls.Config{RootCAs: roots, MinVersion: tls.VersionTLS12},
 		},
 	}
-	workerPort, err := freePort()
-	if err != nil {
-		return err
-	}
-	agentPort, err := freePort()
-	if err != nil {
-		return err
-	}
-	relayURL := fmt.Sprintf("https://127.0.0.1:%d", workerPort)
 	persistDir := filepath.Join(tmp, "worker-persistence")
 	if err := os.MkdirAll(persistDir, 0o700); err != nil {
 		return err
@@ -241,14 +235,12 @@ func run() error {
 	}
 	defer os.Remove(devVarsPath)
 
-	worker, err := startWorker(wrangler, workerDir, workerPort, keyPath, certPath, persistDir)
+	worker, workerPort, err := startWorkerWithRetry(wrangler, workerDir, keyPath, certPath, persistDir, tlsClient)
 	if err != nil {
-		return err
+		return fmt.Errorf("start local Worker after bounded port retries: %w", err)
 	}
 	defer worker.stop()
-	if err := waitWorkerReady(tlsClient, relayURL, worker, 30*time.Second); err != nil {
-		return err
-	}
+	relayURL := fmt.Sprintf("https://127.0.0.1:%d", workerPort)
 
 	agentState := filepath.Join(tmp, "agent-state")
 	initOutput, err := runCommand(ctx, root, nil, agentBinary, "init", "--state", agentState, "--name", "worker-process-agent")
@@ -273,22 +265,15 @@ func run() error {
 	}
 
 	agentEnv := []string{"SSL_CERT_FILE=" + certPath}
-	agent, err := startManagedProcess(agentBinary, []string{
-		"serve", "--state", agentState, "--name", "worker-process-agent",
-		"--listen", net.JoinHostPort("127.0.0.1", strconv.Itoa(agentPort)),
-		"--web-relay", relayURL, "--relay-slots", "2", "--shell", "/bin/sh",
-	}, root, agentEnv, false)
+	agent, agentPort, err := startAgentWithRetry(agentBinary, agentState, root, agentEnv, relayURL)
 	if err != nil {
-		return fmt.Errorf("start independent Go agent process: %w", err)
+		return fmt.Errorf("start independent Go agent after bounded port retries: %w", err)
 	}
 	defer func() {
 		if agent != nil {
 			agent.stop()
 		}
 	}()
-	if err := agent.waitForOutputCount("web relay slot parked", 2, 30*time.Second); err != nil {
-		return fmt.Errorf("agent did not register two Worker relay slots: %w", err)
-	}
 
 	clientAState := filepath.Join(tmp, "client-a-state")
 	clientBState := filepath.Join(tmp, "client-b-state")
@@ -440,26 +425,17 @@ func run() error {
 		return errors.New("Wrangler did not persist any local Durable Object storage files")
 	}
 
-	worker, err = startWorker(wrangler, workerDir, workerPort, keyPath, certPath, persistDir)
+	worker, workerPort, err = startWorkerWithRetry(wrangler, workerDir, keyPath, certPath, persistDir, tlsClient)
 	if err != nil {
-		return err
+		return fmt.Errorf("restart local Worker after bounded port retries: %w", err)
 	}
 	defer worker.stop()
-	if err := waitWorkerReady(tlsClient, relayURL, worker, 30*time.Second); err != nil {
-		return fmt.Errorf("restarted Worker did not become ready: %w", err)
-	}
+	relayURL = fmt.Sprintf("https://127.0.0.1:%d", workerPort)
 	// Restart the independent agent against the restarted Worker, then prove
 	// that the still-authorized unrelated device can establish a fresh session.
-	agent, err = startManagedProcess(agentBinary, []string{
-		"serve", "--state", agentState, "--name", "worker-process-agent",
-		"--listen", net.JoinHostPort("127.0.0.1", strconv.Itoa(agentPort)),
-		"--web-relay", relayURL, "--relay-slots", "2", "--shell", "/bin/sh",
-	}, root, agentEnv, false)
+	agent, agentPort, err = startAgentWithRetry(agentBinary, agentState, root, agentEnv, relayURL)
 	if err != nil {
-		return fmt.Errorf("restart independent Go agent process: %w", err)
-	}
-	if err := agent.waitForOutputCount("web relay slot parked", 2, 30*time.Second); err != nil {
-		return fmt.Errorf("restarted agent did not register Worker relay slots: %w", err)
+		return fmt.Errorf("restart independent Go agent after bounded port retries: %w", err)
 	}
 	if err := verifyGrantEvidence(tlsClient, relayURL, agentIdentity, agentID, clientAID, grantA); err != nil {
 		return fmt.Errorf("client A Durable Object evidence did not survive Worker restart: %w", err)
@@ -528,6 +504,48 @@ func run() error {
 	return nil
 }
 
+const maxPortStartAttempts = 5
+
+func startWithPortRetry(
+	allocatePort func() (int, error),
+	start func(int) (*managedProcess, error),
+	ready func(*managedProcess) error,
+) (*managedProcess, int, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxPortStartAttempts; attempt++ {
+		port, err := allocatePort()
+		if err != nil {
+			return nil, 0, fmt.Errorf("allocate loopback port: %w", err)
+		}
+		process, err := start(port)
+		if err == nil {
+			if process == nil {
+				return nil, 0, errors.New("process starter returned a nil process without an error")
+			}
+			err = ready(process)
+			if err == nil {
+				return process, port, nil
+			}
+			process.stop()
+		}
+		if !isAddressInUse(err.Error()) {
+			return nil, 0, err
+		}
+		lastErr = err
+		if attempt < maxPortStartAttempts {
+			time.Sleep(time.Duration(attempt) * 100 * time.Millisecond)
+		}
+	}
+	return nil, 0, fmt.Errorf("loopback listener startup collided on %d consecutive attempts: %w", maxPortStartAttempts, lastErr)
+}
+
+func isAddressInUse(output string) bool {
+	output = strings.ToLower(output)
+	return strings.Contains(output, "address already in use") ||
+		strings.Contains(output, "eaddrinuse") ||
+		strings.Contains(output, "only one usage of each socket address")
+}
+
 func startWorker(wrangler, workerDir string, port int, keyPath, certPath, persistDir string) (*managedProcess, error) {
 	return startManagedProcess(wrangler, []string{
 		"dev", "--local", "--local-protocol", "https", "--ip", "127.0.0.1", "--port", strconv.Itoa(port),
@@ -536,9 +554,40 @@ func startWorker(wrangler, workerDir string, port int, keyPath, certPath, persis
 	}, workerDir, nil, false)
 }
 
+func startWorkerWithRetry(wrangler, workerDir, keyPath, certPath, persistDir string, client *http.Client) (*managedProcess, int, error) {
+	return startWithPortRetry(
+		freePort,
+		func(port int) (*managedProcess, error) {
+			return startWorker(wrangler, workerDir, port, keyPath, certPath, persistDir)
+		},
+		func(worker *managedProcess) error {
+			return waitWorkerReady(client, "", worker, 30*time.Second)
+		},
+	)
+}
+
+func startAgentWithRetry(agentBinary, agentState, root string, env []string, relayURL string) (*managedProcess, int, error) {
+	return startWithPortRetry(
+		freePort,
+		func(port int) (*managedProcess, error) {
+			return startManagedProcess(agentBinary, []string{
+				"serve", "--state", agentState, "--name", "worker-process-agent",
+				"--listen", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+				"--web-relay", relayURL, "--relay-slots", "2", "--shell", "/bin/sh",
+			}, root, env, false)
+		},
+		func(agent *managedProcess) error {
+			return agent.waitForOutputCount("web relay slot parked", 2, 30*time.Second)
+		},
+	)
+}
+
 func waitWorkerReady(client *http.Client, relayURL string, worker *managedProcess, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
+		if isAddressInUse(worker.output.String()) {
+			return fmt.Errorf("Wrangler could not bind a loopback listener: %s", worker.output.String())
+		}
 		if worker.exited() {
 			worker.mu.Lock()
 			err := worker.waitErr
