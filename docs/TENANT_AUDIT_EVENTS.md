@@ -37,7 +37,7 @@ Events are inserted in the same transaction as the underlying mutation. If audit
 
 Authenticated users receive SELECT only. Row-level security permits reads only to current organization owners and administrators through the existing `wedecent_private.can_manage_organization` policy helper. Ordinary members, former members and users from other organizations receive no rows.
 
-No application role (including `service_role`) receives direct INSERT, UPDATE, DELETE or TRUNCATE privileges. Internal append helpers are not executable by application roles. A database trigger rejects UPDATE and DELETE even for the table owner. This is append-only against application and ordinary database roles; a PostgreSQL superuser or migration owner can still alter schema, disable triggers or otherwise bypass database controls. This is not a cryptographic tamper-evident ledger.
+No application role (including `service_role`) receives direct INSERT, UPDATE, DELETE or TRUNCATE privileges. Internal append helpers are not executable by application roles. A database trigger rejects UPDATE, DELETE and TRUNCATE even for the table owner. This is append-only against application and ordinary database roles; a PostgreSQL superuser or migration owner can still alter schema, disable triggers or otherwise bypass database controls. This is not a cryptographic tamper-evident ledger.
 
 There is no retention/archival or tenant audit export API in this slice. Records are retained indefinitely by the schema as written; production retention, export and legal-hold policy require a separate reviewed design.
 
