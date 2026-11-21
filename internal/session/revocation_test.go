@@ -7,6 +7,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/hmac"
+	"crypto/sha1"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/tls"
@@ -15,9 +16,12 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"hash"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -28,6 +32,7 @@ import (
 	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/protocol"
+	"wedecent.com/wedecent/internal/transport"
 	"wedecent.com/wedecent/internal/trust"
 )
 
@@ -568,6 +573,298 @@ func TestWriteSessionAcceptedFailsClosedWhenDeadlineCannotBeSet(t *testing.T) {
 	if err := writeSessionAccepted(conn, protocol.Frame{Type: protocol.TypeSessionAccepted}); err == nil {
 		t.Fatal("session acceptance succeeded without a bounded write deadline")
 	}
+}
+
+
+type revocationRelayPeer struct {
+	conn   net.Conn
+	reader *bufio.Reader
+}
+
+type revocationWebSocketRelay struct {
+	ctx       context.Context
+	cancel    context.CancelFunc
+	agents    chan *revocationRelayPeer
+	clients   chan *revocationRelayPeer
+	mu        sync.Mutex
+	peers     []*revocationRelayPeer
+	closeOnce sync.Once
+}
+
+func newRevocationWebSocketRelay() *revocationWebSocketRelay {
+	ctx, cancel := context.WithCancel(context.Background())
+	relay := &revocationWebSocketRelay{
+		ctx:     ctx,
+		cancel:  cancel,
+		agents:  make(chan *revocationRelayPeer, 1),
+		clients: make(chan *revocationRelayPeer, 1),
+	}
+	go relay.pair()
+	return relay
+}
+
+func (r *revocationWebSocketRelay) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	role := request.URL.Query().Get("role")
+	if role != "agent" && role != "client" {
+		http.Error(w, "invalid relay role", http.StatusBadRequest)
+		return
+	}
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "WebSocket hijacking unavailable", http.StatusInternalServerError)
+		return
+	}
+	raw, rw, err := hijacker.Hijack()
+	if err != nil {
+		return
+	}
+	digest := sha1.Sum([]byte(
+		request.Header.Get("Sec-WebSocket-Key") + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11",
+	))
+	accept := base64.StdEncoding.EncodeToString(digest[:])
+	if _, err := fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept); err != nil {
+		_ = raw.Close()
+		return
+	}
+	if err := rw.Flush(); err != nil {
+		_ = raw.Close()
+		return
+	}
+	peer := &revocationRelayPeer{conn: raw, reader: rw.Reader}
+	r.mu.Lock()
+	r.peers = append(r.peers, peer)
+	r.mu.Unlock()
+
+	channel := r.clients
+	if role == "agent" {
+		channel = r.agents
+	}
+	select {
+	case channel <- peer:
+	case <-r.ctx.Done():
+		_ = raw.Close()
+	}
+}
+
+func (r *revocationWebSocketRelay) pair() {
+	var agent, client *revocationRelayPeer
+	select {
+	case agent = <-r.agents:
+	case <-r.ctx.Done():
+		return
+	}
+	select {
+	case client = <-r.clients:
+	case <-r.ctx.Done():
+		return
+	}
+	go r.forward(agent, client)
+	go r.forward(client, agent)
+}
+
+func (r *revocationWebSocketRelay) forward(source, destination *revocationRelayPeer) {
+	for {
+		opcode, payload, err := readRevocationWebSocketFrame(source.reader)
+		if err != nil {
+			r.closePeers()
+			return
+		}
+		if err := writeRevocationWebSocketFrame(destination.conn, opcode, payload); err != nil {
+			r.closePeers()
+			return
+		}
+		if opcode == 0x8 {
+			r.closePeers()
+			return
+		}
+	}
+}
+
+func (r *revocationWebSocketRelay) closePeers() {
+	r.closeOnce.Do(func() {
+		r.cancel()
+		r.mu.Lock()
+		peers := append([]*revocationRelayPeer(nil), r.peers...)
+		r.mu.Unlock()
+		for _, peer := range peers {
+			_ = peer.conn.Close()
+		}
+	})
+}
+
+func (r *revocationWebSocketRelay) Close() {
+	r.closePeers()
+}
+
+func readRevocationWebSocketFrame(reader *bufio.Reader) (byte, []byte, error) {
+	var header [2]byte
+	if _, err := io.ReadFull(reader, header[:]); err != nil {
+		return 0, nil, err
+	}
+	length := uint64(header[1] & 0x7f)
+	switch length {
+	case 126:
+		var extended [2]byte
+		if _, err := io.ReadFull(reader, extended[:]); err != nil {
+			return 0, nil, err
+		}
+		length = uint64(binary.BigEndian.Uint16(extended[:]))
+	case 127:
+		var extended [8]byte
+		if _, err := io.ReadFull(reader, extended[:]); err != nil {
+			return 0, nil, err
+		}
+		length = binary.BigEndian.Uint64(extended[:])
+	}
+	if length > 32<<20 {
+		return 0, nil, errors.New("test relay frame exceeds limit")
+	}
+	masked := header[1]&0x80 != 0
+	var mask [4]byte
+	if masked {
+		if _, err := io.ReadFull(reader, mask[:]); err != nil {
+			return 0, nil, err
+		}
+	}
+	payload := make([]byte, int(length))
+	if _, err := io.ReadFull(reader, payload); err != nil {
+		return 0, nil, err
+	}
+	if masked {
+		for index := range payload {
+			payload[index] ^= mask[index&3]
+		}
+	}
+	return header[0] & 0x0f, payload, nil
+}
+
+func writeRevocationWebSocketFrame(writer io.Writer, opcode byte, payload []byte) error {
+	var header [10]byte
+	header[0] = 0x80 | opcode
+	headerLength := 2
+	switch {
+	case len(payload) < 126:
+		header[1] = byte(len(payload))
+	case len(payload) <= 65535:
+		header[1] = 126
+		binary.BigEndian.PutUint16(header[2:4], uint16(len(payload)))
+		headerLength = 4
+	default:
+		header[1] = 127
+		binary.BigEndian.PutUint64(header[2:10], uint64(len(payload)))
+		headerLength = 10
+	}
+	if err := writeRevocationAll(writer, header[:headerLength]); err != nil {
+		return err
+	}
+	return writeRevocationAll(writer, payload)
+}
+
+func writeRevocationAll(writer io.Writer, data []byte) error {
+	for len(data) > 0 {
+		written, err := writer.Write(data)
+		if err != nil {
+			return err
+		}
+		if written == 0 {
+			return io.ErrShortWrite
+		}
+		data = data[written:]
+	}
+	return nil
+}
+
+func TestRevocationAbortsEstablishedSessionThroughWebRelayGoAdapter(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("web-relay-revocation-client")
+	relay := newRevocationWebSocketRelay()
+	server := httptest.NewServer(relay)
+	defer server.Close()
+	defer relay.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	agentConn, err := transport.WaitWebRelaySession(ctx, server.URL, transport.WebRelayOptions{
+		Token:             "agent-ticket",
+		Timeout:           5 * time.Second,
+		KeepAliveInterval: -1,
+	}, rig.serverID.ID, 1)
+	if err != nil {
+		t.Fatalf("wait for WebSocket relay session: %v", err)
+	}
+	go rig.server.ServeParkedRelayConn(agentConn)
+
+	clientRaw, err := (transport.WebRelayDialer{
+		BaseURL:        server.URL,
+		TargetDeviceID: rig.serverID.ID,
+		Options: transport.WebRelayOptions{
+			Token:             "client-ticket",
+			Timeout:           5 * time.Second,
+			ConnectionGrant:   "header.payload.signature",
+			KeepAliveInterval: -1,
+		},
+	}).Dial(ctx)
+	if err != nil {
+		t.Fatalf("dial WebSocket relay client: %v", err)
+	}
+	conn := tls.Client(clientRaw, identity.ClientTLS(client, rig.serverFingerprint))
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Handshake(); err != nil {
+		t.Fatalf("inner terminal TLS handshake through WebSocket adapter: %v", err)
+	}
+	if err := rig.sendOpen(conn, TransportWebSocketRelay, false); err != nil {
+		t.Fatalf("open terminal session through WebSocket adapter: %v", err)
+	}
+	if err := rig.readAccepted(conn); err != nil {
+		t.Fatalf("read WebSocket terminal session acceptance: %v", err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+	pty := rig.ptyAt(0)
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitRevocationPTYClosed(t, pty)
+	waitRevocationConnectionClosed(t, conn)
+	_ = conn.Close()
+	_ = clientRaw.Close()
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		terminated, closed := 0, 0
+		for _, event := range events {
+			if event.PeerID != client.ID {
+				continue
+			}
+			if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+				terminated++
+			}
+			if event.Type == "terminal.session_closed" && event.Reason == "client_revoked" {
+				closed++
+			}
+		}
+		return terminated == 1 && closed == 1
+	})
+	terminated, closed := 0, 0
+	terminatedAt, closedAt := -1, -1
+	for index, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+			terminated++
+			terminatedAt = index
+		}
+		if event.Type == "terminal.session_closed" && event.Reason == "client_revoked" {
+			closed++
+			closedAt = index
+		}
+	}
+	if terminated != 1 || closed != 1 || terminatedAt >= closedAt {
+		t.Fatalf("WebSocket revocation audit: terminated=%d at %d, closed=%d at %d", terminated, terminatedAt, closed, closedAt)
+	}
+	waitRevocationSessionsIdle(t, rig.server)
 }
 
 func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T) {
