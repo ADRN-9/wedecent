@@ -3,8 +3,8 @@ package session
 import "sync"
 
 type typedSessionCloseReason struct {
-	mu     sync.RWMutex
-	value  string
+	mu    sync.RWMutex
+	value string
 }
 
 func newTypedSessionCloseReason(initial string) *typedSessionCloseReason {
@@ -35,10 +35,11 @@ func (r *typedSessionCloseReason) valueOr(fallback string) string {
 
 // Revocation's immutable reason wins over a concurrently completed terminal read.
 func resolveTypedSessionCloseReason(active *activeTerminalSession, fallback *typedSessionCloseReason) string {
+	fallbackReason := fallback.valueOr("connection_ended")
 	if active != nil {
 		if reason := active.reasonOr(""); reason != "" {
 			return reason
 		}
 	}
-	return fallback.valueOr("connection_ended")
+	return fallbackReason
 }
