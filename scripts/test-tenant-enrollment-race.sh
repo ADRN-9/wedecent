@@ -86,37 +86,48 @@ db_psql <<'SQL'
 delete from public.device_enrollment_challenges
  where id in (
    '60000000-0000-4000-8000-000000000001',
-   '60000000-0000-4000-8000-000000000002'
+   '60000000-0000-4000-8000-000000000002',
+   '60000000-0000-4000-8000-000000000003'
  );
 delete from public.devices
- where device_id in ('wd_aaaaaaaaaaaaaaaa', 'wd_bbbbbbbbbbbbbbbb');
+ where device_id in ('wd_aaaaaaaaaaaaaaaa', 'wd_bbbbbbbbbbbbbbbb', 'wd_cccccccccccccccc');
 delete from public.organizations
  where id in (
    '50000000-0000-4000-8000-000000000001',
-   '50000000-0000-4000-8000-000000000002'
+   '50000000-0000-4000-8000-000000000002',
+   '50000000-0000-4000-8000-000000000003'
  );
 delete from auth.users
  where id in (
    '40000000-0000-4000-8000-000000000001',
-   '40000000-0000-4000-8000-000000000002'
+   '40000000-0000-4000-8000-000000000002',
+   '40000000-0000-4000-8000-000000000003'
  );
 
 insert into auth.users (id, aud, role, email)
 values
   ('40000000-0000-4000-8000-000000000001', 'authenticated', 'authenticated', 'wd-cp01-race-a@example.test'),
-  ('40000000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'wd-cp01-race-b@example.test');
+  ('40000000-0000-4000-8000-000000000002', 'authenticated', 'authenticated', 'wd-cp01-race-b@example.test'),
+  ('40000000-0000-4000-8000-000000000003', 'authenticated', 'authenticated', 'wd-cp01-race-c@example.test');
 
 insert into public.organizations (id, name, slug, created_by)
 values
   ('50000000-0000-4000-8000-000000000001', 'WD CP01 Race A', 'wd-cp01-race-a', '40000000-0000-4000-8000-000000000001'),
-  ('50000000-0000-4000-8000-000000000002', 'WD CP01 Race B', 'wd-cp01-race-b', '40000000-0000-4000-8000-000000000002');
+  ('50000000-0000-4000-8000-000000000002', 'WD CP01 Race B', 'wd-cp01-race-b', '40000000-0000-4000-8000-000000000002'),
+  ('50000000-0000-4000-8000-000000000003', 'WD CP01 Race C', 'wd-cp01-race-c', '40000000-0000-4000-8000-000000000003');
+
+update public.organization_memberships
+   set role = 'member'
+ where organization_id = '50000000-0000-4000-8000-000000000003'
+   and user_id = '40000000-0000-4000-8000-000000000003';
 
 insert into public.device_enrollment_challenges (
   id, user_id, device_id, challenge_sha256, expires_at
 )
 values
   ('60000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', 'wd_aaaaaaaaaaaaaaaa', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
-  ('60000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-000000000002', 'wd_bbbbbbbbbbbbbbbb', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes');
+  ('60000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-000000000002', 'wd_bbbbbbbbbbbbbbbb', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes'),
+  ('60000000-0000-4000-8000-000000000003', '40000000-0000-4000-8000-000000000003', 'wd_cccccccccccccccc', decode(repeat('00', 32), 'hex'), now() + interval '5 minutes');
 SQL
 
 # Case 1: enrollment locks the owner membership first; revocation must wait.
@@ -208,4 +219,52 @@ grep -q 'target organization enrollment is not authorized' "$WORK/enroll-after.l
 [[ "$(scalar "select count(*) from public.device_enrollment_challenges where id = '60000000-0000-4000-8000-000000000002' and consumed_at is null")" == "1" ]] ||
   fail 'revocation-first race consumed the challenge despite denied enrollment'
 
-printf 'Tenant enrollment/revocation race ordering verified in both directions.\n'
+# Case 3: a non-manager membership row is still locked before its role is
+# evaluated. A concurrent membership change must wait, and enrollment must fail
+# closed after observing the committed member role.
+member_lock_app="wd-cp01-member-lock"
+member_enroll_app="wd-cp01-member-enroll"
+docker exec -u postgres -i -e "PGAPPNAME=$member_lock_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/member-lock.log" 2>&1 <<SQL &
+begin;
+set role service_role;
+select organization_id
+  from public.organization_memberships
+ where organization_id = '50000000-0000-4000-8000-000000000003'
+   and user_id = '40000000-0000-4000-8000-000000000003'
+ for update;
+select pg_sleep($HOLD_SECONDS);
+commit;
+SQL
+member_lock_pid=$!
+PIDS+=("$member_lock_pid")
+wait_for_activity "$member_lock_app" "wait_event = 'PgSleep'"
+
+docker exec -u postgres -i -e "PGAPPNAME=$member_enroll_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/member-enroll.log" 2>&1 <<'SQL' &
+begin;
+set role service_role;
+select public.complete_device_enrollment(
+  '60000000-0000-4000-8000-000000000003',
+  '40000000-0000-4000-8000-000000000003',
+  'wd_cccccccccccccccc',
+  repeat('C', 43),
+  'client',
+  'Race C device',
+  '50000000-0000-4000-8000-000000000003',
+  repeat('00', 32)
+);
+commit;
+SQL
+member_enroll_pid=$!
+PIDS+=("$member_enroll_pid")
+wait_for_activity "$member_enroll_app" "wait_event_type = 'Lock'"
+wait_for_exit "$member_lock_pid" success
+wait_for_exit "$member_enroll_pid" failure
+
+grep -q 'target organization enrollment is not authorized' "$WORK/member-enroll.log" ||
+  fail 'ordinary member enrollment did not fail with the expected authorization denial'
+[[ "$(scalar "select count(*) from public.devices where device_id = 'wd_cccccccccccccccc'")" == "0" ]] ||
+  fail 'ordinary member race unexpectedly created a device'
+[[ "$(scalar "select count(*) from public.device_enrollment_challenges where id = '60000000-0000-4000-8000-000000000003' and consumed_at is null")" == "1" ]] ||
+  fail 'ordinary member race consumed the challenge despite denied enrollment'
+
+printf 'Tenant enrollment/revocation and member-role lock ordering verified.\n'
