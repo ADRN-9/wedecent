@@ -42,6 +42,23 @@ The regression TestTypedHandlerPTYCleanupFailureAuditsStreamTerminationAndSessio
 
 Additional regressions cover tracker-level cleanup outcomes, logical stream closure despite PTY cleanup failure, retention of cleanup errors after stream removal, and parent cleanup waiting for an in-flight close operation.
 
+### Parent-session termination and terminal stream admission
+
+The typed terminal server now has a permanent parent-session closure gate. Stream reservation and registration of the in-flight open operation happen under the same mutex used by parent cleanup. Once CloseAllWithReason marks the server closed, every later terminal StreamOpen is rejected before PTY startup.
+
+Parent cleanup closes the admission gate before draining children, then waits for all pre-existing open reservations and stream-close operations. An opener that returns a PTY after parent closure closes that PTY instead of publishing a child or sending StreamAccepted. PTY close errors are retained by the server and returned from CloseAllWithReason after the in-flight opener finishes, so terminal.session_terminated and terminal.session_closed cannot report successful cleanup while a late PTY close has failed.
+
+The production dispatch path checks the parent active-session termination state before routing each buffered application frame. If revocation wins before dispatch, a buffered StreamOpen is discarded and its revocation reason is retained. If dispatch passed that check immediately before revocation, the server's synchronized permanent closure gate decides the race: either the reservation is registered before closure and drained by parent cleanup, or the reservation is rejected after closure. No PTY startup can occur after parent cleanup has returned.
+
+StreamAccepted writes and stream lifecycle audit callbacks are serialized so terminal.stream_opened cannot be recorded after the corresponding terminal.stream_closed event. A stream that never received StreamAccepted is not recorded as an opened/closed stream; if its PTY cleanup fails, the error still makes the parent termination and session-close outcomes fail.
+
+Regression coverage:
+- `TestDispatchTypedSessionFrameRejectsBufferedOpenAfterRevocation` — a buffered frame dispatched after parent termination is rejected without invoking the PTY starter.
+- `TestTypedTerminalServerRejectsBufferedOpenAfterParentCleanup` — the permanent server gate rejects a post-cleanup StreamOpen before PTY startup.
+- `TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen` — parent cleanup waits for a blocked starter, closes its late PTY, and returns the injected close failure.
+- `TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure` — production revocation/deferred cleanup reports failed session-terminated and session-closed events with the original client_revoked reason and correct session/peer/transport attribution.
+- The existing accepted-stream PTY cleanup regression continues to verify failed terminal.stream_closed, terminal.session_terminated, and terminal.session_closed event outcomes and ordering.
+
 ## Identity-certificate concurrency
 
 Identity certificate creation and repair write and sync a temporary file before publishing it. First creation uses an atomic hard link that cannot replace an existing path; repair verifies that the existing regular file has not changed before atomically renaming the complete replacement. A concurrent winner is reloaded and strictly validated rather than exposing a partially written final certificate. The identity private key and Ed25519 device identity are not rotated by certificate repair. Concurrent create and repair regressions cover 32 simultaneous Ensure callers.
