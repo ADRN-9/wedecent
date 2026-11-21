@@ -281,7 +281,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("start independent Go agent process: %w", err)
 	}
-	defer agent.stop()
+	defer func() {
+		if agent != nil {
+			agent.stop()
+		}
+	}()
 	if err := agent.waitForOutputCount("web relay slot parked", 2, 30*time.Second); err != nil {
 		return fmt.Errorf("agent did not register two Worker relay slots: %w", err)
 	}
@@ -428,14 +432,9 @@ func run() error {
 		return fmt.Errorf("read client B grant evidence from Worker Durable Object: %w", err)
 	}
 
-	if err := clientB.writeInput("exit\n"); err != nil {
-		return err
-	}
-	if _, ok := clientB.wait(10 * time.Second); !ok {
-		return fmt.Errorf("client B did not exit after its terminal shell was closed: %s", clientB.output.String())
-	}
 	agent.stop()
 	worker.stop()
+	clientB.stop()
 
 	if countFiles(persistDir) == 0 {
 		return errors.New("Wrangler did not persist any local Durable Object storage files")
@@ -449,14 +448,83 @@ func run() error {
 	if err := waitWorkerReady(tlsClient, relayURL, worker, 30*time.Second); err != nil {
 		return fmt.Errorf("restarted Worker did not become ready: %w", err)
 	}
+	// Restart the independent agent against the restarted Worker, then prove
+	// that the still-authorized unrelated device can establish a fresh session.
+	agent, err = startManagedProcess(agentBinary, []string{
+		"serve", "--state", agentState, "--name", "worker-process-agent",
+		"--listen", net.JoinHostPort("127.0.0.1", strconv.Itoa(agentPort)),
+		"--web-relay", relayURL, "--relay-slots", "2", "--shell", "/bin/sh",
+	}, root, agentEnv, false)
+	if err != nil {
+		return fmt.Errorf("restart independent Go agent process: %w", err)
+	}
+	if err := agent.waitForOutputCount("web relay slot parked", 2, 30*time.Second); err != nil {
+		return fmt.Errorf("restarted agent did not register Worker relay slots: %w", err)
+	}
 	if err := verifyGrantEvidence(tlsClient, relayURL, agentIdentity, agentID, clientAID, grantA); err != nil {
 		return fmt.Errorf("client A Durable Object evidence did not survive Worker restart: %w", err)
 	}
 	if err := verifyGrantEvidence(tlsClient, relayURL, agentIdentity, agentID, clientBID, grantB); err != nil {
 		return fmt.Errorf("client B Durable Object evidence did not survive Worker restart: %w", err)
 	}
+	if err := assertWorkerReplayRejected(relayURL, agentID, clientAIdentity, grantA, roots); err != nil {
+		return fmt.Errorf("replayed client A grant was accepted after Worker restart: %w", err)
+	}
+	clientBIdentity, err := identity.Ensure(clientBState, "worker-process-client-b")
+	if err != nil {
+		return fmt.Errorf("load client B identity for post-restart replay proof: %w", err)
+	}
+	if err := assertWorkerReplayRejected(relayURL, agentID, clientBIdentity, grantB, roots); err != nil {
+		return fmt.Errorf("replayed client B grant was accepted after Worker restart: %w", err)
+	}
 
-	fmt.Printf("Worker/DO process integration passed: agent=%s clients=%s,%s replay=rejected selective_revocation=verified do_storage=persistent\n", agentID, clientAID, clientBID)
+	grantB2, err := issueConnectionGrant(grantPrivate, grantKID, clientBID, agentID)
+	if err != nil {
+		return fmt.Errorf("issue fresh post-restart grant for unrelated client B: %w", err)
+	}
+	grantB2Path := filepath.Join(tmp, "grant-b-after-restart.jwt")
+	if err := writePrivateFile(grantB2Path, grantB2.Token+"\n"); err != nil {
+		return err
+	}
+	clientBAfterRestart, err := startClient(wd, root, clientBState, relayURL, grantB2Path, agentID, certPath)
+	if err != nil {
+		return fmt.Errorf("start unrelated client B after Worker restart: %w", err)
+	}
+	defer clientBAfterRestart.stop()
+	if _, err := waitForAudit(auditPath, func(events []audit.Event) bool {
+		opened := 0
+		for _, event := range events {
+			if event.Type == "terminal.session_opened" && event.PeerID == clientBID && event.Outcome == "success" {
+				opened++
+			}
+		}
+		return opened >= 2 && hasAuditEvent(events, "terminal.authorization", clientBID, "success", "")
+	}, 20*time.Second); err != nil {
+		return fmt.Errorf("unrelated client B did not reauthorize after Worker restart: %w", err)
+	}
+	if err := clientBAfterRestart.writeInput("printf 'WEDECENT_%s_AFTER_RESTART\\n' B\n"); err != nil {
+		return fmt.Errorf("write to unrelated client B after Worker restart: %w", err)
+	}
+	if err := clientBAfterRestart.waitForOutput("WEDECENT_B_AFTER_RESTART", 15*time.Second); err != nil {
+		return fmt.Errorf("unrelated client B could not operate after Worker restart: %w", err)
+	}
+	if err := verifyGrantEvidence(tlsClient, relayURL, agentIdentity, agentID, clientBID, grantB2); err != nil {
+		return fmt.Errorf("post-restart client B grant evidence was not persisted: %w", err)
+	}
+	if err := assertWorkerReplayRejected(relayURL, agentID, clientBIdentity, grantB2, roots); err != nil {
+		return fmt.Errorf("post-restart client B grant replay was accepted: %w", err)
+	}
+	postRestartAudit, err := readAuditEvents(auditPath)
+	if err != nil {
+		return fmt.Errorf("read persistent agent audit after Worker restart: %w", err)
+	}
+	if !hasAuditEvent(postRestartAudit, "terminal.session_terminated", clientAID, "success", "client_revoked") ||
+		!hasAuditEvent(postRestartAudit, "terminal.session_closed", clientAID, "success", "client_revoked") ||
+		!hasAuditEvent(postRestartAudit, "terminal.session_opened", clientBID, "success", "") {
+		return errors.New("persistent agent audit lost revocation or unrelated-session outcomes after Worker restart")
+	}
+
+	fmt.Printf("Worker/DO process integration passed: agent=%s clients=%s,%s replay=pre_and_post_restart_rejected selective_revocation=verified unrelated_session=operational_after_restart do_storage=persistent\n", agentID, clientAID, clientBID)
 	return nil
 }
 
