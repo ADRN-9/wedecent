@@ -454,7 +454,7 @@ func run() error {
 
 func startWorker(wrangler, workerDir string, port int, keyPath, certPath, persistDir string) (*managedProcess, error) {
 	return startManagedProcess(wrangler, []string{
-		"dev", "--local", "--ip", "127.0.0.1", "--port", strconv.Itoa(port),
+		"dev", "--local", "--local-protocol", "https", "--ip", "127.0.0.1", "--port", strconv.Itoa(port),
 		"--https-key-path", keyPath, "--https-cert-path", certPath,
 		"--persist-to", persistDir, "--log-level", "error",
 	}, workerDir, nil, false)
@@ -763,6 +763,9 @@ func assertWorkerReplayRejected(relayURL, targetID string, clientIdentity *ident
 		return err
 	}
 	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		return err
+	}
 	var nonce [16]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
 		return err
