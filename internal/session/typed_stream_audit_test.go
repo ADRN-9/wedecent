@@ -1,6 +1,7 @@
 package session
 
 import (
+	"errors"
 	"testing"
 
 	"wedecent.com/wedecent/internal/audit"
@@ -21,12 +22,7 @@ func TestTypedTerminalAuditTrackerRecordsLifecycleOnce(t *testing.T) {
 	tracker.observeOutgoing(accepted)
 	tracker.observeOutgoing(accepted)
 
-	closePayload, err := protocol.JSON(protocol.StreamClose{Reason: "process_exit"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	tracker.observeOutgoing(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: 2, Payload: closePayload})
-	tracker.observeIncoming(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: 2})
+	tracker.closed(2, "process_exit", nil)
 
 	if len(events) != 2 {
 		t.Fatalf("events = %#v", events)
@@ -75,5 +71,23 @@ func TestTypedTerminalAuditTrackerParentCleanupAndPreacceptError(t *testing.T) {
 	}
 	if len(closed) != 2 || closed[3] != "peer_disconnect" || closed[4] != "peer_disconnect" {
 		t.Fatalf("closed events = %#v", closed)
+	}
+}
+
+func TestTypedTerminalAuditTrackerReportsPTYCleanupFailure(t *testing.T) {
+	var events []audit.Event
+	tracker := newTypedTerminalAuditTracker("wd_peer", "direct_tcp", func(event audit.Event) {
+		events = append(events, event)
+	}, "session-123")
+	tracker.opened(2)
+	tracker.closed(2, "client_revoked", errors.New("injected PTY close failure"))
+	if len(events) != 2 {
+		t.Fatalf("events = %#v", events)
+	}
+	closed := events[1]
+	if closed.Type != "terminal.stream_closed" || closed.Outcome != "failed" ||
+		closed.PeerID != "wd_peer" || closed.SessionID != "session-123" ||
+		closed.Transport != "direct_tcp" || closed.StreamID != 2 || closed.Reason != "client_revoked" {
+		t.Fatalf("PTY cleanup failure audit = %#v", closed)
 	}
 }

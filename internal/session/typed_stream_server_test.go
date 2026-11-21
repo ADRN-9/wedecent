@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/protocol"
 )
 
@@ -20,12 +21,16 @@ type fakeTypedPTY struct {
 	writeErr  error
 	closed    chan struct{}
 	closeOne  sync.Once
+	closeErr  error
 }
 
 func newFakeTypedPTY() *fakeTypedPTY             { return &fakeTypedPTY{closed: make(chan struct{})} }
 func (p *fakeTypedPTY) Read([]byte) (int, error) { <-p.closed; return 0, io.EOF }
 func (p *fakeTypedPTY) Wait() error              { <-p.closed; return nil }
-func (p *fakeTypedPTY) Close() error             { p.closeOne.Do(func() { close(p.closed) }); return nil }
+func (p *fakeTypedPTY) Close() error {
+	p.closeOne.Do(func() { close(p.closed) })
+	return p.closeErr
+}
 func (p *fakeTypedPTY) Write(data []byte) (int, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -232,4 +237,44 @@ func TestTypedTerminalServerOutputWaitsForCreditAndUsesBoundedChunks(t *testing.
 		t.Fatalf("frames after credit = %#v", frames)
 	}
 	server.CloseAll()
+}
+
+func TestTypedTerminalServerPTYCleanupFailureClosesStreamAndPersistsError(t *testing.T) {
+	closeFailure := errors.New("injected typed PTY close failure")
+	pty := newFakeTypedPTY()
+	pty.closeErr = closeFailure
+	var events []audit.Event
+	tracker := newTypedTerminalAuditTracker("wd_peer", "direct_tcp", func(event audit.Event) {
+		events = append(events, event)
+	}, "session-123")
+	server := newTypedTerminalServerWithStarter("/bin/sh", func(frame protocol.Frame) error {
+		tracker.observeOutgoing(frame)
+		return nil
+	}, func(string, uint16, uint16, string) (typedTerminalPTY, error) {
+		return pty, nil
+	})
+	server.setCloseObserver(tracker.closed)
+	if err := server.Handle(protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: 2, Payload: typedOpenPayload(t, 64<<10)}); err != nil {
+		t.Fatal(err)
+	}
+	closePayload, err := protocol.JSON(protocol.StreamClose{Reason: "client_revoked"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Handle(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: 2, Payload: closePayload}); !errors.Is(err, errTypedStreamCleanup) || !errors.Is(err, closeFailure) {
+		t.Fatalf("peer close cleanup error = %v, want typed cleanup failure", err)
+	}
+	if server.states.isOpen(2) {
+		t.Fatal("stream remained logically open after PTY close failure")
+	}
+	if len(events) != 2 || events[1].Type != "terminal.stream_closed" ||
+		events[1].Outcome != "failed" || events[1].Reason != "client_revoked" {
+		t.Fatalf("stream audit events = %#v", events)
+	}
+	if err := server.CloseAllWithReason("client_revoked"); !errors.Is(err, closeFailure) {
+		t.Fatalf("parent cleanup lost earlier PTY close error: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("repeated parent cleanup emitted duplicate close events: %#v", events)
+	}
 }
