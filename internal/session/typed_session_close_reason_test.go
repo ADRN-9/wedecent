@@ -75,26 +75,25 @@ func TestTypedSessionCloseReasonConcurrentReadCompletionAndAsyncRevocationCleanu
 		t.Fatal("asynchronous revocation termination did not finish")
 	}
 
-	var streamClosed, sessionTerminated bool
+	var streamClosed bool
+	select {
+	case event := <-auditEvents:
+		streamClosed = event.Type == "terminal.stream_closed" && event.StreamID == 2 && event.Reason == "client_revoked"
+	case <-time.After(3 * time.Second):
+		t.Fatal("asynchronous cleanup did not emit the typed stream close audit")
+	}
+
+	var sessionTerminated bool
 	for _, event := range waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
 		for _, event := range events {
-			if event.SessionID != active.ID {
-				continue
-			}
-			if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+			if event.SessionID == active.ID && event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
 				return true
 			}
 		}
 		return false
 	}) {
-		if event.SessionID != active.ID {
-			continue
-		}
-		if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+		if event.SessionID == active.ID && event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
 			sessionTerminated = true
-		}
-		if event.Type == "terminal.stream_closed" && event.StreamID == 2 && event.Reason == "client_revoked" {
-			streamClosed = true
 		}
 	}
 	if !sessionTerminated || !streamClosed {
