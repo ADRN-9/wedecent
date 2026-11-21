@@ -3,12 +3,6 @@ begin;
 create extension if not exists pgtap with schema extensions;
 create extension if not exists dblink with schema extensions;
 
-drop role if exists wd_grant_test_login;
-create role wd_grant_test_login
-    login
-    password 'wd-test-only-password-2026'
-    in role service_role;
-
 select plan(5);
 
 -- Seed committed rows so independent database sessions can coordinate the lock
@@ -91,13 +85,15 @@ values (
 
 commit;
 
-select extensions.dblink_connect(
+-- dblink_connect_u is intentionally confined to this disposable database
+-- regression and is invoked by the local postgres test runner only.
+select extensions.dblink_connect_u(
     'wd_grant_clock_lock',
-    'host=127.0.0.1 port=5432 user=wd_grant_test_login password=wd-test-only-password-2026 dbname=' || current_database()
+    'host=/var/run/postgresql user=postgres dbname=' || current_database()
 );
-select extensions.dblink_connect(
+select extensions.dblink_connect_u(
     'wd_grant_clock_issue',
-    'host=127.0.0.1 port=5432 user=wd_grant_test_login password=wd-test-only-password-2026 dbname=' || current_database()
+    'host=/var/run/postgresql user=postgres dbname=' || current_database()
 );
 select extensions.dblink_exec('wd_grant_clock_lock', 'set role service_role');
 select extensions.dblink_exec('wd_grant_clock_issue', 'set role service_role');
@@ -236,7 +232,6 @@ select * from finish();
 
 select extensions.dblink_disconnect('wd_grant_clock_issue');
 select extensions.dblink_disconnect('wd_grant_clock_lock');
-drop role wd_grant_test_login;
 
 begin;
 delete from public.device_access
