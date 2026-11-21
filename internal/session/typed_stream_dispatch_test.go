@@ -163,7 +163,7 @@ func TestDispatchTypedSessionFrameRejectsBufferedOpenAfterRevocation(t *testing.
 
 	active := &activeTerminalSession{
 		server:          &Server{StateDir: t.TempDir()},
-		ID:              "session-buffered-open",
+		ID:              "00000000-0000-4000-8000-000000000016",
 		clientID:        "peer-buffered-open",
 		transport:       "direct_tcp",
 		cleanupReady:    make(chan struct{}),
