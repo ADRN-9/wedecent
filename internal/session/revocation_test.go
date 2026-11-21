@@ -1445,16 +1445,16 @@ func (c *revocationAbortFailureConn) Abort() error {
 func TestRevocationDuringPTYStartupAbortsBeforeAcceptance(t *testing.T) {
 	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
 	client := rig.addClient("revocation-during-pty-startup")
-	pty := newRevocationTestPTY()
+	startupPTY := newRevocationTestPTY()
 	startupEntered := make(chan struct{})
 	releaseStartup := make(chan struct{})
 	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
 		close(startupEntered)
 		<-releaseStartup
 		rig.mu.Lock()
-		rig.ptys = append(rig.ptys, pty)
+		rig.ptys = append(rig.ptys, startupPTY)
 		rig.mu.Unlock()
-		return pty, nil
+		return startupPTY, nil
 	}
 
 	conn := rig.dial(client, TransportDirectTCP)
@@ -1479,7 +1479,7 @@ func TestRevocationDuringPTYStartupAbortsBeforeAcceptance(t *testing.T) {
 	}
 	waitRevocationConnectionClosed(t, conn)
 	close(releaseStartup)
-	pty = rig.ptyAt(0)
+	pty := rig.ptyAt(0)
 	waitRevocationPTYClosed(t, pty)
 	if err := rig.readAccepted(conn); err == nil {
 		t.Fatal("revoked session received an acceptance frame after PTY startup")
