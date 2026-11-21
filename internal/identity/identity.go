@@ -148,7 +148,7 @@ func readCertificateFile(path string) ([]byte, error) {
 		return nil, errors.New("identity certificate must be a regular file")
 	}
 
-	f, err := os.Open(path)
+	f, err := openCertificateFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("open identity certificate: %w", err)
 	}
