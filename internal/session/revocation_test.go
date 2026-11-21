@@ -575,7 +575,6 @@ func TestWriteSessionAcceptedFailsClosedWhenDeadlineCannotBeSet(t *testing.T) {
 	}
 }
 
-
 type revocationRelayPeer struct {
 	conn   net.Conn
 	reader *bufio.Reader
