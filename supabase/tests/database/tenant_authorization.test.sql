@@ -242,7 +242,7 @@ select throws_ok(
             null,
             repeat('00', 32)
         )
-    $,
+    $$,
     '22023',
     'invalid enrollment parameters',
     'enrollment RPC rejects a missing public key before changing device or challenge state'
