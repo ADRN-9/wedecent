@@ -27,6 +27,8 @@ const (
 	maxIdentityCertificateFileSize = 64 << 10
 )
 
+var errIdentityCertificateChanged = errors.New("identity certificate changed during concurrent update")
+
 type Identity struct {
 	ID          string
 	Name        string
@@ -102,7 +104,7 @@ func issueCertificate(path, name, id string, pub ed25519.PublicKey, signer crypt
 	}
 	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
 	if err := writeCertificateFile(path, certPEM, replaceExisting); err != nil {
-		if !replaceExisting && errors.Is(err, os.ErrExist) {
+		if errors.Is(err, os.ErrExist) || errors.Is(err, errIdentityCertificateChanged) {
 			existing, loadErr := loadConcurrentlyCreatedCertificate(path)
 			if loadErr != nil {
 				return nil, fmt.Errorf("load concurrently created identity certificate: %w", loadErr)
@@ -175,87 +177,70 @@ func readCertificateFile(path string) ([]byte, error) {
 }
 
 func writeCertificateFile(path string, data []byte, replaceExisting bool) error {
-	if !replaceExisting {
-		return createCertificateFile(path, data)
+	var existing os.FileInfo
+	if replaceExisting {
+		before, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("stat identity certificate path before renewal: %w", err)
+		}
+		if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
+			return errors.New("identity certificate must be a regular file")
+		}
+		existing = before
 	}
 
-	before, err := os.Lstat(path)
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".identity.crt.tmp-*")
 	if err != nil {
-		return fmt.Errorf("stat identity certificate path before renewal: %w", err)
+		return fmt.Errorf("create temporary identity certificate: %w", err)
 	}
-	if before.Mode()&os.ModeSymlink != 0 || !before.Mode().IsRegular() {
-		return errors.New("identity certificate must be a regular file")
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+
+	cleanup := func(cause error) error {
+		_ = tmp.Close()
+		return cause
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		return cleanup(fmt.Errorf("set temporary identity certificate permissions: %w", err))
+	}
+	if err := writeAll(tmp, data); err != nil {
+		return cleanup(fmt.Errorf("write temporary identity certificate: %w", err))
+	}
+	if err := tmp.Sync(); err != nil {
+		return cleanup(fmt.Errorf("sync temporary identity certificate: %w", err))
+	}
+	tmpInfo, err := tmp.Stat()
+	if err != nil {
+		return cleanup(fmt.Errorf("stat temporary identity certificate: %w", err))
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary identity certificate: %w", err)
 	}
 
-	f, err := os.OpenFile(path, os.O_WRONLY, 0)
-	if err != nil {
-		return fmt.Errorf("open identity certificate for renewal: %w", err)
-	}
-	defer f.Close()
-
-	opened, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat opened identity certificate for renewal: %w", err)
-	}
-	afterOpen, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("re-stat identity certificate before renewal: %w", err)
-	}
-	if afterOpen.Mode()&os.ModeSymlink != 0 || !afterOpen.Mode().IsRegular() || !opened.Mode().IsRegular() || !os.SameFile(before, opened) || !os.SameFile(opened, afterOpen) {
-		return errors.New("identity certificate path changed before renewal")
-	}
-	if err := f.Chmod(0o644); err != nil {
-		return fmt.Errorf("set identity certificate permissions: %w", err)
-	}
-	if err := f.Truncate(0); err != nil {
-		return fmt.Errorf("truncate identity certificate: %w", err)
-	}
-	if _, err := f.Seek(0, 0); err != nil {
-		return fmt.Errorf("seek identity certificate: %w", err)
-	}
-	if err := writeAll(f, data); err != nil {
-		return fmt.Errorf("write identity certificate: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("sync identity certificate: %w", err)
+	if replaceExisting {
+		current, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("re-stat identity certificate before replacement: %w", err)
+		}
+		if current.Mode()&os.ModeSymlink != 0 || !current.Mode().IsRegular() {
+			return errors.New("identity certificate must be a regular file")
+		}
+		if !os.SameFile(existing, current) {
+			return errIdentityCertificateChanged
+		}
+		if err := os.Rename(tmpPath, path); err != nil {
+			return fmt.Errorf("publish identity certificate replacement: %w", err)
+		}
+	} else if err := os.Link(tmpPath, path); err != nil {
+		return fmt.Errorf("publish identity certificate: %w", err)
 	}
 
-	afterWrite, err := os.Lstat(path)
+	published, err := os.Lstat(path)
 	if err != nil {
-		return fmt.Errorf("re-stat identity certificate after renewal: %w", err)
+		return fmt.Errorf("verify published identity certificate: %w", err)
 	}
-	if afterWrite.Mode()&os.ModeSymlink != 0 || !afterWrite.Mode().IsRegular() || !os.SameFile(opened, afterWrite) {
-		return errors.New("identity certificate path changed during renewal")
-	}
-	return nil
-}
-
-func createCertificateFile(path string, data []byte) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
-	if err != nil {
-		return fmt.Errorf("create identity certificate: %w", err)
-	}
-	defer f.Close()
-	if err := f.Chmod(0o644); err != nil {
-		return fmt.Errorf("set identity certificate permissions: %w", err)
-	}
-	if err := writeAll(f, data); err != nil {
-		return fmt.Errorf("write identity certificate: %w", err)
-	}
-	if err := f.Sync(); err != nil {
-		return fmt.Errorf("sync identity certificate: %w", err)
-	}
-
-	opened, err := f.Stat()
-	if err != nil {
-		return fmt.Errorf("stat created identity certificate: %w", err)
-	}
-	pathInfo, err := os.Lstat(path)
-	if err != nil {
-		return fmt.Errorf("stat created identity certificate path: %w", err)
-	}
-	if pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() || !opened.Mode().IsRegular() || !os.SameFile(opened, pathInfo) {
-		return errors.New("identity certificate path changed during creation")
+	if published.Mode()&os.ModeSymlink != 0 || !published.Mode().IsRegular() || !os.SameFile(tmpInfo, published) {
+		return errIdentityCertificateChanged
 	}
 	return nil
 }

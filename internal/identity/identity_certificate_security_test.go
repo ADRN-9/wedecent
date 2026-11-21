@@ -147,3 +147,60 @@ func TestEnsureConcurrentCertificateCreationConverges(t *testing.T) {
 		t.Fatalf("Load() after concurrent certificate creation: %v", err)
 	}
 }
+
+func TestEnsureConcurrentCertificateRepairConverges(t *testing.T) {
+	dir := t.TempDir()
+	first, err := Ensure(dir, "test-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certPath := filepath.Join(dir, "identity.crt")
+	if err := os.WriteFile(certPath, []byte("invalid certificate"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	const callers = 32
+	start := make(chan struct{})
+	ids := make(chan string, callers)
+	errs := make(chan error, callers)
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	for i := 0; i < callers; i++ {
+		go func() {
+			defer wg.Done()
+			<-start
+			id, err := Ensure(dir, "test-device")
+			if err != nil {
+				errs <- err
+				return
+			}
+			ids <- id.ID
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(ids)
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("concurrent Ensure() repair error = %v", err)
+	}
+	count := 0
+	for id := range ids {
+		count++
+		if id != first.ID {
+			t.Fatalf("concurrent Ensure() repair returned identity %q, want %q", id, first.ID)
+		}
+	}
+	if count != callers {
+		t.Fatalf("successful concurrent repairs = %d, want %d", count, callers)
+	}
+
+	loaded, err := Load(dir)
+	if err != nil {
+		t.Fatalf("Load() after concurrent certificate repair: %v", err)
+	}
+	if loaded.ID != first.ID {
+		t.Fatalf("Load() after concurrent repair returned identity %q, want %q", loaded.ID, first.ID)
+	}
+}
