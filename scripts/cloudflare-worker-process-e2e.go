@@ -769,7 +769,7 @@ func assertWorkerReplayRejected(relayURL, targetID string, clientIdentity *ident
 	}
 	key := base64.StdEncoding.EncodeToString(nonce[:])
 	request := fmt.Sprintf(
-		"GET /v1/stream/%s?role=client HTTP/1.1\\r\\nHost: %s\\r\\nUpgrade: websocket\\r\\nConnection: Upgrade\\r\\nSec-WebSocket-Key: %s\\r\\nSec-WebSocket-Version: 13\\r\\nAuthorization: Bearer %s\\r\\nX-WeDecent-Connection-Grant: %s\\r\\n\\r\\n",
+		"GET /v1/stream/%s?role=client HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nAuthorization: Bearer %s\r\nX-WeDecent-Connection-Grant: %s\r\n\r\n",
 		targetID, u.Host, key, ticket, grant.Token,
 	)
 	if _, err := io.WriteString(conn, request); err != nil {
