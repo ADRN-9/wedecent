@@ -9,6 +9,15 @@ import (
 )
 
 func TestTypedSessionCloseReasonConcurrentReadCompletionAndAsyncRevocationCleanup(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		t.Run("iteration", func(t *testing.T) {
+			runTypedSessionCloseReasonRace(t)
+		})
+	}
+}
+
+func runTypedSessionCloseReasonRace(t *testing.T) {
+	t.Helper()
 	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
 	client := rig.addClient("typed-close-reason-race")
 	closeReason := newTypedSessionCloseReason("connection_ended")
