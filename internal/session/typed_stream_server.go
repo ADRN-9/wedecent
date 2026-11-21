@@ -210,7 +210,7 @@ func (s *typedTerminalServer) open(frame protocol.Frame) error {
 		_ = s.closeStream(frame.StreamID, "encode_failed", false)
 		return err
 	}
-	if err := s.writeFrame(protocol.Frame{Type: protocol.TypeStreamAccepted, StreamID: frame.StreamID, Payload: payload}); err != nil {
+	if err := s.writeAcceptedFrame(protocol.Frame{Type: protocol.TypeStreamAccepted, StreamID: frame.StreamID, Payload: payload}); err != nil {
 		_ = s.closeStream(frame.StreamID, "transport_write_failed", false)
 		return err
 	}
@@ -512,6 +512,20 @@ func (s *typedTerminalServer) CloseAllWithReason(reason string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.cleanupErr
+}
+
+func (s *typedTerminalServer) writeAcceptedFrame(frame protocol.Frame) error {
+	if s.write == nil {
+		return errors.New("typed terminal frame writer is unavailable")
+	}
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("%w: parent terminal session is closed", errTypedStreamProtocol)
+	}
+	return s.write(frame)
 }
 
 func (s *typedTerminalServer) writeFrame(frame protocol.Frame) error {

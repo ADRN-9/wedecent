@@ -1869,6 +1869,9 @@ func TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure(t *testi
 	pty.closeErr = closeFailure
 	startEntered := make(chan struct{})
 	releaseStart := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseStart) }) }
+	defer release()
 	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
 		close(startEntered)
 		<-releaseStart
@@ -1918,7 +1921,7 @@ func TestTypedHandlerRevocationWaitsForInFlightStreamOpenCleanupFailure(t *testi
 		t.Fatal("revocation did not mark the in-flight parent session terminated")
 	}
 
-	close(releaseStart)
+	release()
 	select {
 	case <-pty.closed:
 	case <-time.After(3 * time.Second):

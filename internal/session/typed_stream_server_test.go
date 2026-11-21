@@ -349,6 +349,9 @@ func TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen(t *testing.T
 	pty.closeErr = closeFailure
 	startEntered := make(chan struct{})
 	releaseStart := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseStart) }) }
+	defer release()
 	sink := &typedFrameSink{}
 	server := newTypedTerminalServerWithStarter("/bin/sh", sink.write, func(string, uint16, uint16, string) (typedTerminalPTY, error) {
 		close(startEntered)
@@ -380,7 +383,7 @@ func TestTypedTerminalServerParentCleanupWaitsForInFlightStreamOpen(t *testing.T
 	default:
 	}
 
-	close(releaseStart)
+	release()
 	openErr := <-openDone
 	if !errors.Is(openErr, errTypedStreamCleanup) || !errors.Is(openErr, closeFailure) {
 		t.Fatalf("late stream-open error = %v, want retained PTY cleanup failure", openErr)
