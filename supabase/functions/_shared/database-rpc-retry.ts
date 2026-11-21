@@ -23,7 +23,7 @@ function defaultSleep(milliseconds: number): Promise<void> {
 // Retry only explicit PostgreSQL transaction-abort codes. Network errors and
 // application errors are not retried because the commit outcome may be unknown.
 export async function withBoundedDatabaseRetry<T>(
-  operation: () => Promise<DatabaseRPCResult<T>>,
+  operation: () => PromiseLike<DatabaseRPCResult<T>>,
   options: RetryOptions = {},
 ): Promise<DatabaseRPCResult<T>> {
   const maxAttempts = options.maxAttempts ?? MAX_ATTEMPTS;
