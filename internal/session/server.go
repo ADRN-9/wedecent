@@ -47,7 +47,7 @@ type Server struct {
 
 	// This per-server fault seam is nil in production.
 	beforeSessionAdmission func()
-	afterSessionAccepted    func()
+	afterSessionAccepted   func()
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 

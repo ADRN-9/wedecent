@@ -70,7 +70,7 @@ func (p *revocationTestPTY) Close() error {
 
 type revocationFloodPTY struct {
 	*revocationTestPTY
-	started chan struct{}
+	started  chan struct{}
 	readOnce sync.Once
 }
 
@@ -89,11 +89,11 @@ func (p *revocationFloodPTY) Read(buffer []byte) (int, error) {
 
 type revocationObservedConn struct {
 	net.Conn
-	mu sync.Mutex
-	armed bool
-	writes int
+	mu         sync.Mutex
+	armed      bool
+	writes     int
 	firstWrite chan struct{}
-	firstOnce sync.Once
+	firstOnce  sync.Once
 }
 
 func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
@@ -121,7 +121,7 @@ func (c *revocationObservedConn) Write(buffer []byte) (int, error) {
 
 type tlsRecordCounterConn struct {
 	net.Conn
-	mu sync.Mutex
+	mu      sync.Mutex
 	enabled bool
 	pending []byte
 	records uint64
@@ -161,12 +161,11 @@ func (c *tlsRecordCounterConn) Write(buffer []byte) (int, error) {
 	return n, err
 }
 
-func clientTrafficSecret(t *testing.T, keyLog *bytes.Buffer, clientRandom []byte) []byte {
+func clientTrafficSecret(t *testing.T, keyLog *bytes.Buffer) []byte {
 	t.Helper()
-	wantRandom := hex.EncodeToString(clientRandom)
 	for _, line := range strings.Split(keyLog.String(), "\n") {
 		fields := strings.Fields(line)
-		if len(fields) == 3 && fields[0] == "CLIENT_TRAFFIC_SECRET_0" && fields[1] == wantRandom {
+		if len(fields) == 3 && fields[0] == "CLIENT_TRAFFIC_SECRET_0" {
 			secret, err := hex.DecodeString(fields[2])
 			if err != nil {
 				t.Fatal(err)
@@ -629,7 +628,7 @@ func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T
 	if sequence == 0 {
 		t.Fatal("client application record sequence was not captured")
 	}
-	secret := clientTrafficSecret(t, keyLog, state.ClientRandom)
+	secret := clientTrafficSecret(t, keyLog)
 	keyUpdate := tls13KeyUpdateRequest(t, state, secret, sequence)
 	if err := clientRaw.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
 		t.Fatal(err)
@@ -1050,9 +1049,13 @@ func TestAdmissionReservationFirstThenRevocationCleansEstablishedSession(t *test
 		case "terminal.session_opened":
 			opened++
 		case "terminal.session_terminated":
-				if event.Reason == "client_revoked" { terminated++ }
+			if event.Reason == "client_revoked" {
+				terminated++
+			}
 		case "terminal.session_closed":
-				if event.Reason == "client_revoked" { closed++ }
+			if event.Reason == "client_revoked" {
+				closed++
+			}
 		}
 	}
 	if opened != 1 || terminated != 1 || closed != 1 {
