@@ -32,7 +32,7 @@ func TestStartWithPortRetryRetriesAddressInUse(t *testing.T) {
 			started++
 			return testProcess(""), nil
 		},
-		func(_ int, *managedProcess) error {
+		func(_ int, _ *managedProcess) error {
 			if started == 1 {
 				return fmt.Errorf("listen tcp 127.0.0.1:%d: bind: address already in use", ports[0])
 			}
@@ -58,7 +58,7 @@ func TestStartWithPortRetryDoesNotRetryNonCollision(t *testing.T) {
 			started++
 			return testProcess(""), nil
 		},
-		func(_ int, *managedProcess) error { return errors.New("invalid Worker configuration") },
+		func(_ int, _ *managedProcess) error { return errors.New("invalid Worker configuration") },
 	)
 	if err == nil || process != nil {
 		t.Fatalf("startWithPortRetry() = (%v, %v), want failure", process, err)
@@ -80,7 +80,7 @@ func TestStartWithPortRetryIsBounded(t *testing.T) {
 			started++
 			return testProcess(""), nil
 		},
-		func(_ int, *managedProcess) error { return errors.New("bind: address already in use") },
+		func(_ int, _ *managedProcess) error { return errors.New("bind: address already in use") },
 	)
 	if err == nil || process != nil || port != 0 {
 		t.Fatalf("startWithPortRetry() = (%v, %d, %v), want bounded failure", process, port, err)
