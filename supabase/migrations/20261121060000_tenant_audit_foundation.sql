@@ -348,31 +348,31 @@ security definer
 set search_path = ''
 as $$
 declare
-    device_id text;
-    organization_id uuid;
-    target_user_id uuid;
-    permission text;
-    expires_at timestamptz;
-    event_type text;
+    v_device_id text;
+    v_organization_id uuid;
+    v_target_user_id uuid;
+    v_permission text;
+    v_expires_at timestamptz;
+    v_event_type text;
 begin
     if tg_op = 'DELETE' then
-        device_id := old.device_id;
-        target_user_id := old.user_id;
-        permission := old.permission::text;
-        expires_at := old.expires_at;
-        event_type := 'device_access.revoked';
+        v_device_id := old.device_id;
+        v_target_user_id := old.user_id;
+        v_permission := old.permission::text;
+        v_expires_at := old.expires_at;
+        v_event_type := 'device_access.revoked';
     elsif tg_op = 'INSERT' then
-        device_id := new.device_id;
-        target_user_id := new.user_id;
-        permission := new.permission::text;
-        expires_at := new.expires_at;
-        event_type := 'device_access.granted';
+        v_device_id := new.device_id;
+        v_target_user_id := new.user_id;
+        v_permission := new.permission::text;
+        v_expires_at := new.expires_at;
+        v_event_type := 'device_access.granted';
     else
-        device_id := new.device_id;
-        target_user_id := new.user_id;
-        permission := new.permission::text;
-        expires_at := new.expires_at;
-        event_type := 'device_access.updated';
+        v_device_id := new.device_id;
+        v_target_user_id := new.user_id;
+        v_permission := new.permission::text;
+        v_expires_at := new.expires_at;
+        v_event_type := 'device_access.updated';
         if new.device_id is not distinct from old.device_id
            and new.user_id is not distinct from old.user_id
            and new.permission is not distinct from old.permission
@@ -382,20 +382,20 @@ begin
     end if;
 
     select d.organization_id
-      into organization_id
+      into v_organization_id
       from public.devices as d
-     where d.device_id = device_id;
+     where d.device_id = v_device_id;
 
-    if organization_id is not null then
+    if v_organization_id is not null then
         perform wedecent_private.append_tenant_audit_event(
-            organization_id,
-            event_type,
+            v_organization_id,
+            v_event_type,
             'device_access',
-            device_id || ':' || target_user_id::text || ':' || permission,
+            v_device_id || ':' || v_target_user_id::text || ':' || v_permission,
             jsonb_build_object(
-                'target_user_id', target_user_id,
-                'permission', permission,
-                'expires_at', expires_at
+                'target_user_id', v_target_user_id,
+                'permission', v_permission,
+                'expires_at', v_expires_at
             )
         );
     end if;
