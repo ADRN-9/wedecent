@@ -263,3 +263,5 @@ jobs:
         run: bash ./scripts/test-tenant-enrollment-race.sh
       - name: Test concurrent device-access grant authorization
         run: bash ./scripts/test-device-access-grant-race.sh
+      - name: Verify connection-grant expiry after a device lock wait
+        run: ./scripts/test-connection-grant-expiration.sh
