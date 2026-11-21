@@ -21,10 +21,10 @@ insert into auth.users (
 )
 values
     (
-        '71000000-0000-4000-8000-000000000001',
+        '79000000-0000-4000-8000-000000000001',
         'authenticated',
         'authenticated',
-        'grant-clock-client@example.invalid',
+        'grant-clock-client-790@example.invalid',
         '',
         clock_timestamp(),
         '{}'::jsonb,
@@ -33,10 +33,10 @@ values
         clock_timestamp()
     ),
     (
-        '71000000-0000-4000-8000-000000000002',
+        '79000000-0000-4000-8000-000000000002',
         'authenticated',
         'authenticated',
-        'grant-clock-target@example.invalid',
+        'grant-clock-target-790@example.invalid',
         '',
         clock_timestamp(),
         '{}'::jsonb,
@@ -54,18 +54,18 @@ insert into public.devices (
 )
 values
     (
-        'wd_aaaaaaaaaaaaaaaa',
-        repeat('A', 43),
+        'wd_7777777777777777',
+        repeat('E', 43),
         'client',
         'grant-clock-client',
-        '71000000-0000-4000-8000-000000000001'
+        '79000000-0000-4000-8000-000000000001'
     ),
     (
-        'wd_bbbbbbbbbbbbbbbb',
-        repeat('B', 43),
+        'wd_6666666666666666',
+        repeat('F', 43),
         'agent',
         'grant-clock-target',
-        '71000000-0000-4000-8000-000000000002'
+        '79000000-0000-4000-8000-000000000002'
     );
 
 insert into public.device_access (
@@ -76,8 +76,8 @@ insert into public.device_access (
     expires_at
 )
 values (
-    'wd_bbbbbbbbbbbbbbbb',
-    '71000000-0000-4000-8000-000000000001',
+    'wd_6666666666666666',
+    '79000000-0000-4000-8000-000000000001',
     'terminal.connect',
     clock_timestamp(),
     clock_timestamp() + interval '3 seconds'
@@ -87,17 +87,17 @@ commit;
 
 select extensions.dblink_connect(
     'wd_grant_clock_lock',
-    'host=127.0.0.1 port=5432 user=postgres password=postgres dbname=' || current_database()
+    'host=/var/run/postgresql user=postgres dbname=' || current_database()
 );
 select extensions.dblink_connect(
     'wd_grant_clock_issue',
-    'host=127.0.0.1 port=5432 user=postgres password=postgres dbname=' || current_database()
+    'host=/var/run/postgresql user=postgres dbname=' || current_database()
 );
 
 select extensions.dblink_exec('wd_grant_clock_lock', 'begin');
 select extensions.dblink_exec(
     'wd_grant_clock_lock',
-    'update public.devices set name = name where device_id = ''wd_bbbbbbbbbbbbbbbb'''
+    'update public.devices set name = name where device_id = ''wd_6666666666666666'''
 );
 
 create temporary table wd_grant_clock_wait_state (
@@ -113,9 +113,9 @@ select extensions.dblink_send_query(
     'wd_grant_clock_issue',
     $query$
         select (public.issue_connection_grant(
-            '71000000-0000-4000-8000-000000000001'::uuid,
-            'wd_aaaaaaaaaaaaaaaa',
-            'wd_bbbbbbbbbbbbbbbb'
+            '79000000-0000-4000-8000-000000000001'::uuid,
+            'wd_7777777777777777',
+            'wd_6666666666666666'
         )).id as grant_id
     $query$
 );
@@ -162,8 +162,8 @@ begin
     select expires_at
       into grant_expiry
       from public.device_access
-     where device_id = 'wd_bbbbbbbbbbbbbbbb'
-       and user_id = '71000000-0000-4000-8000-000000000001'
+     where device_id = 'wd_6666666666666666'
+       and user_id = '79000000-0000-4000-8000-000000000001'
        and permission = 'terminal.connect';
 
     while clock_timestamp() <= grant_expiry loop
@@ -192,9 +192,9 @@ select is(
     (
         select count(*)::bigint
           from public.connection_grants
-         where user_id = '71000000-0000-4000-8000-000000000001'
-           and client_device_id = 'wd_aaaaaaaaaaaaaaaa'
-           and target_device_id = 'wd_bbbbbbbbbbbbbbbb'
+         where user_id = '79000000-0000-4000-8000-000000000001'
+           and client_device_id = 'wd_7777777777777777'
+           and target_device_id = 'wd_6666666666666666'
     ),
     0::bigint,
     'no connection grant is issued from a permission that expired during lock wait'
@@ -216,13 +216,13 @@ select extensions.dblink_disconnect('wd_grant_clock_lock');
 
 begin;
 delete from public.device_access
- where device_id = 'wd_bbbbbbbbbbbbbbbb'
-   and user_id = '71000000-0000-4000-8000-000000000001';
+ where device_id = 'wd_6666666666666666'
+   and user_id = '79000000-0000-4000-8000-000000000001';
 delete from public.devices
- where device_id in ('wd_aaaaaaaaaaaaaaaa', 'wd_bbbbbbbbbbbbbbbb');
+ where device_id in ('wd_7777777777777777', 'wd_6666666666666666');
 delete from auth.users
  where id in (
-    '71000000-0000-4000-8000-000000000001',
-    '71000000-0000-4000-8000-000000000002'
+    '79000000-0000-4000-8000-000000000001',
+    '79000000-0000-4000-8000-000000000002'
  );
 commit;
