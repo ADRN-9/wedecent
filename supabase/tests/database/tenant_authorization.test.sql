@@ -105,32 +105,29 @@ select is(
     'user cannot read another user connection-grant audit records'
 );
 
+update public.organizations
+   set name = 'Unauthorized rename'
+ where id = '20000000-0000-4000-8000-000000000001';
+
+delete from public.organizations
+ where id = '20000000-0000-4000-8000-000000000001';
+
+reset role;
+
 select is(
-    (
-        with changed as (
-            update public.organizations
-               set name = 'Unauthorized rename'
-             where id = '20000000-0000-4000-8000-000000000001'
-            returning 1
-        )
-        select count(*)::bigint from changed
-    ),
-    0::bigint,
+    (select name from public.organizations where id = '20000000-0000-4000-8000-000000000001'),
+    'Organization A',
     'former creator cannot update organization metadata'
 );
 
 select is(
-    (
-        with deleted as (
-            delete from public.organizations
-             where id = '20000000-0000-4000-8000-000000000001'
-            returning 1
-        )
-        select count(*)::bigint from deleted
-    ),
-    0::bigint,
+    (select count(*)::bigint from public.organizations where id = '20000000-0000-4000-8000-000000000001'),
+    1::bigint,
     'former creator cannot delete an organization'
 );
+
+set local role authenticated;
+select set_config('request.jwt.claim.sub', '10000000-0000-4000-8000-000000000001', true);
 
 select throws_ok(
     $$
