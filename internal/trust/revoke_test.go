@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
-	"time"
 )
 
 func TestStoreReloadsExternalRevocation(t *testing.T) {
@@ -148,7 +147,7 @@ func TestReloadFailureFailsClosed(t *testing.T) {
 	}
 }
 
-func TestWithTrustedPeerSerializesRevocation(t *testing.T) {
+func TestWithTrustedPeerAdmissionWinsBeforeRevocation(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "trusted-clients.json")
 	store, err := Open(path)
 	if err != nil {
@@ -164,11 +163,8 @@ func TestWithTrustedPeerSerializesRevocation(t *testing.T) {
 	admitted := make(chan error, 1)
 	go func() {
 		admitted <- store.WithTrustedPeer(peer.ID, peer.Fingerprint, func(got Peer) error {
-			if got.ID != peer.ID {
-				return errors.New("admitted the wrong peer")
-			}
-			if !validPeerGeneration(got.Generation) {
-				return errors.New("admitted peer has no trust generation")
+			if got.ID != peer.ID || !validPeerGeneration(got.Generation) {
+				return errors.New("admitted peer identity or generation is invalid")
 			}
 			close(entered)
 			<-release
@@ -177,20 +173,16 @@ func TestWithTrustedPeerSerializesRevocation(t *testing.T) {
 	}()
 	<-entered
 
-	started := make(chan struct{})
+	revocationStarted := make(chan struct{})
 	revoked := make(chan error, 1)
 	go func() {
-		close(started)
+		close(revocationStarted)
 		_, err := Revoke(path, peer.ID)
 		revoked <- err
 	}()
-	<-started
-	select {
-	case err := <-revoked:
-		t.Fatalf("revocation passed the admission lock: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
+	<-revocationStarted
 	close(release)
+
 	if err := <-admitted; err != nil {
 		t.Fatal(err)
 	}
@@ -199,6 +191,33 @@ func TestWithTrustedPeerSerializesRevocation(t *testing.T) {
 	}
 	if _, ok, err := store.Lookup(peer.ID); err != nil || ok {
 		t.Fatalf("revoked peer lookup = (ok %v, err %v)", ok, err)
+	}
+}
+
+func TestWithTrustedPeerRevocationWinsBeforeAdmission(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-clients.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{ID: "wd_aaaaaaaaaaaaaaaa", Name: "client", Fingerprint: "fp-a"}
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Revoke(path, peer.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	callbackRan := false
+	err = store.WithTrustedPeer(peer.ID, peer.Fingerprint, func(Peer) error {
+		callbackRan = true
+		return nil
+	})
+	if !errors.Is(err, ErrPeerNotFound) {
+		t.Fatalf("admission after revocation error = %v, want ErrPeerNotFound", err)
+	}
+	if callbackRan {
+		t.Fatal("admission callback ran after revocation won")
 	}
 }
 

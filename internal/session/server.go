@@ -47,6 +47,7 @@ type Server struct {
 
 	// This per-server fault seam is nil in production.
 	beforeSessionAdmission func()
+	afterPTYStart          func()
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
 }
 
@@ -104,14 +105,14 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 			_ = sendError(tlsConn, "authorization_required", "this transport requires an authorized session request")
 			return
 		}
-		s.handleTerminal(tlsConn, first, metadata, nil)
+		s.handleTerminal(raw, tlsConn, first, metadata, nil)
 	case protocol.TypeOpenAuthorizedSession:
 		if !requireInBandAuthorization {
 			s.recordTransportAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "unexpected_authorized_request"})
 			_ = sendError(tlsConn, "unexpected_message", "authorized session requests are not valid on this transport")
 			return
 		}
-		s.handleAuthorizedTerminal(tlsConn, first, metadata)
+		s.handleAuthorizedTerminal(raw, tlsConn, first, metadata)
 	default:
 		_ = sendError(tlsConn, "unexpected_message", "expected pairing or session request")
 	}
@@ -272,7 +273,7 @@ func (s *Server) handlePairCommit(conn *tls.Conn, metadata TransportMetadata, cl
 	s.log().Info("paired client", "client_id", clientID, "client_name", name)
 }
 
-func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, metadata TransportMetadata) {
+func (s *Server) handleAuthorizedTerminal(rawConn net.Conn, conn *tls.Conn, first protocol.Frame, metadata TransportMetadata) {
 	transport, _ := metadata.auditLabel()
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
@@ -364,7 +365,7 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport}, &evidence)
 
 	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, GrantJTI: grantJTI, BuildNonce: req.BuildNonce, Capabilities: req.Capabilities})
-	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, metadata, &evidence)
+	s.handleTerminal(rawConn, conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, metadata, &evidence)
 }
 
 func (s *Server) signedBuildIdentity(nonce string) (*protocol.AgentBuildIdentity, error) {
@@ -381,7 +382,7 @@ func (s *Server) signedBuildIdentity(nonce string) (*protocol.AgentBuildIdentity
 	return &attestation, nil
 }
 
-func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata TransportMetadata, authorization *GrantConsumptionEvidence) {
+func (s *Server) handleTerminal(rawConn net.Conn, conn *tls.Conn, first protocol.Frame, metadata TransportMetadata, authorization *GrantConsumptionEvidence) {
 	transport, _ := metadata.auditLabel()
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
@@ -486,7 +487,7 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 		if s.beforeSessionAdmission != nil {
 			s.beforeSessionAdmission()
 		}
-		active, err := s.admitTerminalSession(peer.ID, fp, transport, conn, nil, func(string) error {
+		active, err := s.admitTerminalSession(peer.ID, fp, transport, rawConn, nil, func(string) error {
 			return writeSessionAccepted(conn, accepted)
 		})
 		if err != nil {
@@ -505,37 +506,52 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, metadata T
 	if open.Rows == 0 {
 		open.Rows = 24
 	}
-	pty, err := s.startTerminal(s.Shell, open.Cols, open.Rows, open.Term)
-	if err != nil {
-		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "pty_start_failed"})
-		_ = sendError(conn, "pty_error", err.Error())
-		return
-	}
 	accepted, err := sessionAcceptedFrame(capabilities, buildIdentity)
 	if err != nil {
-		_ = pty.Close()
 		_ = sendError(conn, "server_error", "session acceptance metadata could not be encoded")
 		return
 	}
 	if s.beforeSessionAdmission != nil {
 		s.beforeSessionAdmission()
 	}
-	active, err := s.admitTerminalSession(peer.ID, fp, transport, conn, func() {
-		if err := pty.Close(); err != nil {
-			s.log().Error("terminal PTY close failed during session revocation", "client_id", peer.ID, "transport", transport, "error", err)
-		}
-	}, func(string) error {
-		return writeSessionAccepted(conn, accepted)
-	})
+
+	// Reserve admission under the trust-store lock before starting a shell.
+	// A revocation that wins this boundary prevents PTY creation and shell init.
+	active, err := s.admitTerminalSession(peer.ID, fp, transport, rawConn, nil, nil)
 	if err != nil {
-		_ = pty.Close()
 		code, reason := sessionAdmissionFailure(err)
 		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: reason})
 		_ = sendError(conn, code, "terminal session authorization is unavailable")
 		return
 	}
 	defer active.finish()
+	if active.isTerminated() {
+		return
+	}
+
+	pty, err := s.startTerminal(s.Shell, open.Cols, open.Rows, open.Term)
+	if err != nil {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "failed", PeerID: peer.ID, Transport: transport, Reason: "pty_start_failed"})
+		_ = sendError(conn, "pty_error", err.Error())
+		return
+	}
+	active.setCleanup(func() {
+		if err := pty.Close(); err != nil {
+			s.log().Error("terminal PTY close failed during session revocation", "client_id", peer.ID, "transport", transport, "error", err)
+		}
+	})
 	defer pty.Close()
+	if s.afterPTYStart != nil {
+		s.afterPTYStart()
+	}
+	if active.isTerminated() {
+		return
+	}
+	if err := writeSessionAccepted(conn, accepted); err != nil {
+		s.recordTransportAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "denied", PeerID: peer.ID, Transport: transport, Reason: "session_accept_failed"})
+		return
+	}
+
 	s.recordGrantAudit(metadata, audit.Event{Type: "terminal.session_opened", Outcome: "success", PeerID: peer.ID, SessionID: active.ID, Transport: transport}, authorization)
 	closeReason := "connection_ended"
 	if active.isTerminated() {

@@ -2,11 +2,20 @@ package session
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/sha512"
 	"crypto/tls"
 	"encoding/base64"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"hash"
 	"io"
 	"net"
 	"os"
@@ -57,6 +66,173 @@ func (p *revocationTestPTY) Wait() error {
 func (p *revocationTestPTY) Close() error {
 	p.once.Do(func() { close(p.closed) })
 	return nil
+}
+
+type revocationFloodPTY struct {
+	*revocationTestPTY
+	started chan struct{}
+	readOnce sync.Once
+}
+
+func (p *revocationFloodPTY) Read(buffer []byte) (int, error) {
+	select {
+	case <-p.closed:
+		return 0, io.EOF
+	default:
+	}
+	p.readOnce.Do(func() { close(p.started) })
+	for i := range buffer {
+		buffer[i] = 'x'
+	}
+	return len(buffer), nil
+}
+
+type revocationObservedConn struct {
+	net.Conn
+	mu sync.Mutex
+	armed bool
+	writes int
+	secondWrite chan struct{}
+	secondOnce sync.Once
+}
+
+func newRevocationObservedConn(conn net.Conn) *revocationObservedConn {
+	return &revocationObservedConn{Conn: conn, secondWrite: make(chan struct{})}
+}
+
+func (c *revocationObservedConn) arm() {
+	c.mu.Lock()
+	c.armed = true
+	c.writes = 0
+	c.mu.Unlock()
+}
+
+func (c *revocationObservedConn) Write(buffer []byte) (int, error) {
+	c.mu.Lock()
+	if c.armed {
+		c.writes++
+		if c.writes >= 2 {
+			c.secondOnce.Do(func() { close(c.secondWrite) })
+		}
+	}
+	c.mu.Unlock()
+	return c.Conn.Write(buffer)
+}
+
+type tlsRecordCounterConn struct {
+	net.Conn
+	mu sync.Mutex
+	enabled bool
+	pending []byte
+	records uint64
+}
+
+func (c *tlsRecordCounterConn) enable() {
+	c.mu.Lock()
+	c.enabled = true
+	c.mu.Unlock()
+}
+
+func (c *tlsRecordCounterConn) recordCount() uint64 {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.records
+}
+
+func (c *tlsRecordCounterConn) Write(buffer []byte) (int, error) {
+	n, err := c.Conn.Write(buffer)
+	if n > 0 {
+		c.mu.Lock()
+		if c.enabled {
+			c.pending = append(c.pending, buffer[:n]...)
+			for len(c.pending) >= 5 {
+				recordLength := int(binary.BigEndian.Uint16(c.pending[3:5]))
+				if len(c.pending) < 5+recordLength {
+					break
+				}
+				if c.pending[0] == 23 {
+					c.records++
+				}
+				c.pending = c.pending[5+recordLength:]
+			}
+		}
+		c.mu.Unlock()
+	}
+	return n, err
+}
+
+func clientTrafficSecret(t *testing.T, keyLog *bytes.Buffer, clientRandom []byte) []byte {
+	t.Helper()
+	wantRandom := hex.EncodeToString(clientRandom)
+	for _, line := range strings.Split(keyLog.String(), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) == 3 && fields[0] == "CLIENT_TRAFFIC_SECRET_0" && fields[1] == wantRandom {
+			secret, err := hex.DecodeString(fields[2])
+			if err != nil {
+				t.Fatal(err)
+			}
+			return secret
+		}
+	}
+	t.Fatal("TLS key log did not contain CLIENT_TRAFFIC_SECRET_0")
+	return nil
+}
+
+func hkdfExpandLabel(secret []byte, label string, hashFunc func() hash.Hash, length int) []byte {
+	fullLabel := "tls13 " + label
+	info := make([]byte, 2+1+len(fullLabel)+1)
+	binary.BigEndian.PutUint16(info[:2], uint16(length))
+	info[2] = byte(len(fullLabel))
+	copy(info[3:], fullLabel)
+	info[3+len(fullLabel)] = 0
+
+	var output, previous []byte
+	for counter := byte(1); len(output) < length; counter++ {
+		mac := hmac.New(hashFunc, secret)
+		_, _ = mac.Write(previous)
+		_, _ = mac.Write(info)
+		_, _ = mac.Write([]byte{counter})
+		previous = mac.Sum(nil)
+		output = append(output, previous...)
+	}
+	return output[:length]
+}
+
+func tls13KeyUpdateRequest(t *testing.T, state tls.ConnectionState, secret []byte, sequence uint64) []byte {
+	t.Helper()
+	var hashFunc func() hash.Hash
+	keyLength := 0
+	switch state.CipherSuite {
+	case tls.TLS_AES_128_GCM_SHA256:
+		hashFunc, keyLength = sha256.New, 16
+	case tls.TLS_AES_256_GCM_SHA384:
+		hashFunc, keyLength = sha512.New384, 32
+	default:
+		t.Skipf("TLS 1.3 cipher suite %x is not supported by the KeyUpdate test helper", state.CipherSuite)
+	}
+	key := hkdfExpandLabel(secret, "key", hashFunc, keyLength)
+	iv := hkdfExpandLabel(secret, "iv", hashFunc, 12)
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aead, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := append([]byte(nil), iv...)
+	var sequenceBytes [8]byte
+	binary.BigEndian.PutUint64(sequenceBytes[:], sequence)
+	for i := range sequenceBytes {
+		nonce[len(nonce)-len(sequenceBytes)+i] ^= sequenceBytes[i]
+	}
+
+	// TLS 1.3 KeyUpdate(request_update=1), followed by the inner handshake type.
+	plaintext := []byte{24, 0, 0, 1, 1, 22}
+	recordLength := len(plaintext) + aead.Overhead()
+	header := []byte{23, 3, 3, byte(recordLength >> 8), byte(recordLength)}
+	ciphertext := aead.Seal(nil, nonce, plaintext, header)
+	return append(header, ciphertext...)
 }
 
 type revocationTestAuthorizer struct {
@@ -342,6 +518,138 @@ func waitRevocationAuditEvents(t *testing.T, stateDir string, ready func([]audit
 	}
 	t.Fatal("expected revocation audit events were not persisted")
 	return nil
+}
+
+func TestRevocationForceClosesBlockedTLS13KeyUpdateAndOtherSessions(t *testing.T) {
+	rig := newRevocationTestRig(t, &revocationTestAuthorizer{})
+	client := rig.addClient("blocked-tls13-client")
+	floodBase := newRevocationTestPTY()
+	floodPTY := &revocationFloodPTY{revocationTestPTY: floodBase, started: make(chan struct{})}
+	var startMu sync.Mutex
+	starts := 0
+	secondPTY := newRevocationTestPTY()
+	rig.server.terminalStart = func(string, uint16, uint16, string) (terminalSessionPTY, error) {
+		startMu.Lock()
+		defer startMu.Unlock()
+		starts++
+		if starts == 1 {
+			rig.mu.Lock()
+			rig.ptys = append(rig.ptys, floodBase)
+			rig.mu.Unlock()
+			return floodPTY, nil
+		}
+		rig.mu.Lock()
+		rig.ptys = append(rig.ptys, secondPTY)
+		rig.mu.Unlock()
+		return secondPTY, nil
+	}
+
+	clientRaw, serverRaw := net.Pipe()
+	observedServer := newRevocationObservedConn(serverRaw)
+	go rig.server.ServeConnWithTransport(observedServer, TransportMetadata{Kind: TransportDirectTCP})
+	clientTransport := &tlsRecordCounterConn{Conn: clientRaw}
+	keyLog := &bytes.Buffer{}
+	clientConfig := identity.ClientTLS(client, rig.serverFingerprint)
+	clientConfig.MinVersion = tls.VersionTLS13
+	clientConfig.MaxVersion = tls.VersionTLS13
+	clientConfig.KeyLogWriter = keyLog
+	conn := tls.Client(clientTransport, clientConfig)
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Handshake(); err != nil {
+		t.Fatal(err)
+	}
+	clientTransport.enable()
+	observedServer.arm()
+	if err := rig.sendOpen(conn, TransportDirectTCP, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := rig.readAccepted(conn); err != nil {
+		t.Fatal(err)
+	}
+	_ = conn.SetDeadline(time.Time{})
+
+	// The first post-handshake server write is SessionAccepted. The second is
+	// the flood PTY output; with this TLS 1.3 peer no longer reading, it blocks.
+	select {
+	case <-observedServer.secondWrite:
+	case <-time.After(3 * time.Second):
+		t.Fatal("server TLS write did not saturate against the non-reading peer")
+	}
+	select {
+	case <-floodPTY.started:
+	default:
+		t.Fatal("flood PTY did not begin writing terminal output")
+	}
+
+	other, err := rig.open(client, TransportDirectTCP, false)
+	if err != nil {
+		t.Fatalf("open independent session while first TLS write is blocked: %v", err)
+	}
+	startMu.Lock()
+	startedCount := starts
+	startMu.Unlock()
+	if startedCount != 2 {
+		t.Fatalf("PTY starts = %d, want two independent sessions", startedCount)
+	}
+
+	state := conn.ConnectionState()
+	if state.Version != tls.VersionTLS13 {
+		t.Fatalf("negotiated TLS version = %x, want TLS 1.3", state.Version)
+	}
+	sequence := clientTransport.recordCount()
+	if sequence == 0 {
+		t.Fatal("client application record sequence was not captured")
+	}
+	secret := clientTrafficSecret(t, keyLog, state.ClientRandom)
+	keyUpdate := tls13KeyUpdateRequest(t, state, secret, sequence)
+	if err := clientRaw.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientRaw.Write(keyUpdate); err != nil {
+		t.Fatalf("send TLS 1.3 KeyUpdate request: %v", err)
+	}
+	_ = clientRaw.SetWriteDeadline(time.Time{})
+
+	if _, err := trust.Revoke(rig.trustPath, client.ID); err != nil {
+		t.Fatal(err)
+	}
+	waitRevocationPTYClosed(t, floodBase)
+	waitRevocationPTYClosed(t, secondPTY)
+	waitRevocationConnectionClosed(t, conn)
+	waitRevocationConnectionClosed(t, other)
+	_ = conn.Close()
+	_ = other.Close()
+
+	events := waitRevocationAuditEvents(t, rig.stateDir, func(events []audit.Event) bool {
+		terminated, closed := 0, 0
+		for _, event := range events {
+			if event.PeerID == client.ID && event.Type == "terminal.session_terminated" {
+				terminated++
+			}
+			if event.PeerID == client.ID && event.Type == "terminal.session_closed" {
+				closed++
+			}
+		}
+		return terminated == 2 && closed == 2
+	})
+	terminated, closed := 0, 0
+	for _, event := range events {
+		if event.PeerID != client.ID {
+			continue
+		}
+		if event.Type == "terminal.session_terminated" && event.Reason == "client_revoked" {
+			terminated++
+		}
+		if event.Type == "terminal.session_closed" && event.Reason == "client_revoked" {
+			closed++
+		}
+	}
+	if terminated != 2 || closed != 2 {
+		t.Fatalf("revocation audit counts: terminated=%d closed=%d, want two each", terminated, closed)
+	}
+	waitRevocationSessionsIdle(t, rig.server)
 }
 
 func TestRevocationTerminatesOnlyTargetClientAcrossTerminalTransports(t *testing.T) {

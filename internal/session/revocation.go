@@ -39,7 +39,7 @@ type activeTerminalSession struct {
 	fingerprint string
 	generation  string
 	transport   string
-	conn        net.Conn
+	rawConn     net.Conn
 
 	mu         sync.Mutex
 	finished   bool
@@ -57,16 +57,17 @@ func (s *Server) startTerminal(shell string, cols, rows uint16, term string) (te
 	return terminal.Start(shell, cols, rows, term)
 }
 
-// admitTerminalSession linearizes session acceptance with cross-process
-// trust revocation. The short acceptance write runs under the trust-store lock:
-// either revocation commits first and admission fails, or acceptance completes
-// first and the newly active session is terminated by the revocation watcher.
-func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, conn net.Conn, cleanup func(), accept func(string) error) (*activeTerminalSession, error) {
+// admitTerminalSession reserves admission under the trust-store mutation lock.
+// Lock order is trust-store file lock -> Store.mu -> activeSessionsMu. The
+// watcher releases activeSessionsMu before reading the trust snapshot, so it
+// never acquires these locks in reverse order. A nil accept callback creates a
+// reservation that callers may initialize (for example, start a PTY) afterward.
+func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, rawConn net.Conn, cleanup func(), accept func(string) error) (*activeTerminalSession, error) {
 	if s == nil || s.Trust == nil {
 		return nil, errors.New("terminal trust store is unavailable")
 	}
-	if conn == nil || accept == nil {
-		return nil, errors.New("terminal session admission is incomplete")
+	if rawConn == nil {
+		return nil, errors.New("terminal session transport is unavailable")
 	}
 
 	var active *activeTerminalSession
@@ -82,7 +83,7 @@ func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, c
 			fingerprint: peer.Fingerprint,
 			generation:  peer.Generation,
 			transport:   transport,
-			conn:        conn,
+			rawConn:     rawConn,
 			cleanup:     cleanup,
 			done:        make(chan struct{}),
 		}
@@ -93,9 +94,11 @@ func (s *Server) admitTerminalSession(clientID, fingerprint, transport string, c
 		s.activeSessions[sessionID] = active
 		s.activeSessionsMu.Unlock()
 
-		if err := accept(sessionID); err != nil {
-			active.finish()
-			return fmt.Errorf("%w: %v", errSessionAdmissionWrite, err)
+		if accept != nil {
+			if err := accept(sessionID); err != nil {
+				active.finish()
+				return fmt.Errorf("%w: %v", errSessionAdmissionWrite, err)
+			}
 		}
 		return nil
 	})
@@ -171,7 +174,7 @@ func (s *Server) watchActiveSessions() {
 		snapshot, err := s.Trust.Snapshot()
 		if err != nil {
 			for _, active := range sessions {
-				active.terminate("trust_store_unavailable")
+				active.terminateAsync("trust_store_unavailable")
 			}
 			continue
 		}
@@ -179,11 +182,11 @@ func (s *Server) watchActiveSessions() {
 			peer, ok := snapshot[active.clientID]
 			switch {
 			case !ok:
-				active.terminate("client_revoked")
+				active.terminateAsync("client_revoked")
 			case peer.Fingerprint != active.fingerprint:
-				active.terminate("client_identity_changed")
+				active.terminateAsync("client_identity_changed")
 			case peer.Generation != active.generation:
-				active.terminate("client_revoked")
+				active.terminateAsync("client_revoked")
 			}
 		}
 	}
@@ -207,27 +210,45 @@ func (a *activeTerminalSession) setCleanup(cleanup func()) {
 	a.mu.Unlock()
 }
 
-func (a *activeTerminalSession) terminate(reason string) {
+func (a *activeTerminalSession) beginTermination(reason string) (func(), bool) {
 	if a == nil {
-		return
+		return nil, false
 	}
 	a.mu.Lock()
+	defer a.mu.Unlock()
 	if a.finished || a.terminated {
-		a.mu.Unlock()
-		return
+		return nil, false
 	}
 	a.terminated = true
 	a.reason = reason
-	cleanup := a.cleanup
-	a.mu.Unlock()
+	return a.cleanup, true
+}
 
-	// Tear down the PTY/ConPTY before closing TLS. In particular, TLS
-	// close_notify can wait for the peer to read; resource cleanup must not
-	// depend on transport shutdown completing first.
+func (a *activeTerminalSession) terminate(reason string) {
+	cleanup, ok := a.beginTermination(reason)
+	if ok {
+		a.closeAndAudit(reason, cleanup)
+	}
+}
+
+func (a *activeTerminalSession) terminateAsync(reason string) {
+	cleanup, ok := a.beginTermination(reason)
+	if !ok {
+		return
+	}
+	go a.closeAndAudit(reason, cleanup)
+}
+
+func (a *activeTerminalSession) closeAndAudit(reason string, cleanup func()) {
+	// Close the underlying transport directly. tls.Conn.Close may need the TLS
+	// write lock to emit close_notify, which can be held by a blocked write or
+	// a TLS 1.3 KeyUpdate response to a non-reading peer.
+	if a.rawConn != nil {
+		_ = a.rawConn.Close()
+	}
 	if cleanup != nil {
 		cleanup()
 	}
-	_ = a.conn.Close()
 	if err := a.server.appendAudit(audit.Event{
 		Type:      "terminal.session_terminated",
 		Outcome:   "success",
