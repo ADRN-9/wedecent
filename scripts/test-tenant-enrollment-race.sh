@@ -43,7 +43,7 @@ cleanup() {
 trap cleanup EXIT
 
 db_psql() {
-  docker exec -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres "$@"
+  docker exec -u postgres -i "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres "$@"
 }
 
 scalar() {
@@ -122,7 +122,7 @@ SQL
 # Case 1: enrollment locks the owner membership first; revocation must wait.
 enroll_app="wd-cp01-enroll-first"
 revoke_app="wd-cp01-revoke-after"
-docker exec -i -e "PGAPPNAME=$enroll_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/enroll-first.log" 2>&1 <<SQL &
+docker exec -u postgres -i -e "PGAPPNAME=$enroll_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/enroll-first.log" 2>&1 <<SQL &
 begin;
 select public.complete_device_enrollment(
   '60000000-0000-4000-8000-000000000001',
@@ -141,7 +141,7 @@ enroll_pid=$!
 PIDS+=("$enroll_pid")
 wait_for_activity "$enroll_app" "wait_event = 'PgSleep'"
 
-docker exec -i -e "PGAPPNAME=$revoke_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/revoke-after.log" 2>&1 <<'SQL' &
+docker exec -u postgres -i -e "PGAPPNAME=$revoke_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/revoke-after.log" 2>&1 <<'SQL' &
 begin;
 delete from public.organization_memberships
  where organization_id = '50000000-0000-4000-8000-000000000001'
@@ -165,7 +165,7 @@ grep -q 'wd_aaaaaaaaaaaaaaaa' "$WORK/enroll-first.log" ||
 # must wait, then fail closed after the revocation commits.
 revoke_first_app="wd-cp01-revoke-first"
 enroll_after_app="wd-cp01-enroll-after"
-docker exec -i -e "PGAPPNAME=$revoke_first_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/revoke-first.log" 2>&1 <<SQL &
+docker exec -u postgres -i -e "PGAPPNAME=$revoke_first_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/revoke-first.log" 2>&1 <<SQL &
 begin;
 delete from public.organization_memberships
  where organization_id = '50000000-0000-4000-8000-000000000002'
@@ -177,7 +177,7 @@ revoke_first_pid=$!
 PIDS+=("$revoke_first_pid")
 wait_for_activity "$revoke_first_app" "wait_event = 'PgSleep'"
 
-docker exec -i -e "PGAPPNAME=$enroll_after_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/enroll-after.log" 2>&1 <<'SQL' &
+docker exec -u postgres -i -e "PGAPPNAME=$enroll_after_app" "$DB_CONTAINER" psql -X -v ON_ERROR_STOP=1 -U postgres -d postgres >"$WORK/enroll-after.log" 2>&1 <<'SQL' &
 begin;
 select public.complete_device_enrollment(
   '60000000-0000-4000-8000-000000000002',
