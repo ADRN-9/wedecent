@@ -116,16 +116,22 @@ func (p *managedProcess) exited() bool {
 	}
 }
 
-func (p *managedProcess) stop() {
+func (p *managedProcess) stop() error {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil || p.exited() {
-		return
+		return nil
 	}
 	_ = p.cmd.Process.Signal(os.Interrupt)
 	if _, ok := p.wait(3 * time.Second); ok {
-		return
+		return nil
 	}
-	_ = p.cmd.Process.Kill()
-	_, _ = p.wait(3 * time.Second)
+	killErr := p.cmd.Process.Kill()
+	if _, ok := p.wait(3 * time.Second); !ok {
+		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			return fmt.Errorf("kill process after interrupt timeout: %w", killErr)
+		}
+		return errors.New("process did not exit after interrupt and kill")
+	}
+	return nil
 }
 
 func (p *managedProcess) waitForOutput(value string, timeout time.Duration) error {
@@ -180,7 +186,7 @@ func main() {
 	}
 }
 
-func run() error {
+func run() (runErr error) {
 	root, err := os.Getwd()
 	if err != nil {
 		return err
@@ -195,7 +201,11 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() {
+		if err := os.RemoveAll(tmp); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("remove integration temp directory: %w", err))
+		}
+	}()
 
 	wd := filepath.Join(tmp, "wd")
 	agentBinary := filepath.Join(tmp, "wd-agent")
@@ -233,13 +243,21 @@ func run() error {
 	if err := writePrivateFile(devVarsPath, "WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64="+grantPublicSPKI+"\n"); err != nil {
 		return fmt.Errorf("write temporary Worker verifier configuration: %w", err)
 	}
-	defer os.Remove(devVarsPath)
+	defer func() {
+		if err := os.Remove(devVarsPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			runErr = errors.Join(runErr, fmt.Errorf("remove temporary Worker verifier configuration: %w", err))
+		}
+	}()
 
 	worker, workerPort, err := startWorkerWithRetry(wrangler, workerDir, keyPath, certPath, persistDir, tlsClient)
 	if err != nil {
 		return fmt.Errorf("start local Worker after bounded port retries: %w", err)
 	}
-	defer worker.stop()
+	defer func() {
+		if err := worker.stop(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("stop Worker process: %w", err))
+		}
+	}()
 	relayURL := fmt.Sprintf("https://127.0.0.1:%d", workerPort)
 
 	agentState := filepath.Join(tmp, "agent-state")
@@ -270,8 +288,8 @@ func run() error {
 		return fmt.Errorf("start independent Go agent after bounded port retries: %w", err)
 	}
 	defer func() {
-		if agent != nil {
-			agent.stop()
+		if err := agent.stop(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("stop agent process: %w", err))
 		}
 	}()
 
@@ -331,7 +349,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("start independent Go client A: %w", err)
 	}
-	defer clientA.stop()
+	defer func() {
+		if err := clientA.stop(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("stop client A process: %w", err))
+		}
+	}()
 	auditPath := filepath.Join(agentState, "audit.jsonl")
 	if _, err := waitForAudit(auditPath, func(events []audit.Event) bool {
 		// wd connect currently uses the legacy terminal protocol, so assert its
@@ -360,7 +382,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("start independent Go client B: %w", err)
 	}
-	defer clientB.stop()
+	defer func() {
+		if err := clientB.stop(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("stop client B process: %w", err))
+		}
+	}()
 	if _, err := waitForAudit(auditPath, func(events []audit.Event) bool {
 		return hasAuditEvent(events, "terminal.authorization", clientAID, "success", "") &&
 			hasAuditEvent(events, "terminal.session_opened", clientAID, "success", "") &&
@@ -417,9 +443,15 @@ func run() error {
 		return fmt.Errorf("read client B grant evidence from Worker Durable Object: %w", err)
 	}
 
-	agent.stop()
-	worker.stop()
-	clientB.stop()
+	if err := agent.stop(); err != nil {
+		return fmt.Errorf("stop agent before Worker restart: %w", err)
+	}
+	if err := worker.stop(); err != nil {
+		return fmt.Errorf("stop Worker before restart: %w", err)
+	}
+	if err := clientB.stop(); err != nil {
+		return fmt.Errorf("stop client B before Worker restart: %w", err)
+	}
 
 	if countFiles(persistDir) == 0 {
 		return errors.New("Wrangler did not persist any local Durable Object storage files")
@@ -429,7 +461,7 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("restart local Worker after bounded port retries: %w", err)
 	}
-	defer worker.stop()
+
 	relayURL = fmt.Sprintf("https://127.0.0.1:%d", workerPort)
 	// Restart the independent agent against the restarted Worker, then prove
 	// that the still-authorized unrelated device can establish a fresh session.
@@ -466,7 +498,11 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("start unrelated client B after Worker restart: %w", err)
 	}
-	defer clientBAfterRestart.stop()
+	defer func() {
+		if err := clientBAfterRestart.stop(); err != nil {
+			runErr = errors.Join(runErr, fmt.Errorf("stop post-restart client B process: %w", err))
+		}
+	}()
 	if _, err := waitForAudit(auditPath, func(events []audit.Event) bool {
 		opened := 0
 		for _, event := range events {
@@ -526,7 +562,9 @@ func startWithPortRetry(
 			if err == nil {
 				return process, port, nil
 			}
-			process.stop()
+			if stopErr := process.stop(); stopErr != nil {
+				return nil, 0, fmt.Errorf("stop process after failed listener startup (%v): %w", err, stopErr)
+			}
 		}
 		if !isAddressInUse(err.Error()) {
 			return nil, 0, err
