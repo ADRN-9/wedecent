@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"errors"
@@ -670,8 +671,11 @@ func newUUID() (string, error) {
 	}
 	value[6] = (value[6] & 0x0f) | 0x40
 	value[8] = (value[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%08x-%04x-%04x-%04x-%012x",
-		value[0:4], value[4:6], value[6:8], value[8:10], value[10:16]), nil
+	return hex.EncodeToString(value[0:4]) + "-" +
+		hex.EncodeToString(value[4:6]) + "-" +
+		hex.EncodeToString(value[6:8]) + "-" +
+		hex.EncodeToString(value[8:10]) + "-" +
+		hex.EncodeToString(value[10:16]), nil
 }
 
 func readAuditEvents(path string) ([]audit.Event, error) {
