@@ -484,27 +484,46 @@ func waitRevocationPTYClosed(t *testing.T, pty *revocationTestPTY) {
 
 func readRevocationAudit(t *testing.T, stateDir string) []audit.Event {
 	t.Helper()
-	file, err := os.Open(filepath.Join(stateDir, audit.FileName))
+	data, err := os.ReadFile(filepath.Join(stateDir, audit.FileName))
 	if os.IsNotExist(err) {
 		return nil
 	}
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer file.Close()
+	// A concurrent append may expose its final JSONL record before the newline.
+	// Ignore only that incomplete tail; the polling caller will read it again.
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		lastNewline := bytes.LastIndexByte(data, '\n')
+		if lastNewline < 0 {
+			return nil
+		}
+		data = data[:lastNewline+1]
+	}
 	var events []audit.Event
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
+	for _, line := range bytes.Split(data, []byte{'\n'}) {
+		if len(line) == 0 {
+			continue
+		}
 		var event audit.Event
-		if err := json.Unmarshal(scanner.Bytes(), &event); err != nil {
+		if err := json.Unmarshal(line, &event); err != nil {
 			t.Fatal(err)
 		}
 		events = append(events, event)
 	}
-	if err := scanner.Err(); err != nil {
+	return events
+}
+
+func TestReadRevocationAuditIgnoresIncompleteTrailingAppend(t *testing.T) {
+	stateDir := t.TempDir()
+	data := []byte("{\"type\":\"terminal.session_terminated\",\"outcome\":\"success\"}\n{\"type\":")
+	if err := os.WriteFile(filepath.Join(stateDir, audit.FileName), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return events
+	events := readRevocationAudit(t, stateDir)
+	if len(events) != 1 || events[0].Type != "terminal.session_terminated" {
+		t.Fatalf("complete audit events = %#v, want the one complete record", events)
+	}
 }
 
 func waitRevocationSessionsIdle(t *testing.T, server *Server) {
