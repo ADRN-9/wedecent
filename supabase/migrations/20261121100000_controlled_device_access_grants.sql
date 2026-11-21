@@ -125,6 +125,43 @@ alter function wedecent_private.lock_device_access_authority(text, boolean)
 revoke all on function wedecent_private.lock_device_access_authority(text, boolean)
     from public, anon, authenticated, service_role;
 
+-- RLS helper intentionally ignores revoked_at so managers can inspect stale
+-- grants for explicit cleanup. It does not authorize device use or mutation.
+create or replace function wedecent_private.can_manage_device_access(
+    target_device_id text
+)
+returns boolean
+language sql
+stable
+security definer
+set search_path = ''
+as $manage$
+    select
+        auth.uid() is not null
+        and (auth.jwt() ->> 'role') is not distinct from 'authenticated'
+        and coalesce((auth.jwt() ->> 'is_anonymous')::boolean, true) is false
+        and exists (
+            select 1
+              from public.devices as d
+             where d.device_id = target_device_id
+               and (
+                   d.owner_user_id = (select auth.uid())
+                   or (
+                       d.organization_id is not null
+                       and (select wedecent_private.can_manage_organization(d.organization_id))
+                   )
+               )
+        );
+$manage$;
+
+alter function wedecent_private.can_manage_device_access(text)
+    owner to postgres;
+
+revoke all on function wedecent_private.can_manage_device_access(text)
+    from public, anon, authenticated, service_role;
+grant execute on function wedecent_private.can_manage_device_access(text)
+    to authenticated;
+
 create or replace function public.create_device_access_grant(
     p_device_id text,
     p_grantee_user_id uuid,
@@ -392,12 +429,24 @@ revoke insert (
 
 grant select on table public.device_access to authenticated, service_role;
 
+-- Keep stale revoked-device grants visible only to their device owner and
+-- current organization managers so they can be explicitly cleaned up.
+drop policy if exists device_access_select_relevant on public.device_access;
+create policy device_access_select_relevant
+on public.device_access
+for select
+to authenticated
+using (
+    user_id = (select auth.uid())
+    or (select wedecent_private.can_manage_device_access(device_id))
+);
+
 drop policy if exists device_access_insert_manager on public.device_access;
 drop policy if exists device_access_update_manager on public.device_access;
 drop policy if exists device_access_delete_manager on public.device_access;
 
 comment on table public.device_access is
-'Explicit per-user terminal grants. Authenticated writes use the create, expiry-update, and revoke RPCs; service_role has read-only table access.';
+'Explicit per-user terminal.connect and mesh.forward grants. Authenticated writes use the create, expiry-update, and revoke RPCs; service_role has read-only table access.';
 
 comment on function public.create_device_access_grant(
     text, uuid, public.device_permission, timestamptz

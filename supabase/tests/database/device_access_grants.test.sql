@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(87);
+select plan(90);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -275,6 +275,32 @@ select ok(
                && array['p_actor_user_id', 'p_granted_by']::text[]
     ),
     'RPC signatures never accept a caller-supplied actor or granted_by'
+);
+
+select ok(
+    has_function_privilege(
+        'authenticated',
+        'wedecent_private.can_manage_device_access(text)',
+        'EXECUTE'
+    )
+    and not has_function_privilege(
+        'anon',
+        'wedecent_private.can_manage_device_access(text)',
+        'EXECUTE'
+    )
+    and not has_function_privilege(
+        'service_role',
+        'wedecent_private.can_manage_device_access(text)',
+        'EXECUTE'
+    )
+    and (
+        select p.prosecdef
+           and p.proowner = 'postgres'::regrole
+           and 'search_path=""' = any(p.proconfig)
+          from pg_catalog.pg_proc as p
+         where p.oid = 'wedecent_private.can_manage_device_access(text)'::regprocedure
+    ),
+    'revoked-device management RLS helper is SECURITY DEFINER, postgres-owned, search_path-restricted, and authenticated-only'
 );
 
 set local role authenticated;
@@ -776,7 +802,7 @@ select throws_ok(
 
 -- Routing permission is a distinct explicit grant; it never implies terminal access.
 select lives_ok(
-    $
+    $wd$
         select public.create_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000004',
@@ -821,7 +847,7 @@ select ok(
 select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000001', true);
 
 select lives_ok(
-    $
+    $wd$
         select public.update_device_access_grant_expiry(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000004',
@@ -844,7 +870,7 @@ select ok(
 );
 
 select throws_ok(
-    $
+    $wd$
         select public.update_device_access_grant_expiry(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000004',
@@ -858,7 +884,7 @@ select throws_ok(
 );
 
 select lives_ok(
-    $
+    $wd$
         select public.revoke_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000004',
@@ -891,7 +917,7 @@ select ok(
 );
 
 select lives_ok(
-    $
+    $wd$
         select public.create_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000004',
@@ -915,7 +941,7 @@ select is(
 );
 
 select lives_ok(
-    $
+    $wd$
         select public.revoke_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000004',
@@ -926,7 +952,7 @@ select lives_ok(
 );
 
 select throws_ok(
-    $
+    $wd$
         select public.create_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000008',
@@ -956,7 +982,7 @@ select is(
 );
 
 select lives_ok(
-    $
+    $wd$
         select public.update_device_access_grant_expiry(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000007',
@@ -979,7 +1005,7 @@ select ok(
 );
 
 select lives_ok(
-    $
+    $wd$
         select public.update_device_access_grant_expiry(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000007',
@@ -1005,7 +1031,7 @@ select is(
 select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000005', true);
 
 select throws_ok(
-    $
+    $wd$
         select public.create_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000008',
@@ -1019,7 +1045,7 @@ select throws_ok(
 );
 
 select throws_ok(
-    $
+    $wd$
         select public.update_device_access_grant_expiry(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000007',
@@ -1033,7 +1059,7 @@ select throws_ok(
 );
 
 select throws_ok(
-    $
+    $wd$
         select public.revoke_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000007',
@@ -1048,7 +1074,7 @@ select throws_ok(
 select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000002', true);
 
 select lives_ok(
-    $
+    $wd$
         select public.revoke_device_access_grant(
             'wd_aaaaaaaaaaaaaaaa',
             '71000000-0000-4000-8000-000000000007',
@@ -1070,8 +1096,36 @@ select is(
     'explicit revocation removes the pre-existing permanent routing grant'
 );
 
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000003', true);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_access
+         where device_id = 'wd_cccccccccccccccc'
+           and user_id = '71000000-0000-4000-8000-000000000004'
+           and permission = 'mesh.forward'
+    ),
+    0::bigint,
+    'ordinary members cannot inspect another user grant on a revoked device'
+);
+
+select set_config('request.jwt.claim.sub', '71000000-0000-4000-8000-000000000002', true);
+
+select is(
+    (
+        select count(*)::bigint
+          from public.device_access
+         where device_id = 'wd_cccccccccccccccc'
+           and user_id = '71000000-0000-4000-8000-000000000004'
+           and permission = 'mesh.forward'
+    ),
+    1::bigint,
+    'organization administrators can inspect stale grants on revoked devices for cleanup'
+);
+
 select throws_ok(
-    $
+    $wd$
         select public.update_device_access_grant_expiry(
             'wd_cccccccccccccccc',
             '71000000-0000-4000-8000-000000000004',
@@ -1085,7 +1139,7 @@ select throws_ok(
 );
 
 select lives_ok(
-    $
+    $wd$
         select public.revoke_device_access_grant(
             'wd_cccccccccccccccc',
             '71000000-0000-4000-8000-000000000004',

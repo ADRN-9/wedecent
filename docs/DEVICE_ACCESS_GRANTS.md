@@ -18,7 +18,7 @@ Every RPC requires a non-null auth.uid(), an authenticated JWT role, and an expl
 
 The only supported permissions are `terminal.connect` and `mesh.forward`. They are independent, exact grants: neither implies the other, and each RPC receives the permission being created, updated, or revoked. Device owners retain their existing direct device-management authority. Otherwise, the caller must have a current owner or admin membership in the device's organization. Ordinary members and users from other tenants are denied.
 
-Revoked devices cannot receive new grants or have grant expirations changed. Existing `device_access` rows are not silently deleted when a device is revoked. A current organization owner/admin (or the device owner) may still explicitly revoke an existing grant on a revoked device; this cleanup operation only removes authority and is recorded by the existing audit trigger. This policy keeps stale authorization records manageable without making a revoked device usable again.
+Revoked devices cannot receive new grants or have grant expirations changed. Existing `device_access` rows are not silently deleted when a device is revoked. A current organization owner/admin (or the device owner) may still inspect and explicitly revoke an existing grant on a revoked device; ordinary members cannot inspect other users' stale grants. This cleanup operation only removes authority and is recorded by the existing audit trigger. This policy keeps stale authorization records manageable without making a revoked device usable again.
 
 A NULL expires_at continues to mean a permanent grant. Non-NULL expirations must be finite PostgreSQL timestamps and in the future when evaluated after the relevant locks are acquired. Both positive and negative timestamp infinities are rejected by the RPC boundary. Expired grants cannot be revived through the expiry-update RPC, but an expired row may still be revoked.
 
@@ -54,7 +54,7 @@ The device-access Edge Function retries only explicit PostgreSQL transaction-abo
 ## Verification
 
 The database pgTAP suite covers:
-- RLS, table/column privileges, service-role read-only access, RPC ownership, SECURITY DEFINER, empty search_path, and execute ACLs;
+- RLS, including manager-only visibility of revoked-device grant records, table/column privileges, service-role read-only access, RPC ownership, SECURITY DEFINER, empty search_path, and execute ACLs;
 - owner, administrator, ordinary member, device-owner (including organization-managed devices), anonymous/missing-claim rejection, and cross-tenant authorization for both permission types;
 - independent `terminal.connect`/`mesh.forward` creation, update, revocation, and permission separation; existing permanent routing-grant management; positive-infinity rejection for create/update; revoked-device cleanup policy; missing authentication, actor spoofing, malformed IDs, revoked-device create/update denial, expired requests, duplicates, and missing grant rows;
 - audit actor attribution, permanent-grant semantics, rollback of both grant and audit rows, and expired-row revocation.
