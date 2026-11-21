@@ -809,7 +809,7 @@ select lives_ok(
             'mesh.forward',
             now() + interval '1 hour'
         )
-    $,
+    $wd$,
     'device owner can create an explicit mesh.forward grant'
 );
 
@@ -854,7 +854,7 @@ select lives_ok(
             'mesh.forward',
             now() + interval '2 hours'
         )
-    $,
+    $wd$,
     'device owner can update a mesh.forward grant expiry'
 );
 
@@ -877,7 +877,7 @@ select throws_ok(
             'mesh.forward',
             'infinity'::timestamptz
         )
-    $,
+    $wd$,
     '22023',
     'grant expiration must be finite',
     'expiry update rejects PostgreSQL positive infinity'
@@ -890,7 +890,7 @@ select lives_ok(
             '71000000-0000-4000-8000-000000000004',
             'mesh.forward'
         )
-    $,
+    $wd$,
     'device owner can revoke a mesh.forward grant'
 );
 
@@ -924,7 +924,7 @@ select lives_ok(
             'terminal.connect',
             now() + interval '1 hour'
         )
-    $,
+    $wd$,
     'terminal.connect remains independently grantable'
 );
 
@@ -947,7 +947,7 @@ select lives_ok(
             '71000000-0000-4000-8000-000000000004',
             'terminal.connect'
         )
-    $,
+    $wd$,
     'terminal.connect can be revoked independently of routing permission'
 );
 
@@ -959,7 +959,7 @@ select throws_ok(
             'mesh.forward',
             'infinity'::timestamptz
         )
-    $,
+    $wd$,
     '22023',
     'grant expiration must be finite',
     'grant creation rejects PostgreSQL positive infinity'
@@ -989,7 +989,7 @@ select lives_ok(
             'mesh.forward',
             now() + interval '1 hour'
         )
-    $,
+    $wd$,
     'administrator can update an existing permanent mesh.forward grant'
 );
 
@@ -1012,7 +1012,7 @@ select lives_ok(
             'mesh.forward',
             null
         )
-    $,
+    $wd$,
     'administrator can restore an existing routing grant to permanent'
 );
 
@@ -1038,7 +1038,7 @@ select throws_ok(
             'mesh.forward',
             now() + interval '1 hour'
         )
-    $,
+    $wd$,
     '42501',
     'device access grant is not authorized',
     'cross-tenant routing grant creation is denied'
@@ -1052,7 +1052,7 @@ select throws_ok(
             'mesh.forward',
             now() + interval '2 hours'
         )
-    $,
+    $wd$,
     '42501',
     'device access grant is not authorized',
     'cross-tenant routing grant expiry updates are denied'
@@ -1065,7 +1065,7 @@ select throws_ok(
             '71000000-0000-4000-8000-000000000007',
             'mesh.forward'
         )
-    $,
+    $wd$,
     '42501',
     'device access grant is not authorized',
     'cross-tenant routing grant revocation is denied'
@@ -1080,7 +1080,7 @@ select lives_ok(
             '71000000-0000-4000-8000-000000000007',
             'mesh.forward'
         )
-    $,
+    $wd$,
     'administrator can revoke a pre-existing permanent mesh.forward grant'
 );
 
@@ -1132,7 +1132,7 @@ select throws_ok(
             'mesh.forward',
             now() + interval '1 hour'
         )
-    $,
+    $wd$,
     '22023',
     'device is revoked',
     'administrators cannot update grants on revoked devices'
@@ -1145,7 +1145,7 @@ select lives_ok(
             '71000000-0000-4000-8000-000000000004',
             'mesh.forward'
         )
-    $,
+    $wd$,
     'administrator can explicitly clean up a grant on a revoked device'
 );
 
