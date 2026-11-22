@@ -13,6 +13,7 @@ export function relayMetricContext(request) {
   else if (pathname === "/readyz") route = "ready";
   else if (pathname === "/v1/time") route = "time";
   else if (pathname.startsWith("/v1/direct-authorize/")) route = "direct_authorize";
+  else if (pathname.startsWith("/v1/revoke/")) route = "device_revocation";
   else if (pathname.startsWith("/v1/status/")) route = "status";
   else if (pathname.startsWith("/v1/stream/")) route = "stream";
 
@@ -71,6 +72,9 @@ export async function relayReadiness(env) {
   try {
     relayRateLimitConfig(env ?? {});
     if (!env?.RELAY_METRICS || typeof env.RELAY_METRICS.writeDataPoint !== "function") {
+      return false;
+    }
+    if (typeof env.RELAY_REVOCATION_TOKEN !== "string" || env.RELAY_REVOCATION_TOKEN.length < 32) {
       return false;
     }
     const checks = [
