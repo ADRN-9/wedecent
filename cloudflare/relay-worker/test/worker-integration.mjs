@@ -37,7 +37,8 @@ function startWorker(port, persistTo, globalLimit, ipLimit = 10_000, extraVars =
     "--var", "RELAY_DIRECT_GLOBAL_REQUESTS_PER_WINDOW:" + globalLimit,
     "--var", "RELAY_DIRECT_IP_REQUESTS_PER_WINDOW:" + ipLimit,
   ];
-  for (const [key, value] of Object.entries(extraVars)) {
+  const configuredVars = { RELAY_REVOCATION_TOKEN: "r".repeat(64), ...extraVars };
+  for (const [key, value] of Object.entries(configuredVars)) {
     args.push("--var", key + ":" + value);
   }
   const child = spawn("npx", args, {
@@ -359,6 +360,7 @@ async function openAgentWebSocket(port, targetDeviceID, relayTicket, agentAdmiss
 }
 
 async function waitForSocketClose(socket, timeoutMS = 5_000) {
+  if (socket.destroyed) return;
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       socket.destroy();
