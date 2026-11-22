@@ -23,6 +23,7 @@ test("uses bounded production defaults and rejects invalid overrides", () => {
     ipLimit: 120,
     deviceLimit: 240,
     globalStreamLimit: 12_000,
+    legacyAgentLimit: 240,
     directIPLimit: 30,
     directDeviceLimit: 60,
     directGlobalLimit: 600,
