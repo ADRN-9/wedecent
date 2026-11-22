@@ -39,6 +39,7 @@ import {
   agentRevocationTargets,
   bindGlobalAgentClient,
   bindGlobalAgentClientLease,
+  cleanupExpiredDeviceRevocationMarkers,
   cleanupExpiredRateLimitBuckets,
   cleanupGlobalAgentConnectionLeases,
   consumeRateLimitBuckets,
@@ -50,6 +51,10 @@ import {
   releaseGlobalAgentConnectionLease,
   reserveGlobalAgentConnection,
   findAgentRevocationTargets,
+  isGlobalDeviceRevoked,
+  isGlobalDeviceRevokedLease,
+  markGlobalDeviceRevoked,
+  markGlobalDeviceRevokedLease,
   unbindGlobalAgentClient,
   unbindGlobalAgentClientLease,
 } from "./rate-limit.js";
@@ -197,6 +202,15 @@ async function handleRelayRequest(request, env) {
     return new Response("Relay admission unavailable", { status: 503 });
   }
   for (const authenticatedDeviceID of authenticatedDeviceIDs) {
+    let revoked;
+    try {
+      revoked = await isGlobalDeviceRevoked(env.RELAY_RATE_LIMIT, authenticatedDeviceID);
+    } catch {
+      return new Response("Device revocation registry unavailable", { status: 503 });
+    }
+    if (revoked) {
+      return new Response("Device revoked", { status: 403 });
+    }
     const deviceAdmission = await enforceRelayDeviceRateLimit(env, authenticatedDeviceID, "stream");
     if (!deviceAdmission.ok) {
       return rateLimitResponse(deviceAdmission);
@@ -239,6 +253,12 @@ async function handleDeviceRevocation(request, env, url) {
   }
   if (!constantTimeStringEqual(bearerToken(request), expected)) {
     return new Response("Unauthorized", { status: 401 });
+  }
+
+  try {
+    await markGlobalDeviceRevoked(env.RELAY_RATE_LIMIT, deviceID);
+  } catch {
+    return new Response("Global device revocation registry unavailable", { status: 503 });
   }
 
   let targets;
@@ -399,6 +419,15 @@ export class ConnectionRateLimiter extends DurableObject {
           const targetDeviceIDs = agentRevocationTargets(this.ctx.storage.kv, leaseConfig.deviceID);
           return Response.json({ target_device_ids: targetDeviceIDs }, { headers: { "Cache-Control": "no-store" } });
         }
+        if (leaseConfig.action === "revoke-device") {
+          const revoked = markGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID);
+          await this.#ensureCleanupScheduled();
+          return Response.json({ revoked }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "check-device") {
+          const revoked = isGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID);
+          return Response.json({ revoked }, { headers: { "Cache-Control": "no-store" } });
+        }
         return new Response("Invalid global agent lease operation", { status: 400 });
       } catch {
         return new Response("Global agent connection limiter unavailable", { status: 503 });
@@ -434,7 +463,8 @@ export class ConnectionRateLimiter extends DurableObject {
     const nowMS = Date.now();
     const cleanup = cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, nowMS);
     const leases = cleanupGlobalAgentConnectionLeases(this.ctx.storage.kv, nowMS);
-    if (cleanup.remaining > 0 || leases.remaining > 0) {
+    const revokedDevices = cleanupExpiredDeviceRevocationMarkers(this.ctx.storage.kv, nowMS);
+    if (cleanup.remaining > 0 || leases.remaining > 0 || revokedDevices.remaining > 0) {
       await this.ctx.storage.setAlarm(nowMS + RATE_LIMIT_CLEANUP_INTERVAL_MS);
     }
   }
