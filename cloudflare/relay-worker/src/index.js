@@ -575,6 +575,9 @@ export class DeviceRelay extends DurableObject {
     } catch {
       return new Response("Global agent connection limiter unavailable", { status: 503 });
     }
+    if (globalLease.revoked) {
+      return new Response("Agent device revoked", { status: 403 });
+    }
     if (!globalLease.accepted) {
       return new Response("Global agent connection capacity reached", { status: 429, headers: { "Retry-After": "1" } });
     }
@@ -613,6 +616,16 @@ export class DeviceRelay extends DurableObject {
       }));
       this.ctx.acceptWebSocket(server, ["agent", `agent-slot-${slot}`]);
       leaseOwned = false;
+      let revokedAfterAccept;
+      try {
+        revokedAfterAccept = await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, deviceID);
+      } catch {
+        server.close(1011, "Device revocation registry unavailable");
+        return new Response("Device revocation registry unavailable", { status: 503 });
+      }
+      if (revokedAfterAccept) {
+        server.close(4003, "Device revoked");
+      }
       await this.#scheduleAgentSessionAlarm();
 
       return new Response(null, { status: 101, webSocket: client });
@@ -684,6 +697,11 @@ export class DeviceRelay extends DurableObject {
     try {
       bound = await bindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, agentAttachment.leaseID, clientDeviceID);
       if (!bound) {
+        const revokedClient = await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, clientDeviceID);
+        const revokedAgent = await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, agentAttachment.deviceID);
+        if (revokedClient || revokedAgent) {
+          return new Response("Device revoked", { status: 403 });
+        }
         return new Response("Agent relay session is no longer registered", { status: 503, headers: { "Retry-After": "1" } });
       }
 
@@ -710,6 +728,20 @@ export class DeviceRelay extends DurableObject {
         throw error;
       }
       bound = false;
+      let revokedAfterAccept;
+      try {
+        revokedAfterAccept =
+          await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, clientDeviceID) ||
+          await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, agentAttachment.deviceID);
+      } catch {
+        server.close(1011, "Device revocation registry unavailable");
+        agent.close(1011, "Device revocation registry unavailable");
+        return new Response("Device revocation registry unavailable", { status: 503 });
+      }
+      if (revokedAfterAccept) {
+        server.close(4003, "Device revoked");
+        agent.close(4003, "Device revoked");
+      }
       await this.#scheduleAgentSessionAlarm();
       return new Response(null, { status: 101, webSocket: client });
     } finally {
