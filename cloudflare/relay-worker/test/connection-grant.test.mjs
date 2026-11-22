@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 
-import { verifyConnectionGrant } from "../src/connection-grant.js";
+import { verifyAgentAdmission, verifyConnectionGrant } from "../src/connection-grant.js";
 
 const clientDeviceID = "wd_44qgdpulq5tcdo5e";
 const targetDeviceID = "wd_surqdx3ktyrkje55";
@@ -76,6 +76,60 @@ test("rejects a mismatched client device", async () => {
 
 test("rejects a mismatched signing key id", async () => {
   await assert.rejects(() => verify(issueGrant({}, { kid: "wrong" })), /signing key mismatch/);
+});
+
+function issueAgentAdmission(overrides = {}, headerOverrides = {}) {
+  const now = 1_787_779_000;
+  const header = { alg: "EdDSA", typ: "JWT", kid, ...headerOverrides };
+  const claims = {
+    grant_id: grantID,
+    organization_id: organizationID,
+    client_device_id: clientDeviceID,
+    target_device_id: targetDeviceID,
+    permission: "terminal.connect",
+    purpose: "relay.agent.connect",
+    slot: 4,
+    iss: "wedecent-control-plane",
+    aud: "wedecent-relay-agent",
+    sub: userID,
+    jti: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    iat: now,
+    exp: now + 90,
+    ...overrides,
+  };
+  const signingInput = `${jsonPart(header)}.${jsonPart(claims)}`;
+  return `${signingInput}.${b64url(sign(null, Buffer.from(signingInput), privateKey))}`;
+}
+
+test("accepts a control-plane signed admission bound to an enrolled device and slot", async () => {
+  const token = issueAgentAdmission();
+  const claims = await verifyAgentAdmission(
+    token,
+    { targetDeviceID, slot: 4 },
+    publicSPKIB64,
+    1_787_779_010,
+  );
+  assert.equal(claims.target_device_id, targetDeviceID);
+  assert.equal(claims.permission, "terminal.connect");
+  assert.equal(claims.purpose, "relay.agent.connect");
+  assert.equal(claims.slot, 4);
+});
+
+test("rejects agent admission for another device, slot, audience, or purpose", async () => {
+  const token = issueAgentAdmission();
+  await assert.rejects(() => verifyAgentAdmission(token, { targetDeviceID: clientDeviceID, slot: 4 }, publicSPKIB64, 1_787_779_010));
+  await assert.rejects(() => verifyAgentAdmission(token, { targetDeviceID, slot: 5 }, publicSPKIB64, 1_787_779_010));
+  await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({ aud: "wedecent-relay" }), { targetDeviceID, slot: 4 }, publicSPKIB64, 1_787_779_010));
+  await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({ purpose: "terminal.connect" }), { targetDeviceID, slot: 4 }, publicSPKIB64, 1_787_779_010));
+});
+
+test("rejects expired and overlong agent admission capabilities", async () => {
+  await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission(), { targetDeviceID, slot: 4 }, publicSPKIB64, 1_787_779_200));
+  await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({ exp: 1_787_779_200 }), { targetDeviceID, slot: 4 }, publicSPKIB64, 1_787_779_010));
+});
+
+test("rejects agent admission signed by an unknown key", async () => {
+  await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({}, { kid: "wrong" }), { targetDeviceID, slot: 4 }, publicSPKIB64, 1_787_779_010));
 });
 
 function jsonPart(value) {
