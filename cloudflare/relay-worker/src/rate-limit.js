@@ -471,6 +471,12 @@ function validatePersistedBucket(state) {
   if (!Number.isFinite(state.expiresAtMS) || state.expiresAtMS < 0) {
     throw new Error("invalid persisted rate-limit bucket expiry");
   }
+  if (
+    state.windowMS !== undefined &&
+    (!Number.isSafeInteger(state.windowMS) || state.windowMS < 1000 || state.windowMS > MAX_WINDOW_SECONDS * 1000)
+  ) {
+    throw new Error("invalid persisted rate-limit bucket window");
+  }
 }
 
 function readPersistedCount(value) {
