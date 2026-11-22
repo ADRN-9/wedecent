@@ -103,7 +103,12 @@ Deno.serve(async (request) => {
     const { data: authData, error: authError } = await admin.auth.getUser(token);
     if (authError || !authData.user) return json({ error: "authentication rejected" }, 401);
 
-    const deviceID = await readDeviceID(request);
+    let deviceID: string;
+    try {
+      deviceID = await readDeviceID(request);
+    } catch {
+      return json({ error: "invalid device_id" }, 400);
+    }
     const { data: device, error: deviceError } = await admin
       .from("devices")
       .select("device_id, owner_user_id, organization_id, revoked_at")
