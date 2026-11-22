@@ -649,11 +649,12 @@ export async function agentConnectionLeaseRequestConfig(request) {
   }
 
   if (
-    keys.length !== 4 ||
-    keys[0] !== "device_id" ||
-    keys[1] !== "expires_at_ms" ||
-    keys[2] !== "lease_id" ||
-    keys[3] !== "slot" ||
+    keys.length !== 5 ||
+    keys[0] !== "authorization_generation" ||
+    keys[1] !== "device_id" ||
+    keys[2] !== "expires_at_ms" ||
+    keys[3] !== "lease_id" ||
+    keys[4] !== "slot" ||
     typeof payload.device_id !== "string" ||
     !DEVICE_ID.test(payload.device_id) ||
     typeof payload.lease_id !== "string" ||
@@ -661,7 +662,9 @@ export async function agentConnectionLeaseRequestConfig(request) {
     !Number.isSafeInteger(payload.slot) ||
     payload.slot < 1 ||
     payload.slot > 32 ||
-    !Number.isSafeInteger(payload.expires_at_ms)
+    !Number.isSafeInteger(payload.expires_at_ms) ||
+    !Number.isSafeInteger(payload.authorization_generation) ||
+    payload.authorization_generation < 1
   ) {
     return null;
   }
@@ -678,6 +681,7 @@ export async function agentConnectionLeaseRequestConfig(request) {
     deviceID: payload.device_id,
     slot: payload.slot,
     expiresAtMS: payload.expires_at_ms,
+    authorizationGeneration: payload.authorization_generation,
   };
 }
 
@@ -820,7 +824,7 @@ export function acquireGlobalAgentConnectionLease(
       stored.slot < 1 ||
       stored.slot > 32 ||
       !Number.isSafeInteger(stored.expiresAtMS) ||
-      stored.expiresAtMS < 0 ||
+      stored.expiresAtMS < 0
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }
@@ -888,7 +892,7 @@ export function cleanupGlobalAgentConnectionLeases(
       stored.slot < 1 ||
       stored.slot > 32 ||
       !Number.isSafeInteger(stored.expiresAtMS) ||
-      stored.expiresAtMS < 0 ||
+      stored.expiresAtMS < 0
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }
@@ -1379,7 +1383,7 @@ export function agentRevocationTargets(storage, deviceID, nowMS = Date.now()) {
       lease.slot < 1 ||
       lease.slot > 32 ||
       !Number.isSafeInteger(lease.expiresAtMS) ||
-      lease.expiresAtMS < 0 ||
+      lease.expiresAtMS < 0
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }

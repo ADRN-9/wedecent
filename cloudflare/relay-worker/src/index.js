@@ -39,6 +39,7 @@ import {
   agentRevocationTargets,
   bindGlobalAgentClient,
   registerGlobalDeviceAuthorizationGeneration,
+  registerGlobalDeviceAuthorizationGenerationLease,
   isGlobalDeviceAuthorizationGenerationCurrent,
   bindGlobalAgentClientLease,
   cleanupExpiredDeviceRevocationMarkers,
