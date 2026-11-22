@@ -327,10 +327,10 @@ async function openAgentWebSocket(port, targetDeviceID, relayTicket, agentAdmiss
     const timeout = setTimeout(() => finish(new Error("WebSocket upgrade timed out")), 10_000);
     const onData = (chunk) => {
       response = Buffer.concat([response, chunk]);
-      const end = response.indexOf("\\r\\n\\r\\n");
+      const end = response.indexOf("\r\n\r\n");
       if (end < 0) return;
-      const statusLine = response.subarray(0, end).toString("latin1").split("\\r\\n")[0];
-      const match = /^HTTP\\/1\\.[01] (\\d{3})/.exec(statusLine);
+      const statusLine = response.subarray(0, end).toString("latin1").split("\r\n")[0];
+      const match = /^HTTP\/1\.[01] (\d{3})/.exec(statusLine);
       if (!match) return finish(new Error("invalid WebSocket response: " + statusLine));
       socket.removeListener("data", onData);
       finish(null, Number(match[1]));
@@ -348,7 +348,7 @@ async function openAgentWebSocket(port, targetDeviceID, relayTicket, agentAdmiss
         "X-WeDecent-Agent-Admission: " + agentAdmission,
         "",
         "",
-      ].join("\\r\\n"));
+      ].join("\r\n"));
     });
     socket.on("data", onData);
     socket.on("error", (error) => finish(error));
