@@ -922,6 +922,7 @@ export function bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, now
     !storage ||
     typeof storage.get !== "function" ||
     typeof storage.put !== "function" ||
+    typeof storage.delete !== "function" ||
     typeof leaseID !== "string" ||
     !UUID.test(leaseID) ||
     typeof clientDeviceID !== "string" ||
