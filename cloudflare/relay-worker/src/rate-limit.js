@@ -16,8 +16,10 @@ const INTERNAL_AGENT_ACQUIRE_URL = "https://wedecent.internal/agent-acquire";
 const INTERNAL_AGENT_RELEASE_URL = "https://wedecent.internal/agent-release";
 const AGENT_CONNECTION_LEASE_PREFIX = "agent-connection-lease:";
 const REVOKED_DEVICE_PREFIX = "revoked-device:";
+const PENDING_DEVICE_REVOCATION_PREFIX = "pending-device-revocation:";
 export const REVOKED_DEVICE_TOMBSTONE_MS = 5 * 60 * 1000;
 const REVOKED_DEVICE_CLEANUP_BATCH = 500;
+const PENDING_DEVICE_REVOCATION_BATCH = 50;
 const AGENT_CONNECTION_LEASE_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
 export const MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS = 1024;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -576,6 +578,7 @@ export async function agentConnectionLeaseRequestConfig(request) {
     ["/agent-revocation-targets", "targets"],
     ["/device-revoke", "revoke-device"],
     ["/device-revoked-check", "check-device"],
+    ["/device-revocation-complete", "complete-device-revocation"],
   ]).get(path);
   if (!action || request.method !== "POST") return null;
 
@@ -982,6 +985,10 @@ export function unbindGlobalAgentClientLease(storage, leaseID, clientDeviceID) {
   return true;
 }
 
+export async function completeGlobalDeviceRevocation(namespace, deviceID) {
+  return await postGlobalDeviceRevocationOperation(namespace, "/device-revocation-complete", deviceID);
+}
+
 export async function markGlobalDeviceRevoked(namespace, deviceID) {
   return await postGlobalDeviceRevocationOperation(namespace, "/device-revoke", deviceID);
 }
@@ -1076,6 +1083,130 @@ export function isGlobalDeviceRevokedLease(storage, deviceID, nowMS = Date.now()
     return false;
   }
   return true;
+}
+
+export function queueDeviceRevocationLease(storage, deviceID, nowMS = Date.now()) {
+  if (
+    !storage ||
+    typeof storage.get !== "function" ||
+    typeof storage.put !== "function" ||
+    typeof deviceID !== "string" ||
+    !DEVICE_ID.test(deviceID) ||
+    !Number.isSafeInteger(nowMS) ||
+    nowMS < 0
+  ) {
+    throw new Error("invalid pending device revocation");
+  }
+  const key = PENDING_DEVICE_REVOCATION_PREFIX + deviceID;
+  const existing = storage.get(key);
+  if (
+    existing !== undefined &&
+    (existing === null ||
+      typeof existing !== "object" ||
+      existing.deviceID !== deviceID ||
+      !Number.isSafeInteger(existing.attempts) ||
+      existing.attempts < 0 ||
+      !Number.isSafeInteger(existing.nextAttemptAtMS) ||
+      existing.nextAttemptAtMS < 0)
+  ) {
+    throw new Error("invalid persisted pending device revocation");
+  }
+  storage.put(key, {
+    deviceID,
+    attempts: existing?.attempts ?? 0,
+    nextAttemptAtMS: Math.min(existing?.nextAttemptAtMS ?? nowMS, nowMS),
+  });
+  return true;
+}
+
+export function completeDeviceRevocationLease(storage, deviceID) {
+  if (
+    !storage ||
+    typeof storage.delete !== "function" ||
+    typeof deviceID !== "string" ||
+    !DEVICE_ID.test(deviceID)
+  ) {
+    throw new Error("invalid completed device revocation");
+  }
+  return storage.delete(PENDING_DEVICE_REVOCATION_PREFIX + deviceID);
+}
+
+export async function retryPendingDeviceRevocations(namespace, storage, nowMS = Date.now()) {
+  if (
+    !namespace ||
+    typeof namespace.idFromName !== "function" ||
+    typeof namespace.get !== "function" ||
+    !storage ||
+    typeof storage.list !== "function" ||
+    typeof storage.put !== "function" ||
+    typeof storage.delete !== "function" ||
+    !Number.isSafeInteger(nowMS) ||
+    nowMS < 0
+  ) {
+    throw new Error("pending device revocation retry configuration is invalid");
+  }
+
+  const entries = storage.list({
+    prefix: PENDING_DEVICE_REVOCATION_PREFIX,
+    limit: PENDING_DEVICE_REVOCATION_BATCH,
+  });
+  let remaining = entries.size === PENDING_DEVICE_REVOCATION_BATCH ? 1 : 0;
+
+  for (const [key, event] of entries) {
+    const deviceID = key.slice(PENDING_DEVICE_REVOCATION_PREFIX.length);
+    if (
+      !DEVICE_ID.test(deviceID) ||
+      event === null ||
+      typeof event !== "object" ||
+      event.deviceID !== deviceID ||
+      !Number.isSafeInteger(event.attempts) ||
+      event.attempts < 0 ||
+      !Number.isSafeInteger(event.nextAttemptAtMS) ||
+      event.nextAttemptAtMS < 0
+    ) {
+      throw new Error("invalid persisted pending device revocation");
+    }
+    if (event.nextAttemptAtMS > nowMS) {
+      remaining += 1;
+      continue;
+    }
+
+    const targets = agentRevocationTargets(storage, deviceID, nowMS);
+    let failed = false;
+    for (let offset = 0; offset < targets.length; offset += 32) {
+      const batch = targets.slice(offset, offset + 32);
+      const results = await Promise.all(batch.map(async (targetDeviceID) => {
+        try {
+          const objectId = namespace.idFromName(targetDeviceID);
+          const response = await namespace.get(objectId).fetch(new Request(
+            "https://wedecent.internal/revoke-device",
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ device_id: deviceID }),
+            },
+          ));
+          return response.status === 204;
+        } catch {
+          return false;
+        }
+      }));
+      if (results.some((closed) => !closed)) failed = true;
+    }
+
+    if (failed) {
+      storage.put(key, {
+        ...event,
+        attempts: event.attempts + 1,
+        nextAttemptAtMS: nowMS + RATE_LIMIT_CLEANUP_INTERVAL_MS,
+      });
+      remaining += 1;
+    } else {
+      storage.delete(key);
+    }
+  }
+
+  return { remaining };
 }
 
 export function cleanupExpiredDeviceRevocationMarkers(storage, nowMS = Date.now()) {
