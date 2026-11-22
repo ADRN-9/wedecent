@@ -67,6 +67,71 @@ export async function verifyConnectionGrant(
   return claims;
 }
 
+export async function verifyAgentAdmission(
+  token,
+  expected,
+  publicSPKIB64,
+  nowSeconds = Math.floor(Date.now() / 1000),
+) {
+  if (typeof token !== "string" || token.length < 32 || token.length > MAX_TOKEN_LENGTH) {
+    throw new Error("invalid agent admission length");
+  }
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new Error("invalid agent admission format");
+  }
+
+  const header = decodeJSONObject(parts[0], "agent admission header");
+  const claims = decodeJSONObject(parts[1], "agent admission claims");
+  if (header.alg !== "EdDSA" || header.typ !== "JWT" || typeof header.kid !== "string" || header.kid.length === 0) {
+    throw new Error("unsupported agent admission header");
+  }
+  validateClaims(claims);
+
+  if (
+    claims.iss !== ISSUER ||
+    claims.aud !== "wedecent-relay-agent" ||
+    claims.permission !== PERMISSION ||
+    claims.purpose !== "relay.agent.connect"
+  ) {
+    throw new Error("unsupported agent admission authority");
+  }
+  if (
+    claims.target_device_id !== expected.targetDeviceID ||
+    claims.client_device_id === claims.target_device_id ||
+    (expected.clientDeviceID && claims.client_device_id !== expected.clientDeviceID) ||
+    !Number.isSafeInteger(claims.slot) ||
+    claims.slot < 1 ||
+    claims.slot > 32 ||
+    claims.slot !== expected.slot
+  ) {
+    throw new Error("agent admission scope mismatch");
+  }
+  if (!Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.exp) || claims.exp <= claims.iat) {
+    throw new Error("invalid agent admission lifetime");
+  }
+  if (claims.exp - claims.iat > MAX_LIFETIME_SECONDS) {
+    throw new Error("agent admission lifetime is too long");
+  }
+  if (claims.iat > nowSeconds + CLOCK_SKEW_SECONDS || claims.exp < nowSeconds - CLOCK_SKEW_SECONDS) {
+    throw new Error("agent admission is not currently valid");
+  }
+
+  const signature = decodeBase64URL(parts[2]);
+  if (signature.length !== 64) {
+    throw new Error("invalid agent admission signature length");
+  }
+  const { key, kid } = await connectionGrantPublicKey(publicSPKIB64);
+  if (header.kid !== kid) {
+    throw new Error("agent admission signing key mismatch");
+  }
+  const signed = new TextEncoder().encode(`${parts[0]}.${parts[1]}`);
+  if (!(await crypto.subtle.verify("Ed25519", key, signature, signed))) {
+    throw new Error("invalid agent admission signature");
+  }
+  return claims;
+}
+
 function validateClaims(claims) {
   if (claims === null || typeof claims !== "object" || Array.isArray(claims)) {
     throw new Error("invalid connection grant claims");
