@@ -48,6 +48,7 @@ import {
   cleanupGlobalAgentConnectionLeases,
   consumeRateLimitBuckets,
   RATE_LIMIT_CLEANUP_INTERVAL_MS,
+  RATE_LIMIT_OBJECT_NAME,
   enforceRelayDeviceRateLimit,
   enforceRelayRequestRateLimit,
   limiterRequestConfig,
@@ -96,6 +97,11 @@ export default {
       emitRelayTrace(console.error, metricContext, traceID, 500, durationMS, "exception");
       throw error;
     }
+  },
+  async scheduled(_controller, env, ctx) {
+    const work = runScheduledMaintenance(env);
+    ctx.waitUntil(work);
+    return await work;
   },
 };
 
@@ -264,6 +270,62 @@ async function handleDeviceGeneration(request, env, url) {
     return new Response(null, { status: registered ? 204 : 409 });
   } catch {
     return new Response("Global device generation registry unavailable", { status: 503 });
+  }
+}
+
+async function runScheduledMaintenance(env) {
+  try {
+    const namespace = env.RELAY_RATE_LIMIT;
+    if (namespace && typeof namespace.idFromName === "function" && typeof namespace.get === "function") {
+      const stub = namespace.get(namespace.idFromName(RATE_LIMIT_OBJECT_NAME));
+      const tick = await stub.fetch(new Request("https://wedecent.internal/tick", { method: "POST" }));
+      if (!tick.ok) console.error("relay durable revocation retry tick failed", tick.status);
+    }
+  } catch {
+    console.error("relay durable revocation retry tick unavailable");
+  }
+
+  const rawSupabaseURL = typeof env.SUPABASE_URL === "string" ? env.SUPABASE_URL.trim() : "";
+  const dispatchToken = typeof env.WEDECENT_REVOCATION_DISPATCH_TOKEN === "string"
+    ? env.WEDECENT_REVOCATION_DISPATCH_TOKEN
+    : "";
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(dispatchToken)) {
+    console.error("autonomous device revocation dispatcher credential is not configured");
+    return;
+  }
+
+  let endpoint;
+  try {
+    endpoint = new URL(rawSupabaseURL);
+  } catch {
+    console.error("autonomous device revocation dispatcher URL is invalid");
+    return;
+  }
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username !== "" ||
+    endpoint.password !== "" ||
+    endpoint.pathname !== "/" ||
+    endpoint.search !== "" ||
+    endpoint.hash !== ""
+  ) {
+    console.error("autonomous device revocation dispatcher requires a Supabase HTTPS origin");
+    return;
+  }
+  endpoint.pathname = "/functions/v1/device-revocation-dispatch";
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + dispatchToken,
+        "Cache-Control": "no-store",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) console.error("autonomous device revocation dispatch failed", response.status);
+  } catch {
+    console.error("autonomous device revocation dispatch unavailable");
   }
 }
 

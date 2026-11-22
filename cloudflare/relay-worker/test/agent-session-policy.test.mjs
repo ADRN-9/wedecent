@@ -15,6 +15,7 @@ test("agent sessions expire at the absolute lifetime even with recent activity",
   let attachment = createAgentSessionAttachment({
     id: "agent",
     role: "agent",
+    authorizationGeneration: 1,
     peerId: null,
     absoluteExpiresAtMS: createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS,
   }, createdAtMS);
@@ -29,7 +30,8 @@ test("agent sessions expire at the absolute lifetime even with recent activity",
 
 test("agent sessions expire after the idle timeout and activity refreshes only idle expiry", () => {
   const createdAtMS = 2_000;
-  const attachment = createAgentSessionAttachment({ id: "agent", role: "agent", peerId: null }, createdAtMS);
+  const attachment = createAgentSessionAttachment({ id: "agent", role: "agent",
+    authorizationGeneration: 1, peerId: null }, createdAtMS);
   assert.equal(agentSessionExpired(attachment, createdAtMS + AGENT_SESSION_IDLE_TIMEOUT_MS), true);
   const touched = touchAgentSessionAttachment(attachment, createdAtMS + 10_000);
   assert.notEqual(touched, null);
@@ -61,6 +63,7 @@ test("invalid absolute expiry fails closed", () => {
   assert.throws(() => createAgentSessionAttachment({
     id: "agent",
     role: "agent",
+    authorizationGeneration: 1,
     absoluteExpiresAtMS: 9_999,
   }, 10_000), /absolute expiry/);
 });

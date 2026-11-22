@@ -6,6 +6,8 @@ export function createAgentSessionAttachment(attachment, nowMS = Date.now()) {
     attachment === null ||
     typeof attachment !== "object" ||
     attachment.role !== "agent" ||
+    !Number.isSafeInteger(attachment.authorizationGeneration) ||
+    attachment.authorizationGeneration < 1 ||
     !Number.isSafeInteger(nowMS) ||
     nowMS < 0
   ) {
@@ -36,6 +38,8 @@ export function agentSessionExpired(attachment, nowMS = Date.now()) {
     nowMS < 0 ||
     !Number.isSafeInteger(attachment.createdAtMS) ||
     attachment.createdAtMS < 0 ||
+    !Number.isSafeInteger(attachment.authorizationGeneration) ||
+    attachment.authorizationGeneration < 1 ||
     !Number.isSafeInteger(attachment.lastActivityAtMS) ||
     attachment.lastActivityAtMS < attachment.createdAtMS ||
     attachment.lastActivityAtMS > nowMS
