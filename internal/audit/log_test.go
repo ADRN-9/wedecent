@@ -91,7 +91,6 @@ func TestAppendRejectsInvalidUTF8InEveryStringField(t *testing.T) {
 	}
 }
 
-
 func TestAppendRejectsInvalidUTF8WithoutChangingExistingRecords(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
