@@ -1,10 +1,10 @@
 package audit
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
-	"bufio"
 	"io"
 	"os"
 	"path/filepath"
