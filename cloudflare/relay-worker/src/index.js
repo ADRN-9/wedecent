@@ -41,6 +41,7 @@ import {
   bindGlobalAgentClientLease,
   cleanupExpiredDeviceRevocationMarkers,
   cleanupExpiredRateLimitBuckets,
+  completeDeviceRevocationLease,
   cleanupGlobalAgentConnectionLeases,
   consumeRateLimitBuckets,
   RATE_LIMIT_CLEANUP_INTERVAL_MS,
@@ -55,6 +56,9 @@ import {
   isGlobalDeviceRevokedLease,
   markGlobalDeviceRevoked,
   markGlobalDeviceRevokedLease,
+  queueDeviceRevocationLease,
+  retryPendingDeviceRevocations,
+  completeGlobalDeviceRevocation,
   unbindGlobalAgentClient,
   unbindGlobalAgentClientLease,
 } from "./rate-limit.js";
@@ -292,6 +296,11 @@ async function handleDeviceRevocation(request, env, url) {
   if (failed) {
     return new Response("One or more relay sessions could not be revoked", { status: 503 });
   }
+  try {
+    await completeGlobalDeviceRevocation(env.RELAY_RATE_LIMIT, deviceID);
+  } catch {
+    return new Response("Relay revocation retry state could not be completed", { status: 503 });
+  }
   return Response.json(
     { revoked_device_id: deviceID, affected_relay_devices: targets.length },
     { headers: { "Cache-Control": "no-store" } },
@@ -421,8 +430,13 @@ export class ConnectionRateLimiter extends DurableObject {
         }
         if (leaseConfig.action === "revoke-device") {
           const revoked = markGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID);
+          queueDeviceRevocationLease(this.ctx.storage.kv, leaseConfig.deviceID);
           await this.#ensureCleanupScheduled();
           return Response.json({ revoked }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "complete-device-revocation") {
+          completeDeviceRevocationLease(this.ctx.storage.kv, leaseConfig.deviceID);
+          return Response.json({ revoked: true }, { headers: { "Cache-Control": "no-store" } });
         }
         if (leaseConfig.action === "check-device") {
           const revoked = isGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID);
@@ -464,7 +478,22 @@ export class ConnectionRateLimiter extends DurableObject {
     const cleanup = cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, nowMS);
     const leases = cleanupGlobalAgentConnectionLeases(this.ctx.storage.kv, nowMS);
     const revokedDevices = cleanupExpiredDeviceRevocationMarkers(this.ctx.storage.kv, nowMS);
-    if (cleanup.remaining > 0 || leases.remaining > 0 || revokedDevices.remaining > 0) {
+    let pendingRevocations = { remaining: 0 };
+    try {
+      pendingRevocations = await retryPendingDeviceRevocations(
+        this.env.DEVICE_RELAY,
+        this.ctx.storage.kv,
+        nowMS,
+      );
+    } catch {
+      pendingRevocations = { remaining: 1 };
+    }
+    if (
+      cleanup.remaining > 0 ||
+      leases.remaining > 0 ||
+      revokedDevices.remaining > 0 ||
+      pendingRevocations.remaining > 0
+    ) {
       await this.ctx.storage.setAlarm(nowMS + RATE_LIMIT_CLEANUP_INTERVAL_MS);
     }
   }
