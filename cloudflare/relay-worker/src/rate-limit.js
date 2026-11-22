@@ -565,7 +565,13 @@ function readInternalInteger(value, maximum) {
 
 export async function agentConnectionLeaseRequestConfig(request) {
   const path = new URL(request.url).pathname;
-  const action = path === "/agent-acquire" ? "acquire" : path === "/agent-release" ? "release" : null;
+  const action = new Map([
+    ["/agent-acquire", "acquire"],
+    ["/agent-release", "release"],
+    ["/agent-bind-client", "bind"],
+    ["/agent-unbind-client", "unbind"],
+    ["/agent-revocation-targets", "targets"],
+  ]).get(path);
   if (!action || request.method !== "POST") return null;
 
   const contentLength = request.headers.get("Content-Length");
@@ -589,6 +595,30 @@ export async function agentConnectionLeaseRequestConfig(request) {
       return null;
     }
     return { action, leaseID: payload.lease_id.toLowerCase() };
+  }
+  if (action === "bind" || action === "unbind") {
+    if (
+      keys.length !== 2 ||
+      keys[0] !== "client_device_id" ||
+      keys[1] !== "lease_id" ||
+      typeof payload.client_device_id !== "string" ||
+      !DEVICE_ID.test(payload.client_device_id) ||
+      typeof payload.lease_id !== "string" ||
+      !UUID.test(payload.lease_id)
+    ) {
+      return null;
+    }
+    return {
+      action,
+      leaseID: payload.lease_id.toLowerCase(),
+      clientDeviceID: payload.client_device_id,
+    };
+  }
+  if (action === "targets") {
+    if (keys.length !== 1 || keys[0] !== "device_id" || typeof payload.device_id !== "string" || !DEVICE_ID.test(payload.device_id)) {
+      return null;
+    }
+    return { action, deviceID: payload.device_id };
   }
 
   if (
@@ -740,6 +770,8 @@ export function acquireGlobalAgentConnectionLease(
       typeof stored !== "object" ||
       typeof stored.deviceID !== "string" ||
       !DEVICE_ID.test(stored.deviceID) ||
+      (stored.clientDeviceID !== undefined && stored.clientDeviceID !== null &&
+        (typeof stored.clientDeviceID !== "string" || !DEVICE_ID.test(stored.clientDeviceID))) ||
       !Number.isSafeInteger(stored.slot) ||
       stored.slot < 1 ||
       stored.slot > 32 ||
@@ -758,6 +790,7 @@ export function acquireGlobalAgentConnectionLease(
   if (active >= maximum) return { accepted: false, active };
   storage.put(key, {
     deviceID: lease.deviceID,
+    clientDeviceID: null,
     slot: lease.slot,
     expiresAtMS: lease.expiresAtMS,
   });
@@ -804,6 +837,8 @@ export function cleanupGlobalAgentConnectionLeases(
       typeof stored !== "object" ||
       typeof stored.deviceID !== "string" ||
       !DEVICE_ID.test(stored.deviceID) ||
+      (stored.clientDeviceID !== undefined && stored.clientDeviceID !== null &&
+        (typeof stored.clientDeviceID !== "string" || !DEVICE_ID.test(stored.clientDeviceID))) ||
       !Number.isSafeInteger(stored.slot) ||
       stored.slot < 1 ||
       stored.slot > 32 ||
@@ -821,4 +856,164 @@ export function cleanupGlobalAgentConnectionLeases(
     }
   }
   return { remaining, deleted, nextExpiryMS };
+}
+
+
+export async function bindGlobalAgentClient(namespace, leaseID, clientDeviceID) {
+  return await postAgentLeaseOperation(namespace, "/agent-bind-client", {
+    lease_id: leaseID,
+    client_device_id: clientDeviceID,
+  }, "bound");
+}
+
+export async function unbindGlobalAgentClient(namespace, leaseID, clientDeviceID) {
+  return await postAgentLeaseOperation(namespace, "/agent-unbind-client", {
+    lease_id: leaseID,
+    client_device_id: clientDeviceID,
+  }, "unbound");
+}
+
+async function postAgentLeaseOperation(namespace, path, body, resultField) {
+  if (
+    !namespace ||
+    typeof namespace.idFromName !== "function" ||
+    typeof namespace.get !== "function" ||
+    typeof body.lease_id !== "string" ||
+    !UUID.test(body.lease_id) ||
+    typeof body.client_device_id !== "string" ||
+    !DEVICE_ID.test(body.client_device_id)
+  ) {
+    throw new Error("global agent client lease configuration is invalid");
+  }
+  const stub = namespace.get(namespace.idFromName(RATE_LIMIT_OBJECT_NAME));
+  if (!stub || typeof stub.fetch !== "function") {
+    throw new Error("global agent connection limiter is unavailable");
+  }
+  const response = await stub.fetch(new Request("https://wedecent.internal" + path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  }));
+  if (!response.ok) throw new Error("global agent connection limiter rejected client lease operation");
+  const payload = await response.json();
+  if (payload === null || typeof payload !== "object" || typeof payload[resultField] !== "boolean") {
+    throw new Error("global agent connection limiter returned an invalid client lease response");
+  }
+  return payload[resultField];
+}
+
+export function bindGlobalAgentClientLease(storage, leaseID, clientDeviceID) {
+  if (
+    !storage ||
+    typeof storage.get !== "function" ||
+    typeof storage.put !== "function" ||
+    typeof leaseID !== "string" ||
+    !UUID.test(leaseID) ||
+    typeof clientDeviceID !== "string" ||
+    !DEVICE_ID.test(clientDeviceID)
+  ) {
+    throw new Error("invalid global agent client lease binding");
+  }
+  const key = AGENT_CONNECTION_LEASE_PREFIX + leaseID.toLowerCase();
+  const lease = storage.get(key);
+  if (lease === undefined || lease === null || typeof lease !== "object") return false;
+  if (lease.clientDeviceID && lease.clientDeviceID !== clientDeviceID) return false;
+  storage.put(key, { ...lease, clientDeviceID });
+  return true;
+}
+
+export function unbindGlobalAgentClientLease(storage, leaseID, clientDeviceID) {
+  if (
+    !storage ||
+    typeof storage.get !== "function" ||
+    typeof storage.put !== "function" ||
+    typeof leaseID !== "string" ||
+    !UUID.test(leaseID) ||
+    typeof clientDeviceID !== "string" ||
+    !DEVICE_ID.test(clientDeviceID)
+  ) {
+    throw new Error("invalid global agent client lease unbinding");
+  }
+  const key = AGENT_CONNECTION_LEASE_PREFIX + leaseID.toLowerCase();
+  const lease = storage.get(key);
+  if (lease === undefined || lease === null || typeof lease !== "object" || lease.clientDeviceID !== clientDeviceID) {
+    return false;
+  }
+  storage.put(key, { ...lease, clientDeviceID: null });
+  return true;
+}
+
+export async function findAgentRevocationTargets(namespace, deviceID) {
+  if (
+    !namespace ||
+    typeof namespace.idFromName !== "function" ||
+    typeof namespace.get !== "function" ||
+    typeof deviceID !== "string" ||
+    !DEVICE_ID.test(deviceID)
+  ) {
+    throw new Error("agent revocation lookup configuration is invalid");
+  }
+  const stub = namespace.get(namespace.idFromName(RATE_LIMIT_OBJECT_NAME));
+  if (!stub || typeof stub.fetch !== "function") {
+    throw new Error("global agent connection limiter is unavailable");
+  }
+  const response = await stub.fetch(new Request("https://wedecent.internal/agent-revocation-targets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ device_id: deviceID }),
+  }));
+  if (!response.ok) throw new Error("global agent connection limiter could not resolve revocation targets");
+  const payload = await response.json();
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    !Array.isArray(payload.target_device_ids) ||
+    payload.target_device_ids.length > MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS ||
+    payload.target_device_ids.some((id) => typeof id !== "string" || !DEVICE_ID.test(id))
+  ) {
+    throw new Error("global agent connection limiter returned invalid revocation targets");
+  }
+  return payload.target_device_ids;
+}
+
+export function agentRevocationTargets(storage, deviceID, nowMS = Date.now()) {
+  if (
+    !storage ||
+    typeof storage.list !== "function" ||
+    typeof storage.delete !== "function" ||
+    typeof deviceID !== "string" ||
+    !DEVICE_ID.test(deviceID) ||
+    !Number.isSafeInteger(nowMS) ||
+    nowMS < 0
+  ) {
+    throw new Error("invalid agent revocation target lookup");
+  }
+  const entries = storage.list({ prefix: AGENT_CONNECTION_LEASE_PREFIX, limit: MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS + 1 });
+  if (entries.size > MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS) throw new Error("global agent connection lease cardinality exceeded");
+  const targets = new Set([deviceID]);
+  for (const [key, lease] of entries) {
+    if (
+      lease === null ||
+      typeof lease !== "object" ||
+      typeof lease.deviceID !== "string" ||
+      !DEVICE_ID.test(lease.deviceID) ||
+      (lease.clientDeviceID !== undefined && lease.clientDeviceID !== null &&
+        (typeof lease.clientDeviceID !== "string" || !DEVICE_ID.test(lease.clientDeviceID))) ||
+      !Number.isSafeInteger(lease.slot) ||
+      lease.slot < 1 ||
+      lease.slot > 32 ||
+      !Number.isSafeInteger(lease.expiresAtMS) ||
+      lease.expiresAtMS < 0
+    ) {
+      throw new Error("invalid persisted global agent connection lease");
+    }
+    if (lease.expiresAtMS <= nowMS) {
+      storage.delete(key);
+      continue;
+    }
+    if (lease.deviceID === deviceID || lease.clientDeviceID === deviceID) {
+      targets.add(lease.deviceID);
+    }
+  }
+  return [...targets].sort();
 }
