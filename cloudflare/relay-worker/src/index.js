@@ -258,7 +258,7 @@ export class ConnectionRateLimiter extends DurableObject {
   async fetch(request) {
     if (healthProbeRequest(request)) {
       try {
-        this.ctx.storage.transactionSync(() => this.ctx.storage.kv.get("__health__"));
+        this.ctx.storage.kv.get("__health__");
         return new Response(null, { status: 204 });
       } catch {
         return new Response("Rate-limit storage unavailable", { status: 500 });
@@ -271,9 +271,8 @@ export class ConnectionRateLimiter extends DurableObject {
     }
 
     try {
-      const result = this.ctx.storage.transactionSync(() =>
-        consumeRateLimitBuckets(this.ctx.storage.kv, config.buckets, config.windowMS, Date.now()),
-      );
+      // Keep the synchronous KV read/modify/write sequence in one event-loop turn.
+      const result = consumeRateLimitBuckets(this.ctx.storage.kv, config.buckets, config.windowMS, Date.now());
       await this.#ensureCleanupScheduled();
       return Response.json(
         { accepted: result.accepted, retry_after_ms: result.retryAfterMS, scope: result.scope },
@@ -292,9 +291,7 @@ export class ConnectionRateLimiter extends DurableObject {
   }
 
   async alarm() {
-    const cleanup = this.ctx.storage.transactionSync(() =>
-      cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, Date.now()),
-    );
+    const cleanup = cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, Date.now());
     if (cleanup.remaining > 0) {
       await this.ctx.storage.setAlarm(Date.now() + RATE_LIMIT_CLEANUP_INTERVAL_MS);
     }
