@@ -53,6 +53,80 @@ func TestAppendRejectsControlCharacters(t *testing.T) {
 	}
 }
 
+func TestAppendRejectsInvalidUTF8InEveryStringField(t *testing.T) {
+	invalidUTF8 := string([]byte{0xff})
+	tests := []struct {
+		name  string
+		mutate func(*Event)
+	}{
+		{"type", func(event *Event) { event.Type += invalidUTF8 }},
+		{"outcome", func(event *Event) { event.Outcome += invalidUTF8 }},
+		{"actor_id", func(event *Event) { event.ActorID = "actor-" + invalidUTF8 }},
+		{"peer_id", func(event *Event) { event.PeerID = "peer-" + invalidUTF8 }},
+		{"transport", func(event *Event) { event.Transport = "transport-" + invalidUTF8 }},
+		{"reason", func(event *Event) { event.Reason = "reason-" + invalidUTF8 }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			log, err := Open(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			event := Event{Type: "terminal.stream_opened", Outcome: "success"}
+			test.mutate(&event)
+
+			err = log.Append(event)
+			if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+				t.Fatalf("expected invalid UTF-8 rejection, got %v", err)
+			}
+			if _, err := os.Lstat(log.Path()); !os.IsNotExist(err) {
+				t.Fatalf("rejected event created a durable audit record: %v", err)
+			}
+			archive := filepath.Join(filepath.Dir(log.Path()), archiveFileName)
+			if _, err := os.Lstat(archive); !os.IsNotExist(err) {
+				t.Fatalf("rejected event created an audit archive: %v", err)
+			}
+		})
+	}
+}
+
+func TestAppendAcceptsValidUnicodeAndReplacementCharacter(t *testing.T) {
+	log, err := Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixed := time.Date(2026, 11, 22, 12, 34, 56, 0, time.UTC)
+	log.now = func() time.Time { return fixed }
+	event := Event{
+		Type:      "terminal.stream_opened",
+		Outcome:   "success",
+		ActorID:   "cliënt-東京",
+		PeerID:    "peer-🙂",
+		Transport: "direct-🌐",
+		Reason:    "café 東京 🙂 \uFFFD",
+	}
+	if err := log.Append(event); err != nil {
+		t.Fatalf("valid Unicode event was rejected: %v", err)
+	}
+
+	data, err := os.ReadFile(log.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got Event
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatal(err)
+	}
+	event.Time = fixed
+	if got != event {
+		t.Fatalf("Unicode audit event changed during serialization: got %+v, want %+v", got, event)
+	}
+	if !strings.Contains(string(data), "\uFFFD") {
+		t.Fatal("legitimate U+FFFD was not preserved in the audit record")
+	}
+}
+
 func TestAppendRotatesBoundedLog(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, FileName)
