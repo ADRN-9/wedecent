@@ -35,7 +35,7 @@ A self-signed Ed25519 relay ticket proves possession of a device key; it does no
 
 The `supabase/functions/agent-admission` Edge Function issues this token by calling the existing `issue_connection_grant` authorization RPC and signing its approved result with the existing connection-grant signing key. The separate audience and purpose prevent this token from being accepted as a terminal client connection grant.
 
-The agent runtime must obtain a fresh admission token for each slot connection and send it in the header above. The Worker fails closed if the header, public verifier key, device scope, slot, signature, expiry, or replay state is invalid. The legacy shared relay token is no longer sufficient by itself; legacy agents also need a signed admission token.
+The agent runtime must obtain a fresh admission token for each slot connection and send it in the header above. The Worker fails closed if the header, public verifier key, device scope, slot, signature, expiry, or replay state is invalid. The legacy shared relay token is no longer sufficient by itself; legacy agents also need a signed admission token and receive per-device quotas from the authenticated target ID.
 
 Each DeviceRelay permits at most 32 open agent sockets and one active socket per logical slot. A free stale socket for the same slot may be replaced; a paired/active duplicate slot is rejected. DeviceRelay replay records use additive storage prefixes, preserving existing connection-grant replay records and existing DeviceRelay attachment/state formats.
 
@@ -55,7 +55,8 @@ CI runs the Worker with Wrangler's local Workers runtime and SQLite-backed Durab
 - invalid method/path requests do not consume the direct quota
 - oversized streamed bodies are rejected
 - global quota state survives a local Worker process restart
-- a signed agent admission and relay ticket are accepted once, then rejected as replay after a local Worker/DeviceRelay restart
+- concurrent requests using the same signed agent admission and relay ticket have exactly one winner
+- a signed agent admission and relay ticket are rejected as replay after a local Worker/DeviceRelay restart
 - 128 concurrent direct-authorization requests against the centralized limiter
 - measured local throughput, p50, p95, and maximum request latency
 
