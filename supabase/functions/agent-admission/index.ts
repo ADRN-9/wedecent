@@ -121,6 +121,52 @@ function parseSlot(value: unknown): number {
   return value;
 }
 
+async function registerRelayAuthorizationGeneration(deviceID: string, generation: number): Promise<void> {
+  const rawURL = Deno.env.get("WEDECENT_RELAY_REVOCATION_URL")?.trim() ?? "";
+  const token = Deno.env.get("WEDECENT_RELAY_REVOCATION_TOKEN") ?? "";
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(token)) {
+    throw new AdmissionError("relay authorization-generation authority is not configured", 503);
+  }
+  let endpoint: URL;
+  try {
+    endpoint = new URL(rawURL);
+  } catch {
+    throw new AdmissionError("relay authorization-generation endpoint is invalid", 503);
+  }
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username !== "" ||
+    endpoint.password !== "" ||
+    endpoint.pathname !== "/" ||
+    endpoint.search !== "" ||
+    endpoint.hash !== ""
+  ) {
+    throw new AdmissionError("relay authorization-generation endpoint must be an HTTPS origin", 503);
+  }
+  endpoint.pathname = "/v1/device-generation/" + encodeURIComponent(deviceID);
+  endpoint.searchParams.set("generation", String(generation));
+  let response: Response;
+  try {
+    response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + token,
+        "Cache-Control": "no-store",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch {
+    throw new AdmissionError("relay authorization-generation registry is unavailable", 503);
+  }
+  if (response.status === 409) {
+    throw new AdmissionError("device authorization generation is stale or revoked", 403);
+  }
+  if (response.status !== 204) {
+    throw new AdmissionError("relay authorization-generation registry rejected the device", 503);
+  }
+}
+
 function decodeBase64URL(value: string): Uint8Array {
   if (!value || value.length % 4 === 1 || !/^[A-Za-z0-9_-]+$/.test(value)) {
     throw new AdmissionError("invalid enrolled device key", 403);
@@ -237,15 +283,19 @@ Deno.serve(async (request) => {
 
     const { data: device, error: deviceError } = await adminClient
       .from("devices")
-      .select("device_id, public_key, kind, revoked_at")
+      .select("device_id, public_key, kind, revoked_at, authorization_generation, revocation_pending")
       .eq("device_id", deviceID)
       .maybeSingle();
     if (deviceError) throw new Error("enrolled device lookup failed");
     if (!device || !["agent", "hybrid"].includes(device.kind)) {
       throw new AdmissionError("agent device is not enrolled or is not an agent", 403);
     }
-    if (device.revoked_at !== null) {
-      throw new AdmissionError("agent device is revoked", 403);
+    if (device.revoked_at !== null || device.revocation_pending === true) {
+      throw new AdmissionError("agent device is revoked or revocation is pending", 403);
+    }
+    const authorizationGeneration = Number(device.authorization_generation);
+    if (!Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) {
+      throw new Error("device authorization generation is invalid");
     }
 
     const publicKeyBytes = decodeBase64URL(String(device.public_key ?? ""));
@@ -291,6 +341,8 @@ Deno.serve(async (request) => {
     }
     if (consumed !== "accepted") throw new Error("agent proof replay service returned an invalid result");
 
+    await registerRelayAuthorizationGeneration(deviceID, authorizationGeneration);
+
     const issuedAt = Math.floor(Date.now() / 1000);
     const expiresAt = issuedAt + capabilityLifetimeSeconds;
     const jti = crypto.randomUUID();
@@ -299,6 +351,7 @@ Deno.serve(async (request) => {
       public_key_fingerprint: fingerprint,
       purpose,
       slot,
+      authorization_generation: authorizationGeneration,
     })
       .setProtectedHeader({ alg: "EdDSA", typ: "JWT", kid: signing.kid })
       .setIssuer(issuer)
@@ -309,15 +362,21 @@ Deno.serve(async (request) => {
       .setExpirationTime(expiresAt)
       .sign(signing.key);
 
-    const { error: auditError } = await adminClient.rpc("record_agent_admission_audit", {
-      p_device_id: deviceID,
-      p_event_type: "issued",
-      p_slot: slot,
-      p_proof_jti: proofClaims.jti,
-      p_admission_jti: jti,
-      p_reason: "issued",
-    });
-    if (auditError) throw new Error("agent admission issuance audit persistence unavailable");
+    const { data: issueAuthorized, error: issueAuthorizationError } = await adminClient.rpc(
+      "authorize_agent_admission_issue",
+      {
+        p_device_id: deviceID,
+        p_public_key: String(device.public_key),
+        p_authorization_generation: authorizationGeneration,
+        p_slot: slot,
+        p_proof_jti: proofClaims.jti,
+        p_admission_jti: jti,
+      },
+    );
+    if (issueAuthorizationError) throw new Error("agent admission generation authorization unavailable");
+    if (issueAuthorized !== true) {
+      throw new AdmissionError("agent authorization generation is stale or revocation is pending", 403);
+    }
 
     return json({
       agent_admission: admission,
@@ -330,6 +389,7 @@ Deno.serve(async (request) => {
         public_key_fingerprint: fingerprint,
         purpose,
         slot,
+        authorization_generation: authorizationGeneration,
         iat: issuedAt,
         exp: expiresAt,
         kid: signing.kid,

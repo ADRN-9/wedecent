@@ -1,4 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
+import { dispatchPendingDeviceRevocations } from "../_shared/device-revocation-dispatch.mjs";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -111,7 +112,7 @@ Deno.serve(async (request) => {
     }
     const { data: device, error: deviceError } = await admin
       .from("devices")
-      .select("device_id, owner_user_id, organization_id, revoked_at")
+      .select("device_id, owner_user_id, organization_id, revoked_at, authorization_generation, revocation_pending")
       .eq("device_id", deviceID)
       .maybeSingle();
     if (deviceError) throw new Error("device lookup failed");
@@ -140,121 +141,43 @@ Deno.serve(async (request) => {
       if (revokeError) throw new Error("device revocation could not be persisted");
     }
 
-    const { data: dispatch, error: dispatchLookupError } = await admin
+    const dispatch = await dispatchPendingDeviceRevocations(admin, {
+      relayURL: Deno.env.get("WEDECENT_RELAY_REVOCATION_URL") ?? "",
+      relayToken: Deno.env.get("WEDECENT_RELAY_REVOCATION_TOKEN") ?? "",
+      limit: 1,
+      deviceID,
+    });
+    if (dispatch.dispatched > 0) {
+      return json({
+        revoked: true,
+        device_id: deviceID,
+        relay: { dispatched: true, generation: dispatch.authorizationGeneration ?? null },
+      });
+    }
+
+    const { data: latestDispatch, error: latestDispatchError } = await admin
       .from("device_revocation_dispatch_outbox")
-      .select("id, status, attempts")
+      .select("status, authorization_generation")
       .eq("device_id", deviceID)
       .order("created_at", { ascending: false })
       .limit(1)
       .maybeSingle();
-    if (dispatchLookupError) throw new Error("device revocation dispatch lookup failed");
-
-    let dispatchRecord = dispatch;
-    if (!dispatchRecord) {
-      const { data: createdDispatch, error: createDispatchError } = await admin
-        .from("device_revocation_dispatch_outbox")
-        .insert({ device_id: deviceID, status: "pending" })
-        .select("id, status, attempts")
-        .single();
-      if (createDispatchError || !createdDispatch) {
-        throw new Error("device revocation dispatch could not be queued");
-      }
-      dispatchRecord = createdDispatch;
-    }
-    if (dispatchRecord.status === "dispatched") {
+    if (latestDispatchError) throw new Error("device revocation dispatch state unavailable");
+    if (latestDispatch?.status === "dispatched") {
       return json({ revoked: true, device_id: deviceID, relay: { already_dispatched: true } });
     }
-    if (dispatchRecord.status !== "pending") {
-      throw new Error("device revocation dispatch state is invalid");
-    }
-
-    const recordDispatchFailure = async (reason: string) => {
-      const { error: attemptError } = await admin
-        .from("device_revocation_dispatch_outbox")
-        .update({
-          attempts: dispatchRecord.attempts + 1,
-          last_attempt_at: new Date().toISOString(),
-          last_error: reason,
-        })
-        .eq("id", dispatchRecord.id)
-        .eq("status", "pending");
-      if (attemptError) throw new Error("device revocation dispatch attempt could not be recorded");
-    };
-
-    const relayURL = Deno.env.get("WEDECENT_RELAY_REVOCATION_URL")?.trim() ?? "";
-    const relayToken = Deno.env.get("WEDECENT_RELAY_REVOCATION_TOKEN") ?? "";
-    if (!relayURL || !/^[A-Za-z0-9_-]{43,128}$/.test(relayToken)) {
-      await recordDispatchFailure("relay_configuration_missing");
-      return json({
-        error: "device is revoked; relay session termination is pending operator configuration",
-      }, 503);
-    }
-
-    let endpoint: URL;
-    try {
-      endpoint = new URL(relayURL);
-    } catch {
-      await recordDispatchFailure("relay_endpoint_invalid");
-      return json({ error: "device is revoked; relay session termination is pending retry" }, 503);
-    }
-    if (
-      endpoint.protocol !== "https:" ||
-      endpoint.username !== "" ||
-      endpoint.password !== "" ||
-      endpoint.pathname !== "/" ||
-      endpoint.search !== "" ||
-      endpoint.hash !== ""
-    ) {
-      await recordDispatchFailure("relay_endpoint_invalid");
-      return json({ error: "device is revoked; relay session termination is pending retry" }, 503);
-    }
-
-    let relayResponse: Response;
-    try {
-      relayResponse = await fetch(
-        endpoint.origin + "/v1/revoke/" + encodeURIComponent(deviceID),
-        {
-          method: "POST",
-          headers: {
-            Authorization: "Bearer " + relayToken,
-            "Cache-Control": "no-store",
-          },
-          redirect: "error",
-        },
-      );
-    } catch {
-      await recordDispatchFailure("relay_dispatch_failed");
+    if (dispatch.failed > 0) {
       return json({
         error: "device is revoked; relay session termination is pending retry",
+        revoked: true,
+        device_id: deviceID,
       }, 503);
     }
-    if (!relayResponse.ok) {
-      await recordDispatchFailure("relay_dispatch_failed");
-      return json({
-        error: "device is revoked; relay session termination is pending retry",
-      }, 503);
-    }
-
-    const dispatchedAt = new Date().toISOString();
-    const { error: completeError } = await admin
-      .from("device_revocation_dispatch_outbox")
-      .update({
-        status: "dispatched",
-        attempts: dispatchRecord.attempts + 1,
-        last_attempt_at: dispatchedAt,
-        dispatched_at: dispatchedAt,
-        last_error: null,
-      })
-      .eq("id", dispatchRecord.id)
-      .eq("status", "pending");
-    if (completeError) throw new Error("device revocation dispatch completion could not be recorded");
-
-    const relayResult = await relayResponse.json().catch(() => null);
     return json({
       revoked: true,
       device_id: deviceID,
-      relay: relayResult,
-    });
+      relay: { pending: true, claimed: dispatch.claimed },
+    }, 202);
 
   } catch (error) {
     console.error("device-revocation unavailable", error);
