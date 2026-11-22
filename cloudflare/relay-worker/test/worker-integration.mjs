@@ -192,22 +192,6 @@ function createAgentCredentials(slot = 1) {
   const agentSPKI = agent.publicKey.export({ format: "der", type: "spki" });
   const agentPublicKey = agentSPKI.subarray(agentSPKI.length - 32);
   const deviceID = "wd_" + base32NoPadding(createHash("sha256").update(agentPublicKey).digest().subarray(0, 10));
-  const issuedAt = Math.floor(Date.now() / 1000);
-  const ticketClaims = {
-    v: 2,
-    aud: "wedecent-relay",
-    iss: deviceID,
-    sub: deviceID,
-    role: "agent",
-    iat: issuedAt,
-    exp: issuedAt + 90,
-    jti: base64url(randomBytes(16)),
-    pk: base64url(agentPublicKey),
-    slot,
-  };
-  const ticketPayload = base64url(Buffer.from(JSON.stringify(ticketClaims)));
-  const ticketInput = "wedecent-relay-ticket-v2\n" + ticketPayload;
-  const relayTicket = "wdt2." + ticketPayload + "." + base64url(sign(null, Buffer.from(ticketInput), agent.privateKey));
 
   const controlPlane = generateKeyPairSync("ed25519");
   const controlSPKI = controlPlane.publicKey.export({ format: "der", type: "spki" });
@@ -216,30 +200,47 @@ function createAgentCredentials(slot = 1) {
   const kid = createHash("sha256").update(thumbprintInput).digest("base64url");
   const admissionHeader = { alg: "EdDSA", typ: "JWT", kid };
   const clientDeviceID = deviceID === "wd_mw3am46w5weex4a4" ? "wd_aaaaaaaaaaaaaaaa" : "wd_mw3am46w5weex4a4";
-  const admissionClaims = {
-    grant_id: randomUUID(),
-    organization_id: null,
-    client_device_id: clientDeviceID,
-    target_device_id: deviceID,
-    permission: "terminal.connect",
-    purpose: "relay.agent.connect",
-    slot,
-    iss: "wedecent-control-plane",
-    aud: "wedecent-relay-agent",
-    sub: randomUUID(),
-    jti: randomUUID(),
-    iat: issuedAt,
-    exp: issuedAt + 90,
-  };
-  const admissionInput = base64url(Buffer.from(JSON.stringify(admissionHeader))) + "." +
-    base64url(Buffer.from(JSON.stringify(admissionClaims)));
-  const agentAdmission = admissionInput + "." + base64url(sign(null, Buffer.from(admissionInput), controlPlane.privateKey));
 
   return {
     deviceID,
-    relayTicket,
-    agentAdmission,
     publicSPKIB64: controlSPKI.toString("base64"),
+    createTokens() {
+      const issuedAt = Math.floor(Date.now() / 1000);
+      const ticketClaims = {
+        v: 2,
+        aud: "wedecent-relay",
+        iss: deviceID,
+        sub: deviceID,
+        role: "agent",
+        iat: issuedAt,
+        exp: issuedAt + 120,
+        jti: base64url(randomBytes(16)),
+        pk: base64url(agentPublicKey),
+        slot,
+      };
+      const ticketPayload = base64url(Buffer.from(JSON.stringify(ticketClaims)));
+      const ticketInput = "wedecent-relay-ticket-v2\n" + ticketPayload;
+      const relayTicket = "wdt2." + ticketPayload + "." + base64url(sign(null, Buffer.from(ticketInput), agent.privateKey));
+      const admissionClaims = {
+        grant_id: randomUUID(),
+        organization_id: null,
+        client_device_id: clientDeviceID,
+        target_device_id: deviceID,
+        permission: "terminal.connect",
+        purpose: "relay.agent.connect",
+        slot,
+        iss: "wedecent-control-plane",
+        aud: "wedecent-relay-agent",
+        sub: randomUUID(),
+        jti: randomUUID(),
+        iat: issuedAt,
+        exp: issuedAt + 120,
+      };
+      const admissionInput = base64url(Buffer.from(JSON.stringify(admissionHeader))) + "." +
+        base64url(Buffer.from(JSON.stringify(admissionClaims)));
+      const agentAdmission = admissionInput + "." + base64url(sign(null, Buffer.from(admissionInput), controlPlane.privateKey));
+      return { relayTicket, agentAdmission };
+    },
   };
 }
 
@@ -293,14 +294,16 @@ async function verifyAgentReplayPersistence() {
   const persistTo = join(root, "agent-state");
   const credentials = createAgentCredentials(1);
   const extraVars = { WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: credentials.publicSPKIB64 };
+  let tokens;
 
   await withWorker(port, persistTo, 10_000, 10_000, async () => {
-    const status = await websocketUpgradeStatus(port, credentials.deviceID, credentials.relayTicket, credentials.agentAdmission);
+    tokens = credentials.createTokens();
+    const status = await websocketUpgradeStatus(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission);
     assert.equal(status, 101, "signed enrolled agent should be admitted once");
   }, extraVars);
 
   await withWorker(port, persistTo, 10_000, 10_000, async () => {
-    const replay = await websocketUpgradeStatus(port, credentials.deviceID, credentials.relayTicket, credentials.agentAdmission);
+    const replay = await websocketUpgradeStatus(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission);
     assert.equal(replay, 409, "agent admission and relay-ticket replay state must survive Worker restart");
   }, extraVars);
 }
