@@ -188,7 +188,7 @@ test("client bindings cannot be replaced by another client or attached to an exp
   });
   assert.equal(bindGlobalAgentClientLease(storage, leaseID, otherClientDeviceID, 10_000), false);
   assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID), true);
-  assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, 10_000), [clientDeviceID]);
+  assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, 10_000), [deviceID, clientDeviceID].sort());
 });
 
 test("revocation target registry rejects corrupted lease metadata", () => {
