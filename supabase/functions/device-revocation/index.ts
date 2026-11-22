@@ -27,13 +27,41 @@ function serviceKey(): string {
 }
 
 async function readDeviceID(request: Request): Promise<string> {
+  const maximumBytes = 1024;
   const declared = request.headers.get("Content-Length");
-  if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > 1024)) {
+  if (declared !== null && (!/^[0-9]+$/.test(declared) || Number(declared) > maximumBytes)) {
     throw new Error("invalid request body");
   }
-  const bytes = new Uint8Array(await request.arrayBuffer());
-  if (bytes.length === 0 || bytes.length > 1024 || (declared !== null && Number(declared) !== bytes.length)) {
+  const reader = request.body?.getReader();
+  if (!reader) throw new Error("invalid request body");
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maximumBytes) {
+        void reader.cancel().catch(() => {});
+        throw new Error("request body too large");
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // A failed release does not change the fail-closed request result.
+    }
+  }
+  if (total === 0 || (declared !== null && Number(declared) !== total)) {
     throw new Error("invalid request body");
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
   }
   let payload: unknown;
   try {
@@ -129,6 +157,7 @@ Deno.serve(async (request) => {
       endpoint.protocol !== "https:" ||
       endpoint.username !== "" ||
       endpoint.password !== "" ||
+      endpoint.pathname !== "/" ||
       endpoint.search !== "" ||
       endpoint.hash !== ""
     ) {
