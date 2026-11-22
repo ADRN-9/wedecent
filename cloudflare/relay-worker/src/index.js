@@ -626,7 +626,12 @@ export class DeviceRelay extends DurableObject {
       if (revokedAfterAccept) {
         server.close(4003, "Device revoked");
       }
-      await this.#scheduleAgentSessionAlarm();
+      try {
+        await this.#scheduleAgentSessionAlarm();
+      } catch {
+        server.close(1011, "Relay session expiry could not be scheduled");
+        return new Response("Relay session expiry could not be scheduled", { status: 503 });
+      }
 
       return new Response(null, { status: 101, webSocket: client });
     } finally {
@@ -742,7 +747,13 @@ export class DeviceRelay extends DurableObject {
         server.close(4003, "Device revoked");
         agent.close(4003, "Device revoked");
       }
-      await this.#scheduleAgentSessionAlarm();
+      try {
+        await this.#scheduleAgentSessionAlarm();
+      } catch {
+        server.close(1011, "Relay session expiry could not be scheduled");
+        agent.close(1011, "Relay session expiry could not be scheduled");
+        return new Response("Relay session expiry could not be scheduled", { status: 503 });
+      }
       return new Response(null, { status: 101, webSocket: client });
     } finally {
       if (bound) {
