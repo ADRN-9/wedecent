@@ -1017,12 +1017,11 @@ export function agentRevocationTargets(storage, deviceID, nowMS = Date.now()) {
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }
-    if (lease.expiresAtMS <= nowMS) {
-      storage.delete(key);
-      continue;
-    }
     if (lease.deviceID === deviceID || lease.clientDeviceID === deviceID) {
       targets.add(lease.deviceID);
+    }
+    if (lease.expiresAtMS <= nowMS) {
+      storage.delete(key);
     }
   }
   return [...targets].sort();
