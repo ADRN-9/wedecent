@@ -108,7 +108,8 @@ terminal connection-grant signing key into this keyring.
 
 ## Revocation configuration and operational boundary
 
-The relay Worker requires a secret `RELAY_REVOCATION_TOKEN` (at least 32 characters).
+The relay Worker requires a secret `RELAY_REVOCATION_TOKEN` containing 43–128
+base64url characters (at least 256 bits when generated from 32 random bytes).
 The Supabase `device-revocation` function requires the same value in
 `WEDECENT_RELAY_REVOCATION_TOKEN` and an exact HTTPS origin in
 `WEDECENT_RELAY_REVOCATION_URL` (for example, `https://relay.wedecent.com`).
