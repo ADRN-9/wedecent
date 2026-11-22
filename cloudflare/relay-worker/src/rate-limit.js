@@ -375,7 +375,8 @@ function cleanupRateLimitScope(storage, scope, nowMS) {
   let active = 0;
   let deleted = 0;
   let seen = 0;
-  for (const [key, state] of storage.list({ prefix: "bucket:" + scope + ":", limit: MAX_RATE_LIMIT_BUCKETS_PER_SCOPE + 1 })) {
+  for (const [key, storedState] of storage.list({ prefix: "bucket:" + scope + ":", limit: MAX_RATE_LIMIT_BUCKETS_PER_SCOPE + 1 })) {
+    let state = storedState;
     seen++;
     if (seen > MAX_RATE_LIMIT_BUCKETS_PER_SCOPE) {
       throw new Error("rate-limit bucket cardinality exceeded");
