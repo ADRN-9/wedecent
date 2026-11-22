@@ -109,6 +109,10 @@ func (c Client) Acquire(ctx context.Context, id *identity.Identity, slot int) (s
 	if err != nil {
 		return "", err
 	}
+	endpointURL, err := url.Parse(endpoint)
+	if err != nil {
+		return "", errors.New("agent admission endpoint is invalid")
+	}
 	if err := c.Validate(); err != nil {
 		return "", err
 	}
@@ -139,12 +143,18 @@ func (c Client) Acquire(ctx context.Context, id *identity.Identity, slot int) (s
 	req.Header.Set("Cache-Control", "no-store")
 	req.Header.Set("apikey", strings.TrimSpace(c.PublishableKey))
 
-	client := c.httpClient()
+	client, err := c.httpClient(endpointURL.Hostname())
+	if err != nil {
+		return "", err
+	}
 	resp, err := client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("request agent admission: %w", err)
 	}
 	defer resp.Body.Close()
+	if err := validateEndpointResponse(resp, endpointURL); err != nil {
+		return "", err
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("agent admission service rejected request: HTTP %d", resp.StatusCode)
 	}
@@ -261,7 +271,7 @@ func loopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-func (c Client) httpClient() *http.Client {
+func (c Client) httpClient(endpointHost string) (*http.Client, error) {
 	client := &http.Client{Timeout: 10 * time.Second}
 	if c.HTTP != nil {
 		copy := *c.HTTP
@@ -274,23 +284,57 @@ func (c Client) httpClient() *http.Client {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	if standard, ok := transport.(*http.Transport); ok {
-		clone := standard.Clone()
-		tlsConfig := clone.TLSClientConfig
-		if tlsConfig == nil {
-			tlsConfig = &tls.Config{}
-		} else {
-			tlsConfig = tlsConfig.Clone()
-		}
-		tlsConfig.MinVersion = tls.VersionTLS13
-		clone.TLSClientConfig = tlsConfig
-		client.Transport = clone
+	standard, ok := transport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("agent admission requires a standard HTTP transport to enforce endpoint TLS policy")
 	}
+	clone := standard.Clone()
+	tlsConfig := clone.TLSClientConfig
+	if tlsConfig == nil {
+		tlsConfig = &tls.Config{}
+	} else {
+		tlsConfig = tlsConfig.Clone()
+	}
+	if tlsConfig.InsecureSkipVerify {
+		return nil, errors.New("agent admission endpoint certificate verification must remain enabled")
+	}
+	if tlsConfig.ServerName != "" && !strings.EqualFold(tlsConfig.ServerName, endpointHost) {
+		return nil, errors.New("agent admission TLS server name does not match the configured endpoint")
+	}
+	tlsConfig.ServerName = endpointHost
+	tlsConfig.MinVersion = tls.VersionTLS13
+	clone.TLSClientConfig = tlsConfig
+	client.Transport = clone
 	client.Jar = nil
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}
-	return client
+	return client, nil
+}
+
+func validateEndpointResponse(resp *http.Response, endpoint *url.URL) error {
+	if resp == nil || endpoint == nil || resp.Request == nil || resp.Request.URL == nil {
+		return errors.New("agent admission response is missing endpoint verification metadata")
+	}
+	actual := resp.Request.URL
+	if actual.Scheme != endpoint.Scheme ||
+		!strings.EqualFold(actual.Host, endpoint.Host) ||
+		actual.EscapedPath() != endpoint.EscapedPath() ||
+		actual.RawQuery != endpoint.RawQuery ||
+		actual.Fragment != "" || actual.User != nil {
+		return errors.New("agent admission response did not come from the exact configured endpoint")
+	}
+	if endpoint.Scheme == "https" {
+		if resp.TLS == nil || resp.TLS.Version < tls.VersionTLS13 ||
+			!strings.EqualFold(resp.TLS.ServerName, endpoint.Hostname()) {
+			return errors.New("agent admission endpoint did not satisfy the TLS 1.3 host trust policy")
+		}
+		return nil
+	}
+	if endpoint.Scheme != "http" || !loopbackHost(endpoint.Hostname()) {
+		return errors.New("agent admission endpoint does not satisfy the transport trust policy")
+	}
+	return nil
 }
 
 func (c Client) now() time.Time {
