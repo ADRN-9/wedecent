@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -12,6 +13,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -285,6 +287,160 @@ func TestDialWebSocketRoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, want) {
 		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+type wsAbortObservedConn struct {
+	net.Conn
+	blocked      chan struct{}
+	returned     chan struct{}
+	closed       chan struct{}
+	once         sync.Once
+	returnedOnce sync.Once
+	closeOnce    sync.Once
+}
+
+func (c *wsAbortObservedConn) Write(p []byte) (int, error) {
+	c.once.Do(func() {
+		close(c.blocked)
+	})
+	<-c.closed
+	c.returnedOnce.Do(func() { close(c.returned) })
+	return 0, net.ErrClosed
+}
+
+func (c *wsAbortObservedConn) Close() error {
+	c.closeOnce.Do(func() { close(c.closed) })
+	return c.Conn.Close()
+}
+
+type wsAbortCountingConn struct {
+	net.Conn
+	mu        sync.Mutex
+	abortCall int
+	closeCall int
+}
+
+func (c *wsAbortCountingConn) Abort() error {
+	c.mu.Lock()
+	c.abortCall++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func (c *wsAbortCountingConn) Close() error {
+	c.mu.Lock()
+	c.closeCall++
+	c.mu.Unlock()
+	return c.Conn.Close()
+}
+
+func TestWSNetConnAbortUnblocksBlockedWriterWithoutWriteMutex(t *testing.T) {
+	client, peer := net.Pipe()
+	defer peer.Close()
+	observed := &wsAbortObservedConn{Conn: client, blocked: make(chan struct{}), returned: make(chan struct{}), closed: make(chan struct{})}
+	conn := &wsNetConn{raw: observed, br: bufio.NewReader(observed), done: make(chan struct{})}
+
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := conn.Write(bytes.Repeat([]byte("x"), 1<<20))
+		writeDone <- err
+	}()
+	select {
+	case <-observed.blocked:
+	case <-time.After(time.Second):
+		t.Fatal("WebSocket writer did not reach the deterministic blocked-write barrier")
+	}
+	select {
+	case <-observed.returned:
+		t.Fatal("WebSocket writer returned before the peer consumed the frame")
+	default:
+	}
+
+	abortDone := make(chan error, 1)
+	go func() { abortDone <- conn.Abort() }()
+	select {
+	case err := <-abortDone:
+		if err != nil {
+			t.Fatalf("abort WebSocket transport: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Abort waited for the WebSocket write mutex")
+	}
+	select {
+	case err := <-writeDone:
+		if err == nil {
+			t.Fatal("blocked WebSocket writer unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("force-closing the underlying socket did not unblock the writer")
+	}
+}
+
+func TestWSNetConnAbortUnwrapsTLSWithoutGracefulClose(t *testing.T) {
+	client, peer := net.Pipe()
+	defer peer.Close()
+	counted := &wsAbortCountingConn{Conn: client}
+	tlsConn := tls.Client(counted, &tls.Config{MinVersion: tls.VersionTLS13})
+	conn := &wsNetConn{raw: tlsConn, br: bufio.NewReader(tlsConn), done: make(chan struct{})}
+
+	if err := conn.Abort(); err != nil {
+		t.Fatalf("abort nested TLS/WebSocket transport: %v", err)
+	}
+	counted.mu.Lock()
+	abortCalls, closeCalls := counted.abortCall, counted.closeCall
+	counted.mu.Unlock()
+	if abortCalls != 1 || closeCalls != 0 {
+		t.Fatalf("underlying transport calls: Abort=%d Close=%d, want Abort=1 Close=0", abortCalls, closeCalls)
+	}
+}
+
+func TestWaitWebRelaySessionExposesForceAbortForEstablishedSocket(t *testing.T) {
+	peerClosed := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("server does not support hijacking")
+			return
+		}
+		raw, rw, err := hj.Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		accept := websocketAccept(r.Header.Get("Sec-WebSocket-Key"))
+		_, _ = fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
+		if err := rw.Flush(); err != nil {
+			t.Error(err)
+			_ = raw.Close()
+			return
+		}
+		defer raw.Close()
+		_, _ = io.Copy(io.Discard, raw)
+		close(peerClosed)
+	}))
+	defer server.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	conn, err := WaitWebRelaySession(ctx, server.URL, WebRelayOptions{
+		Token:             "test-agent-ticket",
+		KeepAliveInterval: -1,
+	}, "wd_4ksk5edkttwsxqx4", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	aborter, ok := conn.(interface{ Abort() error })
+	if !ok {
+		t.Fatal("WaitWebRelaySession did not return a force-abort-capable transport")
+	}
+	if err := aborter.Abort(); err != nil {
+		t.Fatalf("abort established WebSocket relay session: %v", err)
+	}
+	select {
+	case <-peerClosed:
+	case <-time.After(time.Second):
+		t.Fatal("relay peer did not observe the force-closed transport")
 	}
 }
 

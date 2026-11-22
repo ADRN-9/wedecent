@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"wedecent.com/wedecent/internal/protocol"
@@ -68,4 +69,26 @@ func routeTypedApplicationFrame(
 	default:
 		return true, fmt.Errorf("%w: unsupported typed stream kind", errTypedStreamProtocol)
 	}
+}
+
+var errTypedSessionTerminated = errors.New("typed terminal parent session is terminated")
+
+// dispatchTypedSessionFrame drops frames that were already buffered when
+// revocation won. The terminal server's closed reservation gate separately
+// handles a termination that races after this check.
+func dispatchTypedSessionFrame(
+	active *activeTerminalSession,
+	closeReason *typedSessionCloseReason,
+	ctx context.Context,
+	capabilities []protocol.Capability,
+	registry *typedParentStreamRegistry,
+	terminalServer *typedTerminalServer,
+	fileServer *typedFileServer,
+	frame protocol.Frame,
+) (bool, error) {
+	if active != nil && active.isTerminated() {
+		closeReason.set(active.reasonOr("client_revoked"))
+		return true, errTypedSessionTerminated
+	}
+	return routeTypedApplicationFrame(ctx, capabilities, registry, terminalServer, fileServer, frame)
 }

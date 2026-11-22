@@ -36,6 +36,7 @@ type Event struct {
 	Outcome              string    `json:"outcome"`
 	ActorID              string    `json:"actor_id,omitempty"`
 	PeerID               string    `json:"peer_id,omitempty"`
+	SessionID            string    `json:"session_id,omitempty"`
 	AttemptID            string    `json:"attempt_id,omitempty"`
 	AuthorizationRunID   string    `json:"authorization_run_id,omitempty"`
 	ValidationAttemptID  string    `json:"validation_attempt_id,omitempty"`
@@ -145,6 +146,10 @@ func validateEvent(event *Event) error {
 	event.Outcome = strings.TrimSpace(event.Outcome)
 	event.ActorID = strings.TrimSpace(event.ActorID)
 	event.PeerID = strings.TrimSpace(event.PeerID)
+	event.SessionID = strings.TrimSpace(event.SessionID)
+	if event.SessionID != "" && !auditUUIDPattern.MatchString(event.SessionID) {
+		return errors.New("audit session ID is invalid")
+	}
 	event.AuthorizationRunID = strings.TrimSpace(event.AuthorizationRunID)
 	event.ValidationAttemptID = strings.TrimSpace(event.ValidationAttemptID)
 	event.ConsumptionAttemptID = strings.TrimSpace(event.ConsumptionAttemptID)
@@ -211,7 +216,7 @@ func validateEvent(event *Event) error {
 		return errors.New("audit event outcome is invalid")
 	}
 	for name, value := range map[string]string{
-		"actor_id": event.ActorID, "peer_id": event.PeerID,
+		"actor_id": event.ActorID, "peer_id": event.PeerID, "session_id": event.SessionID,
 		"authorization_run_id":   event.AuthorizationRunID,
 		"validation_attempt_id":  event.ValidationAttemptID,
 		"consumption_attempt_id": event.ConsumptionAttemptID,

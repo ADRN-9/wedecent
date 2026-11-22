@@ -146,3 +146,201 @@ func TestReloadFailureFailsClosed(t *testing.T) {
 		t.Fatal("corrupt refreshed trust store authorized a peer")
 	}
 }
+
+func TestWithTrustedPeerAdmissionWinsBeforeRevocation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-clients.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{ID: "wd_aaaaaaaaaaaaaaaa", Name: "client", Fingerprint: "fp-a"}
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	admitted := make(chan error, 1)
+	go func() {
+		admitted <- store.WithTrustedPeer(peer.ID, peer.Fingerprint, func(got Peer) error {
+			if got.ID != peer.ID || !validPeerGeneration(got.Generation) {
+				return errors.New("admitted peer identity or generation is invalid")
+			}
+			close(entered)
+			<-release
+			return nil
+		})
+	}()
+	<-entered
+
+	revocationStarted := make(chan struct{})
+	revoked := make(chan error, 1)
+	go func() {
+		close(revocationStarted)
+		_, err := Revoke(path, peer.ID)
+		revoked <- err
+	}()
+	<-revocationStarted
+	close(release)
+
+	if err := <-admitted; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-revoked; err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.Lookup(peer.ID); err != nil || ok {
+		t.Fatalf("revoked peer lookup = (ok %v, err %v)", ok, err)
+	}
+}
+
+func TestWithTrustedPeerRevocationWinsBeforeAdmission(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-clients.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{ID: "wd_aaaaaaaaaaaaaaaa", Name: "client", Fingerprint: "fp-a"}
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Revoke(path, peer.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	callbackRan := false
+	err = store.WithTrustedPeer(peer.ID, peer.Fingerprint, func(Peer) error {
+		callbackRan = true
+		return nil
+	})
+	if !errors.Is(err, ErrPeerNotFound) {
+		t.Fatalf("admission after revocation error = %v, want ErrPeerNotFound", err)
+	}
+	if callbackRan {
+		t.Fatal("admission callback ran after revocation won")
+	}
+}
+
+func TestLookupReturnsTrustStoreReadFailure(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-clients.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{ID: "wd_aaaaaaaaaaaaaaaa", Name: "client", Fingerprint: "fp-a"}
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{malformed"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := store.Lookup(peer.ID); err == nil || ok {
+		t.Fatalf("malformed trust store lookup = (ok %v, err %v), want read error", ok, err)
+	}
+}
+
+func TestConcurrentRevocationsOnlyOneSucceeds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-clients.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{ID: "wd_aaaaaaaaaaaaaaaa", Name: "client", Fingerprint: "fp-a"}
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+
+	start := make(chan struct{})
+	results := make(chan error, 2)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := Revoke(path, peer.ID)
+			results <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	successes, missing := 0, 0
+	for err := range results {
+		switch {
+		case err == nil:
+			successes++
+		case errors.Is(err, ErrPeerNotFound):
+			missing++
+		default:
+			t.Fatalf("unexpected concurrent revoke error: %v", err)
+		}
+	}
+	if successes != 1 || missing != 1 {
+		t.Fatalf("concurrent revoke outcomes = success %d, missing %d; want one each", successes, missing)
+	}
+}
+
+func TestPeerGenerationChangesAfterRevocationAndRepair(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-clients.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{ID: "wd_aaaaaaaaaaaaaaaa", Name: "client", Fingerprint: "fp-a"}
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+	before, ok := store.Get(peer.ID)
+	if !ok || before.Generation == "" {
+		t.Fatalf("initial peer generation = %q, trusted %v", before.Generation, ok)
+	}
+	if _, err := Revoke(path, peer.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+	after, ok := store.Get(peer.ID)
+	if !ok || after.Generation == "" || after.Generation == before.Generation {
+		t.Fatalf("repaired peer generation = %q, want a new generation after %q", after.Generation, before.Generation)
+	}
+}
+
+func TestPeerGenerationSurvivesMetadataUpdate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-clients.json")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := Peer{ID: "wd_aaaaaaaaaaaaaaaa", Name: "client", Fingerprint: "fp-a"}
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := store.Get(peer.ID)
+	peer.Name = "renamed client"
+	if err := store.Put(peer); err != nil {
+		t.Fatal(err)
+	}
+	after, _ := store.Get(peer.ID)
+	if after.Generation == "" || after.Generation != before.Generation {
+		t.Fatalf("metadata update changed trust generation: before %q after %q", before.Generation, after.Generation)
+	}
+}
+
+func TestOpenMigratesLegacyPeersWithNoGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trusted-clients.json")
+	legacy := `{"peers":{"wd_aaaaaaaaaaaaaaaa":{"id":"wd_aaaaaaaaaaaaaaaa","name":"client","fingerprint":"fp-a","trusted_at":"2026-01-01T00:00:00Z"}}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer, ok := store.Get("wd_aaaaaaaaaaaaaaaa")
+	if !ok || peer.Generation == "" {
+		t.Fatalf("legacy peer generation = %q, trusted %v", peer.Generation, ok)
+	}
+}

@@ -145,3 +145,52 @@ func TestRouteTypedApplicationFrameRejectsUnknownOrClosedStream(t *testing.T) {
 		t.Fatalf("closed stream handled=%v err=%v", handled, err)
 	}
 }
+
+func TestDispatchTypedSessionFrameRejectsBufferedOpenAfterRevocation(t *testing.T) {
+	starts := 0
+	registry := newTypedParentStreamRegistry()
+	terminalServer := newTypedTerminalServerWithStarterAndRegistry(
+		"/bin/sh",
+		func(protocol.Frame) error { return nil },
+		func(string, uint16, uint16, string) (typedTerminalPTY, error) {
+			starts++
+			return newFakeTypedPTY(), nil
+		},
+		registry,
+	)
+	caps := []protocol.Capability{protocol.CapabilityTypedStreamsV1}
+	frame := protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: 2, Payload: typedOpenPayload(t, 64<<10)}
+
+	active := &activeTerminalSession{
+		server:          &Server{StateDir: t.TempDir()},
+		ID:              "00000000-0000-4000-8000-000000000016",
+		clientID:        "peer-buffered-open",
+		transport:       "direct_tcp",
+		cleanupReady:    make(chan struct{}),
+		terminationDone: make(chan struct{}),
+	}
+	if err := active.setCleanup(func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := active.terminate("client_revoked"); err != nil {
+		t.Fatalf("terminate parent session: %v", err)
+	}
+
+	closeReason := newTypedSessionCloseReason("connection_ended")
+	handled, err := dispatchTypedSessionFrame(active, closeReason, context.Background(), caps, registry, terminalServer, nil, frame)
+	if !handled || !errors.Is(err, errTypedSessionTerminated) {
+		t.Fatalf("buffered frame handled=%v err=%v", handled, err)
+	}
+	if got := closeReason.valueOr(""); got != "client_revoked" {
+		t.Fatalf("buffered frame close reason = %q, want client_revoked", got)
+	}
+	if starts != 0 {
+		t.Fatalf("buffered StreamOpen started %d PTYs after revocation", starts)
+	}
+	terminalServer.mu.Lock()
+	closed := terminalServer.closed
+	terminalServer.mu.Unlock()
+	if closed {
+		t.Fatal("dispatch guard test unexpectedly depended on terminal-server cleanup")
+	}
+}
