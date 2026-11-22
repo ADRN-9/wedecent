@@ -1,7 +1,8 @@
-import { verifyConnectionGrant } from "./connection-grant.js";
+import { verifyAgentAdmission, verifyConnectionGrant } from "./connection-grant.js";
 import { verifyRelayTicket } from "./relay-auth.js";
 
 export const CONNECTION_GRANT_HEADER = "X-WeDecent-Connection-Grant";
+export const AGENT_ADMISSION_HEADER = "X-WeDecent-Agent-Admission";
 
 export async function authorizeStream(request, env, expected, nowSeconds = Math.floor(Date.now() / 1000)) {
   const token = bearerToken(request);
@@ -18,10 +19,14 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
     }
 
     if (expected.role === "agent") {
+      const admission = await verifyAgentAdmissionHeader(request, env, expected, nowSeconds);
+      if (!admission.ok) return admission;
       return {
         ok: true,
         deviceID: relayClaims.iss,
         targetDeviceID: relayClaims.sub,
+        agentAdmissionReplay: admission.replay,
+        relayTicketReplay: { jti: relayClaims.jti, exp: relayClaims.exp },
       };
     }
 
@@ -58,17 +63,47 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
     }
   }
 
-  // The shared relay token remains only as an agent migration credential.
-  // Allowing it for clients would bypass account-scoped connection grants.
+  // The shared relay token remains a migration credential, not an enrollment authority.
   if (expected.role === "agent" && env.RELAY_ACCESS_TOKEN && token === env.RELAY_ACCESS_TOKEN) {
-    return { ok: true, deviceID: null, targetDeviceID: null, legacy: true };
+    const admission = await verifyAgentAdmissionHeader(request, env, expected, nowSeconds);
+    if (!admission.ok) return admission;
+    return {
+      ok: true,
+      deviceID: null,
+      targetDeviceID: null,
+      legacy: true,
+      agentAdmissionReplay: admission.replay,
+    };
   }
+
   return { ok: false, status: 401, message: "Unauthorized" };
+}
+
+async function verifyAgentAdmissionHeader(request, env, expected, nowSeconds) {
+  const token = request.headers.get(AGENT_ADMISSION_HEADER)?.trim() ?? "";
+  if (!token) {
+    return { ok: false, status: 403, message: "Agent enrollment required" };
+  }
+  const publicKey = env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64;
+  if (!publicKey) {
+    return { ok: false, status: 503, message: "Agent admission verifier is not configured" };
+  }
+  try {
+    const claims = await verifyAgentAdmission(
+      token,
+      { targetDeviceID: expected.deviceId, slot: expected.slot },
+      publicKey,
+      nowSeconds,
+    );
+    return { ok: true, replay: { jti: claims.jti, exp: claims.exp } };
+  } catch {
+    return { ok: false, status: 403, message: "Agent admission rejected" };
+  }
 }
 
 function bearerToken(request) {
   const value = request.headers.get("Authorization");
   if (!value) return "";
-  const match = /^Bearer ([^\s]+)$/.exec(value);
+  const match = /^Bearer ([^\\s]+)$/.exec(value);
   return match ? match[1] : "";
 }
