@@ -517,13 +517,13 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 			},
 		},
 		{
-			name: "empty active log with valid archive",
-			active: func(_, _ []byte, _ int64) []byte { return nil },
+			name:    "empty active log with valid archive",
+			active:  func(_, _ []byte, _ int64) []byte { return nil },
 			archive: func(target, _ []byte, _ int64) []byte { return record(target) },
 		},
 		{
-			name: "empty active log without archive evidence",
-			active: func(_, _ []byte, _ int64) []byte { return nil },
+			name:    "empty active log without archive evidence",
+			active:  func(_, _ []byte, _ int64) []byte { return nil },
 			wantErr: true,
 		},
 		{
@@ -555,8 +555,8 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "blank-only log",
-			active: func(_, _ []byte, _ int64) []byte { return []byte{'\n'} },
+			name:    "blank-only log",
+			active:  func(_, _ []byte, _ int64) []byte { return []byte{'\n'} },
 			wantErr: true,
 		},
 		{
@@ -686,14 +686,14 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "malformed active log does not fall back to valid archive",
-			active: func(_, _ []byte, _ int64) []byte { return []byte("{broken}\n") },
+			name:    "malformed active log does not fall back to valid archive",
+			active:  func(_, _ []byte, _ int64) []byte { return []byte("{broken}\n") },
 			archive: func(target, _ []byte, _ int64) []byte { return record(target) },
 			wantErr: true,
 		},
 		{
-			name: "malformed archive is checked after active target",
-			active: func(target, _ []byte, _ int64) []byte { return record(target) },
+			name:    "malformed archive is checked after active target",
+			active:  func(target, _ []byte, _ int64) []byte { return record(target) },
 			archive: func(_, _ []byte, _ int64) []byte { return []byte("{broken}\n") },
 			wantErr: true,
 		},
@@ -705,8 +705,8 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name: "duplicate target across active and archive",
-			active: func(target, _ []byte, _ int64) []byte { return record(target) },
+			name:    "duplicate target across active and archive",
+			active:  func(target, _ []byte, _ int64) []byte { return record(target) },
 			archive: func(target, _ []byte, _ int64) []byte { return record(target) },
 			wantErr: true,
 		},
