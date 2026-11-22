@@ -143,7 +143,7 @@ Deno.serve(async (req) => {
     const clientDeviceID = parseDeviceID(body.client_device_id, "client_device_id");
     const targetDeviceID = parseDeviceID(body.target_device_id, "target_device_id");
     const slot = body.slot;
-    if (!Number.isSafeInteger(slot) || Number(slot) < 1 || Number(slot) > 32) {
+    if (typeof slot !== "number" || !Number.isSafeInteger(slot) || slot < 1 || slot > 32) {
       return json({ error: "invalid agent slot" }, 400);
     }
     if (clientDeviceID === targetDeviceID) {
