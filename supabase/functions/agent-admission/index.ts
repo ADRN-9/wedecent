@@ -179,7 +179,29 @@ Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
 
+  let admin: ReturnType<typeof createClient> | null = null;
+  let auditDeviceID: string | null = null;
+  let auditSlot: number | null = null;
+  let auditProofJTI: string | null = null;
+  let auditAlreadyRecorded = false;
+
   try {
+    const url = Deno.env.get("SUPABASE_URL");
+    if (!url) throw new Error("SUPABASE_URL is not configured");
+    const adminClient = createClient(url, serviceKey(), {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+    admin = adminClient;
+
+    const { data: rateAllowed, error: rateLimitError } = await adminClient.rpc(
+      "consume_agent_admission_endpoint_request",
+    );
+    if (rateLimitError) throw new Error("agent admission endpoint rate limiter unavailable");
+    if (rateAllowed !== true) {
+      auditAlreadyRecorded = true;
+      throw new AdmissionError("agent admission endpoint rate limit exceeded", 429);
+    }
+
     const body = await readBody(request);
     if (
       Object.keys(body).length !== 3 ||
@@ -190,18 +212,14 @@ Deno.serve(async (request) => {
       throw new AdmissionError("invalid request fields", 400);
     }
     const deviceID = parseDeviceID(body.device_id);
+    auditDeviceID = deviceID;
     const slot = parseSlot(body.slot);
+    auditSlot = slot;
     if (typeof body.proof !== "string" || body.proof.length < 32 || body.proof.length > 4096) {
       throw new AdmissionError("invalid device proof", 400);
     }
 
-    const url = Deno.env.get("SUPABASE_URL");
-    if (!url) throw new Error("SUPABASE_URL is not configured");
-    const admin = createClient(url, serviceKey(), {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-
-    const { data: device, error: deviceError } = await admin
+    const { data: device, error: deviceError } = await adminClient
       .from("devices")
       .select("device_id, public_key, kind, revoked_at")
       .eq("device_id", deviceID)
@@ -231,9 +249,10 @@ Deno.serve(async (request) => {
     } catch {
       throw new AdmissionError("device proof rejected", 403);
     }
+    auditProofJTI = proofClaims.jti;
 
     const signing = await signer();
-    const { data: consumed, error: consumeError } = await admin.rpc("consume_agent_admission_proof", {
+    const { data: consumed, error: consumeError } = await adminClient.rpc("consume_agent_admission_proof", {
       p_device_id: deviceID,
       p_public_key: String(device.public_key),
       p_jti: proofClaims.jti,
@@ -243,8 +262,14 @@ Deno.serve(async (request) => {
       throw new AdmissionError("agent device is not enrolled or is revoked", 403);
     }
     if (consumeError) throw new Error("agent proof replay service unavailable");
-    if (consumed === "replay") throw new AdmissionError("device proof has already been used", 409);
-    if (consumed === "rate_limited") throw new AdmissionError("agent admission issuance rate limit exceeded", 429);
+    if (consumed === "replay") {
+      auditAlreadyRecorded = true;
+      throw new AdmissionError("device proof has already been used", 409);
+    }
+    if (consumed === "rate_limited") {
+      auditAlreadyRecorded = true;
+      throw new AdmissionError("agent admission issuance rate limit exceeded", 429);
+    }
     if (consumed !== "accepted") throw new Error("agent proof replay service returned an invalid result");
 
     const issuedAt = Math.floor(Date.now() / 1000);
@@ -265,6 +290,16 @@ Deno.serve(async (request) => {
       .setExpirationTime(expiresAt)
       .sign(signing.key);
 
+    const { error: auditError } = await adminClient.rpc("record_agent_admission_audit", {
+      p_device_id: deviceID,
+      p_event_type: "issued",
+      p_slot: slot,
+      p_proof_jti: proofClaims.jti,
+      p_admission_jti: jti,
+      p_reason: "issued",
+    });
+    if (auditError) throw new Error("agent admission issuance audit persistence unavailable");
+
     return json({
       agent_admission: admission,
       claims: {
@@ -282,7 +317,28 @@ Deno.serve(async (request) => {
       },
     });
   } catch (error) {
-    if (error instanceof AdmissionError) return json({ error: error.message }, error.status);
+    if (error instanceof AdmissionError) {
+      if (admin && !auditAlreadyRecorded) {
+        const reason = error.message === "device proof rejected"
+          ? "invalid_proof"
+          : error.message === "agent device is not enrolled or is revoked"
+            ? "device_revoked"
+            : "request_rejected";
+        const { error: auditError } = await admin.rpc("record_agent_admission_audit", {
+          p_device_id: auditDeviceID,
+          p_event_type: "rejected",
+          p_slot: auditSlot,
+          p_proof_jti: auditProofJTI,
+          p_admission_jti: null,
+          p_reason: reason,
+        });
+        if (auditError) {
+          console.error("agent-admission rejection audit unavailable", { code: auditError.code });
+          return json({ error: "agent admission audit unavailable" }, 503);
+        }
+      }
+      return json({ error: error.message }, error.status);
+    }
     console.error("agent-admission unavailable", error);
     return json({ error: "agent admission service unavailable" }, 503);
   }
