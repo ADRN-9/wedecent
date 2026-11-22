@@ -109,8 +109,10 @@ test("arbitrary unauthenticated target IDs never become device bucket identities
     RELAY_IP_CONNECTIONS_PER_WINDOW: "10000",
     RELAY_GLOBAL_STREAM_CONNECTIONS_PER_WINDOW: "10000",
   });
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
   for (let i = 0; i < 500; i++) {
-    const target = "wd_" + i.toString(32).padStart(16, "a").slice(-16);
+    const target = "wd_" + "a".repeat(14) + alphabet[Math.floor(i / 32)] + alphabet[i % 32];
+    assert.match(target, /^wd_[a-z2-7]{16}$/);
     const result = await enforceRelayRequestRateLimit(streamRequest("192.0.2.20", target), limiterEnv, "stream");
     assert.equal(result.ok, true);
   }
