@@ -225,8 +225,11 @@ Deno.serve(async (request) => {
       .eq("device_id", deviceID)
       .maybeSingle();
     if (deviceError) throw new Error("enrolled device lookup failed");
-    if (!device || device.revoked_at !== null || !["agent", "hybrid"].includes(device.kind)) {
-      throw new AdmissionError("agent device is not enrolled or is revoked", 403);
+    if (!device || !["agent", "hybrid"].includes(device.kind)) {
+      throw new AdmissionError("agent device is not enrolled or is not an agent", 403);
+    }
+    if (device.revoked_at !== null) {
+      throw new AdmissionError("agent device is revoked", 403);
     }
 
     const publicKeyBytes = decodeBase64URL(String(device.public_key ?? ""));
@@ -321,7 +324,8 @@ Deno.serve(async (request) => {
       if (admin && !auditAlreadyRecorded) {
         const reason = error.message === "device proof rejected"
           ? "invalid_proof"
-          : error.message === "agent device is not enrolled or is revoked"
+          : error.message === "agent device is revoked" ||
+              error.message === "agent device is not enrolled or is revoked"
             ? "device_revoked"
             : "request_rejected";
         const { error: auditError } = await admin.rpc("record_agent_admission_audit", {
