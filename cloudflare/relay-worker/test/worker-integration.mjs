@@ -415,6 +415,15 @@ async function verifyAgentRevocationPropagation() {
     const result = await response.json();
     assert.equal(result.revoked_device_id, credentials.deviceID);
     await waitForWebSocketCloseFrame(socket);
+
+    const freshTokens = credentials.createTokens();
+    const reconnectStatus = await websocketUpgradeStatus(
+      port,
+      credentials.deviceID,
+      freshTokens.relayTicket,
+      freshTokens.agentAdmission,
+    );
+    assert.equal(reconnectStatus, 403, "revoked device must not reconnect with fresh capabilities");
   }, extraVars);
 }
 
