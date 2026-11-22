@@ -59,6 +59,13 @@ values
     'client',
     'Foreign source D',
     '10000000-0000-4000-8000-000000000002'
+),
+(
+    'wd_eeeeeeeeeeeeeeee',
+    repeat('E', 43),
+    'agent',
+    'Route router E for expiry checks',
+    '10000000-0000-4000-8000-000000000002'
 );
 
 -- Start with the wrong permission on B and the correct terminal permission
@@ -291,18 +298,22 @@ select throws_ok(
     'revoked router cannot receive route capability'
 );
 
-update public.devices
-set revoked_at = null
-where device_id = 'wd_bbbbbbbbbbbbbbbb';
-
-update public.device_access
-set
-    created_at = now() - interval '2 minutes',
-    expires_at = now() - interval '1 minute'
-where device_id = 'wd_bbbbbbbbbbbbbbbb'
-  and user_id =
-      '10000000-0000-4000-8000-000000000001'
-  and permission = 'mesh.forward';
+insert into public.device_access (
+    device_id,
+    user_id,
+    permission,
+    granted_by,
+    created_at,
+    expires_at
+)
+values (
+    'wd_eeeeeeeeeeeeeeee',
+    '10000000-0000-4000-8000-000000000001',
+    'mesh.forward',
+    '10000000-0000-4000-8000-000000000002',
+    now() - interval '2 minutes',
+    now() - interval '1 minute'
+);
 
 select throws_ok(
     $$
@@ -310,7 +321,7 @@ select throws_ok(
         '10000000-0000-4000-8000-000000000001',
         repeat('F', 22),
         'wd_aaaaaaaaaaaaaaaa',
-        'wd_bbbbbbbbbbbbbbbb',
+        'wd_eeeeeeeeeeeeeeee',
         'wd_cccccccccccccccc',
         'internet',
         'lan',
@@ -327,7 +338,7 @@ update public.device_access
 set
     created_at = now(),
     expires_at = null
-where device_id = 'wd_bbbbbbbbbbbbbbbb'
+where device_id = 'wd_eeeeeeeeeeeeeeee'
   and user_id =
       '10000000-0000-4000-8000-000000000001'
   and permission = 'mesh.forward';
@@ -338,7 +349,7 @@ select throws_ok(
         '10000000-0000-4000-8000-000000000001',
         repeat('G', 22),
         'wd_aaaaaaaaaaaaaaaa',
-        'wd_bbbbbbbbbbbbbbbb',
+        'wd_eeeeeeeeeeeeeeee',
         'wd_cccccccccccccccc',
         null,
         'lan',
