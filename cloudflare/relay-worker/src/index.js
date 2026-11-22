@@ -248,23 +248,28 @@ async function handleDeviceRevocation(request, env, url) {
     return new Response("Relay revocation registry unavailable", { status: 503 });
   }
 
-  const results = await Promise.all(targets.map(async (targetDeviceID) => {
-    try {
-      const objectId = env.DEVICE_RELAY.idFromName(targetDeviceID);
-      const response = await env.DEVICE_RELAY.get(objectId).fetch(new Request(
-        "https://wedecent.internal/revoke-device",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ device_id: deviceID }),
-        },
-      ));
-      return response.status === 204;
-    } catch {
-      return false;
-    }
-  }));
-  if (results.some((closed) => !closed)) {
+  let failed = false;
+  for (let offset = 0; offset < targets.length; offset += 32) {
+    const batch = targets.slice(offset, offset + 32);
+    const results = await Promise.all(batch.map(async (targetDeviceID) => {
+      try {
+        const objectId = env.DEVICE_RELAY.idFromName(targetDeviceID);
+        const response = await env.DEVICE_RELAY.get(objectId).fetch(new Request(
+          "https://wedecent.internal/revoke-device",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ device_id: deviceID }),
+          },
+        ));
+        return response.status === 204;
+      } catch {
+        return false;
+      }
+    }));
+    if (results.some((closed) => !closed)) failed = true;
+  }
+  if (failed) {
     return new Response("One or more relay sessions could not be revoked", { status: 503 });
   }
   return Response.json(
@@ -900,9 +905,10 @@ export class DeviceRelay extends DurableObject {
 
   #findSocket(id) {
     for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment();
-      if (attachment?.id === id) {
-        return socket;
+      try {
+        if (socket.deserializeAttachment()?.id === id) return socket;
+      } catch {
+        // Malformed peer state is not a match.
       }
     }
     return null;
