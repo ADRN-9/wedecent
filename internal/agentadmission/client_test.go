@@ -7,7 +7,9 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/url"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -176,16 +178,83 @@ func TestAcquireRejectsMissingTrustConfiguration(t *testing.T) {
 }
 
 func TestAdmissionHTTPClientRequiresTLS13AndDisablesAmbientCredentials(t *testing.T) {
-	client := (Client{}).httpClient()
+	client, err := (Client{}).httpClient("supabase.example")
+	if err != nil {
+		t.Fatal(err)
+	}
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatal("expected a standard HTTP transport")
 	}
-	if transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion != tls.VersionTLS13 {
-		t.Fatal("agent admission HTTP client must require TLS 1.3")
+	if transport.TLSClientConfig == nil ||
+		transport.TLSClientConfig.MinVersion != tls.VersionTLS13 ||
+		transport.TLSClientConfig.ServerName != "supabase.example" {
+		t.Fatal("agent admission HTTP client must require TLS 1.3 and pin the configured server name")
 	}
 	if client.Jar != nil || client.CheckRedirect == nil {
 		t.Fatal("agent admission HTTP client must disable cookies and redirects")
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+func TestAdmissionHTTPClientRejectsCustomTransportThatCanBypassTLSPolicy(t *testing.T) {
+	client := Client{HTTP: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("unexpected request")
+	})}}
+	if _, err := client.httpClient("supabase.example"); err == nil {
+		t.Fatal("expected custom transport to be rejected")
+	}
+}
+
+func TestValidateEndpointResponseRequiresExactOriginAndTLS13(t *testing.T) {
+	endpoint, err := url.Parse("https://supabase.example/functions/v1/agent-admission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseURL := *endpoint
+	response := &http.Response{
+		Request: &http.Request{URL: &responseURL},
+		TLS: &tls.ConnectionState{Version: tls.VersionTLS12, ServerName: "supabase.example"},
+	}
+	if err := validateEndpointResponse(response, endpoint); err == nil {
+		t.Fatal("expected TLS 1.2 response to be rejected")
+	}
+	response.TLS.Version = tls.VersionTLS13
+	if err := validateEndpointResponse(response, endpoint); err != nil {
+		t.Fatalf("valid TLS 1.3 endpoint response rejected: %v", err)
+	}
+	wrongURL, _ := url.Parse("https://attacker.example/functions/v1/agent-admission")
+	response.Request.URL = wrongURL
+	if err := validateEndpointResponse(response, endpoint); err == nil {
+		t.Fatal("expected response from another endpoint to be rejected")
+	}
+	response.Request.URL = &responseURL
+	response.TLS.ServerName = "attacker.example"
+	if err := validateEndpointResponse(response, endpoint); err == nil {
+		t.Fatal("expected mismatched TLS server name to be rejected")
+	}
+}
+
+func TestValidateEndpointResponseAllowsOnlyLoopbackHTTPForLocalTests(t *testing.T) {
+	endpoint, err := url.Parse("http://127.0.0.1:8080/functions/v1/agent-admission")
+	if err != nil {
+		t.Fatal(err)
+	}
+	responseURL := *endpoint
+	response := &http.Response{Request: &http.Request{URL: &responseURL}}
+	if err := validateEndpointResponse(response, endpoint); err != nil {
+		t.Fatalf("loopback HTTP response rejected: %v", err)
+	}
+	endpoint, _ = url.Parse("http://example.com/functions/v1/agent-admission")
+	responseURL = *endpoint
+	response.Request.URL = &responseURL
+	if err := validateEndpointResponse(response, endpoint); err == nil {
+		t.Fatal("expected non-loopback HTTP response to be rejected")
 	}
 }
 
