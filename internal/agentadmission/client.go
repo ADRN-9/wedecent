@@ -85,8 +85,7 @@ type capabilityClaims struct {
 }
 
 func (c Client) Validate() error {
-	if strings.TrimSpace(c.PublishableKey) == "" || strings.ContainsAny(c.PublishableKey, "
-	 ") || len(c.PublishableKey) > 4096 {
+	if strings.TrimSpace(c.PublishableKey) == "" || strings.ContainsAny(c.PublishableKey, string([]byte{13, 10, 9, 32})) || len(c.PublishableKey) > 4096 {
 		return errors.New("agent admission publishable key is missing or invalid")
 	}
 	_, err := c.endpoint()
@@ -191,8 +190,7 @@ func makeProof(id *identity.Identity, fingerprint string, slot int, now time.Tim
 }
 
 func validateCapability(token, deviceID, fingerprint string, slot int, now time.Time) error {
-	if len(token) < 32 || len(token) > 8192 || strings.ContainsAny(token, "
-	 ") {
+	if len(token) < 32 || len(token) > 8192 || strings.ContainsAny(token, string([]byte{13, 10, 9, 32})) {
 		return errors.New("invalid token length or whitespace")
 	}
 	parts := strings.Split(token, ".")
