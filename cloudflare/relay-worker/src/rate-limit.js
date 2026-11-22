@@ -902,7 +902,7 @@ async function postAgentLeaseOperation(namespace, path, body, resultField) {
   return payload[resultField];
 }
 
-export function bindGlobalAgentClientLease(storage, leaseID, clientDeviceID) {
+export function bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, nowMS = Date.now()) {
   if (
     !storage ||
     typeof storage.get !== "function" ||
@@ -910,13 +910,23 @@ export function bindGlobalAgentClientLease(storage, leaseID, clientDeviceID) {
     typeof leaseID !== "string" ||
     !UUID.test(leaseID) ||
     typeof clientDeviceID !== "string" ||
-    !DEVICE_ID.test(clientDeviceID)
+    !DEVICE_ID.test(clientDeviceID) ||
+    !Number.isSafeInteger(nowMS) ||
+    nowMS < 0
   ) {
     throw new Error("invalid global agent client lease binding");
   }
   const key = AGENT_CONNECTION_LEASE_PREFIX + leaseID.toLowerCase();
   const lease = storage.get(key);
-  if (lease === undefined || lease === null || typeof lease !== "object") return false;
+  if (
+    lease === undefined ||
+    lease === null ||
+    typeof lease !== "object" ||
+    !Number.isSafeInteger(lease.expiresAtMS) ||
+    lease.expiresAtMS <= nowMS
+  ) {
+    return false;
+  }
   if (lease.clientDeviceID && lease.clientDeviceID !== clientDeviceID) return false;
   storage.put(key, { ...lease, clientDeviceID });
   return true;
