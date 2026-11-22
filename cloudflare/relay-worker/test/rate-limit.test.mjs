@@ -175,21 +175,31 @@ test("active client-device bindings identify every relay that must be revoked", 
   assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [clientDeviceID]);
 });
 
-test("client bindings cannot be replaced by another client or attached to an expired lease", () => {
+test("client bindings cannot be replaced and expired leases cannot be rebound", () => {
   const storage = createStorage();
   const leaseID = "d90987bf-bae6-45da-ab21-c82d049617bd";
+  const expiredLeaseID = "f90987bf-bae6-45da-ab21-c82d049617bd";
   const clientDeviceID = "wd_mw3am46w5weex4a4";
   const otherClientDeviceID = "wd_aaaaaaaaaaaaaaaa";
   storage.put("agent-connection-lease:" + leaseID, {
     deviceID,
     clientDeviceID,
     slot: 1,
-    expiresAtMS: 10_000,
+    expiresAtMS: 20_000,
   });
   assert.equal(bindGlobalAgentClientLease(storage, leaseID, otherClientDeviceID, 10_000), false);
-  assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID), true);
+  assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, 10_000), true);
+
+  storage.put("agent-connection-lease:" + expiredLeaseID, {
+    deviceID,
+    clientDeviceID,
+    slot: 2,
+    expiresAtMS: 10_000,
+  });
+  assert.equal(bindGlobalAgentClientLease(storage, expiredLeaseID, clientDeviceID, 10_000), false);
   assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, 10_000), [deviceID, clientDeviceID].sort());
 });
+
 
 test("revocation target registry rejects corrupted lease metadata", () => {
   const storage = createStorage();
