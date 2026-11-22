@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -115,6 +116,22 @@ func (l *Log) Append(event Event) error {
 }
 
 func validateEvent(event *Event) error {
+	for _, field := range []struct {
+		name  string
+		value string
+	}{
+		{"type", event.Type},
+		{"outcome", event.Outcome},
+		{"actor_id", event.ActorID},
+		{"peer_id", event.PeerID},
+		{"transport", event.Transport},
+		{"reason", event.Reason},
+	} {
+		if !utf8.ValidString(field.value) {
+			return fmt.Errorf("audit field %s is not valid UTF-8", field.name)
+		}
+	}
+
 	event.Type = strings.TrimSpace(event.Type)
 	event.Outcome = strings.TrimSpace(event.Outcome)
 	event.ActorID = strings.TrimSpace(event.ActorID)
