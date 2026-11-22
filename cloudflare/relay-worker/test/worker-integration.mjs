@@ -73,6 +73,21 @@ async function waitForHealth(worker, baseURL) {
   throw new Error("Wrangler dev health timeout:\n" + worker.logs);
 }
 
+function waitForExit(child, timeoutMS) {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve(true);
+    const onExit = () => {
+      clearTimeout(timeout);
+      resolve(true);
+    };
+    const timeout = setTimeout(() => {
+      child.removeListener("exit", onExit);
+      resolve(false);
+    }, timeoutMS);
+    child.once("exit", onExit);
+  });
+}
+
 async function stopWorker(worker) {
   const child = worker.child;
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -81,13 +96,13 @@ async function stopWorker(worker) {
   } catch {
     child.kill("SIGTERM");
   }
-  await Promise.race([
-    new Promise((resolve) => child.once("exit", resolve)),
-    delay(5_000),
-  ]);
-  if (child.exitCode === null && child.signalCode === null) {
-    try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+  if (await waitForExit(child, 5_000)) return;
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    child.kill("SIGKILL");
   }
+  await waitForExit(child, 2_000);
 }
 
 async function withWorker(port, persistTo, globalLimit, ipLimit, operation, extraVars = {}) {
