@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 
-import { authorizeStream, CONNECTION_GRANT_HEADER } from "../src/stream-auth.js";
+import { authorizeStream, AGENT_ADMISSION_HEADER, CONNECTION_GRANT_HEADER } from "../src/stream-auth.js";
 import { deviceIDFromPublicKey } from "../src/relay-auth.js";
 
 const now = 1_800_000_000;
@@ -56,9 +56,32 @@ function issueGrant(clientDeviceID, overrides = {}) {
   return `${input}.${b64url(sign(null, Buffer.from(input), grantKeys.privateKey))}`;
 }
 
-function request(ticket, grant = "") {
+function issueAgentAdmission(deviceID, slot, overrides = {}) {
+  const header = { alg: "EdDSA", typ: "JWT", kid };
+  const claims = {
+    grant_id: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    organization_id: "7140858e-39db-4a54-a707-88d5e86b910c",
+    client_device_id: "wd_mw3am46w5weex4a4",
+    target_device_id: deviceID,
+    permission: "terminal.connect",
+    purpose: "relay.agent.connect",
+    slot,
+    iss: "wedecent-control-plane",
+    aud: "wedecent-relay-agent",
+    sub: userID,
+    jti: "a90987bf-bae6-45da-ab21-c82d049617bd",
+    iat: now,
+    exp: now + 90,
+    ...overrides,
+  };
+  const input = `${jsonPart(header)}.${jsonPart(claims)}`;
+  return `${input}.${b64url(sign(null, Buffer.from(input), grantKeys.privateKey))}`;
+}
+
+function request(ticket, grant = "", admission = "") {
   const headers = new Headers({ Authorization: `Bearer ${ticket}` });
   if (grant) headers.set(CONNECTION_GRANT_HEADER, grant);
+  if (admission) headers.set(AGENT_ADMISSION_HEADER, admission);
   return new Request(`https://relay.test/v1/stream/${targetDeviceID}?role=client`, { headers });
 }
 
@@ -142,12 +165,31 @@ test("rejects a connection grant for another client", async () => {
   assert.equal(result.status, 403);
 });
 
-test("legacy shared-token agents remain IP-limited without inventing an authenticated device ID", async () => {
+test("legacy shared-token agents require control-plane admission", async () => {
   const req = new Request("https://relay.test/v1/stream/" + targetDeviceID + "?role=agent&slot=4", {
     headers: { Authorization: "Bearer legacy" },
   });
   const result = await authorizeStream(req, env, { deviceId: targetDeviceID, role: "agent", slot: 4 }, now);
-  assert.deepEqual(result, { ok: true, deviceID: null, targetDeviceID: null, legacy: true });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 403);
+});
+
+test("legacy shared-token agents remain a bounded migration path with signed admission", async () => {
+  const admission = issueAgentAdmission(targetDeviceID, 4);
+  const req = new Request("https://relay.test/v1/stream/" + targetDeviceID + "?role=agent&slot=4", {
+    headers: {
+      Authorization: "Bearer legacy",
+      [AGENT_ADMISSION_HEADER]: admission,
+    },
+  });
+  const result = await authorizeStream(req, env, { deviceId: targetDeviceID, role: "agent", slot: 4 }, now);
+  assert.deepEqual(result, {
+    ok: true,
+    deviceID: null,
+    targetDeviceID: null,
+    legacy: true,
+    agentAdmissionReplay: { jti: "a90987bf-bae6-45da-ab21-c82d049617bd", exp: now + 90 },
+  });
 });
 
 test("rejects legacy shared-token client bypass", async () => {
@@ -158,17 +200,50 @@ test("rejects legacy shared-token client bypass", async () => {
   assert.equal(result.ok, false);
 });
 
-test("accepts an authenticated agent slot without a connection grant", async () => {
+test("rejects a self-generated agent identity without control-plane admission", async () => {
   const relay = await issueRelayTicket({ role: "agent", slot: 4 });
   const req = new Request(`https://relay.test/v1/stream/${relay.claims.iss}?role=agent&slot=4`, {
     headers: { Authorization: `Bearer ${relay.token}` },
+  });
+  const result = await authorizeStream(req, env, { deviceId: relay.claims.iss, role: "agent", slot: 4 }, now);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 403);
+});
+
+test("accepts an enrolled agent only with a device- and slot-bound admission token", async () => {
+  const relay = await issueRelayTicket({ role: "agent", slot: 4 });
+  const admission = issueAgentAdmission(relay.claims.iss, 4);
+  const req = new Request(`https://relay.test/v1/stream/${relay.claims.iss}?role=agent&slot=4`, {
+    headers: {
+      Authorization: `Bearer ${relay.token}`,
+      [AGENT_ADMISSION_HEADER]: admission,
+    },
   });
   const result = await authorizeStream(req, env, { deviceId: relay.claims.iss, role: "agent", slot: 4 }, now);
   assert.deepEqual(result, {
     ok: true,
     deviceID: relay.claims.iss,
     targetDeviceID: relay.claims.iss,
+    agentAdmissionReplay: { jti: "a90987bf-bae6-45da-ab21-c82d049617bd", exp: now + 90 },
+    relayTicketReplay: { jti: relay.claims.jti, exp: relay.claims.exp },
   });
+});
+
+test("rejects an agent admission token for another device or slot", async () => {
+  const relay = await issueRelayTicket({ role: "agent", slot: 4 });
+  const wrongDevice = issueAgentAdmission(targetDeviceID, 4);
+  const wrongSlot = issueAgentAdmission(relay.claims.iss, 5);
+  for (const admission of [wrongDevice, wrongSlot]) {
+    const req = new Request(`https://relay.test/v1/stream/${relay.claims.iss}?role=agent&slot=4`, {
+      headers: {
+        Authorization: `Bearer ${relay.token}`,
+        [AGENT_ADMISSION_HEADER]: admission,
+      },
+    });
+    const result = await authorizeStream(req, env, { deviceId: relay.claims.iss, role: "agent", slot: 4 }, now);
+    assert.equal(result.ok, false);
+    assert.equal(result.status, 403);
+  }
 });
 
 function jsonPart(value) {
