@@ -166,6 +166,16 @@ test("verified device identity receives a separate bounded device quota", async 
   assert.equal([...namespace.storage.keys()].some((key) => key.includes(deviceID)), false);
 });
 
+test("direct authorization has its own verified-device quota", async () => {
+  const namespace = fakeNamespace();
+  const limiterEnv = env(namespace, { RELAY_DIRECT_DEVICE_REQUESTS_PER_WINDOW: "1" });
+  assert.equal((await enforceRelayDeviceRateLimit(limiterEnv, deviceID, "direct")).ok, true);
+  const rejected = await enforceRelayDeviceRateLimit(limiterEnv, deviceID, "direct");
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.scope, "device");
+  assert.equal(namespace.storage.get("count:direct-device"), 1);
+});
+
 test("bucket cardinality is bounded and new identities fail closed at the cap", () => {
   const storage = createStorage();
   const now = 10_000;
