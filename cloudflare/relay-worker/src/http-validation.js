@@ -105,9 +105,12 @@ export async function readBoundedRequestBody(request, maxBytes) {
   }
 }
 
-async function cancelReader(reader) {
+function cancelReader(reader) {
   try {
-    await reader.cancel();
+    const cancelled = reader.cancel();
+    if (cancelled && typeof cancelled.catch === "function") {
+      void cancelled.catch(() => {});
+    }
   } catch {
     // Cancellation is best effort; the byte and chunk bounds remain enforced.
   }
