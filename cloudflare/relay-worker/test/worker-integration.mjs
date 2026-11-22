@@ -212,6 +212,10 @@ function createAgentCredentials(slot = 1) {
 
   const terminalGrant = generateKeyPairSync("ed25519");
   const terminalSPKI = terminalGrant.publicKey.export({ format: "der", type: "spki" });
+  const terminalJWK = terminalGrant.publicKey.export({ format: "jwk" });
+  const terminalKID = createHash("sha256")
+    .update(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: terminalJWK.x }))
+    .digest("base64url");
 
   const admissionSigner = generateKeyPairSync("ed25519");
   const admissionSPKI = admissionSigner.publicKey.export({ format: "der", type: "spki" });
@@ -224,6 +228,49 @@ function createAgentCredentials(slot = 1) {
     deviceID,
     publicSPKIB64: terminalSPKI.toString("base64"),
     admissionKeyringJSON: JSON.stringify({ [admissionKID]: admissionSPKI.toString("base64") }),
+    createClientTokens() {
+      const clientIdentity = generateKeyPairSync("ed25519");
+      const clientSPKI = clientIdentity.publicKey.export({ format: "der", type: "spki" });
+      const clientPublicKey = clientSPKI.subarray(clientSPKI.length - 32);
+      const clientDeviceID = "wd_" + base32NoPadding(
+        createHash("sha256").update(clientPublicKey).digest().subarray(0, 10),
+      );
+      const issuedAt = Math.floor(Date.now() / 1000);
+      const ticketClaims = {
+        v: 2,
+        aud: "wedecent-relay",
+        iss: clientDeviceID,
+        sub: deviceID,
+        role: "client",
+        iat: issuedAt,
+        exp: issuedAt + 120,
+        jti: base64url(randomBytes(16)),
+        pk: base64url(clientPublicKey),
+      };
+      const ticketPayload = base64url(Buffer.from(JSON.stringify(ticketClaims)));
+      const ticketInput = "wedecent-relay-ticket-v2\n" + ticketPayload;
+      const relayTicket = "wdt2." + ticketPayload + "." +
+        base64url(sign(null, Buffer.from(ticketInput), clientIdentity.privateKey));
+      const grantHeader = { alg: "EdDSA", typ: "JWT", kid: terminalKID };
+      const grantClaims = {
+        grant_id: randomUUID(),
+        organization_id: "7140858e-39db-4a54-a707-88d5e86b910c",
+        client_device_id: clientDeviceID,
+        target_device_id: deviceID,
+        permission: "terminal.connect",
+        iss: "wedecent-control-plane",
+        aud: "wedecent-relay",
+        sub: "0b7729e9-95bf-4591-80f4-3f0616e57751",
+        jti: randomUUID(),
+        iat: issuedAt,
+        exp: issuedAt + 90,
+      };
+      const grantInput = base64url(Buffer.from(JSON.stringify(grantHeader))) + "." +
+        base64url(Buffer.from(JSON.stringify(grantClaims)));
+      const connectionGrant = grantInput + "." +
+        base64url(sign(null, Buffer.from(grantInput), terminalGrant.privateKey));
+      return { clientDeviceID, relayTicket, connectionGrant };
+    },
     createTokens() {
       const issuedAt = Math.floor(Date.now() / 1000);
       const ticketClaims = {
@@ -360,6 +407,59 @@ async function openAgentWebSocket(port, targetDeviceID, relayTicket, agentAdmiss
   });
 }
 
+async function openClientWebSocket(port, targetDeviceID, relayTicket, connectionGrant) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1");
+    let response = Buffer.alloc(0);
+    let settled = false;
+    const finish = (error, status) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) {
+        socket.destroy();
+        reject(error);
+      } else if (status !== 101) {
+        socket.destroy();
+        reject(new Error("expected client WebSocket 101, received " + status));
+      } else {
+        resolve(socket);
+      }
+    };
+    const timeout = setTimeout(() => finish(new Error("client WebSocket upgrade timed out")), 10_000);
+    const onData = (chunk) => {
+      response = Buffer.concat([response, chunk]);
+      const end = response.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const statusLine = response.subarray(0, end).toString("latin1").split("\r\n")[0];
+      const match = /^HTTP\/1\.[01] (\d{3})/.exec(statusLine);
+      if (!match) return finish(new Error("invalid client WebSocket response: " + statusLine));
+      socket.removeListener("data", onData);
+      finish(null, Number(match[1]));
+    };
+    socket.on("connect", () => {
+      const key = randomBytes(16).toString("base64");
+      socket.write([
+        "GET /v1/stream/" + targetDeviceID + "?role=client HTTP/1.1",
+        "Host: 127.0.0.1:" + port,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: " + key,
+        "Authorization: Bearer " + relayTicket,
+        "X-WeDecent-Connection-Grant: " + connectionGrant,
+        "",
+        "",
+      ].join("\r\n"));
+    });
+    socket.on("data", onData);
+    socket.on("error", (error) => finish(error));
+    socket.on("close", () => {
+      if (!settled) finish(new Error("client WebSocket closed before response headers"));
+    });
+  });
+}
+
 async function waitForWebSocketCloseFrame(socket, timeoutMS = 5_000) {
   if (socket.destroyed) return;
   await new Promise((resolve, reject) => {
@@ -412,7 +512,14 @@ async function verifyAgentRevocationPropagation() {
     );
     assert.equal(generationResponse.status, 204);
     const tokens = credentials.createTokens();
+    const clientTokens = credentials.createClientTokens();
     const socket = await openAgentWebSocket(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission);
+    const clientSocket = await openClientWebSocket(
+      port,
+      credentials.deviceID,
+      clientTokens.relayTicket,
+      clientTokens.connectionGrant,
+    );
     const response = await fetch(baseURL + "/v1/revoke/" + credentials.deviceID + "?generation=2", {
       method: "POST",
       headers: { Authorization: "Bearer " + revocationToken },
@@ -420,7 +527,10 @@ async function verifyAgentRevocationPropagation() {
     assert.equal(response.status, 200, "authorized revocation event should be accepted");
     const result = await response.json();
     assert.equal(result.revoked_device_id, credentials.deviceID);
-    await waitForWebSocketCloseFrame(socket);
+    await Promise.all([
+      waitForWebSocketCloseFrame(socket),
+      waitForWebSocketCloseFrame(clientSocket),
+    ]);
 
     const freshTokens = credentials.createTokens();
     const reconnectStatus = await websocketUpgradeStatus(
