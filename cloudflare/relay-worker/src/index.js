@@ -19,8 +19,10 @@ import {
   withRelayTraceHeader,
 } from "./observability.js";
 import {
-  consumeTokenBucket,
-  enforceRelayConnectionRateLimit,
+  cleanupExpiredRateLimitBuckets,
+  consumeRateLimitBuckets,
+  enforceRelayDeviceRateLimit,
+  enforceRelayRequestRateLimit,
   limiterRequestConfig,
 } from "./rate-limit.js";
 
@@ -88,6 +90,10 @@ async function handleRelayRequest(request, env) {
   }
 
   if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
+    const admission = await enforceRelayRequestRateLimit(request, env, "direct");
+    if (!admission.ok) {
+      return rateLimitResponse(admission);
+    }
     return authorizeDirectRequest(request, env, url);
   }
 
@@ -134,15 +140,9 @@ async function handleRelayRequest(request, env) {
     return new Response("Clients must not specify a relay slot", { status: 400 });
   }
 
-  const admission = await enforceRelayConnectionRateLimit(request, env, deviceId);
+  const admission = await enforceRelayRequestRateLimit(request, env, "stream");
   if (!admission.ok) {
-    return new Response(admission.message, {
-      status: admission.status,
-      headers: {
-        "Cache-Control": "no-store",
-        "Retry-After": String(admission.retryAfterSeconds),
-      },
-    });
+    return rateLimitResponse(admission);
   }
 
   const authorization = await authorizeStream(request, env, {
@@ -152,6 +152,15 @@ async function handleRelayRequest(request, env) {
   });
   if (!authorization.ok) {
     return new Response(authorization.message, { status: authorization.status });
+  }
+
+  if (authorization.deviceID) {
+    const deviceAdmission = await enforceRelayDeviceRateLimit(env, authorization.deviceID, "stream");
+    if (!deviceAdmission.ok) {
+      return rateLimitResponse(deviceAdmission);
+    }
+  } else if (role !== "agent") {
+    return new Response("Relay admission unavailable", { status: 503 });
   }
 
   const objectId = env.DEVICE_RELAY.idFromName(deviceId);
@@ -194,6 +203,11 @@ async function authorizeDirectRequest(request, env, url) {
     return new Response(authorization.message, { status: authorization.status });
   }
 
+  const deviceAdmission = await enforceRelayDeviceRateLimit(env, authorization.deviceID, "direct");
+  if (!deviceAdmission.ok) {
+    return rateLimitResponse(deviceAdmission);
+  }
+
   const headers = new Headers();
   headers.set(INTERNAL_GRANT_JTI_HEADER, authorization.replay.jti);
   headers.set(INTERNAL_GRANT_EXP_HEADER, String(authorization.replay.exp));
@@ -201,6 +215,16 @@ async function authorizeDirectRequest(request, env, url) {
   return env.DEVICE_RELAY.get(objectId).fetch(
     new Request("https://wedecent.internal/authorize", { method: "POST", headers }),
   );
+}
+
+function rateLimitResponse(admission) {
+  return new Response(admission.message, {
+    status: admission.status,
+    headers: {
+      "Cache-Control": "no-store",
+      "Retry-After": String(admission.retryAfterSeconds),
+    },
+  });
 }
 
 function legacyAuthorized(request, env) {
@@ -228,21 +252,38 @@ export class ConnectionRateLimiter extends DurableObject {
       }
     }
 
-    const config = limiterRequestConfig(request);
+    const config = await limiterRequestConfig(request);
     if (!config) {
       return new Response("Invalid rate-limit request", { status: 400 });
     }
 
     try {
-      const state = await this.ctx.storage.get("bucket");
-      const result = consumeTokenBucket(state, Date.now(), config.capacity, config.windowMS);
-      await this.ctx.storage.put("bucket", result.state);
+      const result = this.ctx.storage.transactionSync(() =>
+        consumeRateLimitBuckets(this.ctx.storage.kv, config.buckets, config.windowMS, Date.now()),
+      );
+      await this.#ensureCleanupScheduled();
       return Response.json(
-        { accepted: result.accepted, retry_after_ms: result.retryAfterMS },
+        { accepted: result.accepted, retry_after_ms: result.retryAfterMS, scope: result.scope },
         { headers: { "Cache-Control": "no-store" } },
       );
     } catch {
-      return new Response("Rate-limit storage unavailable", { status: 500 });
+      return new Response("Rate-limit storage unavailable", { status: 503 });
+    }
+  }
+
+  async #ensureCleanupScheduled() {
+    const currentAlarm = await this.ctx.storage.getAlarm();
+    if (currentAlarm === null) {
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+    }
+  }
+
+  async alarm() {
+    const cleanup = this.ctx.storage.transactionSync(() =>
+      cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, Date.now()),
+    );
+    if (cleanup.remaining > 0) {
+      await this.ctx.storage.setAlarm(Date.now() + 60_000);
     }
   }
 }

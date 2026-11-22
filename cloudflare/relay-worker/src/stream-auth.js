@@ -18,7 +18,7 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
     }
 
     if (expected.role === "agent") {
-      return { ok: true };
+      return { ok: true, deviceID: relayClaims.iss };
     }
 
     const grant = request.headers.get(CONNECTION_GRANT_HEADER)?.trim();
@@ -43,7 +43,11 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
         env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64,
         nowSeconds,
       );
-      return { ok: true, replay: { jti: grantClaims.jti, exp: grantClaims.exp } };
+      return {
+        ok: true,
+        deviceID: grantClaims.client_device_id,
+        replay: { jti: grantClaims.jti, exp: grantClaims.exp },
+      };
     } catch {
       return { ok: false, status: 403, message: "Connection grant rejected" };
     }
@@ -52,7 +56,7 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
   // The shared relay token remains only as an agent migration credential.
   // Allowing it for clients would bypass account-scoped connection grants.
   if (expected.role === "agent" && env.RELAY_ACCESS_TOKEN && token === env.RELAY_ACCESS_TOKEN) {
-    return { ok: true };
+    return { ok: true, deviceID: null };
   }
   return { ok: false, status: 401, message: "Unauthorized" };
 }
