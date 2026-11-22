@@ -313,8 +313,11 @@ async function verifyAgentReplayPersistence() {
 
   await withWorker(port, persistTo, 10_000, 10_000, async () => {
     tokens = credentials.createTokens();
-    const status = await websocketUpgradeStatus(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission);
-    assert.equal(status, 101, "signed enrolled agent should be admitted once");
+    const results = await Promise.all([
+      websocketUpgradeStatus(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission),
+      websocketUpgradeStatus(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission),
+    ]);
+    assert.deepEqual(results.sort((a, b) => a - b), [101, 409], "concurrent admission replay must have exactly one winner");
   }, extraVars);
 
   await withWorker(port, persistTo, 10_000, 10_000, async () => {
