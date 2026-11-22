@@ -128,6 +128,27 @@ test("rejects expired and overlong agent admission capabilities", async () => {
   await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({ exp: 1_787_779_200 }), { targetDeviceID, slot: 4 }, publicSPKIB64, 1_787_779_010));
 });
 
+test("one agent admission cannot authorize thousands of arbitrary device identities", async () => {
+  const token = issueAgentAdmission();
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  for (let index = 0; index < 4_500; index++) {
+    let value = index;
+    let suffix = "";
+    for (let digit = 0; digit < 16; digit++) {
+      suffix = alphabet[value % 32] + suffix;
+      value = Math.floor(value / 32);
+    }
+    const candidate = "wd_" + suffix;
+    if (candidate === targetDeviceID) continue;
+    await assert.rejects(() => verifyAgentAdmission(
+      token,
+      { targetDeviceID: candidate, slot: 4 },
+      publicSPKIB64,
+      1_787_779_010,
+    ));
+  }
+});
+
 test("rejects agent admission signed by an unknown key", async () => {
   await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({}, { kid: "wrong" }), { targetDeviceID, slot: 4 }, publicSPKIB64, 1_787_779_010));
 });
