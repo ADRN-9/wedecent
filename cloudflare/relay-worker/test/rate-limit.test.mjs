@@ -119,6 +119,36 @@ test("global agent lease internal requests accept only exact bounded schemas", a
     leaseID: lease.lease_id,
   });
 
+  const clientDeviceID = "wd_mw3am46w5weex4a4";
+  const bind = new Request("https://wedecent.internal/agent-bind-client", {
+    method: "POST",
+    body: JSON.stringify({ lease_id: lease.lease_id, client_device_id: clientDeviceID }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(bind), {
+    action: "bind",
+    leaseID: lease.lease_id,
+    clientDeviceID,
+  });
+
+  const unbind = new Request("https://wedecent.internal/agent-unbind-client", {
+    method: "POST",
+    body: JSON.stringify({ lease_id: lease.lease_id, client_device_id: clientDeviceID }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(unbind), {
+    action: "unbind",
+    leaseID: lease.lease_id,
+    clientDeviceID,
+  });
+
+  const targets = new Request("https://wedecent.internal/agent-revocation-targets", {
+    method: "POST",
+    body: JSON.stringify({ device_id: clientDeviceID }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(targets), {
+    action: "targets",
+    deviceID: clientDeviceID,
+  });
+
   const extraField = new Request("https://wedecent.internal/agent-acquire", {
     method: "POST",
     body: JSON.stringify({ ...lease, admin: true }),
