@@ -381,6 +381,13 @@ function cleanupRateLimitScope(storage, scope, nowMS) {
       throw new Error("rate-limit bucket cardinality exceeded");
     }
     validatePersistedBucket(state);
+    if (Number.isSafeInteger(state.windowMS)) {
+      const effectiveExpiryMS = Math.max(state.expiresAtMS, state.updatedAtMS + state.windowMS);
+      if (effectiveExpiryMS > state.expiresAtMS) {
+        state = { ...state, expiresAtMS: effectiveExpiryMS };
+        storage.put(key, state);
+      }
+    }
     if (state.expiresAtMS <= nowMS) {
       storage.delete(key);
       deleted++;
