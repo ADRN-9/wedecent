@@ -4,6 +4,8 @@ import test from "node:test";
 import {
   acquireGlobalAgentConnectionLease,
   agentConnectionLeaseRequestConfig,
+  agentRevocationTargets,
+  bindGlobalAgentClientLease,
   cleanupExpiredRateLimitBuckets,
   cleanupGlobalAgentConnectionLeases,
   consumeRateLimitBuckets,
@@ -17,6 +19,7 @@ import {
   MAX_RATE_LIMIT_BUCKETS_PER_SCOPE,
   releaseGlobalAgentConnectionLease,
   relayRateLimitConfig,
+  unbindGlobalAgentClientLease,
   sourceIPBucketName,
 } from "../src/rate-limit.js";
 
@@ -121,6 +124,52 @@ test("global agent lease internal requests accept only exact bounded schemas", a
     body: JSON.stringify({ ...lease, admin: true }),
   });
   assert.equal(await agentConnectionLeaseRequestConfig(extraField), null);
+});
+
+test("active client-device bindings identify every relay that must be revoked", () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  const leaseID = "d90987bf-bae6-45da-ab21-c82d049617bd";
+  const clientDeviceID = "wd_mw3am46w5weex4a4";
+  const lease = {
+    leaseID,
+    deviceID,
+    slot: 1,
+    expiresAtMS: nowMS + 60_000,
+  };
+  assert.equal(acquireGlobalAgentConnectionLease(storage, lease, nowMS, 2).accepted, true);
+  assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID), true);
+  assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [deviceID]);
+  assert.deepEqual(agentRevocationTargets(storage, deviceID, nowMS), [deviceID]);
+  assert.equal(unbindGlobalAgentClientLease(storage, leaseID, clientDeviceID), true);
+  assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [clientDeviceID]);
+});
+
+test("client bindings cannot be replaced by another client or attached to an expired lease", () => {
+  const storage = createStorage();
+  const leaseID = "d90987bf-bae6-45da-ab21-c82d049617bd";
+  const clientDeviceID = "wd_mw3am46w5weex4a4";
+  const otherClientDeviceID = "wd_aaaaaaaaaaaaaaaa";
+  storage.put("agent-connection-lease:" + leaseID, {
+    deviceID,
+    clientDeviceID,
+    slot: 1,
+    expiresAtMS: 10_000,
+  });
+  assert.equal(bindGlobalAgentClientLease(storage, leaseID, otherClientDeviceID), false);
+  assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID), true);
+  assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, 10_000), [clientDeviceID]);
+});
+
+test("revocation target registry rejects corrupted lease metadata", () => {
+  const storage = createStorage();
+  storage.put("agent-connection-lease:bad", {
+    deviceID,
+    clientDeviceID: "invalid",
+    slot: 1,
+    expiresAtMS: 70_000,
+  });
+  assert.throws(() => agentRevocationTargets(storage, deviceID, 10_000), /persisted global agent connection lease/);
 });
 
 test("uses bounded production defaults and rejects invalid overrides", () => {
