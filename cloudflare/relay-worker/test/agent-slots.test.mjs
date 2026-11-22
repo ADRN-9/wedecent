@@ -25,15 +25,15 @@ test("rejects a second connection for an occupied active slot", () => {
   assert.deepEqual(result.retire, []);
 });
 
-test("caps active agent connections at the configured maximum", () => {
-  const agents = Array.from({ length: MAX_AGENT_CONNECTIONS }, (_, index) => open(index + 1, "client-" + index));
+test("caps active agent connections even when legacy sockets have no slot metadata", () => {
+  const agents = Array.from({ length: MAX_AGENT_CONNECTIONS }, (_, index) => open(null, "client-" + index));
   const result = planAgentSlotAdmission(agents, 1);
   assert.equal(result.ok, false);
-  assert.equal(result.status, 409);
+  assert.equal(result.status, 429);
   assert.deepEqual(result.retire, []);
 });
 
-test("rejects a new slot when all connection capacity is occupied", () => {
+test("rejects a duplicate active slot when all numbered slots are occupied", () => {
   const agents = Array.from({ length: MAX_AGENT_CONNECTIONS }, (_, index) => open(index + 1, "client-" + index));
   const result = planAgentSlotAdmission(agents, 1);
   assert.equal(result.ok, false);
