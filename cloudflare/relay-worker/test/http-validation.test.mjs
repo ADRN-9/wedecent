@@ -107,6 +107,16 @@ test("bounds chunk count as well as byte count", async () => {
   assert.deepEqual(result, { ok: false, status: 413 });
 });
 
+test("rejects a locked or unreadable request stream", async () => {
+  const locked = {
+    headers: new Headers(),
+    body: {
+      getReader() { throw new Error("locked"); },
+    },
+  };
+  assert.deepEqual(await readBoundedRequestBody(locked, 1024), { ok: false, status: 400 });
+});
+
 test("rejects empty bodies and invalid UTF-8", async () => {
   assert.deepEqual(await readBoundedRequestBody(streamRequest([]), 1024), { ok: false, status: 400 });
   assert.deepEqual(
