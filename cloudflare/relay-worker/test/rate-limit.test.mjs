@@ -2,7 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  acquireGlobalAgentConnectionLease,
+  agentConnectionLeaseRequestConfig,
   cleanupExpiredRateLimitBuckets,
+  cleanupGlobalAgentConnectionLeases,
   consumeRateLimitBuckets,
   consumeTokenBucket,
   deviceBucketName,
@@ -10,12 +13,115 @@ import {
   enforceRelayLegacyAgentRateLimit,
   enforceRelayRequestRateLimit,
   limiterRequestConfig,
+  MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS,
   MAX_RATE_LIMIT_BUCKETS_PER_SCOPE,
+  releaseGlobalAgentConnectionLease,
   relayRateLimitConfig,
   sourceIPBucketName,
 } from "../src/rate-limit.js";
 
 const deviceID = "wd_4ksk5edkttwsxqx4";
+
+test("global active-agent leases enforce a single bounded concurrent cap", () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  const first = {
+    leaseID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    deviceID,
+    slot: 1,
+    expiresAtMS: nowMS + 60_000,
+  };
+  const second = {
+    leaseID: "76b4c468-4e39-437c-a9c8-b758c92ab89b",
+    deviceID: "wd_mw3am46w5weex4a4",
+    slot: 2,
+    expiresAtMS: nowMS + 60_000,
+  };
+  const third = {
+    leaseID: "0b7729e9-95bf-4591-80f4-3f0616e57751",
+    deviceID: "wd_aaaaaaaaaaaaaaaa",
+    slot: 3,
+    expiresAtMS: nowMS + 60_000,
+  };
+
+  assert.deepEqual(acquireGlobalAgentConnectionLease(storage, first, nowMS, 2), { accepted: true, active: 1 });
+  assert.deepEqual(acquireGlobalAgentConnectionLease(storage, second, nowMS, 2), { accepted: true, active: 2 });
+  assert.deepEqual(acquireGlobalAgentConnectionLease(storage, third, nowMS, 2), { accepted: false, active: 2 });
+  assert.equal(releaseGlobalAgentConnectionLease(storage, first.leaseID), true);
+  assert.equal(releaseGlobalAgentConnectionLease(storage, first.leaseID), false);
+  assert.deepEqual(acquireGlobalAgentConnectionLease(storage, third, nowMS, 2), { accepted: true, active: 2 });
+});
+
+test("expired global agent leases are reclaimed before capacity is evaluated", () => {
+  const storage = createStorage();
+  const expiredID = "d90987bf-bae6-45da-ab21-c82d049617bd";
+  storage.put("agent-connection-lease:" + expiredID, {
+    deviceID,
+    slot: 1,
+    expiresAtMS: 10_000,
+  });
+  const next = {
+    leaseID: "76b4c468-4e39-437c-a9c8-b758c92ab89b",
+    deviceID,
+    slot: 2,
+    expiresAtMS: 70_000,
+  };
+  assert.deepEqual(acquireGlobalAgentConnectionLease(storage, next, 10_000, 1), { accepted: true, active: 1 });
+  assert.equal(storage.get("agent-connection-lease:" + expiredID), undefined);
+  assert.deepEqual(cleanupGlobalAgentConnectionLeases(storage, 10_000, 1), {
+    remaining: 1,
+    deleted: 0,
+    nextExpiryMS: 70_000,
+  });
+});
+
+test("corrupt global agent lease state fails closed", () => {
+  const storage = createStorage();
+  storage.put("agent-connection-lease:bad", { deviceID, slot: 1, expiresAtMS: "never" });
+  assert.throws(() => acquireGlobalAgentConnectionLease(storage, {
+    leaseID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    deviceID,
+    slot: 1,
+    expiresAtMS: 70_000,
+  }, 10_000, 2), /persisted global agent connection lease/);
+  assert.equal(MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS, 1024);
+});
+
+test("global agent lease internal requests accept only exact bounded schemas", async () => {
+  const lease = {
+    lease_id: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    device_id: deviceID,
+    slot: 1,
+    expires_at_ms: Date.now() + 60_000,
+  };
+  const acquire = new Request("https://wedecent.internal/agent-acquire", {
+    method: "POST",
+    body: JSON.stringify(lease),
+  });
+  const config = await agentConnectionLeaseRequestConfig(acquire);
+  assert.deepEqual(config, {
+    action: "acquire",
+    leaseID: lease.lease_id,
+    deviceID: lease.device_id,
+    slot: lease.slot,
+    expiresAtMS: lease.expires_at_ms,
+  });
+
+  const release = new Request("https://wedecent.internal/agent-release", {
+    method: "POST",
+    body: JSON.stringify({ lease_id: lease.lease_id }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(release), {
+    action: "release",
+    leaseID: lease.lease_id,
+  });
+
+  const extraField = new Request("https://wedecent.internal/agent-acquire", {
+    method: "POST",
+    body: JSON.stringify({ ...lease, admin: true }),
+  });
+  assert.equal(await agentConnectionLeaseRequestConfig(extraField), null);
+});
 
 test("uses bounded production defaults and rejects invalid overrides", () => {
   assert.deepEqual(relayRateLimitConfig({}), {
