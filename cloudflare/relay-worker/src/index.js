@@ -467,7 +467,7 @@ export class ConnectionRateLimiter extends DurableObject {
           return Response.json({ completed }, { headers: { "Cache-Control": "no-store" } });
         }
         if (leaseConfig.action === "register-generation") {
-          const registered = registerGlobalDeviceAuthorizationGeneration(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          const registered = registerGlobalDeviceAuthorizationGenerationLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
           return Response.json({ registered }, { headers: { "Cache-Control": "no-store" } });
         }
         if (leaseConfig.action === "check-generation") {

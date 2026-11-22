@@ -821,8 +821,6 @@ export function acquireGlobalAgentConnectionLease(
       stored.slot > 32 ||
       !Number.isSafeInteger(stored.expiresAtMS) ||
       stored.expiresAtMS < 0 ||
-      !Number.isSafeInteger(stored.authorizationGeneration) ||
-      stored.authorizationGeneration < 1
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }
@@ -891,8 +889,6 @@ export function cleanupGlobalAgentConnectionLeases(
       stored.slot > 32 ||
       !Number.isSafeInteger(stored.expiresAtMS) ||
       stored.expiresAtMS < 0 ||
-      !Number.isSafeInteger(stored.authorizationGeneration) ||
-      stored.authorizationGeneration < 1
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }
@@ -1080,7 +1076,7 @@ async function postGlobalDeviceRevocationOperation(namespace, path, deviceID, au
   return payload[field];
 }
 
-export function registerGlobalDeviceAuthorizationGeneration(storage, deviceID, authorizationGeneration, nowMS = Date.now()) {
+export function registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, authorizationGeneration, nowMS = Date.now()) {
   if (!storage || typeof storage.get !== "function" || typeof storage.put !== "function" ||
       typeof deviceID !== "string" || !DEVICE_ID.test(deviceID) ||
       !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1 ||
@@ -1384,8 +1380,6 @@ export function agentRevocationTargets(storage, deviceID, nowMS = Date.now()) {
       lease.slot > 32 ||
       !Number.isSafeInteger(lease.expiresAtMS) ||
       lease.expiresAtMS < 0 ||
-      !Number.isSafeInteger(lease.authorizationGeneration) ||
-      lease.authorizationGeneration < 1
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }
