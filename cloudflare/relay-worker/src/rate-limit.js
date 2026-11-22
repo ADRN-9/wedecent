@@ -125,12 +125,12 @@ export async function enforceRelayRequestRateLimit(request, env, kind = "stream"
     const buckets =
       kind === "direct"
         ? [
-            { scope: "direct-global", key: "global", capacity: config.directGlobalLimit },
             { scope: "direct-ip", key: ipBucket, capacity: config.directIPLimit },
+            { scope: "direct-global", key: "global", capacity: config.directGlobalLimit },
           ]
         : [
-            { scope: "stream-global", key: "global", capacity: config.globalStreamLimit },
             { scope: "stream-ip", key: ipBucket, capacity: config.ipLimit },
+            { scope: "stream-global", key: "global", capacity: config.globalStreamLimit },
           ];
     return await consumeRemoteBuckets(env.RELAY_RATE_LIMIT, buckets, config.windowMS);
   } catch {
