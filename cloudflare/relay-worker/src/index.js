@@ -1,14 +1,21 @@
 import { DurableObject } from "cloudflare:workers";
-import { authorizeStream, CONNECTION_GRANT_HEADER } from "./stream-auth.js";
+import { authorizeStream, AGENT_ADMISSION_HEADER, CONNECTION_GRANT_HEADER } from "./stream-auth.js";
 import {
+  agentAdmissionReplayMetadataFromRequest,
   cleanupExpiredConnectionGrants,
+  consumeAgentAdmission,
   consumeConnectionGrant,
+  INTERNAL_AGENT_LEGACY_HEADER,
   INTERNAL_GRANT_EXP_HEADER,
   INTERNAL_GRANT_JTI_HEADER,
+  prepareAgentRelayRequest,
   prepareDeviceRelayRequest,
+  relayTicketReplayMetadataFromRequest,
   replayMetadataFromRequest,
   scheduleReplayCleanup,
 } from "./grant-replay.js";
+import { planAgentSlotAdmission } from "./agent-slots.js";
+import { directAuthorizationPreflight, readBoundedRequestBody } from "./http-validation.js";
 import {
   emitRelayTrace,
   healthProbeRequest,
@@ -34,7 +41,7 @@ const STATUS_PREFIX = "/v1/status/";
 const TIME_PATH = "/v1/time";
 const DIRECT_AUTHORIZE_PREFIX = "/v1/direct-authorize/";
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
-const HEALTH_VERSION = 11;
+const HEALTH_VERSION = 12;
 
 export default {
   async fetch(request, env) {
@@ -92,11 +99,15 @@ async function handleRelayRequest(request, env) {
   }
 
   if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
+    const preflight = directAuthorizationPreflight(request, url);
+    if (!preflight.ok) {
+      return preflight.response;
+    }
     const admission = await enforceRelayRequestRateLimit(request, env, "direct");
     if (!admission.ok) {
       return rateLimitResponse(admission);
     }
-    return authorizeDirectRequest(request, env, url);
+    return authorizeDirectRequest(request, env, preflight.targetDeviceID);
   }
 
   if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
@@ -135,7 +146,7 @@ async function handleRelayRequest(request, env) {
   }
 
   const slot = url.searchParams.get("slot");
-  if (role === "agent" && slot !== null && !AGENT_SLOT.test(slot)) {
+  if (role === "agent" && (slot === null || !AGENT_SLOT.test(slot))) {
     return new Response("Invalid agent relay slot", { status: 400 });
   }
   if (role === "client" && slot !== null) {
@@ -174,27 +185,28 @@ async function handleRelayRequest(request, env) {
   }
 
   const objectId = env.DEVICE_RELAY.idFromName(deviceId);
-  return env.DEVICE_RELAY.get(objectId).fetch(
-    prepareDeviceRelayRequest(request, authorization.replay, CONNECTION_GRANT_HEADER),
-  );
+  const forwardedRequest = role === "agent"
+    ? prepareAgentRelayRequest(
+        request,
+        authorization.agentAdmissionReplay,
+        authorization.relayTicketReplay ?? null,
+        AGENT_ADMISSION_HEADER,
+        CONNECTION_GRANT_HEADER,
+        authorization.legacy === true,
+      )
+    : prepareDeviceRelayRequest(request, authorization.replay, CONNECTION_GRANT_HEADER);
+  return env.DEVICE_RELAY.get(objectId).fetch(forwardedRequest);
 }
 
-async function authorizeDirectRequest(request, env, url) {
-  if (request.method !== "POST") {
-    return new Response("Method not allowed", { status: 405 });
-  }
-  const targetDeviceID = decodeURIComponent(url.pathname.slice(DIRECT_AUTHORIZE_PREFIX.length));
-  if (!DEVICE_ID.test(targetDeviceID)) {
-    return new Response("Invalid device ID", { status: 400 });
+async function authorizeDirectRequest(request, env, targetDeviceID) {
+  const body = await readBoundedRequestBody(request, 1024);
+  if (!body.ok) {
+    return new Response("Invalid authorization request", { status: body.status });
   }
 
   let payload;
   try {
-    const text = await request.text();
-    if (text.length === 0 || text.length > 1024) {
-      return new Response("Invalid authorization request", { status: 400 });
-    }
-    payload = JSON.parse(text);
+    payload = JSON.parse(body.text);
   } catch {
     return new Response("Invalid authorization request", { status: 400 });
   }
@@ -307,6 +319,7 @@ export class ConnectionRateLimiter extends DurableObject {
 
 export class DeviceRelay extends DurableObject {
   #clientAdmission = Promise.resolve();
+  #agentAdmission = Promise.resolve();
 
   async fetch(request) {
     const url = new URL(request.url);
@@ -329,7 +342,7 @@ export class DeviceRelay extends DurableObject {
 
     const role = url.searchParams.get("role");
     if (role === "agent") {
-      return this.#acceptAgent(url);
+      return this.#acceptAgent(request, url);
     }
     if (role === "client") {
       return this.#acceptClient(request);
@@ -353,49 +366,74 @@ export class DeviceRelay extends DurableObject {
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
   }
 
-  #acceptAgent(url) {
-    const slotParam = url.searchParams.get("slot");
-    const slot = slotParam === null ? null : Number.parseInt(slotParam, 10);
+  async #acceptAgent(request, url) {
+    let release;
+    const previous = this.#agentAdmission;
+    this.#agentAdmission = new Promise((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await this.#acceptAgentExclusive(request, url);
+    } finally {
+      release();
+    }
+  }
 
-    // v4 agents identify each parked outbound connection by a stable logical
-    // slot number. Retire free sockets from older generations before accepting
-    // the replacement. This prevents hibernated/stale Durable Object sockets
-    // from accumulating across agent restarts and being selected by clients.
-    if (slot !== null) {
-      this.#retireSupersededFreeAgents(slot);
+  async #acceptAgentExclusive(request, url) {
+    const slotParam = url.searchParams.get("slot");
+    if (slotParam === null || !AGENT_SLOT.test(slotParam)) {
+      return new Response("Invalid agent relay slot", { status: 400 });
+    }
+    const slot = Number.parseInt(slotParam, 10);
+    const entries = this.ctx.getWebSockets("agent").map((socket) => {
+      let attachment = null;
+      try {
+        attachment = socket.deserializeAttachment();
+      } catch {
+        // An unreadable attachment still counts against the active socket cap.
+      }
+      return { socket, readyState: socket.readyState, attachment };
+    });
+    const plan = planAgentSlotAdmission(entries, slot);
+    if (!plan.ok) {
+      return new Response(
+        plan.status === 409 ? "Agent relay slot already active" : "Agent connection capacity reached",
+        { status: plan.status },
+      );
+    }
+
+    const admission = agentAdmissionReplayMetadataFromRequest(request);
+    const relayTicket = relayTicketReplayMetadataFromRequest(request);
+    const legacy = request.headers.get(INTERNAL_AGENT_LEGACY_HEADER) === "1";
+    if (!admission || (legacy ? relayTicket !== null : relayTicket === null)) {
+      return new Response("Agent admission replay metadata missing", { status: 403 });
+    }
+
+    const consumption = await consumeAgentAdmission(
+      this.ctx.storage,
+      admission.jti,
+      admission.exp,
+      relayTicket?.jti ?? null,
+      relayTicket?.exp ?? null,
+    );
+    if (!consumption.accepted) {
+      return new Response("Agent admission already used or expired", { status: 409 });
+    }
+    await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
+
+    // Only replace free sockets after the new admission capability has been consumed.
+    for (const entry of plan.retire) {
+      entry.socket.close(1000, "Superseded relay slot");
     }
 
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const id = crypto.randomUUID();
-    const tags = ["agent"];
-    if (slot !== null) {
-      tags.push(`agent-slot-${slot}`);
-    }
-
     server.serializeAttachment({ id, role: "agent", peerId: null, slot });
-    this.ctx.acceptWebSocket(server, tags);
+    this.ctx.acceptWebSocket(server, ["agent", `agent-slot-${slot}`]);
 
     return new Response(null, { status: 101, webSocket: client });
-  }
-
-  #retireSupersededFreeAgents(slot) {
-    for (const socket of this.ctx.getWebSockets("agent")) {
-      if (socket.readyState !== WebSocket.OPEN) {
-        continue;
-      }
-
-      const attachment = socket.deserializeAttachment();
-      if (attachment?.role !== "agent" || attachment.peerId) {
-        continue;
-      }
-
-      const legacy = !Number.isInteger(attachment.slot);
-      const duplicateSlot = attachment.slot === slot;
-      if (legacy || duplicateSlot) {
-        socket.close(1000, legacy ? "Replaced legacy relay slot" : "Superseded relay slot");
-      }
-    }
   }
 
   async #acceptClient(request) {
