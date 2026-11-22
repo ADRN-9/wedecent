@@ -70,7 +70,11 @@ requires device ownership or organization owner/admin authority. It records
 `devices.revoked_at` first (which triggers a durable revocation audit event), then
 dispatches an authenticated revocation event to the relay Worker. The Worker resolves
 all active target relays associated with the revoked device, including sessions where
-the device is the client, and closes the established WebSockets.
+the device is the client, and closes the established WebSockets. It also records a
+five-minute global revocation tombstone, rejects any capability issued immediately
+before revocation, and rechecks the tombstone at the Durable Object accept boundary to
+close connection-setup races. The five-minute interval exceeds the current 120-second
+relay-ticket and connection-grant lifetimes plus clock skew.
 
 The function itself requires its Supabase service-role key, the independent
 `WEDECENT_AGENT_ADMISSION_PKCS8_B64` secret, its matching public
