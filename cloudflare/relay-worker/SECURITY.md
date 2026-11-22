@@ -39,7 +39,7 @@ The agent runtime must obtain a fresh admission token for each slot connection a
 
 Each DeviceRelay permits at most 32 open agent sockets and one active socket per logical slot. A free stale socket for the same slot may be replaced; a paired/active duplicate slot is rejected. DeviceRelay replay records use additive storage prefixes, preserving existing connection-grant replay records and existing DeviceRelay attachment/state formats.
 
-**Integration dependency:** this change adds the control-plane issuer and Worker contract, but does not update the native agent runtime to call the new Edge Function or attach the admission header. Until that client integration is merged and deployed, Ed25519 and legacy agent WebSocket connections will fail closed. This is an explicit release blocker, not a production-ready claim.
+**Integration dependency:** this change adds the control-plane issuer and Worker contract, but does not update the native agent runtime to call the new Edge Function or attach the admission header. The Edge Function source and Worker changes are not deployed by this PR. Until the Edge Function is deployed and client integration is merged and deployed, Ed25519 and legacy agent WebSocket connections will fail closed. This is an explicit release blocker, not a production-ready claim.
 
 ## Direct authorization request bounds
 
@@ -55,6 +55,7 @@ CI runs the Worker with Wrangler's local Workers runtime and SQLite-backed Durab
 - invalid method/path requests do not consume the direct quota
 - oversized streamed bodies are rejected
 - global quota state survives a local Worker process restart
+- a signed agent admission and relay ticket are accepted once, then rejected as replay after a local Worker/DeviceRelay restart
 - 128 concurrent direct-authorization requests against the centralized limiter
 - measured local throughput, p50, p95, and maximum request latency
 
