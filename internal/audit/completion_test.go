@@ -481,3 +481,341 @@ func TestPairingCompletionRejectsForeignAuditLogSource(t *testing.T) {
 		t.Fatalf("valid matching audit log was rejected: %v", err)
 	}
 }
+
+func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
+	record := func(payload []byte) []byte {
+		line := append([]byte(nil), payload...)
+		return append(line, '\n')
+	}
+	join := func(records ...[]byte) []byte {
+		var data []byte
+		for _, item := range records {
+			data = append(data, item...)
+		}
+		return data
+	}
+	paddedRecord := func(payload []byte, totalBytes int) []byte {
+		if totalBytes < len(payload)+1 {
+			t.Fatalf("record size %d cannot contain %d-byte JSON plus newline", totalBytes, len(payload))
+		}
+		line := append([]byte(nil), payload...)
+		line = append(line, bytes.Repeat([]byte{' '}, totalBytes-len(payload)-1)...)
+		return append(line, '\n')
+	}
+
+	type recordBuilder func(target, other []byte, maxBytes int64) []byte
+	tests := []struct {
+		name    string
+		active  recordBuilder
+		archive recordBuilder
+		wantErr bool
+	}{
+		{
+			name: "valid JSONL with records before and after target",
+			active: func(target, other []byte, _ int64) []byte {
+				return join(record(other), record(target), record(other))
+			},
+		},
+		{
+			name: "empty active log with valid archive",
+			active: func(_, _ []byte, _ int64) []byte { return nil },
+			archive: func(target, _ []byte, _ int64) []byte { return record(target) },
+		},
+		{
+			name: "empty active log without archive evidence",
+			active: func(_, _ []byte, _ int64) []byte { return nil },
+			wantErr: true,
+		},
+		{
+			name: "leading blank record",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join([]byte{'\n'}, record(target))
+			},
+			wantErr: true,
+		},
+		{
+			name: "interior blank record",
+			active: func(target, other []byte, _ int64) []byte {
+				return join(record(other), []byte{'\n'}, record(target))
+			},
+			wantErr: true,
+		},
+		{
+			name: "additional trailing blank record",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join(record(target), []byte{'\n'})
+			},
+			wantErr: true,
+		},
+		{
+			name: "multiple additional trailing blank records",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join(record(target), []byte("\n\n"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "blank-only log",
+			active: func(_, _ []byte, _ int64) []byte { return []byte{'\n'} },
+			wantErr: true,
+		},
+		{
+			name: "JSON null record",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join(record(target), []byte("null\n"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "empty object record",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join(record(target), []byte("{}\n"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing timestamp",
+			active: func(target, _ []byte, _ int64) []byte {
+				missing := []byte("{\"type\":\"pairing.trust_added\",\"outcome\":\"success\"}\n")
+				return join(record(target), missing)
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing event type",
+			active: func(target, _ []byte, _ int64) []byte {
+				missing := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"outcome\":\"success\"}\n")
+				return join(record(target), missing)
+			},
+			wantErr: true,
+		},
+		{
+			name: "missing outcome",
+			active: func(target, _ []byte, _ int64) []byte {
+				missing := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\"}\n")
+				return join(record(target), missing)
+			},
+			wantErr: true,
+		},
+		{
+			name: "zero timestamp",
+			active: func(target, _ []byte, _ int64) []byte {
+				zero := []byte("{\"time\":\"0001-01-01T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\"}\n")
+				return join(record(target), zero)
+			},
+			wantErr: true,
+		},
+		{
+			name: "unknown Event field rejected by strict v1 schema",
+			active: func(target, other []byte, _ int64) []byte {
+				unknown := append([]byte(nil), other[:len(other)-1]...)
+				unknown = append(unknown, []byte(",\"future_field\":true}\n")...)
+				return join(record(target), unknown)
+			},
+			wantErr: true,
+		},
+		{
+			name: "case-folded schema alias rejected",
+			active: func(target, _ []byte, _ int64) []byte {
+				alias := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"Type\":\"pairing.trust_added\",\"outcome\":\"success\"}\n")
+				return join(record(target), alias)
+			},
+			wantErr: true,
+		},
+		{
+			name: "duplicate JSON object key rejected",
+			active: func(target, other []byte, _ int64) []byte {
+				duplicate := []byte(fmt.Sprintf(
+					"{\"time\":%q,\"type\":\"pairing.trust_added\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\"}\n",
+					completionTestEvent(strings.Repeat("b", 32)).Time.Format(time.RFC3339Nano),
+				))
+				_ = other
+				return join(record(target), duplicate)
+			},
+			wantErr: true,
+		},
+		{
+			name: "escaped duplicate JSON object key rejected",
+			active: func(target, _ []byte, _ int64) []byte {
+				duplicate := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"\\u0074ype\":\"pairing.trust_added\",\"outcome\":\"success\"}\n")
+				return join(record(target), duplicate)
+			},
+			wantErr: true,
+		},
+		{
+			name: "null optional field rejected",
+			active: func(target, _ []byte, _ int64) []byte {
+				nullField := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"actor_id\":null}\n")
+				return join(record(target), nullField)
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed complete JSON before target",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join([]byte("{not-json}\n"), record(target))
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed complete JSON after target",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join(record(target), []byte("{not-json}\n"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "incomplete trailing fragment",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join(record(target), []byte("{\"type\":"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed record followed by incomplete fragment",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join(record(target), []byte("{not-json}\n"), []byte("{\"type\":"))
+			},
+			wantErr: true,
+		},
+		{
+			name: "unterminated final JSON record",
+			active: func(target, other []byte, _ int64) []byte {
+				return join(record(target), other)
+			},
+			wantErr: true,
+		},
+		{
+			name: "malformed active log does not fall back to valid archive",
+			active: func(_, _ []byte, _ int64) []byte { return []byte("{broken}\n") },
+			archive: func(target, _ []byte, _ int64) []byte { return record(target) },
+			wantErr: true,
+		},
+		{
+			name: "malformed archive is checked after active target",
+			active: func(target, _ []byte, _ int64) []byte { return record(target) },
+			archive: func(_, _ []byte, _ int64) []byte { return []byte("{broken}\n") },
+			wantErr: true,
+		},
+		{
+			name: "duplicate target events in active log",
+			active: func(target, _ []byte, _ int64) []byte {
+				return join(record(target), record(target))
+			},
+			wantErr: true,
+		},
+		{
+			name: "duplicate target across active and archive",
+			active: func(target, _ []byte, _ int64) []byte { return record(target) },
+			archive: func(target, _ []byte, _ int64) []byte { return record(target) },
+			wantErr: true,
+		},
+		{
+			name: "event record exactly at size limit including newline",
+			active: func(target, other []byte, _ int64) []byte {
+				return join(paddedRecord(other, maxEventSize), record(target))
+			},
+		},
+		{
+			name: "event record one byte over size limit",
+			active: func(target, other []byte, _ int64) []byte {
+				return join(paddedRecord(other, maxEventSize+1), record(target))
+			},
+			wantErr: true,
+		},
+		{
+			name: "file exactly at size limit",
+			active: func(target, other []byte, maxBytes int64) []byte {
+				targetRecord := record(target)
+				remaining := int(maxBytes) - len(targetRecord)
+				first := remaining / 2
+				second := remaining - first
+				return join(targetRecord, paddedRecord(other, first), paddedRecord(other, second))
+			},
+		},
+		{
+			name: "file one byte over size limit",
+			active: func(target, other []byte, maxBytes int64) []byte {
+				targetRecord := record(target)
+				remaining := int(maxBytes) + 1 - len(targetRecord)
+				first := remaining / 2
+				second := remaining - first
+				return join(targetRecord, paddedRecord(other, first), paddedRecord(other, second))
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recovery, log, id := completedRecoveryFixture(t)
+			event := completionTestEvent(id)
+			target, err := json.Marshal(event)
+			if err != nil {
+				t.Fatal(err)
+			}
+			otherEvent := completionTestEvent(strings.Repeat("b", 32))
+			other, err := json.Marshal(otherEvent)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			var active []byte
+			if test.active != nil {
+				active = test.active(target, other, log.maxBytes)
+			}
+			if err := os.WriteFile(log.path, active, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if test.archive != nil {
+				archivePath := filepath.Join(filepath.Dir(log.path), archiveFileName)
+				archive := test.archive(target, other, log.maxBytes)
+				if err := os.WriteFile(archivePath, archive, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			verifyErr := log.VerifyDurableEvent(event)
+			if test.wantErr && verifyErr == nil {
+				t.Fatal("invalid audit JSONL passed Log.VerifyDurableEvent")
+			}
+			if !test.wantErr && verifyErr != nil {
+				t.Fatalf("valid audit JSONL failed Log.VerifyDurableEvent: %v", verifyErr)
+			}
+			confirmErr := recovery.ConfirmCompletion(log, id, event)
+			if test.wantErr && confirmErr == nil {
+				t.Fatal("invalid audit JSONL produced a completion proof")
+			}
+			if !test.wantErr && confirmErr != nil {
+				t.Fatalf("valid audit JSONL failed PairingRecovery.ConfirmCompletion: %v", confirmErr)
+			}
+
+			reopened, err := OpenPairingRecovery(filepath.Dir(log.path))
+			if err != nil {
+				t.Fatal(err)
+			}
+			records, err := reopened.Records()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(records) != 1 {
+				t.Fatalf("recovery records = %d, want 1", len(records))
+			}
+			if test.wantErr {
+				if records[0].AuditProof != nil {
+					t.Fatal("rejected audit JSONL persisted a durable AuditProof")
+				}
+				if err := reopened.AcknowledgeResolved(id); err == nil {
+					t.Fatal("rejected audit JSONL permitted acknowledgment after reopening")
+				}
+				return
+			}
+			if records[0].AuditProof == nil || records[0].AuditProof.Event != event {
+				t.Fatal("valid audit JSONL did not persist its durable AuditProof")
+			}
+			if err := reopened.AcknowledgeResolved(id); err != nil {
+				t.Fatalf("valid durable completion could not be acknowledged: %v", err)
+			}
+		})
+	}
+}
