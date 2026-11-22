@@ -73,7 +73,7 @@ function rowObject(value: unknown): Record<string, unknown> | null {
 async function readBody(request: Request): Promise<Record<string, unknown>> {
   const declared = request.headers.get("Content-Length");
   if (declared !== null) {
-    if (!/^(0|[1-9][0-9]*)$/.test(declared)) throw new Error("invalid request body");
+    if (!/^[0-9]+$/.test(declared)) throw new Error("invalid request body");
     const length = Number(declared);
     if (!Number.isSafeInteger(length)) throw new Error("invalid request body");
     if (length > maximumBodyBytes) throw new Error("request body too large");
