@@ -6,8 +6,11 @@ import {
   agentConnectionLeaseRequestConfig,
   agentRevocationTargets,
   cleanupExpiredDeviceRevocationMarkers,
+  completeDeviceRevocationLease,
   isGlobalDeviceRevokedLease,
   markGlobalDeviceRevokedLease,
+  queueDeviceRevocationLease,
+  retryPendingDeviceRevocations,
   REVOKED_DEVICE_TOMBSTONE_MS,
   bindGlobalAgentClientLease,
   cleanupExpiredRateLimitBuckets,
@@ -171,6 +174,15 @@ test("global agent lease internal requests accept only exact bounded schemas", a
     deviceID: clientDeviceID,
   });
 
+  const completeRevocation = new Request("https://wedecent.internal/device-revocation-complete", {
+    method: "POST",
+    body: JSON.stringify({ device_id: clientDeviceID }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(completeRevocation), {
+    action: "complete-device-revocation",
+    deviceID: clientDeviceID,
+  });
+
   const extraField = new Request("https://wedecent.internal/agent-acquire", {
     method: "POST",
     body: JSON.stringify({ ...lease, admin: true }),
@@ -288,6 +300,43 @@ test("revocation marker cleanup is bounded and removes expired entries", () => {
   const result = cleanupExpiredDeviceRevocationMarkers(storage, nowMS + REVOKED_DEVICE_TOMBSTONE_MS);
   assert.equal(result.remaining, 0);
   assert.equal(storage.has("revoked-device:" + deviceID), false);
+});
+
+test("pending revocation dispatch retries until every relay accepts the close event", async () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  queueDeviceRevocationLease(storage, deviceID, nowMS);
+  const calls = [];
+  let shouldFail = true;
+  const namespace = {
+    idFromName(value) { return value; },
+    get(value) {
+      return {
+        async fetch(request) {
+          calls.push({ deviceID: value, url: request.url });
+          return new Response(null, { status: shouldFail ? 503 : 204 });
+        },
+      };
+    },
+  };
+
+  const first = await retryPendingDeviceRevocations(namespace, storage, nowMS);
+  assert.equal(first.remaining, 1);
+  assert.equal(storage.get("pending-device-revocation:" + deviceID).attempts, 1);
+  assert.equal(storage.get("pending-device-revocation:" + deviceID).nextAttemptAtMS, nowMS + 60_000);
+
+  shouldFail = false;
+  const second = await retryPendingDeviceRevocations(namespace, storage, nowMS + 60_000);
+  assert.equal(second.remaining, 0);
+  assert.equal(storage.has("pending-device-revocation:" + deviceID), false);
+  assert.equal(calls.length, 2);
+});
+
+test("completed revocation removes its durable retry record", () => {
+  const storage = createStorage();
+  queueDeviceRevocationLease(storage, deviceID, 10_000);
+  assert.equal(completeDeviceRevocationLease(storage, deviceID), true);
+  assert.equal(storage.has("pending-device-revocation:" + deviceID), false);
 });
 
 test("uses bounded production defaults and rejects invalid overrides", () => {
