@@ -257,8 +257,18 @@ export function consumeRateLimitBuckets(storage, buckets, windowMS, nowMS) {
     throw new Error("invalid rate-limit clock");
   }
 
+  const seenScopes = new Set();
+  const pendingWrites = new Map();
+  const pendingCounts = new Map();
+  const saturatedScopes = [];
+
   for (const bucket of buckets) {
     validateBucket(bucket);
+    if (seenScopes.has(bucket.scope)) {
+      throw new Error("duplicate rate-limit bucket scope");
+    }
+    seenScopes.add(bucket.scope);
+
     const isGlobal = GLOBAL_SCOPES.has(bucket.scope);
     const storageKey = "bucket:" + bucket.scope + ":" + bucket.key;
     let state = storage.get(storageKey);
@@ -268,6 +278,14 @@ export function consumeRateLimitBuckets(storage, buckets, windowMS, nowMS) {
         validatePersistedTokenBucket(state);
       } else {
         validatePersistedBucket(state);
+        const expiryWindowMS = Number.isSafeInteger(state.windowMS)
+          ? Math.max(state.windowMS, windowMS)
+          : windowMS;
+        const effectiveExpiryMS = Math.max(state.expiresAtMS, state.updatedAtMS + expiryWindowMS);
+        if (effectiveExpiryMS > state.expiresAtMS) {
+          state = { ...state, expiresAtMS: effectiveExpiryMS, windowMS: expiryWindowMS };
+          storage.put(storageKey, state);
+        }
         if (state.expiresAtMS <= nowMS) {
           storage.delete(storageKey);
           decrementBucketCount(storage, bucket.scope, nowMS);
@@ -278,33 +296,61 @@ export function consumeRateLimitBuckets(storage, buckets, windowMS, nowMS) {
 
     if (state === undefined && !isGlobal) {
       const countKey = "count:" + bucket.scope;
-      const storedCount = storage.get(countKey);
-      const count =
-        storedCount === undefined
-          ? cleanupRateLimitScope(storage, bucket.scope, nowMS).active
-          : readPersistedCount(storedCount);
+      const count = pendingCounts.has(bucket.scope)
+        ? pendingCounts.get(bucket.scope)
+        : (() => {
+            const storedCount = storage.get(countKey);
+            return storedCount === undefined
+              ? cleanupRateLimitScope(storage, bucket.scope, nowMS).active
+              : readPersistedCount(storedCount);
+          })();
+
       if (count >= MAX_RATE_LIMIT_BUCKETS_PER_SCOPE) {
-        return {
-          accepted: false,
-          retryAfterMS: windowMS,
-          scope: bucket.scope,
-          saturated: true,
-        };
+        // Saturated identity scopes fall back to the already-enforced global quota.
+        // Unknown identities never allocate persistent buckets or deny all newcomers.
+        saturatedScopes.push(bucket.scope);
+        continue;
       }
-      storage.put(countKey, count + 1);
+      pendingCounts.set(bucket.scope, count + 1);
     }
 
     const result = consumeTokenBucket(state, nowMS, bucket.capacity, windowMS);
-    storage.put(storageKey, {
-      ...result.state,
-      expiresAtMS: isGlobal ? null : nowMS + windowMS,
-    });
     if (!result.accepted) {
-      return { accepted: false, retryAfterMS: result.retryAfterMS, scope: bucket.scope, saturated: false };
+      return {
+        accepted: false,
+        retryAfterMS: result.retryAfterMS,
+        scope: bucket.scope,
+        saturated: false,
+        saturatedScopes,
+      };
     }
+
+    const persistedWindowMS = isGlobal
+      ? undefined
+      : state && Number.isSafeInteger(state.windowMS)
+        ? Math.max(state.windowMS, windowMS)
+        : windowMS;
+    pendingWrites.set(storageKey, {
+      ...result.state,
+      expiresAtMS: isGlobal ? null : result.state.updatedAtMS + persistedWindowMS,
+      ...(isGlobal ? {} : { windowMS: persistedWindowMS }),
+    });
   }
 
-  return { accepted: true, retryAfterMS: 0, scope: null, saturated: false };
+  for (const [scope, count] of pendingCounts) {
+    storage.put("count:" + scope, count);
+  }
+  for (const [key, state] of pendingWrites) {
+    storage.put(key, state);
+  }
+
+  return {
+    accepted: true,
+    retryAfterMS: 0,
+    scope: null,
+    saturated: saturatedScopes.length > 0,
+    saturatedScopes,
+  };
 }
 
 export function cleanupExpiredRateLimitBuckets(storage, nowMS) {
