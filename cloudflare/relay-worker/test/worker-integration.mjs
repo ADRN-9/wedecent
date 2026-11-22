@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign } from "node:crypto";
 import { spawn } from "node:child_process";
-import { createServer } from "node:net";
+import { connect, createServer } from "node:net";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -27,7 +28,7 @@ async function freePort() {
   return port;
 }
 
-function startWorker(port, persistTo, globalLimit, ipLimit = 10_000) {
+function startWorker(port, persistTo, globalLimit, ipLimit = 10_000, extraVars = {}) {
   const args = [
     "--no-install", "wrangler", "dev", "--local",
     "--ip", "127.0.0.1",
@@ -36,6 +37,9 @@ function startWorker(port, persistTo, globalLimit, ipLimit = 10_000) {
     "--var", "RELAY_DIRECT_GLOBAL_REQUESTS_PER_WINDOW:" + globalLimit,
     "--var", "RELAY_DIRECT_IP_REQUESTS_PER_WINDOW:" + ipLimit,
   ];
+  for (const [key, value] of Object.entries(extraVars)) {
+    args.push("--var", key + ":" + value);
+  }
   const child = spawn("npx", args, {
     cwd: process.cwd(),
     detached: true,
@@ -86,8 +90,8 @@ async function stopWorker(worker) {
   }
 }
 
-async function withWorker(port, persistTo, globalLimit, ipLimit, operation) {
-  const worker = startWorker(port, persistTo, globalLimit, ipLimit);
+async function withWorker(port, persistTo, globalLimit, ipLimit, operation, extraVars = {}) {
+  const worker = startWorker(port, persistTo, globalLimit, ipLimit, extraVars);
   const baseURL = "http://127.0.0.1:" + port;
   try {
     await waitForHealth(worker, baseURL);
@@ -157,6 +161,146 @@ async function verifyDurableObjectPersistence() {
   });
 }
 
+function base64url(value) {
+  return Buffer.from(value).toString("base64url");
+}
+
+function base32NoPadding(bytes) {
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  let bits = 0;
+  let value = 0;
+  let output = "";
+  for (const byte of bytes) {
+    value = (value << 8) | byte;
+    bits += 8;
+    while (bits >= 5) {
+      output += alphabet[(value >>> (bits - 5)) & 31];
+      bits -= 5;
+    }
+    if (bits > 24) value &= (1 << bits) - 1;
+  }
+  if (bits > 0) output += alphabet[(value << (5 - bits)) & 31];
+  return output;
+}
+
+function createAgentCredentials(slot = 1) {
+  const agent = generateKeyPairSync("ed25519");
+  const agentSPKI = agent.publicKey.export({ format: "der", type: "spki" });
+  const agentPublicKey = agentSPKI.subarray(agentSPKI.length - 32);
+  const deviceID = "wd_" + base32NoPadding(createHash("sha256").update(agentPublicKey).digest().subarray(0, 10));
+  const issuedAt = Math.floor(Date.now() / 1000);
+  const ticketClaims = {
+    v: 2,
+    aud: "wedecent-relay",
+    iss: deviceID,
+    sub: deviceID,
+    role: "agent",
+    iat: issuedAt,
+    exp: issuedAt + 90,
+    jti: base64url(randomBytes(16)),
+    pk: base64url(agentPublicKey),
+    slot,
+  };
+  const ticketPayload = base64url(Buffer.from(JSON.stringify(ticketClaims)));
+  const ticketInput = "wedecent-relay-ticket-v2\n" + ticketPayload;
+  const relayTicket = "wdt2." + ticketPayload + "." + base64url(sign(null, Buffer.from(ticketInput), agent.privateKey));
+
+  const controlPlane = generateKeyPairSync("ed25519");
+  const controlSPKI = controlPlane.publicKey.export({ format: "der", type: "spki" });
+  const jwk = controlPlane.publicKey.export({ format: "jwk" });
+  const thumbprintInput = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x });
+  const kid = createHash("sha256").update(thumbprintInput).digest("base64url");
+  const admissionHeader = { alg: "EdDSA", typ: "JWT", kid };
+  const clientDeviceID = deviceID === "wd_mw3am46w5weex4a4" ? "wd_aaaaaaaaaaaaaaaa" : "wd_mw3am46w5weex4a4";
+  const admissionClaims = {
+    grant_id: randomUUID(),
+    organization_id: null,
+    client_device_id: clientDeviceID,
+    target_device_id: deviceID,
+    permission: "terminal.connect",
+    purpose: "relay.agent.connect",
+    slot,
+    iss: "wedecent-control-plane",
+    aud: "wedecent-relay-agent",
+    sub: randomUUID(),
+    jti: randomUUID(),
+    iat: issuedAt,
+    exp: issuedAt + 90,
+  };
+  const admissionInput = base64url(Buffer.from(JSON.stringify(admissionHeader))) + "." +
+    base64url(Buffer.from(JSON.stringify(admissionClaims)));
+  const agentAdmission = admissionInput + "." + base64url(sign(null, Buffer.from(admissionInput), controlPlane.privateKey));
+
+  return {
+    deviceID,
+    relayTicket,
+    agentAdmission,
+    publicSPKIB64: controlSPKI.toString("base64"),
+  };
+}
+
+async function websocketUpgradeStatus(port, deviceID, relayTicket, agentAdmission) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1");
+    let response = Buffer.alloc(0);
+    let settled = false;
+    const finish = (error, status) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      socket.destroy();
+      if (error) reject(error);
+      else resolve(status);
+    };
+    const timeout = setTimeout(() => finish(new Error("WebSocket upgrade timed out")), 10_000);
+    socket.on("connect", () => {
+      const key = randomBytes(16).toString("base64");
+      socket.write([
+        "GET /v1/stream/" + deviceID + "?role=agent&slot=1 HTTP/1.1",
+        "Host: 127.0.0.1:" + port,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: " + key,
+        "Authorization: Bearer " + relayTicket,
+        "X-WeDecent-Agent-Admission: " + agentAdmission,
+        "",
+        "",
+      ].join("\r\n"));
+    });
+    socket.on("data", (chunk) => {
+      response = Buffer.concat([response, chunk]);
+      const end = response.indexOf("\r\n\r\n");
+      if (end < 0) return;
+      const statusLine = response.subarray(0, end).toString("latin1").split("\r\n")[0];
+      const match = /^HTTP\/1\.[01] (\d{3})/.exec(statusLine);
+      if (!match) return finish(new Error("invalid WebSocket response: " + statusLine));
+      finish(null, Number(match[1]));
+    });
+    socket.on("error", (error) => finish(error));
+    socket.on("close", () => {
+      if (!settled) finish(new Error("WebSocket closed before response headers"));
+    });
+  });
+}
+
+async function verifyAgentReplayPersistence() {
+  const port = await freePort();
+  const persistTo = join(root, "agent-state");
+  const credentials = createAgentCredentials(1);
+  const extraVars = { WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: credentials.publicSPKIB64 };
+
+  await withWorker(port, persistTo, 10_000, 10_000, async () => {
+    const status = await websocketUpgradeStatus(port, credentials.deviceID, credentials.relayTicket, credentials.agentAdmission);
+    assert.equal(status, 101, "signed enrolled agent should be admitted once");
+  }, extraVars);
+
+  await withWorker(port, persistTo, 10_000, 10_000, async () => {
+    const replay = await websocketUpgradeStatus(port, credentials.deviceID, credentials.relayTicket, credentials.agentAdmission);
+    assert.equal(replay, 409, "agent admission and relay-ticket replay state must survive Worker restart");
+  }, extraVars);
+}
+
 async function measureCentralLimiter() {
   const port = await freePort();
   await withWorker(port, join(root, "performance-state"), 10_000, 10_000, async (baseURL) => {
@@ -193,6 +337,7 @@ async function measureCentralLimiter() {
 
 try {
   await verifyDurableObjectPersistence();
+  await verifyAgentReplayPersistence();
   await measureCentralLimiter();
 } finally {
   await rm(root, { recursive: true, force: true });
