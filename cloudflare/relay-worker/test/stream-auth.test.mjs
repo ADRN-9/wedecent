@@ -174,7 +174,7 @@ test("legacy shared-token agents require control-plane admission", async () => {
   assert.equal(result.status, 403);
 });
 
-test("legacy shared-token agents remain a bounded migration path with signed admission", async () => {
+test("legacy shared-token agents use the control-plane authenticated device identity", async () => {
   const admission = issueAgentAdmission(targetDeviceID, 4);
   const req = new Request("https://relay.test/v1/stream/" + targetDeviceID + "?role=agent&slot=4", {
     headers: {
@@ -185,8 +185,8 @@ test("legacy shared-token agents remain a bounded migration path with signed adm
   const result = await authorizeStream(req, env, { deviceId: targetDeviceID, role: "agent", slot: 4 }, now);
   assert.deepEqual(result, {
     ok: true,
-    deviceID: null,
-    targetDeviceID: null,
+    deviceID: targetDeviceID,
+    targetDeviceID,
     legacy: true,
     agentAdmissionReplay: { jti: "a90987bf-bae6-45da-ab21-c82d049617bd", exp: now + 90 },
   });
