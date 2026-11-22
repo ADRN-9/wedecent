@@ -33,12 +33,18 @@ import {
   withRelayTraceHeader,
 } from "./observability.js";
 import {
+  acquireGlobalAgentConnectionLease,
+  agentConnectionLeaseRequestConfig,
   cleanupExpiredRateLimitBuckets,
+  cleanupGlobalAgentConnectionLeases,
   consumeRateLimitBuckets,
   RATE_LIMIT_CLEANUP_INTERVAL_MS,
   enforceRelayDeviceRateLimit,
   enforceRelayRequestRateLimit,
   limiterRequestConfig,
+  releaseGlobalAgentConnection,
+  releaseGlobalAgentConnectionLease,
+  reserveGlobalAgentConnection,
 } from "./rate-limit.js";
 
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
@@ -284,6 +290,21 @@ export class ConnectionRateLimiter extends DurableObject {
       }
     }
 
+    const leaseConfig = await agentConnectionLeaseRequestConfig(request);
+    if (leaseConfig) {
+      try {
+        if (leaseConfig.action === "acquire") {
+          const result = acquireGlobalAgentConnectionLease(this.ctx.storage.kv, leaseConfig);
+          await this.#ensureCleanupScheduled();
+          return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+        }
+        const released = releaseGlobalAgentConnectionLease(this.ctx.storage.kv, leaseConfig.leaseID);
+        return Response.json({ released }, { headers: { "Cache-Control": "no-store" } });
+      } catch {
+        return new Response("Global agent connection limiter unavailable", { status: 503 });
+      }
+    }
+
     const config = await limiterRequestConfig(request);
     if (!config) {
       return new Response("Invalid rate-limit request", { status: 400 });
@@ -310,15 +331,22 @@ export class ConnectionRateLimiter extends DurableObject {
   }
 
   async alarm() {
-    const cleanup = cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, Date.now());
-    if (cleanup.remaining > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + RATE_LIMIT_CLEANUP_INTERVAL_MS);
+    const nowMS = Date.now();
+    const cleanup = cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, nowMS);
+    const leases = cleanupGlobalAgentConnectionLeases(this.ctx.storage.kv, nowMS);
+    if (cleanup.remaining > 0 || leases.remaining > 0) {
+      await this.ctx.storage.setAlarm(nowMS + RATE_LIMIT_CLEANUP_INTERVAL_MS);
     }
   }
 }
 
 export class DeviceRelay extends DurableObject {
   #admission = Promise.resolve();
+
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.env = env;
+  }
 
   async fetch(request) {
     const url = new URL(request.url);
@@ -400,37 +428,64 @@ export class DeviceRelay extends DurableObject {
       return new Response("Agent admission replay metadata missing", { status: 403 });
     }
 
-    const consumption = await consumeAgentAdmission(
-      this.ctx.storage,
-      admission.jti,
-      admission.exp,
-      relayTicket?.jti ?? null,
-      relayTicket?.exp ?? null,
-    );
-    if (!consumption.accepted) {
-      return new Response("Agent admission already used or expired", { status: 409 });
+    const deviceID = decodeURIComponent(url.pathname.slice(STREAM_PREFIX.length));
+    const leaseID = crypto.randomUUID();
+    const absoluteExpiresAtMS = Date.now() + MAX_AGENT_SESSION_LIFETIME_MS;
+    let globalLease;
+    try {
+      globalLease = await reserveGlobalAgentConnection(this.env.RELAY_RATE_LIMIT, {
+        leaseID,
+        deviceID,
+        slot,
+        expiresAtMS: absoluteExpiresAtMS,
+      });
+    } catch {
+      return new Response("Global agent connection limiter unavailable", { status: 503 });
     }
-    await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
-
-    // Only replace free sockets after the new admission capability has been consumed.
-    for (const entry of plan.retire) {
-      entry.socket.close(1000, "Superseded relay slot");
+    if (!globalLease.accepted) {
+      return new Response("Global agent connection capacity reached", { status: 429, headers: { "Retry-After": "1" } });
     }
 
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-    const id = crypto.randomUUID();
-    server.serializeAttachment(createAgentSessionAttachment({
-      id,
-      role: "agent",
-      peerId: null,
-      slot,
-      absoluteExpiresAtMS: Date.now() + MAX_AGENT_SESSION_LIFETIME_MS,
-    }));
-    this.ctx.acceptWebSocket(server, ["agent", `agent-slot-${slot}`]);
-    await this.#scheduleAgentSessionAlarm();
+    let leaseOwned = true;
+    try {
+      const consumption = await consumeAgentAdmission(
+        this.ctx.storage,
+        admission.jti,
+        admission.exp,
+        relayTicket?.jti ?? null,
+        relayTicket?.exp ?? null,
+      );
+      if (!consumption.accepted) {
+        return new Response("Agent admission already used or expired", { status: 409 });
+      }
+      await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
 
-    return new Response(null, { status: 101, webSocket: client });
+      // Only replace free sockets after the new admission capability has been consumed.
+      for (const entry of plan.retire) {
+        entry.socket.close(1000, "Superseded relay slot");
+      }
+
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      const id = crypto.randomUUID();
+      server.serializeAttachment(createAgentSessionAttachment({
+        id,
+        role: "agent",
+        peerId: null,
+        slot,
+        leaseID,
+        absoluteExpiresAtMS,
+      }));
+      this.ctx.acceptWebSocket(server, ["agent", `agent-slot-${slot}`]);
+      leaseOwned = false;
+      await this.#scheduleAgentSessionAlarm();
+
+      return new Response(null, { status: 101, webSocket: client });
+    } finally {
+      if (leaseOwned) {
+        await this.#releaseAgentLease(leaseID);
+      }
+    }
   }
 
   #acceptClient(request) {
@@ -516,6 +571,14 @@ export class DeviceRelay extends DurableObject {
     await this.#scheduleAgentSessionAlarm(nowMS);
   }
 
+  async #releaseAgentLease(leaseID) {
+    try {
+      await releaseGlobalAgentConnection(this.env.RELAY_RATE_LIMIT, leaseID);
+    } catch {
+      // Expiring the bounded lease is the fail-safe if explicit release is unavailable.
+    }
+  }
+
   async #scheduleAgentSessionAlarm(nowMS = Date.now()) {
     const entries = this.ctx.getWebSockets("agent").map((socket) => {
       try {
@@ -590,8 +653,11 @@ export class DeviceRelay extends DurableObject {
     peer.send(message);
   }
 
-  webSocketClose(socket, code, reason) {
+  async webSocketClose(socket, code, reason) {
     const attachment = socket.deserializeAttachment();
+    if (attachment?.role === "agent" && typeof attachment.leaseID === "string") {
+      await this.#releaseAgentLease(attachment.leaseID);
+    }
     if (!attachment?.peerId) {
       return;
     }
@@ -602,8 +668,11 @@ export class DeviceRelay extends DurableObject {
     }
   }
 
-  webSocketError(socket) {
+  async webSocketError(socket) {
     const attachment = socket.deserializeAttachment();
+    if (attachment?.role === "agent" && typeof attachment.leaseID === "string") {
+      await this.#releaseAgentLease(attachment.leaseID);
+    }
     if (!attachment?.peerId) {
       return;
     }
