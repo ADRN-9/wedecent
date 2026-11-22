@@ -482,6 +482,35 @@ func waitRevocationPTYClosed(t *testing.T, pty *revocationTestPTY) {
 	}
 }
 
+func parseRevocationAudit(data []byte) ([]audit.Event, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
+
+	lines := bytes.Split(data, []byte{'\n'})
+	// JSONL records are complete only after their newline delimiter. Discard
+	// exactly the final split element: it is either the empty element produced
+	// by a terminating newline or an in-flight append that the next poll retries.
+	lines = lines[:len(lines)-1]
+
+	events := make([]audit.Event, 0, len(lines))
+	for index, line := range lines {
+		record := bytes.TrimSpace(line)
+		if len(record) == 0 {
+			return nil, fmt.Errorf("audit JSONL record %d is empty", index+1)
+		}
+		if record[0] != '{' {
+			return nil, fmt.Errorf("audit JSONL record %d is not an object", index+1)
+		}
+		var event audit.Event
+		if err := json.Unmarshal(record, &event); err != nil {
+			return nil, fmt.Errorf("decode audit JSONL record %d: %w", index+1, err)
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
 func readRevocationAudit(t *testing.T, stateDir string) []audit.Event {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(stateDir, audit.FileName))
@@ -491,38 +520,60 @@ func readRevocationAudit(t *testing.T, stateDir string) []audit.Event {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A concurrent append may expose its final JSONL record before the newline.
-	// Ignore only that incomplete tail; the polling caller will read it again.
-	if len(data) > 0 && data[len(data)-1] != '\n' {
-		lastNewline := bytes.LastIndexByte(data, '\n')
-		if lastNewline < 0 {
-			return nil
-		}
-		data = data[:lastNewline+1]
-	}
-	var events []audit.Event
-	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		if len(line) == 0 {
-			continue
-		}
-		var event audit.Event
-		if err := json.Unmarshal(line, &event); err != nil {
-			t.Fatal(err)
-		}
-		events = append(events, event)
+	events, err := parseRevocationAudit(data)
+	if err != nil {
+		t.Fatal(err)
 	}
 	return events
 }
 
-func TestReadRevocationAuditIgnoresIncompleteTrailingAppend(t *testing.T) {
-	stateDir := t.TempDir()
-	data := []byte("{\"type\":\"terminal.session_terminated\",\"outcome\":\"success\"}\n{\"type\":")
-	if err := os.WriteFile(filepath.Join(stateDir, audit.FileName), data, 0o600); err != nil {
-		t.Fatal(err)
+func TestParseRevocationAuditJSONL(t *testing.T) {
+	validRecord := []byte("{\"type\":\"terminal.session_terminated\",\"outcome\":\"success\"}")
+	malformedRecord := []byte("{\"type\":}")
+	incompleteRecord := []byte("{\"type\":")
+	validRecords := append(append(append([]byte(nil), validRecord...), '\n'), validRecord...)
+	validRecords = append(validRecords, '\n')
+	validWithFinalNewline := append(append([]byte(nil), validRecord...), '\n')
+	validWithIncompleteTail := append(append([]byte(nil), validRecord...), '\n')
+	validWithIncompleteTail = append(validWithIncompleteTail, incompleteRecord...)
+	interiorBlank := append(append(append([]byte(nil), validRecord...), '\n', '\n'), validRecord...)
+	interiorBlank = append(interiorBlank, '\n')
+	malformedComplete := append(append([]byte(nil), malformedRecord...), '\n')
+	malformedThenIncomplete := append(append([]byte(nil), malformedRecord...), '\n')
+	malformedThenIncomplete = append(malformedThenIncomplete, incompleteRecord...)
+
+	tests := []struct {
+		name       string
+		data       []byte
+		wantEvents int
+		wantErr    bool
+	}{
+		{name: "valid complete records", data: validRecords, wantEvents: 2},
+		{name: "valid final newline", data: validWithFinalNewline, wantEvents: 1},
+		{name: "incomplete trailing fragment", data: validWithIncompleteTail, wantEvents: 1},
+		{name: "interior blank line", data: interiorBlank, wantErr: true},
+		{name: "malformed complete record", data: malformedComplete, wantErr: true},
+		{name: "malformed complete record followed by incomplete fragment", data: malformedThenIncomplete, wantErr: true},
 	}
-	events := readRevocationAudit(t, stateDir)
-	if len(events) != 1 || events[0].Type != "terminal.session_terminated" {
-		t.Fatalf("complete audit events = %#v, want the one complete record", events)
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			events, err := parseRevocationAudit(test.data)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("parseRevocationAudit() error = %v, wantErr %v", err, test.wantErr)
+			}
+			if test.wantErr {
+				return
+			}
+			if len(events) != test.wantEvents {
+				t.Fatalf("parsed events = %d, want %d: %#v", len(events), test.wantEvents, events)
+			}
+			for _, event := range events {
+				if event.Type != "terminal.session_terminated" || event.Outcome != "success" {
+					t.Fatalf("parsed audit event = %#v", event)
+				}
+			}
+		})
 	}
 }
 
