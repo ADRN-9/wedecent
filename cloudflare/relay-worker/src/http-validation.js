@@ -51,7 +51,12 @@ export async function readBoundedRequestBody(request, maxBytes) {
     return { ok: false, status: 400 };
   }
 
-  const reader = request.body.getReader();
+  let reader;
+  try {
+    reader = request.body.getReader();
+  } catch {
+    return { ok: false, status: 400 };
+  }
   const chunks = [];
   let totalBytes = 0;
   let chunkCount = 0;
@@ -61,14 +66,14 @@ export async function readBoundedRequestBody(request, maxBytes) {
       const { done, value } = await reader.read();
       if (done) break;
       if (!(value instanceof Uint8Array)) {
-        await cancelReader(reader);
+        cancelReader(reader);
         return { ok: false, status: 400 };
       }
 
       chunkCount++;
       totalBytes += value.byteLength;
       if (chunkCount > MAX_BODY_CHUNKS || totalBytes > maxBytes) {
-        await cancelReader(reader);
+        cancelReader(reader);
         return { ok: false, status: 413 };
       }
       chunks.push(value);
