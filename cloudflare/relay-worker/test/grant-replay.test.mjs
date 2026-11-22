@@ -218,6 +218,16 @@ test("expired replay metadata cannot be consumed", async () => {
   assert.equal(result.accepted, false);
 });
 
+test("replay cleanup expires agent admission and relay ticket keys without changing legacy grant keys", async () => {
+  const storage = new MemoryStorage();
+  const ticketJti = Buffer.alloc(16, 3).toString("base64url");
+  const consumed = await consumeAgentAdmission(storage, jti, exp, ticketJti, exp, nowMS);
+  assert.equal(consumed.accepted, true);
+  await scheduleReplayCleanup(storage, consumed.expiresAtMS);
+  await cleanupExpiredConnectionGrants(storage, consumed.expiresAtMS + 1);
+  assert.equal(storage.data.size, 0);
+});
+
 test("cleanup removes expired replay records and keeps the next alarm", async () => {
   const storage = new MemoryStorage();
   const first = await consumeConnectionGrant(storage, jti, exp, nowMS);
