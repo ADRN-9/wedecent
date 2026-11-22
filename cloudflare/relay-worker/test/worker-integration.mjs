@@ -120,17 +120,21 @@ async function verifyDurableObjectPersistence() {
     await readiness.arrayBuffer();
     assert.equal(readiness.status, 200, "local Durable Object bindings should be ready");
 
-    const unsupported = await fetch(baseURL + directPath, { method: "GET" });
-    await unsupported.arrayBuffer();
-    assert.equal(unsupported.status, 405);
+    for (let i = 0; i < 100; i++) {
+      const unsupported = await fetch(baseURL + directPath + "?flood=" + i, { method: "GET" });
+      await unsupported.arrayBuffer();
+      assert.equal(unsupported.status, 405);
+    }
 
-    const malformed = await fetch(baseURL + "/v1/direct-authorize/not-a-device", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body,
-    });
-    await malformed.arrayBuffer();
-    assert.equal(malformed.status, 400);
+    for (let i = 0; i < 100; i++) {
+      const malformed = await fetch(baseURL + "/v1/direct-authorize/not-a-device-" + i, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body,
+      });
+      await malformed.arrayBuffer();
+      assert.equal(malformed.status, 400);
+    }
 
     const oversizedStream = new ReadableStream({
       start(controller) {
