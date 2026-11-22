@@ -234,7 +234,7 @@ async function handleDeviceRevocation(request, env, url) {
     return new Response("Invalid device ID", { status: 400 });
   }
   const expected = typeof env.RELAY_REVOCATION_TOKEN === "string" ? env.RELAY_REVOCATION_TOKEN : "";
-  if (expected.length < 32) {
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(expected)) {
     return new Response("Relay revocation authority is not configured", { status: 503 });
   }
   if (!constantTimeStringEqual(bearerToken(request), expected)) {
