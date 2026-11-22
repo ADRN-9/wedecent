@@ -146,7 +146,6 @@ func (l *Log) findAndSyncAuditEvent(path string, target []byte) (int, error) {
 	return matches, nil
 }
 
-
 // validateJSONUnicode rejects encodings that encoding/json otherwise repairs
 // by replacing malformed UTF-8 or unpaired UTF-16 surrogate escapes with U+FFFD.
 // It scans every JSON string, including object keys, before any JSON decoding.

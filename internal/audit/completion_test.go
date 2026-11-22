@@ -768,7 +768,7 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 				bad = append(bad, []byte("\"}\n")...)
 				return join(record(target), bad)
 			},
-			wantErr: true,
+			wantErr:    true,
 			leakMarker: "sensitive-audit-secret",
 		},
 		{
@@ -779,7 +779,7 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 				bad = append(bad, []byte("\":\"sensitive-key-secret\"}\n")...)
 				return join(record(target), bad)
 			},
-			wantErr: true,
+			wantErr:    true,
 			leakMarker: "sensitive-key-secret",
 		},
 		{
@@ -945,7 +945,6 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 	}
 }
 
-
 func TestPairingCompletionCanonicalizesNonUTCTimestamps(t *testing.T) {
 	recovery, log, id := completedRecoveryFixture(t)
 	event := completionTestEvent(id)
@@ -978,4 +977,3 @@ func TestPairingCompletionCanonicalizesNonUTCTimestamps(t *testing.T) {
 		t.Fatalf("canonical non-UTC completion could not be acknowledged after reopening: %v", err)
 	}
 }
-
