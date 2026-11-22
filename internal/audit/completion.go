@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"wedecent.com/wedecent/internal/trust"
 )
@@ -23,9 +24,10 @@ func (l *Log) VerifyDurableEvent(event Event) error {
 	if err := validateEvent(&copyEvent); err != nil || copyEvent != event {
 		return errors.New("invalid pairing audit verification event")
 	}
-	target, err := json.Marshal(event)
+	copyEvent.Time = copyEvent.Time.UTC()
+	target, err := json.Marshal(copyEvent)
 	if err != nil {
-		return err
+		return errors.New("pairing audit verification event could not be encoded")
 	}
 	unlock, err := lockFile(l.path)
 	if err != nil {
@@ -144,6 +146,85 @@ func (l *Log) findAndSyncAuditEvent(path string, target []byte) (int, error) {
 	return matches, nil
 }
 
+
+// validateJSONUnicode rejects encodings that encoding/json otherwise repairs
+// by replacing malformed UTF-8 or unpaired UTF-16 surrogate escapes with U+FFFD.
+// It scans every JSON string, including object keys, before any JSON decoding.
+func validateJSONUnicode(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("JSON input is not valid UTF-8")
+	}
+scan:
+	for i := 0; i < len(data); {
+		if data[i] != '"' {
+			i++
+			continue
+		}
+		i++
+		for i < len(data) {
+			switch data[i] {
+			case '"':
+				i++
+				continue scan
+			case '\\':
+				if i+1 >= len(data) {
+					return errors.New("JSON string has an incomplete escape")
+				}
+				if data[i+1] != 'u' {
+					i += 2
+					continue
+				}
+				code, ok := parseJSONUnicodeQuad(data[i+2:])
+				if !ok {
+					return errors.New("JSON string has an invalid Unicode escape")
+				}
+				switch {
+				case code >= 0xD800 && code <= 0xDBFF:
+					// A high surrogate must be immediately followed by one
+					// escaped low surrogate; literal UTF-8 cannot complete it.
+					if i+12 > len(data) || data[i+6] != '\\' || data[i+7] != 'u' {
+						return errors.New("JSON string has an unpaired high surrogate")
+					}
+					low, valid := parseJSONUnicodeQuad(data[i+8:])
+					if !valid || low < 0xDC00 || low > 0xDFFF {
+						return errors.New("JSON string has an unpaired high surrogate")
+					}
+					i += 12
+				case code >= 0xDC00 && code <= 0xDFFF:
+					return errors.New("JSON string has an unpaired low surrogate")
+				default:
+					i += 6
+				}
+			default:
+				i++
+			}
+		}
+		return errors.New("JSON string is unterminated")
+	}
+	return nil
+}
+
+func parseJSONUnicodeQuad(data []byte) (uint16, bool) {
+	if len(data) < 4 {
+		return 0, false
+	}
+	var value uint16
+	for _, c := range data[:4] {
+		value <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			value |= uint16(c - '0')
+		case c >= 'a' && c <= 'f':
+			value |= uint16(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			value |= uint16(c-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
+}
+
 // auditProofEventFields defines the strict v1 JSON schema. Exact JSON tag
 // spellings are required; unknown fields and case-folded aliases are rejected.
 // Compatibility policy: additive Event fields require a coordinated reader
@@ -159,6 +240,9 @@ var auditProofEventFields = map[string]struct{}{
 
 func decodeAuditProofEvent(record []byte) (Event, error) {
 	var event Event
+	if err := validateJSONUnicode(record); err != nil {
+		return event, errors.New("audit event contains invalid Unicode")
+	}
 	schema := json.NewDecoder(bytes.NewReader(record))
 	schema.UseNumber()
 	root, err := schema.Token()
@@ -220,6 +304,7 @@ func decodeAuditProofEvent(record []byte) (Event, error) {
 	if event.Time.IsZero() {
 		return Event{}, errors.New("audit event timestamp is zero")
 	}
+	event.Time = event.Time.UTC()
 	validated := event
 	if err := validateEvent(&validated); err != nil || validated != event {
 		return Event{}, errors.New("audit event fields are invalid")

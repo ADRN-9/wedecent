@@ -505,10 +505,11 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 
 	type recordBuilder func(target, other []byte, maxBytes int64) []byte
 	tests := []struct {
-		name    string
-		active  recordBuilder
-		archive recordBuilder
-		wantErr bool
+		name       string
+		active     recordBuilder
+		archive    recordBuilder
+		wantErr    bool
+		leakMarker string
 	}{
 		{
 			name: "valid JSONL with records before and after target",
@@ -726,6 +727,108 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 			wantErr: true,
 		},
 		{
+			name: "equivalent instant with alternate timezone offset",
+			active: func(target, _ []byte, _ int64) []byte {
+				var parsed Event
+				if err := json.Unmarshal(target, &parsed); err != nil {
+					t.Fatal(err)
+				}
+				parsed.Time = parsed.Time.In(time.FixedZone("UTC-07", -7*60*60))
+				alternate, err := json.Marshal(parsed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return record(alternate)
+			},
+		},
+		{
+			name: "duplicate completion across active and archive with equivalent offset timestamps",
+			active: func(target, _ []byte, _ int64) []byte {
+				return record(target)
+			},
+			archive: func(target, _ []byte, _ int64) []byte {
+				var parsed Event
+				if err := json.Unmarshal(target, &parsed); err != nil {
+					t.Fatal(err)
+				}
+				parsed.Time = parsed.Time.In(time.FixedZone("UTC+05:30", 5*60*60+30*60))
+				alternate, err := json.Marshal(parsed)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return record(alternate)
+			},
+			wantErr: true,
+		},
+		{
+			name: "invalid raw UTF-8 in string value",
+			active: func(target, _ []byte, _ int64) []byte {
+				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"reason\":\"sensitive-audit-secret")
+				bad = append(bad, 0xff)
+				bad = append(bad, []byte("\"}\n")...)
+				return join(record(target), bad)
+			},
+			wantErr: true,
+			leakMarker: "sensitive-audit-secret",
+		},
+		{
+			name: "invalid raw UTF-8 in object key",
+			active: func(target, _ []byte, _ int64) []byte {
+				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"sensitive")
+				bad = append(bad, 0xff)
+				bad = append(bad, []byte("\":\"sensitive-key-secret\"}\n")...)
+				return join(record(target), bad)
+			},
+			wantErr: true,
+			leakMarker: "sensitive-key-secret",
+		},
+		{
+			name: "unpaired high surrogate in string value",
+			active: func(target, _ []byte, _ int64) []byte {
+				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"reason\":\"\\uD800\"}\n")
+				return join(record(target), bad)
+			},
+			wantErr: true,
+		},
+		{
+			name: "unpaired low surrogate in string value",
+			active: func(target, _ []byte, _ int64) []byte {
+				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"reason\":\"\\uDC00\"}\n")
+				return join(record(target), bad)
+			},
+			wantErr: true,
+		},
+		{
+			name: "unpaired high surrogate in object key",
+			active: func(target, _ []byte, _ int64) []byte {
+				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"\\uD800\":\"secret\"}\n")
+				return join(record(target), bad)
+			},
+			wantErr: true,
+		},
+		{
+			name: "unpaired low surrogate in object key",
+			active: func(target, _ []byte, _ int64) []byte {
+				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"\\uDC00\":\"secret\"}\n")
+				return join(record(target), bad)
+			},
+			wantErr: true,
+		},
+		{
+			name: "valid escaped surrogate pair in string value",
+			active: func(target, other []byte, _ int64) []byte {
+				valid := bytes.Replace(other, []byte("\"outcome\":\"success\""), []byte("\"outcome\":\"success\",\"reason\":\"\\uD83D\\uDE00\""), 1)
+				return join(record(target), record(valid))
+			},
+		},
+		{
+			name: "valid literal U+FFFD in string value",
+			active: func(target, other []byte, _ int64) []byte {
+				valid := bytes.Replace(other, []byte("\"outcome\":\"success\""), []byte("\"outcome\":\"success\",\"reason\":\"�\""), 1)
+				return join(record(target), record(valid))
+			},
+		},
+		{
 			name: "event record exactly at size limit including newline",
 			active: func(target, other []byte, _ int64) []byte {
 				return join(paddedRecord(other, maxEventSize), record(target))
@@ -804,6 +907,13 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 			if !test.wantErr && confirmErr != nil {
 				t.Fatalf("valid audit JSONL failed PairingRecovery.ConfirmCompletion: %v", confirmErr)
 			}
+			if test.leakMarker != "" {
+				for _, returnedErr := range []error{verifyErr, confirmErr} {
+					if returnedErr != nil && strings.Contains(returnedErr.Error(), test.leakMarker) {
+						t.Fatalf("externally returned parsing error disclosed sensitive audit content: %v", returnedErr)
+					}
+				}
+			}
 
 			reopened, err := OpenPairingRecovery(filepath.Dir(log.path))
 			if err != nil {
@@ -834,3 +944,38 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 		})
 	}
 }
+
+
+func TestPairingCompletionCanonicalizesNonUTCTimestamps(t *testing.T) {
+	recovery, log, id := completedRecoveryFixture(t)
+	event := completionTestEvent(id)
+	event.Time = time.Date(2026, 11, 22, 12, 34, 56, 123456789, time.FixedZone("UTC+05:30", 5*60*60+30*60))
+
+	if err := log.Append(event); err != nil {
+		t.Fatalf("Append rejected non-UTC event: %v", err)
+	}
+	if err := log.VerifyDurableEvent(event); err != nil {
+		t.Fatalf("VerifyDurableEvent did not canonicalize the original non-UTC instant: %v", err)
+	}
+	if err := recovery.ConfirmCompletion(log, id, event); err != nil {
+		t.Fatalf("ConfirmCompletion did not canonicalize the original non-UTC instant: %v", err)
+	}
+
+	reopened, err := OpenPairingRecovery(filepath.Dir(log.path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	records, err := reopened.Records()
+	if err != nil || len(records) != 1 || records[0].AuditProof == nil {
+		t.Fatalf("canonical completion proof did not survive reopening: %+v %v", records, err)
+	}
+	expected := event
+	expected.Time = expected.Time.UTC()
+	if records[0].AuditProof.Event != expected {
+		t.Fatalf("persisted completion event was not UTC-canonical: got=%+v want=%+v", records[0].AuditProof.Event, expected)
+	}
+	if err := reopened.AcknowledgeResolved(id); err != nil {
+		t.Fatalf("canonical non-UTC completion could not be acknowledged after reopening: %v", err)
+	}
+}
+

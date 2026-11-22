@@ -548,11 +548,13 @@ func (r *PairingRecovery) ConfirmCompletion(log *Log, attemptID string, event Ev
 	if !pairingAttemptPattern.MatchString(attemptID) {
 		return errors.New("invalid pairing audit confirmation")
 	}
-	if err := log.VerifyDurableEvent(event); err != nil {
+	canonicalEvent := event
+	canonicalEvent.Time = canonicalEvent.Time.UTC()
+	if err := log.VerifyDurableEvent(canonicalEvent); err != nil {
 		return fmt.Errorf("pairing audit event not independently verified: %w", err)
 	}
 	return r.recordAuditProof(attemptID, PairingAuditProof{
-		Kind: "completion", Event: event, VerifiedAt: time.Now().UTC(),
+		Kind: "completion", Event: canonicalEvent, VerifiedAt: time.Now().UTC(),
 	})
 }
 
