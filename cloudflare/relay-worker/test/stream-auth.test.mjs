@@ -23,7 +23,7 @@ async function issueRelayTicket({ role = "client", slot = null } = {}) {
     v: 2,
     aud: "wedecent-relay",
     iss: issuer,
-    sub: role === "agent" ? issuer : targetDeviceID,
+    sub: role === "client" ? targetDeviceID : issuer,
     role,
     ...(role === "agent" ? { slot } : {}),
     iat: now,
@@ -75,6 +75,33 @@ test("accepts a client only when relay ticket and connection grant scopes match"
   assert.equal(result.ok, true);
   assert.equal(result.deviceID, relay.claims.iss);
   assert.equal(result.targetDeviceID, targetDeviceID);
+  assert.deepEqual(result.replay, { jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b", exp: now + 90 });
+});
+
+test("direct authorization returns both grant-bound client and target identities", async () => {
+  const relay = await issueRelayTicket({ role: "authorize" });
+  const clientDeviceID = "wd_mw3am46w5weex4a4";
+  const grant = issueGrant(clientDeviceID, { target_device_id: relay.claims.iss });
+  const req = new Request("https://relay.test/v1/direct-authorize/" + relay.claims.iss, {
+    headers: {
+      Authorization: "Bearer " + relay.token,
+      [CONNECTION_GRANT_HEADER]: grant,
+    },
+  });
+  const result = await authorizeStream(
+    req,
+    env,
+    {
+      deviceId: relay.claims.iss,
+      role: "authorize",
+      clientDeviceID,
+      slot: null,
+    },
+    now,
+  );
+  assert.equal(result.ok, true);
+  assert.equal(result.deviceID, clientDeviceID);
+  assert.equal(result.targetDeviceID, relay.claims.iss);
   assert.deepEqual(result.replay, { jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b", exp: now + 90 });
 });
 
