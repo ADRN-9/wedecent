@@ -62,7 +62,7 @@ const DIRECT_AUTHORIZE_PREFIX = "/v1/direct-authorize/";
 const DEVICE_REVOCATION_PREFIX = "/v1/revoke/";
 const AGENT_LEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
-const HEALTH_VERSION = 12;
+const HEALTH_VERSION = 13;
 
 export default {
   async fetch(request, env) {
@@ -663,12 +663,17 @@ export class DeviceRelay extends DurableObject {
         targetDeviceID: agentAttachment.deviceID,
         leaseID: agentAttachment.leaseID,
       });
-      agent.serializeAttachment({
-        ...touchedAgentAttachment,
-        peerId: clientId,
-        clientDeviceID,
-      });
       this.ctx.acceptWebSocket(server, ["client"]);
+      try {
+        agent.serializeAttachment({
+          ...touchedAgentAttachment,
+          peerId: clientId,
+          clientDeviceID,
+        });
+      } catch (error) {
+        server.close(1011, "Unable to attach relay peer");
+        throw error;
+      }
       bound = false;
       await this.#scheduleAgentSessionAlarm();
       return new Response(null, { status: 101, webSocket: client });
