@@ -207,18 +207,22 @@ function createAgentCredentials(slot = 1) {
   const agentSPKI = agent.publicKey.export({ format: "der", type: "spki" });
   const agentPublicKey = agentSPKI.subarray(agentSPKI.length - 32);
   const deviceID = "wd_" + base32NoPadding(createHash("sha256").update(agentPublicKey).digest().subarray(0, 10));
+  const publicKeyFingerprint = "SHA256:" + createHash("sha256").update(agentSPKI).digest("hex").toUpperCase();
 
-  const controlPlane = generateKeyPairSync("ed25519");
-  const controlSPKI = controlPlane.publicKey.export({ format: "der", type: "spki" });
-  const jwk = controlPlane.publicKey.export({ format: "jwk" });
-  const thumbprintInput = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x });
-  const kid = createHash("sha256").update(thumbprintInput).digest("base64url");
-  const admissionHeader = { alg: "EdDSA", typ: "JWT", kid };
-  const clientDeviceID = deviceID === "wd_mw3am46w5weex4a4" ? "wd_aaaaaaaaaaaaaaaa" : "wd_mw3am46w5weex4a4";
+  const terminalGrant = generateKeyPairSync("ed25519");
+  const terminalSPKI = terminalGrant.publicKey.export({ format: "der", type: "spki" });
+
+  const admissionSigner = generateKeyPairSync("ed25519");
+  const admissionSPKI = admissionSigner.publicKey.export({ format: "der", type: "spki" });
+  const admissionJWK = admissionSigner.publicKey.export({ format: "jwk" });
+  const thumbprintInput = JSON.stringify({ crv: admissionJWK.crv, kty: admissionJWK.kty, x: admissionJWK.x });
+  const admissionKID = createHash("sha256").update(thumbprintInput).digest("base64url");
+  const admissionHeader = { alg: "EdDSA", typ: "JWT", kid: admissionKID };
 
   return {
     deviceID,
-    publicSPKIB64: controlSPKI.toString("base64"),
+    publicSPKIB64: terminalSPKI.toString("base64"),
+    admissionKeyringJSON: JSON.stringify({ [admissionKID]: admissionSPKI.toString("base64") }),
     createTokens() {
       const issuedAt = Math.floor(Date.now() / 1000);
       const ticketClaims = {
@@ -237,23 +241,20 @@ function createAgentCredentials(slot = 1) {
       const ticketInput = "wedecent-relay-ticket-v2\n" + ticketPayload;
       const relayTicket = "wdt2." + ticketPayload + "." + base64url(sign(null, Buffer.from(ticketInput), agent.privateKey));
       const admissionClaims = {
-        grant_id: randomUUID(),
-        organization_id: null,
-        client_device_id: clientDeviceID,
-        target_device_id: deviceID,
-        permission: "terminal.connect",
-        purpose: "relay.agent.connect",
-        slot,
         iss: "wedecent-control-plane",
+        sub: deviceID,
         aud: "wedecent-relay-agent",
-        sub: randomUUID(),
-        jti: randomUUID(),
+        purpose: "relay.agent.connect",
+        device_id: deviceID,
+        public_key_fingerprint: publicKeyFingerprint,
+        slot,
         iat: issuedAt,
-        exp: issuedAt + 120,
+        exp: issuedAt + 90,
+        jti: randomUUID(),
       };
       const admissionInput = base64url(Buffer.from(JSON.stringify(admissionHeader))) + "." +
         base64url(Buffer.from(JSON.stringify(admissionClaims)));
-      const agentAdmission = admissionInput + "." + base64url(sign(null, Buffer.from(admissionInput), controlPlane.privateKey));
+      const agentAdmission = admissionInput + "." + base64url(sign(null, Buffer.from(admissionInput), admissionSigner.privateKey));
       return { relayTicket, agentAdmission };
     },
   };
@@ -308,7 +309,10 @@ async function verifyAgentReplayPersistence() {
   const port = await freePort();
   const persistTo = join(root, "agent-state");
   const credentials = createAgentCredentials(1);
-  const extraVars = { WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: credentials.publicSPKIB64 };
+  const extraVars = {
+    WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: credentials.publicSPKIB64,
+    WEDECENT_AGENT_ADMISSION_PUBLIC_KEYS_JSON: credentials.admissionKeyringJSON,
+  };
   let tokens;
 
   await withWorker(port, persistTo, 10_000, 10_000, async () => {
