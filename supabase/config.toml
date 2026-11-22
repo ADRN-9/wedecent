@@ -4,3 +4,6 @@ project_id = "wedecent-local"
 
 [functions.agent-admission]
 verify_jwt = false
+
+[functions.device-revocation]
+verify_jwt = false
