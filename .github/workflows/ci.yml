@@ -209,6 +209,7 @@ jobs:
           node --check src/rate-limit.js
           node --check src/http-validation.js
           node --check src/agent-slots.js
+          node --check src/agent-session-policy.js
       - name: Test relay authentication and admission
         working-directory: cloudflare/relay-worker
         run: npm test
@@ -242,6 +243,8 @@ jobs:
         run: deno check supabase/functions/route-authorization/index.ts
       - name: Type-check relay agent admission Edge Function
         run: deno check supabase/functions/agent-admission/index.ts
+      - name: Type-check authenticated device revocation Edge Function
+        run: deno check supabase/functions/device-revocation/index.ts
 
   supabase-db:
     runs-on: ubuntu-latest
