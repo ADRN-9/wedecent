@@ -118,8 +118,13 @@ func TestAppendAcceptsValidUnicodeAndReplacementCharacter(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatal(err)
 	}
-	event.Time = fixed
-	if got != event {
+	if !got.Time.Equal(fixed) ||
+		got.Type != event.Type ||
+		got.Outcome != event.Outcome ||
+		got.ActorID != event.ActorID ||
+		got.PeerID != event.PeerID ||
+		got.Transport != event.Transport ||
+		got.Reason != event.Reason {
 		t.Fatalf("Unicode audit event changed during serialization: got %+v, want %+v", got, event)
 	}
 	if !strings.Contains(string(data), "\uFFFD") {
