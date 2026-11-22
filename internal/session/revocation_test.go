@@ -556,21 +556,24 @@ func TestParseRevocationAuditJSONL(t *testing.T) {
 		{name: "malformed complete record followed by incomplete fragment", data: malformedThenIncomplete, wantErr: true},
 	}
 
+	const repetitions = 100
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			events, err := parseRevocationAudit(test.data)
-			if (err != nil) != test.wantErr {
-				t.Fatalf("parseRevocationAudit() error = %v, wantErr %v", err, test.wantErr)
-			}
-			if test.wantErr {
-				return
-			}
-			if len(events) != test.wantEvents {
-				t.Fatalf("parsed events = %d, want %d: %#v", len(events), test.wantEvents, events)
-			}
-			for _, event := range events {
-				if event.Type != "terminal.session_terminated" || event.Outcome != "success" {
-					t.Fatalf("parsed audit event = %#v", event)
+			for iteration := 0; iteration < repetitions; iteration++ {
+				events, err := parseRevocationAudit(test.data)
+				if (err != nil) != test.wantErr {
+					t.Fatalf("iteration %d: parseRevocationAudit() error = %v, wantErr %v", iteration, err, test.wantErr)
+				}
+				if test.wantErr {
+					continue
+				}
+				if len(events) != test.wantEvents {
+					t.Fatalf("iteration %d: parsed events = %d, want %d: %#v", iteration, len(events), test.wantEvents, events)
+				}
+				for _, event := range events {
+					if event.Type != "terminal.session_terminated" || event.Outcome != "success" {
+						t.Fatalf("iteration %d: parsed audit event = %#v", iteration, event)
+					}
 				}
 			}
 		})
