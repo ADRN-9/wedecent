@@ -241,18 +241,26 @@ export function consumeRateLimitBuckets(storage, buckets, windowMS, nowMS) {
     const storageKey = "bucket:" + bucket.scope + ":" + bucket.key;
     let state = storage.get(storageKey);
 
-    if (state !== undefined && !isGlobal) {
-      validatePersistedBucket(state);
-      if (state.expiresAtMS <= nowMS) {
-        storage.delete(storageKey);
-        decrementBucketCount(storage, bucket.scope);
-        state = undefined;
+    if (state !== undefined) {
+      if (isGlobal) {
+        validatePersistedTokenBucket(state);
+      } else {
+        validatePersistedBucket(state);
+        if (state.expiresAtMS <= nowMS) {
+          storage.delete(storageKey);
+          decrementBucketCount(storage, bucket.scope, nowMS);
+          state = undefined;
+        }
       }
     }
 
     if (state === undefined && !isGlobal) {
       const countKey = "count:" + bucket.scope;
-      const count = readPersistedCount(storage.get(countKey));
+      const storedCount = storage.get(countKey);
+      const count =
+        storedCount === undefined
+          ? cleanupRateLimitScope(storage, bucket.scope, nowMS).active
+          : readPersistedCount(storedCount);
       if (count >= MAX_RATE_LIMIT_BUCKETS_PER_SCOPE) {
         return {
           accepted: false,
@@ -288,25 +296,32 @@ export function cleanupExpiredRateLimitBuckets(storage, nowMS) {
   let deleted = 0;
   let remaining = 0;
   for (const scope of IDENTITY_SCOPES) {
-    let active = 0;
-    let seen = 0;
-    for (const [key, state] of storage.list({ prefix: "bucket:" + scope + ":", limit: MAX_RATE_LIMIT_BUCKETS_PER_SCOPE + 1 })) {
-      seen++;
-      if (seen > MAX_RATE_LIMIT_BUCKETS_PER_SCOPE) {
-        throw new Error("rate-limit bucket cardinality exceeded");
-      }
-      validatePersistedBucket(state);
-      if (state.expiresAtMS <= nowMS) {
-        storage.delete(key);
-        deleted++;
-      } else {
-        active++;
-      }
-    }
-    storage.put("count:" + scope, active);
-    remaining += active;
+    const result = cleanupRateLimitScope(storage, scope, nowMS);
+    deleted += result.deleted;
+    remaining += result.active;
   }
   return { deleted, remaining };
+}
+
+function cleanupRateLimitScope(storage, scope, nowMS) {
+  let active = 0;
+  let deleted = 0;
+  let seen = 0;
+  for (const [key, state] of storage.list({ prefix: "bucket:" + scope + ":", limit: MAX_RATE_LIMIT_BUCKETS_PER_SCOPE + 1 })) {
+    seen++;
+    if (seen > MAX_RATE_LIMIT_BUCKETS_PER_SCOPE) {
+      throw new Error("rate-limit bucket cardinality exceeded");
+    }
+    validatePersistedBucket(state);
+    if (state.expiresAtMS <= nowMS) {
+      storage.delete(key);
+      deleted++;
+    } else {
+      active++;
+    }
+  }
+  storage.put("count:" + scope, active);
+  return { active, deleted };
 }
 
 async function consumeRemoteBuckets(namespace, buckets, windowMS) {
@@ -363,18 +378,23 @@ function validateBucket(bucket) {
   }
 }
 
-function validatePersistedBucket(state) {
+function validatePersistedTokenBucket(state) {
   if (
     state === null ||
     typeof state !== "object" ||
     !Number.isFinite(state.tokens) ||
     state.tokens < 0 ||
     !Number.isFinite(state.updatedAtMS) ||
-    state.updatedAtMS < 0 ||
-    !Number.isFinite(state.expiresAtMS) ||
-    state.expiresAtMS < 0
+    state.updatedAtMS < 0
   ) {
     throw new Error("invalid persisted rate-limit bucket");
+  }
+}
+
+function validatePersistedBucket(state) {
+  validatePersistedTokenBucket(state);
+  if (!Number.isFinite(state.expiresAtMS) || state.expiresAtMS < 0) {
+    throw new Error("invalid persisted rate-limit bucket expiry");
   }
 }
 
@@ -386,8 +406,13 @@ function readPersistedCount(value) {
   return value;
 }
 
-function decrementBucketCount(storage, scope) {
-  const count = readPersistedCount(storage.get("count:" + scope));
+function decrementBucketCount(storage, scope, nowMS) {
+  const storedCount = storage.get("count:" + scope);
+  if (storedCount === undefined) {
+    cleanupRateLimitScope(storage, scope, nowMS);
+    return;
+  }
+  const count = readPersistedCount(storedCount);
   if (count < 1) {
     throw new Error("invalid persisted rate-limit bucket count");
   }

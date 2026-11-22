@@ -228,6 +228,23 @@ test("concurrent bucket creation is atomic and does not overcount", async () => 
   assert.equal(storage.get("count:stream-device"), 1);
 });
 
+test("missing bucket-count metadata is rebuilt before admitting new identities", () => {
+  const storage = createStorage();
+  storage.put("bucket:stream-ip:" + "1".repeat(64), {
+    tokens: 1,
+    updatedAtMS: 1_000,
+    expiresAtMS: 61_000,
+  });
+  const result = consumeRateLimitBuckets(
+    storage,
+    [{ scope: "stream-ip", key: "2".repeat(64), capacity: 10 }],
+    60_000,
+    1_000,
+  );
+  assert.equal(result.accepted, true);
+  assert.equal(storage.get("count:stream-ip"), 2);
+});
+
 test("limiter state survives a Durable Object instance restart", () => {
   const backing = new Map();
   const firstInstance = createStorage(backing);
@@ -268,6 +285,16 @@ test("limiter outages, storage corruption and malformed responses fail closed wi
   const corrupted = fakeNamespace({ storage: corruptedStorage });
   const storageFailure = await enforceRelayRequestRateLimit(streamRequest("192.0.2.41"), env(corrupted), "stream");
   assert.equal(storageFailure.status, 503);
+
+  const malformedGlobalStorage = createStorage();
+  malformedGlobalStorage.put("bucket:stream-global:global", null);
+  const malformedGlobal = fakeNamespace({ storage: malformedGlobalStorage });
+  const malformedGlobalResult = await enforceRelayRequestRateLimit(
+    streamRequest("192.0.2.43"),
+    env(malformedGlobal),
+    "stream",
+  );
+  assert.equal(malformedGlobalResult.status, 503);
 
   const malformed = {
     idFromName: () => "relay-rate-limit-v2",
