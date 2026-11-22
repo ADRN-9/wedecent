@@ -1,13 +1,14 @@
 package audit
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"unicode/utf8"
 
 	"wedecent.com/wedecent/internal/trust"
 )
@@ -23,9 +24,10 @@ func (l *Log) VerifyDurableEvent(event Event) error {
 	if err := validateEvent(&copyEvent); err != nil || copyEvent != event {
 		return errors.New("invalid pairing audit verification event")
 	}
-	target, err := json.Marshal(event)
+	copyEvent.Time = copyEvent.Time.UTC()
+	target, err := json.Marshal(copyEvent)
 	if err != nil {
-		return err
+		return errors.New("pairing audit verification event could not be encoded")
 	}
 	unlock, err := lockFile(l.path)
 	if err != nil {
@@ -34,71 +36,335 @@ func (l *Log) VerifyDurableEvent(event Event) error {
 	defer unlock()
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	matches := 0
 	for _, path := range []string{l.path, filepath.Join(filepath.Dir(l.path), archiveFileName)} {
-		match, err := l.findAndSyncAuditEvent(path, target)
+		count, err := l.findAndSyncAuditEvent(path, target)
 		if err != nil {
 			return err
 		}
-		if match {
-			return l.syncDirectory(filepath.Dir(l.path))
-		}
+		matches += count
 	}
-	return errors.New("pairing completion is no longer independently present in synchronized audit logs")
+	switch matches {
+	case 0:
+		return errors.New("pairing completion is no longer independently present in synchronized audit logs")
+	case 1:
+		return l.syncDirectory(filepath.Dir(l.path))
+	default:
+		return errors.New("pairing completion audit event is duplicated across synchronized audit logs")
+	}
 }
 
-func (l *Log) findAndSyncAuditEvent(path string, target []byte) (bool, error) {
+func (l *Log) findAndSyncAuditEvent(path string, target []byte) (int, error) {
 	before, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return false, nil
+		return 0, nil
 	}
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	if !before.Mode().IsRegular() || before.Size() > l.maxBytes {
-		return false, errors.New("audit proof source is unsafe or oversized")
+		return 0, errors.New("audit proof source is unsafe or oversized")
 	}
 	if err := trust.VerifyPairingStatePath(path); err != nil {
-		return false, err
+		return 0, err
 	}
 	f, err := os.OpenFile(path, os.O_RDWR, 0)
 	if err != nil {
-		return false, err
+		return 0, err
 	}
 	defer f.Close()
 	opened, err := f.Stat()
-	if err != nil || !os.SameFile(before, opened) {
-		return false, errors.New("audit proof source was replaced during open")
+	if err != nil || !os.SameFile(before, opened) || opened.Size() != before.Size() {
+		return 0, errors.New("audit proof source was replaced during open")
 	}
-	data, err := io.ReadAll(io.LimitReader(f, l.maxBytes+1))
-	if err != nil {
-		return false, err
-	}
-	if int64(len(data)) > l.maxBytes ||
-		(len(data) != 0 && data[len(data)-1] != '\n') {
-		return false, errors.New("audit proof source contains truncated or oversized records")
-	}
-	found := false
-	for _, line := range bytes.Split(data, []byte{'\n'}) {
-		if len(line) == 0 {
-			continue
+
+	// The reader retains at most one bounded JSONL record. The extra byte
+	// distinguishes a file exactly at the limit from one byte over it.
+	limited := &io.LimitedReader{R: f, N: l.maxBytes + 1}
+	reader := bufio.NewReaderSize(limited, maxEventSize)
+	var bytesRead int64
+	matches := 0
+	for {
+		line, readErr := reader.ReadSlice('\n')
+		bytesRead += int64(len(line))
+		if bytesRead > l.maxBytes {
+			return 0, errors.New("audit proof source exceeds file size limit")
 		}
+		if errors.Is(readErr, bufio.ErrBufferFull) {
+			return 0, errors.New("audit proof source contains oversized event")
+		}
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			return 0, errors.New("audit proof source could not be read")
+		}
+		if errors.Is(readErr, io.EOF) {
+			if len(line) == 0 {
+				break
+			}
+			return 0, errors.New("audit proof source contains unterminated record")
+		}
+		if len(line) == 0 || line[len(line)-1] != '\n' {
+			return 0, errors.New("audit proof source contains unterminated record")
+		}
+		// Append enforces maxEventSize on the serialized JSON plus newline.
 		if len(line) > maxEventSize {
-			return false, errors.New("audit proof source contains oversized event")
+			return 0, errors.New("audit proof source contains oversized event")
 		}
-		var parsed Event
-		if err := json.Unmarshal(line, &parsed); err != nil {
-			return false, fmt.Errorf("malformed audit proof source: %w", err)
+		record := line[:len(line)-1]
+		if len(record) == 0 {
+			return 0, errors.New("audit proof source contains blank record")
 		}
-		if bytes.Equal(line, target) {
-			found = true
+		parsed, err := decodeAuditProofEvent(record)
+		if err != nil {
+			// Do not return decoder details: audit records can contain sensitive
+			// identifiers even though the schema intentionally excludes secrets.
+			return 0, errors.New("audit proof source contains invalid event")
+		}
+		canonical, err := json.Marshal(parsed)
+		if err != nil {
+			return 0, errors.New("audit proof source contains invalid event")
+		}
+		// Compare canonical Event encodings so key order and harmless JSON
+		// whitespace cannot conceal a duplicate completion event.
+		if bytes.Equal(canonical, target) {
+			matches++
 		}
 	}
+
 	if err := f.Sync(); err != nil {
-		return false, err
+		return 0, err
+	}
+	current, err := f.Stat()
+	if err != nil || !os.SameFile(opened, current) ||
+		current.Size() != bytesRead || !current.ModTime().Equal(opened.ModTime()) {
+		return 0, errors.New("audit proof source changed during synchronization")
 	}
 	after, err := os.Lstat(path)
-	if err != nil || !os.SameFile(opened, after) {
-		return false, errors.New("audit proof source replaced during sync")
+	if err != nil || !os.SameFile(opened, after) ||
+		after.Size() != bytesRead || !after.ModTime().Equal(opened.ModTime()) {
+		return 0, errors.New("audit proof source replaced during sync")
 	}
-	return found, nil
+	return matches, nil
+}
+
+// validateJSONUnicode rejects encodings that encoding/json otherwise repairs
+// by replacing malformed UTF-8 or unpaired UTF-16 surrogate escapes with U+FFFD.
+// It scans every JSON string, including object keys, before any JSON decoding.
+func validateJSONUnicode(data []byte) error {
+	if !utf8.Valid(data) {
+		return errors.New("JSON input is not valid UTF-8")
+	}
+scan:
+	for i := 0; i < len(data); {
+		if data[i] != '"' {
+			i++
+			continue
+		}
+		i++
+		for i < len(data) {
+			switch data[i] {
+			case '"':
+				i++
+				continue scan
+			case '\\':
+				if i+1 >= len(data) {
+					return errors.New("JSON string has an incomplete escape")
+				}
+				if data[i+1] != 'u' {
+					i += 2
+					continue
+				}
+				code, ok := parseJSONUnicodeQuad(data[i+2:])
+				if !ok {
+					return errors.New("JSON string has an invalid Unicode escape")
+				}
+				switch {
+				case code >= 0xD800 && code <= 0xDBFF:
+					// A high surrogate must be immediately followed by one
+					// escaped low surrogate; literal UTF-8 cannot complete it.
+					if i+12 > len(data) || data[i+6] != '\\' || data[i+7] != 'u' {
+						return errors.New("JSON string has an unpaired high surrogate")
+					}
+					low, valid := parseJSONUnicodeQuad(data[i+8:])
+					if !valid || low < 0xDC00 || low > 0xDFFF {
+						return errors.New("JSON string has an unpaired high surrogate")
+					}
+					i += 12
+				case code >= 0xDC00 && code <= 0xDFFF:
+					return errors.New("JSON string has an unpaired low surrogate")
+				default:
+					i += 6
+				}
+			default:
+				i++
+			}
+		}
+		return errors.New("JSON string is unterminated")
+	}
+	return nil
+}
+
+func parseJSONUnicodeQuad(data []byte) (uint16, bool) {
+	if len(data) < 4 {
+		return 0, false
+	}
+	var value uint16
+	for _, c := range data[:4] {
+		value <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			value |= uint16(c - '0')
+		case c >= 'a' && c <= 'f':
+			value |= uint16(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			value |= uint16(c-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
+}
+
+// auditProofEventFields defines the strict v1 JSON schema. Exact JSON tag
+// spellings are required; unknown fields and case-folded aliases are rejected.
+// Compatibility policy: additive Event fields require a coordinated reader
+// update. Older verifiers intentionally fail closed on newer schema fields.
+var auditProofEventFields = map[string]struct{}{
+	"time": {}, "type": {}, "outcome": {}, "actor_id": {}, "peer_id": {},
+	"session_id": {}, "attempt_id": {}, "authorization_run_id": {},
+	"validation_attempt_id": {}, "consumption_attempt_id": {},
+	"validation_event_id": {}, "consumption_event_id": {}, "transport": {},
+	"transport_provenance": {}, "underlying_transport": {}, "route_router_id": {},
+	"stream_id": {}, "reason": {},
+}
+
+func decodeAuditProofEvent(record []byte) (Event, error) {
+	var event Event
+	if err := validateJSONUnicode(record); err != nil {
+		return event, errors.New("audit event contains invalid Unicode")
+	}
+	schema := json.NewDecoder(bytes.NewReader(record))
+	schema.UseNumber()
+	root, err := schema.Token()
+	if err != nil {
+		return event, err
+	}
+	rootDelimiter, ok := root.(json.Delim)
+	if !ok || rootDelimiter != '{' {
+		return event, errors.New("audit event must be a JSON object")
+	}
+
+	seen := make(map[string]struct{}, len(auditProofEventFields))
+	for schema.More() {
+		keyToken, err := schema.Token()
+		if err != nil {
+			return event, err
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return event, errors.New("audit event object key is invalid")
+		}
+		if _, ok := auditProofEventFields[key]; !ok {
+			return event, errors.New("audit event contains an unknown field")
+		}
+		if _, exists := seen[key]; exists {
+			return event, errors.New("audit event contains a duplicate JSON key")
+		}
+		seen[key] = struct{}{}
+		value, err := schema.Token()
+		if err != nil {
+			return event, err
+		}
+		if err := consumeAuditJSONValue(schema, value); err != nil {
+			return event, err
+		}
+	}
+	closing, err := schema.Token()
+	if err != nil || closing != json.Delim('}') {
+		return event, errors.New("audit event object is incomplete")
+	}
+	for _, required := range []string{"time", "type", "outcome"} {
+		if _, ok := seen[required]; !ok {
+			return event, errors.New("audit event is missing a required field")
+		}
+	}
+	if _, err := schema.Token(); !errors.Is(err, io.EOF) {
+		return event, errors.New("audit event contains trailing JSON data")
+	}
+
+	decoder := json.NewDecoder(bytes.NewReader(record))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&event); err != nil {
+		return Event{}, err
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return Event{}, errors.New("audit event contains trailing JSON data")
+	}
+	if event.Time.IsZero() {
+		return Event{}, errors.New("audit event timestamp is zero")
+	}
+	event.Time = event.Time.UTC()
+	validated := event
+	if err := validateEvent(&validated); err != nil || validated != event {
+		return Event{}, errors.New("audit event fields are invalid")
+	}
+	return event, nil
+}
+
+// consumeAuditJSONValue recursively checks nested objects too, so duplicate
+// keys cannot be hidden inside a value. Record-size bounds cap its memory use.
+func consumeAuditJSONValue(decoder *json.Decoder, token json.Token) error {
+	if token == nil {
+		return errors.New("JSON null values are not permitted in audit events")
+	}
+	delimiter, ok := token.(json.Delim)
+	if !ok {
+		return nil
+	}
+	switch delimiter {
+	case '{':
+		seen := make(map[string]struct{})
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return errors.New("audit event object key is invalid")
+			}
+			if _, exists := seen[key]; exists {
+				return errors.New("audit event contains a duplicate JSON key")
+			}
+			seen[key] = struct{}{}
+			value, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeAuditJSONValue(decoder, value); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim('}') {
+			return errors.New("audit event object is incomplete")
+		}
+	case '[':
+		for decoder.More() {
+			value, err := decoder.Token()
+			if err != nil {
+				return err
+			}
+			if err := consumeAuditJSONValue(decoder, value); err != nil {
+				return err
+			}
+		}
+		closing, err := decoder.Token()
+		if err != nil || closing != json.Delim(']') {
+			return errors.New("audit event array is incomplete")
+		}
+	default:
+		return errors.New("audit event contains an invalid JSON delimiter")
+	}
+	return nil
 }
