@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(19);
+select plan(20);
 
 select ok(
     (select c.relrowsecurity from pg_catalog.pg_class c
