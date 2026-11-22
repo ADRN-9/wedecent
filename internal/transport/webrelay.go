@@ -29,12 +29,12 @@ const (
 type WebRelayOptions struct {
 	// TicketSource is the v2 proof-of-possession credential source. When set,
 	// it takes precedence over Token and is called for every WebSocket upgrade.
-	TicketSource      func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error)
+	TicketSource         func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error)
 	AgentAdmissionSource func(ctx context.Context, targetDeviceID string, slot int) (string, error)
-	Token             string // Legacy v1 shared relay token; clients only during migration.
-	ConnectionGrant   string // Short-lived account authorization JWT for client terminal connections.
-	Timeout           time.Duration
-	KeepAliveInterval time.Duration
+	Token                string // Legacy v1 shared relay token; clients only during migration.
+	ConnectionGrant      string // Short-lived account authorization JWT for client terminal connections.
+	Timeout              time.Duration
+	KeepAliveInterval    time.Duration
 }
 
 type WebRelayDialer struct {
