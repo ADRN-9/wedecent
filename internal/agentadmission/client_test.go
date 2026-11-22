@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"net"
 	"net/http"
 	"net/url"
 	"net/http/httptest"
@@ -200,6 +201,17 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+func TestAdmissionHTTPClientRejectsCustomTLSDialers(t *testing.T) {
+	client := Client{HTTP: &http.Client{Transport: &http.Transport{
+		DialTLS: func(string, string) (net.Conn, error) {
+			return nil, errors.New("unexpected TLS dial")
+		},
+	}}}
+	if _, err := client.httpClient("supabase.example"); err == nil {
+		t.Fatal("expected custom TLS dialer to be rejected")
+	}
 }
 
 func TestAdmissionHTTPClientRejectsCustomTransportThatCanBypassTLSPolicy(t *testing.T) {
