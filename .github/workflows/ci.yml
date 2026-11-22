@@ -70,7 +70,8 @@ jobs:
       - name: Test all Go packages
         run: go test ./...
       - name: Repeat revocation audit JSONL reader regressions
-        run: go test ./internal/session -run '^TestParseRevocationAuditJSONL      - name: Test with race detector
+        run: go test ./internal/session -run TestParseRevocationAuditJSONL -count=100
+      - name: Test with race detector
         run: go test -race ./...
       - name: Repeat typed-stream parent-termination admission regressions
         run: bash ./scripts/test-typed-stream-parent-termination-races.sh
