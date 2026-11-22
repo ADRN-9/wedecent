@@ -874,7 +874,8 @@ export class DeviceRelay extends DurableObject {
 
     const peer = this.#findSocket(attachment.peerId);
     if (peer && peer.readyState === WebSocket.OPEN) {
-      peer.close(code === 1000 ? 1000 : 1011, reason || "Relay peer disconnected");
+      const peerCode = code === 1000 ? 1000 : code === 4003 ? 4003 : 1011;
+      peer.close(peerCode, reason || "Relay peer disconnected");
     }
   }
 
