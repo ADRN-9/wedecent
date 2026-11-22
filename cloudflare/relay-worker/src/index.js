@@ -843,6 +843,14 @@ export class DeviceRelay extends DurableObject {
       peer.close(1011, "Invalid relay session state");
       return;
     }
+    if (
+      !DEVICE_ID.test(agentAttachment?.deviceID ?? "") ||
+      !AGENT_LEASE_ID.test(agentAttachment?.leaseID ?? "")
+    ) {
+      socket.close(1011, "Relay session identity is invalid");
+      peer.close(1011, "Relay session identity is invalid");
+      return;
+    }
     const touched = touchAgentSessionAttachment(agentAttachment, Date.now());
     if (!touched) {
       socket.close(4001, "Relay session expired");
