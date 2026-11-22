@@ -922,6 +922,13 @@ export function bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, now
     lease === undefined ||
     lease === null ||
     typeof lease !== "object" ||
+    typeof lease.deviceID !== "string" ||
+    !DEVICE_ID.test(lease.deviceID) ||
+    (lease.clientDeviceID !== undefined && lease.clientDeviceID !== null &&
+      (typeof lease.clientDeviceID !== "string" || !DEVICE_ID.test(lease.clientDeviceID))) ||
+    !Number.isSafeInteger(lease.slot) ||
+    lease.slot < 1 ||
+    lease.slot > 32 ||
     !Number.isSafeInteger(lease.expiresAtMS) ||
     lease.expiresAtMS <= nowMS
   ) {
@@ -978,7 +985,7 @@ export async function findAgentRevocationTargets(namespace, deviceID) {
     payload === null ||
     typeof payload !== "object" ||
     !Array.isArray(payload.target_device_ids) ||
-    payload.target_device_ids.length > MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS ||
+    payload.target_device_ids.length > MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS + 1 ||
     payload.target_device_ids.some((id) => typeof id !== "string" || !DEVICE_ID.test(id))
   ) {
     throw new Error("global agent connection limiter returned invalid revocation targets");
