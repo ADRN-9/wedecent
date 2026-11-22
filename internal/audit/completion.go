@@ -111,12 +111,19 @@ func (l *Log) findAndSyncAuditEvent(path string, target []byte) (int, error) {
 		if len(record) == 0 {
 			return 0, errors.New("audit proof source contains blank record")
 		}
-		if _, err := decodeAuditProofEvent(record); err != nil {
+		parsed, err := decodeAuditProofEvent(record)
+		if err != nil {
 			// Do not return decoder details: audit records can contain sensitive
 			// identifiers even though the schema intentionally excludes secrets.
 			return 0, errors.New("audit proof source contains invalid event")
 		}
-		if bytes.Equal(record, target) {
+		canonical, err := json.Marshal(parsed)
+		if err != nil {
+			return 0, errors.New("audit proof source contains invalid event")
+		}
+		// Compare canonical Event encodings so key order and harmless JSON
+		// whitespace cannot conceal a duplicate completion event.
+		if bytes.Equal(canonical, target) {
 			matches++
 		}
 	}
