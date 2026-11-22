@@ -12,6 +12,12 @@ export const MAX_RATE_LIMIT_BUCKETS_PER_SCOPE = 4096;
 export const RATE_LIMIT_CLEANUP_INTERVAL_MS = 60_000;
 export const RATE_LIMIT_OBJECT_NAME = "relay-rate-limit-v2";
 const INTERNAL_CONSUME_URL = "https://wedecent.internal/consume";
+const INTERNAL_AGENT_ACQUIRE_URL = "https://wedecent.internal/agent-acquire";
+const INTERNAL_AGENT_RELEASE_URL = "https://wedecent.internal/agent-release";
+const AGENT_CONNECTION_LEASE_PREFIX = "agent-connection-lease:";
+const AGENT_CONNECTION_LEASE_MAX_LIFETIME_MS = 12 * 60 * 60 * 1000;
+export const MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS = 1024;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const UNKNOWN_SOURCE = "unknown";
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const IDENTITY_SCOPES = ["stream-ip", "stream-device", "direct-ip", "direct-device"];
@@ -554,4 +560,265 @@ function readInternalInteger(value, maximum) {
     return 0;
   }
   return value;
+}
+
+
+export async function agentConnectionLeaseRequestConfig(request) {
+  const path = new URL(request.url).pathname;
+  const action = path === "/agent-acquire" ? "acquire" : path === "/agent-release" ? "release" : null;
+  if (!action || request.method !== "POST") return null;
+
+  const contentLength = request.headers.get("Content-Length");
+  if (contentLength !== null && (!/^[0-9]+$/.test(contentLength) || Number(contentLength) > 1024)) {
+    return null;
+  }
+
+  let payload;
+  try {
+    const text = await request.text();
+    if (!text || new TextEncoder().encode(text).byteLength > 1024) return null;
+    payload = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+
+  const keys = Object.keys(payload).sort();
+  if (action === "release") {
+    if (keys.length !== 1 || keys[0] !== "lease_id" || typeof payload.lease_id !== "string" || !UUID.test(payload.lease_id)) {
+      return null;
+    }
+    return { action, leaseID: payload.lease_id.toLowerCase() };
+  }
+
+  if (
+    keys.length !== 4 ||
+    keys[0] !== "device_id" ||
+    keys[1] !== "expires_at_ms" ||
+    keys[2] !== "lease_id" ||
+    keys[3] !== "slot" ||
+    typeof payload.device_id !== "string" ||
+    !DEVICE_ID.test(payload.device_id) ||
+    typeof payload.lease_id !== "string" ||
+    !UUID.test(payload.lease_id) ||
+    !Number.isSafeInteger(payload.slot) ||
+    payload.slot < 1 ||
+    payload.slot > 32 ||
+    !Number.isSafeInteger(payload.expires_at_ms)
+  ) {
+    return null;
+  }
+  const nowMS = Date.now();
+  if (
+    payload.expires_at_ms <= nowMS ||
+    payload.expires_at_ms > nowMS + AGENT_CONNECTION_LEASE_MAX_LIFETIME_MS + 60_000
+  ) {
+    return null;
+  }
+  return {
+    action,
+    leaseID: payload.lease_id.toLowerCase(),
+    deviceID: payload.device_id,
+    slot: payload.slot,
+    expiresAtMS: payload.expires_at_ms,
+  };
+}
+
+export async function reserveGlobalAgentConnection(namespace, lease) {
+  if (
+    !namespace ||
+    typeof namespace.idFromName !== "function" ||
+    typeof namespace.get !== "function" ||
+    !lease ||
+    typeof lease.leaseID !== "string" ||
+    !UUID.test(lease.leaseID) ||
+    typeof lease.deviceID !== "string" ||
+    !DEVICE_ID.test(lease.deviceID) ||
+    !Number.isSafeInteger(lease.slot) ||
+    lease.slot < 1 ||
+    lease.slot > 32 ||
+    !Number.isSafeInteger(lease.expiresAtMS)
+  ) {
+    throw new Error("global agent connection lease configuration is invalid");
+  }
+  const stub = namespace.get(namespace.idFromName(RATE_LIMIT_OBJECT_NAME));
+  if (!stub || typeof stub.fetch !== "function") {
+    throw new Error("global agent connection limiter is unavailable");
+  }
+  const response = await stub.fetch(new Request(INTERNAL_AGENT_ACQUIRE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      lease_id: lease.leaseID,
+      device_id: lease.deviceID,
+      slot: lease.slot,
+      expires_at_ms: lease.expiresAtMS,
+    }),
+  }));
+  if (!response.ok) throw new Error("global agent connection limiter rejected lease request");
+  const payload = await response.json();
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    typeof payload.accepted !== "boolean" ||
+    !Number.isSafeInteger(payload.active) ||
+    payload.active < 0 ||
+    payload.active > MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS
+  ) {
+    throw new Error("global agent connection limiter returned an invalid response");
+  }
+  return payload;
+}
+
+export async function releaseGlobalAgentConnection(namespace, leaseID) {
+  if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function" ||
+      typeof leaseID !== "string" || !UUID.test(leaseID)) {
+    throw new Error("global agent connection release configuration is invalid");
+  }
+  const stub = namespace.get(namespace.idFromName(RATE_LIMIT_OBJECT_NAME));
+  if (!stub || typeof stub.fetch !== "function") {
+    throw new Error("global agent connection limiter is unavailable");
+  }
+  const response = await stub.fetch(new Request(INTERNAL_AGENT_RELEASE_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ lease_id: leaseID.toLowerCase() }),
+  }));
+  if (!response.ok) throw new Error("global agent connection limiter rejected lease release");
+  const payload = await response.json();
+  if (payload === null || typeof payload !== "object" || typeof payload.released !== "boolean") {
+    throw new Error("global agent connection limiter returned an invalid release response");
+  }
+  return payload.released;
+}
+
+export function acquireGlobalAgentConnectionLease(
+  storage,
+  lease,
+  nowMS = Date.now(),
+  maximum = MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS,
+) {
+  if (
+    !storage ||
+    typeof storage.get !== "function" ||
+    typeof storage.put !== "function" ||
+    typeof storage.delete !== "function" ||
+    typeof storage.list !== "function" ||
+    !Number.isSafeInteger(nowMS) ||
+    nowMS < 0 ||
+    !Number.isSafeInteger(maximum) ||
+    maximum < 1 ||
+    maximum > MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS
+  ) {
+    throw new Error("invalid global agent connection lease storage or limit");
+  }
+  if (
+    !lease ||
+    typeof lease.leaseID !== "string" ||
+    !UUID.test(lease.leaseID) ||
+    typeof lease.deviceID !== "string" ||
+    !DEVICE_ID.test(lease.deviceID) ||
+    !Number.isSafeInteger(lease.slot) ||
+    lease.slot < 1 ||
+    lease.slot > 32 ||
+    !Number.isSafeInteger(lease.expiresAtMS) ||
+    lease.expiresAtMS <= nowMS ||
+    lease.expiresAtMS > nowMS + AGENT_CONNECTION_LEASE_MAX_LIFETIME_MS + 60_000
+  ) {
+    throw new Error("invalid global agent connection lease");
+  }
+
+  const entries = storage.list({ prefix: AGENT_CONNECTION_LEASE_PREFIX, limit: maximum + 1 });
+  if (entries.size > maximum) throw new Error("global agent connection lease cardinality exceeded");
+  let active = 0;
+  const expired = [];
+  for (const [key, stored] of entries) {
+    if (
+      typeof key !== "string" ||
+      !key.startsWith(AGENT_CONNECTION_LEASE_PREFIX) ||
+      stored === null ||
+      typeof stored !== "object" ||
+      typeof stored.deviceID !== "string" ||
+      !DEVICE_ID.test(stored.deviceID) ||
+      !Number.isSafeInteger(stored.slot) ||
+      stored.slot < 1 ||
+      stored.slot > 32 ||
+      !Number.isSafeInteger(stored.expiresAtMS) ||
+      stored.expiresAtMS < 0
+    ) {
+      throw new Error("invalid persisted global agent connection lease");
+    }
+    if (stored.expiresAtMS <= nowMS) expired.push(key);
+    else active++;
+  }
+  for (const key of expired) storage.delete(key);
+
+  const key = AGENT_CONNECTION_LEASE_PREFIX + lease.leaseID.toLowerCase();
+  if (storage.get(key) !== undefined) return { accepted: false, active };
+  if (active >= maximum) return { accepted: false, active };
+  storage.put(key, {
+    deviceID: lease.deviceID,
+    slot: lease.slot,
+    expiresAtMS: lease.expiresAtMS,
+  });
+  return { accepted: true, active: active + 1 };
+}
+
+export function releaseGlobalAgentConnectionLease(storage, leaseID) {
+  if (
+    !storage ||
+    typeof storage.delete !== "function" ||
+    typeof leaseID !== "string" ||
+    !UUID.test(leaseID)
+  ) {
+    throw new Error("invalid global agent connection lease release");
+  }
+  return storage.delete(AGENT_CONNECTION_LEASE_PREFIX + leaseID.toLowerCase());
+}
+
+export function cleanupGlobalAgentConnectionLeases(
+  storage,
+  nowMS = Date.now(),
+  maximum = MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS,
+) {
+  if (
+    !storage ||
+    typeof storage.list !== "function" ||
+    typeof storage.delete !== "function" ||
+    !Number.isSafeInteger(nowMS) ||
+    nowMS < 0 ||
+    !Number.isSafeInteger(maximum) ||
+    maximum < 1 ||
+    maximum > MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS
+  ) {
+    throw new Error("invalid global agent connection lease cleanup input");
+  }
+  const entries = storage.list({ prefix: AGENT_CONNECTION_LEASE_PREFIX, limit: maximum + 1 });
+  if (entries.size > maximum) throw new Error("global agent connection lease cardinality exceeded");
+  let remaining = 0;
+  let nextExpiryMS = null;
+  let deleted = 0;
+  for (const [key, stored] of entries) {
+    if (
+      stored === null ||
+      typeof stored !== "object" ||
+      typeof stored.deviceID !== "string" ||
+      !DEVICE_ID.test(stored.deviceID) ||
+      !Number.isSafeInteger(stored.slot) ||
+      stored.slot < 1 ||
+      stored.slot > 32 ||
+      !Number.isSafeInteger(stored.expiresAtMS) ||
+      stored.expiresAtMS < 0
+    ) {
+      throw new Error("invalid persisted global agent connection lease");
+    }
+    if (stored.expiresAtMS <= nowMS) {
+      storage.delete(key);
+      deleted++;
+    } else {
+      remaining++;
+      if (nextExpiryMS === null || stored.expiresAtMS < nextExpiryMS) nextExpiryMS = stored.expiresAtMS;
+    }
+  }
+  return { remaining, deleted, nextExpiryMS };
 }
