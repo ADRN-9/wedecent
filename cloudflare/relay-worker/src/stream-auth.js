@@ -104,6 +104,6 @@ async function verifyAgentAdmissionHeader(request, env, expected, nowSeconds) {
 function bearerToken(request) {
   const value = request.headers.get("Authorization");
   if (!value) return "";
-  const match = /^Bearer ([^\\s]+)$/.exec(value);
+  const match = /^Bearer ([^\s]+)$/.exec(value);
   return match ? match[1] : "";
 }
