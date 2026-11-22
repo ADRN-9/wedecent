@@ -57,6 +57,15 @@ function signingKeyPEM(): string {
   return "-----BEGIN PRIVATE KEY-----\n" + lines.join("\n") + "\n-----END PRIVATE KEY-----";
 }
 
+function admissionPublicKeyPEM(): string {
+  const der = Deno.env.get("WEDECENT_AGENT_ADMISSION_PUBLIC_SPKI_B64")?.trim();
+  if (!der || !/^[A-Za-z0-9+/=]+$/.test(der)) {
+    throw new Error("WEDECENT_AGENT_ADMISSION_PUBLIC_SPKI_B64 is not configured");
+  }
+  const lines = der.match(/.{1,64}/g) ?? [];
+  return "-----BEGIN PUBLIC KEY-----\\n" + lines.join("\\n") + "\\n-----END PUBLIC KEY-----";
+}
+
 function connectionGrantPublicKeyPEM(): string {
   const der = Deno.env.get("WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64")?.trim();
   if (!der || !/^[A-Za-z0-9+/=]+$/.test(der)) {
@@ -71,9 +80,16 @@ let signerPromise: Promise<{ key: CryptoKey; kid: string }> | null = null;
 async function signer(): Promise<{ key: CryptoKey; kid: string }> {
   if (!signerPromise) {
     signerPromise = (async () => {
-      const key = await importPKCS8(signingKeyPEM(), "EdDSA", { extractable: true });
-      const jwk = await exportJWK(key);
-      const kid = await calculateJwkThumbprint(jwk, "sha256");
+      const key = await importPKCS8(signingKeyPEM(), "EdDSA", { extractable: false });
+      const publicKey = await importSPKI(admissionPublicKeyPEM(), "EdDSA", { extractable: true });
+      const publicJWK = await exportJWK(publicKey);
+      const kid = await calculateJwkThumbprint(publicJWK, "sha256");
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+      const signature = await crypto.subtle.sign({ name: "Ed25519" }, key, challenge);
+      const matchesPublicKey = await crypto.subtle.verify({ name: "Ed25519" }, publicKey, signature, challenge);
+      if (!matchesPublicKey) {
+        throw new Error("agent admission private key does not match its configured public key");
+      }
       const terminalKey = await importSPKI(connectionGrantPublicKeyPEM(), "EdDSA", { extractable: true });
       const terminalJWK = await exportJWK(terminalKey);
       const terminalKID = await calculateJwkThumbprint(terminalJWK, "sha256");
