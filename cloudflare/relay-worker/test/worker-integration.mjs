@@ -52,12 +52,15 @@ function startWorker(port, persistTo, globalLimit, ipLimit = 10_000) {
 
 async function waitForHealth(worker, baseURL) {
   for (let attempt = 0; attempt < 300; attempt++) {
-    if (worker.child.exitCode !== null) {
+    if (worker.child.exitCode !== null || worker.child.signalCode !== null) {
       throw new Error("Wrangler dev exited before becoming healthy:\n" + worker.logs);
     }
     try {
       const response = await fetch(baseURL + "/healthz");
-      if (response.status === 200) return;
+      if (response.status === 200) {
+        await response.arrayBuffer();
+        return;
+      }
     } catch {
       // The local Worker is still starting.
     }
@@ -67,112 +70,125 @@ async function waitForHealth(worker, baseURL) {
 }
 
 async function stopWorker(worker) {
-  if (worker.child.exitCode !== null || worker.child.killed) return;
+  const child = worker.child;
+  if (child.exitCode !== null || child.signalCode !== null) return;
   try {
-    process.kill(-worker.child.pid, "SIGTERM");
+    process.kill(-child.pid, "SIGTERM");
   } catch {
-    worker.child.kill("SIGTERM");
+    child.kill("SIGTERM");
   }
   await Promise.race([
-    new Promise((resolve) => worker.child.once("exit", resolve)),
-    delay(5_000).then(() => {
-      try { process.kill(-worker.child.pid, "SIGKILL"); } catch { worker.child.kill("SIGKILL"); }
-    }),
+    new Promise((resolve) => child.once("exit", resolve)),
+    delay(5_000),
   ]);
+  if (child.exitCode === null && child.signalCode === null) {
+    try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+  }
 }
 
-async function postDirect(baseURL, requestBody = body, extra = {}) {
-  return fetch(baseURL + directPath, {
+async function withWorker(port, persistTo, globalLimit, ipLimit, operation) {
+  const worker = startWorker(port, persistTo, globalLimit, ipLimit);
+  const baseURL = "http://127.0.0.1:" + port;
+  try {
+    await waitForHealth(worker, baseURL);
+    return await operation(baseURL, worker);
+  } finally {
+    await stopWorker(worker);
+  }
+}
+
+async function postDirect(baseURL, requestBody = body) {
+  const response = await fetch(baseURL + directPath, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(extra.headers ?? {}) },
+    headers: { "Content-Type": "application/json" },
     body: requestBody,
-    ...extra.fetchOptions,
   });
+  await response.arrayBuffer();
+  return response;
 }
 
 async function verifyDurableObjectPersistence() {
   const port = await freePort();
-  const baseURL = "http://127.0.0.1:" + port;
   const persistTo = join(root, "quota-state");
-  let worker = startWorker(port, persistTo, 10);
-  await waitForHealth(worker, baseURL);
 
-  const readiness = await fetch(baseURL + "/readyz");
-  assert.equal(readiness.status, 200, "local Durable Object bindings should be ready");
+  await withWorker(port, persistTo, 10, 10_000, async (baseURL) => {
+    const readiness = await fetch(baseURL + "/readyz");
+    await readiness.arrayBuffer();
+    assert.equal(readiness.status, 200, "local Durable Object bindings should be ready");
 
-  const unsupported = await fetch(baseURL + directPath, { method: "GET" });
-  assert.equal(unsupported.status, 405);
+    const unsupported = await fetch(baseURL + directPath, { method: "GET" });
+    await unsupported.arrayBuffer();
+    assert.equal(unsupported.status, 405);
 
-  const malformed = await fetch(baseURL + "/v1/direct-authorize/not-a-device", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
+    const malformed = await fetch(baseURL + "/v1/direct-authorize/not-a-device", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    });
+    await malformed.arrayBuffer();
+    assert.equal(malformed.status, 400);
+
+    const oversizedStream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("x".repeat(1100)));
+        controller.close();
+      },
+    });
+    const oversized = await fetch(baseURL + directPath, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: oversizedStream,
+      duplex: "half",
+    });
+    await oversized.arrayBuffer();
+    assert.equal(oversized.status, 413, "chunked oversized body must be bounded");
+
+    for (let i = 0; i < 9; i++) {
+      const response = await postDirect(baseURL);
+      assert.equal(response.status, 401, "valid preflight should reach authorization");
+    }
+    const saturated = await postDirect(baseURL);
+    assert.equal(saturated.status, 429, "global quota should reject after ten charged requests");
   });
-  assert.equal(malformed.status, 400);
 
-  const oversizedStream = new ReadableStream({
-    start(controller) {
-      controller.enqueue(new TextEncoder().encode("x".repeat(1100)));
-      controller.close();
-    },
+  await withWorker(port, persistTo, 10, 10_000, async (baseURL) => {
+    const afterRestart = await postDirect(baseURL);
+    assert.equal(afterRestart.status, 429, "SQLite Durable Object state must survive worker restart");
   });
-  const oversized = await fetch(baseURL + directPath, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: oversizedStream,
-    duplex: "half",
-  });
-  assert.equal(oversized.status, 413, "chunked oversized body must be bounded");
-
-  for (let i = 0; i < 9; i++) {
-    const response = await postDirect(baseURL);
-    assert.equal(response.status, 401, "valid preflight should reach authorization");
-  }
-  const saturated = await postDirect(baseURL);
-  assert.equal(saturated.status, 429, "global quota should reject after ten charged requests");
-
-  await stopWorker(worker);
-  worker = startWorker(port, persistTo, 10);
-  await waitForHealth(worker, baseURL);
-  const afterRestart = await postDirect(baseURL);
-  assert.equal(afterRestart.status, 429, "SQLite Durable Object state must survive worker restart");
-  await stopWorker(worker);
 }
 
 async function measureCentralLimiter() {
   const port = await freePort();
-  const baseURL = "http://127.0.0.1:" + port;
-  const worker = startWorker(port, join(root, "performance-state"), 10_000, 10_000);
-  await waitForHealth(worker, baseURL);
+  await withWorker(port, join(root, "performance-state"), 10_000, 10_000, async (baseURL) => {
+    const readiness = await fetch(baseURL + "/readyz");
+    await readiness.arrayBuffer();
+    assert.equal(readiness.status, 200, "local limiter and relay Durable Objects should be available");
 
-  const readiness = await fetch(baseURL + "/readyz");
-  assert.equal(readiness.status, 200, "local limiter and relay Durable Objects should be available");
+    const requestCount = 128;
+    const started = performance.now();
+    const results = await Promise.all(Array.from({ length: requestCount }, async () => {
+      const requestStarted = performance.now();
+      const response = await postDirect(baseURL);
+      return { status: response.status, latencyMS: performance.now() - requestStarted };
+    }));
+    const elapsedMS = performance.now() - started;
+    assert.equal(results.filter((result) => result.status === 401).length, requestCount);
+    assert.equal(results.filter((result) => result.status === 429 || result.status >= 500).length, 0);
 
-  const requestCount = 128;
-  const started = performance.now();
-  const results = await Promise.all(Array.from({ length: requestCount }, async () => {
-    const requestStarted = performance.now();
-    const response = await postDirect(baseURL);
-    return { status: response.status, latencyMS: performance.now() - requestStarted };
-  }));
-  const elapsedMS = performance.now() - started;
-  assert.equal(results.filter((result) => result.status === 401).length, requestCount);
-  assert.equal(results.filter((result) => result.status === 429 || result.status >= 500).length, 0);
-
-  const latencies = results.map((result) => result.latencyMS).sort((a, b) => a - b);
-  const percentile = (p) => latencies[Math.min(latencies.length - 1, Math.ceil(p * latencies.length) - 1)];
-  const metrics = {
-    runtime: "wrangler-local-sqlite-durable-objects",
-    requests: requestCount,
-    elapsed_ms: Number(elapsedMS.toFixed(2)),
-    throughput_rps: Number((requestCount / (elapsedMS / 1000)).toFixed(2)),
-    p50_ms: Number(percentile(0.50).toFixed(2)),
-    p95_ms: Number(percentile(0.95).toFixed(2)),
-    max_ms: Number(latencies.at(-1).toFixed(2)),
-  };
-  console.log("RELAY_DO_LOCAL_PERFORMANCE " + JSON.stringify(metrics));
-  assert.ok(metrics.p95_ms < 10_000, "local Durable Object p95 must remain bounded");
-  await stopWorker(worker);
+    const latencies = results.map((result) => result.latencyMS).sort((a, b) => a - b);
+    const percentile = (p) => latencies[Math.min(latencies.length - 1, Math.ceil(p * latencies.length) - 1)];
+    const metrics = {
+      runtime: "wrangler-local-sqlite-durable-objects",
+      requests: requestCount,
+      elapsed_ms: Number(elapsedMS.toFixed(2)),
+      throughput_rps: Number((requestCount / (elapsedMS / 1000)).toFixed(2)),
+      p50_ms: Number(percentile(0.50).toFixed(2)),
+      p95_ms: Number(percentile(0.95).toFixed(2)),
+      max_ms: Number(latencies.at(-1).toFixed(2)),
+    };
+    console.log("RELAY_DO_LOCAL_PERFORMANCE " + JSON.stringify(metrics));
+    assert.ok(metrics.p95_ms < 10_000, "local Durable Object p95 must remain bounded");
+  });
 }
 
 try {
