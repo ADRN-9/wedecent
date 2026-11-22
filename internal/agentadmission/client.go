@@ -288,6 +288,9 @@ func (c Client) httpClient(endpointHost string) (*http.Client, error) {
 	if !ok {
 		return nil, errors.New("agent admission requires a standard HTTP transport to enforce endpoint TLS policy")
 	}
+	if standard.DialTLS != nil || standard.DialTLSContext != nil {
+		return nil, errors.New("agent admission does not allow custom TLS dialers")
+	}
 	clone := standard.Clone()
 	tlsConfig := clone.TLSClientConfig
 	if tlsConfig == nil {
