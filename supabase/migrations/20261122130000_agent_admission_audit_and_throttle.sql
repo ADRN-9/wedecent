@@ -2,6 +2,16 @@
 
 begin;
 
+alter table public.agent_admission_global_rate_limits
+    drop constraint if exists agent_admission_global_rate_count_range;
+alter table public.agent_admission_global_rate_limits
+    add constraint agent_admission_global_rate_count_range check (request_count between 0 and 10002);
+
+alter table public.agent_admission_rate_limits
+    drop constraint if exists agent_admission_rate_count_range;
+alter table public.agent_admission_rate_limits
+    add constraint agent_admission_rate_count_range check (request_count between 0 and 66);
+
 create table public.agent_admission_audit_events (
     id uuid primary key default gen_random_uuid(),
     device_id text,
@@ -210,14 +220,16 @@ begin
            end,
            request_count = case
                when gr.window_started_at <= v_now - interval '60 seconds' then 1
-               else least(gr.request_count + 1, 10001)
+               else least(gr.request_count + 1, 10002)
            end,
            updated_at = v_now
     returning request_count into v_global_request_count;
 
     if v_global_request_count > 10000 then
-        insert into public.agent_admission_audit_events (device_id, event_type, reason)
-        values (p_device_id, 'rejected', 'rate_limited');
+        if v_global_request_count = 10001 then
+            insert into public.agent_admission_audit_events (device_id, event_type, reason)
+            values (p_device_id, 'rejected', 'rate_limited');
+        end if;
         return 'rate_limited';
     end if;
 
@@ -232,14 +244,16 @@ begin
            end,
            request_count = case
                when rl.window_started_at <= v_now - interval '60 seconds' then 1
-               else least(rl.request_count + 1, 65)
+               else least(rl.request_count + 1, 66)
            end,
            updated_at = v_now
     returning request_count into v_request_count;
 
     if v_request_count > 64 then
-        insert into public.agent_admission_audit_events (device_id, event_type, reason)
-        values (p_device_id, 'rejected', 'rate_limited');
+        if v_request_count = 65 then
+            insert into public.agent_admission_audit_events (device_id, event_type, reason)
+            values (p_device_id, 'rejected', 'rate_limited');
+        end if;
         return 'rate_limited';
     end if;
 
