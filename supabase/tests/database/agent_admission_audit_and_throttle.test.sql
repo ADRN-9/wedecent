@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(19);
+select plan(22);
 
 select ok(
     (select c.relrowsecurity from pg_catalog.pg_class c
@@ -15,6 +15,16 @@ select ok(
       join pg_catalog.pg_namespace n on n.oid = c.relnamespace
      where n.nspname = 'public' and c.relname = 'agent_admission_endpoint_rate_limits'),
     'endpoint abuse limiter has RLS enabled'
+);
+select ok(
+    (select c.relrowsecurity from pg_catalog.pg_class c
+      join pg_catalog.pg_namespace n on n.oid = c.relnamespace
+     where n.nspname = 'public' and c.relname = 'device_revocation_dispatch_outbox'),
+    'device revocation dispatch outbox has RLS enabled'
+);
+select ok(
+    not pg_catalog.has_table_privilege('anon', 'public.device_revocation_dispatch_outbox', 'SELECT'),
+    'anon cannot read device revocation dispatch state'
 );
 select ok(
     not pg_catalog.has_table_privilege('anon', 'public.agent_admission_audit_events', 'SELECT'),
@@ -154,6 +164,12 @@ select is(
       where device_id = 'wd_eeeeeeeeeeeeeeee' and event_type = 'revoked' and reason = 'device_revoked'),
     1,
     'device revocation is durably audited'
+);
+select is(
+    (select count(*)::integer from public.device_revocation_dispatch_outbox
+      where device_id = 'wd_eeeeeeeeeeeeeeee' and status = 'pending'),
+    1,
+    'device revocation creates a durable pending relay dispatch'
 );
 
 select * from finish();
