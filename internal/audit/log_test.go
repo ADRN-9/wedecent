@@ -56,7 +56,7 @@ func TestAppendRejectsControlCharacters(t *testing.T) {
 func TestAppendRejectsInvalidUTF8InEveryStringField(t *testing.T) {
 	invalidUTF8 := string([]byte{0xff})
 	tests := []struct {
-		name  string
+		name   string
 		mutate func(*Event)
 	}{
 		{"type", func(event *Event) { event.Type += invalidUTF8 }},
@@ -88,6 +88,51 @@ func TestAppendRejectsInvalidUTF8InEveryStringField(t *testing.T) {
 				t.Fatalf("rejected event created an audit archive: %v", err)
 			}
 		})
+	}
+}
+
+
+func TestAppendRejectsInvalidUTF8WithoutChangingExistingRecords(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, FileName)
+	maxBytes := int64(maxEventSize + 32)
+	activeBefore := []byte(strings.Repeat("x", int(maxBytes-1)))
+	archive := filepath.Join(dir, archiveFileName)
+	archiveBefore := []byte("previous archive\n")
+	if err := os.WriteFile(path, activeBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(archive, archiveBefore, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	log, err := open(path, maxBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	invalidUTF8 := string([]byte{0xff})
+	err = log.Append(Event{
+		Type:    "terminal.stream_opened",
+		Outcome: "success",
+		Reason:  "invalid-" + invalidUTF8,
+	})
+	if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("expected invalid UTF-8 rejection, got %v", err)
+	}
+
+	activeAfter, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(activeAfter) != string(activeBefore) {
+		t.Fatal("rejected event modified or partially appended to the active audit log")
+	}
+	archiveAfter, err := os.ReadFile(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(archiveAfter) != string(archiveBefore) {
+		t.Fatal("rejected event modified or replaced the existing audit archive")
 	}
 }
 
