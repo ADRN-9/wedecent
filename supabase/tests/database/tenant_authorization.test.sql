@@ -187,7 +187,7 @@ select throws_ok(
         )
     $$,
     '42501',
-    'new row violates row-level security policy for table "device_access"',
+    'permission denied for table device_access',
     'former creator cannot grant access to another organization device'
 );
 

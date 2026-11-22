@@ -102,6 +102,19 @@ Other relevant CI gates include Windows agent tests/builds, macOS agent tests/bu
 
 Results must be attributed to the exact tested HEAD and workflow run. A command listed here is not evidence of a passing result until the corresponding CI job is completed successfully.
 
+## Exact-head verification snapshot — 2026-11-21
+
+The following are the implementation heads after the port-retry and focused-race changes, before this documentation-only synchronization commit. Workflow IDs are CI `342513994` and Desktop shell `367426414`.
+
+| PR | Implementation HEAD | CI run | Desktop run | Status when recorded |
+|---|---|---|---|---|
+| #179 | `1be871201a6e52683afc8c734b6740b2e6ee6ff6` | [44960917819](https://github.com/ADRN-9/wedecent/actions/runs/44960917819) | [44960917928](https://github.com/ADRN-9/wedecent/actions/runs/44960917928) | Queued / running |
+| #180 | `da51f71417e25bdee06c890f5d27f310ee00ca13` | [44960969047](https://github.com/ADRN-9/wedecent/actions/runs/44960969047) | [44960969032](https://github.com/ADRN-9/wedecent/actions/runs/44960969032) | Queued / running |
+| #181 | `cb60e970abdca73d54f9e832b930ea91893ac683` | [44960999654](https://github.com/ADRN-9/wedecent/actions/runs/44960999654) | [44960999694](https://github.com/ADRN-9/wedecent/actions/runs/44960999694) | Queued / running |
+| #182 | `dbddb6fac38849b60cd6974ef50bd33301d6f4ef` | [44961033380](https://github.com/ADRN-9/wedecent/actions/runs/44961033380) | [44961033373](https://github.com/ADRN-9/wedecent/actions/runs/44961033373) | Queued / running |
+
+These workflow runs are tied to the exact implementation HEADs in the table. The documentation-only synchronization commit that follows has its own exact-head CI and desktop runs; those final run IDs are recorded in PR #182's description. Do not treat queued or in-progress runs as passing evidence.
+
 ## Repository governance observations — 2026-11-21
 
 The only active repository ruleset returned by the GitHub API is `Protect main` (ID `21507567`), targeting `~DEFAULT_BRANCH` only. It does not protect the stacked `security/*` branches.
