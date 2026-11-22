@@ -710,16 +710,16 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 			archive: func(target, _ []byte, _ int64) []byte { return record(target) },
 			wantErr: true,
 		},
-{
+		{
 			name:    "duplicate semantic target with alternate JSON formatting",
 			active:  func(target, _ []byte, _ int64) []byte {
 				var parsed Event
 				if err := json.Unmarshal(target, &parsed); err != nil {
 					t.Fatal(err)
 				}
-				alternate, err := json.MarshalIndent(parsed, "", "  ")
-				if err != nil {
-					t.Fatal(err)
+				alternate := bytes.Replace(target, []byte(",\"type\":"), []byte(", \"type\" : "), 1)
+				if bytes.Equal(alternate, target) {
+					t.Fatal("test did not produce alternate JSON formatting")
 				}
 				return join(record(target), record(alternate))
 			},
