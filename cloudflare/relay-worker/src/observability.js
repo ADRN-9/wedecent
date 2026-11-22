@@ -74,7 +74,7 @@ export async function relayReadiness(env) {
     if (!env?.RELAY_METRICS || typeof env.RELAY_METRICS.writeDataPoint !== "function") {
       return false;
     }
-    if (typeof env.RELAY_REVOCATION_TOKEN !== "string" || env.RELAY_REVOCATION_TOKEN.length < 32) {
+    if (typeof env.RELAY_REVOCATION_TOKEN !== "string" || !/^[A-Za-z0-9_-]{43,128}$/.test(env.RELAY_REVOCATION_TOKEN)) {
       return false;
     }
     const checks = [
