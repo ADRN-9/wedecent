@@ -118,10 +118,10 @@ func TestAcquireGeneratesFreshProofNonceForEachReconnect(t *testing.T) {
 	}))
 	defer server.Close()
 	client := Client{
-		SupabaseURL: server.URL,
+		SupabaseURL:    server.URL,
 		PublishableKey: "public-test-key",
-		HTTP: server.Client(),
-		Now: func() time.Time { return now },
+		HTTP:           server.Client(),
+		Now:            func() time.Time { return now },
 	}
 	for attempt := 0; attempt < 2; attempt++ {
 		if _, err := client.Acquire(context.Background(), id, 5); err != nil {
@@ -231,7 +231,7 @@ func TestValidateEndpointResponseRequiresExactOriginAndTLS13(t *testing.T) {
 	responseURL := *endpoint
 	response := &http.Response{
 		Request: &http.Request{URL: &responseURL},
-		TLS: &tls.ConnectionState{Version: tls.VersionTLS12, ServerName: "supabase.example"},
+		TLS:     &tls.ConnectionState{Version: tls.VersionTLS12, ServerName: "supabase.example"},
 	}
 	if err := validateEndpointResponse(response, endpoint); err == nil {
 		t.Fatal("expected TLS 1.2 response to be rejected")
