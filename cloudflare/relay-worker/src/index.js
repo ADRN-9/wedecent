@@ -23,6 +23,7 @@ import {
   consumeRateLimitBuckets,
   RATE_LIMIT_CLEANUP_INTERVAL_MS,
   enforceRelayDeviceRateLimit,
+  enforceRelayLegacyAgentRateLimit,
   enforceRelayRequestRateLimit,
   limiterRequestConfig,
 } from "./rate-limit.js";
@@ -156,8 +157,14 @@ async function handleRelayRequest(request, env) {
   }
 
   const authenticatedDeviceIDs = verifiedDeviceIDs(authorization);
-  if (authenticatedDeviceIDs.length === 0 && role !== "agent") {
-    return new Response("Relay admission unavailable", { status: 503 });
+  if (authenticatedDeviceIDs.length === 0) {
+    if (role !== "agent" || authorization.legacy !== true) {
+      return new Response("Relay admission unavailable", { status: 503 });
+    }
+    const legacyAdmission = await enforceRelayLegacyAgentRateLimit(env);
+    if (!legacyAdmission.ok) {
+      return rateLimitResponse(legacyAdmission);
+    }
   }
   for (const authenticatedDeviceID of authenticatedDeviceIDs) {
     const deviceAdmission = await enforceRelayDeviceRateLimit(env, authenticatedDeviceID, "stream");

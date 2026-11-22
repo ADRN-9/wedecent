@@ -5,6 +5,7 @@ const DEFAULT_GLOBAL_STREAM_CONNECTIONS_PER_WINDOW = 12000;
 const DEFAULT_DIRECT_IP_REQUESTS_PER_WINDOW = 30;
 const DEFAULT_DIRECT_DEVICE_REQUESTS_PER_WINDOW = 60;
 const DEFAULT_DIRECT_GLOBAL_REQUESTS_PER_WINDOW = 600;
+const DEFAULT_LEGACY_AGENT_CONNECTIONS_PER_WINDOW = 240;
 const MAX_WINDOW_SECONDS = 3600;
 const MAX_CONNECTIONS_PER_WINDOW = 1000000;
 export const MAX_RATE_LIMIT_BUCKETS_PER_SCOPE = 4096;
@@ -14,7 +15,7 @@ const INTERNAL_CONSUME_URL = "https://wedecent.internal/consume";
 const UNKNOWN_SOURCE = "unknown";
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 const IDENTITY_SCOPES = ["stream-ip", "stream-device", "direct-ip", "direct-device"];
-const GLOBAL_SCOPES = new Set(["stream-global", "direct-global"]);
+const GLOBAL_SCOPES = new Set(["stream-global", "direct-global", "stream-legacy-agent"]);
 const ALLOWED_SCOPES = new Set([...IDENTITY_SCOPES, ...GLOBAL_SCOPES]);
 const encoder = new TextEncoder();
 
@@ -50,6 +51,11 @@ export function relayRateLimitConfig(env = {}) {
     directGlobalLimit: readPositiveInteger(
       env.RELAY_DIRECT_GLOBAL_REQUESTS_PER_WINDOW,
       DEFAULT_DIRECT_GLOBAL_REQUESTS_PER_WINDOW,
+      MAX_CONNECTIONS_PER_WINDOW,
+    ),
+    legacyAgentLimit: readPositiveInteger(
+      env.RELAY_LEGACY_AGENT_CONNECTIONS_PER_WINDOW,
+      DEFAULT_LEGACY_AGENT_CONNECTIONS_PER_WINDOW,
       MAX_CONNECTIONS_PER_WINDOW,
     ),
   };
@@ -133,6 +139,22 @@ export async function enforceRelayRequestRateLimit(request, env, kind = "stream"
             { scope: "stream-global", key: "global", capacity: config.globalStreamLimit },
           ];
     return await consumeRemoteBuckets(env.RELAY_RATE_LIMIT, buckets, config.windowMS);
+  } catch {
+    return unavailable();
+  }
+}
+
+export async function enforceRelayLegacyAgentRateLimit(env) {
+  try {
+    const config = relayRateLimitConfig(env);
+    if (!env.RELAY_RATE_LIMIT) {
+      throw new Error("rate-limit configuration is unavailable");
+    }
+    return await consumeRemoteBuckets(
+      env.RELAY_RATE_LIMIT,
+      [{ scope: "stream-legacy-agent", key: "global", capacity: config.legacyAgentLimit }],
+      config.windowMS,
+    );
   } catch {
     return unavailable();
   }
@@ -423,6 +445,7 @@ function scopeLabel(scope) {
   if (scope.endsWith("-global")) return "global";
   if (scope.endsWith("-ip")) return "ip";
   if (scope.endsWith("-device")) return "device";
+  if (scope === "stream-legacy-agent") return "legacy";
   return "unavailable";
 }
 

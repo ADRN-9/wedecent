@@ -7,6 +7,7 @@ import {
   consumeTokenBucket,
   deviceBucketName,
   enforceRelayDeviceRateLimit,
+  enforceRelayLegacyAgentRateLimit,
   enforceRelayRequestRateLimit,
   limiterRequestConfig,
   MAX_RATE_LIMIT_BUCKETS_PER_SCOPE,
@@ -32,6 +33,7 @@ test("uses bounded production defaults and rejects invalid overrides", () => {
       RELAY_IP_CONNECTIONS_PER_WINDOW: "75",
       RELAY_DEVICE_CONNECTIONS_PER_WINDOW: "150",
       RELAY_GLOBAL_STREAM_CONNECTIONS_PER_WINDOW: "5000",
+      RELAY_LEGACY_AGENT_CONNECTIONS_PER_WINDOW: "180",
       RELAY_DIRECT_IP_REQUESTS_PER_WINDOW: "20",
       RELAY_DIRECT_DEVICE_REQUESTS_PER_WINDOW: "40",
       RELAY_DIRECT_GLOBAL_REQUESTS_PER_WINDOW: "300",
@@ -41,6 +43,7 @@ test("uses bounded production defaults and rejects invalid overrides", () => {
       ipLimit: 75,
       deviceLimit: 150,
       globalStreamLimit: 5000,
+      legacyAgentLimit: 180,
       directIPLimit: 20,
       directDeviceLimit: 40,
       directGlobalLimit: 300,
@@ -153,6 +156,16 @@ test("direct authorization requests are throttled per IP and across distributed 
   const distributed = await enforceRelayRequestRateLimit(streamRequest("192.0.2.32"), limiterEnv, "direct");
   assert.equal(distributed.ok, false);
   assert.equal(distributed.scope, "global");
+});
+
+test("legacy shared-token agents share one bounded migration quota", async () => {
+  const namespace = fakeNamespace();
+  const limiterEnv = env(namespace, { RELAY_LEGACY_AGENT_CONNECTIONS_PER_WINDOW: "1" });
+  assert.equal((await enforceRelayLegacyAgentRateLimit(limiterEnv)).ok, true);
+  const rejected = await enforceRelayLegacyAgentRateLimit(limiterEnv);
+  assert.equal(rejected.ok, false);
+  assert.equal(rejected.scope, "legacy");
+  assert.equal([...namespace.storage.keys()].filter((key) => key.startsWith("bucket:stream-legacy-agent:")).length, 1);
 });
 
 test("verified device identity receives a separate bounded device quota", async () => {

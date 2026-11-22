@@ -147,7 +147,7 @@ test("legacy shared-token agents remain IP-limited without inventing an authenti
     headers: { Authorization: "Bearer legacy" },
   });
   const result = await authorizeStream(req, env, { deviceId: targetDeviceID, role: "agent", slot: 4 }, now);
-  assert.deepEqual(result, { ok: true, deviceID: null, targetDeviceID: null });
+  assert.deepEqual(result, { ok: true, deviceID: null, targetDeviceID: null, legacy: true });
 });
 
 test("rejects legacy shared-token client bypass", async () => {

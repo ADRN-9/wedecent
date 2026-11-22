@@ -61,7 +61,7 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
   // The shared relay token remains only as an agent migration credential.
   // Allowing it for clients would bypass account-scoped connection grants.
   if (expected.role === "agent" && env.RELAY_ACCESS_TOKEN && token === env.RELAY_ACCESS_TOKEN) {
-    return { ok: true, deviceID: null, targetDeviceID: null };
+    return { ok: true, deviceID: null, targetDeviceID: null, legacy: true };
   }
   return { ok: false, status: 401, message: "Unauthorized" };
 }
