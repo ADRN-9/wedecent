@@ -197,10 +197,18 @@ jobs:
         run: |
           node --check src/index.js
           node --check src/relay-auth.js
+          node --check src/connection-grant.js
+          node --check src/stream-auth.js
+          node --check src/grant-replay.js
           node --check src/rate-limit.js
+          node --check src/http-validation.js
+          node --check src/agent-slots.js
       - name: Test relay authentication and admission
         working-directory: cloudflare/relay-worker
         run: npm test
+      - name: Test local Durable Object persistence, availability and throughput
+        working-directory: cloudflare/relay-worker
+        run: npm run test:integration
       - name: Validate Worker bundle and configuration
         working-directory: cloudflare/relay-worker
         run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wedecent-relay-worker-dry-run"
@@ -222,6 +230,8 @@ jobs:
         run: node --test supabase/functions/_shared/route-authorization.test.mjs
       - name: Type-check route authorization Edge Function
         run: deno check supabase/functions/route-authorization/index.ts
+      - name: Type-check relay agent admission Edge Function
+        run: deno check supabase/functions/agent-admission/index.ts
 
   supabase-db:
     runs-on: ubuntu-latest
