@@ -21,8 +21,11 @@ const maximumBodyBytes = 4096;
 const capabilityLifetimeSeconds = 90;
 
 class AdmissionError extends Error {
-  constructor(message, status) {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
     super(message);
+    this.name = "AdmissionError";
     this.status = status;
   }
 }
@@ -80,7 +83,12 @@ async function signer(): Promise<{ key: CryptoKey; kid: string }> {
       return { key, kid };
     })();
   }
-  return await signerPromise;
+  try {
+    return await signerPromise;
+  } catch (error) {
+    signerPromise = null;
+    throw error;
+  }
 }
 
 function parseDeviceID(value: unknown): string {
@@ -213,7 +221,7 @@ Deno.serve(async (request) => {
     } catch {
       throw new AdmissionError("enrolled device identity is invalid", 403);
     }
-    let proofClaims;
+    let proofClaims: { jti: string; exp: number };
     try {
       proofClaims = await verifyDeviceAdmissionProof(
         body.proof,
@@ -227,6 +235,7 @@ Deno.serve(async (request) => {
     const signing = await signer();
     const { data: consumed, error: consumeError } = await admin.rpc("consume_agent_admission_proof", {
       p_device_id: deviceID,
+      p_public_key: String(device.public_key),
       p_jti: proofClaims.jti,
       p_expires_at: new Date(proofClaims.exp * 1000).toISOString(),
     });

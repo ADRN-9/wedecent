@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -171,6 +172,20 @@ func TestAcquireRejectsMissingTrustConfiguration(t *testing.T) {
 	}
 	if err := (Client{SupabaseURL: "http://example.invalid", PublishableKey: "public-test-key"}).Validate(); err == nil {
 		t.Fatal("expected non-loopback HTTP endpoint to fail")
+	}
+}
+
+func TestAdmissionHTTPClientRequiresTLS13AndDisablesAmbientCredentials(t *testing.T) {
+	client := (Client{}).httpClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("expected a standard HTTP transport")
+	}
+	if transport.TLSClientConfig == nil || transport.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatal("agent admission HTTP client must require TLS 1.3")
+	}
+	if client.Jar != nil || client.CheckRedirect == nil {
+		t.Fatal("agent admission HTTP client must disable cookies and redirects")
 	}
 }
 

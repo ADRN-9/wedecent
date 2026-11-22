@@ -74,3 +74,18 @@ test("rejects malformed proof encodings", async () => {
   await assert.rejects(() => verifyDeviceAdmissionProof("not-a-jwt", expected, rawPublicKey, now));
   await assert.rejects(() => verifyDeviceAdmissionProof(issueProof(), expected, rawPublicKey.subarray(1), now));
 });
+
+test("rejects non-canonical replay nonces and unsupported proof headers", async () => {
+  await assert.rejects(() => verifyDeviceAdmissionProof(
+    issueProof({ jti: "A".repeat(21) + "B" }),
+    expected,
+    rawPublicKey,
+    now,
+  ));
+  await assert.rejects(() => verifyDeviceAdmissionProof(
+    issueProof({}, { crit: ["b64"] }),
+    expected,
+    rawPublicKey,
+    now,
+  ));
+});

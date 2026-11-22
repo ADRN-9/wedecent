@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(6);
+select plan(8);
 
 insert into auth.users (id, aud, role, email)
 values (
@@ -22,21 +22,27 @@ values (
 );
 
 select is(
-    public.consume_agent_admission_proof(
-        'wd_eeeeeeeeeeeeeeee',
-        repeat('A', 22),
-        pg_catalog.now() + interval '30 seconds'
-    ),
+    public.consume_agent_admission_proof('wd_eeeeeeeeeeeeeeee', repeat('E', 43), repeat('A', 22), pg_catalog.now() + interval '30 seconds'),
     'accepted',
     'a fresh device proof nonce is accepted'
 );
 
-select is(
-    public.consume_agent_admission_proof(
+select throws_ok(
+    $$
+    select public.consume_agent_admission_proof(
         'wd_eeeeeeeeeeeeeeee',
-        repeat('A', 22),
+        repeat('G', 43),
+        repeat('G', 22),
         pg_catalog.now() + interval '30 seconds'
-    ),
+    )
+    $$,
+    '42501',
+    'agent device is not enrolled or is revoked',
+    'a changed enrolled public key cannot consume the proof'
+);
+
+select is(
+    public.consume_agent_admission_proof('wd_eeeeeeeeeeeeeeee', repeat('E', 43), repeat('A', 22), pg_catalog.now() + interval '30 seconds'),
     'replay',
     'a repeated device proof nonce is rejected'
 );
@@ -47,6 +53,7 @@ select is(
         from generate_series(1, 62) as generated(nonce)
         where public.consume_agent_admission_proof(
             'wd_eeeeeeeeeeeeeeee',
+            repeat('E', 43),
             pg_catalog.lpad(pg_catalog.to_hex(generated.nonce), 22, 'B'),
             pg_catalog.now() + interval '30 seconds'
         ) = 'accepted'
@@ -56,19 +63,28 @@ select is(
 );
 
 select is(
-    public.consume_agent_admission_proof(
-        'wd_eeeeeeeeeeeeeeee',
-        repeat('C', 22),
-        pg_catalog.now() + interval '30 seconds'
-    ),
+    public.consume_agent_admission_proof('wd_eeeeeeeeeeeeeeee', repeat('E', 43), repeat('C', 22), pg_catalog.now() + interval '30 seconds'),
     'rate_limited',
     'the 65th request in a device window is rate limited'
+);
+
+update public.agent_admission_global_rate_limits
+   set window_started_at = pg_catalog.now(),
+       request_count = 10000,
+       updated_at = pg_catalog.now()
+ where singleton is true;
+
+select is(
+    public.consume_agent_admission_proof('wd_eeeeeeeeeeeeeeee', repeat('E', 43), repeat('H', 22), pg_catalog.now() + interval '30 seconds'),
+    'rate_limited',
+    'the aggregate issuance ceiling is enforced across enrolled devices'
 );
 
 select throws_ok(
     $$
     select public.consume_agent_admission_proof(
         'wd_eeeeeeeeeeeeeeee',
+        repeat('E', 43),
         repeat('D', 22),
         pg_catalog.now() - interval '1 second'
     )
@@ -86,6 +102,7 @@ select throws_ok(
     $$
     select public.consume_agent_admission_proof(
         'wd_eeeeeeeeeeeeeeee',
+        repeat('E', 43),
         repeat('F', 22),
         pg_catalog.now() + interval '30 seconds'
     )

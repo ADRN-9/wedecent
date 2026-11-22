@@ -15,10 +15,10 @@ proof signed by the enrolled device identity. The proof is bound to:
 The Edge Function loads the enrolled device public key from `public.devices`, checks
 that the device is an active `agent` or `hybrid`, recomputes its ID and fingerprint,
 and verifies the proof. It never accepts a user bearer token. The device row is
-rechecked under a database share lock when the proof nonce is consumed.
+rechecked under a database share lock when the proof nonce is consumed, including exact equality of the enrolled public-key bytes.
 
 The database RPC atomically enforces one-time proof nonces and a per-device issuance
-limit of 64 proof attempts per rolling 60-second window, including replay attempts. Expired replay rows are
+limit of 64 proof attempts per device and 10,000 proof attempts globally per rolling 60-second window, including replay attempts. Expired replay rows are
 pruned in bounded batches. The Edge Function issues a 90-second capability bound to
 the device ID, key fingerprint, slot, audience `wedecent-relay-agent`, and purpose
 `relay.agent.connect`.
@@ -32,7 +32,7 @@ cannot open agent streams.
 
 ## Runtime configuration
 
-The native service receives only public application configuration:
+The native service receives only public application configuration. The Go client requires TLS 1.3 to the exact configured Supabase origin and rejects redirects (loopback HTTP is permitted only for local tests):
 
 - `supabase_url` / `--supabase-url`: the Supabase project origin;
 - `supabase_publishable_key` / `--supabase-publishable-key`: the public publishable key.

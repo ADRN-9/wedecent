@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -242,7 +243,7 @@ func decodePart(part string, out any) error {
 func (c Client) endpoint() (string, error) {
 	raw := strings.TrimSpace(c.SupabaseURL)
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" ||
+	if err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
 		(u.Path != "" && u.Path != "/") {
 		return "", errors.New("agent admission Supabase URL must be an absolute origin")
 	}
@@ -271,6 +272,23 @@ func (c Client) httpClient() *http.Client {
 			client.Timeout = 10 * time.Second
 		}
 	}
+	transport := client.Transport
+	if transport == nil {
+		transport = http.DefaultTransport
+	}
+	if standard, ok := transport.(*http.Transport); ok {
+		clone := standard.Clone()
+		tlsConfig := clone.TLSClientConfig
+		if tlsConfig == nil {
+			tlsConfig = &tls.Config{}
+		} else {
+			tlsConfig = tlsConfig.Clone()
+		}
+		tlsConfig.MinVersion = tls.VersionTLS13
+		clone.TLSClientConfig = tlsConfig
+		client.Transport = clone
+	}
+	client.Jar = nil
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return http.ErrUseLastResponse
 	}

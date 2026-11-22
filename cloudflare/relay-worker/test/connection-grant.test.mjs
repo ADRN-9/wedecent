@@ -159,6 +159,38 @@ test("rejects agent admission signed by an unknown key", async () => {
   await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({}, { kid: "wrong" }), { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 4 }, admissionKeyring, 1_787_779_010, publicSPKIB64));
 });
 
+test("supports overlapping admission verification keys during rotation", async () => {
+  const previousKeys = generateKeyPairSync("ed25519");
+  const previousSPKIB64 = previousKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+  const previousJWK = previousKeys.publicKey.export({ format: "jwk" });
+  const previousKID = b64url(createHash("sha256").update(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: previousJWK.x })).digest());
+  const rotatingKeyring = JSON.stringify({
+    [previousKID]: previousSPKIB64,
+    [admissionKID]: admissionPublicSPKIB64,
+  });
+  const claims = await verifyAgentAdmission(
+    issueAgentAdmission(),
+    { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 4 },
+    rotatingKeyring,
+    1_787_779_010,
+    publicSPKIB64,
+  );
+  assert.equal(claims.device_id, targetDeviceID);
+});
+
+test("rejects an admission with a tampered signature", async () => {
+  const token = issueAgentAdmission();
+  const parts = token.split(".");
+  parts[2] = (parts[2][0] === "A" ? "B" : "A") + parts[2].slice(1);
+  await assert.rejects(() => verifyAgentAdmission(
+    parts.join("."),
+    { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 4 },
+    admissionKeyring,
+    1_787_779_010,
+    publicSPKIB64,
+  ), /signature/);
+});
+
 test("rejects an agent admission without its independent keyring", async () => {
   await assert.rejects(() => verifyAgentAdmission(
     issueAgentAdmission(),

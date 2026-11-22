@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(9);
+select plan(11);
 
 select ok(
     (select c.relrowsecurity from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'agent_admission_proof_replays'),
@@ -13,8 +13,16 @@ select ok(
     'agent admission rate-limit table has RLS enabled'
 );
 select ok(
+    (select c.relrowsecurity from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'agent_admission_global_rate_limits'),
+    'aggregate agent admission rate-limit table has RLS enabled'
+);
+select ok(
     not pg_catalog.has_table_privilege('anon', 'public.agent_admission_proof_replays', 'SELECT'),
     'anon cannot read agent admission proof replay state'
+);
+select ok(
+    not pg_catalog.has_table_privilege('authenticated', 'public.agent_admission_global_rate_limits', 'UPDATE'),
+    'authenticated users cannot modify aggregate agent admission rate limits'
 );
 select ok(
     not pg_catalog.has_table_privilege('authenticated', 'public.agent_admission_rate_limits', 'INSERT'),
@@ -33,7 +41,7 @@ select ok(
 select ok(
     not pg_catalog.has_function_privilege(
         'authenticated',
-        'public.consume_agent_admission_proof(text,text,timestamp with time zone)',
+        'public.consume_agent_admission_proof(text,text,text,timestamp with time zone)',
         'EXECUTE'
     ),
     'authenticated users cannot consume agent proof nonces'
@@ -41,7 +49,7 @@ select ok(
 select ok(
     pg_catalog.has_function_privilege(
         'service_role',
-        'public.consume_agent_admission_proof(text,text,timestamp with time zone)',
+        'public.consume_agent_admission_proof(text,text,text,timestamp with time zone)',
         'EXECUTE'
     ),
     'service role can atomically consume agent proof nonces'

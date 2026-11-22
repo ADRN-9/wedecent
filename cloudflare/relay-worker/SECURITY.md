@@ -30,8 +30,8 @@ The device proof is signed by the enrolled Ed25519 identity and binds the device
 SHA-256 SPKI fingerprint, logical slot, audience `wedecent-agent-admission`, purpose
 `relay.agent.admission.acquire`, a fresh 128-bit nonce, and a 30-second lifetime.
 The Edge Function loads the public key from the enrolled device row, verifies the
-proof, rejects revoked or non-agent devices, and atomically consumes the proof nonce.
-The database applies a 64-proof-attempts-per-device-per-60-second limit, including replay attempts and bounded cleanup
+proof, rejects revoked or non-agent devices, and atomically consumes the proof nonce. The database locks the device row and rechecks exact public-key equality and revocation state to close the verification/issuance race.
+The database applies a 64-proof-attempts-per-device and 10,000-proof-attempts-global per-60-second limits, including replay attempts and bounded cleanup
 of expired replay rows.
 
 The issued capability is signed with an agent-admission-only Ed25519 key and binds:

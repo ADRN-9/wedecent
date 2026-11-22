@@ -48,7 +48,7 @@ export async function verifyConnectionGrant(
   if (claims.exp - claims.iat > MAX_LIFETIME_SECONDS) {
     throw new Error("connection grant lifetime is too long");
   }
-  if (claims.iat > nowSeconds + CLOCK_SKEW_SECONDS || claims.exp <= nowSeconds) {
+  if (claims.iat > nowSeconds + CLOCK_SKEW_SECONDS || claims.exp < nowSeconds - CLOCK_SKEW_SECONDS) {
     throw new Error("connection grant is not currently valid");
   }
 
@@ -130,7 +130,7 @@ export async function verifyAgentAdmission(
   if (claims.exp - claims.iat > MAX_LIFETIME_SECONDS) {
     throw new Error("agent admission lifetime is too long");
   }
-  if (claims.iat > nowSeconds + CLOCK_SKEW_SECONDS || claims.exp < nowSeconds - CLOCK_SKEW_SECONDS) {
+  if (claims.iat > nowSeconds + CLOCK_SKEW_SECONDS || claims.exp <= nowSeconds) {
     throw new Error("agent admission is not currently valid");
   }
 
