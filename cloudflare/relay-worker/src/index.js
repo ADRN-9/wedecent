@@ -15,6 +15,13 @@ import {
   scheduleReplayCleanup,
 } from "./grant-replay.js";
 import { planAgentSlotAdmission } from "./agent-slots.js";
+import {
+  agentSessionExpired,
+  createAgentSessionAttachment,
+  MAX_AGENT_SESSION_LIFETIME_MS,
+  nextAgentSessionExpiry,
+  touchAgentSessionAttachment,
+} from "./agent-session-policy.js";
 import { directAuthorizationPreflight, readBoundedRequestBody } from "./http-validation.js";
 import {
   emitRelayTrace,
@@ -325,6 +332,7 @@ export class DeviceRelay extends DurableObject {
         return new Response("Relay storage unavailable", { status: 500 });
       }
     }
+    await this.#expireAgentSessions();
     if (url.pathname === "/status") {
       return this.#status();
     }
@@ -412,8 +420,15 @@ export class DeviceRelay extends DurableObject {
     const pair = new WebSocketPair();
     const [client, server] = Object.values(pair);
     const id = crypto.randomUUID();
-    server.serializeAttachment({ id, role: "agent", peerId: null, slot });
+    server.serializeAttachment(createAgentSessionAttachment({
+      id,
+      role: "agent",
+      peerId: null,
+      slot,
+      absoluteExpiresAtMS: Date.now() + MAX_AGENT_SESSION_LIFETIME_MS,
+    }));
     this.ctx.acceptWebSocket(server, ["agent", `agent-slot-${slot}`]);
+    await this.#scheduleAgentSessionAlarm();
 
     return new Response(null, { status: 101, webSocket: client });
   }
@@ -463,15 +478,59 @@ export class DeviceRelay extends DurableObject {
     const clientId = crypto.randomUUID();
     const agentAttachment = agent.deserializeAttachment();
 
+    const touchedAgentAttachment = touchAgentSessionAttachment(agentAttachment, Date.now());
+    if (!touchedAgentAttachment) {
+      agent.close(4001, "Relay session expired");
+      return new Response("Agent relay session expired", { status: 503, headers: { "Retry-After": "1" } });
+    }
     server.serializeAttachment({ id: clientId, role: "client", peerId: agentAttachment.id });
-    agent.serializeAttachment({ ...agentAttachment, peerId: clientId });
+    agent.serializeAttachment({ ...touchedAgentAttachment, peerId: clientId });
     this.ctx.acceptWebSocket(server, ["client"]);
+    await this.#scheduleAgentSessionAlarm();
 
     return new Response(null, { status: 101, webSocket: client });
   }
 
   async alarm() {
     await cleanupExpiredConnectionGrants(this.ctx.storage);
+    await this.#expireAgentSessions();
+  }
+
+  async #expireAgentSessions() {
+    const nowMS = Date.now();
+    for (const socket of this.ctx.getWebSockets("agent")) {
+      let attachment;
+      try {
+        attachment = socket.deserializeAttachment();
+      } catch {
+        socket.close(1011, "Invalid relay session state");
+        continue;
+      }
+      if (!agentSessionExpired(attachment, nowMS)) continue;
+      const peer = attachment?.peerId ? this.#findSocket(attachment.peerId) : null;
+      socket.close(4001, "Relay session expired");
+      if (peer && peer.readyState === WebSocket.OPEN) {
+        peer.close(4001, "Relay session expired");
+      }
+    }
+    await this.#scheduleAgentSessionAlarm(nowMS);
+  }
+
+  async #scheduleAgentSessionAlarm(nowMS = Date.now()) {
+    const entries = this.ctx.getWebSockets("agent").map((socket) => {
+      try {
+        return { readyState: socket.readyState, attachment: socket.deserializeAttachment() };
+      } catch {
+        return { readyState: socket.readyState, attachment: null };
+      }
+    });
+    const nextExpiryMS = nextAgentSessionExpiry(entries, nowMS);
+    if (nextExpiryMS === null) return;
+    const currentAlarm = await this.ctx.storage.getAlarm();
+    const scheduledAtMS = Math.max(nowMS + 1, nextExpiryMS);
+    if (currentAlarm === null || scheduledAtMS < currentAlarm) {
+      await this.ctx.storage.setAlarm(scheduledAtMS);
+    }
   }
 
   #status() {
@@ -512,6 +571,22 @@ export class DeviceRelay extends DurableObject {
       return;
     }
 
+    const agentSocket = attachment.role === "agent" ? socket : peer;
+    let agentAttachment;
+    try {
+      agentAttachment = agentSocket.deserializeAttachment();
+    } catch {
+      socket.close(1011, "Invalid relay session state");
+      peer.close(1011, "Invalid relay session state");
+      return;
+    }
+    const touched = touchAgentSessionAttachment(agentAttachment, Date.now());
+    if (!touched) {
+      socket.close(4001, "Relay session expired");
+      peer.close(4001, "Relay session expired");
+      return;
+    }
+    agentSocket.serializeAttachment(touched);
     peer.send(message);
   }
 
