@@ -68,6 +68,21 @@ test("rejects expired grants", async () => {
   await assert.rejects(() => verify(issueGrant(), 1_787_779_200), /currently valid/);
 });
 
+test("allows only the configured 30-second clock-skew tolerance", async () => {
+  const base = 1_787_779_000;
+  const expiring = issueGrant();
+
+  const withinExpirationSkew = await verify(expiring, base + 120);
+  assert.equal(withinExpirationSkew.exp, base + 90);
+  await assert.rejects(() => verify(expiring, base + 121), /currently valid/);
+
+  const issuedAtBoundary = issueGrant({ iat: base + 30, exp: base + 120 });
+  await verify(issuedAtBoundary, base);
+
+  const issuedTooFarInFuture = issueGrant({ iat: base + 31, exp: base + 121 });
+  await assert.rejects(() => verify(issuedTooFarInFuture, base), /currently valid/);
+});
+
 test("rejects the wrong permission", async () => {
   await assert.rejects(() => verify(issueGrant({ permission: "terminal.read" })), /permission/);
 });
