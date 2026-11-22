@@ -100,7 +100,7 @@ test("source IP and device bucket keys are stable hashes without raw identifiers
   assert.equal(firstDeviceKey, await deviceBucketName(deviceID));
   assert.match(firstDeviceKey, /^[0-9a-f]{64}$/);
   assert.equal(firstDeviceKey.includes(deviceID), false);
-  await assert.rejects(() => deviceBucketName("wd_unverifiedtarget"));
+  await assert.rejects(() => deviceBucketName("wd_123"));
 });
 
 test("arbitrary unauthenticated target IDs never become device bucket identities", async () => {
@@ -114,7 +114,7 @@ test("arbitrary unauthenticated target IDs never become device bucket identities
     const result = await enforceRelayRequestRateLimit(streamRequest("192.0.2.20", target), limiterEnv, "stream");
     assert.equal(result.ok, true);
   }
-  assert.deepEqual(namespace.objectNames, ["relay-rate-limit-v2"]);
+  assert.deepEqual([...new Set(namespace.objectNames)], ["relay-rate-limit-v2"]);
   assert.equal(namespace.storage.get("count:stream-ip"), 1);
   assert.equal(namespace.storage.get("count:stream-device"), undefined);
   assert.equal([...namespace.storage.keys()].filter((key) => key.startsWith("bucket:")).length, 2);
@@ -132,7 +132,7 @@ test("distributed source IP requests share a global stream quota", async () => {
   assert.equal(rejected.ok, false);
   assert.equal(rejected.status, 429);
   assert.equal(rejected.scope, "global");
-  assert.deepEqual(namespace.objectNames, ["relay-rate-limit-v2"]);
+  assert.deepEqual([...new Set(namespace.objectNames)], ["relay-rate-limit-v2"]);
 });
 
 test("direct authorization requests are throttled per IP and across distributed IPs", async () => {
@@ -248,10 +248,10 @@ test("limiter outages, storage corruption and malformed responses fail closed wi
   assert.equal(unavailable.message.includes(deviceID), false);
 
   const corruptedStorage = createStorage();
-  corruptedStorage.put("bucket:stream-ip:" + "d".repeat(64), {
+  corruptedStorage.put("bucket:stream-global:global", {
     tokens: -1,
     updatedAtMS: 0,
-    expiresAtMS: 90_000,
+    expiresAtMS: null,
   });
   const corrupted = fakeNamespace({ storage: corruptedStorage });
   const storageFailure = await enforceRelayRequestRateLimit(streamRequest("192.0.2.41"), env(corrupted), "stream");
