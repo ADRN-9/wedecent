@@ -155,13 +155,15 @@ async function handleRelayRequest(request, env) {
     return new Response(authorization.message, { status: authorization.status });
   }
 
-  if (authorization.deviceID) {
-    const deviceAdmission = await enforceRelayDeviceRateLimit(env, authorization.deviceID, "stream");
+  const authenticatedDeviceIDs = verifiedDeviceIDs(authorization);
+  if (authenticatedDeviceIDs.length === 0 && role !== "agent") {
+    return new Response("Relay admission unavailable", { status: 503 });
+  }
+  for (const authenticatedDeviceID of authenticatedDeviceIDs) {
+    const deviceAdmission = await enforceRelayDeviceRateLimit(env, authenticatedDeviceID, "stream");
     if (!deviceAdmission.ok) {
       return rateLimitResponse(deviceAdmission);
     }
-  } else if (role !== "agent") {
-    return new Response("Relay admission unavailable", { status: 503 });
   }
 
   const objectId = env.DEVICE_RELAY.idFromName(deviceId);
@@ -204,9 +206,15 @@ async function authorizeDirectRequest(request, env, url) {
     return new Response(authorization.message, { status: authorization.status });
   }
 
-  const deviceAdmission = await enforceRelayDeviceRateLimit(env, authorization.deviceID, "direct");
-  if (!deviceAdmission.ok) {
-    return rateLimitResponse(deviceAdmission);
+  const authenticatedDeviceIDs = verifiedDeviceIDs(authorization);
+  if (authenticatedDeviceIDs.length === 0) {
+    return new Response("Relay admission unavailable", { status: 503 });
+  }
+  for (const authenticatedDeviceID of authenticatedDeviceIDs) {
+    const deviceAdmission = await enforceRelayDeviceRateLimit(env, authenticatedDeviceID, "direct");
+    if (!deviceAdmission.ok) {
+      return rateLimitResponse(deviceAdmission);
+    }
   }
 
   const headers = new Headers();
@@ -216,6 +224,10 @@ async function authorizeDirectRequest(request, env, url) {
   return env.DEVICE_RELAY.get(objectId).fetch(
     new Request("https://wedecent.internal/authorize", { method: "POST", headers }),
   );
+}
+
+function verifiedDeviceIDs(authorization) {
+  return [...new Set([authorization.deviceID, authorization.targetDeviceID].filter((value) => typeof value === "string"))];
 }
 
 function rateLimitResponse(admission) {

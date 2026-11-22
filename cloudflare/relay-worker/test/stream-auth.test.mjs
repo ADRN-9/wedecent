@@ -74,6 +74,7 @@ test("accepts a client only when relay ticket and connection grant scopes match"
   );
   assert.equal(result.ok, true);
   assert.equal(result.deviceID, relay.claims.iss);
+  assert.equal(result.targetDeviceID, targetDeviceID);
   assert.deepEqual(result.replay, { jti: "76b4c468-4e39-437c-a9c8-b758c92ab89b", exp: now + 90 });
 });
 
@@ -119,7 +120,7 @@ test("legacy shared-token agents remain IP-limited without inventing an authenti
     headers: { Authorization: "Bearer legacy" },
   });
   const result = await authorizeStream(req, env, { deviceId: targetDeviceID, role: "agent", slot: 4 }, now);
-  assert.deepEqual(result, { ok: true, deviceID: null });
+  assert.deepEqual(result, { ok: true, deviceID: null, targetDeviceID: null });
 });
 
 test("rejects legacy shared-token client bypass", async () => {
@@ -136,7 +137,11 @@ test("accepts an authenticated agent slot without a connection grant", async () 
     headers: { Authorization: `Bearer ${relay.token}` },
   });
   const result = await authorizeStream(req, env, { deviceId: relay.claims.iss, role: "agent", slot: 4 }, now);
-  assert.deepEqual(result, { ok: true, deviceID: relay.claims.iss });
+  assert.deepEqual(result, {
+    ok: true,
+    deviceID: relay.claims.iss,
+    targetDeviceID: relay.claims.iss,
+  });
 });
 
 function jsonPart(value) {
