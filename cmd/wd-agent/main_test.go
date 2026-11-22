@@ -10,6 +10,8 @@ func TestParseServeConfigOutboundOnly(t *testing.T) {
 	cfg, err := parseServeConfig([]string{
 		"--listen=",
 		"--web-relay=https://relay.wedecent.com",
+		"--supabase-url=https://project.supabase.co",
+		"--supabase-publishable-key=sb_publishable_test",
 		"--relay-slots=4",
 	})
 	if err != nil {
@@ -23,6 +25,16 @@ func TestParseServeConfigOutboundOnly(t *testing.T) {
 	}
 	if cfg.RelaySlots != 4 {
 		t.Fatalf("RelaySlots = %d", cfg.RelaySlots)
+	}
+}
+
+func TestParseServeConfigWebRelayRequiresDeviceAdmissionConfiguration(t *testing.T) {
+	_, err := parseServeConfig([]string{
+		"--listen=",
+		"--web-relay=https://relay.wedecent.com",
+	})
+	if err == nil || !strings.Contains(err.Error(), "agent admission") {
+		t.Fatalf("err = %v, want missing device admission configuration", err)
 	}
 }
 

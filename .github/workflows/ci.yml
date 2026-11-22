@@ -228,6 +228,10 @@ jobs:
         run: node --check supabase/functions/_shared/route-authorization.mjs
       - name: Test Go-compatible route authorization signing
         run: node --test supabase/functions/_shared/route-authorization.test.mjs
+      - name: Test device-authenticated agent admission proof verification
+        run: |
+          node --check supabase/functions/_shared/agent-admission.mjs
+          node --test supabase/functions/_shared/agent-admission.test.mjs
       - name: Type-check route authorization Edge Function
         run: deno check supabase/functions/route-authorization/index.ts
       - name: Type-check relay agent admission Edge Function

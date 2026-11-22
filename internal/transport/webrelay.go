@@ -30,7 +30,8 @@ type WebRelayOptions struct {
 	// TicketSource is the v2 proof-of-possession credential source. When set,
 	// it takes precedence over Token and is called for every WebSocket upgrade.
 	TicketSource      func(ctx context.Context, relayBaseURL, targetDeviceID, role string, slot int) (string, error)
-	Token             string // Legacy v1 shared relay token; retained for migration only.
+	AgentAdmissionSource func(ctx context.Context, targetDeviceID string, slot int) (string, error)
+	Token             string // Legacy v1 shared relay token; clients only during migration.
 	ConnectionGrant   string // Short-lived account authorization JWT for client terminal connections.
 	Timeout           time.Duration
 	KeepAliveInterval time.Duration
@@ -123,6 +124,10 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 	if err != nil {
 		return nil, err
 	}
+	admission, err := webRelayAgentAdmission(ctx, u, opts)
+	if err != nil {
+		return nil, err
+	}
 
 	host := u.Hostname()
 	port := u.Port()
@@ -150,7 +155,7 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 
 	deadline := time.Now().Add(timeout)
 	_ = raw.SetDeadline(deadline)
-	conn, err := websocketClientHandshake(raw, u, credential, strings.TrimSpace(opts.ConnectionGrant))
+	conn, err := websocketClientHandshake(raw, u, credential, strings.TrimSpace(opts.ConnectionGrant), admission)
 	if err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -177,6 +182,9 @@ func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (ne
 
 func webRelayCredential(ctx context.Context, u *url.URL, opts WebRelayOptions) (string, error) {
 	if opts.TicketSource == nil {
+		if u != nil && u.Query().Get("role") == "agent" {
+			return "", errors.New("agent WebRelay connections require a device-signed relay ticket")
+		}
 		return strings.TrimSpace(opts.Token), nil
 	}
 	const prefix = "/v1/stream/"
@@ -217,6 +225,37 @@ func webRelayCredential(ctx context.Context, u *url.URL, opts WebRelayOptions) (
 	return strings.TrimSpace(ticket), nil
 }
 
+func webRelayAgentAdmission(ctx context.Context, u *url.URL, opts WebRelayOptions) (string, error) {
+	if u == nil || u.Query().Get("role") != "agent" {
+		return "", nil
+	}
+	if opts.AgentAdmissionSource == nil {
+		return "", errors.New("agent WebRelay connections require a device-authenticated admission source")
+	}
+	const prefix = "/v1/stream/"
+	if !strings.HasPrefix(u.Path, prefix) {
+		return "", errors.New("invalid web relay agent stream path")
+	}
+	deviceID := strings.TrimPrefix(u.Path, prefix)
+	if !validDeviceID(deviceID) {
+		return "", errors.New("invalid web relay agent device ID")
+	}
+	slot, err := strconv.Atoi(u.Query().Get("slot"))
+	if err != nil || slot < 1 || slot > 32 {
+		return "", errors.New("invalid web relay agent slot")
+	}
+	token, err := opts.AgentAdmissionSource(ctx, deviceID, slot)
+	if err != nil {
+		return "", fmt.Errorf("acquire agent relay admission: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	parts := strings.Split(token, ".")
+	if len(token) < 32 || len(token) > 8192 || len(parts) != 3 || strings.ContainsAny(token, "\r\n\t ") {
+		return "", errors.New("agent admission source returned a malformed capability")
+	}
+	return token, nil
+}
+
 func webRelayOriginURL(u *url.URL) (string, error) {
 	if u == nil || u.Host == "" {
 		return "", errors.New("invalid web relay URL")
@@ -234,7 +273,7 @@ func webRelayOriginURL(u *url.URL) (string, error) {
 	return (&url.URL{Scheme: scheme, Host: u.Host}).String(), nil
 }
 
-func websocketClientHandshake(raw net.Conn, u *url.URL, token, connectionGrant string) (*wsNetConn, error) {
+func websocketClientHandshake(raw net.Conn, u *url.URL, token, connectionGrant, agentAdmission string) (*wsNetConn, error) {
 	keyBytes := make([]byte, 16)
 	if _, err := io.ReadFull(rand.Reader, keyBytes); err != nil {
 		return nil, err
@@ -257,6 +296,9 @@ func websocketClientHandshake(raw net.Conn, u *url.URL, token, connectionGrant s
 	b.WriteString("Sec-WebSocket-Version: 13\r\n")
 	b.WriteString("User-Agent: WeDecent/2\r\n")
 	if token != "" {
+		if strings.ContainsAny(token, "\r\n\t ") {
+			return nil, errors.New("relay ticket contains invalid whitespace")
+		}
 		fmt.Fprintf(&b, "Authorization: Bearer %s\r\n", token)
 	}
 	if connectionGrant != "" {
@@ -264,6 +306,12 @@ func websocketClientHandshake(raw net.Conn, u *url.URL, token, connectionGrant s
 			return nil, errors.New("connection grant contains invalid whitespace")
 		}
 		fmt.Fprintf(&b, "X-WeDecent-Connection-Grant: %s\r\n", connectionGrant)
+	}
+	if agentAdmission != "" {
+		if strings.ContainsAny(agentAdmission, "\r\n\t ") {
+			return nil, errors.New("agent admission contains invalid whitespace")
+		}
+		fmt.Fprintf(&b, "X-WeDecent-Agent-Admission: %s\r\n", agentAdmission)
 	}
 	b.WriteString("\r\n")
 	if _, err := io.WriteString(raw, b.String()); err != nil {

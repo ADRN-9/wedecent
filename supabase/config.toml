@@ -1,3 +1,6 @@
 # Disposable local/CI Supabase stack only.
 # This identifier is intentionally not a hosted project reference.
 project_id = "wedecent-local"
+
+[functions.agent-admission]
+verify_jwt = false

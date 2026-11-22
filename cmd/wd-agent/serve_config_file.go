@@ -27,6 +27,8 @@ type serveFileConfig struct {
 	SessionMaxDuration     *string `json:"session_max_duration"`
 	RelayAddr              *string `json:"relay"`
 	WebRelay               *string `json:"web_relay"`
+	SupabaseURL            *string `json:"supabase_url"`
+	SupabasePublishableKey *string `json:"supabase_publishable_key"`
 	RelaySlots             *int    `json:"relay_slots"`
 	RelayCA                *string `json:"relay_ca"`
 	RelayServerName        *string `json:"relay_server_name"`
@@ -157,7 +159,7 @@ func loadServeConfigArgs(path string) ([]string, error) {
 }
 
 func (cfg serveFileConfig) flagArgs() []string {
-	args := make([]string, 0, 21)
+	args := make([]string, 0, 23)
 	addString := func(name string, value *string) {
 		if value != nil {
 			args = append(args, "--"+name+"="+*value)
@@ -186,6 +188,8 @@ func (cfg serveFileConfig) flagArgs() []string {
 	addString("session-max-duration", cfg.SessionMaxDuration)
 	addString("relay", cfg.RelayAddr)
 	addString("web-relay", cfg.WebRelay)
+	addString("supabase-url", cfg.SupabaseURL)
+	addString("supabase-publishable-key", cfg.SupabasePublishableKey)
 	addInt("relay-slots", cfg.RelaySlots)
 	addString("relay-ca", cfg.RelayCA)
 	addString("relay-server-name", cfg.RelayServerName)

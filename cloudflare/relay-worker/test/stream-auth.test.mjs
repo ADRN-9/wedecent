@@ -3,7 +3,7 @@ import { createHash, generateKeyPairSync, sign } from "node:crypto";
 import test from "node:test";
 
 import { authorizeStream, AGENT_ADMISSION_HEADER, CONNECTION_GRANT_HEADER } from "../src/stream-auth.js";
-import { deviceIDFromPublicKey } from "../src/relay-auth.js";
+import { deviceIDFromPublicKey, devicePublicKeyFingerprint } from "../src/relay-auth.js";
 
 const now = 1_800_000_000;
 const targetDeviceID = "wd_4ksk5edkttwsxqx4";
@@ -12,6 +12,11 @@ const grantKeys = generateKeyPairSync("ed25519");
 const publicSPKIB64 = grantKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64");
 const publicJWK = grantKeys.publicKey.export({ format: "jwk" });
 const kid = b64url(createHash("sha256").update(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: publicJWK.x })).digest());
+const admissionKeys = generateKeyPairSync("ed25519");
+const admissionPublicSPKIB64 = admissionKeys.publicKey.export({ type: "spki", format: "der" }).toString("base64");
+const admissionJWK = admissionKeys.publicKey.export({ format: "jwk" });
+const admissionKID = b64url(createHash("sha256").update(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: admissionJWK.x })).digest());
+const admissionKeyring = JSON.stringify({ [admissionKID]: admissionPublicSPKIB64 });
 const enc = new TextEncoder();
 const signingContext = "wedecent-relay-ticket-v2\n";
 
@@ -56,26 +61,23 @@ function issueGrant(clientDeviceID, overrides = {}) {
   return `${input}.${b64url(sign(null, Buffer.from(input), grantKeys.privateKey))}`;
 }
 
-function issueAgentAdmission(deviceID, slot, overrides = {}) {
-  const header = { alg: "EdDSA", typ: "JWT", kid };
+function issueAgentAdmission(deviceID, slot, publicKeyFingerprint, overrides = {}) {
+  const header = { alg: "EdDSA", typ: "JWT", kid: admissionKID };
   const claims = {
-    grant_id: "d90987bf-bae6-45da-ab21-c82d049617bd",
-    organization_id: "7140858e-39db-4a54-a707-88d5e86b910c",
-    client_device_id: "wd_mw3am46w5weex4a4",
-    target_device_id: deviceID,
-    permission: "terminal.connect",
+    device_id: deviceID,
+    public_key_fingerprint: publicKeyFingerprint,
     purpose: "relay.agent.connect",
     slot,
     iss: "wedecent-control-plane",
     aud: "wedecent-relay-agent",
-    sub: userID,
+    sub: deviceID,
     jti: "a90987bf-bae6-45da-ab21-c82d049617bd",
     iat: now,
     exp: now + 90,
     ...overrides,
   };
-  const input = `${jsonPart(header)}.${jsonPart(claims)}`;
-  return `${input}.${b64url(sign(null, Buffer.from(input), grantKeys.privateKey))}`;
+  const input = jsonPart(header) + "." + jsonPart(claims);
+  return input + "." + b64url(sign(null, Buffer.from(input), admissionKeys.privateKey));
 }
 
 function request(ticket, grant = "", admission = "") {
@@ -85,7 +87,7 @@ function request(ticket, grant = "", admission = "") {
   return new Request(`https://relay.test/v1/stream/${targetDeviceID}?role=client`, { headers });
 }
 
-const env = { WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: publicSPKIB64, RELAY_ACCESS_TOKEN: "legacy" };
+const env = { WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: publicSPKIB64, WEDECENT_AGENT_ADMISSION_PUBLIC_KEYS_JSON: admissionKeyring, RELAY_ACCESS_TOKEN: "legacy" };
 
 test("accepts a client only when relay ticket and connection grant scopes match", async () => {
   const relay = await issueRelayTicket();
@@ -171,11 +173,11 @@ test("legacy shared-token agents require control-plane admission", async () => {
   });
   const result = await authorizeStream(req, env, { deviceId: targetDeviceID, role: "agent", slot: 4 }, now);
   assert.equal(result.ok, false);
-  assert.equal(result.status, 403);
+  assert.equal(result.status, 401);
 });
 
-test("legacy shared-token agents use the control-plane authenticated device identity", async () => {
-  const admission = issueAgentAdmission(targetDeviceID, 4);
+test("legacy shared-token agents are rejected even with an admission bearer", async () => {
+  const admission = issueAgentAdmission(targetDeviceID, 4, "SHA256:" + "A".repeat(64));
   const req = new Request("https://relay.test/v1/stream/" + targetDeviceID + "?role=agent&slot=4", {
     headers: {
       Authorization: "Bearer legacy",
@@ -183,13 +185,8 @@ test("legacy shared-token agents use the control-plane authenticated device iden
     },
   });
   const result = await authorizeStream(req, env, { deviceId: targetDeviceID, role: "agent", slot: 4 }, now);
-  assert.deepEqual(result, {
-    ok: true,
-    deviceID: targetDeviceID,
-    targetDeviceID,
-    legacy: true,
-    agentAdmissionReplay: { jti: "a90987bf-bae6-45da-ab21-c82d049617bd", exp: now + 90 },
-  });
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 401);
 });
 
 test("rejects legacy shared-token client bypass", async () => {
@@ -212,7 +209,8 @@ test("rejects a self-generated agent identity without control-plane admission", 
 
 test("accepts an enrolled agent only with a device- and slot-bound admission token", async () => {
   const relay = await issueRelayTicket({ role: "agent", slot: 4 });
-  const admission = issueAgentAdmission(relay.claims.iss, 4);
+  const fingerprint = await devicePublicKeyFingerprint(relay.claims.pk);
+  const admission = issueAgentAdmission(relay.claims.iss, 4, fingerprint);
   const req = new Request(`https://relay.test/v1/stream/${relay.claims.iss}?role=agent&slot=4`, {
     headers: {
       Authorization: `Bearer ${relay.token}`,
@@ -229,10 +227,46 @@ test("accepts an enrolled agent only with a device- and slot-bound admission tok
   });
 });
 
+test("rejects an agent admission bound to a substituted public-key fingerprint", async () => {
+  const relay = await issueRelayTicket({ role: "agent", slot: 4 });
+  const wrongFingerprint = "SHA256:" + "B".repeat(64);
+  const admission = issueAgentAdmission(relay.claims.iss, 4, wrongFingerprint);
+  const req = new Request("https://relay.test/v1/stream/" + relay.claims.iss + "?role=agent&slot=4", {
+    headers: {
+      Authorization: "Bearer " + relay.token,
+      [AGENT_ADMISSION_HEADER]: admission,
+    },
+  });
+  const result = await authorizeStream(req, env, { deviceId: relay.claims.iss, role: "agent", slot: 4 }, now);
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 403);
+});
+
+test("fails closed when the independent agent admission keyring is missing", async () => {
+  const relay = await issueRelayTicket({ role: "agent", slot: 4 });
+  const fingerprint = await devicePublicKeyFingerprint(relay.claims.pk);
+  const admission = issueAgentAdmission(relay.claims.iss, 4, fingerprint);
+  const req = new Request("https://relay.test/v1/stream/" + relay.claims.iss + "?role=agent&slot=4", {
+    headers: {
+      Authorization: "Bearer " + relay.token,
+      [AGENT_ADMISSION_HEADER]: admission,
+    },
+  });
+  const result = await authorizeStream(
+    req,
+    { ...env, WEDECENT_AGENT_ADMISSION_PUBLIC_KEYS_JSON: "" },
+    { deviceId: relay.claims.iss, role: "agent", slot: 4 },
+    now,
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.status, 503);
+});
+
 test("rejects an agent admission token for another device or slot", async () => {
   const relay = await issueRelayTicket({ role: "agent", slot: 4 });
-  const wrongDevice = issueAgentAdmission(targetDeviceID, 4);
-  const wrongSlot = issueAgentAdmission(relay.claims.iss, 5);
+  const fingerprint = await devicePublicKeyFingerprint(relay.claims.pk);
+  const wrongDevice = issueAgentAdmission(targetDeviceID, 4, fingerprint);
+  const wrongSlot = issueAgentAdmission(relay.claims.iss, 5, fingerprint);
   for (const admission of [wrongDevice, wrongSlot]) {
     const req = new Request(`https://relay.test/v1/stream/${relay.claims.iss}?role=agent&slot=4`, {
       headers: {

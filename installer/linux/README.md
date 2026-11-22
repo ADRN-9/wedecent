@@ -19,6 +19,26 @@ The installer creates the `wedecent` account if necessary, copies the binary/con
 
 The service intentionally has no capabilities and cannot write outside `/var/lib/wedecent`. Configure an unprivileged shell path in `agent.json`; do not point it at a privileged wrapper.
 
+## Device-authenticated relay admission
+
+When enabling `web_relay`, also set `supabase_url` and
+`supabase_publishable_key` in the strict agent JSON configuration:
+
+```json
+{
+  "web_relay": "https://relay.wedecent.com",
+  "supabase_url": "https://YOUR_PROJECT.supabase.co",
+  "supabase_publishable_key": "sb_publishable_..."
+}
+```
+
+The publishable key is public application configuration. The background service uses
+the enrolled device's Ed25519 key to sign a short-lived proof and never receives a
+user access token or refresh token. Missing admission configuration is a startup
+error; there is no bearer-only agent fallback. See
+`docs/AGENT_RELAY_ADMISSION.md` for independent signing-key provisioning and
+rotation requirements.
+
 Uninstall the service files with:
 
 ```sh

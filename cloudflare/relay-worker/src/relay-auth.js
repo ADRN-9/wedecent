@@ -94,6 +94,23 @@ export async function deviceIDFromPublicKey(publicKey) {
   return "wd_" + base32NoPadding(digest.subarray(0, 10));
 }
 
+export async function devicePublicKeyFingerprint(publicKeyBase64URL) {
+  const publicKey = decodeBase64URL(publicKeyBase64URL);
+  if (publicKey.length !== 32) {
+    throw new Error("invalid relay ticket public key");
+  }
+  const key = await crypto.subtle.importKey(
+    "raw",
+    publicKey,
+    { name: "Ed25519" },
+    true,
+    ["verify"],
+  );
+  const spki = new Uint8Array(await crypto.subtle.exportKey("spki", key));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", spki));
+  return "SHA256:" + Array.from(digest, (value) => value.toString(16).padStart(2, "0")).join("").toUpperCase();
+}
+
 function validateClaimsShape(claims) {
   if (claims === null || typeof claims !== "object" || Array.isArray(claims)) {
     throw new Error("invalid relay ticket claims");

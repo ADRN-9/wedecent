@@ -9,6 +9,8 @@ param(
     [ValidatePattern('^[A-Za-z0-9_.-]{1,64}$')]
     [string]$ServiceAccountName = 'WeDecentSvc',
     [string]$WebRelay = 'https://relay.wedecent.com',
+    [string]$SupabaseURL = $env:WEDECENT_SUPABASE_URL,
+    [string]$SupabasePublishableKey = $env:WEDECENT_SUPABASE_PUBLISHABLE_KEY,
     [ValidateRange(1, 32)]
     [int]$RelaySlots = 4,
     [string]$DeviceName = $env:COMPUTERNAME,
@@ -20,6 +22,11 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+if (-not [string]::IsNullOrWhiteSpace($WebRelay)) {
+    if ([string]::IsNullOrWhiteSpace($SupabaseURL) -or [string]::IsNullOrWhiteSpace($SupabasePublishableKey)) {
+        throw 'Web relay requires WEDECENT_SUPABASE_URL and WEDECENT_SUPABASE_PUBLISHABLE_KEY; the agent never receives a user refresh token.'
+    }
+}
 $script:BinaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
 $script:VerifiedBinaryHashes = @{}
 
@@ -436,6 +443,8 @@ function Invoke-AgentServiceInstall {
         "--name=$DeviceName",
         '--listen=',
         "--web-relay=$WebRelay",
+        "--supabase-url=$SupabaseURL",
+        "--supabase-publishable-key=$SupabasePublishableKey",
         "--relay-slots=$RelaySlots",
         "--shell=$Shell",
         '--automatic=true',

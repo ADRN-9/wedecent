@@ -83,6 +83,23 @@ Use the signed `installer/` payload for production distribution. The finalizer r
 
 Do not weaken execution policy or Defender to run unsigned, invalidly signed, or untrusted packages.
 
+## Device-authenticated relay admission
+
+Web relay service installation requires the public Supabase project origin and its
+publishable key. Supply them through the installer environment or parameters:
+
+```powershell
+$env:WEDECENT_SUPABASE_URL = 'https://YOUR_PROJECT.supabase.co'
+$env:WEDECENT_SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_...'
+.\Install-WeDecent.ps1
+```
+
+The publishable key is public application configuration, not a user credential. The
+background service signs a short-lived proof with the enrolled device Ed25519 key.
+It does not read or receive a user's Supabase access token or refresh token. The
+admission endpoint and relay must have their independent agent-admission signing and
+verification keys provisioned before relay connections can succeed.
+
 ## Install or upgrade
 
 ```powershell

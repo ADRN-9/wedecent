@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"wedecent.com/wedecent/internal/account"
+	"wedecent.com/wedecent/internal/agentadmission"
 	"wedecent.com/wedecent/internal/appdirs"
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/discovery"
@@ -268,6 +269,8 @@ type serveConfig struct {
 	FileTransferMaxBytes      uint64
 	RelayAddr                 string
 	WebRelay                  string
+	SupabaseURL               string
+	SupabasePublishableKey    string
 	RelaySlots                int
 	RelayCA                   string
 	RelayServerName           string
@@ -387,6 +390,18 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"web-relay",
 		"",
 		"serverless WebSocket relay URL, e.g. https://relay.wedecent.com",
+	)
+	fs.StringVar(
+		&cfg.SupabaseURL,
+		"supabase-url",
+		"",
+		"Supabase project origin used for device-authenticated relay admission",
+	)
+	fs.StringVar(
+		&cfg.SupabasePublishableKey,
+		"supabase-publishable-key",
+		"",
+		"public Supabase publishable key; never a user access or refresh token",
 	)
 	fs.IntVar(
 		&cfg.RelaySlots,
@@ -510,6 +525,18 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		return serveConfig{}, errors.New(
 			"relay-slots must be between 1 and 32",
 		)
+	}
+
+	cfg.SupabaseURL = strings.TrimSpace(cfg.SupabaseURL)
+	cfg.SupabasePublishableKey = strings.TrimSpace(cfg.SupabasePublishableKey)
+	if cfg.WebRelay != "" {
+		admissionClient := agentadmission.Client{
+			SupabaseURL: cfg.SupabaseURL,
+			PublishableKey: cfg.SupabasePublishableKey,
+		}
+		if err := admissionClient.Validate(); err != nil {
+			return serveConfig{}, fmt.Errorf("web relay agent admission: %w", err)
+		}
 	}
 
 	if cfg.RouteMaxConnections < 1 ||
@@ -717,10 +744,18 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	}
 
 	if cfg.WebRelay != "" {
+		admissionClient := agentadmission.Client{
+			SupabaseURL: cfg.SupabaseURL,
+			PublishableKey: cfg.SupabasePublishableKey,
+		}
 		webOpts := transport.WebRelayOptions{
-			TicketSource: relayauth.NewTicketSource(
-				id,
-			),
+			TicketSource: relayauth.NewTicketSource(id),
+			AgentAdmissionSource: func(ctx context.Context, deviceID string, slot int) (string, error) {
+				if deviceID != id.ID {
+					return "", errors.New("agent admission requested for a different enrolled identity")
+				}
+				return admissionClient.Acquire(ctx, id, slot)
+			},
 			Timeout:           15 * time.Second,
 			KeepAliveInterval: 30 * time.Second,
 		}

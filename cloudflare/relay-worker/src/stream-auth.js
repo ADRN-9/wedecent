@@ -1,5 +1,5 @@
 import { verifyAgentAdmission, verifyConnectionGrant } from "./connection-grant.js";
-import { verifyRelayTicket } from "./relay-auth.js";
+import { devicePublicKeyFingerprint, verifyRelayTicket } from "./relay-auth.js";
 
 export const CONNECTION_GRANT_HEADER = "X-WeDecent-Connection-Grant";
 export const AGENT_ADMISSION_HEADER = "X-WeDecent-Agent-Admission";
@@ -19,7 +19,18 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
     }
 
     if (expected.role === "agent") {
-      const admission = await verifyAgentAdmissionHeader(request, env, expected, nowSeconds);
+      let publicKeyFingerprint;
+      try {
+        publicKeyFingerprint = await devicePublicKeyFingerprint(relayClaims.pk);
+      } catch {
+        return { ok: false, status: 401, message: "Unauthorized" };
+      }
+      const admission = await verifyAgentAdmissionHeader(
+        request,
+        env,
+        { deviceID: relayClaims.iss, publicKeyFingerprint, slot: expected.slot },
+        nowSeconds,
+      );
       if (!admission.ok) return admission;
       return {
         ok: true,
@@ -63,19 +74,6 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
     }
   }
 
-  // The shared relay token remains a migration credential, not an enrollment authority.
-  if (expected.role === "agent" && env.RELAY_ACCESS_TOKEN && token === env.RELAY_ACCESS_TOKEN) {
-    const admission = await verifyAgentAdmissionHeader(request, env, expected, nowSeconds);
-    if (!admission.ok) return admission;
-    return {
-      ok: true,
-      deviceID: admission.deviceID,
-      targetDeviceID: admission.deviceID,
-      legacy: true,
-      agentAdmissionReplay: admission.replay,
-    };
-  }
-
   return { ok: false, status: 401, message: "Unauthorized" };
 }
 
@@ -84,20 +82,15 @@ async function verifyAgentAdmissionHeader(request, env, expected, nowSeconds) {
   if (!token) {
     return { ok: false, status: 403, message: "Agent enrollment required" };
   }
-  const publicKey = env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64;
-  if (!publicKey) {
+  const keyring = env.WEDECENT_AGENT_ADMISSION_PUBLIC_KEYS_JSON;
+  if (!keyring || !env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64) {
     return { ok: false, status: 503, message: "Agent admission verifier is not configured" };
   }
   try {
-    const claims = await verifyAgentAdmission(
-      token,
-      { targetDeviceID: expected.deviceId, slot: expected.slot },
-      publicKey,
-      nowSeconds,
-    );
+    const claims = await verifyAgentAdmission(token, expected, keyring, nowSeconds, env.WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64);
     return {
       ok: true,
-      deviceID: claims.target_device_id,
+      deviceID: claims.device_id,
       replay: { jti: claims.jti, exp: claims.exp },
     };
   } catch {

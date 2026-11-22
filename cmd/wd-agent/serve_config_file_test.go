@@ -19,6 +19,9 @@ func TestServeConfigFilePrecedence(t *testing.T) {
   "max_connections": 17,
   "session_idle_timeout": "45m",
   "session_max_duration": "10h",
+  "web_relay": "https://relay.wedecent.com",
+  "supabase_url": "https://project.supabase.co",
+  "supabase_publishable_key": "sb_publishable_test",
   "relay_slots": 6,
   "route_control_transport": "lan",
   "route_max_connections": 19
@@ -62,6 +65,9 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 	}
 	if cfg.RelaySlots != 6 {
 		t.Fatalf("RelaySlots = %d", cfg.RelaySlots)
+	}
+	if cfg.WebRelay != "https://relay.wedecent.com" || cfg.SupabaseURL != "https://project.supabase.co" || cfg.SupabasePublishableKey != "sb_publishable_test" {
+		t.Fatalf("agent admission config was not preserved: relay=%q supabase=%q key=%q", cfg.WebRelay, cfg.SupabaseURL, cfg.SupabasePublishableKey)
 	}
 	if cfg.RouteControlTransport != "lan" {
 		t.Fatalf("RouteControlTransport = %q", cfg.RouteControlTransport)
