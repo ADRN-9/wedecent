@@ -96,8 +96,15 @@ async function readBody(request: Request): Promise<Record<string, unknown>> {
       }
       chunks.push(value);
     }
+  } catch (error) {
+    if (error instanceof Error && error.message === "request body too large") throw error;
+    throw new Error("invalid request body");
   } finally {
-    reader.releaseLock();
+    try {
+      reader.releaseLock();
+    } catch {
+      // Request parsing remains fail-closed if the stream lock cannot be released.
+    }
   }
   if (total === 0 || (declared !== null && Number(declared) !== total)) {
     throw new Error("invalid request body");
