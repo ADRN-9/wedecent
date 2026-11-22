@@ -570,6 +570,8 @@ export class DeviceRelay extends DurableObject {
         id,
         role: "agent",
         peerId: null,
+        deviceID,
+        clientDeviceID: null,
         slot,
         leaseID,
         absoluteExpiresAtMS,
@@ -600,12 +602,22 @@ export class DeviceRelay extends DurableObject {
   }
 
   async #acceptClientExclusive(request) {
+    const clientDeviceID = request.headers.get(INTERNAL_CLIENT_DEVICE_ID_HEADER)?.trim() ?? "";
+    if (!DEVICE_ID.test(clientDeviceID)) {
+      return new Response("Authenticated client device identity missing", { status: 403 });
+    }
+
     const agent = this.ctx.getWebSockets("agent").find((socket) => {
       if (socket.readyState !== WebSocket.OPEN) {
         return false;
       }
       const attachment = socket.deserializeAttachment();
-      return attachment?.role === "agent" && !attachment.peerId;
+      return (
+        attachment?.role === "agent" &&
+        !attachment.peerId &&
+        DEVICE_ID.test(attachment.deviceID ?? "") &&
+        AGENT_LEASE_ID.test(attachment.leaseID ?? "")
+      );
     });
 
     if (!agent) {
@@ -626,22 +638,98 @@ export class DeviceRelay extends DurableObject {
     }
     await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
 
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-    const clientId = crypto.randomUUID();
     const agentAttachment = agent.deserializeAttachment();
-
     const touchedAgentAttachment = touchAgentSessionAttachment(agentAttachment, Date.now());
     if (!touchedAgentAttachment) {
       agent.close(4001, "Relay session expired");
       return new Response("Agent relay session expired", { status: 503, headers: { "Retry-After": "1" } });
     }
-    server.serializeAttachment({ id: clientId, role: "client", peerId: agentAttachment.id });
-    agent.serializeAttachment({ ...touchedAgentAttachment, peerId: clientId });
-    this.ctx.acceptWebSocket(server, ["client"]);
-    await this.#scheduleAgentSessionAlarm();
 
-    return new Response(null, { status: 101, webSocket: client });
+    let bound = false;
+    try {
+      bound = await bindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, agentAttachment.leaseID, clientDeviceID);
+      if (!bound) {
+        return new Response("Agent relay session is no longer registered", { status: 503, headers: { "Retry-After": "1" } });
+      }
+
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      const clientId = crypto.randomUUID();
+      server.serializeAttachment({
+        id: clientId,
+        role: "client",
+        peerId: agentAttachment.id,
+        clientDeviceID,
+        targetDeviceID: agentAttachment.deviceID,
+        leaseID: agentAttachment.leaseID,
+      });
+      agent.serializeAttachment({
+        ...touchedAgentAttachment,
+        peerId: clientId,
+        clientDeviceID,
+      });
+      this.ctx.acceptWebSocket(server, ["client"]);
+      bound = false;
+      await this.#scheduleAgentSessionAlarm();
+      return new Response(null, { status: 101, webSocket: client });
+    } finally {
+      if (bound) {
+        try {
+          await unbindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, agentAttachment.leaseID, clientDeviceID);
+        } catch {
+          // The absolute agent lease still bounds stale client identity state.
+        }
+      }
+    }
+  }
+
+  async #revokeDevice(request) {
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+    const body = await readBoundedRequestBody(request, 1024);
+    if (!body.ok) {
+      return new Response("Invalid device revocation event", { status: body.status });
+    }
+    let payload;
+    try {
+      payload = JSON.parse(body.text);
+    } catch {
+      return new Response("Invalid device revocation event", { status: 400 });
+    }
+    if (
+      payload === null ||
+      typeof payload !== "object" ||
+      Array.isArray(payload) ||
+      Object.keys(payload).length !== 1 ||
+      typeof payload.device_id !== "string" ||
+      !DEVICE_ID.test(payload.device_id)
+    ) {
+      return new Response("Invalid device revocation event", { status: 400 });
+    }
+
+    const revokedDeviceID = payload.device_id;
+    for (const socket of this.ctx.getWebSockets()) {
+      let attachment;
+      try {
+        attachment = socket.deserializeAttachment();
+      } catch {
+        socket.close(1011, "Invalid relay session state");
+        continue;
+      }
+      const affected = attachment?.role === "agent"
+        ? attachment.deviceID === revokedDeviceID || attachment.clientDeviceID === revokedDeviceID
+        : attachment?.role === "client"
+          ? attachment.clientDeviceID === revokedDeviceID || attachment.targetDeviceID === revokedDeviceID
+          : true;
+      if (!affected || socket.readyState !== WebSocket.OPEN) continue;
+      const peer = attachment?.peerId ? this.#findSocket(attachment.peerId) : null;
+      socket.close(4003, "Device revoked");
+      if (peer && peer.readyState === WebSocket.OPEN) {
+        peer.close(4003, "Device revoked");
+      }
+    }
+    return new Response(null, { status: 204 });
   }
 
   async alarm() {
@@ -659,7 +747,11 @@ export class DeviceRelay extends DurableObject {
         socket.close(1011, "Invalid relay session state");
         continue;
       }
-      if (!agentSessionExpired(attachment, nowMS)) continue;
+      if (
+        DEVICE_ID.test(attachment?.deviceID ?? "") &&
+        AGENT_LEASE_ID.test(attachment?.leaseID ?? "") &&
+        !agentSessionExpired(attachment, nowMS)
+      ) continue;
       const peer = attachment?.peerId ? this.#findSocket(attachment.peerId) : null;
       socket.close(4001, "Relay session expired");
       if (peer && peer.readyState === WebSocket.OPEN) {
@@ -755,6 +847,16 @@ export class DeviceRelay extends DurableObject {
     const attachment = socket.deserializeAttachment();
     if (attachment?.role === "agent" && typeof attachment.leaseID === "string") {
       await this.#releaseAgentLease(attachment.leaseID);
+    } else if (
+      attachment?.role === "client" &&
+      AGENT_LEASE_ID.test(attachment.leaseID ?? "") &&
+      DEVICE_ID.test(attachment.clientDeviceID ?? "")
+    ) {
+      try {
+        await unbindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, attachment.leaseID, attachment.clientDeviceID);
+      } catch {
+        // Agent lease expiry removes stale client-device bindings.
+      }
     }
     if (!attachment?.peerId) {
       return;
@@ -770,6 +872,16 @@ export class DeviceRelay extends DurableObject {
     const attachment = socket.deserializeAttachment();
     if (attachment?.role === "agent" && typeof attachment.leaseID === "string") {
       await this.#releaseAgentLease(attachment.leaseID);
+    } else if (
+      attachment?.role === "client" &&
+      AGENT_LEASE_ID.test(attachment.leaseID ?? "") &&
+      DEVICE_ID.test(attachment.clientDeviceID ?? "")
+    ) {
+      try {
+        await unbindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, attachment.leaseID, attachment.clientDeviceID);
+      } catch {
+        // Agent lease expiry removes stale client-device bindings.
+      }
     }
     if (!attachment?.peerId) {
       return;
