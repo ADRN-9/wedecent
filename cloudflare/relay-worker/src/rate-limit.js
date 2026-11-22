@@ -16,7 +16,9 @@ const INTERNAL_AGENT_ACQUIRE_URL = "https://wedecent.internal/agent-acquire";
 const INTERNAL_AGENT_RELEASE_URL = "https://wedecent.internal/agent-release";
 const AGENT_CONNECTION_LEASE_PREFIX = "agent-connection-lease:";
 const REVOKED_DEVICE_PREFIX = "revoked-device:";
+const DEVICE_AUTHORIZATION_GENERATION_PREFIX = "device-authorization-generation:";
 const PENDING_DEVICE_REVOCATION_PREFIX = "pending-device-revocation:";
+const PENDING_DEVICE_REVOCATION_CURSOR_KEY = "pending-device-revocation-cursor";
 export const REVOKED_DEVICE_TOMBSTONE_MS = 5 * 60 * 1000;
 const REVOKED_DEVICE_CLEANUP_BATCH = 500;
 const PENDING_DEVICE_REVOCATION_BATCH = 50;
@@ -579,6 +581,8 @@ export async function agentConnectionLeaseRequestConfig(request) {
     ["/device-revoke", "revoke-device"],
     ["/device-revoked-check", "check-device"],
     ["/device-revocation-complete", "complete-device-revocation"],
+    ["/device-generation", "register-generation"],
+    ["/device-generation-check", "check-generation"],
   ]).get(path);
   if (!action || request.method !== "POST") return null;
 
@@ -629,11 +633,19 @@ export async function agentConnectionLeaseRequestConfig(request) {
     return { action, deviceID: payload.device_id };
   }
 
-  if (action === "revoke-device" || action === "check-device" || action === "complete-device-revocation") {
+  if (action === "check-device") {
     if (keys.length !== 1 || keys[0] !== "device_id" || typeof payload.device_id !== "string" || !DEVICE_ID.test(payload.device_id)) {
       return null;
     }
     return { action, deviceID: payload.device_id };
+  }
+  if (["revoke-device", "complete-device-revocation", "register-generation", "check-generation"].includes(action)) {
+    if (
+      keys.length !== 2 || keys[0] !== "authorization_generation" || keys[1] !== "device_id" ||
+      typeof payload.device_id !== "string" || !DEVICE_ID.test(payload.device_id) ||
+      !Number.isSafeInteger(payload.authorization_generation) || payload.authorization_generation < 1
+    ) return null;
+    return { action, deviceID: payload.device_id, authorizationGeneration: payload.authorization_generation };
   }
 
   if (
@@ -682,7 +694,9 @@ export async function reserveGlobalAgentConnection(namespace, lease) {
     !Number.isSafeInteger(lease.slot) ||
     lease.slot < 1 ||
     lease.slot > 32 ||
-    !Number.isSafeInteger(lease.expiresAtMS)
+    !Number.isSafeInteger(lease.expiresAtMS) ||
+    !Number.isSafeInteger(lease.authorizationGeneration) ||
+    lease.authorizationGeneration < 1
   ) {
     throw new Error("global agent connection lease configuration is invalid");
   }
@@ -698,6 +712,7 @@ export async function reserveGlobalAgentConnection(namespace, lease) {
       device_id: lease.deviceID,
       slot: lease.slot,
       expires_at_ms: lease.expiresAtMS,
+      authorization_generation: lease.authorizationGeneration,
     }),
   }));
   if (!response.ok) throw new Error("global agent connection limiter rejected lease request");
@@ -768,13 +783,24 @@ export function acquireGlobalAgentConnectionLease(
     lease.slot > 32 ||
     !Number.isSafeInteger(lease.expiresAtMS) ||
     lease.expiresAtMS <= nowMS ||
-    lease.expiresAtMS > nowMS + AGENT_CONNECTION_LEASE_MAX_LIFETIME_MS + 60_000
+    lease.expiresAtMS > nowMS + AGENT_CONNECTION_LEASE_MAX_LIFETIME_MS + 60_000 ||
+    !Number.isSafeInteger(lease.authorizationGeneration) ||
+    lease.authorizationGeneration < 1
   ) {
     throw new Error("invalid global agent connection lease");
   }
 
   if (isGlobalDeviceRevokedLease(storage, lease.deviceID, nowMS)) {
     return { accepted: false, revoked: true, active: 0 };
+  }
+  const generationState = storage.get(DEVICE_AUTHORIZATION_GENERATION_PREFIX + lease.deviceID);
+  if (generationState === undefined || generationState === null ||
+      typeof generationState !== "object" ||
+      !Number.isSafeInteger(generationState.authorizationGeneration) || generationState.authorizationGeneration < 1 ||
+      typeof generationState.revoked !== "boolean" ||
+      !Number.isSafeInteger(generationState.updatedAtMS) || generationState.updatedAtMS < 0 ||
+      generationState.revoked || generationState.authorizationGeneration !== lease.authorizationGeneration) {
+    return { accepted: false, generationMismatch: true, active: 0 };
   }
   const entries = storage.list({ prefix: AGENT_CONNECTION_LEASE_PREFIX, limit: maximum + 1 });
   if (entries.size > maximum) throw new Error("global agent connection lease cardinality exceeded");
@@ -794,7 +820,9 @@ export function acquireGlobalAgentConnectionLease(
       stored.slot < 1 ||
       stored.slot > 32 ||
       !Number.isSafeInteger(stored.expiresAtMS) ||
-      stored.expiresAtMS < 0
+      stored.expiresAtMS < 0 ||
+      !Number.isSafeInteger(stored.authorizationGeneration) ||
+      stored.authorizationGeneration < 1
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }
@@ -811,6 +839,7 @@ export function acquireGlobalAgentConnectionLease(
     clientDeviceID: null,
     slot: lease.slot,
     expiresAtMS: lease.expiresAtMS,
+    authorizationGeneration: lease.authorizationGeneration,
   });
   return { accepted: true, active: active + 1 };
 }
@@ -861,7 +890,9 @@ export function cleanupGlobalAgentConnectionLeases(
       stored.slot < 1 ||
       stored.slot > 32 ||
       !Number.isSafeInteger(stored.expiresAtMS) ||
-      stored.expiresAtMS < 0
+      stored.expiresAtMS < 0 ||
+      !Number.isSafeInteger(stored.authorizationGeneration) ||
+      stored.authorizationGeneration < 1
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }
@@ -953,12 +984,14 @@ export function bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, now
   ) {
     return false;
   }
+  const generationState = storage.get(DEVICE_AUTHORIZATION_GENERATION_PREFIX + lease.deviceID);
   if (
     isGlobalDeviceRevokedLease(storage, clientDeviceID, nowMS) ||
-    isGlobalDeviceRevokedLease(storage, lease.deviceID, nowMS)
-  ) {
-    return false;
-  }
+    isGlobalDeviceRevokedLease(storage, lease.deviceID, nowMS) ||
+    generationState === undefined || generationState === null ||
+    generationState.revoked !== false ||
+    generationState.authorizationGeneration !== lease.authorizationGeneration
+  ) return false;
   if (lease.clientDeviceID && lease.clientDeviceID !== clientDeviceID) return false;
   storage.put(key, { ...lease, clientDeviceID });
   return true;
@@ -985,25 +1018,45 @@ export function unbindGlobalAgentClientLease(storage, leaseID, clientDeviceID) {
   return true;
 }
 
-export async function completeGlobalDeviceRevocation(namespace, deviceID) {
-  return await postGlobalDeviceRevocationOperation(namespace, "/device-revocation-complete", deviceID);
+export async function completeGlobalDeviceRevocation(namespace, deviceID, authorizationGeneration) {
+  return await postGlobalDeviceRevocationOperation(namespace, "/device-revocation-complete", deviceID, authorizationGeneration);
 }
 
-export async function markGlobalDeviceRevoked(namespace, deviceID) {
-  return await postGlobalDeviceRevocationOperation(namespace, "/device-revoke", deviceID);
+export async function markGlobalDeviceRevoked(namespace, deviceID, authorizationGeneration) {
+  return await postGlobalDeviceRevocationOperation(namespace, "/device-revoke", deviceID, authorizationGeneration);
+}
+
+export async function registerGlobalDeviceAuthorizationGeneration(namespace, deviceID, authorizationGeneration) {
+  return await postGlobalDeviceRevocationOperation(namespace, "/device-generation", deviceID, authorizationGeneration);
+}
+
+export async function isGlobalDeviceAuthorizationGenerationCurrent(namespace, deviceID, authorizationGeneration) {
+  return await postGlobalDeviceRevocationOperation(namespace, "/device-generation-check", deviceID, authorizationGeneration);
 }
 
 export async function isGlobalDeviceRevoked(namespace, deviceID) {
-  return await postGlobalDeviceRevocationOperation(namespace, "/device-revoked-check", deviceID);
+  if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function" ||
+      typeof deviceID !== "string" || !DEVICE_ID.test(deviceID)) throw new Error("global device revocation configuration is invalid");
+  const stub = namespace.get(namespace.idFromName(RATE_LIMIT_OBJECT_NAME));
+  if (!stub || typeof stub.fetch !== "function") throw new Error("global device revocation registry is unavailable");
+  const response = await stub.fetch(new Request("https://wedecent.internal/device-revoked-check", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ device_id: deviceID }),
+  }));
+  if (!response.ok) throw new Error("global device revocation registry rejected the operation");
+  const payload = await response.json();
+  if (payload === null || typeof payload !== "object" || typeof payload.revoked !== "boolean") throw new Error("global device revocation registry returned an invalid response");
+  return payload.revoked;
 }
 
-async function postGlobalDeviceRevocationOperation(namespace, path, deviceID) {
+async function postGlobalDeviceRevocationOperation(namespace, path, deviceID, authorizationGeneration) {
   if (
     !namespace ||
     typeof namespace.idFromName !== "function" ||
     typeof namespace.get !== "function" ||
     typeof deviceID !== "string" ||
-    !DEVICE_ID.test(deviceID)
+    !DEVICE_ID.test(deviceID) ||
+    !Number.isSafeInteger(authorizationGeneration) ||
+    authorizationGeneration < 1
   ) {
     throw new Error("global device revocation configuration is invalid");
   }
@@ -1014,37 +1067,80 @@ async function postGlobalDeviceRevocationOperation(namespace, path, deviceID) {
   const response = await stub.fetch(new Request("https://wedecent.internal" + path, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ device_id: deviceID }),
+    body: JSON.stringify({ device_id: deviceID, authorization_generation: authorizationGeneration }),
   }));
   if (!response.ok) throw new Error("global device revocation registry rejected the operation");
   const payload = await response.json();
-  if (payload === null || typeof payload !== "object" || typeof payload.revoked !== "boolean") {
+  const field = path === "/device-generation" ? "registered"
+    : path === "/device-generation-check" ? "current"
+      : path === "/device-revocation-complete" ? "completed" : "revoked";
+  if (payload === null || typeof payload !== "object" || typeof payload[field] !== "boolean") {
     throw new Error("global device revocation registry returned an invalid response");
   }
-  return payload.revoked;
+  return payload[field];
 }
 
-export function markGlobalDeviceRevokedLease(storage, deviceID, nowMS = Date.now()) {
-  if (
-    !storage ||
-    typeof storage.get !== "function" ||
-    typeof storage.put !== "function" ||
-    typeof deviceID !== "string" ||
-    !DEVICE_ID.test(deviceID) ||
-    !Number.isSafeInteger(nowMS) ||
-    nowMS < 0
-  ) {
-    throw new Error("invalid global device revocation marker");
+export function registerGlobalDeviceAuthorizationGeneration(storage, deviceID, authorizationGeneration, nowMS = Date.now()) {
+  if (!storage || typeof storage.get !== "function" || typeof storage.put !== "function" ||
+      typeof deviceID !== "string" || !DEVICE_ID.test(deviceID) ||
+      !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1 ||
+      !Number.isSafeInteger(nowMS) || nowMS < 0) throw new Error("invalid device authorization generation");
+  const key = DEVICE_AUTHORIZATION_GENERATION_PREFIX + deviceID;
+  const existing = storage.get(key);
+  if (existing !== undefined && (
+    existing === null || typeof existing !== "object" ||
+    !Number.isSafeInteger(existing.authorizationGeneration) || existing.authorizationGeneration < 1 ||
+    typeof existing.revoked !== "boolean" ||
+    !Number.isSafeInteger(existing.updatedAtMS) || existing.updatedAtMS < 0
+  )) throw new Error("invalid persisted device authorization generation");
+  if (existing?.revoked || (existing && authorizationGeneration < existing.authorizationGeneration)) return false;
+  if (!existing || authorizationGeneration > existing.authorizationGeneration) {
+    storage.put(key, { authorizationGeneration, revoked: false, updatedAtMS: nowMS });
   }
+  return true;
+}
+
+export function isGlobalDeviceAuthorizationGenerationCurrentLease(storage, deviceID, authorizationGeneration) {
+  if (!storage || typeof storage.get !== "function" || typeof deviceID !== "string" ||
+      !DEVICE_ID.test(deviceID) || !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) {
+    throw new Error("invalid device authorization generation lookup");
+  }
+  const state = storage.get(DEVICE_AUTHORIZATION_GENERATION_PREFIX + deviceID);
+  if (state === undefined || state === null) return false;
+  if (typeof state !== "object" || !Number.isSafeInteger(state.authorizationGeneration) ||
+      state.authorizationGeneration < 1 || typeof state.revoked !== "boolean" ||
+      !Number.isSafeInteger(state.updatedAtMS) || state.updatedAtMS < 0) {
+    throw new Error("invalid persisted device authorization generation");
+  }
+  return !state.revoked && state.authorizationGeneration === authorizationGeneration;
+}
+
+export function markGlobalDeviceRevokedLease(storage, deviceID, authorizationGeneration, nowMS = Date.now()) {
+  if (!storage || typeof storage.get !== "function" || typeof storage.put !== "function" ||
+      typeof deviceID !== "string" || !DEVICE_ID.test(deviceID) ||
+      !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1 ||
+      !Number.isSafeInteger(nowMS) || nowMS < 0) throw new Error("invalid global device revocation marker");
+  const generationKey = DEVICE_AUTHORIZATION_GENERATION_PREFIX + deviceID;
+  const generationState = storage.get(generationKey);
+  if (generationState !== undefined && (
+    generationState === null || typeof generationState !== "object" ||
+    !Number.isSafeInteger(generationState.authorizationGeneration) || generationState.authorizationGeneration < 1 ||
+    typeof generationState.revoked !== "boolean" ||
+    !Number.isSafeInteger(generationState.updatedAtMS) || generationState.updatedAtMS < 0
+  )) throw new Error("invalid persisted device authorization generation");
+  if (generationState && authorizationGeneration < generationState.authorizationGeneration) {
+    throw new Error("stale device revocation generation");
+  }
+  storage.put(generationKey, {
+    authorizationGeneration: Math.max(generationState?.authorizationGeneration ?? 0, authorizationGeneration),
+    revoked: true,
+    updatedAtMS: nowMS,
+  });
   const key = REVOKED_DEVICE_PREFIX + deviceID;
   const existing = storage.get(key);
   if (existing !== undefined && existing !== null) {
-    if (
-      typeof existing !== "object" ||
-      !Number.isSafeInteger(existing.revokedAtMS) ||
-      !Number.isSafeInteger(existing.expiresAtMS) ||
-      existing.expiresAtMS <= existing.revokedAtMS
-    ) {
+    if (typeof existing !== "object" || !Number.isSafeInteger(existing.revokedAtMS) ||
+        !Number.isSafeInteger(existing.expiresAtMS) || existing.expiresAtMS <= existing.revokedAtMS) {
       throw new Error("invalid persisted device revocation marker");
     }
   }
@@ -1056,26 +1152,23 @@ export function markGlobalDeviceRevokedLease(storage, deviceID, nowMS = Date.now
 }
 
 export function isGlobalDeviceRevokedLease(storage, deviceID, nowMS = Date.now()) {
-  if (
-    !storage ||
-    typeof storage.get !== "function" ||
-    typeof storage.delete !== "function" ||
-    typeof deviceID !== "string" ||
-    !DEVICE_ID.test(deviceID) ||
-    !Number.isSafeInteger(nowMS) ||
-    nowMS < 0
-  ) {
-    throw new Error("invalid global device revocation lookup");
+  if (!storage || typeof storage.get !== "function" || typeof storage.delete !== "function" ||
+      typeof deviceID !== "string" || !DEVICE_ID.test(deviceID) ||
+      !Number.isSafeInteger(nowMS) || nowMS < 0) throw new Error("invalid global device revocation lookup");
+  const generationState = storage.get(DEVICE_AUTHORIZATION_GENERATION_PREFIX + deviceID);
+  if (generationState !== undefined && generationState !== null) {
+    if (typeof generationState !== "object" || !Number.isSafeInteger(generationState.authorizationGeneration) ||
+        generationState.authorizationGeneration < 1 || typeof generationState.revoked !== "boolean" ||
+        !Number.isSafeInteger(generationState.updatedAtMS) || generationState.updatedAtMS < 0) {
+      throw new Error("invalid persisted device authorization generation");
+    }
+    if (generationState.revoked) return true;
   }
   const key = REVOKED_DEVICE_PREFIX + deviceID;
   const marker = storage.get(key);
   if (marker === undefined || marker === null) return false;
-  if (
-    typeof marker !== "object" ||
-    !Number.isSafeInteger(marker.revokedAtMS) ||
-    !Number.isSafeInteger(marker.expiresAtMS) ||
-    marker.expiresAtMS <= marker.revokedAtMS
-  ) {
+  if (typeof marker !== "object" || !Number.isSafeInteger(marker.revokedAtMS) ||
+      !Number.isSafeInteger(marker.expiresAtMS) || marker.expiresAtMS <= marker.revokedAtMS) {
     throw new Error("invalid persisted device revocation marker");
   }
   if (marker.expiresAtMS <= nowMS) {
@@ -1085,92 +1178,79 @@ export function isGlobalDeviceRevokedLease(storage, deviceID, nowMS = Date.now()
   return true;
 }
 
-export function queueDeviceRevocationLease(storage, deviceID, nowMS = Date.now()) {
-  if (
-    !storage ||
-    typeof storage.get !== "function" ||
-    typeof storage.put !== "function" ||
-    typeof deviceID !== "string" ||
-    !DEVICE_ID.test(deviceID) ||
-    !Number.isSafeInteger(nowMS) ||
-    nowMS < 0
-  ) {
-    throw new Error("invalid pending device revocation");
-  }
+export function queueDeviceRevocationLease(storage, deviceID, authorizationGeneration, nowMS = Date.now()) {
+  if (!storage || typeof storage.get !== "function" || typeof storage.put !== "function" ||
+      typeof deviceID !== "string" || !DEVICE_ID.test(deviceID) ||
+      !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1 ||
+      !Number.isSafeInteger(nowMS) || nowMS < 0) throw new Error("invalid pending device revocation");
   const key = PENDING_DEVICE_REVOCATION_PREFIX + deviceID;
   const existing = storage.get(key);
-  if (
-    existing !== undefined &&
-    (existing === null ||
-      typeof existing !== "object" ||
-      existing.deviceID !== deviceID ||
-      !Number.isSafeInteger(existing.attempts) ||
-      existing.attempts < 0 ||
-      !Number.isSafeInteger(existing.nextAttemptAtMS) ||
-      existing.nextAttemptAtMS < 0)
-  ) {
-    throw new Error("invalid persisted pending device revocation");
-  }
+  if (existing !== undefined && (
+    existing === null || typeof existing !== "object" || existing.deviceID !== deviceID ||
+    !Number.isSafeInteger(existing.authorizationGeneration) || existing.authorizationGeneration < 1 ||
+    !Number.isSafeInteger(existing.attempts) || existing.attempts < 0 ||
+    !Number.isSafeInteger(existing.nextAttemptAtMS) || existing.nextAttemptAtMS < 0
+  )) throw new Error("invalid persisted pending device revocation");
+  if (existing && existing.authorizationGeneration > authorizationGeneration) return false;
   storage.put(key, {
-    deviceID,
-    attempts: existing?.attempts ?? 0,
-    nextAttemptAtMS: Math.min(existing?.nextAttemptAtMS ?? nowMS, nowMS),
+    deviceID, authorizationGeneration,
+    attempts: existing?.authorizationGeneration === authorizationGeneration ? existing.attempts : 0,
+    nextAttemptAtMS: existing?.authorizationGeneration === authorizationGeneration
+      ? Math.min(existing.nextAttemptAtMS, nowMS) : nowMS,
   });
   return true;
 }
 
-export function completeDeviceRevocationLease(storage, deviceID) {
-  if (
-    !storage ||
-    typeof storage.delete !== "function" ||
-    typeof deviceID !== "string" ||
-    !DEVICE_ID.test(deviceID)
-  ) {
+export function completeDeviceRevocationLease(storage, deviceID, authorizationGeneration) {
+  if (!storage || typeof storage.get !== "function" || typeof storage.delete !== "function" ||
+      typeof deviceID !== "string" || !DEVICE_ID.test(deviceID) ||
+      !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) {
     throw new Error("invalid completed device revocation");
   }
-  return storage.delete(PENDING_DEVICE_REVOCATION_PREFIX + deviceID);
+  const key = PENDING_DEVICE_REVOCATION_PREFIX + deviceID;
+  const existing = storage.get(key);
+  if (existing === undefined || existing === null) return false;
+  if (typeof existing !== "object" || existing.deviceID !== deviceID ||
+      !Number.isSafeInteger(existing.authorizationGeneration) || existing.authorizationGeneration < 1) {
+    throw new Error("invalid persisted pending device revocation");
+  }
+  if (existing.authorizationGeneration !== authorizationGeneration) return false;
+  return storage.delete(key);
 }
 
 export async function retryPendingDeviceRevocations(namespace, storage, nowMS = Date.now()) {
-  if (
-    !namespace ||
-    typeof namespace.idFromName !== "function" ||
-    typeof namespace.get !== "function" ||
-    !storage ||
-    typeof storage.list !== "function" ||
-    typeof storage.put !== "function" ||
-    typeof storage.delete !== "function" ||
-    !Number.isSafeInteger(nowMS) ||
-    nowMS < 0
-  ) {
-    throw new Error("pending device revocation retry configuration is invalid");
+  if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function" ||
+      !storage || typeof storage.get !== "function" || typeof storage.list !== "function" ||
+      typeof storage.put !== "function" || typeof storage.delete !== "function" ||
+      !Number.isSafeInteger(nowMS) || nowMS < 0) throw new Error("pending device revocation retry configuration is invalid");
+  let cursor = storage.get(PENDING_DEVICE_REVOCATION_CURSOR_KEY);
+  if (cursor !== undefined && (typeof cursor !== "string" || !cursor.startsWith(PENDING_DEVICE_REVOCATION_PREFIX))) {
+    throw new Error("invalid pending device revocation cursor");
   }
-
-  const entries = storage.list({
+  let entries = storage.list({
     prefix: PENDING_DEVICE_REVOCATION_PREFIX,
     limit: PENDING_DEVICE_REVOCATION_BATCH,
+    ...(cursor ? { startAfter: cursor } : {}),
   });
-  let remaining = entries.size === PENDING_DEVICE_REVOCATION_BATCH ? 1 : 0;
-
+  if (entries.size === 0 && cursor) {
+    storage.delete(PENDING_DEVICE_REVOCATION_CURSOR_KEY);
+    cursor = undefined;
+    entries = storage.list({ prefix: PENDING_DEVICE_REVOCATION_PREFIX, limit: PENDING_DEVICE_REVOCATION_BATCH });
+  }
+  let remaining = cursor ? 1 : 0;
+  if (entries.size === PENDING_DEVICE_REVOCATION_BATCH) remaining = 1;
+  let lastKey = cursor ?? null;
   for (const [key, event] of entries) {
+    lastKey = key;
     const deviceID = key.slice(PENDING_DEVICE_REVOCATION_PREFIX.length);
-    if (
-      !DEVICE_ID.test(deviceID) ||
-      event === null ||
-      typeof event !== "object" ||
-      event.deviceID !== deviceID ||
-      !Number.isSafeInteger(event.attempts) ||
-      event.attempts < 0 ||
-      !Number.isSafeInteger(event.nextAttemptAtMS) ||
-      event.nextAttemptAtMS < 0
-    ) {
+    if (!DEVICE_ID.test(deviceID) || event === null || typeof event !== "object" ||
+        event.deviceID !== deviceID ||
+        !Number.isSafeInteger(event.authorizationGeneration) || event.authorizationGeneration < 1 ||
+        !Number.isSafeInteger(event.attempts) || event.attempts < 0 ||
+        !Number.isSafeInteger(event.nextAttemptAtMS) || event.nextAttemptAtMS < 0) {
       throw new Error("invalid persisted pending device revocation");
     }
-    if (event.nextAttemptAtMS > nowMS) {
-      remaining += 1;
-      continue;
-    }
-
+    if (event.nextAttemptAtMS > nowMS) { remaining += 1; continue; }
     const targets = agentRevocationTargets(storage, deviceID, nowMS);
     let failed = false;
     for (let offset = 0; offset < targets.length; offset += 32) {
@@ -1178,34 +1258,30 @@ export async function retryPendingDeviceRevocations(namespace, storage, nowMS = 
       const results = await Promise.all(batch.map(async (targetDeviceID) => {
         try {
           const objectId = namespace.idFromName(targetDeviceID);
-          const response = await namespace.get(objectId).fetch(new Request(
-            "https://wedecent.internal/revoke-device",
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ device_id: deviceID }),
-            },
-          ));
+          const response = await namespace.get(objectId).fetch(new Request("https://wedecent.internal/revoke-device", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ device_id: deviceID, authorization_generation: event.authorizationGeneration }),
+          }));
           return response.status === 204;
-        } catch {
-          return false;
-        }
+        } catch { return false; }
       }));
       if (results.some((closed) => !closed)) failed = true;
     }
-
     if (failed) {
-      storage.put(key, {
-        ...event,
-        attempts: event.attempts + 1,
-        nextAttemptAtMS: nowMS + RATE_LIMIT_CLEANUP_INTERVAL_MS,
-      });
+      const backoffMS = Math.min(60 * 60 * 1000, 5_000 * (2 ** Math.min(event.attempts, 10)));
+      storage.put(key, { ...event, attempts: event.attempts + 1, nextAttemptAtMS: nowMS + backoffMS });
       remaining += 1;
-    } else {
-      storage.delete(key);
+    } else if (!completeDeviceRevocationLease(storage, deviceID, event.authorizationGeneration)) {
+      remaining += 1;
     }
   }
-
+  if (entries.size === PENDING_DEVICE_REVOCATION_BATCH) {
+    if (lastKey) storage.put(PENDING_DEVICE_REVOCATION_CURSOR_KEY, lastKey);
+  } else {
+    if (cursor) remaining = Math.max(remaining, 1);
+    storage.delete(PENDING_DEVICE_REVOCATION_CURSOR_KEY);
+  }
   return { remaining };
 }
 
@@ -1307,7 +1383,9 @@ export function agentRevocationTargets(storage, deviceID, nowMS = Date.now()) {
       lease.slot < 1 ||
       lease.slot > 32 ||
       !Number.isSafeInteger(lease.expiresAtMS) ||
-      lease.expiresAtMS < 0
+      lease.expiresAtMS < 0 ||
+      !Number.isSafeInteger(lease.authorizationGeneration) ||
+      lease.authorizationGeneration < 1
     ) {
       throw new Error("invalid persisted global agent connection lease");
     }

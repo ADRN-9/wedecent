@@ -38,6 +38,8 @@ import {
   agentConnectionLeaseRequestConfig,
   agentRevocationTargets,
   bindGlobalAgentClient,
+  registerGlobalDeviceAuthorizationGeneration,
+  isGlobalDeviceAuthorizationGenerationCurrent,
   bindGlobalAgentClientLease,
   cleanupExpiredDeviceRevocationMarkers,
   cleanupExpiredRateLimitBuckets,
@@ -54,6 +56,7 @@ import {
   findAgentRevocationTargets,
   isGlobalDeviceRevoked,
   isGlobalDeviceRevokedLease,
+  isGlobalDeviceAuthorizationGenerationCurrentLease,
   markGlobalDeviceRevoked,
   markGlobalDeviceRevokedLease,
   queueDeviceRevocationLease,
@@ -69,6 +72,7 @@ const STATUS_PREFIX = "/v1/status/";
 const TIME_PATH = "/v1/time";
 const DIRECT_AUTHORIZE_PREFIX = "/v1/direct-authorize/";
 const DEVICE_REVOCATION_PREFIX = "/v1/revoke/";
+const DEVICE_GENERATION_PREFIX = "/v1/device-generation/";
 const AGENT_LEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
 const HEALTH_VERSION = 13;
@@ -130,6 +134,9 @@ async function handleRelayRequest(request, env) {
 
   if (url.pathname.startsWith(DEVICE_REVOCATION_PREFIX)) {
     return handleDeviceRevocation(request, env, url);
+  }
+  if (url.pathname.startsWith(DEVICE_GENERATION_PREFIX)) {
+    return handleDeviceGeneration(request, env, url);
   }
 
   if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
@@ -240,6 +247,25 @@ async function handleRelayRequest(request, env) {
   return env.DEVICE_RELAY.get(objectId).fetch(forwardedRequest);
 }
 
+async function handleDeviceGeneration(request, env, url) {
+  if (request.method !== "POST" || request.body !== null) return new Response("Invalid device generation request", { status: 400 });
+  const deviceID = decodeURIComponent(url.pathname.slice(DEVICE_GENERATION_PREFIX.length));
+  const generationText = url.searchParams.get("generation") ?? "";
+  const authorizationGeneration = /^[1-9][0-9]{0,15}$/.test(generationText) ? Number(generationText) : 0;
+  if (!DEVICE_ID.test(deviceID) || !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) {
+    return new Response("Invalid device generation scope", { status: 400 });
+  }
+  const expected = typeof env.RELAY_REVOCATION_TOKEN === "string" ? env.RELAY_REVOCATION_TOKEN : "";
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(expected)) return new Response("Relay generation authority is not configured", { status: 503 });
+  if (!constantTimeStringEqual(bearerToken(request), expected)) return new Response("Unauthorized", { status: 401 });
+  try {
+    const registered = await registerGlobalDeviceAuthorizationGeneration(env.RELAY_RATE_LIMIT, deviceID, authorizationGeneration);
+    return new Response(null, { status: registered ? 204 : 409 });
+  } catch {
+    return new Response("Global device generation registry unavailable", { status: 503 });
+  }
+}
+
 async function handleDeviceRevocation(request, env, url) {
   if (request.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
@@ -248,8 +274,10 @@ async function handleDeviceRevocation(request, env, url) {
     return new Response("Revocation request body is not allowed", { status: 400 });
   }
   const deviceID = decodeURIComponent(url.pathname.slice(DEVICE_REVOCATION_PREFIX.length));
-  if (!DEVICE_ID.test(deviceID)) {
-    return new Response("Invalid device ID", { status: 400 });
+  const generationText = url.searchParams.get("generation") ?? "";
+  const authorizationGeneration = /^[1-9][0-9]{0,15}$/.test(generationText) ? Number(generationText) : 0;
+  if (!DEVICE_ID.test(deviceID) || !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) {
+    return new Response("Invalid device revocation scope", { status: 400 });
   }
   const expected = typeof env.RELAY_REVOCATION_TOKEN === "string" ? env.RELAY_REVOCATION_TOKEN : "";
   if (!/^[A-Za-z0-9_-]{43,128}$/.test(expected)) {
@@ -260,7 +288,7 @@ async function handleDeviceRevocation(request, env, url) {
   }
 
   try {
-    await markGlobalDeviceRevoked(env.RELAY_RATE_LIMIT, deviceID);
+    await markGlobalDeviceRevoked(env.RELAY_RATE_LIMIT, deviceID, authorizationGeneration);
   } catch {
     return new Response("Global device revocation registry unavailable", { status: 503 });
   }
@@ -283,7 +311,7 @@ async function handleDeviceRevocation(request, env, url) {
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ device_id: deviceID }),
+            body: JSON.stringify({ device_id: deviceID, authorization_generation: authorizationGeneration }),
           },
         ));
         return response.status === 204;
@@ -297,7 +325,7 @@ async function handleDeviceRevocation(request, env, url) {
     return new Response("One or more relay sessions could not be revoked", { status: 503 });
   }
   try {
-    await completeGlobalDeviceRevocation(env.RELAY_RATE_LIMIT, deviceID);
+    await completeGlobalDeviceRevocation(env.RELAY_RATE_LIMIT, deviceID, authorizationGeneration);
   } catch {
     return new Response("Relay revocation retry state could not be completed", { status: 503 });
   }
@@ -429,14 +457,22 @@ export class ConnectionRateLimiter extends DurableObject {
           return Response.json({ target_device_ids: targetDeviceIDs }, { headers: { "Cache-Control": "no-store" } });
         }
         if (leaseConfig.action === "revoke-device") {
-          const revoked = markGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID);
-          queueDeviceRevocationLease(this.ctx.storage.kv, leaseConfig.deviceID);
+          const revoked = markGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          queueDeviceRevocationLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
           await this.#ensureCleanupScheduled();
           return Response.json({ revoked }, { headers: { "Cache-Control": "no-store" } });
         }
         if (leaseConfig.action === "complete-device-revocation") {
-          completeDeviceRevocationLease(this.ctx.storage.kv, leaseConfig.deviceID);
-          return Response.json({ revoked: true }, { headers: { "Cache-Control": "no-store" } });
+          const completed = completeDeviceRevocationLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          return Response.json({ completed }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "register-generation") {
+          const registered = registerGlobalDeviceAuthorizationGeneration(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          return Response.json({ registered }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "check-generation") {
+          const current = isGlobalDeviceAuthorizationGenerationCurrentLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          return Response.json({ current }, { headers: { "Cache-Control": "no-store" } });
         }
         if (leaseConfig.action === "check-device") {
           const revoked = isGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID);
@@ -446,6 +482,12 @@ export class ConnectionRateLimiter extends DurableObject {
       } catch {
         return new Response("Global agent connection limiter unavailable", { status: 503 });
       }
+    }
+
+    if (new URL(request.url).pathname === "/tick" && request.method === "POST") {
+      await this.alarm();
+      await this.#ensureCleanupScheduled();
+      return new Response(null, { status: 204 });
     }
 
     const config = await limiterRequestConfig(request);
@@ -600,12 +642,13 @@ export class DeviceRelay extends DurableObject {
         deviceID,
         slot,
         expiresAtMS: absoluteExpiresAtMS,
+        authorizationGeneration: admission.authorizationGeneration,
       });
     } catch {
       return new Response("Global agent connection limiter unavailable", { status: 503 });
     }
-    if (globalLease.revoked) {
-      return new Response("Agent device revoked", { status: 403 });
+    if (globalLease.revoked || globalLease.generationMismatch) {
+      return new Response("Agent authorization generation is stale or revoked", { status: 403 });
     }
     if (!globalLease.accepted) {
       return new Response("Global agent connection capacity reached", { status: 429, headers: { "Retry-After": "1" } });
@@ -642,12 +685,16 @@ export class DeviceRelay extends DurableObject {
         slot,
         leaseID,
         absoluteExpiresAtMS,
+        authorizationGeneration: admission.authorizationGeneration,
       }));
       this.ctx.acceptWebSocket(server, ["agent", `agent-slot-${slot}`]);
       leaseOwned = false;
       let revokedAfterAccept;
       try {
-        revokedAfterAccept = await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, deviceID);
+        const generationCurrent = await isGlobalDeviceAuthorizationGenerationCurrent(
+          this.env.RELAY_RATE_LIMIT, deviceID, admission.authorizationGeneration,
+        );
+        revokedAfterAccept = !generationCurrent || await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, deviceID);
       } catch {
         server.close(1011, "Device revocation registry unavailable");
         return new Response("Device revocation registry unavailable", { status: 503 });
@@ -764,7 +811,11 @@ export class DeviceRelay extends DurableObject {
       bound = false;
       let revokedAfterAccept;
       try {
+        const agentGenerationCurrent = await isGlobalDeviceAuthorizationGenerationCurrent(
+          this.env.RELAY_RATE_LIMIT, agentAttachment.deviceID, agentAttachment.authorizationGeneration,
+        );
         revokedAfterAccept =
+          !agentGenerationCurrent ||
           await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, clientDeviceID) ||
           await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, agentAttachment.deviceID);
       } catch {
@@ -813,9 +864,11 @@ export class DeviceRelay extends DurableObject {
       payload === null ||
       typeof payload !== "object" ||
       Array.isArray(payload) ||
-      Object.keys(payload).length !== 1 ||
+      Object.keys(payload).length !== 2 ||
       typeof payload.device_id !== "string" ||
-      !DEVICE_ID.test(payload.device_id)
+      !DEVICE_ID.test(payload.device_id) ||
+      !Number.isSafeInteger(payload.authorization_generation) ||
+      payload.authorization_generation < 1
     ) {
       return new Response("Invalid device revocation event", { status: 400 });
     }

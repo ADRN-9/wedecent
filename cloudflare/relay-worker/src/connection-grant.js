@@ -92,7 +92,7 @@ export async function verifyAgentAdmission(
 
   const required = [
     "iss", "aud", "sub", "jti", "device_id", "public_key_fingerprint",
-    "purpose", "slot", "iat", "exp",
+    "purpose", "slot", "iat", "exp", "authorization_generation",
   ];
   const allowed = new Set(required);
   for (const field of required) {
@@ -120,7 +120,9 @@ export async function verifyAgentAdmission(
     !Number.isSafeInteger(claims.slot) ||
     claims.slot < 1 ||
     claims.slot > 32 ||
-    claims.slot !== expected.slot
+    claims.slot !== expected.slot ||
+    !Number.isSafeInteger(claims.authorization_generation) ||
+    claims.authorization_generation < 1
   ) {
     throw new Error("agent admission scope mismatch");
   }

@@ -91,7 +91,7 @@ async function verifyAgentAdmissionHeader(request, env, expected, nowSeconds) {
     return {
       ok: true,
       deviceID: claims.device_id,
-      replay: { jti: claims.jti, exp: claims.exp },
+      replay: { jti: claims.jti, exp: claims.exp, authorizationGeneration: claims.authorization_generation },
     };
   } catch {
     return { ok: false, status: 403, message: "Agent admission rejected" };

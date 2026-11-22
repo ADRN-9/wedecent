@@ -9,6 +9,7 @@ export const INTERNAL_GRANT_JTI_HEADER = "X-WeDecent-Internal-Grant-JTI";
 export const INTERNAL_GRANT_EXP_HEADER = "X-WeDecent-Internal-Grant-Exp";
 export const INTERNAL_AGENT_ADMISSION_JTI_HEADER = "X-WeDecent-Internal-Agent-Admission-JTI";
 export const INTERNAL_AGENT_ADMISSION_EXP_HEADER = "X-WeDecent-Internal-Agent-Admission-Exp";
+export const INTERNAL_AGENT_ADMISSION_GENERATION_HEADER = "X-WeDecent-Internal-Agent-Admission-Generation";
 export const INTERNAL_RELAY_TICKET_JTI_HEADER = "X-WeDecent-Internal-Relay-Ticket-JTI";
 export const INTERNAL_RELAY_TICKET_EXP_HEADER = "X-WeDecent-Internal-Relay-Ticket-Exp";
 export const INTERNAL_AGENT_LEGACY_HEADER = "X-WeDecent-Internal-Agent-Legacy";
@@ -22,6 +23,7 @@ export function prepareDeviceRelayRequest(request, replay, connectionGrantHeader
     INTERNAL_GRANT_EXP_HEADER,
     INTERNAL_AGENT_ADMISSION_JTI_HEADER,
     INTERNAL_AGENT_ADMISSION_EXP_HEADER,
+    INTERNAL_AGENT_ADMISSION_GENERATION_HEADER,
     INTERNAL_RELAY_TICKET_JTI_HEADER,
     INTERNAL_RELAY_TICKET_EXP_HEADER,
     INTERNAL_AGENT_LEGACY_HEADER,
@@ -55,7 +57,8 @@ export function prepareAgentRelayRequest(
   connectionGrantHeader,
   legacy = false,
 ) {
-  if (!admissionReplay || !UUID.test(admissionReplay.jti) || !Number.isSafeInteger(admissionReplay.exp)) {
+  if (!admissionReplay || !UUID.test(admissionReplay.jti) || !Number.isSafeInteger(admissionReplay.exp) ||
+      !Number.isSafeInteger(admissionReplay.authorizationGeneration) || admissionReplay.authorizationGeneration < 1) {
     throw new Error("invalid agent admission replay metadata");
   }
   const headers = new Headers(request.headers);
@@ -64,6 +67,7 @@ export function prepareAgentRelayRequest(
     INTERNAL_GRANT_EXP_HEADER,
     INTERNAL_AGENT_ADMISSION_JTI_HEADER,
     INTERNAL_AGENT_ADMISSION_EXP_HEADER,
+    INTERNAL_AGENT_ADMISSION_GENERATION_HEADER,
     INTERNAL_RELAY_TICKET_JTI_HEADER,
     INTERNAL_RELAY_TICKET_EXP_HEADER,
     INTERNAL_AGENT_LEGACY_HEADER,
@@ -76,6 +80,7 @@ export function prepareAgentRelayRequest(
 
   headers.set(INTERNAL_AGENT_ADMISSION_JTI_HEADER, admissionReplay.jti);
   headers.set(INTERNAL_AGENT_ADMISSION_EXP_HEADER, String(admissionReplay.exp));
+  headers.set(INTERNAL_AGENT_ADMISSION_GENERATION_HEADER, String(admissionReplay.authorizationGeneration));
   if (relayTicketReplay) {
     if (!RELAY_TICKET_JTI.test(relayTicketReplay.jti) || !Number.isSafeInteger(relayTicketReplay.exp)) {
       throw new Error("invalid relay ticket replay metadata");
@@ -103,14 +108,12 @@ export function replayMetadataFromRequest(request) {
 export function agentAdmissionReplayMetadataFromRequest(request) {
   const jti = request.headers.get(INTERNAL_AGENT_ADMISSION_JTI_HEADER)?.trim() ?? "";
   const expText = request.headers.get(INTERNAL_AGENT_ADMISSION_EXP_HEADER)?.trim() ?? "";
-  if (!UUID.test(jti) || !/^[0-9]{1,12}$/.test(expText)) {
-    return null;
-  }
+  const generationText = request.headers.get(INTERNAL_AGENT_ADMISSION_GENERATION_HEADER)?.trim() ?? "";
+  if (!UUID.test(jti) || !/^[0-9]{1,12}$/.test(expText) || !/^[1-9][0-9]{0,15}$/.test(generationText)) return null;
   const exp = Number.parseInt(expText, 10);
-  if (!Number.isSafeInteger(exp) || exp <= 0) {
-    return null;
-  }
-  return { jti: jti.toLowerCase(), exp };
+  const authorizationGeneration = Number.parseInt(generationText, 10);
+  if (!Number.isSafeInteger(exp) || exp <= 0 || !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) return null;
+  return { jti: jti.toLowerCase(), exp, authorizationGeneration };
 }
 
 export function relayTicketReplayMetadataFromRequest(request) {
