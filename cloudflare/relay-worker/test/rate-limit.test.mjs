@@ -11,6 +11,7 @@ import {
   markGlobalDeviceRevokedLease,
   queueDeviceRevocationLease,
   retryPendingDeviceRevocations,
+  registerGlobalDeviceAuthorizationGenerationLease,
   REVOKED_DEVICE_TOMBSTONE_MS,
   bindGlobalAgentClientLease,
   cleanupExpiredRateLimitBuckets,
@@ -40,20 +41,26 @@ test("global active-agent leases enforce a single bounded concurrent cap", () =>
     deviceID,
     slot: 1,
     expiresAtMS: nowMS + 60_000,
+    authorizationGeneration: 1,
   };
   const second = {
     leaseID: "76b4c468-4e39-437c-a9c8-b758c92ab89b",
     deviceID: "wd_mw3am46w5weex4a4",
     slot: 2,
     expiresAtMS: nowMS + 60_000,
+    authorizationGeneration: 1,
   };
   const third = {
     leaseID: "0b7729e9-95bf-4591-80f4-3f0616e57751",
     deviceID: "wd_aaaaaaaaaaaaaaaa",
     slot: 3,
     expiresAtMS: nowMS + 60_000,
+    authorizationGeneration: 1,
   };
 
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, 1, nowMS), true);
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, second.deviceID, 1, nowMS), true);
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, third.deviceID, 1, nowMS), true);
   assert.deepEqual(acquireGlobalAgentConnectionLease(storage, first, nowMS, 2), { accepted: true, active: 1 });
   assert.deepEqual(acquireGlobalAgentConnectionLease(storage, second, nowMS, 2), { accepted: true, active: 2 });
   assert.deepEqual(acquireGlobalAgentConnectionLease(storage, third, nowMS, 2), { accepted: false, active: 2 });
@@ -69,13 +76,16 @@ test("expired global agent leases are reclaimed before capacity is evaluated", (
     deviceID,
     slot: 1,
     expiresAtMS: 10_000,
+    authorizationGeneration: 1,
   });
   const next = {
     leaseID: "76b4c468-4e39-437c-a9c8-b758c92ab89b",
     deviceID,
     slot: 2,
     expiresAtMS: 70_000,
+    authorizationGeneration: 1,
   };
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, 1, 10_000), true);
   assert.deepEqual(acquireGlobalAgentConnectionLease(storage, next, 10_000, 1), { accepted: true, active: 1 });
   assert.equal(storage.get("agent-connection-lease:" + expiredID), undefined);
   assert.deepEqual(cleanupGlobalAgentConnectionLeases(storage, 10_000, 1), {
@@ -88,11 +98,13 @@ test("expired global agent leases are reclaimed before capacity is evaluated", (
 test("corrupt global agent lease state fails closed", () => {
   const storage = createStorage();
   storage.put("agent-connection-lease:bad", { deviceID, slot: 1, expiresAtMS: "never" });
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, 1, 10_000), true);
   assert.throws(() => acquireGlobalAgentConnectionLease(storage, {
     leaseID: "d90987bf-bae6-45da-ab21-c82d049617bd",
     deviceID,
     slot: 1,
     expiresAtMS: 70_000,
+    authorizationGeneration: 1,
   }, 10_000, 2), /persisted global agent connection lease/);
   assert.equal(MAX_GLOBAL_ACTIVE_AGENT_CONNECTIONS, 1024);
 });
@@ -103,6 +115,7 @@ test("global agent lease internal requests accept only exact bounded schemas", a
     device_id: deviceID,
     slot: 1,
     expires_at_ms: Date.now() + 60_000,
+    authorization_generation: 1,
   };
   const acquire = new Request("https://wedecent.internal/agent-acquire", {
     method: "POST",
@@ -115,6 +128,7 @@ test("global agent lease internal requests accept only exact bounded schemas", a
     deviceID: lease.device_id,
     slot: lease.slot,
     expiresAtMS: lease.expires_at_ms,
+    authorizationGeneration: 1,
   });
 
   const release = new Request("https://wedecent.internal/agent-release", {
@@ -158,11 +172,12 @@ test("global agent lease internal requests accept only exact bounded schemas", a
 
   const revokeDevice = new Request("https://wedecent.internal/device-revoke", {
     method: "POST",
-    body: JSON.stringify({ device_id: clientDeviceID }),
+    body: JSON.stringify({ device_id: clientDeviceID, authorization_generation: 2 }),
   });
   assert.deepEqual(await agentConnectionLeaseRequestConfig(revokeDevice), {
     action: "revoke-device",
     deviceID: clientDeviceID,
+    authorizationGeneration: 2,
   });
 
   const checkDevice = new Request("https://wedecent.internal/device-revoked-check", {
@@ -176,11 +191,12 @@ test("global agent lease internal requests accept only exact bounded schemas", a
 
   const completeRevocation = new Request("https://wedecent.internal/device-revocation-complete", {
     method: "POST",
-    body: JSON.stringify({ device_id: clientDeviceID }),
+    body: JSON.stringify({ device_id: clientDeviceID, authorization_generation: 2 }),
   });
   assert.deepEqual(await agentConnectionLeaseRequestConfig(completeRevocation), {
     action: "complete-device-revocation",
     deviceID: clientDeviceID,
+    authorizationGeneration: 2,
   });
 
   const extraField = new Request("https://wedecent.internal/agent-acquire", {
@@ -200,7 +216,9 @@ test("active client-device bindings identify every relay that must be revoked", 
     deviceID,
     slot: 1,
     expiresAtMS: nowMS + 60_000,
+    authorizationGeneration: 1,
   };
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, 1, nowMS), true);
   assert.equal(acquireGlobalAgentConnectionLease(storage, lease, nowMS, 2).accepted, true);
   assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, nowMS), true);
   assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [deviceID, clientDeviceID].sort());
@@ -220,7 +238,9 @@ test("client bindings cannot be replaced and expired leases cannot be rebound", 
     clientDeviceID,
     slot: 1,
     expiresAtMS: 20_000,
+    authorizationGeneration: 1,
   });
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, 1, 10_000), true);
   assert.equal(bindGlobalAgentClientLease(storage, leaseID, otherClientDeviceID, 10_000), false);
   assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, 10_000), true);
 
@@ -229,6 +249,7 @@ test("client bindings cannot be replaced and expired leases cannot be rebound", 
     clientDeviceID,
     slot: 2,
     expiresAtMS: 10_000,
+    authorizationGeneration: 1,
   });
   assert.equal(bindGlobalAgentClientLease(storage, expiredLeaseID, clientDeviceID, 10_000), false);
   assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, 10_000), [deviceID, clientDeviceID].sort());
@@ -242,6 +263,7 @@ test("revocation target registry rejects corrupted lease metadata", () => {
     clientDeviceID: "invalid",
     slot: 1,
     expiresAtMS: 70_000,
+    authorizationGeneration: 1,
   });
   assert.throws(() => agentRevocationTargets(storage, deviceID, 10_000), /persisted global agent connection lease/);
 });
@@ -249,21 +271,22 @@ test("revocation target registry rejects corrupted lease metadata", () => {
 test("revoked-device tombstones block admission and expire after the capability window", () => {
   const storage = createStorage();
   const nowMS = 10_000;
-  markGlobalDeviceRevokedLease(storage, deviceID, nowMS);
+  markGlobalDeviceRevokedLease(storage, deviceID, 2, nowMS);
   assert.equal(isGlobalDeviceRevokedLease(storage, deviceID, nowMS), true);
-  assert.equal(isGlobalDeviceRevokedLease(storage, deviceID, nowMS + REVOKED_DEVICE_TOMBSTONE_MS), false);
+  assert.equal(isGlobalDeviceRevokedLease(storage, deviceID, nowMS + REVOKED_DEVICE_TOMBSTONE_MS), true);
   assert.equal(storage.has("revoked-device:" + deviceID), false);
 });
 
 test("global agent lease acquisition rejects a revoked device", () => {
   const storage = createStorage();
   const nowMS = 10_000;
-  markGlobalDeviceRevokedLease(storage, deviceID, nowMS);
+  markGlobalDeviceRevokedLease(storage, deviceID, 2, nowMS);
   const result = acquireGlobalAgentConnectionLease(storage, {
     leaseID: "d90987bf-bae6-45da-ab21-c82d049617bd",
     deviceID,
     slot: 1,
     expiresAtMS: nowMS + 60_000,
+    authorizationGeneration: 1,
   }, nowMS, 2);
   assert.deepEqual(result, { accepted: false, revoked: true, active: 0 });
 });
@@ -279,8 +302,9 @@ test("client binding rejects either revoked endpoint identity", () => {
     clientDeviceID: null,
     slot: 1,
     expiresAtMS: nowMS + 60_000,
+    authorizationGeneration: 1,
   });
-  markGlobalDeviceRevokedLease(storage, clientDeviceID, nowMS);
+  markGlobalDeviceRevokedLease(storage, clientDeviceID, 2, nowMS);
   assert.equal(bindGlobalAgentClientLease(storage, firstLeaseID, clientDeviceID, nowMS), false);
 
   storage.put("agent-connection-lease:" + secondLeaseID, {
@@ -288,15 +312,16 @@ test("client binding rejects either revoked endpoint identity", () => {
     clientDeviceID: null,
     slot: 2,
     expiresAtMS: nowMS + 60_000,
+    authorizationGeneration: 1,
   });
-  markGlobalDeviceRevokedLease(storage, deviceID, nowMS);
+  markGlobalDeviceRevokedLease(storage, deviceID, 2, nowMS);
   assert.equal(bindGlobalAgentClientLease(storage, secondLeaseID, clientDeviceID, nowMS), false);
 });
 
 test("revocation marker cleanup is bounded and removes expired entries", () => {
   const storage = createStorage();
   const nowMS = 10_000;
-  markGlobalDeviceRevokedLease(storage, deviceID, nowMS);
+  markGlobalDeviceRevokedLease(storage, deviceID, 2, nowMS);
   const result = cleanupExpiredDeviceRevocationMarkers(storage, nowMS + REVOKED_DEVICE_TOMBSTONE_MS);
   assert.equal(result.remaining, 0);
   assert.equal(storage.has("revoked-device:" + deviceID), false);
@@ -305,7 +330,7 @@ test("revocation marker cleanup is bounded and removes expired entries", () => {
 test("pending revocation dispatch retries until every relay accepts the close event", async () => {
   const storage = createStorage();
   const nowMS = 10_000;
-  queueDeviceRevocationLease(storage, deviceID, nowMS);
+  queueDeviceRevocationLease(storage, deviceID, 2, nowMS);
   const calls = [];
   let shouldFail = true;
   const namespace = {
@@ -323,10 +348,10 @@ test("pending revocation dispatch retries until every relay accepts the close ev
   const first = await retryPendingDeviceRevocations(namespace, storage, nowMS);
   assert.equal(first.remaining, 1);
   assert.equal(storage.get("pending-device-revocation:" + deviceID).attempts, 1);
-  assert.equal(storage.get("pending-device-revocation:" + deviceID).nextAttemptAtMS, nowMS + 60_000);
+  assert.equal(storage.get("pending-device-revocation:" + deviceID).nextAttemptAtMS, nowMS + 5_000);
 
   shouldFail = false;
-  const second = await retryPendingDeviceRevocations(namespace, storage, nowMS + 60_000);
+  const second = await retryPendingDeviceRevocations(namespace, storage, nowMS + 5_000);
   assert.equal(second.remaining, 0);
   assert.equal(storage.has("pending-device-revocation:" + deviceID), false);
   assert.equal(calls.length, 2);
@@ -334,8 +359,8 @@ test("pending revocation dispatch retries until every relay accepts the close ev
 
 test("completed revocation removes its durable retry record", () => {
   const storage = createStorage();
-  queueDeviceRevocationLease(storage, deviceID, 10_000);
-  assert.equal(completeDeviceRevocationLease(storage, deviceID), true);
+  queueDeviceRevocationLease(storage, deviceID, 2, 10_000);
+  assert.equal(completeDeviceRevocationLease(storage, deviceID, 2), true);
   assert.equal(storage.has("pending-device-revocation:" + deviceID), false);
 });
 
@@ -661,6 +686,7 @@ test("missing bucket-count metadata is rebuilt before admitting new identities",
     tokens: 1,
     updatedAtMS: 1_000,
     expiresAtMS: 61_000,
+    authorizationGeneration: 1,
   });
   const result = consumeRateLimitBuckets(
     storage,
@@ -708,6 +734,7 @@ test("limiter outages, storage corruption and malformed responses fail closed wi
     tokens: -1,
     updatedAtMS: 0,
     expiresAtMS: null,
+    authorizationGeneration: 1,
   });
   const corrupted = fakeNamespace({ storage: corruptedStorage });
   const storageFailure = await enforceRelayRequestRateLimit(streamRequest("192.0.2.41"), env(corrupted), "stream");
@@ -822,8 +849,10 @@ function createStorage(backing = new Map()) {
     put: (key, value) => backing.set(key, value),
     delete: (key) => backing.delete(key),
     has: (key) => backing.has(key),
-    list: ({ prefix, limit } = {}) => {
-      const entries = [...backing.entries()].filter(([key]) => !prefix || key.startsWith(prefix));
+    list: ({ prefix, limit, startAfter } = {}) => {
+      const entries = [...backing.entries()]
+        .filter(([key]) => (!prefix || key.startsWith(prefix)) && (!startAfter || key > startAfter))
+        .sort(([left], [right]) => left.localeCompare(right));
       return new Map(entries.slice(0, limit));
     },
     keys: () => backing.keys(),
