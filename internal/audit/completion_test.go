@@ -661,9 +661,10 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 		{
 			name: "malformed complete JSON after target",
 			active: func(target, _ []byte, _ int64) []byte {
-				return join(record(target), []byte("{not-json}\n"))
+				return join(record(target), []byte("{\"reason\":\"sensitive-malformed-json-secret\",broken}\n"))
 			},
-			wantErr: true,
+			wantErr:    true,
+			leakMarker: "sensitive-malformed-json-secret",
 		},
 		{
 			name: "incomplete trailing fragment",
