@@ -629,7 +629,7 @@ export async function agentConnectionLeaseRequestConfig(request) {
     return { action, deviceID: payload.device_id };
   }
 
-  if (action === "revoke-device" || action === "check-device") {
+  if (action === "revoke-device" || action === "check-device" || action === "complete-device-revocation") {
     if (keys.length !== 1 || keys[0] !== "device_id" || typeof payload.device_id !== "string" || !DEVICE_ID.test(payload.device_id)) {
       return null;
     }

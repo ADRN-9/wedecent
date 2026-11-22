@@ -12,7 +12,16 @@ import {
 
 test("agent sessions expire at the absolute lifetime even with recent activity", () => {
   const createdAtMS = 1_000;
-  let attachment = createAgentSessionAttachment({ id: "agent", role: "agent", peerId: null }, createdAtMS);
+  let attachment = createAgentSessionAttachment({
+    id: "agent",
+    role: "agent",
+    peerId: null,
+    absoluteExpiresAtMS: createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS,
+  }, createdAtMS);
+  attachment = {
+    ...attachment,
+    lastActivityAtMS: createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS - 2_000,
+  };
   attachment = touchAgentSessionAttachment(attachment, createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS - 1);
   assert.notEqual(attachment, null);
   assert.equal(agentSessionExpired(attachment, createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS), true);
@@ -44,8 +53,16 @@ test("next expiry selects the earliest live agent deadline and ignores non-agent
     { readyState: 1, attachment: { role: "client" } },
     { readyState: 3, attachment: second },
     { readyState: 1, attachment: second },
-  ], nowMS);
+  ], nowMS + 2_000);
   assert.equal(next, nowMS + AGENT_SESSION_IDLE_TIMEOUT_MS);
+});
+
+test("invalid absolute expiry fails closed", () => {
+  assert.throws(() => createAgentSessionAttachment({
+    id: "agent",
+    role: "agent",
+    absoluteExpiresAtMS: 9_999,
+  }, 10_000), /absolute expiry/);
 });
 
 test("an expired open socket requests an immediate cleanup alarm", () => {

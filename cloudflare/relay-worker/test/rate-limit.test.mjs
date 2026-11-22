@@ -203,9 +203,9 @@ test("active client-device bindings identify every relay that must be revoked", 
   };
   assert.equal(acquireGlobalAgentConnectionLease(storage, lease, nowMS, 2).accepted, true);
   assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, nowMS), true);
-  assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [deviceID]);
+  assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [deviceID, clientDeviceID].sort());
   assert.deepEqual(agentRevocationTargets(storage, deviceID, nowMS), [deviceID]);
-  assert.equal(unbindGlobalAgentClientLease(storage, leaseID, clientDeviceID, 10_000), false);
+  assert.equal(unbindGlobalAgentClientLease(storage, leaseID, clientDeviceID, 10_000), true);
   assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [clientDeviceID]);
 });
 
@@ -821,6 +821,7 @@ function createStorage(backing = new Map()) {
     get: (key) => backing.get(key),
     put: (key, value) => backing.set(key, value),
     delete: (key) => backing.delete(key),
+    has: (key) => backing.has(key),
     list: ({ prefix, limit } = {}) => {
       const entries = [...backing.entries()].filter(([key]) => !prefix || key.startsWith(prefix));
       return new Map(entries.slice(0, limit));

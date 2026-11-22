@@ -1,4 +1,4 @@
-import { createClient } from "npm:@supabase/supabase-js@2";
+import { createClient, type SupabaseClient } from "npm:@supabase/supabase-js@2";
 import { calculateJwkThumbprint, exportJWK, importPKCS8, importSPKI, SignJWT } from "npm:jose@6";
 import {
   deviceIDFromPublicKey,
@@ -195,7 +195,7 @@ Deno.serve(async (request) => {
   if (request.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
   if (request.method !== "POST") return json({ error: "method not allowed" }, 405);
 
-  let admin: ReturnType<typeof createClient> | null = null;
+  let admin: SupabaseClient<any> | null = null;
   let auditDeviceID: string | null = null;
   let auditSlot: number | null = null;
   let auditProofJTI: string | null = null;

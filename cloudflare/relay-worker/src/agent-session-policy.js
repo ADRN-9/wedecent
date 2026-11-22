@@ -11,10 +11,19 @@ export function createAgentSessionAttachment(attachment, nowMS = Date.now()) {
   ) {
     throw new Error("invalid agent session attachment");
   }
+  const absoluteExpiresAtMS = attachment.absoluteExpiresAtMS ?? nowMS + MAX_AGENT_SESSION_LIFETIME_MS;
+  if (
+    !Number.isSafeInteger(absoluteExpiresAtMS) ||
+    absoluteExpiresAtMS <= nowMS ||
+    absoluteExpiresAtMS > nowMS + MAX_AGENT_SESSION_LIFETIME_MS
+  ) {
+    throw new Error("invalid agent session absolute expiry");
+  }
   return {
     ...attachment,
     createdAtMS: nowMS,
     lastActivityAtMS: nowMS,
+    absoluteExpiresAtMS,
   };
 }
 
@@ -33,8 +42,12 @@ export function agentSessionExpired(attachment, nowMS = Date.now()) {
   ) {
     return true;
   }
+  const absoluteExpiresAtMS = attachment.absoluteExpiresAtMS ?? attachment.createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS;
+  if (!Number.isSafeInteger(absoluteExpiresAtMS) || absoluteExpiresAtMS <= attachment.createdAtMS) {
+    return true;
+  }
   return (
-    nowMS >= attachment.createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS ||
+    nowMS >= absoluteExpiresAtMS ||
     nowMS >= attachment.lastActivityAtMS + AGENT_SESSION_IDLE_TIMEOUT_MS
   );
 }
@@ -56,8 +69,9 @@ export function nextAgentSessionExpiry(entries, nowMS = Date.now()) {
     const attachment = entry.attachment;
     if (attachment?.role !== "agent") continue;
     if (agentSessionExpired(attachment, nowMS)) return nowMS;
+    const absoluteExpiresAtMS = attachment.absoluteExpiresAtMS ?? attachment.createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS;
     const expiry = Math.min(
-      attachment.createdAtMS + MAX_AGENT_SESSION_LIFETIME_MS,
+      absoluteExpiresAtMS,
       attachment.lastActivityAtMS + AGENT_SESSION_IDLE_TIMEOUT_MS,
     );
     if (next === null || expiry < next) next = expiry;
