@@ -711,8 +711,8 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 			wantErr: true,
 		},
 		{
-			name:    "duplicate semantic target with alternate JSON formatting",
-			active:  func(target, _ []byte, _ int64) []byte {
+			name: "duplicate semantic target with alternate JSON formatting",
+			active: func(target, _ []byte, _ int64) []byte {
 				var parsed Event
 				if err := json.Unmarshal(target, &parsed); err != nil {
 					t.Fatal(err)
