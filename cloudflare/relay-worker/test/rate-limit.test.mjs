@@ -138,10 +138,10 @@ test("active client-device bindings identify every relay that must be revoked", 
     expiresAtMS: nowMS + 60_000,
   };
   assert.equal(acquireGlobalAgentConnectionLease(storage, lease, nowMS, 2).accepted, true);
-  assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID), true);
+  assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, nowMS), true);
   assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [deviceID]);
   assert.deepEqual(agentRevocationTargets(storage, deviceID, nowMS), [deviceID]);
-  assert.equal(unbindGlobalAgentClientLease(storage, leaseID, clientDeviceID), true);
+  assert.equal(unbindGlobalAgentClientLease(storage, leaseID, clientDeviceID, 10_000), false);
   assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, nowMS), [clientDeviceID]);
 });
 
@@ -156,7 +156,7 @@ test("client bindings cannot be replaced by another client or attached to an exp
     slot: 1,
     expiresAtMS: 10_000,
   });
-  assert.equal(bindGlobalAgentClientLease(storage, leaseID, otherClientDeviceID), false);
+  assert.equal(bindGlobalAgentClientLease(storage, leaseID, otherClientDeviceID, 10_000), false);
   assert.equal(bindGlobalAgentClientLease(storage, leaseID, clientDeviceID), true);
   assert.deepEqual(agentRevocationTargets(storage, clientDeviceID, 10_000), [clientDeviceID]);
 });
