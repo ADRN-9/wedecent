@@ -371,7 +371,7 @@ export function cleanupExpiredRateLimitBuckets(storage, nowMS) {
   return { deleted, remaining };
 }
 
-function cleanupRateLimitScope(storage, scope, nowMS) {
+function cleanupRateLimitScope(storage, scope, nowMS, persistCount = true) {
   let active = 0;
   let deleted = 0;
   let seen = 0;
@@ -396,7 +396,7 @@ function cleanupRateLimitScope(storage, scope, nowMS) {
       active++;
     }
   }
-  storage.put("count:" + scope, active);
+  if (persistCount) storage.put("count:" + scope, active);
   return { active, deleted };
 }
 

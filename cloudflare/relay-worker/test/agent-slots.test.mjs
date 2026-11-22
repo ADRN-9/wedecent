@@ -46,7 +46,7 @@ test("replaces a stale legacy free socket before applying the connection cap", (
     legacy,
     ...Array.from({ length: MAX_AGENT_CONNECTIONS - 1 }, (_, index) => open(index + 1, "client-" + index)),
   ];
-  const result = planAgentSlotAdmission(agents, 1);
+  const result = planAgentSlotAdmission(agents, MAX_AGENT_CONNECTIONS);
   assert.equal(result.ok, true);
   assert.deepEqual(result.retire, [legacy]);
 });
