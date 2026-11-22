@@ -124,10 +124,11 @@ configuration or repository variables.
 The revocation function persists the database revocation and a durable pending
 dispatch-outbox row before contacting the relay. If the relay is unavailable or the
 secret is missing, it returns HTTP 503 and leaves the outbox row pending; retrying the
-same authenticated endpoint dispatches it again. There is not yet a scheduled outbox
-worker, so retries are request-driven rather than automatic. The audit and dispatch
-tables are service-role-only; user-facing audit search and retention policy remain
-control-plane work.
+same authenticated endpoint dispatches it again. The relay's global limiter Durable
+Object also keeps a durable retry record and retries incomplete fanout from its alarm
+every 60 seconds until all affected relay objects accept the close event. The audit
+and dispatch tables are service-role-only; user-facing audit search and retention
+policy remain control-plane work.
 
 Production activation requires provisioning the independent admission private key,
 its matching Supabase public SPKI, the Worker admission public keyring, and the
