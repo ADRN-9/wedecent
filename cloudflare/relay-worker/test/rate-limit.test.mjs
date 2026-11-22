@@ -189,6 +189,26 @@ test("global agent lease internal requests accept only exact bounded schemas", a
     deviceID: clientDeviceID,
   });
 
+  const registerGeneration = new Request("https://wedecent.internal/device-generation", {
+    method: "POST",
+    body: JSON.stringify({ device_id: clientDeviceID, authorization_generation: 2 }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(registerGeneration), {
+    action: "register-generation",
+    deviceID: clientDeviceID,
+    authorizationGeneration: 2,
+  });
+
+  const checkGeneration = new Request("https://wedecent.internal/device-generation-check", {
+    method: "POST",
+    body: JSON.stringify({ device_id: clientDeviceID, authorization_generation: 2 }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(checkGeneration), {
+    action: "check-generation",
+    deviceID: clientDeviceID,
+    authorizationGeneration: 2,
+  });
+
   const completeRevocation = new Request("https://wedecent.internal/device-revocation-complete", {
     method: "POST",
     body: JSON.stringify({ device_id: clientDeviceID, authorization_generation: 2 }),
@@ -291,6 +311,22 @@ test("global agent lease acquisition rejects a revoked device", () => {
   assert.deepEqual(result, { accepted: false, revoked: true, active: 0 });
 });
 
+test("delayed admission from an old generation is rejected after revocation fencing", () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, 1, nowMS), true);
+  markGlobalDeviceRevokedLease(storage, deviceID, 2, nowMS);
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, 1, nowMS + 1), false);
+  const result = acquireGlobalAgentConnectionLease(storage, {
+    leaseID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    deviceID,
+    slot: 1,
+    expiresAtMS: nowMS + 60_000,
+    authorizationGeneration: 1,
+  }, nowMS + 1, 2);
+  assert.deepEqual(result, { accepted: false, revoked: true, active: 0 });
+});
+
 test("client binding rejects either revoked endpoint identity", () => {
   const storage = createStorage();
   const nowMS = 10_000;
@@ -304,6 +340,7 @@ test("client binding rejects either revoked endpoint identity", () => {
     expiresAtMS: nowMS + 60_000,
     authorizationGeneration: 1,
   });
+  assert.equal(registerGlobalDeviceAuthorizationGenerationLease(storage, deviceID, 1, nowMS), true);
   markGlobalDeviceRevokedLease(storage, clientDeviceID, 2, nowMS);
   assert.equal(bindGlobalAgentClientLease(storage, firstLeaseID, clientDeviceID, nowMS), false);
 
@@ -355,6 +392,55 @@ test("pending revocation dispatch retries until every relay accepts the close ev
   assert.equal(second.remaining, 0);
   assert.equal(storage.has("pending-device-revocation:" + deviceID), false);
   assert.equal(calls.length, 2);
+});
+
+test("a stale retry completion cannot erase a newer revocation generation", () => {
+  const storage = createStorage();
+  queueDeviceRevocationLease(storage, deviceID, 1, 10_000);
+  queueDeviceRevocationLease(storage, deviceID, 2, 10_001);
+  assert.equal(completeDeviceRevocationLease(storage, deviceID, 1), false);
+  assert.equal(storage.get("pending-device-revocation:" + deviceID).authorizationGeneration, 2);
+  assert.equal(completeDeviceRevocationLease(storage, deviceID, 2), true);
+});
+
+test("pending revocation retry pagination prevents starvation beyond the first batch", async () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  const firstBatch = Array.from({ length: 50 }, (_, index) => {
+    const suffix = alphabet[Math.floor(index / 32)] + alphabet[index % 32];
+    return "wd_" + "a".repeat(14) + suffix;
+  });
+  const lastDeviceID = "wd_" + "b".repeat(16);
+  for (const id of firstBatch) {
+    queueDeviceRevocationLease(storage, id, 1, nowMS);
+    storage.put("pending-device-revocation:" + id, {
+      deviceID: id,
+      authorizationGeneration: 1,
+      attempts: 0,
+      nextAttemptAtMS: nowMS + 60_000,
+    });
+  }
+  queueDeviceRevocationLease(storage, lastDeviceID, 1, nowMS);
+  const calls = [];
+  const namespace = {
+    idFromName(value) { return value; },
+    get(value) {
+      return {
+        async fetch() {
+          calls.push(value);
+          return new Response(null, { status: 204 });
+        },
+      };
+    },
+  };
+  const first = await retryPendingDeviceRevocations(namespace, storage, nowMS);
+  assert.equal(first.remaining > 0, true);
+  assert.equal(calls.length, 0);
+  const second = await retryPendingDeviceRevocations(namespace, storage, nowMS);
+  assert.equal(calls.includes(lastDeviceID), true);
+  assert.equal(storage.has("pending-device-revocation:" + lastDeviceID), false);
+  assert.equal(second.remaining > 0, true);
 });
 
 test("completed revocation removes its durable retry record", () => {
