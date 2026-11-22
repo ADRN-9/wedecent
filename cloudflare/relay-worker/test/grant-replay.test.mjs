@@ -7,6 +7,7 @@ import {
   consumeAgentAdmission,
   consumeConnectionGrant,
   INTERNAL_AGENT_ADMISSION_EXP_HEADER,
+  INTERNAL_AGENT_ADMISSION_GENERATION_HEADER,
   INTERNAL_AGENT_ADMISSION_JTI_HEADER,
   INTERNAL_AGENT_LEGACY_HEADER,
   INTERNAL_CLIENT_DEVICE_ID_HEADER,
@@ -105,6 +106,7 @@ test("agent forwarding strips bearer credentials and injects only trusted replay
       "X-WeDecent-Connection-Grant": "unrelated-grant",
       [INTERNAL_AGENT_ADMISSION_JTI_HEADER]: "attacker-jti",
       [INTERNAL_AGENT_ADMISSION_EXP_HEADER]: "1",
+      [INTERNAL_AGENT_ADMISSION_GENERATION_HEADER]: "999",
       [INTERNAL_RELAY_TICKET_JTI_HEADER]: "attacker-ticket",
       [INTERNAL_RELAY_TICKET_EXP_HEADER]: "1",
       Upgrade: "websocket",
@@ -112,7 +114,7 @@ test("agent forwarding strips bearer credentials and injects only trusted replay
   });
   const forwarded = prepareAgentRelayRequest(
     req,
-    { jti, exp },
+    { jti, exp, authorizationGeneration: 1 },
     { jti: ticketJti, exp },
     "X-WeDecent-Agent-Admission",
     "X-WeDecent-Connection-Grant",
@@ -122,6 +124,7 @@ test("agent forwarding strips bearer credentials and injects only trusted replay
   assert.equal(forwarded.headers.get("X-WeDecent-Connection-Grant"), null);
   assert.equal(forwarded.headers.get(INTERNAL_AGENT_ADMISSION_JTI_HEADER), jti);
   assert.equal(forwarded.headers.get(INTERNAL_AGENT_ADMISSION_EXP_HEADER), String(exp));
+  assert.equal(forwarded.headers.get(INTERNAL_AGENT_ADMISSION_GENERATION_HEADER), "1");
   assert.equal(forwarded.headers.get(INTERNAL_RELAY_TICKET_JTI_HEADER), ticketJti);
   assert.equal(forwarded.headers.get(INTERNAL_RELAY_TICKET_EXP_HEADER), String(exp));
   assert.equal(forwarded.headers.get(INTERNAL_AGENT_LEGACY_HEADER), "0");
@@ -134,7 +137,7 @@ test("legacy agent forwarding still requires a single-use control-plane admissio
   });
   const forwarded = prepareAgentRelayRequest(
     req,
-    { jti, exp },
+    { jti, exp, authorizationGeneration: 1 },
     null,
     "X-WeDecent-Agent-Admission",
     "X-WeDecent-Connection-Grant",
@@ -151,17 +154,19 @@ test("parses only well-formed agent admission and relay-ticket replay metadata",
     headers: {
       [INTERNAL_AGENT_ADMISSION_JTI_HEADER]: jti,
       [INTERNAL_AGENT_ADMISSION_EXP_HEADER]: String(exp),
+      [INTERNAL_AGENT_ADMISSION_GENERATION_HEADER]: "1",
       [INTERNAL_RELAY_TICKET_JTI_HEADER]: ticketJti,
       [INTERNAL_RELAY_TICKET_EXP_HEADER]: String(exp),
     },
   });
-  assert.deepEqual(agentAdmissionReplayMetadataFromRequest(req), { jti, exp });
+  assert.deepEqual(agentAdmissionReplayMetadataFromRequest(req), { jti, exp, authorizationGeneration: 1 });
   assert.deepEqual(relayTicketReplayMetadataFromRequest(req), { jti: ticketJti, exp });
 
   const bad = new Request("https://relay.test", {
     headers: {
       [INTERNAL_AGENT_ADMISSION_JTI_HEADER]: "not-a-jti",
       [INTERNAL_AGENT_ADMISSION_EXP_HEADER]: String(exp),
+      [INTERNAL_AGENT_ADMISSION_GENERATION_HEADER]: "0",
       [INTERNAL_RELAY_TICKET_JTI_HEADER]: "short",
       [INTERNAL_RELAY_TICKET_EXP_HEADER]: String(exp),
     },

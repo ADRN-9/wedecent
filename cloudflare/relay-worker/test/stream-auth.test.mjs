@@ -68,6 +68,7 @@ function issueAgentAdmission(deviceID, slot, publicKeyFingerprint, overrides = {
     public_key_fingerprint: publicKeyFingerprint,
     purpose: "relay.agent.connect",
     slot,
+    authorization_generation: 1,
     iss: "wedecent-control-plane",
     aud: "wedecent-relay-agent",
     sub: deviceID,
@@ -222,7 +223,11 @@ test("accepts an enrolled agent only with a device- and slot-bound admission tok
     ok: true,
     deviceID: relay.claims.iss,
     targetDeviceID: relay.claims.iss,
-    agentAdmissionReplay: { jti: "a90987bf-bae6-45da-ab21-c82d049617bd", exp: now + 90 },
+    agentAdmissionReplay: {
+      jti: "a90987bf-bae6-45da-ab21-c82d049617bd",
+      exp: now + 90,
+      authorizationGeneration: 1,
+    },
     relayTicketReplay: { jti: relay.claims.jti, exp: relay.claims.exp },
   });
 });

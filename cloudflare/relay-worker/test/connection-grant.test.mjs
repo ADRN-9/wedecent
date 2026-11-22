@@ -107,6 +107,7 @@ function issueAgentAdmission(overrides = {}, headerOverrides = {}) {
     public_key_fingerprint: admissionFingerprint,
     purpose: "relay.agent.connect",
     slot: 4,
+    authorization_generation: 1,
     iss: "wedecent-control-plane",
     aud: "wedecent-relay-agent",
     sub: targetDeviceID,
@@ -132,6 +133,7 @@ test("accepts a control-plane signed admission bound to an enrolled device and s
   assert.equal(claims.public_key_fingerprint, admissionFingerprint);
   assert.equal(claims.purpose, "relay.agent.connect");
   assert.equal(claims.slot, 4);
+  assert.equal(claims.authorization_generation, 1);
 });
 
 test("rejects agent admission for another device, slot, audience, or purpose", async () => {
@@ -140,6 +142,24 @@ test("rejects agent admission for another device, slot, audience, or purpose", a
   await assert.rejects(() => verifyAgentAdmission(token, { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 5 }, admissionKeyring, 1_787_779_010, publicSPKIB64));
   await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({ aud: "wedecent-relay" }), { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 4 }, admissionKeyring, 1_787_779_010, publicSPKIB64));
   await assert.rejects(() => verifyAgentAdmission(issueAgentAdmission({ purpose: "terminal.connect" }), { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 4 }, admissionKeyring, 1_787_779_010, publicSPKIB64));
+});
+
+test("rejects missing or malformed authorization generation claims", async () => {
+  await assert.rejects(() => verifyAgentAdmission(
+    issueAgentAdmission({ authorization_generation: undefined }),
+    { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 4 },
+    admissionKeyring, 1_787_779_010, publicSPKIB64,
+  ));
+  await assert.rejects(() => verifyAgentAdmission(
+    issueAgentAdmission({ authorization_generation: 0 }),
+    { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 4 },
+    admissionKeyring, 1_787_779_010, publicSPKIB64,
+  ));
+  await assert.rejects(() => verifyAgentAdmission(
+    issueAgentAdmission({ authorization_generation: 1.5 }),
+    { deviceID: targetDeviceID, publicKeyFingerprint: admissionFingerprint, slot: 4 },
+    admissionKeyring, 1_787_779_010, publicSPKIB64,
+  ));
 });
 
 test("rejects expired and overlong agent admission capabilities", async () => {

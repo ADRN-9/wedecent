@@ -249,6 +249,7 @@ function createAgentCredentials(slot = 1) {
         device_id: deviceID,
         public_key_fingerprint: publicKeyFingerprint,
         slot,
+        authorization_generation: 1,
         iat: issuedAt,
         exp: issuedAt + 90,
         jti: randomUUID(),
@@ -405,9 +406,14 @@ async function verifyAgentRevocationPropagation() {
   };
 
   await withWorker(port, persistTo, 10_000, 10_000, async (baseURL) => {
+    const generationResponse = await fetch(
+      baseURL + "/v1/device-generation/" + credentials.deviceID + "?generation=1",
+      { method: "POST", headers: { Authorization: "Bearer " + revocationToken } },
+    );
+    assert.equal(generationResponse.status, 204);
     const tokens = credentials.createTokens();
     const socket = await openAgentWebSocket(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission);
-    const response = await fetch(baseURL + "/v1/revoke/" + credentials.deviceID, {
+    const response = await fetch(baseURL + "/v1/revoke/" + credentials.deviceID + "?generation=2", {
       method: "POST",
       headers: { Authorization: "Bearer " + revocationToken },
     });
@@ -431,13 +437,20 @@ async function verifyAgentReplayPersistence() {
   const port = await freePort();
   const persistTo = join(root, "agent-state");
   const credentials = createAgentCredentials(1);
+  const revocationToken = "r".repeat(64);
   const extraVars = {
     WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: credentials.publicSPKIB64,
     WEDECENT_AGENT_ADMISSION_PUBLIC_KEYS_JSON: credentials.admissionKeyringJSON,
+    RELAY_REVOCATION_TOKEN: revocationToken,
   };
   let tokens;
 
-  await withWorker(port, persistTo, 10_000, 10_000, async () => {
+  await withWorker(port, persistTo, 10_000, 10_000, async (baseURL) => {
+    const generationResponse = await fetch(
+      baseURL + "/v1/device-generation/" + credentials.deviceID + "?generation=1",
+      { method: "POST", headers: { Authorization: "Bearer " + revocationToken } },
+    );
+    assert.equal(generationResponse.status, 204);
     tokens = credentials.createTokens();
     const results = await Promise.all([
       websocketUpgradeStatus(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission),
