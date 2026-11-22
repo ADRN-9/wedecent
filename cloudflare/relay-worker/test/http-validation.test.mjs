@@ -74,9 +74,15 @@ test("rejects a declared oversized body before reading its stream", async () => 
   let reads = 0;
   const request = {
     headers: new Headers({ "Content-Length": "2048" }),
-    body: new ReadableStream({
-      pull() { reads++; },
-    }),
+    body: {
+      getReader() {
+        return {
+          read() { reads++; },
+          cancel() {},
+          releaseLock() {},
+        };
+      },
+    },
   };
   const result = await readBoundedRequestBody(request, 1024);
   assert.deepEqual(result, { ok: false, status: 413 });
