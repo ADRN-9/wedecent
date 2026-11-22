@@ -359,17 +359,37 @@ async function openAgentWebSocket(port, targetDeviceID, relayTicket, agentAdmiss
   });
 }
 
-async function waitForSocketClose(socket, timeoutMS = 5_000) {
+async function waitForWebSocketCloseFrame(socket, timeoutMS = 5_000) {
   if (socket.destroyed) return;
   await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      clearTimeout(timeout);
+      socket.removeListener("data", onData);
+      socket.removeListener("close", onClose);
+    };
+    const onData = (chunk) => {
+      if (chunk.length < 4 || (chunk[0] & 0x0f) !== 0x08) return;
+      const length = chunk[1] & 0x7f;
+      if (length < 2 || chunk.length < 2 + length) return;
+      const code = chunk.readUInt16BE(2);
+      cleanup();
+      if (code !== 4003) {
+        reject(new Error("expected device-revocation close code 4003, received " + code));
+      } else {
+        resolve();
+      }
+    };
+    const onClose = () => {
+      cleanup();
+      resolve();
+    };
     const timeout = setTimeout(() => {
+      cleanup();
       socket.destroy();
       reject(new Error("revocation did not close the established agent WebSocket"));
     }, timeoutMS);
-    socket.once("close", () => {
-      clearTimeout(timeout);
-      resolve();
-    });
+    socket.on("data", onData);
+    socket.once("close", onClose);
   });
 }
 
@@ -394,7 +414,7 @@ async function verifyAgentRevocationPropagation() {
     assert.equal(response.status, 200, "authorized revocation event should be accepted");
     const result = await response.json();
     assert.equal(result.revoked_device_id, credentials.deviceID);
-    await waitForSocketClose(socket);
+    await waitForWebSocketCloseFrame(socket);
   }, extraVars);
 }
 
