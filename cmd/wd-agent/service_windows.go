@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"wedecent.com/wedecent/internal/agentadmission"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/trust"
 	"wedecent.com/wedecent/internal/winservice"
@@ -125,6 +126,16 @@ func runServiceInstall(args []string) error {
 		"https://relay.wedecent.com",
 		"serverless WebSocket relay URL",
 	)
+	supabaseURL := fs.String(
+		"supabase-url",
+		"",
+		"Supabase project origin for device-authenticated relay admission",
+	)
+	supabasePublishableKey := fs.String(
+		"supabase-publishable-key",
+		"",
+		"public Supabase publishable key; never a user access or refresh token",
+	)
 	relaySlots := fs.Int(
 		"relay-slots",
 		4,
@@ -200,6 +211,15 @@ func runServiceInstall(args []string) error {
 		return errors.New(
 			"relay-slots must be between 1 and 32",
 		)
+	}
+
+	if strings.TrimSpace(*webRelay) != "" {
+		if err := (agentadmission.Client{
+			SupabaseURL:    *supabaseURL,
+			PublishableKey: *supabasePublishableKey,
+		}).Validate(); err != nil {
+			return fmt.Errorf("web relay agent admission: %w", err)
+		}
 	}
 
 	if *routeMaxConnections < 1 ||
@@ -316,6 +336,8 @@ func runServiceInstall(args []string) error {
 		),
 
 		"--web-relay=" + *webRelay,
+		"--supabase-url=" + *supabaseURL,
+		"--supabase-publishable-key=" + *supabasePublishableKey,
 		fmt.Sprintf(
 			"--relay-slots=%d",
 			*relaySlots,

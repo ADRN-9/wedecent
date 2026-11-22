@@ -67,6 +67,155 @@ export async function verifyConnectionGrant(
   return claims;
 }
 
+const cachedAgentAdmissionKeys = new Map();
+
+export async function verifyAgentAdmission(
+  token,
+  expected,
+  publicKeyringJSON,
+  nowSeconds = Math.floor(Date.now() / 1000),
+  terminalPublicSPKIB64,
+) {
+  if (typeof token !== "string" || token.length < 32 || token.length > MAX_TOKEN_LENGTH) {
+    throw new Error("invalid agent admission length");
+  }
+  const parts = token.split(".");
+  if (parts.length !== 3) {
+    throw new Error("invalid agent admission format");
+  }
+
+  const header = decodeJSONObject(parts[0], "agent admission header");
+  const claims = decodeJSONObject(parts[1], "agent admission claims");
+  if (header.alg !== "EdDSA" || header.typ !== "JWT" || typeof header.kid !== "string" || header.kid.length === 0) {
+    throw new Error("unsupported agent admission header");
+  }
+
+  const required = [
+    "iss", "aud", "sub", "jti", "device_id", "public_key_fingerprint",
+    "purpose", "slot", "iat", "exp", "authorization_generation",
+  ];
+  const allowed = new Set(required);
+  for (const field of required) {
+    if (!Object.prototype.hasOwnProperty.call(claims, field)) {
+      throw new Error("agent admission is missing required claims");
+    }
+  }
+  for (const field of Object.keys(claims)) {
+    if (!allowed.has(field)) throw new Error("agent admission contains unsupported claims");
+  }
+
+  if (
+    claims.iss !== ISSUER ||
+    claims.aud !== "wedecent-relay-agent" ||
+    claims.purpose !== "relay.agent.connect"
+  ) {
+    throw new Error("unsupported agent admission authority");
+  }
+  if (
+    claims.sub !== expected.deviceID ||
+    claims.device_id !== expected.deviceID ||
+    claims.public_key_fingerprint !== expected.publicKeyFingerprint ||
+    !/^SHA256:[A-F0-9]{64}$/.test(claims.public_key_fingerprint) ||
+    !UUID.test(claims.jti) ||
+    !Number.isSafeInteger(claims.slot) ||
+    claims.slot < 1 ||
+    claims.slot > 32 ||
+    claims.slot !== expected.slot ||
+    !Number.isSafeInteger(claims.authorization_generation) ||
+    claims.authorization_generation < 1
+  ) {
+    throw new Error("agent admission scope mismatch");
+  }
+  if (!Number.isSafeInteger(claims.iat) || !Number.isSafeInteger(claims.exp) || claims.exp <= claims.iat) {
+    throw new Error("invalid agent admission lifetime");
+  }
+  if (claims.exp - claims.iat > MAX_LIFETIME_SECONDS) {
+    throw new Error("agent admission lifetime is too long");
+  }
+  if (claims.iat > nowSeconds + CLOCK_SKEW_SECONDS || claims.exp <= nowSeconds) {
+    throw new Error("agent admission is not currently valid");
+  }
+
+  const signature = decodeBase64URL(parts[2]);
+  if (signature.length !== 64) {
+    throw new Error("invalid agent admission signature length");
+  }
+  const keyring = parseAgentAdmissionKeyring(publicKeyringJSON);
+  if (typeof terminalPublicSPKIB64 !== "string" || terminalPublicSPKIB64.trim() === "") {
+    throw new Error("terminal connection grant public key is required for admission key separation");
+  }
+  const terminalKey = await connectionGrantPublicKey(terminalPublicSPKIB64);
+  for (const admissionSPKI of Object.values(keyring)) {
+    const admissionKey = await agentAdmissionPublicKey(admissionSPKI);
+    if (admissionKey.kid === terminalKey.kid) {
+      throw new Error("agent admission signing key must be independent from terminal grants");
+    }
+  }
+  const publicSPKIB64 = keyring[header.kid];
+  if (!publicSPKIB64) {
+    throw new Error("unknown agent admission signing key");
+  }
+  const { key, kid } = await agentAdmissionPublicKey(publicSPKIB64);
+  if (header.kid !== kid) {
+    throw new Error("agent admission signing key mismatch");
+  }
+  const signed = new TextEncoder().encode(parts[0] + "." + parts[1]);
+  if (!(await crypto.subtle.verify("Ed25519", key, signature, signed))) {
+    throw new Error("invalid agent admission signature");
+  }
+  return claims;
+}
+
+function parseAgentAdmissionKeyring(value) {
+  const normalized = typeof value === "string" ? value.trim() : "";
+  if (!normalized || normalized.length > 16384) {
+    throw new Error("agent admission public keyring is not configured");
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(normalized);
+  } catch {
+    throw new Error("agent admission public keyring is invalid JSON");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("agent admission public keyring must be an object");
+  }
+  const entries = Object.entries(parsed);
+  if (entries.length < 1 || entries.length > 8) {
+    throw new Error("agent admission public keyring must contain 1 to 8 keys");
+  }
+  const keyring = Object.create(null);
+  for (const [kid, spki] of entries) {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(kid) || typeof spki !== "string" || spki.length > 1024) {
+      throw new Error("agent admission public keyring entry is invalid");
+    }
+    keyring[kid] = spki;
+  }
+  return keyring;
+}
+
+async function agentAdmissionPublicKey(publicSPKIB64) {
+  const normalized = typeof publicSPKIB64 === "string" ? publicSPKIB64.trim() : "";
+  if (!normalized || normalized.length > 1024 || !/^[A-Za-z0-9+/=]+$/.test(normalized)) {
+    throw new Error("agent admission public key is invalid");
+  }
+  if (cachedAgentAdmissionKeys.has(normalized)) {
+    return cachedAgentAdmissionKeys.get(normalized);
+  }
+  const spki = decodeBase64(normalized);
+  const key = await crypto.subtle.importKey("spki", spki, { name: "Ed25519" }, true, ["verify"]);
+  const jwk = await crypto.subtle.exportKey("jwk", key);
+  if (jwk.kty !== "OKP" || jwk.crv !== "Ed25519" || typeof jwk.x !== "string") {
+    throw new Error("invalid agent admission public key");
+  }
+  const canonical = new TextEncoder().encode(JSON.stringify({ crv: "Ed25519", kty: "OKP", x: jwk.x }));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", canonical));
+  const kid = encodeBase64URL(digest);
+  const result = { key, kid };
+  cachedAgentAdmissionKeys.set(normalized, result);
+  return result;
+}
+
 function validateClaims(claims) {
   if (claims === null || typeof claims !== "object" || Array.isArray(claims)) {
     throw new Error("invalid connection grant claims");

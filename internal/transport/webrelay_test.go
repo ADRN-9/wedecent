@@ -44,6 +44,56 @@ func TestWebRelayRejectsInvalidAgentSlot(t *testing.T) {
 	}
 }
 
+func TestWebRelayRejectsInsecureRemoteOrigins(t *testing.T) {
+	for _, raw := range []string{
+		"http://relay.wedecent.com",
+		"ws://relay.wedecent.com",
+		"http://192.0.2.10",
+	} {
+		if _, err := webRelayURL(raw, "wd_4ksk5edkttwsxqx4", "client", 0); err == nil {
+			t.Fatalf("expected insecure remote relay origin %q to be rejected", raw)
+		}
+	}
+}
+
+func TestWebRelayAllowsOnlyLoopbackDevelopmentHTTP(t *testing.T) {
+	for _, raw := range []string{"http://127.0.0.1:8787", "http://[::1]:8787", "http://localhost:8787"} {
+		got, err := webRelayURL(raw, "wd_4ksk5edkttwsxqx4", "client", 0)
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if !strings.HasPrefix(got, "ws://") {
+			t.Fatalf("expected loopback development WebSocket, got %q", got)
+		}
+	}
+}
+
+func TestWebRelayRejectsDecoratedOrigins(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:secret@relay.wedecent.com",
+		"https://relay.wedecent.com/path",
+		"https://relay.wedecent.com/?token=legacy",
+		"https://relay.wedecent.com/#fragment",
+	} {
+		if _, err := webRelayURL(raw, "wd_4ksk5edkttwsxqx4", "client", 0); err == nil {
+			t.Fatalf("expected decorated relay origin %q to be rejected", raw)
+		}
+	}
+}
+
+func TestDialWebSocketRejectsRemotePlaintextAndMalformedEndpoints(t *testing.T) {
+	for _, raw := range []string{
+		"ws://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=client",
+		"wss://relay.wedecent.com/other?role=client",
+		"wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=client&slot=1",
+		"wss://user:secret@relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=client",
+	} {
+		if _, err := dialWebSocket(context.Background(), raw, WebRelayOptions{}); err == nil {
+			t.Fatalf("expected invalid endpoint %q to be rejected before dialing", raw)
+		}
+	}
+}
+
 func TestWebRelayCredentialPrefersTicketSource(t *testing.T) {
 	u, err := url.Parse("wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=agent&slot=3")
 	if err != nil {
@@ -83,6 +133,26 @@ func TestWebRelayCredentialLegacyFallback(t *testing.T) {
 	}
 	if credential != "legacy-token" {
 		t.Fatalf("unexpected legacy credential %q", credential)
+	}
+}
+
+func TestWebRelayCredentialRejectsLegacyAgentFallback(t *testing.T) {
+	u, err := url.Parse("wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=agent&slot=4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := webRelayCredential(context.Background(), u, WebRelayOptions{Token: "legacy-token"}); err == nil {
+		t.Fatal("expected bearer-only agent admission to fail closed")
+	}
+}
+
+func TestWebRelayAgentAdmissionRequiresSource(t *testing.T) {
+	u, err := url.Parse("wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=agent&slot=4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := webRelayAgentAdmission(context.Background(), u, WebRelayOptions{}); err == nil {
+		t.Fatal("expected missing device-authenticated admission source to fail")
 	}
 }
 
@@ -186,8 +256,21 @@ func TestWebSocketHandshakeRejectsConnectionGrantHeaderInjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := websocketClientHandshake(client, u, "token", "good\r\nInjected: value"); err == nil {
+	if _, err := websocketClientHandshake(client, u, "token", "good\r\nInjected: value", ""); err == nil {
 		t.Fatal("expected connection grant header injection to fail")
+	}
+}
+
+func TestWebSocketHandshakeRejectsAgentAdmissionHeaderInjection(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+	u, err := url.Parse("ws://relay.test/v1/stream/wd_4ksk5edkttwsxqx4?role=agent&slot=4")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := websocketClientHandshake(client, u, "token", "", "good\r\nInjected: value"); err == nil {
+		t.Fatal("expected agent admission header injection to fail")
 	}
 }
 
@@ -235,6 +318,69 @@ func TestDialWebSocketUsesTicketSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = conn.Close()
+}
+
+func TestDialWebSocketAgentAdmissionRenewsForEachSlotReconnect(t *testing.T) {
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("role") != "agent" || r.URL.Query().Get("slot") != "4" {
+			http.Error(w, "wrong agent slot", http.StatusBadRequest)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer wdt2.test.signature" {
+			http.Error(w, "missing device relay ticket", http.StatusUnauthorized)
+			return
+		}
+		requests <- r.Header.Get("X-WeDecent-Agent-Admission")
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("server does not support hijacking")
+		}
+		raw, rw, err := hj.Hijack()
+		if err != nil {
+			return
+		}
+		defer raw.Close()
+		accept := websocketAccept(r.Header.Get("Sec-WebSocket-Key"))
+		fmt.Fprintf(rw, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n", accept)
+		_ = rw.Flush()
+	}))
+	defer server.Close()
+
+	var issued int
+	opts := WebRelayOptions{
+		Timeout: 5 * time.Second,
+		TicketSource: func(context.Context, string, string, string, int) (string, error) {
+			return "wdt2.test.signature", nil
+		},
+		AgentAdmissionSource: func(_ context.Context, deviceID string, slot int) (string, error) {
+			if deviceID != "wd_4ksk5edkttwsxqx4" || slot != 4 {
+				t.Fatalf("unexpected admission scope: %s/%d", deviceID, slot)
+			}
+			issued++
+			return fmt.Sprintf("header-%020d.payload.signature", issued), nil
+		},
+	}
+	u := "ws" + strings.TrimPrefix(server.URL, "http") + "/v1/stream/wd_4ksk5edkttwsxqx4?role=agent&slot=4"
+	for attempt := 1; attempt <= 2; attempt++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		conn, err := dialWebSocket(ctx, u, opts)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = conn.Close()
+	}
+	if issued != 2 {
+		t.Fatalf("admission source called %d times, want one fresh capability per reconnect", issued)
+	}
+	for attempt := 1; attempt <= 2; attempt++ {
+		got := <-requests
+		want := fmt.Sprintf("header-%020d.payload.signature", attempt)
+		if got != want {
+			t.Fatalf("admission header %q, want %q", got, want)
+		}
+	}
 }
 
 func TestDialWebSocketRoundTrip(t *testing.T) {

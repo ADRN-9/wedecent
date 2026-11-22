@@ -46,7 +46,16 @@ jobs:
           go-version: '1.27.0'
           cache: true
       - name: Verify formatting
-        run: test -z "$(gofmt -l cmd internal)"
+        run: |
+          files="$(gofmt -l cmd internal)"
+          if [ -n "$files" ]; then
+            echo "Go files need gofmt:"
+            printf '%s\n' "$files"
+            while IFS= read -r file; do
+              gofmt -d "$file"
+            done <<< "$files"
+            exit 1
+          fi
       - name: Vet
         run: go vet ./...
       - name: Test Unix service packaging
@@ -197,10 +206,19 @@ jobs:
         run: |
           node --check src/index.js
           node --check src/relay-auth.js
+          node --check src/connection-grant.js
+          node --check src/stream-auth.js
+          node --check src/grant-replay.js
           node --check src/rate-limit.js
+          node --check src/http-validation.js
+          node --check src/agent-slots.js
+          node --check src/agent-session-policy.js
       - name: Test relay authentication and admission
         working-directory: cloudflare/relay-worker
         run: npm test
+      - name: Test local Durable Object persistence, availability and throughput
+        working-directory: cloudflare/relay-worker
+        run: npm run test:integration
       - name: Validate Worker bundle and configuration
         working-directory: cloudflare/relay-worker
         run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wedecent-relay-worker-dry-run"
@@ -220,8 +238,16 @@ jobs:
         run: node --check supabase/functions/_shared/route-authorization.mjs
       - name: Test Go-compatible route authorization signing
         run: node --test supabase/functions/_shared/route-authorization.test.mjs
+      - name: Test device-authenticated agent admission proof verification
+        run: |
+          node --check supabase/functions/_shared/agent-admission.mjs
+          node --test supabase/functions/_shared/agent-admission.test.mjs
       - name: Type-check route authorization Edge Function
         run: deno check supabase/functions/route-authorization/index.ts
+      - name: Type-check relay agent admission Edge Function
+        run: deno check supabase/functions/agent-admission/index.ts
+      - name: Type-check authenticated device revocation Edge Function
+        run: deno check supabase/functions/device-revocation/index.ts
 
   supabase-db:
     runs-on: ubuntu-latest

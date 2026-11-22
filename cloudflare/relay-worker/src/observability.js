@@ -1,4 +1,4 @@
-import { relayRateLimitConfig } from "./rate-limit.js";
+import { RATE_LIMIT_OBJECT_NAME, relayRateLimitConfig } from "./rate-limit.js";
 
 const HEALTH_OBJECT_NAME = "health-v1";
 const HEALTH_URL = "https://wedecent.internal/health";
@@ -13,6 +13,7 @@ export function relayMetricContext(request) {
   else if (pathname === "/readyz") route = "ready";
   else if (pathname === "/v1/time") route = "time";
   else if (pathname.startsWith("/v1/direct-authorize/")) route = "direct_authorize";
+  else if (pathname.startsWith("/v1/revoke/")) route = "device_revocation";
   else if (pathname.startsWith("/v1/status/")) route = "status";
   else if (pathname.startsWith("/v1/stream/")) route = "stream";
 
@@ -73,7 +74,13 @@ export async function relayReadiness(env) {
     if (!env?.RELAY_METRICS || typeof env.RELAY_METRICS.writeDataPoint !== "function") {
       return false;
     }
-    const checks = [probeDurableObject(env.DEVICE_RELAY), probeDurableObject(env.RELAY_RATE_LIMIT)];
+    if (typeof env.RELAY_REVOCATION_TOKEN !== "string" || !/^[A-Za-z0-9_-]{43,128}$/.test(env.RELAY_REVOCATION_TOKEN)) {
+      return false;
+    }
+    const checks = [
+      probeDurableObject(env.DEVICE_RELAY),
+      probeDurableObject(env.RELAY_RATE_LIMIT, RATE_LIMIT_OBJECT_NAME),
+    ];
     const results = await Promise.all(checks);
     return results.every(Boolean);
   } catch {
@@ -119,11 +126,11 @@ function safeDuration(durationMS) {
   return Math.min(MAX_DURATION_MS, Math.max(0, Math.round(durationMS)));
 }
 
-async function probeDurableObject(namespace) {
+async function probeDurableObject(namespace, objectName = HEALTH_OBJECT_NAME) {
   if (!namespace || typeof namespace.idFromName !== "function" || typeof namespace.get !== "function") {
     return false;
   }
-  const objectId = namespace.idFromName(HEALTH_OBJECT_NAME);
+  const objectId = namespace.idFromName(objectName);
   const stub = namespace.get(objectId);
   if (!stub || typeof stub.fetch !== "function") {
     return false;

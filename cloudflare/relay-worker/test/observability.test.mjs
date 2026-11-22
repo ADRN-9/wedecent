@@ -36,6 +36,10 @@ test("metric context uses bounded labels and omits routing identifiers", () => {
     relayMetricContext(new Request(`https://relay.test/v1/status/${deviceID}?role=client`)),
     { route: "status", role: "none" },
   );
+  assert.deepEqual(
+    relayMetricContext(new Request(`https://relay.test/v1/revoke/${deviceID}`)),
+    { route: "device_revocation", role: "none" },
+  );
   assert.deepEqual(relayMetricContext(new Request("https://relay.test/nope?role=agent")), {
     route: "not_found",
     role: "none",
@@ -112,13 +116,15 @@ test("readiness requires metrics, valid rate-limit config, and both durable obje
   const calls = [];
   const env = {
     RELAY_METRICS: { writeDataPoint() {} },
+    RELAY_REVOCATION_TOKEN: "r".repeat(64),
     DEVICE_RELAY: healthyNamespace("device", calls),
     RELAY_RATE_LIMIT: healthyNamespace("limit", calls),
   };
   assert.equal(await relayReadiness(env), true);
-  assert.deepEqual(calls.sort(), ["device:health-v1", "limit:health-v1"]);
+  assert.deepEqual(calls.sort(), ["device:health-v1", "limit:relay-rate-limit-v2"]);
 
   assert.equal(await relayReadiness({ ...env, RELAY_METRICS: undefined }), false);
+  assert.equal(await relayReadiness({ ...env, RELAY_REVOCATION_TOKEN: undefined }), false);
   assert.equal(await relayReadiness({ ...env, DEVICE_RELAY: undefined }), false);
   assert.equal(await relayReadiness({ ...env, RELAY_IP_CONNECTIONS_PER_WINDOW: "0" }), false);
   assert.equal(

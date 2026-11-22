@@ -1,14 +1,29 @@
 import { DurableObject } from "cloudflare:workers";
-import { authorizeStream, CONNECTION_GRANT_HEADER } from "./stream-auth.js";
+import { authorizeStream, AGENT_ADMISSION_HEADER, CONNECTION_GRANT_HEADER } from "./stream-auth.js";
 import {
+  agentAdmissionReplayMetadataFromRequest,
   cleanupExpiredConnectionGrants,
+  consumeAgentAdmission,
   consumeConnectionGrant,
+  INTERNAL_AGENT_LEGACY_HEADER,
+  INTERNAL_CLIENT_DEVICE_ID_HEADER,
   INTERNAL_GRANT_EXP_HEADER,
   INTERNAL_GRANT_JTI_HEADER,
+  prepareAgentRelayRequest,
   prepareDeviceRelayRequest,
+  relayTicketReplayMetadataFromRequest,
   replayMetadataFromRequest,
   scheduleReplayCleanup,
 } from "./grant-replay.js";
+import { planAgentSlotAdmission } from "./agent-slots.js";
+import {
+  agentSessionExpired,
+  createAgentSessionAttachment,
+  MAX_AGENT_SESSION_LIFETIME_MS,
+  nextAgentSessionExpiry,
+  touchAgentSessionAttachment,
+} from "./agent-session-policy.js";
+import { directAuthorizationPreflight, readBoundedRequestBody } from "./http-validation.js";
 import {
   emitRelayTrace,
   healthProbeRequest,
@@ -19,9 +34,38 @@ import {
   withRelayTraceHeader,
 } from "./observability.js";
 import {
-  consumeTokenBucket,
-  enforceRelayConnectionRateLimit,
+  acquireGlobalAgentConnectionLease,
+  agentConnectionLeaseRequestConfig,
+  agentRevocationTargets,
+  bindGlobalAgentClient,
+  registerGlobalDeviceAuthorizationGeneration,
+  registerGlobalDeviceAuthorizationGenerationLease,
+  isGlobalDeviceAuthorizationGenerationCurrent,
+  bindGlobalAgentClientLease,
+  cleanupExpiredDeviceRevocationMarkers,
+  cleanupExpiredRateLimitBuckets,
+  completeDeviceRevocationLease,
+  cleanupGlobalAgentConnectionLeases,
+  consumeRateLimitBuckets,
+  RATE_LIMIT_CLEANUP_INTERVAL_MS,
+  RATE_LIMIT_OBJECT_NAME,
+  enforceRelayDeviceRateLimit,
+  enforceRelayRequestRateLimit,
   limiterRequestConfig,
+  releaseGlobalAgentConnection,
+  releaseGlobalAgentConnectionLease,
+  reserveGlobalAgentConnection,
+  findAgentRevocationTargets,
+  isGlobalDeviceRevoked,
+  isGlobalDeviceRevokedLease,
+  isGlobalDeviceAuthorizationGenerationCurrentLease,
+  markGlobalDeviceRevoked,
+  markGlobalDeviceRevokedLease,
+  queueDeviceRevocationLease,
+  retryPendingDeviceRevocations,
+  completeGlobalDeviceRevocation,
+  unbindGlobalAgentClient,
+  unbindGlobalAgentClientLease,
 } from "./rate-limit.js";
 
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
@@ -29,8 +73,11 @@ const STREAM_PREFIX = "/v1/stream/";
 const STATUS_PREFIX = "/v1/status/";
 const TIME_PATH = "/v1/time";
 const DIRECT_AUTHORIZE_PREFIX = "/v1/direct-authorize/";
+const DEVICE_REVOCATION_PREFIX = "/v1/revoke/";
+const DEVICE_GENERATION_PREFIX = "/v1/device-generation/";
+const AGENT_LEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
-const HEALTH_VERSION = 11;
+const HEALTH_VERSION = 13;
 
 export default {
   async fetch(request, env) {
@@ -50,6 +97,11 @@ export default {
       emitRelayTrace(console.error, metricContext, traceID, 500, durationMS, "exception");
       throw error;
     }
+  },
+  async scheduled(_controller, env, ctx) {
+    const work = runScheduledMaintenance(env);
+    ctx.waitUntil(work);
+    return await work;
   },
 };
 
@@ -87,8 +139,23 @@ async function handleRelayRequest(request, env) {
     );
   }
 
+  if (url.pathname.startsWith(DEVICE_REVOCATION_PREFIX)) {
+    return handleDeviceRevocation(request, env, url);
+  }
+  if (url.pathname.startsWith(DEVICE_GENERATION_PREFIX)) {
+    return handleDeviceGeneration(request, env, url);
+  }
+
   if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
-    return authorizeDirectRequest(request, env, url);
+    const preflight = directAuthorizationPreflight(request, url);
+    if (!preflight.ok) {
+      return preflight.response;
+    }
+    const admission = await enforceRelayRequestRateLimit(request, env, "direct");
+    if (!admission.ok) {
+      return rateLimitResponse(admission);
+    }
+    return authorizeDirectRequest(request, env, preflight.targetDeviceID);
   }
 
   if (!url.pathname.startsWith(STREAM_PREFIX) && !url.pathname.startsWith(STATUS_PREFIX)) {
@@ -127,22 +194,16 @@ async function handleRelayRequest(request, env) {
   }
 
   const slot = url.searchParams.get("slot");
-  if (role === "agent" && slot !== null && !AGENT_SLOT.test(slot)) {
+  if (role === "agent" && (slot === null || !AGENT_SLOT.test(slot))) {
     return new Response("Invalid agent relay slot", { status: 400 });
   }
   if (role === "client" && slot !== null) {
     return new Response("Clients must not specify a relay slot", { status: 400 });
   }
 
-  const admission = await enforceRelayConnectionRateLimit(request, env, deviceId);
+  const admission = await enforceRelayRequestRateLimit(request, env, "stream");
   if (!admission.ok) {
-    return new Response(admission.message, {
-      status: admission.status,
-      headers: {
-        "Cache-Control": "no-store",
-        "Retry-After": String(admission.retryAfterSeconds),
-      },
-    });
+    return rateLimitResponse(admission);
   }
 
   const authorization = await authorizeStream(request, env, {
@@ -154,28 +215,209 @@ async function handleRelayRequest(request, env) {
     return new Response(authorization.message, { status: authorization.status });
   }
 
+  const authenticatedDeviceIDs = verifiedDeviceIDs(authorization);
+  if (authenticatedDeviceIDs.length === 0) {
+    return new Response("Relay admission unavailable", { status: 503 });
+  }
+  for (const authenticatedDeviceID of authenticatedDeviceIDs) {
+    let revoked;
+    try {
+      revoked = await isGlobalDeviceRevoked(env.RELAY_RATE_LIMIT, authenticatedDeviceID);
+    } catch {
+      return new Response("Device revocation registry unavailable", { status: 503 });
+    }
+    if (revoked) {
+      return new Response("Device revoked", { status: 403 });
+    }
+    const deviceAdmission = await enforceRelayDeviceRateLimit(env, authenticatedDeviceID, "stream");
+    if (!deviceAdmission.ok) {
+      return rateLimitResponse(deviceAdmission);
+    }
+  }
+
   const objectId = env.DEVICE_RELAY.idFromName(deviceId);
-  return env.DEVICE_RELAY.get(objectId).fetch(
-    prepareDeviceRelayRequest(request, authorization.replay, CONNECTION_GRANT_HEADER),
-  );
+  const forwardedRequest = role === "agent"
+    ? prepareAgentRelayRequest(
+        request,
+        authorization.agentAdmissionReplay,
+        authorization.relayTicketReplay ?? null,
+        AGENT_ADMISSION_HEADER,
+        CONNECTION_GRANT_HEADER,
+        authorization.legacy === true,
+      )
+    : prepareDeviceRelayRequest(
+        request,
+        authorization.replay,
+        CONNECTION_GRANT_HEADER,
+        authorization.deviceID,
+      );
+  return env.DEVICE_RELAY.get(objectId).fetch(forwardedRequest);
 }
 
-async function authorizeDirectRequest(request, env, url) {
+async function handleDeviceGeneration(request, env, url) {
+  if (request.method !== "POST" || request.body !== null) return new Response("Invalid device generation request", { status: 400 });
+  const deviceID = decodeURIComponent(url.pathname.slice(DEVICE_GENERATION_PREFIX.length));
+  const generationText = url.searchParams.get("generation") ?? "";
+  const authorizationGeneration = /^[1-9][0-9]{0,15}$/.test(generationText) ? Number(generationText) : 0;
+  if (!DEVICE_ID.test(deviceID) || !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) {
+    return new Response("Invalid device generation scope", { status: 400 });
+  }
+  const expected = typeof env.RELAY_REVOCATION_TOKEN === "string" ? env.RELAY_REVOCATION_TOKEN : "";
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(expected)) return new Response("Relay generation authority is not configured", { status: 503 });
+  if (!constantTimeStringEqual(bearerToken(request), expected)) return new Response("Unauthorized", { status: 401 });
+  try {
+    const registered = await registerGlobalDeviceAuthorizationGeneration(env.RELAY_RATE_LIMIT, deviceID, authorizationGeneration);
+    return new Response(null, { status: registered ? 204 : 409 });
+  } catch {
+    return new Response("Global device generation registry unavailable", { status: 503 });
+  }
+}
+
+async function runScheduledMaintenance(env) {
+  try {
+    const namespace = env.RELAY_RATE_LIMIT;
+    if (namespace && typeof namespace.idFromName === "function" && typeof namespace.get === "function") {
+      const stub = namespace.get(namespace.idFromName(RATE_LIMIT_OBJECT_NAME));
+      const tick = await stub.fetch(new Request("https://wedecent.internal/tick", { method: "POST" }));
+      if (!tick.ok) console.error("relay durable revocation retry tick failed", tick.status);
+    }
+  } catch {
+    console.error("relay durable revocation retry tick unavailable");
+  }
+
+  const rawSupabaseURL = typeof env.SUPABASE_URL === "string" ? env.SUPABASE_URL.trim() : "";
+  const dispatchToken = typeof env.WEDECENT_REVOCATION_DISPATCH_TOKEN === "string"
+    ? env.WEDECENT_REVOCATION_DISPATCH_TOKEN
+    : "";
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(dispatchToken)) {
+    console.error("autonomous device revocation dispatcher credential is not configured");
+    return;
+  }
+
+  let endpoint;
+  try {
+    endpoint = new URL(rawSupabaseURL);
+  } catch {
+    console.error("autonomous device revocation dispatcher URL is invalid");
+    return;
+  }
+  if (
+    endpoint.protocol !== "https:" ||
+    endpoint.username !== "" ||
+    endpoint.password !== "" ||
+    endpoint.pathname !== "/" ||
+    endpoint.search !== "" ||
+    endpoint.hash !== ""
+  ) {
+    console.error("autonomous device revocation dispatcher requires a Supabase HTTPS origin");
+    return;
+  }
+  endpoint.pathname = "/functions/v1/device-revocation-dispatch";
+  try {
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer " + dispatchToken,
+        "Cache-Control": "no-store",
+      },
+      redirect: "error",
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) console.error("autonomous device revocation dispatch failed", response.status);
+  } catch {
+    console.error("autonomous device revocation dispatch unavailable");
+  }
+}
+
+async function handleDeviceRevocation(request, env, url) {
   if (request.method !== "POST") {
     return new Response("Method not allowed", { status: 405 });
   }
-  const targetDeviceID = decodeURIComponent(url.pathname.slice(DIRECT_AUTHORIZE_PREFIX.length));
-  if (!DEVICE_ID.test(targetDeviceID)) {
-    return new Response("Invalid device ID", { status: 400 });
+  if (request.body !== null) {
+    return new Response("Revocation request body is not allowed", { status: 400 });
+  }
+  const deviceID = decodeURIComponent(url.pathname.slice(DEVICE_REVOCATION_PREFIX.length));
+  const generationText = url.searchParams.get("generation") ?? "";
+  const authorizationGeneration = /^[1-9][0-9]{0,15}$/.test(generationText) ? Number(generationText) : 0;
+  if (!DEVICE_ID.test(deviceID) || !Number.isSafeInteger(authorizationGeneration) || authorizationGeneration < 1) {
+    return new Response("Invalid device revocation scope", { status: 400 });
+  }
+  const expected = typeof env.RELAY_REVOCATION_TOKEN === "string" ? env.RELAY_REVOCATION_TOKEN : "";
+  if (!/^[A-Za-z0-9_-]{43,128}$/.test(expected)) {
+    return new Response("Relay revocation authority is not configured", { status: 503 });
+  }
+  if (!constantTimeStringEqual(bearerToken(request), expected)) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  try {
+    await markGlobalDeviceRevoked(env.RELAY_RATE_LIMIT, deviceID, authorizationGeneration);
+  } catch {
+    return new Response("Global device revocation registry unavailable", { status: 503 });
+  }
+
+  let targets;
+  try {
+    targets = await findAgentRevocationTargets(env.RELAY_RATE_LIMIT, deviceID);
+  } catch {
+    return new Response("Relay revocation registry unavailable", { status: 503 });
+  }
+
+  let failed = false;
+  for (let offset = 0; offset < targets.length; offset += 32) {
+    const batch = targets.slice(offset, offset + 32);
+    const results = await Promise.all(batch.map(async (targetDeviceID) => {
+      try {
+        const objectId = env.DEVICE_RELAY.idFromName(targetDeviceID);
+        const response = await env.DEVICE_RELAY.get(objectId).fetch(new Request(
+          "https://wedecent.internal/revoke-device",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ device_id: deviceID, authorization_generation: authorizationGeneration }),
+          },
+        ));
+        return response.status === 204;
+      } catch {
+        return false;
+      }
+    }));
+    if (results.some((closed) => !closed)) failed = true;
+  }
+  if (failed) {
+    return new Response("One or more relay sessions could not be revoked", { status: 503 });
+  }
+  try {
+    await completeGlobalDeviceRevocation(env.RELAY_RATE_LIMIT, deviceID, authorizationGeneration);
+  } catch {
+    return new Response("Relay revocation retry state could not be completed", { status: 503 });
+  }
+  return Response.json(
+    { revoked_device_id: deviceID, affected_relay_devices: targets.length },
+    { headers: { "Cache-Control": "no-store" } },
+  );
+}
+
+function constantTimeStringEqual(left, right) {
+  const a = new TextEncoder().encode(left);
+  const b = new TextEncoder().encode(right);
+  if (a.length !== b.length) return false;
+  let difference = 0;
+  for (let index = 0; index < a.length; index++) {
+    difference |= a[index] ^ b[index];
+  }
+  return difference === 0;
+}
+
+async function authorizeDirectRequest(request, env, targetDeviceID) {
+  const body = await readBoundedRequestBody(request, 1024);
+  if (!body.ok) {
+    return new Response("Invalid authorization request", { status: body.status });
   }
 
   let payload;
   try {
-    const text = await request.text();
-    if (text.length === 0 || text.length > 1024) {
-      return new Response("Invalid authorization request", { status: 400 });
-    }
-    payload = JSON.parse(text);
+    payload = JSON.parse(body.text);
   } catch {
     return new Response("Invalid authorization request", { status: 400 });
   }
@@ -194,6 +436,17 @@ async function authorizeDirectRequest(request, env, url) {
     return new Response(authorization.message, { status: authorization.status });
   }
 
+  const authenticatedDeviceIDs = verifiedDeviceIDs(authorization);
+  if (authenticatedDeviceIDs.length === 0) {
+    return new Response("Relay admission unavailable", { status: 503 });
+  }
+  for (const authenticatedDeviceID of authenticatedDeviceIDs) {
+    const deviceAdmission = await enforceRelayDeviceRateLimit(env, authenticatedDeviceID, "direct");
+    if (!deviceAdmission.ok) {
+      return rateLimitResponse(deviceAdmission);
+    }
+  }
+
   const headers = new Headers();
   headers.set(INTERNAL_GRANT_JTI_HEADER, authorization.replay.jti);
   headers.set(INTERNAL_GRANT_EXP_HEADER, String(authorization.replay.exp));
@@ -201,6 +454,20 @@ async function authorizeDirectRequest(request, env, url) {
   return env.DEVICE_RELAY.get(objectId).fetch(
     new Request("https://wedecent.internal/authorize", { method: "POST", headers }),
   );
+}
+
+function verifiedDeviceIDs(authorization) {
+  return [...new Set([authorization.deviceID, authorization.targetDeviceID].filter((value) => typeof value === "string"))];
+}
+
+function rateLimitResponse(admission) {
+  return new Response(admission.message, {
+    status: admission.status,
+    headers: {
+      "Cache-Control": "no-store",
+      "Retry-After": String(admission.retryAfterSeconds),
+    },
+  });
 }
 
 function legacyAuthorized(request, env) {
@@ -221,34 +488,129 @@ export class ConnectionRateLimiter extends DurableObject {
   async fetch(request) {
     if (healthProbeRequest(request)) {
       try {
-        await this.ctx.storage.get("__health__");
+        this.ctx.storage.kv.get("__health__");
         return new Response(null, { status: 204 });
       } catch {
         return new Response("Rate-limit storage unavailable", { status: 500 });
       }
     }
 
-    const config = limiterRequestConfig(request);
+    const leaseConfig = await agentConnectionLeaseRequestConfig(request);
+    if (leaseConfig) {
+      try {
+        if (leaseConfig.action === "acquire") {
+          const result = acquireGlobalAgentConnectionLease(this.ctx.storage.kv, leaseConfig);
+          await this.#ensureCleanupScheduled();
+          return Response.json(result, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "release") {
+          const released = releaseGlobalAgentConnectionLease(this.ctx.storage.kv, leaseConfig.leaseID);
+          return Response.json({ released }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "bind") {
+          const bound = bindGlobalAgentClientLease(this.ctx.storage.kv, leaseConfig.leaseID, leaseConfig.clientDeviceID);
+          return Response.json({ bound }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "unbind") {
+          const unbound = unbindGlobalAgentClientLease(this.ctx.storage.kv, leaseConfig.leaseID, leaseConfig.clientDeviceID);
+          return Response.json({ unbound }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "targets") {
+          const targetDeviceIDs = agentRevocationTargets(this.ctx.storage.kv, leaseConfig.deviceID);
+          return Response.json({ target_device_ids: targetDeviceIDs }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "revoke-device") {
+          const revoked = markGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          queueDeviceRevocationLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          await this.#ensureCleanupScheduled();
+          return Response.json({ revoked }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "complete-device-revocation") {
+          const completed = completeDeviceRevocationLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          return Response.json({ completed }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "register-generation") {
+          const registered = registerGlobalDeviceAuthorizationGenerationLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          return Response.json({ registered }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "check-generation") {
+          const current = isGlobalDeviceAuthorizationGenerationCurrentLease(this.ctx.storage.kv, leaseConfig.deviceID, leaseConfig.authorizationGeneration);
+          return Response.json({ current }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "check-device") {
+          const revoked = isGlobalDeviceRevokedLease(this.ctx.storage.kv, leaseConfig.deviceID);
+          return Response.json({ revoked }, { headers: { "Cache-Control": "no-store" } });
+        }
+        return new Response("Invalid global agent lease operation", { status: 400 });
+      } catch {
+        return new Response("Global agent connection limiter unavailable", { status: 503 });
+      }
+    }
+
+    if (new URL(request.url).pathname === "/tick" && request.method === "POST") {
+      await this.alarm();
+      await this.#ensureCleanupScheduled();
+      return new Response(null, { status: 204 });
+    }
+
+    const config = await limiterRequestConfig(request);
     if (!config) {
       return new Response("Invalid rate-limit request", { status: 400 });
     }
 
     try {
-      const state = await this.ctx.storage.get("bucket");
-      const result = consumeTokenBucket(state, Date.now(), config.capacity, config.windowMS);
-      await this.ctx.storage.put("bucket", result.state);
+      // Keep the synchronous KV read/modify/write sequence in one event-loop turn.
+      const result = consumeRateLimitBuckets(this.ctx.storage.kv, config.buckets, config.windowMS, Date.now());
+      await this.#ensureCleanupScheduled();
       return Response.json(
-        { accepted: result.accepted, retry_after_ms: result.retryAfterMS },
+        { accepted: result.accepted, retry_after_ms: result.retryAfterMS, scope: result.scope },
         { headers: { "Cache-Control": "no-store" } },
       );
     } catch {
-      return new Response("Rate-limit storage unavailable", { status: 500 });
+      return new Response("Rate-limit storage unavailable", { status: 503 });
+    }
+  }
+
+  async #ensureCleanupScheduled() {
+    const currentAlarm = await this.ctx.storage.getAlarm();
+    if (currentAlarm === null) {
+      await this.ctx.storage.setAlarm(Date.now() + RATE_LIMIT_CLEANUP_INTERVAL_MS);
+    }
+  }
+
+  async alarm() {
+    const nowMS = Date.now();
+    const cleanup = cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, nowMS);
+    const leases = cleanupGlobalAgentConnectionLeases(this.ctx.storage.kv, nowMS);
+    const revokedDevices = cleanupExpiredDeviceRevocationMarkers(this.ctx.storage.kv, nowMS);
+    let pendingRevocations = { remaining: 0 };
+    try {
+      pendingRevocations = await retryPendingDeviceRevocations(
+        this.env.DEVICE_RELAY,
+        this.ctx.storage.kv,
+        nowMS,
+      );
+    } catch {
+      pendingRevocations = { remaining: 1 };
+    }
+    if (
+      cleanup.remaining > 0 ||
+      leases.remaining > 0 ||
+      revokedDevices.remaining > 0 ||
+      pendingRevocations.remaining > 0
+    ) {
+      await this.ctx.storage.setAlarm(nowMS + RATE_LIMIT_CLEANUP_INTERVAL_MS);
     }
   }
 }
 
 export class DeviceRelay extends DurableObject {
-  #clientAdmission = Promise.resolve();
+  #admission = Promise.resolve();
+
+  constructor(ctx, env) {
+    super(ctx, env);
+    this.env = env;
+  }
 
   async fetch(request) {
     const url = new URL(request.url);
@@ -262,6 +624,10 @@ export class DeviceRelay extends DurableObject {
         return new Response("Relay storage unavailable", { status: 500 });
       }
     }
+    await this.#expireAgentSessions();
+    if (url.pathname === "/revoke-device") {
+      return this.#revokeDevice(request);
+    }
     if (url.pathname === "/status") {
       return this.#status();
     }
@@ -271,7 +637,7 @@ export class DeviceRelay extends DurableObject {
 
     const role = url.searchParams.get("role");
     if (role === "agent") {
-      return this.#acceptAgent(url);
+      return this.#acceptAgent(request, url);
     }
     if (role === "client") {
       return this.#acceptClient(request);
@@ -295,72 +661,155 @@ export class DeviceRelay extends DurableObject {
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
   }
 
-  #acceptAgent(url) {
+  #acceptAgent(request, url) {
+    return this.#withAdmission(() => this.#acceptAgentExclusive(request, url));
+  }
+
+  async #acceptAgentExclusive(request, url) {
     const slotParam = url.searchParams.get("slot");
-    const slot = slotParam === null ? null : Number.parseInt(slotParam, 10);
-
-    // v4 agents identify each parked outbound connection by a stable logical
-    // slot number. Retire free sockets from older generations before accepting
-    // the replacement. This prevents hibernated/stale Durable Object sockets
-    // from accumulating across agent restarts and being selected by clients.
-    if (slot !== null) {
-      this.#retireSupersededFreeAgents(slot);
+    if (slotParam === null || !AGENT_SLOT.test(slotParam)) {
+      return new Response("Invalid agent relay slot", { status: 400 });
+    }
+    const slot = Number.parseInt(slotParam, 10);
+    const entries = this.ctx.getWebSockets("agent").map((socket) => {
+      let attachment = null;
+      try {
+        attachment = socket.deserializeAttachment();
+      } catch {
+        // An unreadable attachment still counts against the active socket cap.
+      }
+      return { socket, readyState: socket.readyState, attachment };
+    });
+    const plan = planAgentSlotAdmission(entries, slot);
+    if (!plan.ok) {
+      return new Response(
+        plan.status === 409 ? "Agent relay slot already active" : "Agent connection capacity reached",
+        { status: plan.status },
+      );
     }
 
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-    const id = crypto.randomUUID();
-    const tags = ["agent"];
-    if (slot !== null) {
-      tags.push(`agent-slot-${slot}`);
+    const admission = agentAdmissionReplayMetadataFromRequest(request);
+    const relayTicket = relayTicketReplayMetadataFromRequest(request);
+    const legacy = request.headers.get(INTERNAL_AGENT_LEGACY_HEADER) === "1";
+    if (!admission || (legacy ? relayTicket !== null : relayTicket === null)) {
+      return new Response("Agent admission replay metadata missing", { status: 403 });
     }
 
-    server.serializeAttachment({ id, role: "agent", peerId: null, slot });
-    this.ctx.acceptWebSocket(server, tags);
+    const deviceID = decodeURIComponent(url.pathname.slice(STREAM_PREFIX.length));
+    const leaseID = crypto.randomUUID();
+    const absoluteExpiresAtMS = Date.now() + MAX_AGENT_SESSION_LIFETIME_MS;
+    let globalLease;
+    try {
+      globalLease = await reserveGlobalAgentConnection(this.env.RELAY_RATE_LIMIT, {
+        leaseID,
+        deviceID,
+        slot,
+        expiresAtMS: absoluteExpiresAtMS,
+        authorizationGeneration: admission.authorizationGeneration,
+      });
+    } catch {
+      return new Response("Global agent connection limiter unavailable", { status: 503 });
+    }
+    if (globalLease.revoked || globalLease.generationMismatch) {
+      return new Response("Agent authorization generation is stale or revoked", { status: 403 });
+    }
+    if (!globalLease.accepted) {
+      return new Response("Global agent connection capacity reached", { status: 429, headers: { "Retry-After": "1" } });
+    }
 
-    return new Response(null, { status: 101, webSocket: client });
+    let leaseOwned = true;
+    try {
+      const consumption = await consumeAgentAdmission(
+        this.ctx.storage,
+        admission.jti,
+        admission.exp,
+        relayTicket?.jti ?? null,
+        relayTicket?.exp ?? null,
+      );
+      if (!consumption.accepted) {
+        return new Response("Agent admission already used or expired", { status: 409 });
+      }
+      await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
+
+      // Only replace free sockets after the new admission capability has been consumed.
+      for (const entry of plan.retire) {
+        entry.socket.close(1000, "Superseded relay slot");
+      }
+
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      const id = crypto.randomUUID();
+      server.serializeAttachment(createAgentSessionAttachment({
+        id,
+        role: "agent",
+        peerId: null,
+        deviceID,
+        clientDeviceID: null,
+        slot,
+        leaseID,
+        absoluteExpiresAtMS,
+        authorizationGeneration: admission.authorizationGeneration,
+      }));
+      this.ctx.acceptWebSocket(server, ["agent", `agent-slot-${slot}`]);
+      leaseOwned = false;
+      let revokedAfterAccept;
+      try {
+        const generationCurrent = await isGlobalDeviceAuthorizationGenerationCurrent(
+          this.env.RELAY_RATE_LIMIT, deviceID, admission.authorizationGeneration,
+        );
+        revokedAfterAccept = !generationCurrent || await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, deviceID);
+      } catch {
+        server.close(1011, "Device revocation registry unavailable");
+        return new Response("Device revocation registry unavailable", { status: 503 });
+      }
+      if (revokedAfterAccept) {
+        server.close(4003, "Device revoked");
+      }
+      try {
+        await this.#scheduleAgentSessionAlarm();
+      } catch {
+        server.close(1011, "Relay session expiry could not be scheduled");
+        return new Response("Relay session expiry could not be scheduled", { status: 503 });
+      }
+
+      return new Response(null, { status: 101, webSocket: client });
+    } finally {
+      if (leaseOwned) {
+        await this.#releaseAgentLease(leaseID);
+      }
+    }
   }
 
-  #retireSupersededFreeAgents(slot) {
-    for (const socket of this.ctx.getWebSockets("agent")) {
-      if (socket.readyState !== WebSocket.OPEN) {
-        continue;
-      }
-
-      const attachment = socket.deserializeAttachment();
-      if (attachment?.role !== "agent" || attachment.peerId) {
-        continue;
-      }
-
-      const legacy = !Number.isInteger(attachment.slot);
-      const duplicateSlot = attachment.slot === slot;
-      if (legacy || duplicateSlot) {
-        socket.close(1000, legacy ? "Replaced legacy relay slot" : "Superseded relay slot");
-      }
-    }
+  #acceptClient(request) {
+    return this.#withAdmission(() => this.#acceptClientExclusive(request));
   }
 
-  async #acceptClient(request) {
+  #withAdmission(operation) {
     let release;
-    const previous = this.#clientAdmission;
-    this.#clientAdmission = new Promise((resolve) => {
+    const previous = this.#admission;
+    this.#admission = new Promise((resolve) => {
       release = resolve;
     });
-    await previous;
-    try {
-      return await this.#acceptClientExclusive(request);
-    } finally {
-      release();
-    }
+    return previous.then(operation).finally(() => release());
   }
 
   async #acceptClientExclusive(request) {
+    const clientDeviceID = request.headers.get(INTERNAL_CLIENT_DEVICE_ID_HEADER)?.trim() ?? "";
+    if (!DEVICE_ID.test(clientDeviceID)) {
+      return new Response("Authenticated client device identity missing", { status: 403 });
+    }
+
     const agent = this.ctx.getWebSockets("agent").find((socket) => {
       if (socket.readyState !== WebSocket.OPEN) {
         return false;
       }
       const attachment = socket.deserializeAttachment();
-      return attachment?.role === "agent" && !attachment.peerId;
+      return (
+        attachment?.role === "agent" &&
+        !attachment.peerId &&
+        DEVICE_ID.test(attachment.deviceID ?? "") &&
+        AGENT_LEASE_ID.test(attachment.leaseID ?? "")
+      );
     });
 
     if (!agent) {
@@ -381,20 +830,188 @@ export class DeviceRelay extends DurableObject {
     }
     await scheduleReplayCleanup(this.ctx.storage, consumption.expiresAtMS);
 
-    const pair = new WebSocketPair();
-    const [client, server] = Object.values(pair);
-    const clientId = crypto.randomUUID();
     const agentAttachment = agent.deserializeAttachment();
+    const touchedAgentAttachment = touchAgentSessionAttachment(agentAttachment, Date.now());
+    if (!touchedAgentAttachment) {
+      agent.close(4001, "Relay session expired");
+      return new Response("Agent relay session expired", { status: 503, headers: { "Retry-After": "1" } });
+    }
 
-    server.serializeAttachment({ id: clientId, role: "client", peerId: agentAttachment.id });
-    agent.serializeAttachment({ ...agentAttachment, peerId: clientId });
-    this.ctx.acceptWebSocket(server, ["client"]);
+    let bound = false;
+    try {
+      bound = await bindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, agentAttachment.leaseID, clientDeviceID);
+      if (!bound) {
+        const revokedClient = await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, clientDeviceID);
+        const revokedAgent = await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, agentAttachment.deviceID);
+        if (revokedClient || revokedAgent) {
+          return new Response("Device revoked", { status: 403 });
+        }
+        return new Response("Agent relay session is no longer registered", { status: 503, headers: { "Retry-After": "1" } });
+      }
 
-    return new Response(null, { status: 101, webSocket: client });
+      const pair = new WebSocketPair();
+      const [client, server] = Object.values(pair);
+      const clientId = crypto.randomUUID();
+      server.serializeAttachment({
+        id: clientId,
+        role: "client",
+        peerId: agentAttachment.id,
+        clientDeviceID,
+        targetDeviceID: agentAttachment.deviceID,
+        leaseID: agentAttachment.leaseID,
+      });
+      this.ctx.acceptWebSocket(server, ["client"]);
+      try {
+        agent.serializeAttachment({
+          ...touchedAgentAttachment,
+          peerId: clientId,
+          clientDeviceID,
+        });
+      } catch (error) {
+        server.close(1011, "Unable to attach relay peer");
+        throw error;
+      }
+      bound = false;
+      let revokedAfterAccept;
+      try {
+        const agentGenerationCurrent = await isGlobalDeviceAuthorizationGenerationCurrent(
+          this.env.RELAY_RATE_LIMIT, agentAttachment.deviceID, agentAttachment.authorizationGeneration,
+        );
+        revokedAfterAccept =
+          !agentGenerationCurrent ||
+          await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, clientDeviceID) ||
+          await isGlobalDeviceRevoked(this.env.RELAY_RATE_LIMIT, agentAttachment.deviceID);
+      } catch {
+        server.close(1011, "Device revocation registry unavailable");
+        agent.close(1011, "Device revocation registry unavailable");
+        return new Response("Device revocation registry unavailable", { status: 503 });
+      }
+      if (revokedAfterAccept) {
+        server.close(4003, "Device revoked");
+        agent.close(4003, "Device revoked");
+      }
+      try {
+        await this.#scheduleAgentSessionAlarm();
+      } catch {
+        server.close(1011, "Relay session expiry could not be scheduled");
+        agent.close(1011, "Relay session expiry could not be scheduled");
+        return new Response("Relay session expiry could not be scheduled", { status: 503 });
+      }
+      return new Response(null, { status: 101, webSocket: client });
+    } finally {
+      if (bound) {
+        try {
+          await unbindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, agentAttachment.leaseID, clientDeviceID);
+        } catch {
+          // The absolute agent lease still bounds stale client identity state.
+        }
+      }
+    }
+  }
+
+  async #revokeDevice(request) {
+    if (request.method !== "POST") {
+      return new Response("Method not allowed", { status: 405 });
+    }
+    const body = await readBoundedRequestBody(request, 1024);
+    if (!body.ok) {
+      return new Response("Invalid device revocation event", { status: body.status });
+    }
+    let payload;
+    try {
+      payload = JSON.parse(body.text);
+    } catch {
+      return new Response("Invalid device revocation event", { status: 400 });
+    }
+    if (
+      payload === null ||
+      typeof payload !== "object" ||
+      Array.isArray(payload) ||
+      Object.keys(payload).length !== 2 ||
+      typeof payload.device_id !== "string" ||
+      !DEVICE_ID.test(payload.device_id) ||
+      !Number.isSafeInteger(payload.authorization_generation) ||
+      payload.authorization_generation < 1
+    ) {
+      return new Response("Invalid device revocation event", { status: 400 });
+    }
+
+    const revokedDeviceID = payload.device_id;
+    for (const socket of this.ctx.getWebSockets()) {
+      let attachment;
+      try {
+        attachment = socket.deserializeAttachment();
+      } catch {
+        socket.close(1011, "Invalid relay session state");
+        continue;
+      }
+      const affected = attachment?.role === "agent"
+        ? attachment.deviceID === revokedDeviceID || attachment.clientDeviceID === revokedDeviceID
+        : attachment?.role === "client"
+          ? attachment.clientDeviceID === revokedDeviceID || attachment.targetDeviceID === revokedDeviceID
+          : true;
+      if (!affected || socket.readyState !== WebSocket.OPEN) continue;
+      const peer = attachment?.peerId ? this.#findSocket(attachment.peerId) : null;
+      socket.close(4003, "Device revoked");
+      if (peer && peer.readyState === WebSocket.OPEN) {
+        peer.close(4003, "Device revoked");
+      }
+    }
+    return new Response(null, { status: 204 });
   }
 
   async alarm() {
     await cleanupExpiredConnectionGrants(this.ctx.storage);
+    await this.#expireAgentSessions();
+  }
+
+  async #expireAgentSessions() {
+    const nowMS = Date.now();
+    for (const socket of this.ctx.getWebSockets("agent")) {
+      let attachment;
+      try {
+        attachment = socket.deserializeAttachment();
+      } catch {
+        socket.close(1011, "Invalid relay session state");
+        continue;
+      }
+      if (
+        DEVICE_ID.test(attachment?.deviceID ?? "") &&
+        AGENT_LEASE_ID.test(attachment?.leaseID ?? "") &&
+        !agentSessionExpired(attachment, nowMS)
+      ) continue;
+      const peer = attachment?.peerId ? this.#findSocket(attachment.peerId) : null;
+      socket.close(4001, "Relay session expired");
+      if (peer && peer.readyState === WebSocket.OPEN) {
+        peer.close(4001, "Relay session expired");
+      }
+    }
+    await this.#scheduleAgentSessionAlarm(nowMS);
+  }
+
+  async #releaseAgentLease(leaseID) {
+    try {
+      await releaseGlobalAgentConnection(this.env.RELAY_RATE_LIMIT, leaseID);
+    } catch {
+      // Expiring the bounded lease is the fail-safe if explicit release is unavailable.
+    }
+  }
+
+  async #scheduleAgentSessionAlarm(nowMS = Date.now()) {
+    const entries = this.ctx.getWebSockets("agent").map((socket) => {
+      try {
+        return { readyState: socket.readyState, attachment: socket.deserializeAttachment() };
+      } catch {
+        return { readyState: socket.readyState, attachment: null };
+      }
+    });
+    const nextExpiryMS = nextAgentSessionExpiry(entries, nowMS);
+    if (nextExpiryMS === null) return;
+    const currentAlarm = await this.ctx.storage.getAlarm();
+    const scheduledAtMS = Math.max(nowMS + 1, nextExpiryMS);
+    if (currentAlarm === null || scheduledAtMS < currentAlarm) {
+      await this.ctx.storage.setAlarm(scheduledAtMS);
+    }
   }
 
   #status() {
@@ -435,23 +1052,74 @@ export class DeviceRelay extends DurableObject {
       return;
     }
 
+    const agentSocket = attachment.role === "agent" ? socket : peer;
+    let agentAttachment;
+    try {
+      agentAttachment = agentSocket.deserializeAttachment();
+    } catch {
+      socket.close(1011, "Invalid relay session state");
+      peer.close(1011, "Invalid relay session state");
+      return;
+    }
+    if (
+      !DEVICE_ID.test(agentAttachment?.deviceID ?? "") ||
+      !AGENT_LEASE_ID.test(agentAttachment?.leaseID ?? "")
+    ) {
+      socket.close(1011, "Relay session identity is invalid");
+      peer.close(1011, "Relay session identity is invalid");
+      return;
+    }
+    const touched = touchAgentSessionAttachment(agentAttachment, Date.now());
+    if (!touched) {
+      socket.close(4001, "Relay session expired");
+      peer.close(4001, "Relay session expired");
+      return;
+    }
+    agentSocket.serializeAttachment(touched);
     peer.send(message);
   }
 
-  webSocketClose(socket, code, reason) {
+  async webSocketClose(socket, code, reason) {
     const attachment = socket.deserializeAttachment();
+    if (attachment?.role === "agent" && typeof attachment.leaseID === "string") {
+      await this.#releaseAgentLease(attachment.leaseID);
+    } else if (
+      attachment?.role === "client" &&
+      AGENT_LEASE_ID.test(attachment.leaseID ?? "") &&
+      DEVICE_ID.test(attachment.clientDeviceID ?? "")
+    ) {
+      try {
+        await unbindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, attachment.leaseID, attachment.clientDeviceID);
+      } catch {
+        // Agent lease expiry removes stale client-device bindings.
+      }
+    }
     if (!attachment?.peerId) {
       return;
     }
 
     const peer = this.#findSocket(attachment.peerId);
     if (peer && peer.readyState === WebSocket.OPEN) {
-      peer.close(code === 1000 ? 1000 : 1011, reason || "Relay peer disconnected");
+      const peerCode = code === 1000 ? 1000 : code === 4003 ? 4003 : 1011;
+      peer.close(peerCode, reason || "Relay peer disconnected");
     }
   }
 
-  webSocketError(socket) {
+  async webSocketError(socket) {
     const attachment = socket.deserializeAttachment();
+    if (attachment?.role === "agent" && typeof attachment.leaseID === "string") {
+      await this.#releaseAgentLease(attachment.leaseID);
+    } else if (
+      attachment?.role === "client" &&
+      AGENT_LEASE_ID.test(attachment.leaseID ?? "") &&
+      DEVICE_ID.test(attachment.clientDeviceID ?? "")
+    ) {
+      try {
+        await unbindGlobalAgentClient(this.env.RELAY_RATE_LIMIT, attachment.leaseID, attachment.clientDeviceID);
+      } catch {
+        // Agent lease expiry removes stale client-device bindings.
+      }
+    }
     if (!attachment?.peerId) {
       return;
     }
@@ -464,9 +1132,10 @@ export class DeviceRelay extends DurableObject {
 
   #findSocket(id) {
     for (const socket of this.ctx.getWebSockets()) {
-      const attachment = socket.deserializeAttachment();
-      if (attachment?.id === id) {
-        return socket;
+      try {
+        if (socket.deserializeAttachment()?.id === id) return socket;
+      } catch {
+        // Malformed peer state is not a match.
       }
     }
     return null;

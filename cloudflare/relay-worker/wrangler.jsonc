@@ -1,6 +1,9 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "wedecent-relay",
+  "triggers": {
+    "crons": ["* * * * *"]
+  },
   "main": "src/index.js",
   "compatibility_date": "2026-08-23",
   "workers_dev": false,
