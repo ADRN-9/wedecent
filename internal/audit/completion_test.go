@@ -785,18 +785,20 @@ func TestPairingCompletionJSONLProductionBoundaries(t *testing.T) {
 		{
 			name: "unpaired high surrogate in string value",
 			active: func(target, _ []byte, _ int64) []byte {
-				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"reason\":\"\\uD800\"}\n")
+				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"reason\":\"sensitive-surrogate-secret\\uD800\"}\n")
 				return join(record(target), bad)
 			},
-			wantErr: true,
+			wantErr:    true,
+			leakMarker: "sensitive-surrogate-secret",
 		},
 		{
 			name: "unpaired low surrogate in string value",
 			active: func(target, _ []byte, _ int64) []byte {
-				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"reason\":\"\\uDC00\"}\n")
+				bad := []byte("{\"time\":\"2026-11-22T00:00:00Z\",\"type\":\"pairing.trust_added\",\"outcome\":\"success\",\"reason\":\"sensitive-low-surrogate-secret\\uDC00\"}\n")
 				return join(record(target), bad)
 			},
-			wantErr: true,
+			wantErr:    true,
+			leakMarker: "sensitive-low-surrogate-secret",
 		},
 		{
 			name: "unpaired high surrogate in object key",
