@@ -190,7 +190,7 @@ test("direct authorization has its own verified-device quota", async () => {
   assert.equal(namespace.storage.get("count:direct-device"), 1);
 });
 
-test("bucket cardinality is bounded and new identities fail closed at the cap", () => {
+test("bucket cardinality saturation falls back to global admission and recovers", () => {
   const storage = createStorage();
   const now = 10_000;
   for (let i = 0; i < MAX_RATE_LIMIT_BUCKETS_PER_SCOPE; i++) {
@@ -198,16 +198,107 @@ test("bucket cardinality is bounded and new identities fail closed at the cap", 
     const result = consumeRateLimitBuckets(storage, [{ scope: "stream-ip", key, capacity: 10_000 }], 60_000, now);
     assert.equal(result.accepted, true);
   }
-  const rejected = consumeRateLimitBuckets(
+
+  const legitimate = "f".repeat(64);
+  const overflow = consumeRateLimitBuckets(
     storage,
-    [{ scope: "stream-ip", key: "f".repeat(64), capacity: 10_000 }],
+    [
+      { scope: "stream-ip", key: legitimate, capacity: 10_000 },
+      { scope: "stream-global", key: "global", capacity: 10_000 },
+    ],
     60_000,
     now,
   );
-  assert.equal(rejected.accepted, false);
-  assert.equal(rejected.saturated, true);
+  assert.equal(overflow.accepted, true);
+  assert.equal(overflow.saturated, true);
+  assert.deepEqual(overflow.saturatedScopes, ["stream-ip"]);
   assert.equal(storage.get("count:stream-ip"), MAX_RATE_LIMIT_BUCKETS_PER_SCOPE);
+  assert.equal(storage.get("bucket:stream-ip:" + legitimate), undefined);
   assert.equal([...storage.keys()].filter((key) => key.startsWith("bucket:stream-ip:")).length, MAX_RATE_LIMIT_BUCKETS_PER_SCOPE);
+
+  const cleanup = cleanupExpiredRateLimitBuckets(storage, now + 60_000);
+  assert.equal(cleanup.deleted, MAX_RATE_LIMIT_BUCKETS_PER_SCOPE);
+  assert.equal(cleanup.remaining, 0);
+
+  const recovered = consumeRateLimitBuckets(
+    storage,
+    [
+      { scope: "stream-ip", key: legitimate, capacity: 10_000 },
+      { scope: "stream-global", key: "global", capacity: 10_000 },
+    ],
+    60_000,
+    now + 60_000,
+  );
+  assert.equal(recovered.accepted, true);
+  assert.equal(storage.get("count:stream-ip"), 1);
+  assert.notEqual(storage.get("bucket:stream-ip:" + legitimate), undefined);
+});
+
+test("a globally rejected request does not allocate a new identity bucket", () => {
+  const storage = createStorage();
+  const global = { scope: "stream-global", key: "global", capacity: 1 };
+  assert.equal(consumeRateLimitBuckets(storage, [global], 60_000, 1_000).accepted, true);
+
+  const identity = { scope: "stream-ip", key: "e".repeat(64), capacity: 10 };
+  const rejected = consumeRateLimitBuckets(storage, [identity, global], 60_000, 1_000);
+  assert.equal(rejected.accepted, false);
+  assert.equal(rejected.scope, "stream-global");
+  assert.equal(storage.get("count:stream-ip"), undefined);
+  assert.equal(storage.get("bucket:stream-ip:" + identity.key), undefined);
+});
+
+test("bucket expiry follows the effective persisted timestamp through clock rollback", () => {
+  const storage = createStorage();
+  const key = "d".repeat(64);
+  assert.equal(
+    consumeRateLimitBuckets(storage, [{ scope: "stream-ip", key, capacity: 2 }], 1_000, 10_000).accepted,
+    true,
+  );
+  assert.equal(
+    consumeRateLimitBuckets(storage, [{ scope: "stream-ip", key, capacity: 2 }], 1_000, 5_000).accepted,
+    true,
+  );
+
+  const persisted = storage.get("bucket:stream-ip:" + key);
+  assert.equal(persisted.updatedAtMS, 10_000);
+  assert.equal(persisted.expiresAtMS, 11_000);
+  assert.equal(persisted.windowMS, 1_000);
+
+  assert.deepEqual(cleanupExpiredRateLimitBuckets(storage, 6_000), { deleted: 0, remaining: 1 });
+  assert.deepEqual(cleanupExpiredRateLimitBuckets(storage, 11_000), { deleted: 1, remaining: 0 });
+});
+
+test("thousands of arbitrary source IPs and device IDs cannot exhaust admission for newcomers", async () => {
+  const namespace = fakeNamespace();
+  const limiterEnv = env(namespace, {
+    RELAY_IP_CONNECTIONS_PER_WINDOW: "1",
+    RELAY_DEVICE_CONNECTIONS_PER_WINDOW: "1",
+    RELAY_GLOBAL_STREAM_CONNECTIONS_PER_WINDOW: "10000",
+  });
+  for (let i = 0; i < 4_500; i++) {
+    const ip = "198.51." + Math.floor(i / 256) + "." + (i % 256);
+    const result = await enforceRelayRequestRateLimit(streamRequest(ip), limiterEnv, "stream");
+    assert.equal(result.ok, true, "source IP " + i + " should use bounded overflow admission");
+  }
+  assert.equal(namespace.storage.get("count:stream-ip"), MAX_RATE_LIMIT_BUCKETS_PER_SCOPE);
+
+  const alphabet = "abcdefghijklmnopqrstuvwxyz234567";
+  const deviceFor = (index) => {
+    let value = index;
+    let suffix = "";
+    for (let i = 0; i < 16; i++) {
+      suffix = alphabet[value % 32] + suffix;
+      value = Math.floor(value / 32);
+    }
+    return "wd_" + suffix;
+  };
+  for (let i = 0; i < 4_500; i++) {
+    const result = await enforceRelayDeviceRateLimit(limiterEnv, deviceFor(i), "stream");
+    assert.equal(result.ok, true, "device " + i + " should use bounded overflow admission");
+  }
+  assert.equal(namespace.storage.get("count:stream-device"), MAX_RATE_LIMIT_BUCKETS_PER_SCOPE);
+  assert.equal((await enforceRelayDeviceRateLimit(limiterEnv, deviceFor(0), "stream")).ok, false);
+  assert.equal((await enforceRelayDeviceRateLimit(limiterEnv, deviceFor(4_499), "stream")).ok, true);
 });
 
 test("bucket expiration and alarm cleanup release bounded cardinality", () => {
