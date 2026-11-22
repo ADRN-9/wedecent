@@ -6,6 +6,7 @@ import {
   consumeAgentAdmission,
   consumeConnectionGrant,
   INTERNAL_AGENT_LEGACY_HEADER,
+  INTERNAL_CLIENT_DEVICE_ID_HEADER,
   INTERNAL_GRANT_EXP_HEADER,
   INTERNAL_GRANT_JTI_HEADER,
   prepareAgentRelayRequest,
@@ -58,6 +59,8 @@ const STREAM_PREFIX = "/v1/stream/";
 const STATUS_PREFIX = "/v1/status/";
 const TIME_PATH = "/v1/time";
 const DIRECT_AUTHORIZE_PREFIX = "/v1/direct-authorize/";
+const DEVICE_REVOCATION_PREFIX = "/v1/revoke/";
+const AGENT_LEASE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const AGENT_SLOT = /^(?:[1-9]|[12][0-9]|3[0-2])$/;
 const HEALTH_VERSION = 12;
 
@@ -114,6 +117,10 @@ async function handleRelayRequest(request, env) {
       { unix_ms: Date.now() },
       { headers: { "Cache-Control": "no-store, no-cache, must-revalidate", Pragma: "no-cache" } },
     );
+  }
+
+  if (url.pathname.startsWith(DEVICE_REVOCATION_PREFIX)) {
+    return handleDeviceRevocation(request, env, url);
   }
 
   if (url.pathname.startsWith(DIRECT_AUTHORIZE_PREFIX)) {
@@ -206,8 +213,75 @@ async function handleRelayRequest(request, env) {
         CONNECTION_GRANT_HEADER,
         authorization.legacy === true,
       )
-    : prepareDeviceRelayRequest(request, authorization.replay, CONNECTION_GRANT_HEADER);
+    : prepareDeviceRelayRequest(
+        request,
+        authorization.replay,
+        CONNECTION_GRANT_HEADER,
+        authorization.deviceID,
+      );
   return env.DEVICE_RELAY.get(objectId).fetch(forwardedRequest);
+}
+
+async function handleDeviceRevocation(request, env, url) {
+  if (request.method !== "POST") {
+    return new Response("Method not allowed", { status: 405 });
+  }
+  if (request.body !== null) {
+    return new Response("Revocation request body is not allowed", { status: 400 });
+  }
+  const deviceID = decodeURIComponent(url.pathname.slice(DEVICE_REVOCATION_PREFIX.length));
+  if (!DEVICE_ID.test(deviceID)) {
+    return new Response("Invalid device ID", { status: 400 });
+  }
+  const expected = typeof env.RELAY_REVOCATION_TOKEN === "string" ? env.RELAY_REVOCATION_TOKEN : "";
+  if (expected.length < 32) {
+    return new Response("Relay revocation authority is not configured", { status: 503 });
+  }
+  if (!constantTimeStringEqual(bearerToken(request), expected)) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  let targets;
+  try {
+    targets = await findAgentRevocationTargets(env.RELAY_RATE_LIMIT, deviceID);
+  } catch {
+    return new Response("Relay revocation registry unavailable", { status: 503 });
+  }
+
+  const results = await Promise.all(targets.map(async (targetDeviceID) => {
+    try {
+      const objectId = env.DEVICE_RELAY.idFromName(targetDeviceID);
+      const response = await env.DEVICE_RELAY.get(objectId).fetch(new Request(
+        "https://wedecent.internal/revoke-device",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ device_id: deviceID }),
+        },
+      ));
+      return response.status === 204;
+    } catch {
+      return false;
+    }
+  }));
+  if (results.some((closed) => !closed)) {
+    return new Response("One or more relay sessions could not be revoked", { status: 503 });
+  }
+  return Response.json(
+    { revoked_device_id: deviceID, affected_relay_devices: targets.length },
+    { headers: { "Cache-Control": "no-store" } },
+  );
+}
+
+function constantTimeStringEqual(left, right) {
+  const a = new TextEncoder().encode(left);
+  const b = new TextEncoder().encode(right);
+  if (a.length !== b.length) return false;
+  let difference = 0;
+  for (let index = 0; index < a.length; index++) {
+    difference |= a[index] ^ b[index];
+  }
+  return difference === 0;
 }
 
 async function authorizeDirectRequest(request, env, targetDeviceID) {
@@ -382,6 +456,9 @@ export class DeviceRelay extends DurableObject {
       }
     }
     await this.#expireAgentSessions();
+    if (url.pathname === "/revoke-device") {
+      return this.#revokeDevice(request);
+    }
     if (url.pathname === "/status") {
       return this.#status();
     }
