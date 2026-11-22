@@ -48,8 +48,8 @@ test("missing, malformed, or future session timestamps fail closed", () => {
 
 test("next expiry selects the earliest live agent deadline and ignores non-agent sockets", () => {
   const nowMS = 5_000;
-  const first = createAgentSessionAttachment({ id: "a", role: "agent" }, nowMS);
-  const second = createAgentSessionAttachment({ id: "b", role: "agent" }, nowMS + 2_000);
+  const first = createAgentSessionAttachment({ id: "a", role: "agent", authorizationGeneration: 1 }, nowMS);
+  const second = createAgentSessionAttachment({ id: "b", role: "agent", authorizationGeneration: 1 }, nowMS + 2_000);
   const next = nextAgentSessionExpiry([
     { readyState: 1, attachment: first },
     { readyState: 1, attachment: { role: "client" } },
@@ -70,7 +70,7 @@ test("invalid absolute expiry fails closed", () => {
 
 test("an expired open socket requests an immediate cleanup alarm", () => {
   const createdAtMS = 100;
-  const attachment = createAgentSessionAttachment({ id: "a", role: "agent" }, createdAtMS);
+  const attachment = createAgentSessionAttachment({ id: "a", role: "agent", authorizationGeneration: 1 }, createdAtMS);
   assert.equal(
     nextAgentSessionExpiry([{ readyState: 1, attachment }], createdAtMS + AGENT_SESSION_IDLE_TIMEOUT_MS),
     createdAtMS + AGENT_SESSION_IDLE_TIMEOUT_MS,

@@ -1156,24 +1156,25 @@ export function isGlobalDeviceRevokedLease(storage, deviceID, nowMS = Date.now()
       typeof deviceID !== "string" || !DEVICE_ID.test(deviceID) ||
       !Number.isSafeInteger(nowMS) || nowMS < 0) throw new Error("invalid global device revocation lookup");
   const generationState = storage.get(DEVICE_AUTHORIZATION_GENERATION_PREFIX + deviceID);
+  let generationRevoked = false;
   if (generationState !== undefined && generationState !== null) {
     if (typeof generationState !== "object" || !Number.isSafeInteger(generationState.authorizationGeneration) ||
         generationState.authorizationGeneration < 1 || typeof generationState.revoked !== "boolean" ||
         !Number.isSafeInteger(generationState.updatedAtMS) || generationState.updatedAtMS < 0) {
       throw new Error("invalid persisted device authorization generation");
     }
-    if (generationState.revoked) return true;
+    generationRevoked = generationState.revoked;
   }
   const key = REVOKED_DEVICE_PREFIX + deviceID;
   const marker = storage.get(key);
-  if (marker === undefined || marker === null) return false;
+  if (marker === undefined || marker === null) return generationRevoked;
   if (typeof marker !== "object" || !Number.isSafeInteger(marker.revokedAtMS) ||
       !Number.isSafeInteger(marker.expiresAtMS) || marker.expiresAtMS <= marker.revokedAtMS) {
     throw new Error("invalid persisted device revocation marker");
   }
   if (marker.expiresAtMS <= nowMS) {
     storage.delete(key);
-    return false;
+    return generationRevoked;
   }
   return true;
 }

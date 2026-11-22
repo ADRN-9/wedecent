@@ -288,7 +288,7 @@ test("revocation target registry rejects corrupted lease metadata", () => {
   assert.throws(() => agentRevocationTargets(storage, deviceID, 10_000), /persisted global agent connection lease/);
 });
 
-test("revoked-device tombstones block admission and expire after the capability window", () => {
+test("revocation tombstones expire while the persistent generation fence remains", () => {
   const storage = createStorage();
   const nowMS = 10_000;
   markGlobalDeviceRevokedLease(storage, deviceID, 2, nowMS);
