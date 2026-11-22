@@ -49,6 +49,8 @@ jobs:
         run: test -z "$(gofmt -l cmd internal)"
       - name: Vet
         run: go vet ./...
+      - name: Run focused audit regression tests
+        run: go test ./internal/audit -count=1
       - name: Test Unix service packaging
         run: sh ./scripts/test-unix-service-packaging.sh
       - name: Test protocol version compatibility
