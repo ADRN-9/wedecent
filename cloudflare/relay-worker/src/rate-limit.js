@@ -301,7 +301,7 @@ export function consumeRateLimitBuckets(storage, buckets, windowMS, nowMS) {
         : (() => {
             const storedCount = storage.get(countKey);
             return storedCount === undefined
-              ? cleanupRateLimitScope(storage, bucket.scope, nowMS).active
+              ? cleanupRateLimitScope(storage, bucket.scope, nowMS, false).active
               : readPersistedCount(storedCount);
           })();
 
