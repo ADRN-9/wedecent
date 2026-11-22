@@ -35,6 +35,9 @@ import {
 import {
   acquireGlobalAgentConnectionLease,
   agentConnectionLeaseRequestConfig,
+  agentRevocationTargets,
+  bindGlobalAgentClient,
+  bindGlobalAgentClientLease,
   cleanupExpiredRateLimitBuckets,
   cleanupGlobalAgentConnectionLeases,
   consumeRateLimitBuckets,
@@ -45,6 +48,9 @@ import {
   releaseGlobalAgentConnection,
   releaseGlobalAgentConnectionLease,
   reserveGlobalAgentConnection,
+  findAgentRevocationTargets,
+  unbindGlobalAgentClient,
+  unbindGlobalAgentClientLease,
 } from "./rate-limit.js";
 
 const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
@@ -298,8 +304,23 @@ export class ConnectionRateLimiter extends DurableObject {
           await this.#ensureCleanupScheduled();
           return Response.json(result, { headers: { "Cache-Control": "no-store" } });
         }
-        const released = releaseGlobalAgentConnectionLease(this.ctx.storage.kv, leaseConfig.leaseID);
-        return Response.json({ released }, { headers: { "Cache-Control": "no-store" } });
+        if (leaseConfig.action === "release") {
+          const released = releaseGlobalAgentConnectionLease(this.ctx.storage.kv, leaseConfig.leaseID);
+          return Response.json({ released }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "bind") {
+          const bound = bindGlobalAgentClientLease(this.ctx.storage.kv, leaseConfig.leaseID, leaseConfig.clientDeviceID);
+          return Response.json({ bound }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "unbind") {
+          const unbound = unbindGlobalAgentClientLease(this.ctx.storage.kv, leaseConfig.leaseID, leaseConfig.clientDeviceID);
+          return Response.json({ unbound }, { headers: { "Cache-Control": "no-store" } });
+        }
+        if (leaseConfig.action === "targets") {
+          const targetDeviceIDs = agentRevocationTargets(this.ctx.storage.kv, leaseConfig.deviceID);
+          return Response.json({ target_device_ids: targetDeviceIDs }, { headers: { "Cache-Control": "no-store" } });
+        }
+        return new Response("Invalid global agent lease operation", { status: 400 });
       } catch {
         return new Response("Global agent connection limiter unavailable", { status: 503 });
       }
