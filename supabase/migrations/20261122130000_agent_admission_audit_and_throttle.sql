@@ -233,8 +233,9 @@ begin
      for share;
 
     if not found
-       or v_device.public_key <> p_public_key
+       or v_device.public_key is distinct from p_public_key
        or v_device.revoked_at is not null
+       or v_device.kind is null
        or v_device.kind not in ('agent', 'hybrid') then
         raise exception 'agent device is not enrolled or is revoked' using errcode = '42501';
     end if;
