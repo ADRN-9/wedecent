@@ -770,6 +770,9 @@ export function acquireGlobalAgentConnectionLease(
     throw new Error("invalid global agent connection lease");
   }
 
+  if (isGlobalDeviceRevokedLease(storage, lease.deviceID, nowMS)) {
+    return { accepted: false, revoked: true, active: 0 };
+  }
   const entries = storage.list({ prefix: AGENT_CONNECTION_LEASE_PREFIX, limit: maximum + 1 });
   if (entries.size > maximum) throw new Error("global agent connection lease cardinality exceeded");
   let active = 0;
@@ -943,6 +946,12 @@ export function bindGlobalAgentClientLease(storage, leaseID, clientDeviceID, now
     lease.slot > 32 ||
     !Number.isSafeInteger(lease.expiresAtMS) ||
     lease.expiresAtMS <= nowMS
+  ) {
+    return false;
+  }
+  if (
+    isGlobalDeviceRevokedLease(storage, clientDeviceID, nowMS) ||
+    isGlobalDeviceRevokedLease(storage, lease.deviceID, nowMS)
   ) {
     return false;
   }
