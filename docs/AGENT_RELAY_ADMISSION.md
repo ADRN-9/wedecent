@@ -73,9 +73,12 @@ all active target relays associated with the revoked device, including sessions 
 the device is the client, and closes the established WebSockets.
 
 The function itself requires its Supabase service-role key, the independent
-`WEDECENT_AGENT_ADMISSION_PKCS8_B64` secret, and the terminal grant public key
-`WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64` so it can reject accidental key reuse.
-It does not receive the terminal grant private key. The relay Worker requires
+`WEDECENT_AGENT_ADMISSION_PKCS8_B64` secret, its matching public
+`WEDECENT_AGENT_ADMISSION_PUBLIC_SPKI_B64`, and the terminal grant public key
+`WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64` so it can verify the signer pair and
+reject accidental key reuse. The admission private key is imported non-exportably
+and is never exported as JWK. The function does not receive the terminal grant
+private key. The relay Worker requires
 `WEDECENT_AGENT_ADMISSION_PUBLIC_KEYS_JSON`, a JSON object mapping each agent
 admission JWK thumbprint `kid` to its base64-encoded Ed25519 SPKI public key. It must
 not reuse `WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64`.
@@ -91,8 +94,9 @@ For a rotation:
 1. Add the new public SPKI and its JWK thumbprint to
    `WEDECENT_AGENT_ADMISSION_PUBLIC_KEYS_JSON` while retaining the previous key.
 2. Deploy and verify the Worker keyring before changing the signer.
-3. Update the Supabase `WEDECENT_AGENT_ADMISSION_PKCS8_B64` secret to the new PKCS#8
-   private key and redeploy the Edge Function.
+3. Update the Supabase `WEDECENT_AGENT_ADMISSION_PKCS8_B64` secret and
+   `WEDECENT_AGENT_ADMISSION_PUBLIC_SPKI_B64` value together, then redeploy the Edge
+   Function.
 4. Confirm newly issued capabilities carry the new `kid` and are accepted by the
    Worker.
 5. Retain the old public key for at least the maximum capability lifetime plus
@@ -120,7 +124,8 @@ worker, so retries are request-driven rather than automatic. The audit and dispa
 tables are service-role-only; user-facing audit search and retention policy remain
 control-plane work.
 
-Production activation requires provisioning the independent admission signing secret,
-the Worker admission public keyring, and the matching relay revocation secret in both
-providers; applying the migrations; and verifying the deployed Edge Function and
-Worker configuration. Repository changes alone do not establish production readiness.
+Production activation requires provisioning the independent admission private key,
+its matching Supabase public SPKI, the Worker admission public keyring, and the
+matching relay revocation secret in both providers; applying the migrations; and
+verifying the deployed Edge Function and Worker configuration. Repository changes
+alone do not establish production readiness.
