@@ -5,6 +5,10 @@ import {
   acquireGlobalAgentConnectionLease,
   agentConnectionLeaseRequestConfig,
   agentRevocationTargets,
+  cleanupExpiredDeviceRevocationMarkers,
+  isGlobalDeviceRevokedLease,
+  markGlobalDeviceRevokedLease,
+  REVOKED_DEVICE_TOMBSTONE_MS,
   bindGlobalAgentClientLease,
   cleanupExpiredRateLimitBuckets,
   cleanupGlobalAgentConnectionLeases,
@@ -149,6 +153,24 @@ test("global agent lease internal requests accept only exact bounded schemas", a
     deviceID: clientDeviceID,
   });
 
+  const revokeDevice = new Request("https://wedecent.internal/device-revoke", {
+    method: "POST",
+    body: JSON.stringify({ device_id: clientDeviceID }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(revokeDevice), {
+    action: "revoke-device",
+    deviceID: clientDeviceID,
+  });
+
+  const checkDevice = new Request("https://wedecent.internal/device-revoked-check", {
+    method: "POST",
+    body: JSON.stringify({ device_id: clientDeviceID }),
+  });
+  assert.deepEqual(await agentConnectionLeaseRequestConfig(checkDevice), {
+    action: "check-device",
+    deviceID: clientDeviceID,
+  });
+
   const extraField = new Request("https://wedecent.internal/agent-acquire", {
     method: "POST",
     body: JSON.stringify({ ...lease, admin: true }),
@@ -210,6 +232,62 @@ test("revocation target registry rejects corrupted lease metadata", () => {
     expiresAtMS: 70_000,
   });
   assert.throws(() => agentRevocationTargets(storage, deviceID, 10_000), /persisted global agent connection lease/);
+});
+
+test("revoked-device tombstones block admission and expire after the capability window", () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  markGlobalDeviceRevokedLease(storage, deviceID, nowMS);
+  assert.equal(isGlobalDeviceRevokedLease(storage, deviceID, nowMS), true);
+  assert.equal(isGlobalDeviceRevokedLease(storage, deviceID, nowMS + REVOKED_DEVICE_TOMBSTONE_MS), false);
+  assert.equal(storage.has("revoked-device:" + deviceID), false);
+});
+
+test("global agent lease acquisition rejects a revoked device", () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  markGlobalDeviceRevokedLease(storage, deviceID, nowMS);
+  const result = acquireGlobalAgentConnectionLease(storage, {
+    leaseID: "d90987bf-bae6-45da-ab21-c82d049617bd",
+    deviceID,
+    slot: 1,
+    expiresAtMS: nowMS + 60_000,
+  }, nowMS, 2);
+  assert.deepEqual(result, { accepted: false, revoked: true, active: 0 });
+});
+
+test("client binding rejects either revoked endpoint identity", () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  const clientDeviceID = "wd_mw3am46w5weex4a4";
+  const firstLeaseID = "d90987bf-bae6-45da-ab21-c82d049617bd";
+  const secondLeaseID = "f90987bf-bae6-45da-ab21-c82d049617bd";
+  storage.put("agent-connection-lease:" + firstLeaseID, {
+    deviceID,
+    clientDeviceID: null,
+    slot: 1,
+    expiresAtMS: nowMS + 60_000,
+  });
+  markGlobalDeviceRevokedLease(storage, clientDeviceID, nowMS);
+  assert.equal(bindGlobalAgentClientLease(storage, firstLeaseID, clientDeviceID, nowMS), false);
+
+  storage.put("agent-connection-lease:" + secondLeaseID, {
+    deviceID,
+    clientDeviceID: null,
+    slot: 2,
+    expiresAtMS: nowMS + 60_000,
+  });
+  markGlobalDeviceRevokedLease(storage, deviceID, nowMS);
+  assert.equal(bindGlobalAgentClientLease(storage, secondLeaseID, clientDeviceID, nowMS), false);
+});
+
+test("revocation marker cleanup is bounded and removes expired entries", () => {
+  const storage = createStorage();
+  const nowMS = 10_000;
+  markGlobalDeviceRevokedLease(storage, deviceID, nowMS);
+  const result = cleanupExpiredDeviceRevocationMarkers(storage, nowMS + REVOKED_DEVICE_TOMBSTONE_MS);
+  assert.equal(result.remaining, 0);
+  assert.equal(storage.has("revoked-device:" + deviceID), false);
 });
 
 test("uses bounded production defaults and rejects invalid overrides", () => {
