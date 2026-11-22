@@ -69,8 +69,8 @@ export async function authorizeStream(request, env, expected, nowSeconds = Math.
     if (!admission.ok) return admission;
     return {
       ok: true,
-      deviceID: null,
-      targetDeviceID: null,
+      deviceID: admission.deviceID,
+      targetDeviceID: admission.deviceID,
       legacy: true,
       agentAdmissionReplay: admission.replay,
     };
@@ -95,7 +95,11 @@ async function verifyAgentAdmissionHeader(request, env, expected, nowSeconds) {
       publicKey,
       nowSeconds,
     );
-    return { ok: true, replay: { jti: claims.jti, exp: claims.exp } };
+    return {
+      ok: true,
+      deviceID: claims.target_device_id,
+      replay: { jti: claims.jti, exp: claims.exp },
+    };
   } catch {
     return { ok: false, status: 403, message: "Agent admission rejected" };
   }
