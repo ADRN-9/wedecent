@@ -9,6 +9,7 @@ import {
   INTERNAL_AGENT_ADMISSION_EXP_HEADER,
   INTERNAL_AGENT_ADMISSION_JTI_HEADER,
   INTERNAL_AGENT_LEGACY_HEADER,
+  INTERNAL_CLIENT_DEVICE_ID_HEADER,
   INTERNAL_GRANT_EXP_HEADER,
   INTERNAL_GRANT_JTI_HEADER,
   INTERNAL_RELAY_TICKET_EXP_HEADER,
@@ -77,6 +78,7 @@ test("sanitizes client-supplied internal replay headers before Durable Object fo
       "X-WeDecent-Connection-Grant": "secret-grant",
       [INTERNAL_GRANT_JTI_HEADER]: "d90987bf-bae6-45da-ab21-c82d049617bd",
       [INTERNAL_GRANT_EXP_HEADER]: "1",
+      [INTERNAL_CLIENT_DEVICE_ID_HEADER]: "wd_aaaaaaaaaaaaaaaa",
       Upgrade: "websocket",
     },
   });
@@ -84,11 +86,13 @@ test("sanitizes client-supplied internal replay headers before Durable Object fo
     req,
     { jti, exp },
     "X-WeDecent-Connection-Grant",
+    "wd_mw3am46w5weex4a4",
   );
   assert.equal(forwarded.headers.get("Authorization"), null);
   assert.equal(forwarded.headers.get("X-WeDecent-Connection-Grant"), null);
   assert.equal(forwarded.headers.get(INTERNAL_GRANT_JTI_HEADER), jti);
   assert.equal(forwarded.headers.get(INTERNAL_GRANT_EXP_HEADER), String(exp));
+  assert.equal(forwarded.headers.get(INTERNAL_CLIENT_DEVICE_ID_HEADER), "wd_mw3am46w5weex4a4");
   assert.equal(forwarded.headers.get("Upgrade"), "websocket");
 });
 
