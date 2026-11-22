@@ -318,8 +318,7 @@ export class ConnectionRateLimiter extends DurableObject {
 }
 
 export class DeviceRelay extends DurableObject {
-  #clientAdmission = Promise.resolve();
-  #agentAdmission = Promise.resolve();
+  #admission = Promise.resolve();
 
   async fetch(request) {
     const url = new URL(request.url);
@@ -366,18 +365,8 @@ export class DeviceRelay extends DurableObject {
     return new Response(null, { status: 204, headers: { "Cache-Control": "no-store" } });
   }
 
-  async #acceptAgent(request, url) {
-    let release;
-    const previous = this.#agentAdmission;
-    this.#agentAdmission = new Promise((resolve) => {
-      release = resolve;
-    });
-    await previous;
-    try {
-      return await this.#acceptAgentExclusive(request, url);
-    } finally {
-      release();
-    }
+  #acceptAgent(request, url) {
+    return this.#withAdmission(() => this.#acceptAgentExclusive(request, url));
   }
 
   async #acceptAgentExclusive(request, url) {
@@ -436,18 +425,17 @@ export class DeviceRelay extends DurableObject {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  async #acceptClient(request) {
+  #acceptClient(request) {
+    return this.#withAdmission(() => this.#acceptClientExclusive(request));
+  }
+
+  #withAdmission(operation) {
     let release;
-    const previous = this.#clientAdmission;
-    this.#clientAdmission = new Promise((resolve) => {
+    const previous = this.#admission;
+    this.#admission = new Promise((resolve) => {
       release = resolve;
     });
-    await previous;
-    try {
-      return await this.#acceptClientExclusive(request);
-    } finally {
-      release();
-    }
+    return previous.then(operation).finally(() => release());
   }
 
   async #acceptClientExclusive(request) {
