@@ -116,7 +116,7 @@ test("readiness requires metrics, valid rate-limit config, and both durable obje
     RELAY_RATE_LIMIT: healthyNamespace("limit", calls),
   };
   assert.equal(await relayReadiness(env), true);
-  assert.deepEqual(calls.sort(), ["device:health-v1", "limit:health-v1"]);
+  assert.deepEqual(calls.sort(), ["device:health-v1", "limit:relay-rate-limit-v2"]);
 
   assert.equal(await relayReadiness({ ...env, RELAY_METRICS: undefined }), false);
   assert.equal(await relayReadiness({ ...env, DEVICE_RELAY: undefined }), false);

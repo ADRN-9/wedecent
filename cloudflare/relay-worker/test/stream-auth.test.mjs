@@ -84,6 +84,24 @@ test("rejects a client with no connection grant", async () => {
   assert.equal(result.status, 403);
 });
 
+test("rejects target identifier substitution before returning an authenticated quota identity", async () => {
+  const relay = await issueRelayTicket();
+  const alternateTarget = "wd_mw3am46w5weex4a4";
+  const headers = new Headers({
+    Authorization: "Bearer " + relay.token,
+    [CONNECTION_GRANT_HEADER]: issueGrant(relay.claims.iss),
+  });
+  const req = new Request("https://relay.test/v1/stream/" + alternateTarget + "?role=client", { headers });
+  const result = await authorizeStream(
+    req,
+    env,
+    { deviceId: alternateTarget, role: "client", slot: null },
+    now,
+  );
+  assert.equal(result.ok, false);
+  assert.equal(result.deviceID, undefined);
+});
+
 test("rejects a connection grant for another client", async () => {
   const relay = await issueRelayTicket();
   const result = await authorizeStream(

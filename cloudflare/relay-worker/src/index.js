@@ -21,6 +21,7 @@ import {
 import {
   cleanupExpiredRateLimitBuckets,
   consumeRateLimitBuckets,
+  RATE_LIMIT_CLEANUP_INTERVAL_MS,
   enforceRelayDeviceRateLimit,
   enforceRelayRequestRateLimit,
   limiterRequestConfig,
@@ -245,7 +246,7 @@ export class ConnectionRateLimiter extends DurableObject {
   async fetch(request) {
     if (healthProbeRequest(request)) {
       try {
-        await this.ctx.storage.get("__health__");
+        this.ctx.storage.transactionSync(() => this.ctx.storage.kv.get("__health__"));
         return new Response(null, { status: 204 });
       } catch {
         return new Response("Rate-limit storage unavailable", { status: 500 });
@@ -274,7 +275,7 @@ export class ConnectionRateLimiter extends DurableObject {
   async #ensureCleanupScheduled() {
     const currentAlarm = await this.ctx.storage.getAlarm();
     if (currentAlarm === null) {
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await this.ctx.storage.setAlarm(Date.now() + RATE_LIMIT_CLEANUP_INTERVAL_MS);
     }
   }
 
@@ -283,7 +284,7 @@ export class ConnectionRateLimiter extends DurableObject {
       cleanupExpiredRateLimitBuckets(this.ctx.storage.kv, Date.now()),
     );
     if (cleanup.remaining > 0) {
-      await this.ctx.storage.setAlarm(Date.now() + 60_000);
+      await this.ctx.storage.setAlarm(Date.now() + RATE_LIMIT_CLEANUP_INTERVAL_MS);
     }
   }
 }

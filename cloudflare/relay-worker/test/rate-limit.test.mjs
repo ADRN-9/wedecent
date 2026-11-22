@@ -139,7 +139,7 @@ test("direct authorization requests are throttled per IP and across distributed 
   const namespace = fakeNamespace();
   const limiterEnv = env(namespace, {
     RELAY_DIRECT_IP_REQUESTS_PER_WINDOW: "2",
-    RELAY_DIRECT_GLOBAL_REQUESTS_PER_WINDOW: "3",
+    RELAY_DIRECT_GLOBAL_REQUESTS_PER_WINDOW: "4",
   });
   assert.equal((await enforceRelayRequestRateLimit(streamRequest("192.0.2.30"), limiterEnv, "direct")).ok, true);
   assert.equal((await enforceRelayRequestRateLimit(streamRequest("192.0.2.30"), limiterEnv, "direct")).ok, true);
