@@ -44,6 +44,56 @@ func TestWebRelayRejectsInvalidAgentSlot(t *testing.T) {
 	}
 }
 
+func TestWebRelayRejectsInsecureRemoteOrigins(t *testing.T) {
+	for _, raw := range []string{
+		"http://relay.wedecent.com",
+		"ws://relay.wedecent.com",
+		"http://192.0.2.10",
+	} {
+		if _, err := webRelayURL(raw, "wd_4ksk5edkttwsxqx4", "client", 0); err == nil {
+			t.Fatalf("expected insecure remote relay origin %q to be rejected", raw)
+		}
+	}
+}
+
+func TestWebRelayAllowsOnlyLoopbackDevelopmentHTTP(t *testing.T) {
+	for _, raw := range []string{"http://127.0.0.1:8787", "http://[::1]:8787", "http://localhost:8787"} {
+		got, err := webRelayURL(raw, "wd_4ksk5edkttwsxqx4", "client", 0)
+		if err != nil {
+			t.Fatalf("%s: %v", raw, err)
+		}
+		if !strings.HasPrefix(got, "ws://") {
+			t.Fatalf("expected loopback development WebSocket, got %q", got)
+		}
+	}
+}
+
+func TestWebRelayRejectsDecoratedOrigins(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:secret@relay.wedecent.com",
+		"https://relay.wedecent.com/path",
+		"https://relay.wedecent.com/?token=legacy",
+		"https://relay.wedecent.com/#fragment",
+	} {
+		if _, err := webRelayURL(raw, "wd_4ksk5edkttwsxqx4", "client", 0); err == nil {
+			t.Fatalf("expected decorated relay origin %q to be rejected", raw)
+		}
+	}
+}
+
+func TestDialWebSocketRejectsRemotePlaintextAndMalformedEndpoints(t *testing.T) {
+	for _, raw := range []string{
+		"ws://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=client",
+		"wss://relay.wedecent.com/other?role=client",
+		"wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=client&slot=1",
+		"wss://user:secret@relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=client",
+	} {
+		if _, err := dialWebSocket(context.Background(), raw, WebRelayOptions{}); err == nil {
+			t.Fatalf("expected invalid endpoint %q to be rejected before dialing", raw)
+		}
+	}
+}
+
 func TestWebRelayCredentialPrefersTicketSource(t *testing.T) {
 	u, err := url.Parse("wss://relay.wedecent.com/v1/stream/wd_4ksk5edkttwsxqx4?role=agent&slot=3")
 	if err != nil {

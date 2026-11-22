@@ -64,20 +64,29 @@ func webRelayURL(baseURL, deviceID, role string, slot int) (string, error) {
 		return "", errors.New("invalid WeDecent device ID")
 	}
 	u, err := url.Parse(strings.TrimSpace(baseURL))
-	if err != nil || u.Host == "" {
-		return "", errors.New("web relay must be a URL such as https://relay.wedecent.com")
+	if err != nil || u.Host == "" || u.User != nil || u.Opaque != "" ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", errors.New("web relay must be an undecorated HTTPS origin such as https://relay.wedecent.com")
 	}
 	switch u.Scheme {
 	case "https":
 		u.Scheme = "wss"
+	case "wss":
 	case "http":
+		if !isLoopbackRelayHost(u.Hostname()) {
+			return "", errors.New("insecure web relay transport is permitted only for loopback development")
+		}
 		u.Scheme = "ws"
-	case "wss", "ws":
+	case "ws":
+		if !isLoopbackRelayHost(u.Hostname()) {
+			return "", errors.New("insecure web relay transport is permitted only for loopback development")
+		}
 	default:
-		return "", errors.New("web relay URL scheme must be https, http, wss, or ws")
+		return "", errors.New("web relay URL scheme must be https or wss")
 	}
 	u.Path = "/v1/stream/" + deviceID
-	q := u.Query()
+	u.RawPath = ""
+	q := url.Values{}
 	switch role {
 	case "agent":
 		if slot < 1 || slot > 32 {
@@ -94,8 +103,61 @@ func webRelayURL(baseURL, deviceID, role string, slot int) (string, error) {
 		return "", errors.New("invalid web relay role")
 	}
 	u.RawQuery = q.Encode()
-	u.Fragment = ""
 	return u.String(), nil
+}
+
+func isLoopbackRelayHost(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func validateWebRelaySocketURL(u *url.URL) error {
+	if u == nil || u.Host == "" || u.User != nil || u.Opaque != "" || u.Fragment != "" {
+		return errors.New("invalid WebSocket endpoint")
+	}
+	switch u.Scheme {
+	case "wss":
+	case "ws":
+		if !isLoopbackRelayHost(u.Hostname()) {
+			return errors.New("unencrypted WebSocket transport is permitted only for loopback development")
+		}
+	default:
+		return errors.New("remote WebRelay connections require wss://")
+	}
+	const prefix = "/v1/stream/"
+	if !strings.HasPrefix(u.Path, prefix) || !validDeviceID(strings.TrimPrefix(u.Path, prefix)) {
+		return errors.New("invalid WebRelay stream endpoint")
+	}
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return errors.New("invalid WebRelay stream query")
+	}
+	roleValues, roleOK := query["role"]
+	if !roleOK || len(roleValues) != 1 {
+		return errors.New("invalid WebRelay stream role")
+	}
+	switch roleValues[0] {
+	case "agent":
+		slotValues, ok := query["slot"]
+		if !ok || len(slotValues) != 1 {
+			return errors.New("invalid WebRelay agent slot")
+		}
+		slot, err := strconv.Atoi(slotValues[0])
+		if err != nil || slot < 1 || slot > 32 || len(query) != 2 {
+			return errors.New("invalid WebRelay agent slot")
+		}
+	case "client":
+		if _, ok := query["slot"]; ok || len(query) != 1 {
+			return errors.New("invalid WebRelay client query")
+		}
+	default:
+		return errors.New("invalid WebRelay stream role")
+	}
+	return nil
 }
 
 func validDeviceID(s string) bool {
@@ -112,8 +174,11 @@ func validDeviceID(s string) bool {
 
 func dialWebSocket(ctx context.Context, rawURL string, opts WebRelayOptions) (net.Conn, error) {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Host == "" {
+	if err != nil {
 		return nil, errors.New("invalid WebSocket URL")
+	}
+	if err := validateWebRelaySocketURL(u); err != nil {
+		return nil, err
 	}
 	timeout := opts.Timeout
 	if timeout <= 0 {
