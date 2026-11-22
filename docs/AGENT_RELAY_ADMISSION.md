@@ -112,11 +112,12 @@ The relay readiness probe fails when the Worker revocation authority is absent. 
 the token only in the Cloudflare and Supabase secret stores; never put it in client
 configuration or repository variables.
 
-The revocation function persists the database revocation before dispatch. If the
-relay is unavailable or the secret is missing, it returns HTTP 503 to signal that
-session termination is pending; the caller must retry. There is not yet a scheduled
-outbox retry worker, so a failed dispatch is not automatically retried. The audit
-table is service-role-only; user-facing audit search and retention policy remain
+The revocation function persists the database revocation and a durable pending
+dispatch-outbox row before contacting the relay. If the relay is unavailable or the
+secret is missing, it returns HTTP 503 and leaves the outbox row pending; retrying the
+same authenticated endpoint dispatches it again. There is not yet a scheduled outbox
+worker, so retries are request-driven rather than automatic. The audit and dispatch
+tables are service-role-only; user-facing audit search and retention policy remain
 control-plane work.
 
 Production activation requires provisioning the independent admission signing secret,
