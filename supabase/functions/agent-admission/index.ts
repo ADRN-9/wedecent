@@ -63,7 +63,7 @@ function admissionPublicKeyPEM(): string {
     throw new Error("WEDECENT_AGENT_ADMISSION_PUBLIC_SPKI_B64 is not configured");
   }
   const lines = der.match(/.{1,64}/g) ?? [];
-  return "-----BEGIN PUBLIC KEY-----\\n" + lines.join("\\n") + "\\n-----END PUBLIC KEY-----";
+  return "-----BEGIN PUBLIC KEY-----\n" + lines.join("\n") + "\n-----END PUBLIC KEY-----";
 }
 
 function connectionGrantPublicKeyPEM(): string {
