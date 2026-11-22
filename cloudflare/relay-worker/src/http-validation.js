@@ -35,7 +35,7 @@ export async function readBoundedRequestBody(request, maxBytes) {
   const declaredText = request.headers.get("Content-Length");
   let declaredLength = null;
   if (declaredText !== null) {
-    if (!/^(0|[1-9][0-9]*)$/.test(declaredText)) {
+    if (!/^[0-9]+$/.test(declaredText)) {
       return { ok: false, status: 400 };
     }
     declaredLength = Number(declaredText);
