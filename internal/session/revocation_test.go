@@ -482,28 +482,48 @@ func waitRevocationPTYClosed(t *testing.T, pty *revocationTestPTY) {
 	}
 }
 
+func decodeRevocationAuditRecord(line []byte) (audit.Event, error) {
+	record := bytes.TrimSpace(line)
+	if len(record) == 0 {
+		return audit.Event{}, errors.New("audit JSONL record is empty")
+	}
+	if record[0] != '{' {
+		return audit.Event{}, errors.New("audit JSONL record is not an object")
+	}
+	var event audit.Event
+	if err := json.Unmarshal(record, &event); err != nil {
+		return audit.Event{}, err
+	}
+	return event, nil
+}
+
 func parseRevocationAudit(data []byte) ([]audit.Event, error) {
 	if len(data) == 0 {
 		return nil, nil
 	}
 
 	lines := bytes.Split(data, []byte{'\n'})
-	// JSONL records are complete only after their newline delimiter. Discard
-	// exactly the final split element: it is either the empty element produced
-	// by a terminating newline or an in-flight append that the next poll retries.
-	lines = lines[:len(lines)-1]
+	if data[len(data)-1] == '\n' {
+		// Ignore only the final empty split element produced by the record delimiter.
+		lines = lines[:len(lines)-1]
+	} else {
+		// The last element is not a complete JSONL record until its newline arrives.
+		// Accept it only if it is valid JSON or a prefix that JSON decoding reports
+		// as incomplete; reject malformed tails that an append cannot repair.
+		fragment := lines[len(lines)-1]
+		lines = lines[:len(lines)-1]
+		if _, err := decodeRevocationAuditRecord(fragment); err != nil {
+			var syntaxErr *json.SyntaxError
+			if !errors.As(err, &syntaxErr) || syntaxErr.Error() != "unexpected end of JSON input" {
+				return nil, fmt.Errorf("audit JSONL trailing fragment is malformed: %w", err)
+			}
+		}
+	}
 
 	events := make([]audit.Event, 0, len(lines))
 	for index, line := range lines {
-		record := bytes.TrimSpace(line)
-		if len(record) == 0 {
-			return nil, fmt.Errorf("audit JSONL record %d is empty", index+1)
-		}
-		if record[0] != '{' {
-			return nil, fmt.Errorf("audit JSONL record %d is not an object", index+1)
-		}
-		var event audit.Event
-		if err := json.Unmarshal(record, &event); err != nil {
+		event, err := decodeRevocationAuditRecord(line)
+		if err != nil {
 			return nil, fmt.Errorf("decode audit JSONL record %d: %w", index+1, err)
 		}
 		events = append(events, event)
@@ -536,11 +556,15 @@ func TestParseRevocationAuditJSONL(t *testing.T) {
 	validWithFinalNewline := append(append([]byte(nil), validRecord...), '\n')
 	validWithIncompleteTail := append(append([]byte(nil), validRecord...), '\n')
 	validWithIncompleteTail = append(validWithIncompleteTail, incompleteRecord...)
+	validWithoutTailNewline := append(append([]byte(nil), validRecord...), '\n')
+	validWithoutTailNewline = append(validWithoutTailNewline, validRecord...)
 	interiorBlank := append(append(append([]byte(nil), validRecord...), '\n', '\n'), validRecord...)
 	interiorBlank = append(interiorBlank, '\n')
 	malformedComplete := append(append([]byte(nil), malformedRecord...), '\n')
 	malformedThenIncomplete := append(append([]byte(nil), malformedRecord...), '\n')
 	malformedThenIncomplete = append(malformedThenIncomplete, incompleteRecord...)
+	malformedUnterminated := append(append([]byte(nil), validRecord...), '\n')
+	malformedUnterminated = append(malformedUnterminated, malformedRecord...)
 
 	tests := []struct {
 		name       string
@@ -551,9 +575,11 @@ func TestParseRevocationAuditJSONL(t *testing.T) {
 		{name: "valid complete records", data: validRecords, wantEvents: 2},
 		{name: "valid final newline", data: validWithFinalNewline, wantEvents: 1},
 		{name: "incomplete trailing fragment", data: validWithIncompleteTail, wantEvents: 1},
+		{name: "unterminated valid JSONL record", data: validWithoutTailNewline, wantEvents: 1},
 		{name: "interior blank line", data: interiorBlank, wantErr: true},
 		{name: "malformed complete record", data: malformedComplete, wantErr: true},
 		{name: "malformed complete record followed by incomplete fragment", data: malformedThenIncomplete, wantErr: true},
+		{name: "malformed unterminated fragment", data: malformedUnterminated, wantErr: true},
 	}
 
 	const repetitions = 100
