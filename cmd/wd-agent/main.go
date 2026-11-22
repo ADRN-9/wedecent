@@ -531,7 +531,7 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	cfg.SupabasePublishableKey = strings.TrimSpace(cfg.SupabasePublishableKey)
 	if cfg.WebRelay != "" {
 		admissionClient := agentadmission.Client{
-			SupabaseURL: cfg.SupabaseURL,
+			SupabaseURL:    cfg.SupabaseURL,
 			PublishableKey: cfg.SupabasePublishableKey,
 		}
 		if err := admissionClient.Validate(); err != nil {
@@ -745,11 +745,11 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 
 	if cfg.WebRelay != "" {
 		admissionClient := agentadmission.Client{
-			SupabaseURL: cfg.SupabaseURL,
+			SupabaseURL:    cfg.SupabaseURL,
 			PublishableKey: cfg.SupabasePublishableKey,
 		}
 		webOpts := transport.WebRelayOptions{
-			TicketSource: relayauth.NewTicketSource(id),
+			TicketSource:         relayauth.NewTicketSource(id),
 			AgentAdmissionSource: func(ctx context.Context, deviceID string, slot int) (string, error) {
 				if deviceID != id.ID {
 					return "", errors.New("agent admission requested for a different enrolled identity")

@@ -215,7 +215,7 @@ func runServiceInstall(args []string) error {
 
 	if strings.TrimSpace(*webRelay) != "" {
 		if err := (agentadmission.Client{
-			SupabaseURL: *supabaseURL,
+			SupabaseURL:    *supabaseURL,
 			PublishableKey: *supabasePublishableKey,
 		}).Validate(); err != nil {
 			return fmt.Errorf("web relay agent admission: %w", err)
