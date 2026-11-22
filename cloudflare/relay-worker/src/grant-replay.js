@@ -12,8 +12,10 @@ export const INTERNAL_AGENT_ADMISSION_EXP_HEADER = "X-WeDecent-Internal-Agent-Ad
 export const INTERNAL_RELAY_TICKET_JTI_HEADER = "X-WeDecent-Internal-Relay-Ticket-JTI";
 export const INTERNAL_RELAY_TICKET_EXP_HEADER = "X-WeDecent-Internal-Relay-Ticket-Exp";
 export const INTERNAL_AGENT_LEGACY_HEADER = "X-WeDecent-Internal-Agent-Legacy";
+export const INTERNAL_CLIENT_DEVICE_ID_HEADER = "X-WeDecent-Internal-Client-Device-ID";
+const DEVICE_ID = /^wd_[a-z2-7]{16}$/;
 
-export function prepareDeviceRelayRequest(request, replay, connectionGrantHeader) {
+export function prepareDeviceRelayRequest(request, replay, connectionGrantHeader, clientDeviceID = "") {
   const headers = new Headers(request.headers);
   for (const name of [
     INTERNAL_GRANT_JTI_HEADER,
@@ -23,6 +25,7 @@ export function prepareDeviceRelayRequest(request, replay, connectionGrantHeader
     INTERNAL_RELAY_TICKET_JTI_HEADER,
     INTERNAL_RELAY_TICKET_EXP_HEADER,
     INTERNAL_AGENT_LEGACY_HEADER,
+    INTERNAL_CLIENT_DEVICE_ID_HEADER,
   ]) {
     headers.delete(name);
   }
@@ -33,6 +36,12 @@ export function prepareDeviceRelayRequest(request, replay, connectionGrantHeader
   if (replay) {
     headers.set(INTERNAL_GRANT_JTI_HEADER, replay.jti);
     headers.set(INTERNAL_GRANT_EXP_HEADER, String(replay.exp));
+  }
+  if (clientDeviceID) {
+    if (!DEVICE_ID.test(clientDeviceID)) {
+      throw new Error("invalid authenticated client device ID");
+    }
+    headers.set(INTERNAL_CLIENT_DEVICE_ID_HEADER, clientDeviceID);
   }
 
   return new Request(request, { headers });
