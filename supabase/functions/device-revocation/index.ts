@@ -183,7 +183,7 @@ Deno.serve(async (request) => {
 
     const relayURL = Deno.env.get("WEDECENT_RELAY_REVOCATION_URL")?.trim() ?? "";
     const relayToken = Deno.env.get("WEDECENT_RELAY_REVOCATION_TOKEN") ?? "";
-    if (!relayURL || !relayToken || relayToken.length < 32) {
+    if (!relayURL || !/^[A-Za-z0-9_-]{43,128}$/.test(relayToken)) {
       await recordDispatchFailure("relay_configuration_missing");
       return json({
         error: "device is revoked; relay session termination is pending operator configuration",
