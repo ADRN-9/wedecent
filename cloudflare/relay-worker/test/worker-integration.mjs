@@ -305,6 +305,97 @@ async function websocketUpgradeStatus(port, deviceID, relayTicket, agentAdmissio
   });
 }
 
+async function openAgentWebSocket(port, targetDeviceID, relayTicket, agentAdmission) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, "127.0.0.1");
+    let response = Buffer.alloc(0);
+    let settled = false;
+    const finish = (error, status) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (error) {
+        socket.destroy();
+        reject(error);
+      } else if (status !== 101) {
+        socket.destroy();
+        reject(new Error("expected WebSocket 101, received " + status));
+      } else {
+        resolve(socket);
+      }
+    };
+    const timeout = setTimeout(() => finish(new Error("WebSocket upgrade timed out")), 10_000);
+    const onData = (chunk) => {
+      response = Buffer.concat([response, chunk]);
+      const end = response.indexOf("\\r\\n\\r\\n");
+      if (end < 0) return;
+      const statusLine = response.subarray(0, end).toString("latin1").split("\\r\\n")[0];
+      const match = /^HTTP\\/1\\.[01] (\\d{3})/.exec(statusLine);
+      if (!match) return finish(new Error("invalid WebSocket response: " + statusLine));
+      socket.removeListener("data", onData);
+      finish(null, Number(match[1]));
+    };
+    socket.on("connect", () => {
+      const key = randomBytes(16).toString("base64");
+      socket.write([
+        "GET /v1/stream/" + targetDeviceID + "?role=agent&slot=1 HTTP/1.1",
+        "Host: 127.0.0.1:" + port,
+        "Connection: Upgrade",
+        "Upgrade: websocket",
+        "Sec-WebSocket-Version: 13",
+        "Sec-WebSocket-Key: " + key,
+        "Authorization: Bearer " + relayTicket,
+        "X-WeDecent-Agent-Admission: " + agentAdmission,
+        "",
+        "",
+      ].join("\\r\\n"));
+    });
+    socket.on("data", onData);
+    socket.on("error", (error) => finish(error));
+    socket.on("close", () => {
+      if (!settled) finish(new Error("WebSocket closed before response headers"));
+    });
+  });
+}
+
+async function waitForSocketClose(socket, timeoutMS = 5_000) {
+  await new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      socket.destroy();
+      reject(new Error("revocation did not close the established agent WebSocket"));
+    }, timeoutMS);
+    socket.once("close", () => {
+      clearTimeout(timeout);
+      resolve();
+    });
+  });
+}
+
+async function verifyAgentRevocationPropagation() {
+  const port = await freePort();
+  const persistTo = join(root, "revocation-state");
+  const credentials = createAgentCredentials(1);
+  const revocationToken = "r".repeat(64);
+  const extraVars = {
+    WEDECENT_CONNECTION_GRANT_PUBLIC_SPKI_B64: credentials.publicSPKIB64,
+    WEDECENT_AGENT_ADMISSION_PUBLIC_KEYS_JSON: credentials.admissionKeyringJSON,
+    RELAY_REVOCATION_TOKEN: revocationToken,
+  };
+
+  await withWorker(port, persistTo, 10_000, 10_000, async (baseURL) => {
+    const tokens = credentials.createTokens();
+    const socket = await openAgentWebSocket(port, credentials.deviceID, tokens.relayTicket, tokens.agentAdmission);
+    const response = await fetch(baseURL + "/v1/revoke/" + credentials.deviceID, {
+      method: "POST",
+      headers: { Authorization: "Bearer " + revocationToken },
+    });
+    assert.equal(response.status, 200, "authorized revocation event should be accepted");
+    const result = await response.json();
+    assert.equal(result.revoked_device_id, credentials.deviceID);
+    await waitForSocketClose(socket);
+  }, extraVars);
+}
+
 async function verifyAgentReplayPersistence() {
   const port = await freePort();
   const persistTo = join(root, "agent-state");
@@ -367,6 +458,7 @@ async function measureCentralLimiter() {
 try {
   await verifyDurableObjectPersistence();
   await verifyAgentReplayPersistence();
+  await verifyAgentRevocationPropagation();
   await measureCentralLimiter();
 } finally {
   await rm(root, { recursive: true, force: true });
