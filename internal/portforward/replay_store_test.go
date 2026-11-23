@@ -205,6 +205,110 @@ func TestFileReplayRejectsDeletedStateAfterInitialization(t *testing.T) {
 	}
 }
 
+func TestFileReplayRejectsDeletedStateAndLockTogether(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jti := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path + ".lock"); err != nil {
+		t.Fatal(err)
+	}
+	nextJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), nextJTI, time.Now().UTC().Add(time.Minute)); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("deleted state and lock error = %v, want fail-closed replay unavailable", err)
+	}
+}
+
+func TestFileReplayRejectsDeletedLockAfterInitialization(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jti := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path + ".lock"); err != nil {
+		t.Fatal(err)
+	}
+	nextJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), nextJTI, time.Now().UTC().Add(time.Minute)); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("deleted lock error = %v, want fail-closed replay unavailable", err)
+	}
+}
+
+func TestFileReplayRejectsOlderStateGeneration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	secondJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
+	thirdJTI := base64.RawURLEncoding.EncodeToString([]byte("aaaaaaaaaaaaaaaa"))
+	expiry := time.Now().UTC().Add(time.Minute)
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, expiry); err != nil {
+		t.Fatal(err)
+	}
+	olderState, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), secondJTI, expiry); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, olderState, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), thirdJTI, expiry); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("replayed older state error = %v, want generation mismatch", err)
+	}
+}
+
+func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "replay-state")
+	path := filepath.Join(dir, "replay.json")
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jti := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureReplayDirectory(dir); err != nil {
+		t.Fatalf("verify replay directory security: %v", err)
+	}
+	for _, file := range []string{path, path + ".lock", path + ".anchor"} {
+		if err := secureReplayFile(file); err != nil {
+			t.Fatalf("verify replay file %s: %v", filepath.Base(file), err)
+		}
+	}
+	if info, err := os.Stat(dir); err != nil {
+		t.Fatal(err)
+	} else if info.Mode().Perm() != 0o700 {
+		t.Fatalf("replay directory permissions = %o, want 700", info.Mode().Perm())
+	}
+	for _, file := range []string{path, path + ".lock", path + ".anchor"} {
+		info, err := os.Stat(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("%s permissions = %o, want 600", filepath.Base(file), info.Mode().Perm())
+		}
+	}
+}
+
 func TestFileReplayRejectsWrongDeviceScopeAndCorruptState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "portforward-replay.json")
 	first, err := NewFileReplay(path, testInitiator)
