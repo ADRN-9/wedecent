@@ -59,8 +59,10 @@ func verifyReplayACL(path string) error {
 	}
 	allowed := map[string]bool{
 		owner.String():       true,
-		"S-1-5-18":          true, // LocalSystem
-		"S-1-5-32-544":      true, // Builtin Administrators
+		"S-1-5-18":          true,
+		"S-1-5-32-544":      true,
+		"SY":                true,
+		"BA":                true,
 	}
 	sddl := sd.String()
 	start := strings.Index(sddl, "D:")
@@ -71,7 +73,11 @@ func verifyReplayACL(path string) error {
 	if end := strings.Index(section, "S:"); end >= 0 {
 		section = section[:end]
 	}
-	section = section[strings.Index(section, "("):]
+	firstACE := strings.Index(section, "(")
+	if firstACE < 0 {
+		return fmt.Errorf("replay object DACL is empty")
+	}
+	section = section[firstACE:]
 	if section == "" {
 		return fmt.Errorf("replay object DACL is empty")
 	}
