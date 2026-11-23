@@ -3,6 +3,7 @@
 package portforward
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"errors"
