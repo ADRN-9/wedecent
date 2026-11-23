@@ -10,6 +10,7 @@ wedecent_test_release_tags_init() {
   WEDECENT_TEST_TAG_REMOTE="$2/release-tags.git"
   WEDECENT_TEST_TAGS=()
   git init --bare -q "$WEDECENT_TEST_TAG_REMOTE"
+  git --git-dir="$WEDECENT_TEST_TAG_REMOTE" config receive.shallowUpdate true
   export GIT_CONFIG_COUNT=1
   export GIT_CONFIG_KEY_0='remote.origin.url'
   export GIT_CONFIG_VALUE_0="$WEDECENT_TEST_TAG_REMOTE"
