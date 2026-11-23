@@ -248,4 +248,5 @@ type Service interface {
 	TransportService
 	RouteService
 	RouterService
+	PortForwardService
 }
