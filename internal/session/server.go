@@ -39,6 +39,7 @@ type Server struct {
 	Logger           *slog.Logger
 	DirectAuthorizer DirectAuthorizer
 	FileTransfer     *FileTransferRuntime
+	PortForwarding   *PortForwardRuntime
 	Policy           SessionPolicy
 }
 
@@ -59,6 +60,10 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 	transport := "relay"
 	if requireInBandAuthorization {
 		transport = "direct"
+	}
+	routerID := ""
+	if authenticated, ok := raw.(interface{ AuthenticatedRouterID() string }); ok {
+		routerID = authenticated.AuthenticatedRouterID()
 	}
 	tlsConn := tls.Server(raw, identity.ServerTLS(s.Identity))
 	if handshakeTimeout > 0 {
@@ -89,7 +94,7 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 			_ = sendError(tlsConn, "unexpected_message", "authorized session requests are not valid on this transport")
 			return
 		}
-		s.handleAuthorizedTerminal(tlsConn, first, transport)
+		s.handleAuthorizedTerminalWithRouter(tlsConn, first, transport, routerID)
 	default:
 		_ = sendError(tlsConn, "unexpected_message", "expected pairing or session request")
 	}
@@ -149,6 +154,10 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 }
 
 func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+	s.handleAuthorizedTerminalWithRouter(conn, first, transport, "")
+}
+
+func (s *Server) handleAuthorizedTerminalWithRouter(conn *tls.Conn, first protocol.Frame, transport, routerID string) {
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
@@ -202,10 +211,14 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport})
 
 	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, Capabilities: req.Capabilities})
-	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport)
+	s.handleTerminalWithRouter(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport, routerID)
 }
 
 func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+	s.handleTerminalWithRouter(conn, first, transport, "")
+}
+
+func (s *Server) handleTerminalWithRouter(conn *tls.Conn, first protocol.Frame, transport, routerID string) {
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
@@ -238,9 +251,10 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		return
 	}
 	fileReady := s.FileTransfer != nil && s.FileTransfer.Ready()
-	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady)
+	portForwardReady := s.PortForwarding != nil && s.PortForwarding.Ready()
+	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady, portForwardReady)
 	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
-		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities)
+		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities, routerID)
 		return
 	}
 	if open.Cols == 0 {
