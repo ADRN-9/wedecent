@@ -19,7 +19,7 @@ func secureReplayDirectory(path string) error {
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
 		return fmt.Errorf("replay directory must be a real directory")
 	}
 	if !replayOwnedByCurrentUser(info) {
@@ -32,7 +32,7 @@ func secureReplayDirectory(path string) error {
 	}
 	info, err = os.Lstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() ||
-		info.Mode().Perm() != 0o700 || !replayOwnedByCurrentUser(info) {
+		info.Mode().Perm() != 0o700 || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || !replayOwnedByCurrentUser(info) {
 		return fmt.Errorf("replay directory ownership or permissions are unsafe")
 	}
 	return nil
@@ -43,7 +43,7 @@ func secureReplayFile(path string) error {
 	if err != nil {
 		return err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
 		return fmt.Errorf("replay file must be a regular file")
 	}
 	if !replayOwnedByCurrentUser(info) {
@@ -56,7 +56,7 @@ func secureReplayFile(path string) error {
 	}
 	info, err = os.Lstat(path)
 	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() ||
-		info.Mode().Perm() != 0o600 || !replayOwnedByCurrentUser(info) {
+		info.Mode().Perm() != 0o600 || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || !replayOwnedByCurrentUser(info) {
 		return fmt.Errorf("replay file ownership or permissions are unsafe")
 	}
 	return nil
