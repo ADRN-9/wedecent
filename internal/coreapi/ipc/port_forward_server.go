@@ -8,7 +8,7 @@ import (
 
 func (s *Server) handlePortForward(ctx context.Context, req Request, response Response) (Response, bool) {
 	switch req.Method {
-	case v1.MethodPortForwardStart, v1.MethodPortForwardStop, v1.MethodPortForwardList:
+	case v1.MethodPortForwardStart, v1.MethodPortForwardStop, v1.MethodPortForwardList, v1.MethodPortForwardStatus:
 	default:
 		return Response{}, false
 	}
@@ -34,6 +34,12 @@ func (s *Server) handlePortForward(ctx context.Context, req Request, response Re
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters"), true
 		}
 		err = s.portForwarding.StopPortForward(ctx, params)
+	case v1.MethodPortForwardStatus:
+		var params v1.PortForwardStatusRequest
+		if decodeErr := DecodeParams(req.Params, &params); decodeErr != nil {
+			return errorResponse(response, ErrorInvalidParams, "invalid request parameters"), true
+		}
+		result, err = s.portForwarding.GetPortForwardStatus(ctx, params)
 	case v1.MethodPortForwardList:
 		if !validEmptyParams(req.Params) {
 			return errorResponse(response, ErrorInvalidParams, "invalid request parameters"), true
