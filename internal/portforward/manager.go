@@ -20,6 +20,7 @@ var (
 	ErrManagerConfig         = errors.New("portforward: invalid manager configuration")
 	ErrManagerClosed         = errors.New("portforward: manager is closed")
 	ErrForwardExists         = errors.New("portforward: forwarding is already active")
+	ErrForwardRevoked        = errors.New("portforward: forwarding authorization was revoked before start")
 	ErrForwardNotFound       = errors.New("portforward: forwarding was not found")
 	ErrWrongListenerDevice   = errors.New("portforward: capability is not bound to this listener device")
 	ErrListenerAdminRequired = errors.New("portforward: router-administration authorization is required")
@@ -31,7 +32,13 @@ type AuditWriter interface{ Append(audit.Event) error }
 type Connector interface {
 	// Open must establish the authenticated WeDecent forwarding stream. The destination endpoint
 	// must independently verify the same capability and resolve/dial only approved destination IPs.
-	Open(context.Context, Claims) (net.Conn, error)
+	Open(context.Context, Authorization) (net.Conn, error)
+}
+
+// PermissionAuthorizer must check the exact local-forward or remote-forward
+// grant in Local Core. It must not fall back to terminal or mesh permissions.
+type PermissionAuthorizer interface {
+	AuthorizePortForward(context.Context, Claims) error
 }
 
 type ListenerAuthorizer interface {
@@ -50,9 +57,10 @@ type ManagerLimits struct {
 }
 
 type ManagerConfig struct {
-	LocalDeviceID      mesh.DeviceID
-	Verifier           Verifier
-	Connector          Connector
+	LocalDeviceID       mesh.DeviceID
+	Verifier            Verifier
+	PermissionAuthorizer PermissionAuthorizer
+	Connector           Connector
 	ListenerAuthorizer ListenerAuthorizer
 	Audit              AuditWriter
 	Limits             ManagerLimits
@@ -71,9 +79,10 @@ type ForwardInfo struct {
 }
 
 type Manager struct {
-	localID            mesh.DeviceID
-	verifier           Verifier
-	connector          Connector
+	localID              mesh.DeviceID
+	verifier             Verifier
+	permissionAuthorizer PermissionAuthorizer
+	connector            Connector
 	listenerAuthorizer ListenerAuthorizer
 	audit              AuditWriter
 	limits             ManagerLimits
@@ -93,6 +102,7 @@ type Manager struct {
 
 type activeForward struct {
 	claims          Claims
+	authorization   Authorization
 	listener        net.Listener
 	listenerAddress string
 	ctx             context.Context
@@ -116,7 +126,7 @@ type activeChild struct {
 }
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
-	if !deviceIDPattern.MatchString(string(cfg.LocalDeviceID)) || cfg.Verifier == nil || cfg.Connector == nil || cfg.Audit == nil || !validManagerLimits(cfg.Limits) {
+	if !deviceIDPattern.MatchString(string(cfg.LocalDeviceID)) || cfg.Verifier == nil || cfg.PermissionAuthorizer == nil || cfg.Connector == nil || cfg.Audit == nil || !validManagerLimits(cfg.Limits) {
 		return nil, ErrManagerConfig
 	}
 	listen := cfg.Listen
@@ -128,9 +138,10 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		now = time.Now
 	}
 	return &Manager{
-		localID:            cfg.LocalDeviceID,
-		verifier:           cfg.Verifier,
-		connector:          cfg.Connector,
+		localID:              cfg.LocalDeviceID,
+		verifier:             cfg.Verifier,
+		permissionAuthorizer: cfg.PermissionAuthorizer,
+		connector:            cfg.Connector,
 		listenerAuthorizer: cfg.ListenerAuthorizer,
 		audit:              cfg.Audit,
 		limits:             cfg.Limits,
@@ -157,6 +168,9 @@ func validManagerLimits(l ManagerLimits) bool {
 func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, error) {
 	if m == nil {
 		return ForwardInfo{}, ErrManagerClosed
+	}
+	if ctx == nil {
+		return ForwardInfo{}, ErrAuthorizationInvalid
 	}
 	if err := ctx.Err(); err != nil {
 		return ForwardInfo{}, err
@@ -188,6 +202,12 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	}
 	if !sameClaims(claims, verified) {
 		return ForwardInfo{}, ErrAuthorizationMismatch
+	}
+	if err := m.permissionAuthorizer.AuthorizePortForward(ctx, claims); err != nil {
+		if auditErr := m.record(claims, "port_forward.start", "denied", "permission_denied"); auditErr != nil {
+			return ForwardInfo{}, auditErr
+		}
+		return ForwardInfo{}, err
 	}
 	if err := m.authorizeListener(ctx, claims); err != nil {
 		if auditErr := m.record(claims, "port_forward.start", "denied", "listener_policy_denied"); auditErr != nil {
@@ -227,6 +247,7 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	forwardCtx, cancel := context.WithDeadline(context.Background(), deadline)
 	f := &activeForward{
 		claims:          claims,
+		authorization:   cloneAuthorization(auth),
 		listener:        listener,
 		listenerAddress: listener.Addr().String(),
 		ctx:             forwardCtx,
@@ -236,6 +257,12 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		children:        make(map[uint64]*activeChild),
 	}
 	m.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		cancel()
+		_ = listener.Close()
+		return ForwardInfo{}, err
+	}
 	if m.closed {
 		m.mu.Unlock()
 		cancel()
@@ -246,7 +273,7 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		m.mu.Unlock()
 		cancel()
 		_ = listener.Close()
-		return ForwardInfo{}, ErrForwardExists
+		return ForwardInfo{}, ErrForwardRevoked
 	}
 	if err := m.record(claims, "port_forward.started", "success", ""); err != nil {
 		m.mu.Unlock()
@@ -285,15 +312,16 @@ func (m *Manager) Stop(ctx context.Context, forwardingID string) error {
 }
 
 func (m *Manager) RevokeDevice(ctx context.Context, deviceID mesh.DeviceID) (int, error) {
-	if ctx == nil {
-		ctx = context.Background()
-	}
 	if m == nil {
 		return 0, ErrManagerClosed
+	}
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if !deviceIDPattern.MatchString(string(deviceID)) {
 		return 0, ErrAuthorizationInvalid
 	}
+
 	m.mu.Lock()
 	ids := make([]string, 0)
 	for id, f := range m.forwards {
@@ -301,14 +329,30 @@ func (m *Manager) RevokeDevice(ctx context.Context, deviceID mesh.DeviceID) (int
 			ids = append(ids, id)
 		}
 	}
+	pending := make([]Claims, 0)
+	for id, claims := range m.reservations {
+		if claims.InitiatingDevice == deviceID || claims.DestinationDevice == deviceID || claims.Router == deviceID {
+			delete(m.reservations, id)
+			for _, device := range endpointDevices(claims) {
+				decrement(m.forwardCounts, device)
+			}
+			pending = append(pending, claims)
+		}
+	}
 	m.mu.Unlock()
+
 	var errs []error
-	for _, id := range ids {
-		if err := m.Stop(context.Background(), id); err != nil {
+	for _, claims := range pending {
+		if err := m.record(claims, "port_forward.revoked", "success", "device_revoked_before_start"); err != nil {
 			errs = append(errs, err)
 		}
 	}
-	return len(ids), errors.Join(errs...)
+	for _, id := range ids {
+		if err := m.Stop(ctx, id); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return len(ids) + len(pending), errors.Join(errs...)
 }
 
 func (m *Manager) List() []ForwardInfo {
@@ -468,7 +512,7 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 		return
 	}
 	dialCtx, cancel := context.WithTimeout(child.ctx, m.limits.DialTimeout)
-	remote, err := m.connector.Open(dialCtx, cloneClaims(f.claims))
+	remote, err := m.connector.Open(dialCtx, cloneAuthorization(f.authorization))
 	dialErr := dialCtx.Err()
 	cancel()
 	if err == nil && dialErr != nil {
