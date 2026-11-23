@@ -25,7 +25,7 @@ import (
 )
 
 const (
-	remoteReplayTimeout      = 8 * time.Second
+	remoteReplayTimeout     = 8 * time.Second
 	remoteReplayResponseMax = 8 << 10
 	remoteReplayDomain      = "wedecent-port-forward-replay-consume-v1"
 )

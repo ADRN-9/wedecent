@@ -1,6 +1,7 @@
 package portforward
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"

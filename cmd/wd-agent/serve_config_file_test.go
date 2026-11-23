@@ -171,7 +171,6 @@ func writeServeConfigTestFile(t *testing.T, contents string) string {
 	return path
 }
 
-
 func TestServeConfigFileCarriesIndependentReplayAuthority(t *testing.T) {
 	path := writeServeConfigTestFile(t, `{
 		"port_forward_authorization_public_key": "/tmp/port-forward.pub",
@@ -198,8 +197,8 @@ func TestServeConfigFileCarriesIndependentReplayAuthority(t *testing.T) {
 func TestPortForwardConfigRequiresIndependentReplayAuthority(t *testing.T) {
 	cfg := serveConfig{
 		PortForwardAuthorizationPublicKey: "/tmp/port-forward.pub",
-		PortForwardAllowedPorts: "22",
-		PortForwardMaxConnections: 1,
+		PortForwardAllowedPorts:           "22",
+		PortForwardMaxConnections:         1,
 	}
 	if err := cfg.validatePortForward(); err == nil || !strings.Contains(err.Error(), "port-forward-replay-url") {
 		t.Fatalf("missing remote replay authority error = %v", err)

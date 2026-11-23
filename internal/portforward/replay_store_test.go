@@ -1417,7 +1417,6 @@ func createReplayStagingTestFile(t *testing.T, path, kind string) string {
 	return file.Name()
 }
 
-
 func TestReplayLockReleaseErrorIsObservable(t *testing.T) {
 	expected := errors.New("injected unlock failure")
 	processReleased := false

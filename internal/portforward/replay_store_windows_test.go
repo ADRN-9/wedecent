@@ -351,7 +351,6 @@ func TestWindowsReplayRejectsInsecurePreexistingLockFile(t *testing.T) {
 	}
 }
 
-
 func TestWindowsReplayRepairsBootstrapLockOwnerAfterInterruptedCreation(t *testing.T) {
 	path := newReplayTestPath(t)
 	if err := secureReplayDirectory(filepath.Dir(path)); err != nil {
