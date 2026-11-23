@@ -1098,10 +1098,10 @@ func bridge(ctx context.Context, left, right net.Conn, idle time.Duration) error
 	closeBoth := func() {
 		closeOnce.Do(func() {
 			var errs []error
-			if err := left.Close(); err != nil && !expectedClosedConnError(err) {
+			if err := l.Close(); err != nil && !expectedClosedConnError(err) {
 				errs = append(errs, err)
 			}
-			if err := right.Close(); err != nil && !expectedClosedConnError(err) {
+			if err := r.Close(); err != nil && !expectedClosedConnError(err) {
 				errs = append(errs, err)
 			}
 			closeErr = errors.Join(errs...)
@@ -1122,32 +1122,27 @@ func bridge(ctx context.Context, left, right net.Conn, idle time.Duration) error
 	}
 	go pump(r, l)
 	go pump(l, r)
-	var first error
-	select {
-	case first = <-results:
-	case <-ctx.Done():
-		closeBoth()
-		first = ctx.Err()
-	}
-	if first != nil && !errors.Is(first, io.EOF) {
-		closeBoth()
-	}
-	select {
-	case second := <-results:
-		if first == nil {
-			first = second
-		}
-	case <-ctx.Done():
-		closeBoth()
-		if first == nil {
-			first = ctx.Err()
+
+	var errs []error
+	received := 0
+	contextErr := false
+	for received < 2 {
+		select {
+		case err := <-results:
+			received++
+			if err != nil && !expectedClosedConnError(err) && !errors.Is(err, io.EOF) {
+				errs = append(errs, err)
+			}
+		case <-ctx.Done():
+			if !contextErr {
+				contextErr = true
+				errs = append(errs, ctx.Err())
+				closeBoth()
+			}
 		}
 	}
 	closeBoth()
-	if errors.Is(first, io.EOF) {
-		first = nil
-	}
-	return errors.Join(first, closeErr)
+	return errors.Join(errors.Join(errs...), closeErr)
 }
 
 func listenerMatchesPolicy(listener net.Listener, claims Claims) bool {
