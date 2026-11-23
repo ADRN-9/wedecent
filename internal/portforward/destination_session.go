@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ var (
 	ErrDestinationSessionClosed = errors.New("portforward: destination forwarding session is closed")
 	ErrRouterIdentityMismatch   = errors.New("portforward: authenticated router identity does not match authorization")
 	ErrRouterNotTrusted         = errors.New("portforward: routing trust domain does not trust the router")
+	ErrDestinationCleanupIncomplete = errors.New("portforward: destination cleanup did not finish before its deadline")
+	ErrDestinationAuditIncomplete = errors.New("portforward: destination audit operation did not finish before its deadline")
 )
 
 // DestinationConfig.TrustChecker must be the endpoint-device trust domain.
@@ -66,6 +69,7 @@ type DestinationSession struct {
 	closed    bool
 	nextChild uint64
 	children  map[uint64]*destinationChildConn
+	auditSlots chan struct{}
 	closeOnce sync.Once
 	closeErr  error
 	auditErr  error
@@ -74,10 +78,15 @@ type DestinationSession struct {
 
 type destinationChildConn struct {
 	net.Conn
-	session  *DestinationSession
-	id       uint64
-	once     sync.Once
-	closeErr error
+	session *DestinationSession
+	id      uint64
+
+	doneMu    sync.Mutex
+	done      chan struct{}
+	doneOnce  sync.Once
+	closeOnce sync.Once
+	closeDone chan struct{}
+	closeErr  error
 }
 
 func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Authorization) (*DestinationSession, error) {
@@ -157,7 +166,7 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	if err != nil {
 		return nil, err
 	}
-	if err := cfg.Audit.Append(destinationAuditEvent(claims, cfg.LocalDeviceID, cfg.AuthenticatedPeerID, "port_forward.destination_session_opened", "success", "")); err != nil {
+	if err := appendDestinationAuditContext(ctx, cfg.Audit, destinationAuditEvent(claims, cfg.LocalDeviceID, cfg.AuthenticatedPeerID, "port_forward.destination_session_opened", "success", "")); err != nil {
 		return nil, err
 	}
 
@@ -195,6 +204,7 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		ctx:               sessionCtx,
 		cancel:            cancel,
 		children:          make(map[uint64]*destinationChildConn),
+		auditSlots:        make(chan struct{}, 1),
 		done:              make(chan struct{}),
 	}
 	go session.watchTrust()
@@ -261,6 +271,12 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	opCtx, cancelOp := context.WithCancel(ctx)
+	stopParentCancel := context.AfterFunc(s.ctx, cancelOp)
+	defer func() {
+		stopParentCancel()
+		cancelOp()
+	}()
 
 	s.mu.Lock()
 	if s.closed || s.ctx.Err() != nil {
@@ -276,62 +292,47 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	s.children[childID] = nil
 	s.mu.Unlock()
 
-	if err := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "attempt", "")); err != nil {
+	if err := s.appendAudit(opCtx, destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "attempt", "")); err != nil {
 		s.releaseReservation(childID)
 		return nil, err
 	}
-	if s.ctx.Err() != nil {
+	if err := opCtx.Err(); err != nil {
 		s.releaseReservation(childID)
-		auditErr := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "failed", "parent_session_closed"))
-		return nil, errors.Join(ErrDestinationSessionClosed, auditErr)
+		if s.ctx.Err() != nil {
+			return nil, ErrDestinationSessionClosed
+		}
+		return nil, err
 	}
 
-	dialCtx, cancelDial := context.WithTimeout(ctx, s.dialTimeout)
-	childCtx, cancelChild := context.WithCancel(dialCtx)
-	stopSessionCancel := context.AfterFunc(s.ctx, cancelChild)
-	conn, dialErr := DialApprovedTCP(childCtx, s.dialer, s.policy, s.approved)
-	stopSessionCancel()
-	cancelChild()
+	dialCtx, cancelDial := context.WithTimeout(opCtx, s.dialTimeout)
+	conn, dialErr := DialApprovedTCP(dialCtx, s.dialer, s.policy, s.approved)
 	cancelDial()
 	if dialErr != nil {
 		s.releaseReservation(childID)
-		auditErr := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "failed", "destination_dial_failed"))
+		auditErr := s.appendAudit(opCtx, destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "failed", "destination_dial_failed"))
 		return nil, errors.Join(dialErr, auditErr)
 	}
 
 	child := &destinationChildConn{
-		Conn:    newIdleConn(conn, s.idleTimeout),
-		session: s,
-		id:      childID,
+		Conn: conn, session: s, id: childID, done: make(chan struct{}),
 	}
 	s.mu.Lock()
-	if s.closed || s.ctx.Err() != nil || s.children[childID] != nil {
+	if s.closed || s.ctx.Err() != nil || opCtx.Err() != nil || s.children[childID] != nil {
 		delete(s.children, childID)
 		s.mu.Unlock()
-		closeErr := child.Conn.Close()
-		outcome, reason := "success", "parent_session_closed_before_child_open"
-		if closeErr != nil {
-			outcome, reason = "failed", "child_connection_cleanup_failed"
+		child.startClose(time.Now().Add(s.cleanupTimeout()))
+		if s.ctx.Err() != nil {
+			return nil, ErrDestinationSessionClosed
 		}
-		auditErr := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", outcome, reason))
-		if closeErr != nil || auditErr != nil {
-			s.mu.Lock()
-			s.auditErr = errors.Join(s.auditErr, closeErr, auditErr)
-			s.mu.Unlock()
-		}
-		return nil, errors.Join(ErrDestinationSessionClosed, closeErr, auditErr)
+		return nil, opCtx.Err()
 	}
 	s.children[childID] = child
 	s.mu.Unlock()
 
-	if err := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "success", "")); err != nil {
-		// An unrecorded child open fails the entire parent session closed.
-		// This keeps one owner responsible for closing every registered child.
+	if err := s.appendAudit(opCtx, destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "success", "")); err != nil {
 		return nil, errors.Join(err, s.closeWithReason("child_open_audit_failed"))
 	}
-	if s.ctx.Err() != nil {
-		// Parent shutdown already owns cleanup for children registered above.
-		// A second Close can block behind the first Close's sync.Once.
+	if opCtx.Err() != nil || channelClosed(child.Done()) {
 		return nil, ErrDestinationSessionClosed
 	}
 	return child, nil
@@ -362,39 +363,49 @@ func (s *DestinationSession) closeWithReason(reason string) error {
 				children = append(children, child)
 			}
 		}
+		close(s.done)
 		s.mu.Unlock()
 
-		var errs []error
-		deadline := time.Now().Add(s.closeTimeout)
-		// OpenChild rechecks s.closed after dialing and closes any late result.
-		// Do not wait for pending opens here: a context-ignoring dialer or
-		// blocked audit append must not hold parent teardown indefinitely.
-		closeResults := make(chan error, len(children))
+		deadline := time.Now().Add(s.cleanupTimeout())
 		for _, child := range children {
-			go func(child *destinationChildConn) {
-				closeResults <- child.Close()
-			}(child)
+			child.Cancel()
+			child.startClose(deadline)
 		}
-		timer := time.NewTimer(time.Until(deadline))
-		pending := len(children)
-		for pending > 0 {
-			select {
-			case err := <-closeResults:
-				pending--
-				if err != nil {
-					errs = append(errs, err)
+
+		var errs []error
+		if len(children) > 0 {
+			timer := time.NewTimer(time.Until(deadline))
+			cases := make([]reflect.SelectCase, 0, len(children)+1)
+			for _, child := range children {
+				cases = append(cases, reflect.SelectCase{
+					Dir: reflect.SelectRecv, Chan: reflect.ValueOf(child.closeDone),
+				})
+			}
+			timerIndex := len(cases)
+			cases = append(cases, reflect.SelectCase{
+				Dir: reflect.SelectRecv, Chan: reflect.ValueOf(timer.C),
+			})
+			pending := len(children)
+			for pending > 0 {
+				chosen, _, _ := reflect.Select(cases)
+				if chosen == timerIndex {
+					errs = append(errs, ErrDestinationCleanupIncomplete)
+					break
 				}
-			case <-timer.C:
-				errs = append(errs, errors.New("portforward: destination child cleanup exceeded shutdown timeout"))
-				pending = 0
+				if childErr := children[chosen].closeErr; childErr != nil {
+					errs = append(errs, childErr)
+				}
+				cases[chosen].Chan = reflect.ValueOf(nil)
+				pending--
+			}
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
 			}
 		}
-		if !timer.Stop() {
-			select {
-			case <-timer.C:
-			default:
-			}
-		}
+
 		s.mu.Lock()
 		if s.auditErr != nil {
 			errs = append(errs, s.auditErr)
@@ -403,11 +414,12 @@ func (s *DestinationSession) closeWithReason(reason string) error {
 		outcome := "success"
 		if len(errs) > 0 {
 			outcome = "failed"
-			reason = reason + "_cleanup_failed"
+			reason += "_cleanup_failed"
 		}
-		errs = append(errs, appendDestinationAuditUntil(s.audit, destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_session_closed", outcome, reason), deadline))
+		errs = append(errs, s.appendAuditUntil(deadline, destinationAuditEvent(
+			s.claims, s.localID, s.peerID, "port_forward.destination_session_closed", outcome, reason,
+		)))
 		s.closeErr = errors.Join(errs...)
-		close(s.done)
 	})
 	return s.closeErr
 }
@@ -418,33 +430,145 @@ func (s *DestinationSession) releaseReservation(id uint64) {
 	s.mu.Unlock()
 }
 
+func (c *destinationChildConn) doneChannel() chan struct{} {
+	c.doneMu.Lock()
+	defer c.doneMu.Unlock()
+	if c.done == nil {
+		c.done = make(chan struct{})
+	}
+	return c.done
+}
+
+func (c *destinationChildConn) Done() <-chan struct{} {
+	if c == nil {
+		return nil
+	}
+	return c.doneChannel()
+}
+
+// Cancel signals closure and interrupts pending network I/O without waiting
+// for the potentially blocking underlying Conn.Close call.
+func (c *destinationChildConn) Cancel() {
+	if c == nil {
+		return
+	}
+	c.doneOnce.Do(func() {
+		close(c.doneChannel())
+		if c.Conn != nil {
+			_ = c.Conn.SetDeadline(time.Now())
+		}
+	})
+}
+
+func (c *destinationChildConn) startClose(deadline time.Time) <-chan struct{} {
+	c.Cancel()
+	c.closeOnce.Do(func() {
+		c.closeDone = make(chan struct{})
+		go func() {
+			connErr := c.Conn.Close()
+			outcome, reason := "success", ""
+			if connErr != nil {
+				outcome, reason = "failed", "child_connection_close_failed"
+			}
+			auditErr := c.session.appendAuditUntil(deadline, destinationAuditEvent(
+				c.session.claims, c.session.localID, c.session.peerID,
+				"port_forward.destination_child_closed", outcome, reason,
+			))
+			c.session.mu.Lock()
+			delete(c.session.children, c.id)
+			if auditErr != nil {
+				c.session.auditErr = errors.Join(c.session.auditErr, auditErr)
+			}
+			c.session.mu.Unlock()
+			c.closeErr = errors.Join(connErr, auditErr)
+			close(c.closeDone)
+		}()
+	})
+	return c.closeDone
+}
+
 func (c *destinationChildConn) Close() error {
 	if c == nil {
 		return nil
 	}
-	c.once.Do(func() {
-		connErr := c.Conn.Close()
-		outcome, reason := "success", ""
-		if connErr != nil {
-			outcome, reason = "failed", "child_connection_close_failed"
+	timeout := destinationSessionCloseTimeout
+	if c.session != nil {
+		timeout = c.session.cleanupTimeout()
+	}
+	deadline := time.Now().Add(timeout)
+	done := c.startClose(deadline)
+	timer := time.NewTimer(time.Until(deadline))
+	defer timer.Stop()
+	select {
+	case <-done:
+		return c.closeErr
+	case <-timer.C:
+		return ErrDestinationCleanupIncomplete
+	}
+}
+
+func (s *DestinationSession) cleanupTimeout() time.Duration {
+	if s == nil || s.closeTimeout <= 0 {
+		return destinationSessionCloseTimeout
+	}
+	return s.closeTimeout
+}
+
+func (s *DestinationSession) appendAudit(ctx context.Context, event audit.Event) error {
+	if s == nil || ctx == nil || s.audit == nil {
+		return ErrDestinationAuditIncomplete
+	}
+	s.mu.Lock()
+	if s.auditSlots == nil {
+		s.auditSlots = make(chan struct{}, 1)
+	}
+	slots := s.auditSlots
+	s.mu.Unlock()
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		return errors.Join(ErrDestinationAuditIncomplete, ctx.Err())
+	}
+	result := make(chan error, 1)
+	go func() {
+		defer func() { <-slots }()
+		result <- s.audit.Append(event)
+	}()
+	select {
+	case err := <-result:
+		if ctx.Err() != nil {
+			return errors.Join(ErrDestinationAuditIncomplete, ctx.Err(), err)
 		}
-		auditErr := c.session.audit.Append(destinationAuditEvent(
-			c.session.claims,
-			c.session.localID,
-			c.session.peerID,
-			"port_forward.destination_child_closed",
-			outcome,
-			reason,
-		))
-		c.session.mu.Lock()
-		delete(c.session.children, c.id)
-		if auditErr != nil {
-			c.session.auditErr = errors.Join(c.session.auditErr, auditErr)
+		return err
+	case <-ctx.Done():
+		return errors.Join(ErrDestinationAuditIncomplete, ctx.Err())
+	}
+}
+
+func (s *DestinationSession) appendAuditUntil(deadline time.Time, event audit.Event) error {
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	return s.appendAudit(ctx, event)
+}
+
+func appendDestinationAuditContext(ctx context.Context, writer AuditWriter, event audit.Event) error {
+	if ctx == nil || writer == nil {
+		return ErrDestinationAuditIncomplete
+	}
+	if err := ctx.Err(); err != nil {
+		return errors.Join(ErrDestinationAuditIncomplete, err)
+	}
+	result := make(chan error, 1)
+	go func() { result <- writer.Append(event) }()
+	select {
+	case err := <-result:
+		if ctx.Err() != nil {
+			return errors.Join(ErrDestinationAuditIncomplete, ctx.Err(), err)
 		}
-		c.session.mu.Unlock()
-		c.closeErr = errors.Join(connErr, auditErr)
-	})
-	return c.closeErr
+		return err
+	case <-ctx.Done():
+		return errors.Join(ErrDestinationAuditIncomplete, ctx.Err())
+	}
 }
 
 func (c *destinationChildConn) CloseWrite() error {
@@ -479,18 +603,7 @@ var _ ForwardingSession = (*DestinationSession)(nil)
 
 
 func appendDestinationAuditUntil(writer AuditWriter, event audit.Event, deadline time.Time) error {
-	remaining := time.Until(deadline)
-	if remaining <= 0 {
-		return errors.New("portforward: destination shutdown audit append exceeded timeout")
-	}
-	done := make(chan error, 1)
-	go func() { done <- writer.Append(event) }()
-	timer := time.NewTimer(remaining)
-	defer timer.Stop()
-	select {
-	case err := <-done:
-		return err
-	case <-timer.C:
-		return errors.New("portforward: destination shutdown audit append exceeded timeout")
-	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	defer cancel()
+	return appendDestinationAuditContext(ctx, writer, event)
 }
