@@ -1371,6 +1371,7 @@ func TestFileReplayCrossProcessStagingLockHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire cross-process replay lock: %v", err)
 	}
+	defer unlock()
 	file, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, "replay"))
 	if err != nil {
 		t.Fatalf("create active replay staging file: %v", err)
