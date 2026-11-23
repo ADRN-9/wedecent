@@ -76,6 +76,8 @@ func verifyReplayACL(path string) error {
 		"S-1-5-32-544":      true,
 		"SY":                true,
 		"BA":                true,
+		"CO":                true,
+		"OW":                true,
 	}
 	sddl := sd.String()
 	start := strings.Index(sddl, "D:")
