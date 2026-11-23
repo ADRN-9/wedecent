@@ -41,6 +41,7 @@ type serveFileConfig struct {
 	PortForwardAllowedPrivateCIDRs *string `json:"port_forward_allowed_private_cidrs"`
 	PortForwardAllowPublic *bool `json:"port_forward_allow_public"`
 	PortForwardMaxConnections *int `json:"port_forward_max_connections"`
+	PortForwardAllowLegacyReplayMigration *bool `json:"port_forward_allow_legacy_replay_migration"`
 }
 
 func init() {
@@ -205,5 +206,6 @@ func (cfg serveFileConfig) flagArgs() []string {
 	addString("port-forward-allowed-private-cidrs", cfg.PortForwardAllowedPrivateCIDRs)
 	addBool("port-forward-allow-public", cfg.PortForwardAllowPublic)
 	addInt("port-forward-max-connections", cfg.PortForwardMaxConnections)
+	addBool("port-forward-allow-legacy-replay-migration", cfg.PortForwardAllowLegacyReplayMigration)
 	return args
 }
