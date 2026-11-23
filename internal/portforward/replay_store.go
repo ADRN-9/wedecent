@@ -273,54 +273,66 @@ func createReplayInitialization(path string, marker replayInitialization) error 
 	if err != nil {
 		return err
 	}
-	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if errors.Is(err, os.ErrExist) {
-		existing, readErr := readReplayInitialization(path, mesh.DeviceID(marker.DeviceID))
-		if readErr != nil {
-			return readErr
-		}
-		if existing.Version != marker.Version || existing.DeviceID != marker.DeviceID {
-			return errors.New("concurrent replay initialization has a different device scope")
-		}
-		return nil
-	}
+	dir := filepath.Dir(path)
+	file, err := os.CreateTemp(dir, ".portforward-init-*")
 	if err != nil {
 		return err
 	}
-	if err := file.Chmod(0o600); err != nil {
+	tempPath := file.Name()
+	cleanup := func() {
 		_ = file.Close()
-		_ = os.Remove(path)
+		_ = os.Remove(tempPath)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		cleanup()
 		return err
 	}
-	if err := secureReplayFile(path); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
+	if err := secureReplayFile(tempPath); err != nil {
+		cleanup()
 		return err
 	}
 	for len(data) > 0 {
 		n, writeErr := file.Write(data)
 		if writeErr != nil {
-			_ = file.Close()
-			_ = os.Remove(path)
+			cleanup()
 			return writeErr
 		}
 		if n == 0 {
-			_ = file.Close()
-			_ = os.Remove(path)
+			cleanup()
 			return io.ErrShortWrite
 		}
 		data = data[n:]
 	}
 	if err := file.Sync(); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
+		cleanup()
 		return err
 	}
 	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
+		_ = os.Remove(tempPath)
 		return err
 	}
-	return syncReplayDirectory(filepath.Dir(path))
+	if err := createReplayFileExclusive(tempPath, path); errors.Is(err, os.ErrExist) {
+		_ = os.Remove(tempPath)
+		var existing replayInitialization
+		for attempt := 0; attempt < 5; attempt++ {
+			existing, err = readReplayInitialization(path, mesh.DeviceID(marker.DeviceID))
+			if err == nil {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if err != nil {
+			return err
+		}
+		if existing.Version != marker.Version || existing.DeviceID != marker.DeviceID {
+			return errors.New("concurrent replay initialization has a different device scope")
+		}
+		return nil
+	} else if err != nil {
+		_ = os.Remove(tempPath)
+		return err
+	}
+	return nil
 }
 
 func readReplayInitialization(path string, deviceID mesh.DeviceID) (replayInitialization, error) {
