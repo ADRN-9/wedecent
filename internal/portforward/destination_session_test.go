@@ -401,7 +401,8 @@ type destinationCloseErrorConn struct {
 	net.Conn
 }
 
-func (destinationCloseErrorConn) Close() error {
+func (c destinationCloseErrorConn) Close() error {
+	_ = c.Conn.Close()
 	return errors.New("simulated child close failure")
 }
 
