@@ -9,8 +9,11 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -121,6 +124,95 @@ func TestRemoteReplaySendsVerifiedCapabilityAndDeviceProof(t *testing.T) {
 	verifier := AuthorizationVerifier{PublicKey: controlPublic, Replay: replay}
 	if _, err := verifier.VerifyAndConsume(context.Background(), authorization); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestRemoteReplayRejectsJTIAfterPairedLocalSnapshotAnchorRollback(t *testing.T) {
+	var devicePublic ed25519.PublicKey
+	var mu sync.Mutex
+	consumed := make(map[string]bool)
+	var generation uint64
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body remoteReplayTestRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		verifyRemoteReplayTestRequest(t, body, devicePublic)
+		mu.Lock()
+		defer mu.Unlock()
+		jti := body.Authorization.Claims.JTI
+		if consumed[jti] {
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"accepted":false,"reason":"replay"}`))
+			return
+		}
+		consumed[jti] = true
+		generation++
+		_, _ = fmt.Fprintf(w, `{"accepted":true,"generation":"%d","state_hash":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}`, generation)
+	})
+	remote, _, publicKey, _ := newRemoteReplayFixture(t, handler)
+	devicePublic = publicKey
+	controlPublic, controlPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := remote.Now().UTC()
+	makeAuthorization := func(jti string) Authorization {
+		claims := testClaims(now, DirectionLocal)
+		claims.InitiatingDevice = remote.DeviceID
+		claims.Route.Source = remote.DeviceID
+		claims.Route.Hops[0].From = remote.DeviceID
+		claims.JTI = base64.RawURLEncoding.EncodeToString([]byte(jti))
+		authorization, signErr := SignAuthorization(controlPrivate, claims)
+		if signErr != nil {
+			t.Fatal(signErr)
+		}
+		return authorization
+	}
+	authorizationA := makeAuthorization("replayauth000001")
+	authorizationB := makeAuthorization("replayauth000002")
+	if _, err := AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}.VerifyAndConsume(context.Background(), authorizationA); err != nil {
+		t.Fatalf("consume A through independent authority: %v", err)
+	}
+
+	localPath := filepath.Join(t.TempDir(), "portforward-replay.json")
+	local, err := NewFileReplay(localPath, remote.DeviceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := local.ConsumePortForwardAuthorization(context.Background(), authorizationA.Claims.JTI, time.UnixMilli(authorizationA.Claims.ExpiresAtUnixMS)); err != nil {
+		t.Fatalf("save local snapshot after A: %v", err)
+	}
+	oldSnapshot, err := os.ReadFile(localPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldAnchor, err := os.ReadFile(localPath + ".anchor")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}.VerifyAndConsume(context.Background(), authorizationB); err != nil {
+		t.Fatalf("consume B through independent authority: %v", err)
+	}
+	if err := local.ConsumePortForwardAuthorization(context.Background(), authorizationB.Claims.JTI, time.UnixMilli(authorizationB.Claims.ExpiresAtUnixMS)); err != nil {
+		t.Fatalf("save local snapshot after B: %v", err)
+	}
+
+	// Restore the mutually consistent local snapshot and anchor from after A.
+	if err := os.WriteFile(localPath, oldSnapshot, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(localPath+".anchor", oldAnchor, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := local.ConsumePortForwardAuthorization(context.Background(), authorizationB.Claims.JTI, time.UnixMilli(authorizationB.Claims.ExpiresAtUnixMS)); err != nil {
+		t.Fatalf("historical file store should demonstrate paired rollback acceptance: %v", err)
+	}
+	if _, err := AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}.VerifyAndConsume(context.Background(), authorizationB); !errors.Is(err, ErrAuthorizationReplay) {
+		t.Fatalf("independent authority accepted B after paired local rollback: %v", err)
 	}
 }
 
