@@ -485,7 +485,7 @@ func ValidateRouteAuthorizationBinding(auth Authorization) error {
 	if routeAuth.KeyID == "" || routeAuth.Signature == "" {
 		return ErrRouteAuthorizationRequired
 	}
-	if len(routeAuth.KeyID) > 128 || strings.ContainsAny(routeAuth.KeyID, " \\t\\r\\n") {
+	if len(routeAuth.KeyID) > 128 || strings.ContainsAny(routeAuth.KeyID, " \t\r\n") {
 		return ErrRouteAuthorizationMismatch
 	}
 	signature, err := base64.RawURLEncoding.Strict().DecodeString(routeAuth.Signature)
