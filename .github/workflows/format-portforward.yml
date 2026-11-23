@@ -19,8 +19,14 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           go-version: '1.27.0'
-      - name: Format only this implementation batch
+      - name: Normalize and format only this implementation batch
         run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          for path in Path("internal/portforward").glob("*.go"):
+              source = path.read_text()
+              path.write_text(source.replace("\\`", "`"))
+          PY
           gofmt -w \
             internal/portforward/*.go \
             internal/audit/log.go \
