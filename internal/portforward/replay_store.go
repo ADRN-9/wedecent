@@ -245,5 +245,5 @@ func writeReplayEntries(path string, deviceID mesh.DeviceID, entries map[string]
 		_ = os.Remove(tempPath)
 		return err
 	}
-	return os.Chmod(path, 0o600)
+	return nil
 }
