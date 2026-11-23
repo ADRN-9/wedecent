@@ -217,3 +217,39 @@ func TestAuthorizationReplayConsumptionIsAtomic(t *testing.T) {
 		t.Fatalf("successes=%d replays=%d", successes.Load(), replays.Load())
 	}
 }
+
+func TestAuthorizationRejectsExpiredAndFutureCapabilities(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	replay := NewMemoryReplay(8)
+	replay.Now = func() time.Time { return now }
+	verifier := AuthorizationVerifier{
+		PublicKey: publicKey,
+		Replay: replay,
+		Now: func() time.Time { return now },
+	}
+
+	expiredClaims := testClaims(now, DirectionLocal)
+	expiredAuth, err := SignAuthorization(privateKey, expiredClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier.Now = func() time.Time { return time.UnixMilli(expiredClaims.ExpiresAtUnixMS + 1) }
+	if _, err := verifier.VerifyAndConsume(context.Background(), expiredAuth); !errors.Is(err, ErrAuthorizationExpired) {
+		t.Fatalf("expired capability error = %v", err)
+	}
+
+	futureClaims := testClaims(now, DirectionLocal)
+	futureClaims.IssuedAtUnixMS = now.Add(time.Minute).UnixMilli()
+	futureAuth, err := SignAuthorization(privateKey, futureClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifier.Now = func() time.Time { return now }
+	if _, err := verifier.VerifyAndConsume(context.Background(), futureAuth); !errors.Is(err, ErrAuthorizationNotYetValid) {
+		t.Fatalf("future capability error = %v", err)
+	}
+}
