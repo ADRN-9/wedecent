@@ -262,13 +262,58 @@ func TestDestinationSessionRequiresSeparateRouteAuthorization(t *testing.T) {
 	claims := testRoutedClaims(now, DirectionLocal)
 	auth, publicKey := signDestinationTestAuthorization(t, claims)
 	cfg, replay, dialer, _ := newDestinationTestConfig(t, now, publicKey)
-	cfg.AuthenticatedPeerID = testRouter
-	cfg.TrustChecker = &destinationTestTrust{trusted: map[string]bool{string(testRouter): true}}
+	cfg.AuthenticatedRouterID = testRouter
+	cfg.RouterTrustChecker = &destinationTestTrust{trusted: map[string]bool{string(testRouter): true}}
 	if _, err := NewDestinationSession(context.Background(), cfg, auth); !errors.Is(err, ErrRouteAuthorizationRequired) {
 		t.Fatalf("missing route authorization error = %v", err)
 	}
-	if len(replay.used) != 1 || len(dialer.snapshot()) != 0 {
-		t.Fatal("missing route authorization did not fail closed")
+	if len(replay.used) != 0 || len(dialer.snapshot()) != 0 {
+		t.Fatal("missing route authorization consumed a grant or dialed a destination")
+	}
+}
+
+func TestDestinationSessionDoesNotLetTrustedRouterImpersonateInitiator(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testRoutedClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	auth.RouteAuthorization, _ = testRouteAuthorization(t, claims)
+
+	cfg, replay, _, _ := newDestinationTestConfig(t, now, publicKey)
+	cfg.AuthenticatedPeerID = testRouter
+	cfg.AuthenticatedRouterID = testRouter
+	cfg.TrustChecker = &destinationTestTrust{trusted: map[string]bool{string(testRouter): true}}
+	cfg.RouterTrustChecker = &destinationTestTrust{trusted: map[string]bool{string(testRouter): true}}
+	if _, err := NewDestinationSession(context.Background(), cfg, auth); !errors.Is(err, ErrAuthorizationMismatch) {
+		t.Fatalf("router impersonation error = %v, want endpoint identity mismatch", err)
+	}
+	if len(replay.used) != 0 {
+		t.Fatal("trusted router consumed the endpoint forwarding capability")
+	}
+
+	cfg.AuthenticatedPeerID = testInitiator
+	cfg.TrustChecker = &destinationTestTrust{trusted: map[string]bool{string(testInitiator): true}}
+	session, err := NewDestinationSession(context.Background(), cfg, auth)
+	if err != nil {
+		t.Fatalf("separately authenticated endpoint and router rejected: %v", err)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDestinationSessionRequiresRouterTrustSeparately(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testRoutedClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	auth.RouteAuthorization, _ = testRouteAuthorization(t, claims)
+	cfg, replay, _, _ := newDestinationTestConfig(t, now, publicKey)
+	cfg.AuthenticatedRouterID = testRouter
+	cfg.RouterTrustChecker = &destinationTestTrust{trusted: map[string]bool{}}
+	if _, err := NewDestinationSession(context.Background(), cfg, auth); !errors.Is(err, ErrRouterNotTrusted) {
+		t.Fatalf("untrusted router error = %v", err)
+	}
+	if len(replay.used) != 0 {
+		t.Fatal("untrusted router consumed the endpoint forwarding capability")
 	}
 }
 
@@ -299,6 +344,90 @@ func TestDestinationSessionTrustRevocationClosesChildStreams(t *testing.T) {
 		t.Fatal("child stream remained writable after peer trust revocation")
 	}
 	_ = remote.Close()
+}
+
+func TestDestinationSessionParentCancellationClosesChildren(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	cfg, _, dialer, _ := newDestinationTestConfig(t, now, publicKey)
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	session, err := NewDestinationSession(parentCtx, cfg, auth)
+	if err != nil {
+		cancelParent()
+		t.Fatal(err)
+	}
+	child, err := session.OpenChild(context.Background())
+	if err != nil {
+		cancelParent()
+		t.Fatal(err)
+	}
+	remote := <-dialer.opened
+	defer remote.Close()
+	cancelParent()
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.Write([]byte("after-parent-cancel")); err == nil {
+		t.Fatal("child remained writable after authenticated parent cancellation")
+	}
+}
+
+func TestDestinationSessionAppliesSignedIdleTimeoutToEveryChild(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	claims.Limits.IdleTimeoutSeconds = 5
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	cfg, _, dialer, _ := newDestinationTestConfig(t, now, publicKey)
+	session, err := NewDestinationSession(context.Background(), cfg, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := session.OpenChild(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = <-dialer.opened
+	idle, ok := child.Conn.(idleConn)
+	if !ok || idle.idle != 5*time.Second {
+		t.Fatalf("destination child idle policy = %#v, want signed 5s idle timeout", child.Conn)
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+type destinationCloseErrorConn struct {
+	net.Conn
+}
+
+func (destinationCloseErrorConn) Close() error {
+	return errors.New("simulated child close failure")
+}
+
+func TestDestinationChildCloseAuditReportsConnectionCloseFailure(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	auditLog := &memoryAudit{}
+	left, right := net.Pipe()
+	defer right.Close()
+	session := &DestinationSession{
+		claims:   claims,
+		localID:  testDestination,
+		peerID:   testInitiator,
+		audit:    auditLog,
+		children: make(map[uint64]*destinationChildConn),
+	}
+	child := &destinationChildConn{Conn: destinationCloseErrorConn{Conn: left}, session: session, id: 1}
+	session.children[1] = child
+	if err := child.Close(); err == nil {
+		t.Fatal("connection close failure was hidden")
+	}
+	events := auditLog.snapshot()
+	if len(events) != 1 || events[0].Type != "port_forward.destination_child_closed" ||
+		events[0].Outcome != "failed" || events[0].Reason != "child_connection_close_failed" {
+		t.Fatalf("child close audit = %#v, want failed closure", events)
+	}
 }
 
 func TestDestinationSessionBoundsChildrenAndExpiresActiveStreams(t *testing.T) {
