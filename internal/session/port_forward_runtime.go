@@ -22,6 +22,7 @@ type PortForwardRuntime struct {
 	Policy               portforward.DestinationPolicy
 	Audit                portforward.AuditWriter
 	TrustPollInterval    time.Duration
+	AllowLegacyReplayMigration bool
 	MaxConnections       int
 	DialTimeout          time.Duration
 }
