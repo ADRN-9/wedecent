@@ -14,6 +14,7 @@ var (
 	ErrInvalidPortForwardRequest = errors.New("invalid port forwarding request")
 	ErrPortForwardUnavailable    = errors.New("port forwarding is unavailable")
 	ErrPortForwardLimit          = errors.New("port forwarding limit reached")
+	ErrPortForwardNotFound       = errors.New("port forwarding not found")
 	ErrPortForwardOperation      = errors.New("port forwarding operation failed")
 )
 
@@ -68,6 +69,27 @@ func (s *PortForwardService) StopPortForward(ctx context.Context, req v1.PortFor
 		return classifyPortForwardError(err)
 	}
 	return nil
+}
+
+func (s *PortForwardService) GetPortForwardStatus(ctx context.Context, req v1.PortForwardStatusRequest) (v1.PortForwardStatus, error) {
+	if ctx == nil || ctx.Err() != nil {
+		if ctx == nil {
+			return v1.PortForwardStatus{}, ErrInvalidPortForwardRequest
+		}
+		return v1.PortForwardStatus{}, ctx.Err()
+	}
+	if s == nil || s.manager == nil {
+		return v1.PortForwardStatus{}, ErrPortForwardUnavailable
+	}
+	if !forwardingIDPattern.MatchString(req.ForwardingID) {
+		return v1.PortForwardStatus{}, ErrInvalidPortForwardRequest
+	}
+	for _, forward := range s.manager.List() {
+		if forward.ID == req.ForwardingID {
+			return portForwardStatus(forward), nil
+		}
+	}
+	return v1.PortForwardStatus{}, ErrPortForwardNotFound
 }
 
 func (s *PortForwardService) ListPortForwards(ctx context.Context) ([]v1.PortForwardStatus, error) {
