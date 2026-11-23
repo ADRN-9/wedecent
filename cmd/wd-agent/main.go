@@ -282,6 +282,7 @@ type serveConfig struct {
 	PortForwardAllowedPrivateCIDRs string
 	PortForwardAllowPublic bool
 	PortForwardMaxConnections int
+	PortForwardAllowLegacyReplayMigration bool
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
@@ -477,6 +478,12 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"port-forward-max-connections",
 		0,
 		"maximum concurrent destination child connections (default 16 when enabled; maximum 64)",
+	)
+	fs.BoolVar(
+		&cfg.PortForwardAllowLegacyReplayMigration,
+		"port-forward-allow-legacy-replay-migration",
+		false,
+		"explicitly migrate an unanchored legacy v1 replay store once; remove this flag after successful initialization",
 	)
 
 	if err := fs.Parse(args); err != nil {
