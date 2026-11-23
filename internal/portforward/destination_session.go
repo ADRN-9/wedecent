@@ -243,7 +243,9 @@ func (s *DestinationSession) Close() error {
 		}
 		s.opens.Wait()
 		s.mu.Lock()
-		errs = append(errs, s.auditErr)
+		if s.auditErr != nil {
+			errs = append(errs, s.auditErr)
+		}
 		s.mu.Unlock()
 		outcome := "success"
 		reason := ""
