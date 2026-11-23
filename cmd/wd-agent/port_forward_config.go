@@ -111,9 +111,6 @@ func loadPortForwardAuthorizationPublicKey(path string) (ed25519.PublicKey, erro
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() < ed25519.PublicKeySize || info.Size() > 256 {
 		return nil, errors.New("authorization trust anchor must be a bounded regular file, not a symlink")
 	}
-	if runtimeGOOS := os.Getenv("WEDECENT_UNUSED_RUNTIME_GUARD"); runtimeGOOS != "" {
-		return nil, errors.New("environment-based authorization key configuration is not supported")
-	}
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return nil, err
