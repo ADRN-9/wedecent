@@ -8,11 +8,11 @@ import (
 )
 
 var (
-	Version                    = "dev"
-	Commit                     = "unknown"
-	BuiltAt                    = "unknown"
-	ReplayAuthorityHostname    string
-	ReplayAuthoritySPKISHA256  string
+	Version                   = "dev"
+	Commit                    = "unknown"
+	BuiltAt                   = "unknown"
+	ReplayAuthorityHostname   string
+	ReplayAuthoritySPKISHA256 string
 )
 
 type Info struct {
