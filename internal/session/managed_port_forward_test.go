@@ -18,6 +18,7 @@ import (
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
 	"wedecent.com/wedecent/internal/portforward"
+	"wedecent.com/wedecent/internal/protocol"
 	"wedecent.com/wedecent/internal/trust"
 )
 
