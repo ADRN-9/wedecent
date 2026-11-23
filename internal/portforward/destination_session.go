@@ -299,7 +299,7 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	if s.closed || s.ctx.Err() != nil || s.children[childID] != nil {
 		delete(s.children, childID)
 		s.mu.Unlock()
-		closeErr := conn.Close()
+		closeErr := child.Conn.Close()
 		outcome, reason := "success", "parent_session_closed_before_child_open"
 		if closeErr != nil {
 			outcome, reason = "failed", "child_connection_cleanup_failed"
