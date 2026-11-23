@@ -790,11 +790,13 @@ func TestFileReplayRejectsPartialInitializationWithoutMarker(t *testing.T) {
 func startAndTerminateReplayInitializationProcess(t *testing.T, path, mode string) {
 	t.Helper()
 	readyPath := path + ".child-ready"
+	stopPath := readyPath + ".stop"
 	var output bytes.Buffer
 	cmd := exec.Command(os.Args[0], "-test.run=^TestFileReplayInitializationCrashHelper$")
 	cmd.Env = append(os.Environ(),
 		"WEDECENT_REPLAY_CRASH_PATH="+path,
 		"WEDECENT_REPLAY_CRASH_READY="+readyPath,
+		"WEDECENT_REPLAY_CRASH_STOP="+stopPath,
 		"WEDECENT_REPLAY_CRASH_MODE="+mode,
 	)
 	cmd.Stdout, cmd.Stderr = &output, &output
@@ -806,6 +808,7 @@ func startAndTerminateReplayInitializationProcess(t *testing.T, path, mode strin
 			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 		}
+		_ = os.Remove(stopPath)
 	})
 
 	deadline := time.Now().Add(10 * time.Second)
@@ -822,14 +825,17 @@ func startAndTerminateReplayInitializationProcess(t *testing.T, path, mode strin
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if err := cmd.Process.Kill(); err != nil {
-		t.Fatalf("terminate initialization crash helper (%s): %v", mode, err)
+	if err := os.WriteFile(stopPath, []byte("stop"), 0o600); err != nil {
+		t.Fatalf("signal initialization crash helper (%s): %v", mode, err)
 	}
 	if err := cmd.Wait(); err == nil {
-		t.Fatalf("initialization crash helper (%s) exited normally, expected termination", mode)
+		t.Fatalf("initialization crash helper (%s) exited normally, expected abrupt exit", mode)
 	}
 	if err := os.Remove(readyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("remove crash helper readiness marker: %v", err)
+	}
+	if err := os.Remove(stopPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove crash helper stop marker: %v", err)
 	}
 }
 
@@ -840,8 +846,9 @@ func TestFileReplayInitializationCrashHelper(t *testing.T) {
 	}
 	path := os.Getenv("WEDECENT_REPLAY_CRASH_PATH")
 	readyPath := os.Getenv("WEDECENT_REPLAY_CRASH_READY")
-	if path == "" || readyPath == "" {
-		t.Fatal("initialization crash helper requires path and readiness marker")
+	stopPath := os.Getenv("WEDECENT_REPLAY_CRASH_STOP")
+	if path == "" || readyPath == "" || stopPath == "" {
+		t.Fatal("initialization crash helper requires path and readiness/stop markers")
 	}
 
 	switch mode {
@@ -864,7 +871,14 @@ func TestFileReplayInitializationCrashHelper(t *testing.T) {
 	if err := os.WriteFile(readyPath, []byte(mode), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	select {}
+	for {
+		if _, err := os.Stat(stopPath); err == nil {
+			os.Exit(23)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inspect crash helper stop marker: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 func TestFileReplayCleansOrphanedStagingFilesAndPreservesDurablePendingState(t *testing.T) {
 	path := newReplayTestPath(t)

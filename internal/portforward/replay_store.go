@@ -24,6 +24,7 @@ const (
 	legacyReplayStoreVersion = 1
 	maxReplayStoreSize       = 16 << 20
 	defaultReplayLimit       = 100000
+	replayInitializationRetryLimit = 20
 )
 
 type replaySnapshot struct {
@@ -188,6 +189,10 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 }
 
 func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacyMigration bool) error {
+	return ensureReplayInitializationAttempt(path, deviceID, allowLegacyMigration, 0)
+}
+
+func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allowLegacyMigration bool, attempt int) error {
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
 		return err
@@ -197,7 +202,12 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 	if err != nil {
 		return fmt.Errorf("lock replay store initialization: %w", err)
 	}
-	defer unlockReplay()
+	locked := true
+	defer func() {
+		if locked {
+			unlockReplay()
+		}
+	}()
 	if err := cleanupReplayStaging(path); err != nil {
 		return fmt.Errorf("clean replay staging files: %w", err)
 	}
@@ -255,6 +265,14 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 	}
 	if anchorExists || pendingExists {
 		return errors.New("replay initialization marker is missing for an anchored or pending store")
+	}
+	if !stateExists && lockExists && !lockCreated && attempt < replayInitializationRetryLimit {
+		// Another process may have published the lock before it acquired it.
+		// Release and retry so its first initialization can publish the marker.
+		unlockReplay()
+		locked = false
+		time.Sleep(5 * time.Millisecond)
+		return ensureReplayInitializationAttempt(path, deviceID, allowLegacyMigration, attempt+1)
 	}
 	if stateExists || (lockExists && !lockCreated) {
 		if !allowLegacyMigration || !stateExists || !lockExists {
@@ -760,6 +778,9 @@ func cleanupReplayStagingWith(path string, remove func(string) error) error {
 		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
 			return fmt.Errorf("replay staging entry %s is not a regular file", name)
+		}
+		if err := setReplayFileOwner(tempPath); err != nil {
+			return fmt.Errorf("set replay staging file owner %s: %w", name, err)
 		}
 		if err := secureReplayFile(tempPath); err != nil {
 			return fmt.Errorf("refuse insecure replay staging file %s: %w", name, err)
