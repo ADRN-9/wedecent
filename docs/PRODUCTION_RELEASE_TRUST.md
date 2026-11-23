@@ -81,14 +81,15 @@ This command reports public trust configuration only; it does not expose private
 
 `.github/workflows/production-release-build.yml` is tag-triggered and is designed to run these gates in order:
 
-1. Build Windows, Linux, and macOS production artifacts from the exact tag commit.
-2. Build the Windows installer package from the same unsigned Windows release.
-3. Create per-artifact provenance sidecars and GitHub OIDC/Sigstore attestations.
-4. Download and verify every platform artifact, attestation identity, source commit/tree, and file digest.
-5. Run the Windows Authenticode finalizer on the protected `wedecent-signing` self-hosted Windows runner. It rejects forged source-tree metadata before invoking the signer, verifies signatures, and atomically stages the signed release and installer.
-6. Attest the final signed Windows release and installer bytes.
-7. Publish immutable Windows archives through a create-only uploader. Existing objects are accepted only when their bytes are identical; ambiguous remote states and concurrent create-only conflicts fail closed.
-8. Only after immutable downloads are verified and published, prepare, sign, verify, and publish the stable update manifest/signature pair with monotonic sequence enforcement and an atomic compare-and-swap publisher.
+1. Validate canonical stable `vMAJOR.MINOR.PATCH` tag syntax, require the repository `VERSION` to match, and prove both checked-out `HEAD` and the tag ref resolve to immutable `GITHUB_SHA`. Pre-release and malformed tags stop before any production build.
+2. Build Windows, Linux, and macOS production artifacts from the exact tag commit.
+3. Build the Windows installer package from the same unsigned Windows release.
+4. Create per-artifact provenance sidecars and GitHub OIDC/Sigstore attestations.
+5. Download and verify every platform artifact, attestation identity, source commit/tree, and file digest.
+6. Run the Windows Authenticode finalizer on the protected `wedecent-signing` self-hosted Windows runner. It rejects forged source-tree metadata before invoking the signer, verifies signatures, and atomically stages the signed release and installer.
+7. Attest the final signed Windows release and installer bytes.
+8. Publish immutable Windows archives through a create-only uploader. Existing objects are accepted only when their bytes are identical; ambiguous remote states and concurrent create-only conflicts fail closed.
+9. Only after immutable downloads are verified and published, prepare, sign, verify, and publish the stable update manifest/signature pair with monotonic sequence enforcement and an atomic compare-and-swap publisher.
 
 The signing job expects these environment variables to point to preinstalled, absolute, non-symlink adapters on the protected runner:
 
