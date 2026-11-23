@@ -4,13 +4,14 @@ package portforward
 
 import (
 	"os"
+	"path/filepath"
 )
 
 func replaceReplayFile(source, destination string) error {
 	if err := os.Rename(source, destination); err != nil {
 		return err
 	}
-	dir, err := os.Open(filepathDir(destination))
+	dir, err := os.Open(filepath.Dir(destination))
 	if err != nil {
 		return err
 	}
@@ -18,6 +19,3 @@ func replaceReplayFile(source, destination string) error {
 	return dir.Sync()
 }
 
-func filepathDir(path string) string {
-	return filepath.Dir(path)
-}
