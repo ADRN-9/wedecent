@@ -1,7 +1,10 @@
 package portforward
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -33,6 +36,8 @@ type ApprovedDestination struct {
 	Host string
 	Port uint16
 	IPs  []netip.Addr
+
+	seal [32]byte
 }
 
 type ContextDialer interface {
@@ -41,6 +46,9 @@ type ContextDialer interface {
 
 // ResolveApprovedDestination validates every DNS answer and returns only pinned IPs.
 func ResolveApprovedDestination(ctx context.Context, resolver IPResolver, policy DestinationPolicy, host string, port uint16) (ApprovedDestination, error) {
+	if ctx == nil {
+		return ApprovedDestination{}, ErrDestinationResolution
+	}
 	if err := ctx.Err(); err != nil {
 		return ApprovedDestination{}, err
 	}
@@ -84,12 +92,20 @@ func ResolveApprovedDestination(ctx context.Context, resolver IPResolver, policy
 		return ApprovedDestination{}, ErrDestinationDenied
 	}
 	sort.Slice(approved, func(i, j int) bool { return approved[i].Less(approved[j]) })
-	return ApprovedDestination{Host: host, Port: port, IPs: approved}, nil
+	result := ApprovedDestination{Host: host, Port: port, IPs: approved}
+	result.seal = approvedDestinationSeal(result, policy)
+	return result, nil
 }
 
 // DialApprovedTCP dials only approved IP literals; it never resolves Host again.
 func DialApprovedTCP(ctx context.Context, dialer ContextDialer, policy DestinationPolicy, destination ApprovedDestination) (net.Conn, error) {
-	if dialer == nil || destination.Port == 0 || !policy.allowsPort(destination.Port) || len(destination.IPs) == 0 || len(destination.IPs) > 32 {
+	if ctx == nil || dialer == nil || destination.Port == 0 || !policy.allowsPort(destination.Port) || len(destination.IPs) == 0 || len(destination.IPs) > 32 {
+		return nil, ErrDestinationDenied
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if destination.seal == ([32]byte{}) || destination.seal != approvedDestinationSeal(destination, policy) {
 		return nil, ErrDestinationDenied
 	}
 	var lastErr error
@@ -110,6 +126,57 @@ func DialApprovedTCP(ctx context.Context, dialer ContextDialer, policy Destinati
 		lastErr = ErrDestinationDenied
 	}
 	return nil, lastErr
+}
+
+// approvedDestinationSeal prevents callers from mutating the pinned address set
+// or substituting a different destination policy after DNS validation.
+func approvedDestinationSeal(destination ApprovedDestination, policy DestinationPolicy) [32]byte {
+	var b bytes.Buffer
+	writeString := func(value string) {
+		var length [4]byte
+		binary.BigEndian.PutUint32(length[:], uint32(len(value)))
+		_, _ = b.Write(length[:])
+		_, _ = b.WriteString(value)
+	}
+	writeUint16 := func(value uint16) {
+		var encoded [2]byte
+		binary.BigEndian.PutUint16(encoded[:], value)
+		_, _ = b.Write(encoded[:])
+	}
+	writeString(destination.Host)
+	writeUint16(destination.Port)
+	var count [4]byte
+	binary.BigEndian.PutUint32(count[:], uint32(len(destination.IPs)))
+	_, _ = b.Write(count[:])
+	for _, ip := range destination.IPs {
+		writeString(ip.String())
+	}
+	if policy.AllowPublic {
+		_ = b.WriteByte(1)
+	} else {
+		_ = b.WriteByte(0)
+	}
+	prefixes := append([]netip.Prefix(nil), policy.AllowedPrivate...)
+	sort.Slice(prefixes, func(i, j int) bool { return prefixes[i].String() < prefixes[j].String() })
+	binary.BigEndian.PutUint32(count[:], uint32(len(prefixes)))
+	_, _ = b.Write(count[:])
+	for _, prefix := range prefixes {
+		writeString(prefix.String())
+	}
+	ports := append([]PortRange(nil), policy.AllowedPorts...)
+	sort.Slice(ports, func(i, j int) bool {
+		if ports[i].First == ports[j].First {
+			return ports[i].Last < ports[j].Last
+		}
+		return ports[i].First < ports[j].First
+	})
+	binary.BigEndian.PutUint32(count[:], uint32(len(ports)))
+	_, _ = b.Write(count[:])
+	for _, port := range ports {
+		writeUint16(port.First)
+		writeUint16(port.Last)
+	}
+	return sha256.Sum256(b.Bytes())
 }
 
 func (p DestinationPolicy) Validate() error {
