@@ -26,7 +26,9 @@ func main() {
 		if err := buildinfo.Write(os.Stdout, "wd-core"); err != nil {
 			fmt.Fprintln(os.Stderr, "wd-core:", err)
 			os.Exit(1)
-		}
+		} else if *forwardingLegacyMigration {
+		return errors.New("--port-forward-allow-legacy-replay-migration requires --port-forward-authorization-public-key")
+	}
 		return
 	}
 	if err := run(os.Args[1:]); err != nil && !errors.Is(err, context.Canceled) {
@@ -48,6 +50,7 @@ func run(args []string) error {
 	routerAgentID := fs.String("router-agent-id", strings.TrimSpace(os.Getenv("WEDECENT_ROUTER_AGENT_ID")), "local router agent device ID (or WEDECENT_ROUTER_AGENT_ID)")
 	routerAgentFingerprint := fs.String("router-agent-fingerprint", strings.TrimSpace(os.Getenv("WEDECENT_ROUTER_AGENT_FINGERPRINT")), "local router agent public-key fingerprint (or WEDECENT_ROUTER_AGENT_FINGERPRINT)")
 	forwardingPublicKeyPath := fs.String("port-forward-authorization-public-key", "", "path to the trusted Ed25519 public key used to verify port-forwarding capabilities (forwarding stays disabled when omitted)")
+	forwardingLegacyMigration := fs.Bool("port-forward-allow-legacy-replay-migration", false, "explicitly migrate an unanchored legacy v1 replay store once; remove this flag after successful initialization")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -73,6 +76,7 @@ func run(args []string) error {
 		}
 		config.Forwarding = &portforward.ManagerConfig{
 			AuthorizationPublicKey: publicKey,
+			AllowLegacyReplayMigration: *forwardingLegacyMigration,
 			ReplayPath: filepath.Join(*clientStateDir, "portforward-replay.json"),
 			Limits: portforward.DefaultManagerLimits(),
 		}
