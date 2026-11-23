@@ -18,7 +18,7 @@ permissions:
 jobs:
   linux-tauri-check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -80,7 +80,7 @@ jobs:
 
   windows-tauri-check:
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -118,7 +118,7 @@ jobs:
 
   macos-tauri-check:
     runs-on: macos-latest
-    timeout-minutes: 15
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

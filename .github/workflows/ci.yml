@@ -67,8 +67,8 @@ jobs:
         run: test -z "$(gofmt -l cmd internal)"
       - name: Stress Linux replay initialization and crash recovery
         run: |
-          go test ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions)$' -count=3 -v
-          go test -race ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions)$' -count=1 -v
+          go test ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*)$' -count=3 -v
+          go test -race ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*)$' -count=1 -v
       - name: Test port-forward session and transport packages
         run: go test ./internal/session ./internal/portforward ./internal/transport
       - name: Race-test port-forward session and transport packages
@@ -130,7 +130,7 @@ jobs:
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
       - name: Test Windows replay-store security regressions
-        run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash|TestWindowsReplayRejectsUnauthorizedOrphanStagingACL|TestWindowsReplayRejectsInsecurePreexistingBootstrapLock|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
+        run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash|TestWindowsReplayRepairsBootstrapLockOwnerAfterInterruptedCreation|TestWindowsReplayRejectsUnauthorizedOrphanStagingACL|TestWindowsReplayRejectsInsecurePreexistingBootstrapLock|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
       - name: Test native Windows agent
         run: go test ./...
       - name: Build native Windows binaries
@@ -256,16 +256,21 @@ jobs:
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.x
-      - name: Check route authorization encoder and signer syntax
+      - name: Check authorization and replay authority JavaScript syntax
         run: |
           node --check supabase/functions/_shared/route-authorization.mjs
+          node --check supabase/functions/_shared/port-forward-replay.mjs
           node --check supabase/functions/_shared/route-authorization-signer.mjs
       - name: Test Go-compatible route authorization signing
         run: node --test supabase/functions/_shared/route-authorization.test.mjs
       - name: Test non-extractable route authorization signer
         run: node --test supabase/functions/_shared/route-authorization-signer.test.mjs
+      - name: Test Go-compatible remote replay authority encoding
+        run: node --test supabase/functions/_shared/port-forward-replay.test.mjs
       - name: Type-check route authorization Edge Function
         run: deno check supabase/functions/route-authorization/index.ts
+      - name: Type-check independent replay authority Edge Function
+        run: deno check supabase/functions/port-forward-replay/index.ts
 
   supabase-db:
     runs-on: ubuntu-latest
