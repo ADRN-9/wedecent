@@ -170,12 +170,20 @@ func (s *DestinationSession) watchTrust() {
 	for {
 		select {
 		case <-s.ctx.Done():
-			_ = s.Close()
+			reason := "authorization_expired"
+			if !errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
+				reason = "parent_session_closed"
+			}
+			_ = s.closeWithReason(reason)
 			return
 		case <-ticker.C:
 			trusted, err := s.trustChecker.IsTrusted(s.ctx, string(s.peerID))
-			if err != nil || !trusted {
-				_ = s.Close()
+			if err != nil {
+				_ = s.closeWithReason("peer_trust_unavailable")
+				return
+			}
+			if !trusted {
+				_ = s.closeWithReason("peer_trust_revoked")
 				return
 			}
 		}
@@ -247,6 +255,10 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 }
 
 func (s *DestinationSession) Close() error {
+	return s.closeWithReason("parent_session_closed")
+}
+
+func (s *DestinationSession) closeWithReason(reason string) error {
 	if s == nil {
 		return nil
 	}
@@ -275,10 +287,9 @@ func (s *DestinationSession) Close() error {
 		}
 		s.mu.Unlock()
 		outcome := "success"
-		reason := ""
 		if len(errs) > 0 {
 			outcome = "failed"
-			reason = "destination_session_cleanup_failed"
+			reason = reason + "_cleanup_failed"
 		}
 		errs = append(errs, s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_session_closed", outcome, reason)))
 		s.closeErr = errors.Join(errs...)
