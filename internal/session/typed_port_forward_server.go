@@ -164,7 +164,7 @@ func (s *typedPortForwardServer) openParent(ctx context.Context, frame protocol.
 		return nil
 	}
 	s.mu.Lock()
-	attached = !s.closed && !parent.closed && s.parents[frame.StreamID] == parent
+	attached := !s.closed && !parent.closed && s.parents[frame.StreamID] == parent
 	if attached {
 		go s.watchDestinationParent(parent)
 	}
@@ -325,7 +325,7 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 	// Parent closure may race with the acceptance write. Never start workers
 	// after the parent has detached this child.
 	s.mu.Lock()
-	attached = !s.closed && !parent.closed &&
+	attached := !s.closed && !parent.closed &&
 		s.parents[parent.id] == parent && s.children[child.id] == child &&
 		!child.isClosed()
 	if attached {
