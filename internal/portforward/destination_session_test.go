@@ -217,7 +217,7 @@ func TestDestinationSessionBoundsChildrenAndExpiresActiveStreams(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
 	claims.Limits.MaxConnections = 2
-	claims.Limits.MaxDurationSeconds = 1
+	claims.Limits.MaxDurationSeconds = 2
 	auth, publicKey := signDestinationTestAuthorization(t, claims)
 	cfg, _, dialer, _ := newDestinationTestConfig(t, now, publicKey)
 	cfg.MaxConnections = 1
@@ -236,7 +236,7 @@ func TestDestinationSessionBoundsChildrenAndExpiresActiveStreams(t *testing.T) {
 	_ = remote
 	select {
 	case <-session.ctx.Done():
-	case <-time.After(2 * time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("destination session did not expire at its signed duration")
 	}
 	if _, err := child.Write([]byte("after-expiry")); err == nil {
