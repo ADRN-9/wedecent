@@ -403,7 +403,7 @@ func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
 				if !child.isClosed() {
 					_ = s.closeChild(child.id, "destination_write_failed", false)
 					if s.ctx.Err() == nil {
-						_ = s.sendStreamError(child.id, "destination_write_failed", "destination connection write failed")
+						_ = s.writeChildError(child, "destination_write_failed", "destination connection write failed")
 					}
 				}
 				return
@@ -429,7 +429,7 @@ func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
 		if child.isClosed() || s.ctx.Err() != nil {
 			return
 		}
-		if err := s.write(protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: child.id, Payload: payload}); err != nil {
+		if err := s.writeChildFrame(child, protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: child.id, Payload: payload}); err != nil {
 			_ = s.closeChild(child.id, "transport_write_failed", false)
 			return
 		}
@@ -544,14 +544,14 @@ func (s *typedPortForwardServer) forwardOutput(child *typedPortForwardChild) {
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
 				if !child.isClosed() && s.ctx.Err() == nil {
-					if err := s.write(protocol.Frame{Type: protocol.TypeStreamHalfClose, StreamID: child.id}); err != nil {
+					if err := s.writeChildFrame(child, protocol.Frame{Type: protocol.TypeStreamHalfClose, StreamID: child.id}); err != nil {
 						_ = s.closeChild(child.id, "transport_write_failed", false)
 					}
 				}
 				return
 			}
 			if !errors.Is(readErr, net.ErrClosed) && !errors.Is(readErr, io.ErrClosedPipe) && !child.isClosed() {
-				_ = s.sendStreamError(child.id, "destination_read_failed", "destination connection read failed")
+				_ = s.writeChildError(child, "destination_read_failed", "destination connection read failed")
 			}
 			if !child.isClosed() {
 				_ = s.closeChild(child.id, "destination_read_failed", false)
@@ -609,7 +609,7 @@ func (s *typedPortForwardServer) sendData(child *typedPortForwardChild, data []b
 			child.sendMu.Unlock()
 			return io.ErrClosedPipe
 		}
-		err := s.write(protocol.Frame{
+		err := s.writeChildFrame(child, protocol.Frame{
 			Type: protocol.TypeStreamData, StreamID: child.id,
 			Payload: append([]byte(nil), data[offset:offset+count]...),
 		})
@@ -620,6 +620,26 @@ func (s *typedPortForwardServer) sendData(child *typedPortForwardChild, data []b
 		offset += count
 	}
 	return nil
+}
+
+func (s *typedPortForwardServer) writeChildFrame(child *typedPortForwardChild, frame protocol.Frame) error {
+	if child == nil {
+		return io.ErrClosedPipe
+	}
+	child.sendMu.Lock()
+	defer child.sendMu.Unlock()
+	if child.isClosed() || s.ctx.Err() != nil {
+		return io.ErrClosedPipe
+	}
+	return s.write(frame)
+}
+
+func (s *typedPortForwardServer) writeChildError(child *typedPortForwardChild, code, message string) error {
+	payload, err := protocol.JSON(protocol.StreamError{Code: code, Message: message})
+	if err != nil {
+		return err
+	}
+	return s.writeChildFrame(child, protocol.Frame{Type: protocol.TypeStreamError, StreamID: child.id, Payload: payload})
 }
 
 func (s *typedPortForwardServer) sendAccepted(streamID uint32) error {
