@@ -6,11 +6,11 @@ import (
 	"crypto/rand"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"wedecent.com/wedecent/internal/mesh"
 	"wedecent.com/wedecent/internal/trust"
 )
 
