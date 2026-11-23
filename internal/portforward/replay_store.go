@@ -82,12 +82,12 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 		return ErrAuthorizationInvalid
 	}
 
-	now := time.Now().UTC()
-	if r.Now != nil {
-		now = r.Now().UTC()
-	}
+	now := replayStoreNow(r)
 	if !expiresAt.After(now) {
 		return ErrAuthorizationExpired
+	}
+	if expiresAt.Sub(now) > MaxAuthorizationLifetime {
+		return ErrAuthorizationInvalid
 	}
 	limit := r.MaxEntries
 	if limit == 0 {
@@ -105,6 +105,13 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	now = replayStoreNow(r)
+	if !expiresAt.After(now) {
+		return ErrAuthorizationExpired
+	}
+	if expiresAt.Sub(now) > MaxAuthorizationLifetime {
+		return ErrAuthorizationInvalid
+	}
 
 	entries, err := readReplayEntries(r.Path, r.DeviceID)
 	if err != nil {
@@ -114,6 +121,10 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 	for key, expiryMS := range entries {
 		if expiryMS <= nowMS {
 			delete(entries, key)
+			continue
+		}
+		if expiryMS-nowMS > MaxAuthorizationLifetime.Milliseconds() {
+			return ErrReplayUnavailable
 		}
 	}
 	if _, exists := entries[jti]; exists {
@@ -246,4 +257,12 @@ func writeReplayEntries(path string, deviceID mesh.DeviceID, entries map[string]
 		return err
 	}
 	return nil
+}
+
+func replayStoreNow(replay *FileReplay) time.Time {
+	now := time.Now().UTC()
+	if replay.Now != nil {
+		now = replay.Now().UTC()
+	}
+	return now
 }
