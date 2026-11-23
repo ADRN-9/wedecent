@@ -76,7 +76,7 @@ func TestAuthorizationIssuerRejectsInvalidLifetimeAndCallerOwnedReplayFields(t *
 
 func TestFileReplayPersistsAcrossProcessRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "portforward-replay.json")
-	expiry := time.Now().UTC().Add(5 * time.Minute).UnixMilli()
+	expiry := time.Now().UTC().Add(time.Minute).UnixMilli()
 	run := func(expectReplay bool) {
 		t.Helper()
 		cmd := exec.Command(os.Args[0], "-test.run=^TestFileReplayProcessHelper$")
