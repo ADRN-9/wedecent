@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
@@ -101,6 +102,128 @@ func TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner(t *testing.T) {
 	}
 }
 
+
+func TestWindowsReplayLockBootstrapCrashHelper(t *testing.T) {
+	path := os.Getenv("WEDECENT_REPLAY_LOCK_CRASH_PATH")
+	if path == "" {
+		return
+	}
+	readyPath := os.Getenv("WEDECENT_REPLAY_LOCK_CRASH_READY")
+	stopPath := os.Getenv("WEDECENT_REPLAY_LOCK_CRASH_STOP")
+	if readyPath == "" || stopPath == "" {
+		t.Fatal("Windows lock crash helper requires readiness and stop paths")
+	}
+	unlock, err := lockReplayBootstrapFile(path)
+	if err != nil {
+		t.Fatalf("acquire replay bootstrap lock: %v", err)
+	}
+	defer unlock()
+	file, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, "lock"))
+	if err != nil {
+		t.Fatalf("create pre-publication lock staging file: %v", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := setReplayFileOwner(file.Name()); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := secureReplayFile(file.Name()); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("crashed before publishing replay lock")); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	activePath := file.Name()
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(readyPath, []byte(activePath), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(stopPath); err == nil {
+			os.Exit(23)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inspect Windows lock crash stop marker: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash(t *testing.T) {
+	path := newReplayTestPath(t)
+	readyPath := path + ".lock-crash-ready"
+	stopPath := path + ".lock-crash-stop"
+	var output bytes.Buffer
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWindowsReplayLockBootstrapCrashHelper$")
+	cmd.Env = append(os.Environ(),
+		"WEDECENT_REPLAY_LOCK_CRASH_PATH="+path,
+		"WEDECENT_REPLAY_LOCK_CRASH_READY="+readyPath,
+		"WEDECENT_REPLAY_LOCK_CRASH_STOP="+stopPath,
+	)
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start Windows lock bootstrap crash helper: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = os.WriteFile(stopPath, []byte("stop"), 0o600)
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		_ = os.Remove(readyPath)
+		_ = os.Remove(stopPath)
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	var orphanPath string
+	for {
+		data, readErr := os.ReadFile(readyPath)
+		if readErr == nil {
+			orphanPath = string(data)
+			break
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("read Windows lock crash readiness: %v", readErr)
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			waitErr := cmd.Wait()
+			t.Fatalf("Windows lock bootstrap helper did not reach crash barrier: wait=%v output=%s", waitErr, output.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if _, err := os.Lstat(orphanPath); err != nil {
+		t.Fatalf("expected orphan lock staging file before recovery: %v", err)
+	}
+	if err := os.WriteFile(stopPath, []byte("stop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("Windows lock bootstrap helper exited normally, expected abrupt process exit")
+	}
+
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jti := base64.RawURLEncoding.EncodeToString([]byte("windowscrash0001"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatalf("replay store did not recover after pre-publication lock crash: %v", err)
+	}
+	if _, err := os.Lstat(orphanPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("crashed Windows lock staging file remains: %v", err)
+	}
+}
 func TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash(t *testing.T) {
 	path := newReplayTestPath(t)
 	startAndTerminateReplayInitializationProcess(t, path, "lock_staging")

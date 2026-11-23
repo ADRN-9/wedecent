@@ -865,43 +865,6 @@ func TestFileReplayInitializationCrashHelper(t *testing.T) {
 		if err := ensureReplayInitialization(path, testInitiator, false); err != nil {
 			t.Fatalf("publish pending initialization marker: %v", err)
 		}
-	case "lock_staging":
-		unlock, created, err := lockReplayFileOS(path)
-		if err != nil {
-			t.Fatalf("create replay lock before bootstrap staging crash: %v", err)
-		}
-		if !created {
-			t.Fatal("expected bootstrap crash helper to create the replay lock")
-		}
-		defer unlock()
-		file, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, "lock"))
-		if err != nil {
-			t.Fatalf("create replay lock bootstrap staging file: %v", err)
-		}
-		tempPath := file.Name()
-		if err := file.Chmod(0o600); err != nil {
-			_ = file.Close()
-			t.Fatal(err)
-		}
-		if err := setReplayFileOwner(tempPath); err != nil {
-			_ = file.Close()
-			t.Fatal(err)
-		}
-		if err := secureReplayFile(tempPath); err != nil {
-			_ = file.Close()
-			t.Fatal(err)
-		}
-		if _, err := file.Write([]byte("interrupted lock bootstrap")); err != nil {
-			_ = file.Close()
-			t.Fatal(err)
-		}
-		if err := file.Sync(); err != nil {
-			_ = file.Close()
-			t.Fatal(err)
-		}
-		if err := file.Close(); err != nil {
-			t.Fatal(err)
-		}
 	default:
 		t.Fatalf("unsupported initialization crash mode %q", mode)
 	}
@@ -991,7 +954,7 @@ func TestFileReplayCleansOrphanedStagingFilesAndPreservesDurablePendingState(t *
 		orphaned = append(orphaned, createReplayStagingTestFile(t, path, kind))
 	}
 	otherStorePath := filepath.Join(filepath.Dir(path), "other-replay.json")
-	otherStoreStaging := createReplayStagingTestFile(t, otherStorePath, "replay")
+	otherStoreStaging := createReplayStagingTestFile(t, otherStorePath, "lock")
 
 	if err := replay.ConsumePortForwardAuthorization(context.Background(), nextJTI, expiry); err != nil {
 		t.Fatalf("consume after orphan cleanup and pending recovery: %v", err)
