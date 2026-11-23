@@ -176,6 +176,54 @@ func TestFileReplayConsumptionIsAtomicAcrossInstances(t *testing.T) {
 	}
 }
 
+func TestFileReplayConcurrentInitializationAcrossProcesses(t *testing.T) {
+	path := newReplayTestPath(t)
+	barrier := path + ".start"
+	expiry := time.Now().UTC().Add(time.Minute).UnixMilli()
+
+	type childProcess struct {
+		cmd    *exec.Cmd
+		output bytes.Buffer
+	}
+	const workers = 8
+	children := make([]*childProcess, 0, workers)
+	defer func() {
+		for _, child := range children {
+			if child.cmd.Process != nil {
+				_ = child.cmd.Process.Kill()
+			}
+		}
+	}()
+
+	for i := 0; i < workers; i++ {
+		raw := make([]byte, 16)
+		raw[0] = byte(i + 1)
+		jti := base64.RawURLEncoding.EncodeToString(raw)
+		cmd := exec.Command(os.Args[0], "-test.run=^TestFileReplayConcurrentProcessHelper$")
+		cmd.Env = append(os.Environ(),
+			"WEDECENT_REPLAY_PROCESS_PATH="+path,
+			"WEDECENT_REPLAY_PROCESS_BARRIER="+barrier,
+			"WEDECENT_REPLAY_PROCESS_EXPIRY="+strconv.FormatInt(expiry, 10),
+			"WEDECENT_REPLAY_PROCESS_JTI="+jti,
+		)
+		child := &childProcess{cmd: cmd}
+		cmd.Stdout, cmd.Stderr = &child.output, &child.output
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("start replay process %d: %v", i, err)
+		}
+		children = append(children, child)
+	}
+
+	if err := os.WriteFile(barrier, []byte("start"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for i, child := range children {
+		if err := child.cmd.Wait(); err != nil {
+			t.Errorf("replay process %d failed: %v\n%s", i, err, child.output.String())
+		}
+	}
+}
+
 func TestFileReplayConcurrentInitializationIsSerialized(t *testing.T) {
 	path := newReplayTestPath(t)
 	const workers = 24
@@ -552,4 +600,41 @@ func newReplayTestDir(t *testing.T) string {
 func newReplayTestPath(t *testing.T) string {
 	t.Helper()
 	return filepath.Join(newReplayTestDir(t), "portforward-replay.json")
+}
+
+// TestFileReplayConcurrentProcessHelper is invoked only by the multi-process
+// initialization regression above.
+func TestFileReplayConcurrentProcessHelper(t *testing.T) {
+	path := os.Getenv("WEDECENT_REPLAY_PROCESS_PATH")
+	if path == "" {
+		return
+	}
+	barrier := os.Getenv("WEDECENT_REPLAY_PROCESS_BARRIER")
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		_, err := os.Stat(barrier)
+		if err == nil {
+			break
+		}
+		if !os.IsNotExist(err) {
+			t.Fatal(err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for concurrent replay process barrier")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	expiry, err := strconv.ParseInt(os.Getenv("WEDECENT_REPLAY_PROCESS_EXPIRY"), 10, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jti := os.Getenv("WEDECENT_REPLAY_PROCESS_JTI")
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.UnixMilli(expiry)); err != nil {
+		t.Fatalf("concurrent replay initialization/consumption failed: %v", err)
+	}
 }
