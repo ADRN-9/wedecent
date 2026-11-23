@@ -3,17 +3,27 @@ set -euo pipefail
 
 WEDECENT_TEST_TAG_ROOT=''
 WEDECENT_TEST_TAG_REMOTE=''
+WEDECENT_TEST_TAG_ORIGINAL_REMOTE=''
+WEDECENT_TEST_TAG_ORIGIN_EXISTED=0
 WEDECENT_TEST_TAGS=()
 
 wedecent_test_release_tags_init() {
   WEDECENT_TEST_TAG_ROOT="$1"
   WEDECENT_TEST_TAG_REMOTE="$2/release-tags.git"
   WEDECENT_TEST_TAGS=()
+  WEDECENT_TEST_TAG_ORIGINAL_REMOTE="$(git -C "$WEDECENT_TEST_TAG_ROOT" remote get-url origin 2>/dev/null || true)"
+  if [[ -n "$WEDECENT_TEST_TAG_ORIGINAL_REMOTE" ]]; then
+    WEDECENT_TEST_TAG_ORIGIN_EXISTED=1
+  else
+    WEDECENT_TEST_TAG_ORIGIN_EXISTED=0
+  fi
   git init --bare -q "$WEDECENT_TEST_TAG_REMOTE"
   git --git-dir="$WEDECENT_TEST_TAG_REMOTE" config receive.shallowUpdate true
-  export GIT_CONFIG_COUNT=1
-  export GIT_CONFIG_KEY_0='remote.origin.url'
-  export GIT_CONFIG_VALUE_0="$WEDECENT_TEST_TAG_REMOTE"
+  if ((WEDECENT_TEST_TAG_ORIGIN_EXISTED == 1)); then
+    git -C "$WEDECENT_TEST_TAG_ROOT" remote set-url origin "$WEDECENT_TEST_TAG_REMOTE"
+  else
+    git -C "$WEDECENT_TEST_TAG_ROOT" remote add origin "$WEDECENT_TEST_TAG_REMOTE"
+  fi
 }
 
 wedecent_test_release_tag_add() {
@@ -50,5 +60,9 @@ wedecent_test_release_tags_cleanup() {
   for tag in "${WEDECENT_TEST_TAGS[@]}"; do
     git -C "$WEDECENT_TEST_TAG_ROOT" update-ref -d "refs/tags/$tag" >/dev/null 2>&1 || true
   done
-  unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0
+  if ((WEDECENT_TEST_TAG_ORIGIN_EXISTED == 1)); then
+    git -C "$WEDECENT_TEST_TAG_ROOT" remote set-url origin "$WEDECENT_TEST_TAG_ORIGINAL_REMOTE"
+  else
+    git -C "$WEDECENT_TEST_TAG_ROOT" remote remove origin >/dev/null 2>&1 || true
+  fi
 }
