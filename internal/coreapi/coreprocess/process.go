@@ -29,16 +29,16 @@ var ErrServerRequired = errors.New("core process: IPC server is required")
 var newLocalCoreRemoteReplay = portforward.NewProductionRemoteReplay
 
 type Config struct {
-	ClientStateDir    string
-	SupabaseURL       string
-	PublishableKey    string
-	AccountClient     coreapi.AccountClient
-	ConnectionBackend coreapi.ConnectionBackend
-	RouteSource       coreconnect.RouteRequestSource
-	RouterService     v1.RouterService
-	Forwarding                 *portforward.ManagerConfig
-	ForwardingReplayEndpoint   string
-	ForwardingReplayAPIKey     string
+	ClientStateDir           string
+	SupabaseURL              string
+	PublishableKey           string
+	AccountClient            coreapi.AccountClient
+	ConnectionBackend        coreapi.ConnectionBackend
+	RouteSource              coreconnect.RouteRequestSource
+	RouterService            v1.RouterService
+	Forwarding               *portforward.ManagerConfig
+	ForwardingReplayEndpoint string
+	ForwardingReplayAPIKey   string
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection

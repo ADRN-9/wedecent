@@ -19,6 +19,7 @@ import (
 	"net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -103,6 +104,25 @@ func verifyRemoteReplayTestRequest(t *testing.T, request remoteReplayTestRequest
 	deviceSignature, err := base64.RawURLEncoding.Strict().DecodeString(request.DeviceSignature)
 	if err != nil || !ed25519.Verify(publicKey, deviceMessage, deviceSignature) {
 		t.Fatal("device replay proof signature is invalid")
+	}
+}
+
+func TestProductionRemoteReplayRequiresEmbeddedTrustAnchors(t *testing.T) {
+	if strings.TrimSpace(replayAuthorityHostname) != "" && strings.TrimSpace(replayAuthoritySPKISHA256) != "" {
+		t.Skip("release build supplies embedded replay authority trust anchors")
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewProductionRemoteReplay(
+		"https://replay.example.test"+remoteReplayFunctionPath,
+		"public-anon-key",
+		mesh.DeviceID(identity.DeviceID(publicKey)),
+		privateKey,
+	)
+	if !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("missing embedded replay trust anchors error = %v", err)
 	}
 }
 
