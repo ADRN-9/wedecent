@@ -199,6 +199,7 @@ type activeChild struct {
 	local       net.Conn
 	remote      net.Conn
 	done        chan struct{}
+	openDone    chan struct{}
 	cleanupOnce sync.Once
 	cleanupErr  error
 }
@@ -884,7 +885,7 @@ func (m *Manager) reserveChild(f *activeForward, local net.Conn) (*activeChild, 
 	}
 	m.nextChild++
 	childCtx, cancel := context.WithCancel(f.ctx)
-	child := &activeChild{id: m.nextChild, forwardID: f.claims.ForwardingID, devices: devices, ctx: childCtx, cancel: cancel, local: local, done: make(chan struct{})}
+	child := &activeChild{id: m.nextChild, forwardID: f.claims.ForwardingID, devices: devices, ctx: childCtx, cancel: cancel, local: local, done: make(chan struct{}), openDone: make(chan struct{})}
 	f.children[child.id] = child
 	m.connections++
 	for _, device := range devices {
@@ -894,7 +895,15 @@ func (m *Manager) reserveChild(f *activeForward, local net.Conn) (*activeChild, 
 }
 
 func (m *Manager) handleChild(f *activeForward, child *activeChild) {
+	openPending := true
+	finishOpen := func() {
+		if openPending {
+			close(child.openDone)
+			openPending = false
+		}
+	}
 	defer func() {
+		finishOpen()
 		if err := m.releaseChild(f, child); err != nil {
 			auditErr := m.record(f.claims, "port_forward.connection_cleanup", "failed", "connection_close_failed")
 			m.recordBackgroundError(errors.Join(err, auditErr))
@@ -908,13 +917,19 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 	remote, err := f.session.OpenChild(dialCtx)
 	dialErr := dialCtx.Err()
 	cancel()
+	if remote != nil {
+		m.mu.Lock()
+		child.remote = remote
+		m.mu.Unlock()
+	}
+	finishOpen()
 	if err == nil && dialErr != nil {
 		err = dialErr
 	}
+	if err == nil && remote == nil {
+		err = errors.New("portforward: destination session returned a nil child connection")
+	}
 	if err != nil {
-		if remote != nil {
-			_ = remote.Close()
-		}
 		if auditErr := m.record(f.claims, "port_forward.connection_opened", "failed", "destination_open_failed"); auditErr != nil {
 			go m.terminate(f, "audit_persistence_failed")
 		}
@@ -923,10 +938,8 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 	m.mu.Lock()
 	if child.ctx.Err() != nil || f.closing || m.forwards[child.forwardID] != f {
 		m.mu.Unlock()
-		_ = remote.Close()
 		return
 	}
-	child.remote = remote
 	m.mu.Unlock()
 	if err := m.record(f.claims, "port_forward.connection_opened", "success", ""); err != nil {
 		go m.terminate(f, "audit_persistence_failed")
@@ -949,10 +962,13 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 func (m *Manager) startChildCleanup(f *activeForward, child *activeChild) <-chan struct{} {
 	child.cancel()
 	child.cleanupOnce.Do(func() {
-		m.mu.Lock()
-		local, remote := child.local, child.remote
-		m.mu.Unlock()
 		go func() {
+			// OpenChild may finish after cancellation. Keep the reservation charged
+			// until its result is known so a late remote endpoint has one cleanup owner.
+			<-child.openDone
+			m.mu.Lock()
+			local, remote := child.local, child.remote
+			m.mu.Unlock()
 			results := make(chan error, 2)
 			count := 0
 			if local != nil {
