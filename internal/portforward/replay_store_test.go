@@ -177,49 +177,56 @@ func TestFileReplayConsumptionIsAtomicAcrossInstances(t *testing.T) {
 }
 
 func TestFileReplayConcurrentInitializationAcrossProcesses(t *testing.T) {
-	path := newReplayTestPath(t)
-	barrier := path + ".start"
-	expiry := time.Now().UTC().Add(time.Minute).UnixMilli()
+	const rounds = 3
+	const workers = 8
 
 	type childProcess struct {
 		cmd    *exec.Cmd
 		output bytes.Buffer
 	}
-	const workers = 8
-	children := make([]*childProcess, 0, workers)
+	children := make([]*childProcess, 0, rounds*workers)
 	defer func() {
 		for _, child := range children {
-			if child.cmd.Process != nil {
+			if child.cmd.ProcessState == nil {
 				_ = child.cmd.Process.Kill()
+				_ = child.cmd.Wait()
 			}
 		}
 	}()
 
-	for i := 0; i < workers; i++ {
-		raw := make([]byte, 16)
-		raw[0] = byte(i + 1)
-		jti := base64.RawURLEncoding.EncodeToString(raw)
-		cmd := exec.Command(os.Args[0], "-test.run=^TestFileReplayConcurrentProcessHelper$")
-		cmd.Env = append(os.Environ(),
-			"WEDECENT_REPLAY_PROCESS_PATH="+path,
-			"WEDECENT_REPLAY_PROCESS_BARRIER="+barrier,
-			"WEDECENT_REPLAY_PROCESS_EXPIRY="+strconv.FormatInt(expiry, 10),
-			"WEDECENT_REPLAY_PROCESS_JTI="+jti,
-		)
-		child := &childProcess{cmd: cmd}
-		cmd.Stdout, cmd.Stderr = &child.output, &child.output
-		if err := cmd.Start(); err != nil {
-			t.Fatalf("start replay process %d: %v", i, err)
-		}
-		children = append(children, child)
-	}
+	for round := 0; round < rounds; round++ {
+		path := newReplayTestPath(t)
+		barrier := path + ".start"
+		expiry := time.Now().UTC().Add(time.Minute).UnixMilli()
+		roundChildren := make([]*childProcess, 0, workers)
 
-	if err := os.WriteFile(barrier, []byte("start"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	for i, child := range children {
-		if err := child.cmd.Wait(); err != nil {
-			t.Errorf("replay process %d failed: %v\n%s", i, err, child.output.String())
+		for i := 0; i < workers; i++ {
+			raw := make([]byte, 16)
+			raw[0], raw[1] = byte(round+1), byte(i+1)
+			jti := base64.RawURLEncoding.EncodeToString(raw)
+			cmd := exec.Command(os.Args[0], "-test.run=^TestFileReplayConcurrentProcessHelper$")
+			cmd.Env = append(os.Environ(),
+				"WEDECENT_REPLAY_PROCESS_PATH="+path,
+				"WEDECENT_REPLAY_PROCESS_BARRIER="+barrier,
+				"WEDECENT_REPLAY_PROCESS_EXPIRY="+strconv.FormatInt(expiry, 10),
+				"WEDECENT_REPLAY_PROCESS_JTI="+jti,
+			)
+			child := &childProcess{cmd: cmd}
+			cmd.Stdout, cmd.Stderr = &child.output, &child.output
+			if err := cmd.Start(); err != nil {
+				t.Fatalf("start replay process round %d worker %d: %v", round, i, err)
+			}
+			children = append(children, child)
+			roundChildren = append(roundChildren, child)
+		}
+
+		if err := os.WriteFile(barrier, []byte("start"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		for i, child := range roundChildren {
+			if err := child.cmd.Wait(); err != nil {
+				t.Errorf("replay process round %d worker %d failed: %v\n%s", round, i, err, child.output.String())
+			}
 		}
 	}
 }
@@ -637,4 +644,199 @@ func TestFileReplayConcurrentProcessHelper(t *testing.T) {
 	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.UnixMilli(expiry)); err != nil {
 		t.Fatalf("concurrent replay initialization/consumption failed: %v", err)
 	}
+}
+
+
+func TestFileReplayRecoversPendingInitializationAfterProcessTermination(t *testing.T) {
+	path := newReplayTestPath(t)
+	startAndTerminateReplayInitializationProcess(t, path, "after_marker")
+
+	marker, err := readReplayInitializationLocked(path+".init", testInitiator)
+	if err != nil {
+		t.Fatalf("read initialization marker left by terminated process: %v", err)
+	}
+	if marker.Status != "pending" {
+		t.Fatalf("initialization status = %q, want pending", marker.Status)
+	}
+	for _, file := range []string{path + ".init", path + ".lock"} {
+		if err := secureReplayFile(file); err != nil {
+			t.Fatalf("crash-left metadata %s is not private: %v", filepath.Base(file), err)
+		}
+	}
+
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jti := base64.RawURLEncoding.EncodeToString([]byte("crashrecover0001"))
+	expiry := time.Now().UTC().Add(time.Minute)
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, expiry); err != nil {
+		t.Fatalf("recover pending initialization after process termination: %v", err)
+	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, expiry); !errors.Is(err, ErrAuthorizationReplay) {
+		t.Fatalf("recovered authorization replay error = %v, want replay", err)
+	}
+	ready, err := readReplayInitializationLocked(path+".init", testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ready.Status != "ready" {
+		t.Fatalf("recovered initialization status = %q, want ready", ready.Status)
+	}
+}
+
+func TestFileReplayRejectsInitializationInterruptedBeforeMarker(t *testing.T) {
+	path := newReplayTestPath(t)
+	startAndTerminateReplayInitializationProcess(t, path, "before_marker")
+
+	if err := secureReplayFile(path + ".lock"); err != nil {
+		t.Fatalf("orphaned initialization lock is not private: %v", err)
+	}
+	for _, file := range []string{path, path + ".init", path + ".anchor", path + ".pending"} {
+		if _, err := os.Lstat(file); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("unexpected pre-marker artifact %s: %v", filepath.Base(file), err)
+		}
+	}
+
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jti := base64.RawURLEncoding.EncodeToString([]byte("crashbeforemark1"))
+	err = replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute))
+	if !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("interrupted pre-marker initialization error = %v, want fail-closed replay unavailable", err)
+	}
+}
+
+func TestFileReplayRejectsMalformedInitializationMetadata(t *testing.T) {
+	for _, target := range []string{"marker", "pending"} {
+		t.Run(target, func(t *testing.T) {
+			path := newReplayTestPath(t)
+			if err := ensureReplayInitialization(path, testInitiator, false); err != nil {
+				t.Fatal(err)
+			}
+			metadataPath := path + ".init"
+			if target == "pending" {
+				metadataPath = path + ".pending"
+			}
+			if err := os.WriteFile(metadataPath, []byte("{malformed"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			replay, err := NewFileReplay(path, testInitiator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = replay.ConsumePortForwardAuthorization(
+				context.Background(),
+				base64.RawURLEncoding.EncodeToString([]byte("malformedstate01")),
+				time.Now().UTC().Add(time.Minute),
+			)
+			if !errors.Is(err, ErrReplayUnavailable) {
+				t.Fatalf("malformed %s error = %v, want fail-closed replay unavailable", target, err)
+			}
+		})
+	}
+}
+
+func TestFileReplayRejectsPartialInitializationWithoutMarker(t *testing.T) {
+	path := newReplayTestPath(t)
+	if err := writeReplayAnchor(path+".anchor", replayAnchor{
+		Version: replayStoreVersion, DeviceID: string(testInitiator), Generation: 0,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = replay.ConsumePortForwardAuthorization(
+		context.Background(),
+		base64.RawURLEncoding.EncodeToString([]byte("partialstate0001")),
+		time.Now().UTC().Add(time.Minute),
+	)
+	if !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("partial initialization without marker error = %v, want fail-closed replay unavailable", err)
+	}
+}
+
+func startAndTerminateReplayInitializationProcess(t *testing.T, path, mode string) {
+	t.Helper()
+	readyPath := path + ".child-ready"
+	var output bytes.Buffer
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFileReplayInitializationCrashHelper$")
+	cmd.Env = append(os.Environ(),
+		"WEDECENT_REPLAY_CRASH_PATH="+path,
+		"WEDECENT_REPLAY_CRASH_READY="+readyPath,
+		"WEDECENT_REPLAY_CRASH_MODE="+mode,
+	)
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start initialization crash helper (%s): %v", mode, err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		if _, err := os.Stat(readyPath); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inspect initialization crash helper readiness: %v", err)
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			waitErr := cmd.Wait()
+			t.Fatalf("initialization crash helper (%s) did not reach barrier: wait=%v output=%s", mode, waitErr, output.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if err := cmd.Process.Kill(); err != nil {
+		t.Fatalf("terminate initialization crash helper (%s): %v", mode, err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatalf("initialization crash helper (%s) exited normally, expected termination", mode)
+	}
+	if err := os.Remove(readyPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("remove crash helper readiness marker: %v", err)
+	}
+}
+
+func TestFileReplayInitializationCrashHelper(t *testing.T) {
+	mode := os.Getenv("WEDECENT_REPLAY_CRASH_MODE")
+	if mode == "" {
+		return
+	}
+	path := os.Getenv("WEDECENT_REPLAY_CRASH_PATH")
+	readyPath := os.Getenv("WEDECENT_REPLAY_CRASH_READY")
+	if path == "" || readyPath == "" {
+		t.Fatal("initialization crash helper requires path and readiness marker")
+	}
+
+	switch mode {
+	case "before_marker":
+		unlock, created, err := lockReplayFileOS(path)
+		if err != nil {
+			t.Fatalf("create initialization lock before marker: %v", err)
+		}
+		if !created {
+			t.Fatal("expected initialization helper to create lock file")
+		}
+		defer unlock()
+	case "after_marker":
+		if err := ensureReplayInitialization(path, testInitiator, false); err != nil {
+			t.Fatalf("publish pending initialization marker: %v", err)
+		}
+	default:
+		t.Fatalf("unsupported initialization crash mode %q", mode)
+	}
+	if err := os.WriteFile(readyPath, []byte(mode), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	select {}
 }
