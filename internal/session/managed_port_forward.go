@@ -81,6 +81,12 @@ func (c *Client) OpenManagedPortForwardSession(ctx context.Context, peer trust.P
 	if strings.TrimSpace(auth.Signature) == "" || len(auth.Signature) > 256 {
 		return nil, portforward.ErrAuthorizationInvalid
 	}
+	if err := portforward.ValidateClaims(auth.Claims); err != nil {
+		return nil, err
+	}
+	if err := portforward.ValidateRouteAuthorizationBinding(auth); err != nil {
+		return nil, err
+	}
 	inBandAuthorization := c.ForceInBandAuthorization || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(peer.Endpoint)), "wsrelay://")
 	if inBandAuthorization {
 		grant := strings.TrimSpace(c.ConnectionGrant)
@@ -497,7 +503,15 @@ func (s *ManagedPortForwardSession) closeState(state *managedPortForwardState, e
 	state.closeOnce.Do(func() {
 		state.mu.Lock()
 		state.err = err
+		accepted := state.acceptedOK
 		state.mu.Unlock()
+		if !accepted {
+			acceptErr := err
+			if acceptErr == nil {
+				acceptErr = io.ErrClosedPipe
+			}
+			state.acceptOnce.Do(func() { state.accepted <- acceptErr })
+		}
 		s.mu.Lock()
 		if s.states[state.id] == state {
 			delete(s.states, state.id)
@@ -602,7 +616,8 @@ func (c *ManagedPortForwardConn) Read(p []byte) (int, error) {
 			state.recvCredit += uint32(n)
 			state.mu.Unlock()
 			payload, _ := protocol.JSON(protocol.StreamWindowUpdate{Bytes: uint32(n)})
-			if err := c.session.writeFrameContext(context.Background(), protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: state.id, Payload: payload}, state.deadlineRead()); err != nil {
+			if err := c.session.writeFrameContext(context.Background(), protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: state.id, Payload: payload}, time.Time{}); err != nil {
+				_ = c.session.finish()
 				return n, err
 			}
 			return n, nil
@@ -676,6 +691,7 @@ func (c *ManagedPortForwardConn) Write(p []byte) (int, error) {
 			Type: protocol.TypeStreamData, StreamID: state.id, Payload: append([]byte(nil), p[written:written+count]...),
 		}, deadline)
 		if err != nil {
+			_ = c.session.finish()
 			return written, err
 		}
 		written += count
@@ -700,6 +716,7 @@ func (c *ManagedPortForwardConn) CloseWrite() error {
 	state.localEOF = true
 	state.mu.Unlock()
 	if err := c.session.writeFrameContext(context.Background(), protocol.Frame{Type: protocol.TypeStreamHalfClose, StreamID: state.id}, time.Time{}); err != nil {
+		_ = c.session.finish()
 		return err
 	}
 	return nil
