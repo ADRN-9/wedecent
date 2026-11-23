@@ -926,7 +926,20 @@ func (c idleConn) CloseWrite() error {
 func bridge(ctx context.Context, left, right net.Conn, idle time.Duration) error {
 	l := idleConn{Conn: left, idle: idle}
 	r := idleConn{Conn: right, idle: idle}
-	closeBoth := func() { _ = left.Close(); _ = right.Close() }
+	var closeOnce sync.Once
+	var closeErr error
+	closeBoth := func() {
+		closeOnce.Do(func() {
+			var errs []error
+			if err := left.Close(); err != nil && !expectedClosedConnError(err) {
+				errs = append(errs, err)
+			}
+			if err := right.Close(); err != nil && !expectedClosedConnError(err) {
+				errs = append(errs, err)
+			}
+			closeErr = errors.Join(errs...)
+		})
+	}
 	stop := context.AfterFunc(ctx, closeBoth)
 	defer stop()
 	results := make(chan error, 2)
@@ -964,9 +977,9 @@ func bridge(ctx context.Context, left, right net.Conn, idle time.Duration) error
 	}
 	closeBoth()
 	if errors.Is(first, io.EOF) {
-		return nil
+		first = nil
 	}
-	return first
+	return errors.Join(first, closeErr)
 }
 
 func listenerMatchesPolicy(listener net.Listener, claims Claims) bool {
