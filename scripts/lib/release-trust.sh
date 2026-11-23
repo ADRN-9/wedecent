@@ -180,11 +180,9 @@ wedecent_verify_release_metadata() {
     wedecent_release_fail "release VERSION.txt must be a regular non-symlink file" || return 1
   wedecent_require_approved_replay_trust || return 1
 
-  expected="${WEDECENT_EXPECTED_SOURCE_SHA:-${GITHUB_SHA:-}}"
-  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] ||
-    wedecent_release_fail "WEDECENT_EXPECTED_SOURCE_SHA or GITHUB_SHA must identify the expected source commit" || return 1
-
   version="$(wedecent_metadata_value "$metadata" version)" || return 1
+  wedecent_require_production_release_context "$version" || return 1
+  expected="$WEDECENT_EXPECTED_SOURCE_SHA"
   commit="$(wedecent_metadata_value "$metadata" commit)" || return 1
   source_commit="$(wedecent_metadata_value "$metadata" source_commit)" || return 1
   source_tree="$(wedecent_metadata_value "$metadata" source_tree)" || return 1
