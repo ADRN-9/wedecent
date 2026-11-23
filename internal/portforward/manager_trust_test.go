@@ -38,15 +38,15 @@ func TestManagerTrustStoreRevocationTerminatesParentAndChildStreams(t *testing.T
 	listener := newQueueListener()
 	connector := &pipeConnector{opened: make(chan net.Conn, 1)}
 	manager, err := NewManager(ManagerConfig{
-		LocalDeviceID: testInitiator,
-		Verifier: AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
-		TrustChecker: store,
-		TrustPollInterval: 20 * time.Millisecond,
+		LocalDeviceID:        testInitiator,
+		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		TrustChecker:         store,
+		TrustPollInterval:    20 * time.Millisecond,
 		PermissionAuthorizer: allowPortForwardPermission{},
-		Connector: connector,
-		Audit: &memoryAudit{},
-		Limits: managerTestLimits(),
-		Listen: func(string, string) (net.Listener, error) { return listener, nil },
+		Connector:            connector,
+		Audit:                &memoryAudit{},
+		Limits:               managerTestLimits(),
+		Listen:               func(string, string) (net.Listener, error) { return listener, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -120,15 +120,15 @@ func TestManagerFailsClosedWhenPeerTrustStoreCannotBeRead(t *testing.T) {
 	replay.Now = func() time.Time { return now }
 	listener := newQueueListener()
 	manager, err := NewManager(ManagerConfig{
-		LocalDeviceID: testInitiator,
-		Verifier: AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
-		TrustChecker: store,
-		TrustPollInterval: 20 * time.Millisecond,
+		LocalDeviceID:        testInitiator,
+		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		TrustChecker:         store,
+		TrustPollInterval:    20 * time.Millisecond,
 		PermissionAuthorizer: allowPortForwardPermission{},
-		Connector: &pipeConnector{},
-		Audit: &memoryAudit{},
-		Limits: managerTestLimits(),
-		Listen: func(string, string) (net.Listener, error) { return listener, nil },
+		Connector:            &pipeConnector{},
+		Audit:                &memoryAudit{},
+		Limits:               managerTestLimits(),
+		Listen:               func(string, string) (net.Listener, error) { return listener, nil },
 	})
 	if err != nil {
 		t.Fatal(err)
