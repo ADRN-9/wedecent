@@ -170,6 +170,63 @@ func TestManagerTrustStoreRevocationCancelsPendingStart(t *testing.T) {
 	}
 }
 
+func TestManagerCloseSurfacesBackgroundTrustStoreFailure(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	path := filepath.Join(t.TempDir(), "trusted-devices.json")
+	store, err := trust.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(trust.Peer{ID: string(testDestination), Fingerprint: "test-fingerprint"}); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := SignAuthorization(privateKey, testClaims(now, DirectionLocal))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := NewMemoryReplay(8)
+	replay.Now = func() time.Time { return now }
+	listener := newQueueListener()
+	manager, err := NewManager(ManagerConfig{
+		LocalDeviceID:        testInitiator,
+		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		TrustChecker:         store,
+		TrustPollInterval:    20 * time.Millisecond,
+		PermissionAuthorizer: allowPortForwardPermission{},
+		Connector:            &pipeConnector{},
+		Audit:                &memoryAudit{},
+		Limits:               managerTestLimits(),
+		Listen:               func(string, string) (net.Listener, error) { return listener, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		_ = manager.Close()
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{corrupt"), 0o600); err != nil {
+		_ = manager.Close()
+		t.Fatal(err)
+	}
+	deadline := time.After(2 * time.Second)
+	for len(manager.List()) != 0 {
+		select {
+		case <-deadline:
+			_ = manager.Close()
+			t.Fatal("trust watcher did not revoke forward after trust-store corruption")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := manager.Close(); err == nil {
+		t.Fatal("manager shutdown hid the background trust-store failure")
+	}
+}
+
 func TestManagerFailsClosedWhenPeerTrustStoreCannotBeRead(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	path := filepath.Join(t.TempDir(), "trusted-devices.json")
