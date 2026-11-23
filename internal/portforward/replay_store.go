@@ -190,6 +190,9 @@ func loadReplaySnapshot(path string, deviceID mesh.DeviceID, createdLock bool) (
 			return replaySnapshot{}, errors.New("replay anchor is missing for a non-legacy store")
 		}
 		snapshot.Version = replayStoreVersion
+		if err := writeReplayEntries(path, deviceID, snapshot.Generation, snapshot.Entries); err != nil {
+			return replaySnapshot{}, err
+		}
 		anchor := replayAnchor{Version: replayStoreVersion, DeviceID: string(deviceID), Generation: snapshot.Generation}
 		if err := writeReplayAnchor(anchorPath, anchor); err != nil {
 			return replaySnapshot{}, err
