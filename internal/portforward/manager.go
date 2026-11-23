@@ -243,6 +243,16 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	return manager, nil
 }
 
+func DefaultManagerLimits() ManagerLimits {
+	return ManagerLimits{
+		MaxForwards: 16, MaxForwardsPerDevice: 4,
+		MaxConnections: 128, MaxConnectionsPerDevice: 32,
+		MaxConnectionsPerForward: 16,
+		MaxDuration: 30 * time.Minute, IdleTimeout: 5 * time.Minute,
+		DialTimeout: 10 * time.Second,
+	}
+}
+
 func validManagerLimits(l ManagerLimits) bool {
 	return l.MaxForwards >= 1 && l.MaxForwards <= 128 &&
 		l.MaxForwardsPerDevice >= 1 && l.MaxForwardsPerDevice <= 32 &&
