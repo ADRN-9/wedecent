@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -539,6 +540,18 @@ type parentCloseBlockingConn struct {
 	release chan struct{}
 	closed  chan struct{}
 	once    sync.Once
+	reads   atomic.Int32
+	writes  atomic.Int32
+}
+
+func (c *parentCloseBlockingConn) Read(p []byte) (int, error) {
+	c.reads.Add(1)
+	return c.Conn.Read(p)
+}
+
+func (c *parentCloseBlockingConn) Write(p []byte) (int, error) {
+	c.writes.Add(1)
+	return c.Conn.Write(p)
 }
 
 func (c *parentCloseBlockingConn) Close() error {
@@ -677,6 +690,11 @@ func TestTypedForwardParentCloseDoesNotWaitForBlockedChildClose(t *testing.T) {
 		t.Fatal("destination child close did not reach the blocking connection")
 	}
 	select {
+	case <-child.done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("typed child cancellation waited for blocked destination cleanup")
+	}
+	select {
 	case err := <-closeDone:
 		if err == nil {
 			t.Fatal("parent close hid the destination child cleanup timeout")
@@ -771,7 +789,14 @@ func TestTypedForwardOpenChildDoesNotDoubleCloseDuringParentShutdown(t *testing.
 		},
 		Audit: auditLog, MaxConnections: 1, DialTimeout: 5 * time.Second,
 	}
-	server := newTypedPortForwardServer(context.Background(), serverID.ID, clientID.ID, "", runtime, newTypedParentStreamRegistry(), func(protocol.Frame) error { return nil })
+	var framesMu sync.Mutex
+	var writtenFrames []protocol.Frame
+	server := newTypedPortForwardServer(context.Background(), serverID.ID, clientID.ID, "", runtime, newTypedParentStreamRegistry(), func(frame protocol.Frame) error {
+		framesMu.Lock()
+		writtenFrames = append(writtenFrames, frame)
+		framesMu.Unlock()
+		return nil
+	})
 	parentMetadata, err := protocol.JSON(portForwardParentOpen{Authorization: auth})
 	if err != nil {
 		t.Fatal(err)
@@ -840,6 +865,14 @@ func TestTypedForwardOpenChildDoesNotDoubleCloseDuringParentShutdown(t *testing.
 	case <-time.After(time.Second):
 		t.Fatal("late child open blocked on a duplicate destination child Close")
 	}
+	framesMu.Lock()
+	for _, frame := range writtenFrames {
+		if frame.Type == protocol.TypeStreamAccepted && frame.StreamID == childID {
+			framesMu.Unlock()
+			t.Fatal("detached child received a StreamAccepted acknowledgement")
+		}
+	}
+	framesMu.Unlock()
 	close(blocked.release)
 	released = true
 	select {
@@ -848,3 +881,229 @@ func TestTypedForwardOpenChildDoesNotDoubleCloseDuringParentShutdown(t *testing.
 		t.Fatal("blocked destination connection did not close after release")
 	}
 }
+
+
+type countedForwardConn struct {
+	reads  atomic.Int32
+	writes atomic.Int32
+}
+
+func (c *countedForwardConn) Read(p []byte) (int, error) {
+	c.reads.Add(1)
+	return copy(p, "late"), nil
+}
+func (c *countedForwardConn) Write(p []byte) (int, error) {
+	c.writes.Add(1)
+	return len(p), nil
+}
+func (*countedForwardConn) Close() error                       { return nil }
+func (*countedForwardConn) LocalAddr() net.Addr                { return forwardingTestAddr("local") }
+func (*countedForwardConn) RemoteAddr() net.Addr               { return forwardingTestAddr("remote") }
+func (*countedForwardConn) SetDeadline(time.Time) error        { return nil }
+func (*countedForwardConn) SetReadDeadline(time.Time) error    { return nil }
+func (*countedForwardConn) SetWriteDeadline(time.Time) error   { return nil }
+
+type forwardingTestAddr string
+
+func (a forwardingTestAddr) Network() string { return "test" }
+func (a forwardingTestAddr) String() string  { return string(a) }
+
+func TestTypedForwardCancellationStopsQueuedAndReadData(t *testing.T) {
+	conn := &countedForwardConn{}
+	sendCredit, err := newTypedStreamCredit(64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recvCredit, err := newTypedStreamCredit(64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	child := &typedPortForwardChild{
+		id: protocol.MinTypedStreamID, conn: conn,
+		sendCredit: sendCredit, recvCredit: recvCredit,
+		creditCh: make(chan struct{}, 1), writeCh: make(chan struct{}, 1),
+		writeBuffer: []byte("queued"), done: done,
+		cancel: func() { close(done) },
+	}
+	child.signalClose()
+	var frames atomic.Int32
+	server := &typedPortForwardServer{
+		ctx: context.Background(),
+		write: func(protocol.Frame) error {
+			frames.Add(1)
+			return nil
+		},
+	}
+
+	server.forwardInput(child)
+	server.forwardOutput(child)
+	if err := server.sendData(child, []byte("late")); !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("sendData after cancellation = %v, want closed pipe", err)
+	}
+	if conn.reads.Load() != 0 || conn.writes.Load() != 0 {
+		t.Fatalf("closed child performed network I/O: reads=%d writes=%d", conn.reads.Load(), conn.writes.Load())
+	}
+	if frames.Load() != 0 {
+		t.Fatalf("closed child transmitted %d protocol frames", frames.Load())
+	}
+	if child.sendCredit.available() != 64 {
+		t.Fatalf("closed child consumed send credit: %d remaining", child.sendCredit.available())
+	}
+	if len(child.writeBuffer) != 0 {
+		t.Fatal("queued child data was not discarded on cancellation")
+	}
+}
+
+func TestTypedForwardParentCloseDuringChildAcceptanceDoesNotStartDetachedWorkers(t *testing.T) {
+	clientID, serverID, _ := managedSessionTestIdentities(t, "tcp://ignored.test:7443")
+	fingerprint, err := identity.FingerprintPublicKey(clientID.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTrust, err := trust.Open(filepath.Join(t.TempDir(), "server-trust.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := serverTrust.Put(trust.Peer{ID: clientID.ID, Fingerprint: fingerprint}); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, signingKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sourceID, destinationID := mesh.DeviceID(clientID.ID), mesh.DeviceID(serverID.ID)
+	claims := portforward.Claims{
+		Version: portforward.AuthorizationVersion, Issuer: portforward.AuthorizationIssuerID,
+		Audience: portforward.AuthorizationAudience, Permission: portforward.PermissionLocal,
+		ForwardingID: "00000000-0000-4000-8000-000000000305", Direction: portforward.DirectionLocal,
+		InitiatingDevice: sourceID, DestinationDevice: destinationID,
+		Route: mesh.Route{
+			ID: "00000000-0000-4000-8000-000000000306", Source: sourceID, Destination: destinationID,
+			Hops: []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
+		},
+		DestinationAddress: "forward.example.com", DestinationPort: 443,
+		Listener: portforward.DefaultListenerPolicy(43127), Protocol: portforward.ProtocolTCP,
+		Limits: portforward.ResourceLimits{MaxConnections: 1, MaxDurationSeconds: 30, IdleTimeoutSeconds: 5},
+	}
+	auth, err := (portforward.AuthorizationIssuer{
+		Signer: signingKey, Lifetime: 30 * time.Second, Now: func() time.Time { return now },
+	}).Issue(context.Background(), claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialer := &parentCloseBlockingDialer{opened: make(chan *parentCloseBlockingConn, 1)}
+	runtime := &PortForwardRuntime{
+		Verifier: &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
+		TrustChecker: serverTrust, PermissionAuthorizer: portforward.CapabilityPermissionAuthorizer{},
+		Resolver: forwardingTestResolver{}, Dialer: dialer,
+		Policy: portforward.DestinationPolicy{
+			AllowedPorts: []portforward.PortRange{{First: 443, Last: 443}},
+			AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.30.0/24")},
+		},
+		Audit: forwardingTestAudit{}, MaxConnections: 1, DialTimeout: 5 * time.Second,
+	}
+	childID := protocol.MinTypedStreamID + 1
+	acceptedStarted := make(chan struct{})
+	releaseAccepted := make(chan struct{})
+	releasedAccepted := false
+	defer func() {
+		if !releasedAccepted {
+			close(releaseAccepted)
+		}
+	}()
+	server := newTypedPortForwardServer(context.Background(), serverID.ID, clientID.ID, "", runtime, newTypedParentStreamRegistry(), func(frame protocol.Frame) error {
+		if frame.Type == protocol.TypeStreamAccepted && frame.StreamID == childID {
+			close(acceptedStarted)
+			<-releaseAccepted
+		}
+		return nil
+	})
+	parentMetadata, err := protocol.JSON(portForwardParentOpen{Authorization: auth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentPayload, err := protocol.JSON(protocol.StreamOpen{
+		Kind: protocol.StreamKindPortForwardParent, Metadata: parentMetadata, InitialWindow: managedPortForwardReceiveWindow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentID := protocol.MinTypedStreamID
+	if err := server.Handle(context.Background(), protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: parentID, Payload: parentPayload}); err != nil {
+		t.Fatal(err)
+	}
+	childMetadata, err := protocol.JSON(portForwardChildOpen{ParentStreamID: parentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPayload, err := protocol.JSON(protocol.StreamOpen{
+		Kind: protocol.StreamKindPortForwardChild, Metadata: childMetadata, InitialWindow: managedPortForwardReceiveWindow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	openDone := make(chan error, 1)
+	go func() {
+		openDone <- server.Handle(context.Background(), protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: childID, Payload: childPayload})
+	}()
+	select {
+	case <-acceptedStarted:
+	case <-time.After(time.Second):
+		t.Fatal("child acceptance did not reach its transport write")
+	}
+	blocked := <-dialer.opened
+	releasedClose := false
+	defer func() {
+		if !releasedClose {
+			close(blocked.release)
+		}
+		_ = blocked.remote.Close()
+	}()
+	server.mu.Lock()
+	child := server.children[childID]
+	server.mu.Unlock()
+	if child == nil {
+		t.Fatal("child was not attached before its acceptance write")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- server.closeParent(parentID, "test_accept_race", false) }()
+	select {
+	case <-blocked.started:
+	case <-time.After(time.Second):
+		t.Fatal("parent close did not start child connection cleanup")
+	}
+	select {
+	case <-child.done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("parent close did not cancel the child before waiting for connection cleanup")
+	}
+
+	close(releaseAccepted)
+	releasedAccepted = true
+	select {
+	case err := <-openDone:
+		if err != nil {
+			t.Fatalf("child open after detached acceptance = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("child acceptance handler did not finish after release")
+	}
+	if blocked.reads.Load() != 0 || blocked.writes.Load() != 0 {
+		t.Fatalf("detached child started workers: reads=%d writes=%d", blocked.reads.Load(), blocked.writes.Load())
+	}
+
+	close(blocked.release)
+	releasedClose = true
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("parent close after releasing child cleanup = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("parent close did not finish after child cleanup was released")
+	}
+}
+
