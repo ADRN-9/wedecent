@@ -32,9 +32,16 @@ var (
 type AuditWriter interface{ Append(audit.Event) error }
 
 type Connector interface {
-	// Open must establish the authenticated WeDecent forwarding stream. The destination endpoint
-	// must independently verify the same capability and resolve/dial only approved destination IPs.
-	Open(context.Context, Authorization) (net.Conn, error)
+	// Open establishes one authenticated parent forwarding session and consumes
+	// the forwarding capability once. Child TCP connections use that session.
+	Open(context.Context, Authorization) (ForwardingSession, error)
+}
+
+// ForwardingSession multiplexes authorized child TCP streams over one
+// authenticated parent session. Close must terminate every child stream.
+type ForwardingSession interface {
+	OpenChild(context.Context) (net.Conn, error)
+	Close() error
 }
 
 // PermissionAuthorizer must check the exact local-forward or remote-forward
@@ -108,7 +115,7 @@ type Manager struct {
 
 type activeForward struct {
 	claims          Claims
-	authorization   Authorization
+	session         ForwardingSession
 	listener        net.Listener
 	listenerAddress string
 	ctx             context.Context
@@ -245,6 +252,33 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		return ForwardInfo{}, err
 	}
 
+	openCtx, cancelOpen := context.WithTimeout(startCtx, m.limits.DialTimeout)
+	forwardSession, openErr := m.connector.Open(openCtx, cloneAuthorization(auth))
+	openCtxErr := openCtx.Err()
+	cancelOpen()
+	if openErr == nil && openCtxErr != nil {
+		openErr = openCtxErr
+	}
+	if openErr != nil || forwardSession == nil {
+		if forwardSession != nil {
+			_ = forwardSession.Close()
+		}
+		reason := "destination_session_open_failed"
+		if auditErr := m.record(claims, "port_forward.start", "failed", reason); auditErr != nil {
+			return ForwardInfo{}, auditErr
+		}
+		if openErr == nil {
+			openErr = ErrManagerConfig
+		}
+		return ForwardInfo{}, fmt.Errorf("portforward: open destination session: %w", openErr)
+	}
+	sessionOwned := false
+	defer func() {
+		if !sessionOwned {
+			_ = forwardSession.Close()
+		}
+	}()
+
 	address := net.JoinHostPort(claims.Listener.Address, strconv.Itoa(int(claims.Listener.Port)))
 	listener, err := m.listen("tcp", address)
 	if err == nil && (listener == nil || listener.Addr() == nil || !listenerMatchesPolicy(listener, claims)) {
@@ -273,7 +307,7 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	forwardCtx, cancel := context.WithDeadline(m.ctx, deadline)
 	f := &activeForward{
 		claims:          claims,
-		authorization:   cloneAuthorization(auth),
+		session:         forwardSession,
 		listener:        listener,
 		listenerAddress: listener.Addr().String(),
 		ctx:             forwardCtx,
@@ -316,6 +350,7 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	delete(m.reservations, claims.ForwardingID)
 	m.forwards[claims.ForwardingID] = f
 	m.mu.Unlock()
+	sessionOwned = true
 	reserved = false
 	go m.acceptLoop(f)
 	return m.info(f), nil
@@ -549,7 +584,7 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 		return
 	}
 	dialCtx, cancel := context.WithTimeout(child.ctx, m.limits.DialTimeout)
-	remote, err := m.connector.Open(dialCtx, cloneAuthorization(f.authorization))
+	remote, err := f.session.OpenChild(dialCtx)
 	dialErr := dialCtx.Err()
 	cancel()
 	if err == nil && dialErr != nil {
@@ -635,7 +670,12 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 			}
 		}
 		m.mu.Unlock()
-		f.stopErr = m.record(f.claims, "port_forward.stopped", "success", reason)
+		var sessionErr error
+		if f.session != nil {
+			sessionErr = f.session.Close()
+		}
+		auditErr := m.record(f.claims, "port_forward.stopped", "success", reason)
+		f.stopErr = errors.Join(sessionErr, auditErr)
 		close(f.stopDone)
 	})
 	<-f.stopDone
