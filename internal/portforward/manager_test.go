@@ -269,6 +269,7 @@ func newManagerForTestWithPermission(t *testing.T, local mesh.DeviceID, claims C
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = manager.Close() })
 	return manager, auth, listener
 }
 
