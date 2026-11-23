@@ -15,7 +15,10 @@ import (
 	"wedecent.com/wedecent/internal/trust"
 )
 
-const managedPortForwardReceiveWindow uint32 = 256 << 10
+const (
+	managedPortForwardReceiveWindow uint32 = 256 << 10
+	managedPortForwardMaxChildren = 64
+)
 
 type managedPortForwardState struct {
 	id     uint32
@@ -37,6 +40,7 @@ type managedPortForwardState struct {
 	err        error
 	remoteEOF  bool
 	localEOF   bool
+	acceptedOK bool
 	closing    bool
 	readDead   time.Time
 	writeDead  time.Time
@@ -207,7 +211,7 @@ func (s *ManagedPortForwardSession) reserveState(parent bool) (uint32, *managedP
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.alloc >= managedMuxMaxAllocated || len(s.states) >= managedMuxMaxStreams+1 {
+	if s.alloc >= managedMuxMaxAllocated || len(s.states) >= managedPortForwardMaxChildren+1 {
 		return 0, nil, errors.New("port forwarding stream limit reached")
 	}
 	id := s.nextID
@@ -358,10 +362,11 @@ func (s *ManagedPortForwardSession) handleAccepted(frame protocol.Frame) bool {
 		return false
 	}
 	state.mu.Lock()
-	if state.sendCredit != 0 || channelClosed(state.done) {
+	if state.acceptedOK || channelClosed(state.done) {
 		state.mu.Unlock()
 		return false
 	}
+	state.acceptedOK = true
 	state.sendCredit = accepted.InitialWindow
 	state.mu.Unlock()
 	state.acceptOnce.Do(func() { state.accepted <- nil })
@@ -377,7 +382,7 @@ func (s *ManagedPortForwardSession) handleData(frame protocol.Frame) bool {
 		return false
 	}
 	state.mu.Lock()
-	if channelClosed(state.done) || state.remoteEOF ||
+	if !state.acceptedOK || channelClosed(state.done) || state.remoteEOF ||
 		uint32(len(frame.Payload)) > state.recvCredit ||
 		len(frame.Payload) > managedTerminalOutputLimit-state.outputSize {
 		state.mu.Unlock()
@@ -404,7 +409,7 @@ func (s *ManagedPortForwardSession) handleWindowUpdate(frame protocol.Frame) boo
 		return false
 	}
 	state.mu.Lock()
-	if update.Bytes > protocol.MaxTypedStreamWindow-state.sendCredit {
+	if !state.acceptedOK || update.Bytes > protocol.MaxTypedStreamWindow-state.sendCredit {
 		state.mu.Unlock()
 		return false
 	}
@@ -426,6 +431,10 @@ func (s *ManagedPortForwardSession) handleHalfClose(frame protocol.Frame) bool {
 		return false
 	}
 	state.mu.Lock()
+	if !state.acceptedOK || state.remoteEOF || channelClosed(state.done) {
+		state.mu.Unlock()
+		return false
+	}
 	state.remoteEOF = true
 	state.mu.Unlock()
 	select {
@@ -489,6 +498,11 @@ func (s *ManagedPortForwardSession) closeState(state *managedPortForwardState, e
 		state.mu.Lock()
 		state.err = err
 		state.mu.Unlock()
+		s.mu.Lock()
+		if s.states[state.id] == state {
+			delete(s.states, state.id)
+		}
+		s.mu.Unlock()
 		close(state.done)
 		select {
 		case state.notify <- struct{}{}:
@@ -510,26 +524,23 @@ func (s *ManagedPortForwardSession) writeFrameContext(ctx context.Context, frame
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if ctxDeadline, ok := ctx.Deadline(); ok && (deadline.IsZero() || ctxDeadline.Before(deadline)) {
+		deadline = ctxDeadline
+	}
 	if !deadline.IsZero() {
 		if err := s.conn.SetWriteDeadline(deadline); err != nil {
 			return err
 		}
 	}
-	if d, ok := ctx.Deadline(); ok {
-		if err := s.conn.SetWriteDeadline(d); err != nil {
-			return err
-		}
+	writeErr := protocol.WriteFrame(s.conn, frame)
+	var resetErr error
+	if !deadline.IsZero() {
+		resetErr = s.conn.SetWriteDeadline(time.Time{})
 	}
-	if err := protocol.WriteFrame(s.conn, frame); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
-		return err
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return errors.Join(ctxErr, resetErr)
 	}
-	if err := s.conn.SetWriteDeadline(time.Time{}); err != nil {
-		return err
-	}
-	return nil
+	return errors.Join(writeErr, resetErr)
 }
 
 func (s *ManagedPortForwardSession) finish() error {
