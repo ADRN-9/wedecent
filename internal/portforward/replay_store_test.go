@@ -646,7 +646,6 @@ func TestFileReplayConcurrentProcessHelper(t *testing.T) {
 	}
 }
 
-
 func TestFileReplayRecoversPendingInitializationAfterProcessTermination(t *testing.T) {
 	path := newReplayTestPath(t)
 	startAndTerminateReplayInitializationProcess(t, path, "after_marker")
