@@ -38,7 +38,11 @@ func newRemoteReplayFixture(t *testing.T, handler http.Handler) (*RemoteReplay, 
 		t.Fatal(err)
 	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
-	authorization, err := SignAuthorization(controlPrivate, testClaims(now, DirectionLocal))
+	claims := testClaims(now, DirectionLocal)
+	claims.InitiatingDevice = mesh.DeviceID(identity.DeviceID(devicePublic))
+	claims.Route.Source = claims.InitiatingDevice
+	claims.Route.Hops[0].From = claims.InitiatingDevice
+	authorization, err := SignAuthorization(controlPrivate, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
