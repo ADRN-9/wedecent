@@ -97,7 +97,7 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 		return ErrReplayUnavailable
 	}
 
-	unlock, err := lockReplayFile(r.Path)
+	unlock, createdLock, err := lockReplayFile(r.Path)
 	if err != nil {
 		return fmt.Errorf("%w: lock replay store: %v", ErrReplayUnavailable, err)
 	}
@@ -113,7 +113,7 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 		return ErrAuthorizationInvalid
 	}
 
-	entries, err := readReplayEntries(r.Path, r.DeviceID)
+	entries, err := readReplayEntries(r.Path, r.DeviceID, createdLock)
 	if err != nil {
 		return fmt.Errorf("%w: read replay store: %v", ErrReplayUnavailable, err)
 	}
@@ -143,10 +143,13 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 	return nil
 }
 
-func readReplayEntries(path string, deviceID mesh.DeviceID) (map[string]int64, error) {
+func readReplayEntries(path string, deviceID mesh.DeviceID, allowMissing bool) (map[string]int64, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return make(map[string]int64), nil
+		if allowMissing {
+			return make(map[string]int64), nil
+		}
+		return nil, errors.New("replay state file is missing after initialization")
 	}
 	if err != nil {
 		return nil, err
