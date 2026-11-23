@@ -293,6 +293,135 @@ func TestBridgeReportsConnectionCloseFailures(t *testing.T) {
 	}
 }
 
+func tcpPair(t *testing.T) (net.Conn, net.Conn) {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	acceptErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			acceptErr <- err
+			return
+		}
+		accepted <- conn
+	}()
+	client, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case server := <-accepted:
+		return client, server
+	case err := <-acceptErr:
+		_ = client.Close()
+		t.Fatal(err)
+	case <-time.After(time.Second):
+		_ = client.Close()
+		t.Fatal("timed out creating TCP pair")
+	}
+	return nil, nil
+}
+
+func TestBridgePreservesTCPHalfCloseAndResponse(t *testing.T) {
+	client, left := tcpPair(t)
+	right, server := tcpPair(t)
+	defer client.Close()
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	bridgeDone := make(chan error, 1)
+	go func() { bridgeDone <- bridge(ctx, left, right, 2*time.Second) }()
+
+	if _, err := client.Write([]byte("request")); err != nil {
+		t.Fatal(err)
+	}
+	if err := client.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	request, err := io.ReadAll(server)
+	if err != nil || string(request) != "request" {
+		t.Fatalf("server request = %q, error = %v", request, err)
+	}
+	if _, err := server.Write([]byte("complete-response")); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.(*net.TCPConn).CloseWrite(); err != nil {
+		t.Fatal(err)
+	}
+	response, err := io.ReadAll(client)
+	if err != nil || string(response) != "complete-response" {
+		t.Fatalf("client response = %q, error = %v", response, err)
+	}
+	select {
+	case err := <-bridgeDone:
+		if err != nil {
+			t.Fatalf("bridge after successful TCP half-close = %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("bridge did not finish after both TCP half-closes")
+	}
+}
+
+func TestBridgeRejectsUnsupportedHalfCloseWithoutSilentFallback(t *testing.T) {
+	left, leftPeer := net.Pipe()
+	right, rightPeer := net.Pipe()
+	_ = leftPeer.Close()
+	_ = rightPeer.Close()
+	err := bridge(context.Background(), left, right, time.Second)
+	if !errors.Is(err, ErrHalfCloseUnsupported) {
+		t.Fatalf("bridge unsupported half-close error = %v, want ErrHalfCloseUnsupported", err)
+	}
+}
+
+func TestIdleConnActivityInEitherDirectionResetsSharedIdleTimer(t *testing.T) {
+	local, peer := net.Pipe()
+	wrapped := newIdleConn(local, 120*time.Millisecond)
+	defer wrapped.Close()
+	defer peer.Close()
+
+	peerReadDone := make(chan struct{})
+	go func() {
+		defer close(peerReadDone)
+		buf := make([]byte, 1)
+		for {
+			if _, err := peer.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := wrapped.Read(make([]byte, 1))
+		readDone <- err
+	}()
+
+	for i := 0; i < 5; i++ {
+		if _, err := wrapped.Write([]byte("x")); err != nil {
+			t.Fatalf("active write %d: %v", i, err)
+		}
+		time.Sleep(35 * time.Millisecond)
+	}
+	select {
+	case err := <-readDone:
+		t.Fatalf("one-way active traffic was treated as idle: %v", err)
+	default:
+	}
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("idle read unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shared idle timer did not expire after all traffic stopped")
+	}
+	<-peerReadDone
+}
+
 func TestManagerStartsLocalForwardAndBridgesAuthenticatedStream(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
