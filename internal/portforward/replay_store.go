@@ -325,6 +325,10 @@ func writeReplayJSON(path string, value any, pattern string, maxSize int64) erro
 		cleanup()
 		return err
 	}
+	if err := secureReplayFile(tempPath); err != nil {
+		cleanup()
+		return err
+	}
 	for len(data) > 0 {
 		n, writeErr := file.Write(data)
 		if writeErr != nil {
