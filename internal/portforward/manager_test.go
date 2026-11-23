@@ -79,28 +79,67 @@ type pipeConnector struct {
 	block             <-chan struct{}
 }
 
-func (c *pipeConnector) Open(ctx context.Context, auth Authorization) (net.Conn, error) {
+func (c *pipeConnector) Open(ctx context.Context, auth Authorization) (ForwardingSession, error) {
 	c.mu.Lock()
 	c.calls++
 	c.lastAuthorization = cloneAuthorization(auth)
 	c.mu.Unlock()
-	left, right := net.Pipe()
-	if c.opened != nil {
-		select {
-		case c.opened <- right:
-		default:
-		}
-	}
 	if c.block != nil {
 		select {
 		case <-c.block:
 		case <-ctx.Done():
-			_ = left.Close()
-			_ = right.Close()
 			return nil, ctx.Err()
 		}
 	}
+	return &pipeForwardingSession{connector: c, children: make(map[net.Conn]struct{})}, nil
+}
+
+type pipeForwardingSession struct {
+	connector *pipeConnector
+	mu        sync.Mutex
+	closed    bool
+	children  map[net.Conn]struct{}
+}
+
+func (s *pipeForwardingSession) OpenChild(ctx context.Context) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	left, right := net.Pipe()
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = left.Close()
+		_ = right.Close()
+		return nil, ErrManagerClosed
+	}
+	s.children[left] = struct{}{}
+	s.mu.Unlock()
+	if s.connector.opened != nil {
+		select {
+		case s.connector.opened <- right:
+		default:
+			_ = right.Close()
+		}
+	} else {
+		_ = right.Close()
+	}
 	return left, nil
+}
+
+func (s *pipeForwardingSession) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	children := make([]net.Conn, 0, len(s.children))
+	for child := range s.children {
+		children = append(children, child)
+	}
+	s.children = make(map[net.Conn]struct{})
+	s.mu.Unlock()
+	for _, child := range children {
+		_ = child.Close()
+	}
+	return nil
 }
 func (c *pipeConnector) callCount() int {
 	c.mu.Lock()
