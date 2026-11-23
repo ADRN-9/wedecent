@@ -26,6 +26,15 @@ func (s *fakePortForwardService) StopPortForward(_ context.Context, req v1.PortF
 	return nil
 }
 
+func (s *fakePortForwardService) GetPortForwardStatus(_ context.Context, req v1.PortForwardStatusRequest) (v1.PortForwardStatus, error) {
+	for _, status := range s.status {
+		if status.ID == req.ForwardingID {
+			return status, nil
+		}
+	}
+	return v1.PortForwardStatus{}, nil
+}
+
 func (s *fakePortForwardService) ListPortForwards(context.Context) ([]v1.PortForwardStatus, error) {
 	return append([]v1.PortForwardStatus(nil), s.status...), nil
 }
@@ -55,6 +64,24 @@ func TestPortForwardIPCExposesOnlySignedLifecycleOperations(t *testing.T) {
 	})
 	if stop.Error != nil || len(fake.stops) != 1 || fake.stops[0] != "00000000-0000-4000-8000-000000000001" {
 		t.Fatalf("port_forward.stop response = %#v, stops = %#v", stop.Error, fake.stops)
+	}
+
+	statusParams, err := json.Marshal(v1.PortForwardStatusRequest{ForwardingID: fake.status[0].ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	statusResponse := server.handle(context.Background(), Request{
+		Version: v1.Version, ID: "3", Method: v1.MethodPortForwardStatus, Params: statusParams,
+	})
+	if statusResponse.Error != nil {
+		t.Fatalf("port_forward.status error = %#v", statusResponse.Error)
+	}
+	var oneStatus v1.PortForwardStatus
+	if err := json.Unmarshal(statusResponse.Result, &oneStatus); err != nil {
+		t.Fatal(err)
+	}
+	if oneStatus.ID != fake.status[0].ID {
+		t.Fatalf("port_forward.status result = %#v", oneStatus)
 	}
 
 	list := server.handle(context.Background(), Request{
