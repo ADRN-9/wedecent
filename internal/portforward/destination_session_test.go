@@ -2,6 +2,7 @@ package portforward
 
 import (
 	"context"
+	"wedecent.com/wedecent/internal/audit"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
@@ -554,4 +555,63 @@ func TestDestinationSessionBoundsChildrenAndExpiresActiveStreams(t *testing.T) {
 		t.Fatal("child remained writable after destination session expiry")
 	}
 	_ = child.Close()
+}
+
+
+type blockingDestinationAudit struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (a *blockingDestinationAudit) Append(event audit.Event) error {
+	if event.Type == "port_forward.destination_child" && event.Outcome == "attempt" {
+		a.once.Do(func() {
+			close(a.started)
+			<-a.release
+		})
+	}
+	return nil
+}
+
+func TestDestinationSessionCloseDoesNotWaitForPendingChildOpen(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	cfg, _, _, _ := newDestinationTestConfig(t, now, publicKey)
+	auditLog := &blockingDestinationAudit{started: make(chan struct{}), release: make(chan struct{})}
+	cfg.Audit = auditLog
+	parentCtx, cancelParent := context.WithCancel(context.Background())
+	session, err := NewDestinationSession(parentCtx, cfg, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	openDone := make(chan error, 1)
+	go func() {
+		_, err := session.OpenChild(context.Background())
+		openDone <- err
+	}()
+	select {
+	case <-auditLog.started:
+	case <-time.After(time.Second):
+		t.Fatal("child open did not reach the blocked audit append")
+	}
+
+	cancelParent()
+	select {
+	case <-session.Done():
+	case <-time.After(time.Second):
+		t.Fatal("parent cancellation waited for an in-flight child open")
+	}
+
+	close(auditLog.release)
+	select {
+	case err := <-openDone:
+		if !errors.Is(err, ErrDestinationSessionClosed) {
+			t.Fatalf("late child open error = %v, want destination session closed", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("late child open did not self-clean after the audit append resumed")
+	}
 }

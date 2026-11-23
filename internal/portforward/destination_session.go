@@ -63,7 +63,6 @@ type DestinationSession struct {
 	closed    bool
 	nextChild uint64
 	children  map[uint64]*destinationChildConn
-	opens     sync.WaitGroup
 	closeOnce sync.Once
 	closeErr  error
 	auditErr  error
@@ -271,9 +270,7 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	s.nextChild++
 	childID := s.nextChild
 	s.children[childID] = nil
-	s.opens.Add(1)
 	s.mu.Unlock()
-	defer s.opens.Done()
 
 	if err := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "attempt", "")); err != nil {
 		s.releaseReservation(childID)
@@ -356,12 +353,20 @@ func (s *DestinationSession) closeWithReason(reason string) error {
 		s.mu.Unlock()
 
 		var errs []error
+		// OpenChild rechecks s.closed after dialing and closes any late result.
+		// Do not wait for pending opens here: a context-ignoring dialer or
+		// blocked audit append must not hold parent teardown indefinitely.
+		closeResults := make(chan error, len(children))
 		for _, child := range children {
-			if err := child.Close(); err != nil {
+			go func(child *destinationChildConn) {
+				closeResults <- child.Close()
+			}(child)
+		}
+		for range children {
+			if err := <-closeResults; err != nil {
 				errs = append(errs, err)
 			}
 		}
-		s.opens.Wait()
 		s.mu.Lock()
 		if s.auditErr != nil {
 			errs = append(errs, s.auditErr)
