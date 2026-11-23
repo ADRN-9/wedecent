@@ -14,6 +14,125 @@ import (
 	"wedecent.com/wedecent/internal/trust"
 )
 
+type mutableManagerTrustChecker struct {
+	mu      sync.RWMutex
+	trusted map[string]bool
+	err     error
+}
+
+func (t *mutableManagerTrustChecker) IsTrusted(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	if t.err != nil {
+		return false, t.err
+	}
+	return t.trusted[id], nil
+}
+
+func (t *mutableManagerTrustChecker) revoke(id string) {
+	t.mu.Lock()
+	delete(t.trusted, id)
+	t.mu.Unlock()
+}
+
+func TestManagerRequiresRouterTrustBeforeConsumingForwardingGrant(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testRoutedClaims(now, DirectionLocal)
+	auth, publicKey, replay := signManagerTrustTestAuthorization(t, claims, now)
+	routeAuth, _ := testRouteAuthorization(t, claims)
+	auth.RouteAuthorization = routeAuth
+	listener := newQueueListener()
+	connector := &pipeConnector{}
+	manager, err := NewManager(ManagerConfig{
+		LocalDeviceID:        testInitiator,
+		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		TrustChecker:         managerTestTrustChecker{trusted: map[string]bool{string(testDestination): true}},
+		RouterTrustChecker:   &mutableManagerTrustChecker{trusted: map[string]bool{}},
+		PermissionAuthorizer: allowPortForwardPermission{},
+		Connector:            connector,
+		Audit:                &memoryAudit{},
+		Limits:               managerTestLimits(),
+		Listen:               func(string, string) (net.Listener, error) { return listener, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	if _, err := manager.Start(context.Background(), auth); !errors.Is(err, ErrRouterNotTrusted) {
+		t.Fatalf("untrusted router start error = %v", err)
+	}
+	if len(replay.used) != 0 || connector.callCount() != 0 || len(manager.List()) != 0 {
+		t.Fatal("untrusted router consumed the grant or opened a forwarding session")
+	}
+}
+
+func TestManagerRouterTrustRevocationTerminatesForward(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testRoutedClaims(now, DirectionLocal)
+	auth, publicKey, replay := signManagerTrustTestAuthorization(t, claims, now)
+	routeAuth, _ := testRouteAuthorization(t, claims)
+	auth.RouteAuthorization = routeAuth
+	store, err := trust.Open(filepath.Join(t.TempDir(), "trusted-devices.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(trust.Peer{ID: string(testDestination), Fingerprint: "endpoint-fingerprint"}); err != nil {
+		t.Fatal(err)
+	}
+	routerTrust := &mutableManagerTrustChecker{trusted: map[string]bool{string(testRouter): true}}
+	listener := newQueueListener()
+	manager, err := NewManager(ManagerConfig{
+		LocalDeviceID:        testInitiator,
+		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		TrustChecker:         store,
+		RouterTrustChecker:   routerTrust,
+		TrustPollInterval:    20 * time.Millisecond,
+		PermissionAuthorizer: allowPortForwardPermission{},
+		Connector:            &pipeConnector{},
+		Audit:                &memoryAudit{},
+		Limits:               managerTestLimits(),
+		Listen:               func(string, string) (net.Listener, error) { return listener, nil },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		_ = manager.Close()
+		t.Fatal(err)
+	}
+	routerTrust.revoke(string(testRouter))
+	deadline := time.After(2 * time.Second)
+	for len(manager.List()) != 0 {
+		select {
+		case <-deadline:
+			_ = manager.Close()
+			t.Fatal("router trust revocation did not terminate forwarding")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatalf("manager close after router revocation: %v", err)
+	}
+}
+
+func signManagerTrustTestAuthorization(t *testing.T, claims Claims, now time.Time) (Authorization, ed25519.PublicKey, *MemoryReplay) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := SignAuthorization(privateKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := NewMemoryReplay(8)
+	replay.Now = func() time.Time { return now }
+	return auth, publicKey, replay
+}
+
 func TestManagerTrustStoreRevocationTerminatesParentAndChildStreams(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	store, err := trust.Open(filepath.Join(t.TempDir(), "trusted-devices.json"))
