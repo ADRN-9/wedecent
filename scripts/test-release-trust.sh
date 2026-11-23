@@ -12,8 +12,8 @@ fail() {
 HOSTNAME='replay.example.test'
 PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 APPROVAL="$(wedecent_replay_authority_approval_digest "$HOSTNAME" "$PINS")"
-SOURCE_SHA="${GITHUB_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-TREE_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
+TREE_SHA="$(git -C "$ROOT" rev-parse --verify "${SOURCE_SHA}^{tree}")"
 export GITHUB_ACTIONS=true
 export GITHUB_REPOSITORY='ADRN-9/wedecent'
 export GITHUB_SHA="$SOURCE_SHA"
@@ -116,6 +116,15 @@ cp "$FIXTURE/VERSION.txt" "$WORK/production.txt"
 cp "$WORK/forged-source.txt" "$FIXTURE/VERSION.txt"
 if wedecent_verify_release_metadata "$FIXTURE"; then
   fail 'forged source commit was accepted'
+fi
+mv "$WORK/production.txt" "$FIXTURE/VERSION.txt"
+
+sed "s/^source_tree=$TREE_SHA$/source_tree=cccccccccccccccccccccccccccccccccccccccc/" \
+  "$FIXTURE/VERSION.txt" > "$WORK/forged-tree.txt"
+cp "$FIXTURE/VERSION.txt" "$WORK/production.txt"
+cp "$WORK/forged-tree.txt" "$FIXTURE/VERSION.txt"
+if wedecent_verify_release_metadata "$FIXTURE"; then
+  fail 'forged source tree was accepted'
 fi
 mv "$WORK/production.txt" "$FIXTURE/VERSION.txt"
 

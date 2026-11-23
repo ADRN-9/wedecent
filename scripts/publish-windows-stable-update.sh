@@ -12,6 +12,7 @@ PUBLIC_KEY=''
 DRY_RUN=0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-trust.sh"
 SIGNER="${WEDECENT_UPDATE_MANIFEST_SIGNER:-}"
 PAIR_PUBLISHER="${WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER:-}"
 
@@ -138,6 +139,8 @@ done
 
 [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
   die '--version must be canonical stable vMAJOR.MINOR.PATCH'
+wedecent_require_approved_replay_trust || die 'approved replay-authority configuration is required'
+wedecent_require_production_release_context "${VERSION#v}" || die 'stable update publication is not bound to the immutable production tag context'
 [[ "$SEQUENCE" =~ ^[1-9][0-9]*$ ]] || die '--sequence must be a positive integer'
 [[ -n "$PUBLISHED_AT" ]] || die '--published-at is required'
 [[ -n "$PUBLIC_KEY" ]] || die '--public-key is required'

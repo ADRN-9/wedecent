@@ -11,8 +11,8 @@ source "$ROOT/scripts/lib/release-trust.sh"
 TEST_REPLAY_HOSTNAME='replay.example.test'
 TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
-TEST_SOURCE_SHA="${GITHUB_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-TEST_TREE_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+TEST_SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
+TEST_TREE_SHA="$(git -C "$ROOT" rev-parse --verify "${TEST_SOURCE_SHA}^{tree}")"
 export GITHUB_ACTIONS=true
 export GITHUB_REPOSITORY='ADRN-9/wedecent'
 export GITHUB_SHA="$TEST_SOURCE_SHA"
@@ -225,6 +225,16 @@ grep -Fq 'Dry run: signed release and installer verified; no upload performed.' 
   fail 'publisher did not report signed dry-run success'
 [[ "$(wc -l < "$CURL_LOG" | tr -d '[:space:]')" == '4' ]] ||
   fail 'absent-object dry-run should perform exactly four remote-state probes'
+
+cp "$RELEASE/VERSION.txt" "$WORK/VERSION.tree-good"
+sed "s/^source_tree=$TEST_TREE_SHA$/source_tree=cccccccccccccccccccccccccccccccccccccccc/" \
+  "$WORK/VERSION.tree-good" > "$RELEASE/VERSION.txt"
+: > "$CURL_LOG"
+if run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run >/dev/null 2>&1; then
+  fail 'publisher accepted forged source-tree metadata'
+fi
+[[ ! -s "$CURL_LOG" ]] || fail 'forged source-tree rejection performed network requests'
+mv "$WORK/VERSION.tree-good" "$RELEASE/VERSION.txt"
 
 for failure_mode in http500 transport-error; do
   : > "$CURL_LOG"

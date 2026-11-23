@@ -7,6 +7,11 @@ fail() {
 }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-trust.sh"
+TEST_HOSTNAME='replay.example.test'
+TEST_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TEST_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_HOSTNAME" "$TEST_PINS")"
+TEST_SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
 TARGET="$ROOT/scripts/publish-windows-stable-update.sh"
 WORK="$(mktemp -d)"
 trap 'rm -rf -- "$WORK"' EXIT
@@ -144,12 +149,31 @@ make_version() {
 COUNTER="$WORK/publisher-count"
 printf '0\n' > "$COUNTER"
 run_publish() {
+  local ref_name=''
+  local -a args=("$@")
+  local i
+  for ((i = 0; i + 1 < ${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == '--version' ]]; then
+      ref_name="${args[$((i + 1))]}"
+      break
+    fi
+  done
+  [[ -n "$ref_name" ]] || fail 'test invocation omitted --version'
   PATH="$BIN:$PATH" \
+  GITHUB_ACTIONS=true \
+  GITHUB_REPOSITORY='ADRN-9/wedecent' \
+  GITHUB_SHA="$TEST_SOURCE_SHA" \
+  GITHUB_REF_TYPE=tag \
+  GITHUB_REF_NAME="$ref_name" \
+  WEDECENT_PRODUCTION_RELEASE_APPROVED=true \
+  WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$TEST_HOSTNAME" \
+  WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$TEST_PINS" \
+  WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$TEST_APPROVAL" \
   WEDECENT_FIXTURE_REMOTE="$REMOTE" \
   WEDECENT_FIXTURE_COUNTER="$COUNTER" \
   WEDECENT_UPDATE_MANIFEST_SIGNER="$BIN/signer" \
   WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER="$BIN/publisher" \
-    bash "$TARGET" "$@"
+    bash "$TARGET" "${args[@]}"
 }
 
 make_version v1.0.0
@@ -172,7 +196,13 @@ fi
 cp "$REMOTE/stable/manifest-v1.json" "$WORK/stable-before-dry"
 make_version v1.0.2
 WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER='' \
-PATH="$BIN:$PATH" WEDECENT_FIXTURE_REMOTE="$REMOTE" WEDECENT_FIXTURE_COUNTER="$COUNTER" \
+PATH="$BIN:$PATH" \
+GITHUB_ACTIONS=true GITHUB_REPOSITORY='ADRN-9/wedecent' GITHUB_SHA="$TEST_SOURCE_SHA" \
+GITHUB_REF_TYPE=tag GITHUB_REF_NAME=v1.0.2 WEDECENT_PRODUCTION_RELEASE_APPROVED=true \
+WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$TEST_HOSTNAME" \
+WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$TEST_PINS" \
+WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$TEST_APPROVAL" \
+WEDECENT_FIXTURE_REMOTE="$REMOTE" WEDECENT_FIXTURE_COUNTER="$COUNTER" \
 WEDECENT_UPDATE_MANIFEST_SIGNER="$BIN/signer" \
   bash "$TARGET" --version v1.0.2 --sequence 3 --published-at 2026-09-24T12:10:00Z --public-key "$PUBLIC_KEY" --dry-run >/dev/null
 cmp -s "$WORK/stable-before-dry" "$REMOTE/stable/manifest-v1.json" || fail 'dry run mutated stable manifest'

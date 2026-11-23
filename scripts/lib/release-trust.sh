@@ -162,6 +162,25 @@ wedecent_python() {
   fi
 }
 
+wedecent_verify_source_tree_provenance() {
+  local source_commit="$1"
+  local source_tree="$2"
+  local expected="${WEDECENT_EXPECTED_SOURCE_SHA:-${GITHUB_SHA:-}}"
+  local actual_tree
+
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] ||
+    wedecent_release_fail "trusted GitHub source commit is missing or malformed" || return 1
+  [[ "$source_commit" == "$expected" ]] ||
+    wedecent_release_fail "release source commit does not match immutable GitHub GITHUB_SHA" || return 1
+  [[ "$source_tree" =~ ^[0-9a-f]{40}$ ]] ||
+    wedecent_release_fail "release source tree provenance is malformed" || return 1
+
+  actual_tree="$(git -C "$WEDECENT_RELEASE_ROOT" rev-parse --verify "${expected}^{tree}")" ||
+    wedecent_release_fail "cannot resolve the Git tree associated with immutable GITHUB_SHA" || return 1
+  [[ "$actual_tree" == "$source_tree" ]] ||
+    wedecent_release_fail "release source tree does not match the Git tree associated with immutable GITHUB_SHA" || return 1
+}
+
 wedecent_verify_binary_trust() {
   local binary="$1"
   local hostname="$2"
@@ -198,8 +217,7 @@ wedecent_verify_release_metadata() {
     wedecent_release_fail "diagnostic or unknown build modes cannot be signed or published" || return 1
   [[ "$commit" == "$expected" && "$source_commit" == "$expected" ]] ||
     wedecent_release_fail "release source commit does not match the independently expected source SHA" || return 1
-  [[ "$source_tree" =~ ^[0-9a-f]{40}$ ]] ||
-    wedecent_release_fail "release source tree provenance is malformed" || return 1
+  wedecent_verify_source_tree_provenance "$source_commit" "$source_tree" || return 1
   [[ "$hostname" == "$REPLAY_AUTHORITY_HOSTNAME" &&
      "$pins" == "$REPLAY_AUTHORITY_SPKI_SHA256" &&
      "$approval" == "$REPLAY_AUTHORITY_APPROVAL_SHA256" ]] ||

@@ -63,6 +63,7 @@ jobs:
         run: |
           bash ./scripts/test-release-trust.sh
           bash ./scripts/test-release-build-safety.sh
+          python3 ./scripts/test-release-provenance.py
       - name: Build diagnostic Linux release bundle
         run: WEDECENT_BUILD_MODE=diagnostic ./scripts/build-linux-release.sh
       - name: List Go files requiring formatting

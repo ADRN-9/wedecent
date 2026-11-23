@@ -11,8 +11,8 @@ source "$ROOT/scripts/lib/release-trust.sh"
 TEST_REPLAY_HOSTNAME='replay.example.test'
 TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
-TEST_SOURCE_SHA="${GITHUB_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-TEST_TREE_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+TEST_SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
+TEST_TREE_SHA="$(git -C "$ROOT" rev-parse --verify "${TEST_SOURCE_SHA}^{tree}")"
 export GITHUB_ACTIONS=true
 export GITHUB_REPOSITORY='ADRN-9/wedecent'
 export GITHUB_SHA="$TEST_SOURCE_SHA"
@@ -123,6 +123,17 @@ if env -u WEDECENT_REPLAY_AUTHORITY_HOSTNAME -u WEDECENT_REPLAY_AUTHORITY_SPKI_S
   fail 'signing finalizer accepted missing production trust anchors'
 fi
 [[ ! -e "$OUT_DIR" && ! -e "$SIGN_LOG" ]] || fail 'missing-anchor rejection reached signer or published output'
+
+cp "$RELEASE/VERSION.txt" "$WORK/VERSION.tree-good"
+sed "s/^source_tree=$TEST_TREE_SHA$/source_tree=cccccccccccccccccccccccccccccccccccccccc/" \
+  "$WORK/VERSION.tree-good" > "$RELEASE/VERSION.txt"
+if UNSIGNED_RELEASE_DIR="$RELEASE" UNSIGNED_PACKAGE_DIR="$PACKAGE" OUT_DIR="$OUT_DIR" \
+   WEDECENT_WINDOWS_AUTHENTICODE_SIGNER="$SIGNER" WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
+   WEDECENT_FAKE_SIGN_LOG="$SIGN_LOG" "$FINALIZER" >/dev/null 2>&1; then
+  fail 'signing finalizer accepted forged source-tree metadata'
+fi
+[[ ! -e "$OUT_DIR" && ! -e "$SIGN_LOG" ]] || fail 'forged source-tree rejection reached signer or published output'
+mv "$WORK/VERSION.tree-good" "$RELEASE/VERSION.txt"
 
 snapshot_sources() {
   (
