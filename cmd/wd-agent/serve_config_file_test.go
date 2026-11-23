@@ -170,3 +170,50 @@ func writeServeConfigTestFile(t *testing.T, contents string) string {
 	}
 	return path
 }
+
+
+func TestServeConfigFileCarriesIndependentReplayAuthority(t *testing.T) {
+	path := writeServeConfigTestFile(t, `{
+		"port_forward_authorization_public_key": "/tmp/port-forward.pub",
+		"port_forward_replay_url": "https://example.supabase.co/functions/v1/port-forward-replay",
+		"port_forward_replay_api_key": "public-anon-key",
+		"port_forward_allowed_ports": "22",
+		"port_forward_max_connections": 2
+	}`)
+	expanded, err := expandServeConfigArgs([]string{"--config", path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(expanded, "\x00")
+	for _, expected := range []string{
+		"--port-forward-replay-url=https://example.supabase.co/functions/v1/port-forward-replay",
+		"--port-forward-replay-api-key=public-anon-key",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("expanded config missing %q: %#v", expected, expanded)
+		}
+	}
+}
+
+func TestPortForwardConfigRequiresIndependentReplayAuthority(t *testing.T) {
+	cfg := serveConfig{
+		PortForwardAuthorizationPublicKey: "/tmp/port-forward.pub",
+		PortForwardAllowedPorts: "22",
+		PortForwardMaxConnections: 1,
+	}
+	if err := cfg.validatePortForward(); err == nil || !strings.Contains(err.Error(), "port-forward-replay-url") {
+		t.Fatalf("missing remote replay authority error = %v", err)
+	}
+	cfg.PortForwardReplayURL = "https://example.supabase.co/functions/v1/port-forward-replay"
+	if err := cfg.validatePortForward(); err == nil || !strings.Contains(err.Error(), "port-forward-replay-api-key") {
+		t.Fatalf("missing public API key error = %v", err)
+	}
+	cfg.PortForwardReplayAPIKey = "public-anon-key"
+	if err := cfg.validatePortForward(); err != nil {
+		t.Fatalf("valid independent replay configuration rejected: %v", err)
+	}
+	cfg.PortForwardAllowLegacyReplayMigration = true
+	if err := cfg.validatePortForward(); err == nil || !strings.Contains(err.Error(), "cannot be used") {
+		t.Fatalf("legacy migration fallback was not rejected: %v", err)
+	}
+}

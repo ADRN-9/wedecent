@@ -26,7 +26,8 @@ func (cfg serveConfig) portForwardConfigured() bool {
 	return strings.TrimSpace(cfg.PortForwardAuthorizationPublicKey) != "" ||
 		strings.TrimSpace(cfg.PortForwardAllowedPorts) != "" ||
 		strings.TrimSpace(cfg.PortForwardAllowedPrivateCIDRs) != "" ||
-		cfg.PortForwardAllowPublic || cfg.PortForwardMaxConnections != 0 || cfg.PortForwardAllowLegacyReplayMigration
+		cfg.PortForwardAllowPublic || cfg.PortForwardMaxConnections != 0 || cfg.PortForwardAllowLegacyReplayMigration ||
+		strings.TrimSpace(cfg.PortForwardReplayURL) != "" || strings.TrimSpace(cfg.PortForwardReplayAPIKey) != ""
 }
 
 func (cfg serveConfig) validatePortForward() error {
@@ -35,6 +36,15 @@ func (cfg serveConfig) validatePortForward() error {
 	}
 	if strings.TrimSpace(cfg.PortForwardAuthorizationPublicKey) == "" {
 		return errors.New("--port-forward-authorization-public-key is required when port forwarding is configured")
+	}
+	if strings.TrimSpace(cfg.PortForwardReplayURL) == "" {
+		return errors.New("--port-forward-replay-url or WEDECENT_PORT_FORWARD_REPLAY_URL is required; file-only replay is not production-safe")
+	}
+	if strings.TrimSpace(cfg.PortForwardReplayAPIKey) == "" {
+		return errors.New("--port-forward-replay-api-key or WEDECENT_SUPABASE_ANON_KEY is required")
+	}
+	if cfg.PortForwardAllowLegacyReplayMigration {
+		return errors.New("--port-forward-allow-legacy-replay-migration cannot be used with the independent replay authority; preserve old state and follow the documented identity recovery procedure")
 	}
 	if _, err := parsePortForwardPorts(cfg.PortForwardAllowedPorts); err != nil {
 		return fmt.Errorf("--port-forward-allowed-ports: %w", err)
@@ -140,14 +150,22 @@ func openAgentPortForwardRuntime(cfg serveConfig, id *identity.Identity, peers *
 	if err != nil {
 		return nil, fmt.Errorf("load port-forwarding public trust anchor: %w", err)
 	}
-	verifier, err := portforward.NewPersistentAuthorizationVerifierWithLegacyMigration(
-		filepath.Join(cfg.StateDir, "portforward-replay.json"),
+	legacyReplayPath := filepath.Join(cfg.StateDir, "portforward-replay.json")
+	if err := portforward.RejectExistingFileReplayState(legacyReplayPath); err != nil {
+		return nil, fmt.Errorf("legacy file replay state cannot be trusted or migrated automatically: %w", err)
+	}
+	remoteReplay, err := portforward.NewRemoteReplay(
+		strings.TrimSpace(cfg.PortForwardReplayURL),
+		strings.TrimSpace(cfg.PortForwardReplayAPIKey),
 		mesh.DeviceID(id.ID),
-		publicKey,
-		cfg.PortForwardAllowLegacyReplayMigration,
+		id.PrivateKey,
 	)
 	if err != nil {
-		return nil, fmt.Errorf("open destination replay verifier: %w", err)
+		return nil, fmt.Errorf("configure independent replay authority: %w", err)
+	}
+	verifier := &portforward.AuthorizationVerifier{
+		PublicKey: append(ed25519.PublicKey(nil), publicKey...),
+		Replay:    remoteReplay,
 	}
 	routerTrust, err := meshnet.OpenRouteDestinationRoutersTrust(cfg.StateDir)
 	if err != nil {

@@ -278,6 +278,8 @@ type serveConfig struct {
 	RouteTunnelTransport                  string
 	RouteMaxConnections                   int
 	PortForwardAuthorizationPublicKey     string
+	PortForwardReplayURL                  string
+	PortForwardReplayAPIKey               string
 	PortForwardAllowedPorts               string
 	PortForwardAllowedPrivateCIDRs        string
 	PortForwardAllowPublic                bool
@@ -456,6 +458,18 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"path to the trusted Ed25519 public key used to verify forwarding capabilities",
 	)
 	fs.StringVar(
+		&cfg.PortForwardReplayURL,
+		"port-forward-replay-url",
+		strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_URL")),
+		"HTTPS Supabase Edge Function URL for the independent port-forward replay authority",
+	)
+	fs.StringVar(
+		&cfg.PortForwardReplayAPIKey,
+		"port-forward-replay-api-key",
+		strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_ANON_KEY")),
+		"public Supabase Data API key used to invoke the signed replay authority",
+	)
+	fs.StringVar(
 		&cfg.PortForwardAllowedPorts,
 		"port-forward-allowed-ports",
 		"",
@@ -492,6 +506,8 @@ func parseServeConfig(args []string) (serveConfig, error) {
 
 	cfg.FileTransferRoot = strings.TrimSpace(cfg.FileTransferRoot)
 	cfg.PortForwardAuthorizationPublicKey = strings.TrimSpace(cfg.PortForwardAuthorizationPublicKey)
+	cfg.PortForwardReplayURL = strings.TrimSpace(cfg.PortForwardReplayURL)
+	cfg.PortForwardReplayAPIKey = strings.TrimSpace(cfg.PortForwardReplayAPIKey)
 	cfg.PortForwardAllowedPorts = strings.TrimSpace(cfg.PortForwardAllowedPorts)
 	cfg.PortForwardAllowedPrivateCIDRs = strings.TrimSpace(cfg.PortForwardAllowedPrivateCIDRs)
 	if cfg.PortForwardAuthorizationPublicKey != "" && cfg.PortForwardMaxConnections == 0 {

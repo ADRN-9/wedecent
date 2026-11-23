@@ -47,8 +47,39 @@ type replayInitialization struct {
 	Legacy   bool   `json:"legacy,omitempty"`
 }
 
+// RejectExistingFileReplayState prevents a production remote-authority rollout
+// from silently ignoring or migrating potentially consumed file-backed JTIs.
+func RejectExistingFileReplayState(path string) error {
+	path = filepath.Clean(strings.TrimSpace(path))
+	if path == "." || !filepath.IsAbs(path) {
+		return ErrReplayUnavailable
+	}
+	for _, suffix := range []string{"", ".init", ".lock", ".anchor", ".pending", ".lock.bootstrap"} {
+		if _, err := os.Lstat(path + suffix); err == nil {
+			return fmt.Errorf("%w: existing local replay artifact %s requires explicit identity recovery", ErrReplayUnavailable, filepath.Base(path+suffix))
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("%w: inspect local replay artifact: %v", ErrReplayUnavailable, err)
+		}
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("%w: inspect local replay staging directory: %v", ErrReplayUnavailable, err)
+	}
+	prefix := replayStagingPrefix(path)
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), prefix) {
+			return fmt.Errorf("%w: existing local replay staging artifact %s requires explicit identity recovery", ErrReplayUnavailable, entry.Name())
+		}
+	}
+	return nil
+}
+
 // FileReplay provides cross-process, durable, device-scoped single-use JTI
-// consumption. Use a distinct file and local device ID at each endpoint.
+// consumption for tests and explicitly local-only development. It does not
+// resist same-account paired snapshot-and-anchor rollback.
 type FileReplay struct {
 	Path                 string
 	DeviceID             mesh.DeviceID

@@ -37,6 +37,8 @@ type serveFileConfig struct {
 	RouteTunnelTransport                  *string `json:"route_tunnel_transport"`
 	RouteMaxConnections                   *int    `json:"route_max_connections"`
 	PortForwardAuthorizationPublicKey     *string `json:"port_forward_authorization_public_key"`
+	PortForwardReplayURL                  *string `json:"port_forward_replay_url"`
+	PortForwardReplayAPIKey               *string `json:"port_forward_replay_api_key"`
 	PortForwardAllowedPorts               *string `json:"port_forward_allowed_ports"`
 	PortForwardAllowedPrivateCIDRs        *string `json:"port_forward_allowed_private_cidrs"`
 	PortForwardAllowPublic                *bool   `json:"port_forward_allow_public"`
@@ -202,6 +204,8 @@ func (cfg serveFileConfig) flagArgs() []string {
 	addString("route-tunnel-transport", cfg.RouteTunnelTransport)
 	addInt("route-max-connections", cfg.RouteMaxConnections)
 	addString("port-forward-authorization-public-key", cfg.PortForwardAuthorizationPublicKey)
+	addString("port-forward-replay-url", cfg.PortForwardReplayURL)
+	addString("port-forward-replay-api-key", cfg.PortForwardReplayAPIKey)
 	addString("port-forward-allowed-ports", cfg.PortForwardAllowedPorts)
 	addString("port-forward-allowed-private-cidrs", cfg.PortForwardAllowedPrivateCIDRs)
 	addBool("port-forward-allow-public", cfg.PortForwardAllowPublic)
