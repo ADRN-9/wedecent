@@ -44,6 +44,7 @@ type DestinationSession struct {
 	audit             AuditWriter
 	trustChecker      PeerTrustChecker
 	trustPollInterval time.Duration
+	expiryReason      string
 	maxChildren       int
 	dialTimeout       time.Duration
 	ctx               context.Context
@@ -136,9 +137,11 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	}
 
 	deadline := time.UnixMilli(claims.ExpiresAtUnixMS)
+	expiryReason := "authorization_expired"
 	maxDurationDeadline := time.UnixMilli(claims.IssuedAtUnixMS).Add(time.Duration(claims.Limits.MaxDurationSeconds) * time.Second)
 	if maxDurationDeadline.Before(deadline) {
 		deadline = maxDurationDeadline
+		expiryReason = "max_duration_elapsed"
 	}
 	if !deadline.After(time.Now()) {
 		return nil, ErrAuthorizationExpired
@@ -154,6 +157,7 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		audit:             cfg.Audit,
 		trustChecker:      cfg.TrustChecker,
 		trustPollInterval: trustPollInterval,
+		expiryReason:      expiryReason,
 		maxChildren:       min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
 		dialTimeout:       cfg.DialTimeout,
 		ctx:               sessionCtx,
@@ -170,7 +174,7 @@ func (s *DestinationSession) watchTrust() {
 	for {
 		select {
 		case <-s.ctx.Done():
-			reason := "authorization_expired"
+			reason := s.expiryReason
 			if !errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
 				reason = "parent_session_closed"
 			}
@@ -179,7 +183,7 @@ func (s *DestinationSession) watchTrust() {
 		case <-ticker.C:
 			trusted, err := s.trustChecker.IsTrusted(s.ctx, string(s.peerID))
 			if s.ctx.Err() != nil {
-				reason := "authorization_expired"
+				reason := s.expiryReason
 				if !errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
 					reason = "parent_session_closed"
 				}
