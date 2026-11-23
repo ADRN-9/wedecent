@@ -29,6 +29,21 @@ func (r *destinationTestResolver) LookupNetIP(ctx context.Context, network, host
 	return append([]netip.Addr(nil), r.addresses...), nil
 }
 
+type destinationTestTrust struct {
+	trusted map[string]bool
+	err     error
+}
+
+func (t destinationTestTrust) IsTrusted(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if t.err != nil {
+		return false, t.err
+	}
+	return t.trusted[id], nil
+}
+
 type destinationTestDialer struct {
 	mu        sync.Mutex
 	addresses []string
@@ -76,6 +91,7 @@ func newDestinationTestConfig(t *testing.T, now time.Time, publicKey ed25519.Pub
 		LocalDeviceID:        testDestination,
 		AuthenticatedPeerID:  testInitiator,
 		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		TrustChecker:         destinationTestTrust{trusted: map[string]bool{string(testInitiator): true}},
 		PermissionAuthorizer: allowPortForwardPermission{},
 		Resolver:             &destinationTestResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}},
 		Dialer:               dialer,
@@ -174,6 +190,20 @@ func TestDestinationSessionRejectsWrongDeviceIdentityBeforeReplayConsumption(t *
 	}
 }
 
+func TestDestinationSessionRejectsUntrustedAuthenticatedPeerBeforeReplayConsumption(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	cfg, replay, _, _ := newDestinationTestConfig(t, now, publicKey)
+	cfg.TrustChecker = destinationTestTrust{trusted: map[string]bool{}}
+	if _, err := NewDestinationSession(context.Background(), cfg, auth); !errors.Is(err, ErrPeerNotTrusted) {
+		t.Fatalf("untrusted authenticated peer error = %v", err)
+	}
+	if len(replay.used) != 0 {
+		t.Fatal("untrusted peer consumed the forwarding capability")
+	}
+}
+
 func TestDestinationSessionRejectsPermissionAndDestinationPolicyBeforeDial(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
@@ -205,6 +235,7 @@ func TestDestinationSessionRequiresSeparateRouteAuthorization(t *testing.T) {
 	auth, publicKey := signDestinationTestAuthorization(t, claims)
 	cfg, replay, dialer, _ := newDestinationTestConfig(t, now, publicKey)
 	cfg.AuthenticatedPeerID = testRouter
+	cfg.TrustChecker = destinationTestTrust{trusted: map[string]bool{string(testRouter): true}}
 	if _, err := NewDestinationSession(context.Background(), cfg, auth); !errors.Is(err, ErrRouteAuthorizationRequired) {
 		t.Fatalf("missing route authorization error = %v", err)
 	}
