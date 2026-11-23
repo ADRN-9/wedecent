@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -293,18 +294,20 @@ func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 			t.Fatalf("verify replay file %s: %v", filepath.Base(file), err)
 		}
 	}
-	if info, err := os.Stat(dir); err != nil {
-		t.Fatal(err)
-	} else if info.Mode().Perm() != 0o700 {
-		t.Fatalf("replay directory permissions = %o, want 700", info.Mode().Perm())
-	}
-	for _, file := range []string{path, path + ".lock", path + ".anchor"} {
-		info, err := os.Stat(file)
-		if err != nil {
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(dir); err != nil {
 			t.Fatal(err)
+		} else if info.Mode().Perm() != 0o700 {
+			t.Fatalf("replay directory permissions = %o, want 700", info.Mode().Perm())
 		}
-		if info.Mode().Perm() != 0o600 {
-			t.Fatalf("%s permissions = %o, want 600", filepath.Base(file), info.Mode().Perm())
+		for _, file := range []string{path, path + ".lock", path + ".anchor"} {
+			info, err := os.Stat(file)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if info.Mode().Perm() != 0o600 {
+				t.Fatalf("%s permissions = %o, want 600", filepath.Base(file), info.Mode().Perm())
+			}
 		}
 	}
 }
