@@ -26,9 +26,7 @@ func main() {
 		if err := buildinfo.Write(os.Stdout, "wd-core"); err != nil {
 			fmt.Fprintln(os.Stderr, "wd-core:", err)
 			os.Exit(1)
-		} else if *forwardingLegacyMigration {
-		return errors.New("--port-forward-allow-legacy-replay-migration requires --port-forward-authorization-public-key")
-	}
+		}
 		return
 	}
 	if err := run(os.Args[1:]); err != nil && !errors.Is(err, context.Canceled) {
@@ -80,6 +78,8 @@ func run(args []string) error {
 			ReplayPath: filepath.Join(*clientStateDir, "portforward-replay.json"),
 			Limits: portforward.DefaultManagerLimits(),
 		}
+	} else if *forwardingLegacyMigration {
+		return errors.New("--port-forward-allow-legacy-replay-migration requires --port-forward-authorization-public-key")
 	}
 	if agentID != "" {
 		controller, err := identity.Load(*clientStateDir)
