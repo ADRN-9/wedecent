@@ -120,7 +120,7 @@ func TestManagedPortForwardUsesAuthenticatedTLSAndPreservesTCPHalfClose(t *testi
 	sourceID, destinationID := mesh.DeviceID(clientID.ID), mesh.DeviceID(serverID.ID)
 	claims := portforward.Claims{
 		Version: portforward.AuthorizationVersion,
-		Issuer: portforward.AuthorizationIssuer,
+		Issuer: portforward.AuthorizationIssuerID,
 		Audience: portforward.AuthorizationAudience,
 		Permission: portforward.PermissionLocal,
 		ForwardingID: "00000000-0000-4000-8000-000000000101",
@@ -303,7 +303,7 @@ func TestTypedForwardBlockedChildDoesNotStallSiblingAndParentDisconnectClosesIt(
 	sourceID, destinationID := mesh.DeviceID(clientID.ID), mesh.DeviceID(serverID.ID)
 	claims := portforward.Claims{
 		Version: portforward.AuthorizationVersion,
-		Issuer: portforward.AuthorizationIssuer,
+		Issuer: portforward.AuthorizationIssuerID,
 		Audience: portforward.AuthorizationAudience,
 		Permission: portforward.PermissionLocal,
 		ForwardingID: "00000000-0000-4000-8000-000000000201",
@@ -597,7 +597,7 @@ func TestTypedForwardParentCloseDoesNotWaitForBlockedChildClose(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	sourceID, destinationID := mesh.DeviceID(clientID.ID), mesh.DeviceID(serverID.ID)
 	claims := portforward.Claims{
-		Version: portforward.AuthorizationVersion, Issuer: portforward.AuthorizationIssuer,
+		Version: portforward.AuthorizationVersion, Issuer: portforward.AuthorizationIssuerID,
 		Audience: portforward.AuthorizationAudience, Permission: portforward.PermissionLocal,
 		ForwardingID: "00000000-0000-4000-8000-000000000301", Direction: portforward.DirectionLocal,
 		InitiatingDevice: sourceID, DestinationDevice: destinationID,
