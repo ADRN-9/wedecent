@@ -215,10 +215,10 @@ func TestPinnedRemoteReplayRejectsWrongEndpointPinAndServiceRoleKey(t *testing.T
 	}
 	badEndpoints := []string{
 		"https://other.example.test:" + strconv.Itoa(int(port)) + remoteReplayFunctionPath,
-		"https://"+parsed.Hostname()+":"+strconv.Itoa(int(port))+"/other",
-		"http://"+parsed.Hostname()+":"+strconv.Itoa(int(port))+remoteReplayFunctionPath,
-		"https://"+parsed.Hostname()+":"+strconv.Itoa(int(port))+remoteReplayFunctionPath+"?redirect=1",
-		"https://"+parsed.Hostname()+":"+strconv.Itoa(int(port+1))+remoteReplayFunctionPath,
+		"https://" + parsed.Hostname() + ":" + strconv.Itoa(int(port)) + "/other",
+		"http://" + parsed.Hostname() + ":" + strconv.Itoa(int(port)) + remoteReplayFunctionPath,
+		"https://" + parsed.Hostname() + ":" + strconv.Itoa(int(port)) + remoteReplayFunctionPath + "?redirect=1",
+		"https://" + parsed.Hostname() + ":" + strconv.Itoa(int(port+1)) + remoteReplayFunctionPath,
 	}
 	for _, endpoint := range badEndpoints {
 		if _, err := NewPinnedRemoteReplay(endpoint, "public-anon-key", parsed.Hostname(), port, hex.EncodeToString(pin[:]), deviceID, privateKey); !errors.Is(err, ErrReplayUnavailable) {
