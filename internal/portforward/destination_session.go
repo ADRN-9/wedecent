@@ -21,7 +21,9 @@ type DestinationConfig struct {
 	LocalDeviceID        mesh.DeviceID
 	AuthenticatedPeerID  mesh.DeviceID
 	Verifier             Verifier
-	TrustChecker         PeerTrustChecker
+	// TrustChecker must reference the trust domain for AuthenticatedPeerID:
+	// device trust for direct peers or route-router trust for routed peers.
+	TrustChecker PeerTrustChecker
 	PermissionAuthorizer PermissionAuthorizer
 	Resolver             IPResolver
 	Dialer               ContextDialer
@@ -243,7 +245,13 @@ func (s *DestinationSession) Close() error {
 		s.mu.Lock()
 		errs = append(errs, s.auditErr)
 		s.mu.Unlock()
-		errs = append(errs, s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_session_closed", "success", "")))
+		outcome := "success"
+		reason := ""
+		if len(errs) > 0 {
+			outcome = "failed"
+			reason = "destination_session_cleanup_failed"
+		}
+		errs = append(errs, s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_session_closed", outcome, reason)))
 		s.closeErr = errors.Join(errs...)
 	})
 	return s.closeErr
