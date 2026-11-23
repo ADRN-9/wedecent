@@ -140,10 +140,11 @@ func openAgentPortForwardRuntime(cfg serveConfig, id *identity.Identity, peers *
 	if err != nil {
 		return nil, fmt.Errorf("load port-forwarding public trust anchor: %w", err)
 	}
-	verifier, err := portforward.NewPersistentAuthorizationVerifier(
+	verifier, err := portforward.NewPersistentAuthorizationVerifierWithLegacyMigration(
 		filepath.Join(cfg.StateDir, "portforward-replay.json"),
 		mesh.DeviceID(id.ID),
 		publicKey,
+		cfg.PortForwardAllowLegacyReplayMigration,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("open destination replay verifier: %w", err)
