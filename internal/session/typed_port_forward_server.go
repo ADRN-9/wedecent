@@ -216,7 +216,8 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 	s.mu.Lock()
 	if s.closed || parent.closed || s.parents[parent.id] != parent {
 		s.mu.Unlock()
-		_ = conn.Close()
+		// The parent DestinationSession owns any child it registered before
+		// shutdown. Do not issue a duplicate Close against its sync.Once.
 		_ = s.registry.close(frame.StreamID, protocol.StreamKindPortForwardChild)
 		return s.sendStreamError(frame.StreamID, "parent_stream_unavailable", "forwarding parent stream is unavailable")
 	}

@@ -325,10 +325,13 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	s.mu.Unlock()
 
 	if err := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "success", "")); err != nil {
-		return nil, errors.Join(err, child.Close())
+		// An unrecorded child open fails the entire parent session closed.
+		// This keeps one owner responsible for closing every registered child.
+		return nil, errors.Join(err, s.closeWithReason("child_open_audit_failed"))
 	}
 	if s.ctx.Err() != nil {
-		_ = child.Close()
+		// Parent shutdown already owns cleanup for children registered above.
+		// A second Close can block behind the first Close's sync.Once.
 		return nil, ErrDestinationSessionClosed
 	}
 	return child, nil
