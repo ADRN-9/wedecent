@@ -399,12 +399,71 @@ func TestDestinationSessionParentCancellationClosesChildren(t *testing.T) {
 	remote := <-dialer.opened
 	defer remote.Close()
 	cancelParent()
-	if err := session.Close(); err != nil {
-		t.Fatal(err)
+	select {
+	case <-session.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatal("destination child/session did not terminate after authenticated parent cancellation")
 	}
 	if _, err := child.Write([]byte("after-parent-cancel")); err == nil {
 		t.Fatal("child remained writable after authenticated parent cancellation")
 	}
+}
+
+func TestDestinationSessionIdleWatchClosesAnActuallyIdleChild(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	cfg, _, dialer, _ := newDestinationTestConfig(t, now, publicKey)
+	session, err := NewDestinationSession(context.Background(), cfg, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.idleTimeout = 60 * time.Millisecond
+	child, err := session.OpenChild(context.Background())
+	if err != nil {
+		_ = session.Close()
+		t.Fatal(err)
+	}
+	remote := <-dialer.opened
+	defer remote.Close()
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := child.Read(make([]byte, 1))
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if err == nil {
+			t.Fatal("idle child read unexpectedly succeeded")
+		}
+	case <-time.After(time.Second):
+		_ = session.Close()
+		t.Fatal("idle child was not closed by the destination-side idle timer")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDestinationChildCloseWriteDoesNotCloseConnectionWhenUnsupported(t *testing.T) {
+	left, right := net.Pipe()
+	session := &DestinationSession{
+		claims: testClaims(time.Now().UTC(), DirectionLocal),
+		localID: testDestination,
+		peerID: testInitiator,
+		audit: &memoryAudit{},
+		children: make(map[uint64]*destinationChildConn),
+	}
+	child := &destinationChildConn{Conn: newIdleConn(left, time.Second), session: session, id: 1}
+	session.children[1] = child
+	if err := child.CloseWrite(); !errors.Is(err, ErrHalfCloseUnsupported) {
+		t.Fatalf("unsupported half-close error = %v", err)
+	}
+	if _, err := child.Write([]byte("still-open")); err != nil {
+		t.Fatalf("unsupported half-close destroyed the connection: %v", err)
+	}
+	_ = child.Close()
+	_ = right.Close()
 }
 
 func TestDestinationSessionAppliesSignedIdleTimeoutToEveryChild(t *testing.T) {
