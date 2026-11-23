@@ -40,6 +40,12 @@ function controlPlanePublicKey(): Uint8Array {
   return decodeBase64URLStrict(value, 32);
 }
 
+function asArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer;
+}
+
 function rowObject(value: unknown): Record<string, unknown> | null {
   if (Array.isArray(value)) return value.length ? value[0] as Record<string, unknown> : null;
   if (value && typeof value === "object") return value as Record<string, unknown>;
@@ -53,11 +59,11 @@ async function authorizationDigest(
   const claims = authorization.claims as Record<string, unknown>;
   const canonical = canonicalPortForwardAuthorizationMessage(authorization);
   const signature = decodeBase64URLStrict(authorization.signature as string, 64);
-  const keyDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", publicKeyBytes));
+  const keyDigest = new Uint8Array(await crypto.subtle.digest("SHA-256", asArrayBuffer(publicKeyBytes)));
   const expectedKid = "ed25519-" + encodeBase64URL(keyDigest);
   if (authorization.kid !== expectedKid) throw new Error("authorization key identifier mismatch");
-  const key = await crypto.subtle.importKey("raw", publicKeyBytes, { name: "Ed25519" }, false, ["verify"]);
-  if (!await crypto.subtle.verify({ name: "Ed25519" }, key, signature, canonical)) {
+  const key = await crypto.subtle.importKey("raw", asArrayBuffer(publicKeyBytes), { name: "Ed25519" }, false, ["verify"]);
+  if (!await crypto.subtle.verify({ name: "Ed25519" }, key, asArrayBuffer(signature), asArrayBuffer(canonical))) {
     throw new Error("control-plane authorization signature rejected");
   }
   const issued = claims.iat_unix_ms as number;
@@ -69,7 +75,7 @@ async function authorizationDigest(
   const digestInput = new Uint8Array(canonical.length + signature.length);
   digestInput.set(canonical);
   digestInput.set(signature, canonical.length);
-  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", digestInput));
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", asArrayBuffer(digestInput)));
   return {
     jti: claims.jti as string,
     expiresAtUnixMS: expires,
@@ -123,10 +129,10 @@ Deno.serve(async (request) => {
     }
 
     const devicePublicKey = decodeBase64URLStrict(device.public_key, 32);
-    const deviceKey = await crypto.subtle.importKey("raw", devicePublicKey, { name: "Ed25519" }, false, ["verify"]);
+    const deviceKey = await crypto.subtle.importKey("raw", asArrayBuffer(devicePublicKey), { name: "Ed25519" }, false, ["verify"]);
     const deviceSignature = decodeBase64URLStrict(String(body.device_signature ?? ""), 64);
     const proof = remoteReplayDeviceMessage(deviceID, verified.jti, verified.expiresAtUnixMS, verified.digestHex);
-    if (!await crypto.subtle.verify({ name: "Ed25519" }, deviceKey, deviceSignature, proof)) {
+    if (!await crypto.subtle.verify({ name: "Ed25519" }, deviceKey, asArrayBuffer(deviceSignature), asArrayBuffer(proof))) {
       return json({ error: "device replay proof rejected" }, 403);
     }
 
