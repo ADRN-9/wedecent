@@ -66,6 +66,50 @@ The sidecar is itself the subject and custom predicate of a GitHub artifact atte
 
 The manifest's digest list is not a substitute for the attestation. The attestation cryptographically binds the provenance sidecar to the GitHub Actions workflow identity; the verifier then independently checks the sidecar's source commit/tree and every file digest.
 
+## Live release-tag verification
+
+`scripts/verify-live-release-tag.sh` checks the live remote Git ref at each protected release boundary. It uses an exact `refs/tags/TAG` query through `git ls-remote --refs origin`, requires exactly one matching ref, and compares the remote ref-object SHA with the checked-out ref-object SHA.
+
+- Lightweight tags must point directly to immutable `GITHUB_SHA`.
+- Annotated tags must be a tag object whose embedded tag name matches the requested ref and whose direct target type is `commit` with target SHA equal to `GITHUB_SHA`.
+- Both forms must peel to the exact immutable commit.
+- Missing refs, duplicate/ambiguous responses, stale local refs, moved tag objects, malformed objects, nested tag targets, and mismatched target commits fail closed.
+
+The check runs during production build initialization and again before each Windows/Linux/macOS build, artifact provenance verification, signing preflight, each Authenticode signing operation, signed-output staging, publication preflight, each create-only immutable upload, stable-manifest signing, and stable-pair publication. The production workflow also checks the tag before starting each protected job. This reduces the tag-movement window but is not a substitute for provider-side immutable tag rules: a tag can still move between a successful check and the next external operation unless GitHub rejects the ref update.
+
+`scripts/test-release-tags.sh` creates isolated bare remotes and exercises valid annotated and lightweight tags, retargeting after build, missing tags, ambiguous exact-ref responses, and annotated tag-object reuse under a different tag name.
+
+## Stable-manifest retry and atomicity regressions
+
+The stable publisher now retries transient HTTP 408/425/429/500/502/503/504 responses and transport failures up to three times when probing stable object state. Unknown HTTP states fail immediately; exhausted retries fail before the publisher is invoked.
+
+`scripts/test-windows-stable-update-publication.sh` covers a one-time HTTP 503 followed by success, retry exhaustion, monotonic sequence rejection, malformed/missing manifest-signature pairs, dry-run non-mutation, an injected publisher failure after staging, and a compare-and-swap conflict caused by a concurrent writer. Its test adapter models the pair as immutable generation directories selected by one atomic pointer replacement, so a failure before pointer swap leaves both published files and the pointer unchanged.
+
+This is a regression test of the required adapter contract, not proof that the production R2 adapter exists or is atomic. The repository currently defines the external `WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER` interface but does not contain a production implementation. Two independent mutable R2 object writes are not an atomic pair operation. The production adapter must use a real transactional/CAS mechanism or a single-object commit pointer/envelope with readers bound to the same generation; it must not claim pair atomicity based only on sequential uploads.
+
+## Live GitHub configuration inspection (2026-11-23)
+
+The connected GitHub ruleset listing returned one active ruleset: `Protect main`, target `branch`, include `~DEFAULT_BRANCH`. No ruleset targeting tags was present. The current visible tag refs were:
+
+| Tag | Ref object | Target commit | Object form |
+|---|---|---|---|
+| `v0.2.2` | `3314c50acf5a798550dc7358b87fe8917272bd41` | `ef56bf87e910cbe4c1265d0bcb64d779e11baec8` | annotated |
+| `v0.3.0` | `9f7653ef06911f3d491e4a4de189a773b30dab21` | `33e339932821b442525e0fc0b0e1cc5751e805f6` | annotated |
+| `v0.3.0-rc.1` | `dbff9930734ac2885b08baa50ebab0b7363a9574` | `dd0f01a8262627cca82a1bf027f1153e8f0cea6b` | annotated |
+| `v0.3.0-rc.2` | `e023455a41d21c6bfb0b5c09d05a98d09865fef0` | `5d9535f78372d893ef27132b33af21a321eb332c` | annotated |
+| `v0.3.0-rc.3` | `c9173f9efdc3c1b7209153b776f4e7733ecdbcbe` | `61494ac8098991d9fa4d452251db4725488f5b41` | annotated |
+
+The exact active ruleset configuration required before production tags are used is:
+
+1. **Creation ruleset:** name `Restrict WeDecent release tag creation`; target `tag`; include `refs/tags/v*`; enforcement `active`; rule `creation`; bypass only a dedicated release-operator team and the narrowly scoped release-tag automation identity.
+2. **Immutability ruleset:** name `Protect WeDecent release tag immutability`; target `tag`; include `refs/tags/v*`; enforcement `active`; rules `update` and `deletion`; no bypass actors. Keep this as a separate ruleset so a creation bypass cannot also bypass update/deletion protection.
+
+The current `Protect main` ruleset requires these eight status contexts: `route-capability-client`, `route-e2e`, `linux`, `windows-agent`, `windows-release`, `relay-worker`, `control-plane`, and `supabase-db`. It does not require `macos-agent` or any Desktop shell job. The Desktop workflow contexts that should be required are `linux-tauri-check`, `windows-tauri-check`, and `macos-tauri-check`. Add `macos-agent` and all three Desktop contexts to the protected main-branch ruleset after confirming their stable check names.
+
+The connected GitHub interface exposed ruleset reads but not ruleset writes, environment reviewer settings, or runner inventory. Therefore this inspection cannot verify the required-reviewer configuration for `wedecent-production-release`, `wedecent-production-signing`, or `wedecent-production-publication`, nor can it prove that the self-hosted signing/publisher runners are online. The workflow's `environment:` declarations and approval marker variables are not evidence of required reviewers.
+
+No production replay-authority hostname, SPKI pins, independent owner approval, Authenticode key, stable-update signing key, or public key provisioning was visible or supplied. No production signing/publication workflow evidence is claimed. Keep the protected release jobs fail-closed until the actual owner-approved values, environment reviewers, runners, and external adapters are provisioned.
+
 ## Endpoint binary inspection
 
 `wd-core` and `wd-agent` both import the same `internal/buildinfo` trust-anchor variables. The builders inject the same approved hostname and SPKI pin set into both binaries, then independently inspect each binary's bytes. Native Linux/macOS builds invoke each binary's `release-trust` command and compare the exact runtime output. The production Windows build runs on a native Windows runner and executes both release-trust commands. Ordinary PR CI cross-builds diagnostic Windows binaries on Linux and uses the byte-level verifier only.

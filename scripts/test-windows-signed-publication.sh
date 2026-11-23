@@ -8,6 +8,7 @@ fail() {
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/release-trust.sh"
+source "$ROOT/scripts/testlib/release-tag-fixture.sh"
 TEST_REPLAY_HOSTNAME='replay.example.test'
 TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
@@ -27,7 +28,9 @@ PUBLISH="$ROOT/scripts/publish-windows-downloads.sh"
 DIST_ROOT="$ROOT/dist"
 mkdir -p -- "$DIST_ROOT"
 WORK="$(mktemp -d "$DIST_ROOT/.signed-publication-test.XXXXXX")"
-cleanup() { rm -rf -- "$WORK"; }
+wedecent_test_release_tags_init "$ROOT" "$WORK"
+wedecent_test_release_tag_add "$GITHUB_REF_NAME" "$TEST_SOURCE_SHA"
+cleanup() { wedecent_test_release_tags_cleanup; rm -rf -- "$WORK"; }
 trap cleanup EXIT
 
 RELEASE="$WORK/release"

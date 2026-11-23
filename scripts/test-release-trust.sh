@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 source "$ROOT/scripts/lib/release-trust.sh"
+source "$ROOT/scripts/testlib/release-tag-fixture.sh"
 
 fail() {
   printf 'test-release-trust: %s\n' "$*" >&2
@@ -21,7 +22,9 @@ export GITHUB_REF_TYPE=tag
 export GITHUB_REF_NAME='v0.0.0-test'
 export WEDECENT_PRODUCTION_RELEASE_APPROVED=true
 WORK="$(mktemp -d)"
-trap 'rm -rf -- "$WORK"' EXIT
+wedecent_test_release_tags_init "$ROOT" "$WORK"
+wedecent_test_release_tag_add "$GITHUB_REF_NAME" "$SOURCE_SHA"
+trap 'wedecent_test_release_tags_cleanup; rm -rf -- "$WORK"' EXIT
 FIXTURE="$WORK/release"
 mkdir -p -- "$FIXTURE"
 

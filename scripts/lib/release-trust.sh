@@ -79,6 +79,9 @@ wedecent_require_production_release_context() {
   fi
   WEDECENT_EXPECTED_SOURCE_SHA="$expected"
   export WEDECENT_EXPECTED_SOURCE_SHA
+  "$WEDECENT_RELEASE_ROOT/scripts/verify-live-release-tag.sh" \
+    "$WEDECENT_RELEASE_ROOT" "$GITHUB_REF_NAME" "$expected" ||
+    wedecent_release_fail "live remote release tag does not match immutable GITHUB_SHA" || return 1
 }
 
 wedecent_require_production_provenance() {
@@ -111,6 +114,8 @@ wedecent_require_production_provenance() {
     wedecent_release_fail "the production tag is not present in the checked-out repository" || return 1
   [[ "$tag_commit" == "$head" ]] ||
     wedecent_release_fail "production tag does not resolve to the checked-out source commit" || return 1
+  "$WEDECENT_RELEASE_ROOT/scripts/verify-live-release-tag.sh" "$root" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+    wedecent_release_fail "live remote release tag changed before production build" || return 1
 
   status="$(git -C "$root" status --porcelain --untracked-files=all)" ||
     wedecent_release_fail "cannot inspect source-tree cleanliness" || return 1

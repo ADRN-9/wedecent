@@ -83,6 +83,8 @@ assert_unsigned() {
 
 sign_and_verify() {
   local path="$1"
+  "$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+    fail 'live release tag changed before Authenticode signing'
   "$SIGNER" "$path" || fail "signer failed for $path"
   [[ -f "$path" && ! -L "$path" ]] || fail "signer did not leave a regular artifact: $path"
   "$VERIFIER" "$path" || fail "signature verification failed for $path"
@@ -204,6 +206,8 @@ assert_exact_files "$SIGNED_RELEASE_DIR" 'signed release directory' "${release_f
 assert_exact_files "$SIGNED_PACKAGE_DIR" 'signed installer package directory' "${package_files[@]}"
 wedecent_verify_release_metadata "$SIGNED_RELEASE_DIR"
 wedecent_verify_release_metadata "$SIGNED_PACKAGE_DIR"
+"$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+  fail 'live release tag changed before signed artifact finalization'
 
 mv -- "$TEMP_ROOT" "$OUT_DIR"
 TEMP_ROOT=''

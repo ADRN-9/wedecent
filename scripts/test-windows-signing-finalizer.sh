@@ -8,6 +8,7 @@ fail() {
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/release-trust.sh"
+source "$ROOT/scripts/testlib/release-tag-fixture.sh"
 TEST_REPLAY_HOSTNAME='replay.example.test'
 TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
@@ -27,11 +28,14 @@ DIST_ROOT="$ROOT/dist"
 FINALIZER="$ROOT/scripts/finalize-windows-signed-artifacts.sh"
 mkdir -p -- "$DIST_ROOT"
 WORK="$(mktemp -d "$DIST_ROOT/.signing-finalizer-test.XXXXXX")"
+wedecent_test_release_tags_init "$ROOT" "$WORK"
+wedecent_test_release_tag_add "$GITHUB_REF_NAME" "$TEST_SOURCE_SHA"
 OUT_DIR="$DIST_ROOT/$(basename "$WORK").signed"
 OUT_DIR_2="$DIST_ROOT/$(basename "$WORK").unexpected"
 FAILED_OUT="$DIST_ROOT/$(basename "$WORK").failed"
 NESTED_OUT="$DIST_ROOT/nested/$(basename "$WORK").signed"
 cleanup() {
+  wedecent_test_release_tags_cleanup
   rm -rf -- "$WORK" "$OUT_DIR" "$OUT_DIR_2" "$FAILED_OUT" "$DIST_ROOT/nested"
 }
 trap cleanup EXIT

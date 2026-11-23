@@ -137,6 +137,8 @@ upload_if_missing() {
   local content_disposition="$5"
   local label="$6"
   if [[ "$state" == 'missing' ]]; then
+    "$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+      die 'live release tag changed before immutable object publication'
     "$UPLOADER" "$BUCKET" "$key" "$path" "$content_type" "$content_disposition" "$CACHE_CONTROL" ||
       die "create-only $label upload failed"
   else

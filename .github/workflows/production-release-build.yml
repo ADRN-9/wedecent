@@ -36,7 +36,7 @@ jobs:
           version="$(tr -d '\r\n' < VERSION)"
           [[ "$GITHUB_REF_NAME" == "v$version" ]]
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
-          [[ "$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{commit}")" == "$GITHUB_SHA" ]]
+          ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
 
   windows:
     needs: validate-release-tag
@@ -64,6 +64,9 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Recheck live release tag before Windows build
+        shell: bash
+        run: ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - name: Build production Windows release
         shell: bash
         run: ./scripts/build-windows-release.sh
@@ -141,6 +144,8 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Recheck live release tag before Linux build
+        run: ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - name: Build production Linux releases
         run: |
           GOARCH=amd64 ./scripts/build-linux-release.sh
@@ -215,6 +220,8 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Recheck live release tag before macOS build
+        run: ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - name: Build production macOS releases
         run: |
           GOARCH=amd64 ./scripts/build-macos-release.sh
@@ -279,6 +286,9 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Recheck live release tag before artifact verification
+        shell: bash
+        run: ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: wedecent-windows-${{ github.sha }}
@@ -368,7 +378,7 @@ jobs:
           [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
           [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
-          [[ "$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{commit}")" == "$GITHUB_SHA" ]]
+          ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
           [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
@@ -380,6 +390,9 @@ jobs:
           for command in gh python git sha256sum realpath; do
             command -v "$command" >/dev/null 2>&1
           done
+      - name: Recheck live release tag before artifact verification
+        shell: bash
+        run: ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: wedecent-windows-${{ github.sha }}
@@ -408,6 +421,9 @@ jobs:
           }
           verify_provenance dist/wedecent-windows-amd64 dist/provenance/wedecent-windows-amd64.json wedecent-windows-amd64
           verify_provenance dist/wedecent-windows-installer dist/provenance/wedecent-windows-installer.json wedecent-windows-installer
+      - name: Recheck live release tag immediately before Authenticode signing
+        shell: bash
+        run: ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - name: Finalize signed Windows release and installer
         shell: bash
         run: |
@@ -487,7 +503,7 @@ jobs:
           [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
           [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
-          [[ "$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{commit}")" == "$GITHUB_SHA" ]]
+          ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
           [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
@@ -527,6 +543,9 @@ jobs:
           }
           verify_provenance dist/wedecent-windows-signed/release dist/provenance-signed/wedecent-windows-signed-release.json wedecent-windows-signed-release
           verify_provenance dist/wedecent-windows-signed/installer dist/provenance-signed/wedecent-windows-signed-installer.json wedecent-windows-signed-installer
+      - name: Recheck live release tag immediately before immutable publication
+        shell: bash
+        run: ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
       - name: Publish immutable signed Windows downloads
         shell: bash
         run: |
@@ -570,7 +589,7 @@ jobs:
           [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
           [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
-          [[ "$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{commit}")" == "$GITHUB_SHA" ]]
+          ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
           [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
@@ -595,6 +614,7 @@ jobs:
         run: |
           set -euo pipefail
           version="$(tr -d '\r\n' < VERSION)"
+          ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
           ./scripts/publish-windows-stable-update.sh \
             --version "v$version" \
             --sequence "$WEDECENT_UPDATE_SEQUENCE" \

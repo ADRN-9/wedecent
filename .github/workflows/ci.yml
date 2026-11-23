@@ -61,6 +61,8 @@ jobs:
           cache: true
       - name: Validate production release workflow syntax
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/production-release-build.yml
+      - name: Test immutable live release tags
+        run: bash ./scripts/test-release-tags.sh
       - name: Test production release trust and output containment
         run: |
           bash ./scripts/test-release-trust.sh

@@ -8,6 +8,7 @@ fail() {
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/scripts/lib/release-trust.sh"
+source "$ROOT/scripts/testlib/release-tag-fixture.sh"
 TEST_REPLAY_HOSTNAME='replay.example.test'
 TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
@@ -26,7 +27,9 @@ export WEDECENT_EXPECTED_SOURCE_SHA="$TEST_SOURCE_SHA"
 PREPARE="$ROOT/scripts/prepare-windows-public-installer.sh"
 VERIFY="$ROOT/scripts/verify-public-windows-download.sh"
 WORK="$(mktemp -d)"
-trap 'rm -rf -- "$WORK"' EXIT
+wedecent_test_release_tags_init "$ROOT" "$WORK"
+wedecent_test_release_tag_add "$GITHUB_REF_NAME" "$TEST_SOURCE_SHA"
+trap 'wedecent_test_release_tags_cleanup; rm -rf -- "$WORK"' EXIT
 RELEASE="$WORK/release"
 INSTALLER="$WORK/installer"
 PUBLIC="$WORK/public"
