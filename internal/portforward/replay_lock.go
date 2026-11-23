@@ -39,15 +39,20 @@ func lockReplayProcessPath(path string) func() {
 }
 
 // lockReplayFile combines an in-process path lock with the platform file lock.
-func lockReplayFile(path string) (func(), bool, error) {
+func lockReplayFile(path string) (func() error, bool, error) {
 	unlockProcess := lockReplayProcessPath(path)
 	unlockFile, created, err := lockReplayFileOS(path)
 	if err != nil {
 		unlockProcess()
 		return nil, false, err
 	}
-	return func() {
-		unlockFile()
-		unlockProcess()
+	return func() error {
+		return releaseReplayFileLock(unlockFile, unlockProcess)
 	}, created, nil
+}
+
+func releaseReplayFileLock(unlockFile func() error, unlockProcess func()) error {
+	err := unlockFile()
+	unlockProcess()
+	return err
 }

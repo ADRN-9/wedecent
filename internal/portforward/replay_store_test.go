@@ -1416,3 +1416,19 @@ func createReplayStagingTestFile(t *testing.T, path, kind string) string {
 	}
 	return file.Name()
 }
+
+
+func TestReplayLockReleaseErrorIsObservable(t *testing.T) {
+	expected := errors.New("injected unlock failure")
+	processReleased := false
+	err := releaseReplayFileLock(
+		func() error { return expected },
+		func() { processReleased = true },
+	)
+	if !errors.Is(err, expected) {
+		t.Fatalf("release error = %v, want injected error", err)
+	}
+	if !processReleased {
+		t.Fatal("in-process lock was not released after file unlock failure")
+	}
+}

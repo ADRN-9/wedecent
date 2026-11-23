@@ -54,6 +54,16 @@ func secureReplayFile(path string) error {
 }
 
 func verifyReplayACL(path string) error {
+	return verifyReplayACLMode(path, true)
+}
+
+// verifyReplayDACL checks the access list before repairing an orphaned owner.
+// It never changes a descriptor that grants access to an untrusted SID.
+func verifyReplayDACL(path string) error {
+	return verifyReplayACLMode(path, false)
+}
+
+func verifyReplayACLMode(path string, requireCurrentOwner bool) error {
 	sd, err := windows.GetNamedSecurityInfo(
 		path,
 		windows.SE_FILE_OBJECT,
@@ -76,7 +86,10 @@ func verifyReplayACL(path string) error {
 	if err != nil {
 		return fmt.Errorf("read current user SID: %w", err)
 	}
-	if user == nil || user.User.Sid == nil || !windows.EqualSid(owner, user.User.Sid) {
+	if user == nil || user.User.Sid == nil {
+		return errors.New("current user SID is unavailable")
+	}
+	if requireCurrentOwner && !windows.EqualSid(owner, user.User.Sid) {
 		return errors.New("replay object is not owned by the current user")
 	}
 	dacl, _, err := sd.DACL()
@@ -87,14 +100,14 @@ func verifyReplayACL(path string) error {
 		return errors.New("replay object has no restrictive DACL")
 	}
 	allowed := map[string]bool{
-		owner.String(): true,
-		"S-1-5-18":     true,
-		"S-1-5-32-544": true,
-		"SY":           true,
-		"BA":           true,
-		"LA":           true, // Local Administrator is a privileged administrator SID.
-		"CO":           true,
-		"OW":           true,
+		user.User.Sid.String(): true,
+		"S-1-5-18":             true,
+		"S-1-5-32-544":         true,
+		"SY":                   true,
+		"BA":                   true,
+		"LA":                   true, // Local Administrator is a privileged administrator SID.
+		"CO":                   true,
+		"OW":                   true,
 	}
 	sddl := sd.String()
 	start := strings.Index(sddl, "D:")
@@ -175,27 +188,31 @@ func openReplayBootstrapLockHandle(lockPath string) (*os.File, bool, error) {
 // lockReplayBootstrapFile serializes lock-file publication and all cleanup of
 // lock-bootstrap staging files. The handle denies delete sharing so its path
 // cannot be replaced while another process is using it.
-func lockReplayBootstrapFile(path string) (func(), error) {
+func lockReplayBootstrapFile(path string) (func() error, error) {
 	bootstrapPath := path + ".lock.bootstrap"
-	file, created, err := openReplayBootstrapLockHandle(bootstrapPath)
+	file, _, err := openReplayBootstrapLockHandle(bootstrapPath)
 	if err != nil {
 		return nil, fmt.Errorf("open replay bootstrap lock: %w", err)
 	}
 	closeWithError := func(primary error) error {
 		return errors.Join(primary, file.Close())
 	}
-	if created {
-		if err := setReplayFileOwner(bootstrapPath); err != nil {
-			return nil, closeWithError(fmt.Errorf("set replay bootstrap lock owner: %w", err))
-		}
-	}
 	openedInfo, err := file.Stat()
 	if err != nil {
 		return nil, closeWithError(err)
 	}
 	pathInfo, err := os.Lstat(bootstrapPath)
-	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, pathInfo) {
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !pathInfo.Mode().IsRegular() ||
+		!openedInfo.Mode().IsRegular() || !os.SameFile(openedInfo, pathInfo) {
 		return nil, closeWithError(fmt.Errorf("replay bootstrap lock changed during open"))
+	}
+	if err := verifyReplayDACL(bootstrapPath); err != nil {
+		return nil, closeWithError(fmt.Errorf("refuse bootstrap lock with unauthorized DACL: %w", err))
+	}
+	// Repair an orphan whose creator crashed between CREATE_NEW and owner
+	// assignment, but only after proving the existing DACL is restrictive.
+	if err := setReplayFileOwner(bootstrapPath); err != nil {
+		return nil, closeWithError(fmt.Errorf("set replay bootstrap lock owner: %w", err))
 	}
 	if err := secureReplayFile(bootstrapPath); err != nil {
 		return nil, closeWithError(err)
@@ -204,9 +221,11 @@ func lockReplayBootstrapFile(path string) (func(), error) {
 	if err := windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
 		return nil, closeWithError(fmt.Errorf("lock replay bootstrap: %w", err))
 	}
-	return func() {
-		_ = windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped)
-		_ = file.Close()
+	return func() error {
+		return errors.Join(
+			windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped),
+			file.Close(),
+		)
 	}, nil
 }
 
@@ -286,7 +305,7 @@ func openReplayLockFile(lockPath string) (*os.File, bool, error) {
 	return file, true, nil
 }
 
-func lockReplayFileOS(path string) (func(), bool, error) {
+func lockReplayFileOS(path string) (unlock func() error, created bool, retErr error) {
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
 		return nil, false, err
@@ -298,7 +317,7 @@ func lockReplayFileOS(path string) (func(), bool, error) {
 	bootstrapHeld := true
 	defer func() {
 		if bootstrapHeld {
-			bootstrapUnlock()
+			retErr = errors.Join(retErr, bootstrapUnlock())
 		}
 	}()
 	lockPath := path + ".lock"
@@ -323,27 +342,25 @@ func lockReplayFileOS(path string) (func(), bool, error) {
 	}
 	openedInfo, err := file.Stat()
 	if err != nil {
-		_ = file.Close()
-		return nil, false, err
+		return nil, false, errors.Join(err, file.Close())
 	}
 	pathInfo, err := os.Lstat(lockPath)
 	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, pathInfo) {
-		_ = file.Close()
-		return nil, false, fmt.Errorf("replay lock changed during open")
+		return nil, false, errors.Join(fmt.Errorf("replay lock changed during open"), file.Close())
 	}
 	if err := secureReplayFile(lockPath); err != nil {
-		_ = file.Close()
-		return nil, false, err
+		return nil, false, errors.Join(err, file.Close())
 	}
 	var overlapped windows.Overlapped
 	if err := windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
-		_ = file.Close()
-		return nil, false, fmt.Errorf("lock replay store: %w", err)
+		return nil, false, errors.Join(fmt.Errorf("lock replay store: %w", err), file.Close())
 	}
 	bootstrapHeld = false
-	return func() {
-		_ = windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped)
-		_ = file.Close()
-		bootstrapUnlock()
+	return func() error {
+		return errors.Join(
+			windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped),
+			file.Close(),
+			bootstrapUnlock(),
+		)
 	}, created, nil
 }

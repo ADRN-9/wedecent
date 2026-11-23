@@ -350,3 +350,42 @@ func TestWindowsReplayRejectsInsecurePreexistingLockFile(t *testing.T) {
 		t.Fatalf("insecure pre-existing replay lock error = %v, want fail-closed ErrReplayUnavailable", err)
 	}
 }
+
+
+func TestWindowsReplayRepairsBootstrapLockOwnerAfterInterruptedCreation(t *testing.T) {
+	path := newReplayTestPath(t)
+	if err := secureReplayDirectory(filepath.Dir(path)); err != nil {
+		t.Fatal(err)
+	}
+	bootstrapPath := path + ".lock.bootstrap"
+	file, err := os.OpenFile(bootstrapPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("created before the creator crashed")); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestFileOwner(bootstrapPath, "S-1-5-32-544"); err != nil {
+		t.Skipf("runner cannot assign the alternate Administrators owner: %v", err)
+	}
+	if err := verifyReplayDACL(bootstrapPath); err != nil {
+		t.Fatalf("restrictive inherited DACL rejected before owner repair: %v", err)
+	}
+	if err := secureReplayFile(bootstrapPath); err == nil {
+		t.Fatal("bootstrap lock with interrupted owner assignment passed before repair")
+	}
+	unlock, err := lockReplayBootstrapFile(path)
+	if err != nil {
+		t.Fatalf("bootstrap lock owner recovery failed: %v", err)
+	}
+	if err := secureReplayFile(bootstrapPath); err != nil {
+		t.Fatalf("bootstrap lock owner was not repaired: %v", err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatalf("bootstrap lock release failed: %v", err)
+	}
+}

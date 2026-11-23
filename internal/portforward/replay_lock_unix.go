@@ -3,6 +3,7 @@
 package portforward
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,7 +73,7 @@ func openReplayLockFile(lockPath string) (*os.File, bool, error) {
 	return file, created, nil
 }
 
-func lockReplayFileOS(path string) (func(), bool, error) {
+func lockReplayFileOS(path string) (func() error, bool, error) {
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
 		return nil, false, err
@@ -99,24 +100,19 @@ func lockReplayFileOS(path string) (func(), bool, error) {
 	}
 	openedInfo, err := file.Stat()
 	if err != nil {
-		_ = file.Close()
-		return nil, false, err
+		return nil, false, errors.Join(err, file.Close())
 	}
 	pathInfo, err := os.Lstat(lockPath)
 	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, pathInfo) {
-		_ = file.Close()
-		return nil, false, fmt.Errorf("replay lock changed during open")
+		return nil, false, errors.Join(fmt.Errorf("replay lock changed during open"), file.Close())
 	}
 	if err := secureReplayFile(lockPath); err != nil {
-		_ = file.Close()
-		return nil, false, err
+		return nil, false, errors.Join(err, file.Close())
 	}
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
-		_ = file.Close()
-		return nil, false, fmt.Errorf("lock replay store: %w", err)
+		return nil, false, errors.Join(fmt.Errorf("lock replay store: %w", err), file.Close())
 	}
-	return func() {
-		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
-		_ = file.Close()
+	return func() error {
+		return errors.Join(unix.Flock(int(file.Fd()), unix.LOCK_UN), file.Close())
 	}, created, nil
 }

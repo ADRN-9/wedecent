@@ -119,7 +119,7 @@ func NewPersistentAuthorizationVerifierWithLegacyMigration(path string, localDev
 	}, nil
 }
 
-func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti string, expiresAt time.Time) error {
+func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti string, expiresAt time.Time) (result error) {
 	if ctx == nil {
 		return ErrAuthorizationInvalid
 	}
@@ -159,7 +159,11 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 	if err != nil {
 		return fmt.Errorf("%w: lock replay store: %v", ErrReplayUnavailable, err)
 	}
-	defer unlock()
+	defer func() {
+		if unlockErr := unlock(); unlockErr != nil {
+			result = errors.Join(result, fmt.Errorf("%w: release replay store lock: %v", ErrReplayUnavailable, unlockErr))
+		}
+	}()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -223,7 +227,7 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 	return ensureReplayInitializationAttempt(path, deviceID, allowLegacyMigration, 0)
 }
 
-func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allowLegacyMigration bool, attempt int) error {
+func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allowLegacyMigration bool, attempt int) (result error) {
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
 		return err
@@ -236,7 +240,9 @@ func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allo
 	locked := true
 	defer func() {
 		if locked {
-			unlockReplay()
+			if unlockErr := unlockReplay(); unlockErr != nil {
+				result = errors.Join(result, fmt.Errorf("release replay initialization lock: %w", unlockErr))
+			}
 		}
 	}()
 	if err := cleanupReplayStaging(path); err != nil {
@@ -300,7 +306,10 @@ func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allo
 	if !stateExists && lockExists && !lockCreated && attempt < replayInitializationRetryLimit {
 		// Another process may have published the lock before it acquired it.
 		// Release and retry so its first initialization can publish the marker.
-		unlockReplay()
+		if unlockErr := unlockReplay(); unlockErr != nil {
+			locked = false
+			return fmt.Errorf("release replay initialization lock before retry: %w", unlockErr)
+		}
 		locked = false
 		time.Sleep(5 * time.Millisecond)
 		return ensureReplayInitializationAttempt(path, deviceID, allowLegacyMigration, attempt+1)
