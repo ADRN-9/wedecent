@@ -109,6 +109,9 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Build diagnostic Windows release bundle
+        shell: bash
+        run: WEDECENT_BUILD_MODE=diagnostic ./scripts/build-windows-release.sh
       - name: Parse Windows installer and hardware scripts
         shell: pwsh
         run: |

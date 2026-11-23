@@ -40,7 +40,7 @@ The Linux builder supports amd64 and arm64. The macOS builder supports amd64 and
 
 ## Endpoint binary inspection
 
-wd-core and wd-agent both import the same internal/buildinfo trust-anchor variables. The builders inject the same approved hostname and SPKI pin set into both binaries, then independently inspect each binary's bytes. Native Linux/macOS builds also invoke each binary's release-trust command and compare the exact runtime output. Windows cross-builds use the byte-level verifier because a Windows executable cannot be run on the Linux release runner.
+wd-core and wd-agent both import the same internal/buildinfo trust-anchor variables. The builders inject the same approved hostname and SPKI pin set into both binaries, then independently inspect each binary's bytes. Native Linux/macOS builds also invoke each binary's release-trust command and compare the exact runtime output. The protected production Windows workflow runs on a native Windows runner and executes both release-trust commands. Ordinary PR CI cross-builds diagnostic Windows binaries on Linux and uses the byte-level verifier only.
 
 For an installed binary, run:
 

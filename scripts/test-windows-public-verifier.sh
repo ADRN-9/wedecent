@@ -7,6 +7,16 @@ fail() {
 }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-trust.sh"
+TEST_REPLAY_HOSTNAME='replay.example.test'
+TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
+TEST_SOURCE_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TEST_TREE_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+export WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$TEST_REPLAY_HOSTNAME"
+export WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$TEST_REPLAY_PINS"
+export WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$TEST_REPLAY_APPROVAL"
+export WEDECENT_EXPECTED_SOURCE_SHA="$TEST_SOURCE_SHA"
 PREPARE="$ROOT/scripts/prepare-windows-public-download.sh"
 VERIFY="$ROOT/scripts/verify-public-windows-download.sh"
 WORK="$(mktemp -d)"
@@ -18,14 +28,20 @@ mkdir -p -- "$RELEASE" "$BIN"
 
 binaries=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
 for name in "${binaries[@]}"; do
-  printf 'signed fixture: %s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" > "$RELEASE/$name"
+  printf 'signed fixture: %s\n%s\n%s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS" > "$RELEASE/$name"
 done
-cat > "$RELEASE/VERSION.txt" <<'EOF_VERSION'
+cat > "$RELEASE/VERSION.txt" <<EOF_VERSION
 version=0.4.0
-commit=test
+commit=$TEST_SOURCE_SHA
+source_commit=$TEST_SOURCE_SHA
+source_tree=$TEST_TREE_SHA
 built_at=1970-01-01T00:00:00Z
-go=test
+go=go1.27.0
 platform=windows/amd64
+build_mode=production
+replay_authority_hostname=$TEST_REPLAY_HOSTNAME
+replay_authority_spki_sha256=$TEST_REPLAY_PINS
+replay_authority_approval_sha256=$TEST_REPLAY_APPROVAL
 EOF_VERSION
 (
   cd "$RELEASE"

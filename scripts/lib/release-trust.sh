@@ -194,7 +194,7 @@ wedecent_release_init() {
   local platform="$2"
   local arch="$3"
   local requested_out="$4"
-  local mode status head commit_epoch raw_parent lexical_parent canonical_parent output_name
+  local mode status head commit_epoch raw_parent canonical_parent output_name
 
   ROOT="$(cd "$root" && pwd -P)"
   RELEASE_PLATFORM="$platform"
@@ -288,11 +288,12 @@ wedecent_release_init() {
     wedecent_release_fail "unsafe release output path" || return 1
   [[ -d "$raw_parent" && ! -L "$raw_parent" ]] ||
     wedecent_release_fail "release output parent must already exist and must not be a symlink" || return 1
-  lexical_parent="$(python3 -c 'import os,sys; print(os.path.abspath(sys.argv[1]))' "$raw_parent")" ||
-    wedecent_release_fail "cannot canonicalize release output parent" || return 1
+  case "$raw_parent" in
+    *"/../"*|*/..|*"/./"*|*/.) wedecent_release_fail "release output path contains a non-canonical component" || return 1 ;;
+  esac
   canonical_parent="$(cd "$raw_parent" && pwd -P)" ||
     wedecent_release_fail "cannot resolve release output parent" || return 1
-  [[ "$canonical_parent" == "$lexical_parent" ]] ||
+  [[ "$canonical_parent" == "$raw_parent" ]] ||
     wedecent_release_fail "release output path contains a symlink component" || return 1
   case "$canonical_parent" in
     "$DIST_ROOT"|"$DIST_ROOT"/*) ;;
