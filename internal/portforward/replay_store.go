@@ -190,6 +190,10 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 	initPath := path + ".init"
 	initLockFile, err := os.OpenFile(initPath+".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err == nil {
+		if ownerErr := setReplayFileOwner(initPath + ".lock"); ownerErr != nil {
+			_ = initLockFile.Close()
+			return fmt.Errorf("set replay initialization lock owner: %w", ownerErr)
+		}
 		if closeErr := initLockFile.Close(); closeErr != nil {
 			return closeErr
 		}
@@ -667,6 +671,10 @@ func writeReplayJSON(path string, value any, pattern string, maxSize int64) erro
 	if err := file.Chmod(0o600); err != nil {
 		cleanup()
 		return err
+	}
+	if err := setReplayFileOwner(tempPath); err != nil {
+		cleanup()
+		return fmt.Errorf("set replay file owner: %w", err)
 	}
 	if err := secureReplayFile(tempPath); err != nil {
 		cleanup()

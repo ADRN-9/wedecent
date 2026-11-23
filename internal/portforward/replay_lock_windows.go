@@ -12,6 +12,22 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+func setReplayFileOwner(path string) error {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION,
+		user.User.Sid,
+		nil,
+		nil,
+		nil,
+	)
+}
+
 func secureReplayDirectory(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err
@@ -150,6 +166,12 @@ func lockReplayFile(path string) (func(), bool, error) {
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	if created {
+		if err := setReplayFileOwner(lockPath); err != nil {
+			_ = file.Close()
+			return nil, false, fmt.Errorf("set replay lock owner: %w", err)
+		}
 	}
 	openedInfo, err := file.Stat()
 	if err != nil {
