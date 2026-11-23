@@ -25,6 +25,7 @@ var (
 	ErrWrongListenerDevice   = errors.New("portforward: capability is not bound to this listener device")
 	ErrListenerAdminRequired = errors.New("portforward: router-administration authorization is required")
 	ErrForwardLimit          = errors.New("portforward: resource limit reached")
+	ErrPermissionDenied      = errors.New("portforward: dedicated forwarding permission denied")
 )
 
 type AuditWriter interface{ Append(audit.Event) error }
