@@ -113,7 +113,8 @@ func (s *pipeForwardingSession) OpenChild(ctx context.Context) (net.Conn, error)
 		_ = right.Close()
 		return nil, ErrManagerClosed
 	}
-	s.children[left] = struct{}{}
+	child := &pipeTrackedConn{Conn: left, session: s}
+	s.children[child] = struct{}{}
 	s.mu.Unlock()
 	if s.connector.opened != nil {
 		select {
@@ -124,7 +125,24 @@ func (s *pipeForwardingSession) OpenChild(ctx context.Context) (net.Conn, error)
 	} else {
 		_ = right.Close()
 	}
-	return left, nil
+	return child, nil
+}
+
+type pipeTrackedConn struct {
+	net.Conn
+	session *pipeForwardingSession
+	once    sync.Once
+}
+
+func (c *pipeTrackedConn) Close() error {
+	var err error
+	c.once.Do(func() {
+		err = c.Conn.Close()
+		c.session.mu.Lock()
+		delete(c.session.children, c)
+		c.session.mu.Unlock()
+	})
+	return err
 }
 
 func (s *pipeForwardingSession) Close() error {
@@ -298,6 +316,66 @@ func TestManagerStartsLocalForwardAndBridgesAuthenticatedStream(t *testing.T) {
 	_ = client.Close()
 	if len(log.snapshot()) < 4 {
 		t.Fatalf("expected lifecycle audit events, got %d", len(log.snapshot()))
+	}
+}
+
+func TestManagerMultiplexesMultipleChildrenOverOneParentSession(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	connector := &pipeConnector{opened: make(chan net.Conn, 2)}
+	manager, auth, listener := newManagerForTest(t, testInitiator, claims, connector, nil, nil, nil)
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+
+	firstClient, firstCore := net.Pipe()
+	if !listener.inject(firstCore) {
+		t.Fatal("first child listener injection failed")
+	}
+	secondClient, secondCore := net.Pipe()
+	if !listener.inject(secondCore) {
+		t.Fatal("second child listener injection failed")
+	}
+	defer firstClient.Close()
+	defer secondClient.Close()
+
+	var firstRemote, secondRemote net.Conn
+	select {
+	case firstRemote = <-connector.opened:
+	case <-time.After(time.Second):
+		t.Fatal("first child stream was not opened")
+	}
+	select {
+	case secondRemote = <-connector.opened:
+	case <-time.After(time.Second):
+		t.Fatal("second child stream was not opened")
+	}
+	defer firstRemote.Close()
+	defer secondRemote.Close()
+
+	if connector.callCount() != 1 {
+		t.Fatalf("parent connector opened %d times, want one authenticated session", connector.callCount())
+	}
+	if got := connector.lastAuth(); got.Signature != auth.Signature || got.Claims.ForwardingID != claims.ForwardingID {
+		t.Fatal("parent session did not receive the signed forwarding capability")
+	}
+
+	if _, err := firstClient.Write([]byte("one")); err != nil {
+		t.Fatal(err)
+	}
+	firstBytes := make([]byte, 3)
+	if _, err := io.ReadFull(firstRemote, firstBytes); err != nil || string(firstBytes) != "one" {
+		t.Fatalf("first child payload = %q, error = %v", firstBytes, err)
+	}
+	if _, err := secondClient.Write([]byte("two")); err != nil {
+		t.Fatal(err)
+	}
+	secondBytes := make([]byte, 3)
+	if _, err := io.ReadFull(secondRemote, secondBytes); err != nil || string(secondBytes) != "two" {
+		t.Fatalf("second child payload = %q, error = %v", secondBytes, err)
+	}
+	if err := manager.Stop(context.Background(), claims.ForwardingID); err != nil {
+		t.Fatal(err)
 	}
 }
 
