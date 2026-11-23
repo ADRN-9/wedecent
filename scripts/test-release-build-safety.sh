@@ -132,6 +132,7 @@ fi
   exit 1
 }
 
+ln -s "$WORK/link-target" "$WORK/installer-output-link"
 if RELEASE_DIR="$RELEASE_FIXTURE" OUT_DIR="$WORK/installer-output-link" \
    "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null 2>&1; then
   printf 'test-release-build-safety: installer builder accepted a symlink output\n' >&2
