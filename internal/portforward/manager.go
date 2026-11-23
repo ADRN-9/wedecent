@@ -264,15 +264,16 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	if err := ValidateRouteAuthorizationBinding(auth); err != nil {
 		return ForwardInfo{}, err
 	}
-	if m.trustChecker != nil {
-		peerID := remoteEndpointDevice(claims, m.localID)
-		if peerID == "" {
-			return ForwardInfo{}, ErrAuthorizationMismatch
-		}
-		trusted, trustErr := m.trustChecker.IsTrusted(startCtx, string(peerID))
-		if trustErr != nil || !trusted {
-			return ForwardInfo{}, errors.Join(ErrPeerNotTrusted, trustErr)
-		}
+	peerID := remoteEndpointDevice(claims, m.localID)
+	if peerID == "" {
+		return ForwardInfo{}, ErrAuthorizationMismatch
+	}
+	if m.trustChecker == nil {
+		return ForwardInfo{}, ErrPeerNotTrusted
+	}
+	trusted, trustErr := m.trustChecker.IsTrusted(startCtx, string(peerID))
+	if trustErr != nil || !trusted {
+		return ForwardInfo{}, errors.Join(ErrPeerNotTrusted, trustErr)
 	}
 	if claims.Router != "" {
 		if m.routerTrustChecker == nil {
