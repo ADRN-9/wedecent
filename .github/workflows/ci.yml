@@ -60,7 +60,9 @@ jobs:
           go-version: '1.27.0'
           cache: true
       - name: List Go files requiring formatting
-        run: gofmt -l cmd internal
+        run: |
+          gofmt -l cmd internal
+          gofmt -d cmd internal
       - name: Verify Go formatting (read-only)
         run: test -z "$(gofmt -l cmd internal)"
       - name: Test port-forward session and transport packages
