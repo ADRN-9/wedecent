@@ -282,6 +282,48 @@ func TestManagerRemoteForwardRunsOnRemoteListenerDevice(t *testing.T) {
 	}
 }
 
+func TestManagerRequiresSeparateRouteAuthorizationForRouterPath(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testRoutedClaims(now, DirectionLocal)
+	manager, auth, _ := newManagerForTest(t, testInitiator, claims, &pipeConnector{}, nil, nil, nil)
+	if _, err := manager.Start(context.Background(), auth); !errors.Is(err, ErrRouteAuthorizationRequired) {
+		t.Fatalf("Start error = %v, want separate route-authorization requirement", err)
+	}
+	if len(manager.List()) != 0 {
+		t.Fatal("routed forward started without routing authorization")
+	}
+}
+
+func TestManagerPassesSeparateRouteAuthorizationToConnector(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testRoutedClaims(now, DirectionLocal)
+	connector := &pipeConnector{opened: make(chan net.Conn, 1)}
+	manager, auth, listener := newManagerForTest(t, testInitiator, claims, connector, nil, nil, nil)
+	routeAuth, _ := testRouteAuthorization(t, claims)
+	auth.RouteAuthorization = routeAuth
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	client, core := net.Pipe()
+	if !listener.inject(core) {
+		t.Fatal("listener closed before accept")
+	}
+	var remote net.Conn
+	select {
+	case remote = <-connector.opened:
+	case <-time.After(time.Second):
+		t.Fatal("connector was not called")
+	}
+	defer remote.Close()
+	if connector.lastAuth().RouteAuthorization.Signature != routeAuth.Signature {
+		t.Fatal("connector did not receive the independent route authorization")
+	}
+	if err := manager.Stop(context.Background(), claims.ForwardingID); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+}
+
 func TestManagerRejectsMissingAuthorization(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
