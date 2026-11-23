@@ -67,6 +67,7 @@ type DestinationSession struct {
 	closeOnce sync.Once
 	closeErr  error
 	auditErr  error
+	done      chan struct{}
 }
 
 type destinationChildConn struct {
@@ -191,6 +192,7 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		ctx:               sessionCtx,
 		cancel:            cancel,
 		children:          make(map[uint64]*destinationChildConn),
+		done:              make(chan struct{}),
 	}
 	go session.watchTrust()
 	return session, nil
@@ -292,7 +294,7 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	}
 
 	child := &destinationChildConn{
-		Conn:    idleConn{Conn: conn, idle: s.idleTimeout},
+		Conn:    newIdleConn(conn, s.idleTimeout),
 		session: s,
 		id:      childID,
 	}
@@ -324,6 +326,13 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 		return nil, ErrDestinationSessionClosed
 	}
 	return child, nil
+}
+
+func (s *DestinationSession) Done() <-chan struct{} {
+	if s == nil {
+		return nil
+	}
+	return s.done
 }
 
 func (s *DestinationSession) Close() error {
@@ -365,6 +374,7 @@ func (s *DestinationSession) closeWithReason(reason string) error {
 		}
 		errs = append(errs, s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_session_closed", outcome, reason)))
 		s.closeErr = errors.Join(errs...)
+		close(s.done)
 	})
 	return s.closeErr
 }
@@ -408,14 +418,14 @@ func (c *destinationChildConn) CloseWrite() error {
 	if writer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return writer.CloseWrite()
 	}
-	return c.Close()
+	return ErrHalfCloseUnsupported
 }
 
 func (c *destinationChildConn) CloseRead() error {
 	if reader, ok := c.Conn.(interface{ CloseRead() error }); ok {
 		return reader.CloseRead()
 	}
-	return c.Close()
+	return ErrHalfCloseUnsupported
 }
 
 func destinationAuditEvent(claims Claims, localID, peerID mesh.DeviceID, eventType, outcome, reason string) audit.Event {
