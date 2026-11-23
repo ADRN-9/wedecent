@@ -43,7 +43,7 @@ type typedPortForwardChild struct {
 	creditCh    chan struct{}
 	writeCh     chan struct{}
 	writeBuffer []byte
-	done        chan struct{}
+	done        <-chan struct{}
 	cancel      func()
 	doneOnce    sync.Once
 	closeOnce   sync.Once
@@ -232,8 +232,9 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 		_ = s.registry.close(frame.StreamID, protocol.StreamKindPortForwardChild)
 		return err
 	}
-	done := make(chan struct{})
-	cancel := func() { close(done) }
+	doneCh := make(chan struct{})
+	var done <-chan struct{} = doneCh
+	cancel := func() { close(doneCh) }
 	if lifecycle, ok := conn.(interface {
 		Done() <-chan struct{}
 		Cancel()

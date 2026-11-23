@@ -313,6 +313,9 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 		return nil, errors.Join(dialErr, auditErr)
 	}
 
+	if s.idleTimeout > 0 {
+		conn = newIdleConn(conn, s.idleTimeout)
+	}
 	child := &destinationChildConn{
 		Conn: conn, session: s, id: childID, done: make(chan struct{}),
 	}

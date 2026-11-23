@@ -487,7 +487,7 @@ func TestDestinationSessionAppliesSignedIdleTimeoutToEveryChild(t *testing.T) {
 	if !ok {
 		t.Fatalf("destination child concrete type = %T, want *destinationChildConn", child)
 	}
-	idle, ok := wrapped.Conn.(idleConn)
+	idle, ok := wrapped.Conn.(*idleConn)
 	if !ok || idle.idle != 5*time.Second {
 		t.Fatalf("destination child idle policy = %#v, want signed 5s idle timeout", wrapped.Conn)
 	}
