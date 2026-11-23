@@ -367,6 +367,8 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
           [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{commit}")" == "$GITHUB_SHA" ]]
           [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
@@ -484,6 +486,8 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
           [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{commit}")" == "$GITHUB_SHA" ]]
           [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
@@ -492,7 +496,7 @@ jobs:
             value="${!name}"
             [[ "$value" == /* && -f "$value" && -x "$value" && ! -L "$value" ]]
           done
-          for command in gh python3 curl sha256sum realpath; do
+          for command in gh python3 git curl sha256sum realpath; do
             command -v "$command" >/dev/null 2>&1
           done
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
@@ -565,6 +569,8 @@ jobs:
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
           [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$(git rev-parse --verify "refs/tags/$GITHUB_REF_NAME^{commit}")" == "$GITHUB_SHA" ]]
           [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
           [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
@@ -577,7 +583,7 @@ jobs:
           [[ -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
           [[ "$WEDECENT_UPDATE_SEQUENCE" =~ ^[1-9][0-9]*$ ]]
           [[ -n "$WEDECENT_UPDATE_PUBLISHED_AT" ]]
-          for command in curl sha256sum realpath; do
+          for command in git curl sha256sum realpath; do
             command -v "$command" >/dev/null 2>&1
           done
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
