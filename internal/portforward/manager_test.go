@@ -1321,3 +1321,106 @@ func TestManagerTrustRevocationDuringBlockedChildCleanup(t *testing.T) {
 		t.Fatal("destination stream remained open after trust revocation")
 	}
 }
+
+
+type managerBlockingCloseSession struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (s *managerBlockingCloseSession) OpenChild(context.Context) (net.Conn, error) {
+	return nil, errors.New("test session does not open children")
+}
+
+func (s *managerBlockingCloseSession) Close() error {
+	s.once.Do(func() {
+		close(s.started)
+		<-s.release
+	})
+	return nil
+}
+
+type managerBlockingCloseConnector struct {
+	session *managerBlockingCloseSession
+}
+
+func (c managerBlockingCloseConnector) Open(ctx context.Context, _ Authorization) (ForwardingSession, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return c.session, nil
+}
+
+func waitManagerRemovedForward(t *testing.T, manager *Manager) {
+	t.Helper()
+	deadline := time.After(2 * time.Second)
+	for len(manager.List()) != 0 {
+		select {
+		case <-deadline:
+			t.Fatal("forward remained registered after cleanup was released")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+func TestManagerStopBoundsBlockedSessionClose(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	session := &managerBlockingCloseSession{started: make(chan struct{}), release: make(chan struct{})}
+	manager, auth, _ := newManagerForTest(t, testInitiator, claims, managerBlockingCloseConnector{session: session}, nil, nil, nil)
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(ctx, claims.ForwardingID) }()
+	select {
+	case <-session.started:
+	case <-time.After(time.Second):
+		t.Fatal("termination did not enter the blocked session close")
+	}
+	select {
+	case err := <-stopDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Stop error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Stop remained blocked behind ForwardingSession.Close")
+	}
+	close(session.release)
+	waitManagerRemovedForward(t, manager)
+}
+
+func TestManagerRevokeDeviceHonorsContextDuringBlockedSessionClose(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	session := &managerBlockingCloseSession{started: make(chan struct{}), release: make(chan struct{})}
+	manager, auth, _ := newManagerForTest(t, testInitiator, claims, managerBlockingCloseConnector{session: session}, nil, nil, nil)
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	revokeDone := make(chan error, 1)
+	go func() {
+		_, err := manager.RevokeDevice(ctx, testDestination)
+		revokeDone <- err
+	}()
+	select {
+	case <-session.started:
+	case <-time.After(time.Second):
+		t.Fatal("revocation did not begin session cleanup")
+	}
+	select {
+	case err := <-revokeDone:
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("RevokeDevice error = %v, want context deadline exceeded", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RevokeDevice ignored its context while session close was blocked")
+	}
+	close(session.release)
+	waitManagerRemovedForward(t, manager)
+}

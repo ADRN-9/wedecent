@@ -462,16 +462,16 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		cleanupErr := m.terminate(f, "audit_persistence_failed")
 		return ForwardInfo{}, errors.Join(err, cleanupErr)
 	}
-	if err := startCtx.Err(); err != nil {
+	if err := errors.Join(startCtx.Err(), f.ctx.Err()); err != nil {
 		f.lifecycleMu.Unlock()
 		cleanupErr := m.terminate(f, "start_cancelled")
 		return ForwardInfo{}, errors.Join(err, cleanupErr)
 	}
 	m.mu.Lock()
-	if m.closed || startCtx.Err() != nil {
+	if m.closed || startCtx.Err() != nil || f.ctx.Err() != nil {
 		m.mu.Unlock()
 		f.lifecycleMu.Unlock()
-		startErr := startCtx.Err()
+		startErr := errors.Join(startCtx.Err(), f.ctx.Err())
 		if startErr == nil {
 			startErr = ErrManagerClosed
 		}
@@ -503,27 +503,33 @@ func (m *Manager) stop(ctx context.Context, forwardingID, reason string) error {
 	if f == nil {
 		return nil
 	}
+
+	// Bound the entire termination operation, not only the accept-loop tail.
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
 	terminateDone := make(chan error, 1)
 	go func() {
 		terminateDone <- m.terminate(f, reason)
 	}()
-	var terminateErr error
 	select {
-	case terminateErr = <-terminateDone:
+	case terminateErr := <-terminateDone:
+		select {
+		case <-f.done:
+			return terminateErr
+		case <-ctx.Done():
+			return errors.Join(terminateErr, ctx.Err())
+		case <-timer.C:
+			return errors.Join(terminateErr, errors.New("portforward: shutdown exceeded 5 seconds"))
+		}
 	case <-ctx.Done():
 		// Cleanup continues in the background; the caller's deadline bounds
 		// how long Stop itself waits.
 		return ctx.Err()
-	}
-	timer := time.NewTimer(5 * time.Second)
-	defer timer.Stop()
-	select {
-	case <-f.done:
-		return terminateErr
-	case <-ctx.Done():
-		return errors.Join(terminateErr, ctx.Err())
 	case <-timer.C:
-		return errors.Join(terminateErr, errors.New("portforward: accept loop shutdown exceeded 5 seconds"))
+		// A broken Close implementation must not pin Stop, revocation or manager
+		// shutdown indefinitely. The termination goroutine remains responsible
+		// for completing cleanup if the underlying operation eventually returns.
+		return errors.New("portforward: shutdown exceeded 5 seconds")
 	}
 }
 
@@ -564,7 +570,7 @@ func (m *Manager) RevokeDevice(ctx context.Context, deviceID mesh.DeviceID) (int
 		}
 	}
 	for _, id := range ids {
-		if err := m.stop(context.Background(), id, "device_revoked"); err != nil {
+		if err := m.stop(ctx, id, "device_revoked"); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -713,7 +719,7 @@ func (m *Manager) watchTrust() {
 						return
 					}
 					if trustErr != nil || !trusted {
-						_, revokeErr := m.RevokeDevice(context.Background(), peerID)
+						_, revokeErr := m.RevokeDevice(m.ctx, peerID)
 						if trustErr != nil {
 							m.recordBackgroundError(fmt.Errorf("portforward: peer trust check for %s failed: %w", peerID, trustErr))
 						}
@@ -730,7 +736,7 @@ func (m *Manager) watchTrust() {
 						return
 					}
 					if trustErr != nil || !trusted {
-						_, revokeErr := m.RevokeDevice(context.Background(), routerID)
+						_, revokeErr := m.RevokeDevice(m.ctx, routerID)
 						if trustErr != nil {
 							m.recordBackgroundError(fmt.Errorf("portforward: router trust check for %s failed: %w", routerID, trustErr))
 						}
@@ -933,6 +939,10 @@ func (m *Manager) releaseChild(f *activeForward, child *activeChild) error {
 }
 
 func (m *Manager) terminate(f *activeForward, reason string) error {
+	// Cancellation and listener closure must not wait behind Start's lifecycle
+	// serialization (which can include a durable audit append).
+	f.cancel()
+	listenerErr := f.listener.Close()
 	f.lifecycleMu.Lock()
 	f.stopOnce.Do(func() {
 		type childCleanup struct {
@@ -941,7 +951,6 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 			remote net.Conn
 		}
 		m.mu.Lock()
-		f.cancel()
 		children := make([]childCleanup, 0, len(f.children))
 		for _, child := range f.children {
 			child.cancel()
@@ -950,8 +959,8 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 		m.mu.Unlock()
 
 		var cleanupErrs []error
-		if err := f.listener.Close(); err != nil && !expectedClosedConnError(err) {
-			cleanupErrs = append(cleanupErrs, err)
+		if listenerErr != nil && !expectedClosedConnError(listenerErr) {
+			cleanupErrs = append(cleanupErrs, listenerErr)
 		}
 
 		// Close the authenticated parent before waiting for children. This
