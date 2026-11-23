@@ -12,6 +12,8 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 )
 
+const destinationSessionCloseTimeout = 5 * time.Second
+
 var (
 	ErrWrongDestinationDevice   = errors.New("portforward: capability is not bound to this destination device")
 	ErrDestinationSessionClosed = errors.New("portforward: destination forwarding session is closed")
@@ -56,6 +58,7 @@ type DestinationSession struct {
 	idleTimeout        time.Duration
 	maxChildren        int
 	dialTimeout        time.Duration
+	closeTimeout       time.Duration
 	ctx               context.Context
 	cancel            context.CancelFunc
 
@@ -188,6 +191,7 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		idleTimeout:       time.Duration(claims.Limits.IdleTimeoutSeconds) * time.Second,
 		maxChildren:       min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
 		dialTimeout:       cfg.DialTimeout,
+		closeTimeout:      destinationSessionCloseTimeout,
 		ctx:               sessionCtx,
 		cancel:            cancel,
 		children:          make(map[uint64]*destinationChildConn),
@@ -353,6 +357,7 @@ func (s *DestinationSession) closeWithReason(reason string) error {
 		s.mu.Unlock()
 
 		var errs []error
+		deadline := time.Now().Add(s.closeTimeout)
 		// OpenChild rechecks s.closed after dialing and closes any late result.
 		// Do not wait for pending opens here: a context-ignoring dialer or
 		// blocked audit append must not hold parent teardown indefinitely.
@@ -362,9 +367,24 @@ func (s *DestinationSession) closeWithReason(reason string) error {
 				closeResults <- child.Close()
 			}(child)
 		}
-		for range children {
-			if err := <-closeResults; err != nil {
-				errs = append(errs, err)
+		timer := time.NewTimer(time.Until(deadline))
+		pending := len(children)
+		for pending > 0 {
+			select {
+			case err := <-closeResults:
+				pending--
+				if err != nil {
+					errs = append(errs, err)
+				}
+			case <-timer.C:
+				errs = append(errs, errors.New("portforward: destination child cleanup exceeded shutdown timeout"))
+				pending = 0
+			}
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
 			}
 		}
 		s.mu.Lock()
@@ -377,7 +397,7 @@ func (s *DestinationSession) closeWithReason(reason string) error {
 			outcome = "failed"
 			reason = reason + "_cleanup_failed"
 		}
-		errs = append(errs, s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_session_closed", outcome, reason)))
+		errs = append(errs, appendDestinationAuditUntil(s.audit, destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_session_closed", outcome, reason), deadline))
 		s.closeErr = errors.Join(errs...)
 		close(s.done)
 	})
@@ -448,3 +468,21 @@ func destinationAuditEvent(claims Claims, localID, peerID mesh.DeviceID, eventTy
 }
 
 var _ ForwardingSession = (*DestinationSession)(nil)
+
+
+func appendDestinationAuditUntil(writer AuditWriter, event audit.Event, deadline time.Time) error {
+	done := make(chan error, 1)
+	go func() { done <- writer.Append(event) }()
+	remaining := time.Until(deadline)
+	if remaining <= 0 {
+		return errors.New("portforward: destination shutdown audit append exceeded timeout")
+	}
+	timer := time.NewTimer(remaining)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return err
+	case <-timer.C:
+		return errors.New("portforward: destination shutdown audit append exceeded timeout")
+	}
+}

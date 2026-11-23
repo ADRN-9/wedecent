@@ -624,3 +624,88 @@ func TestDestinationSessionCloseDoesNotWaitForPendingChildOpen(t *testing.T) {
 		t.Fatal("late child open did not self-clean after the audit append resumed")
 	}
 }
+
+
+type destinationBlockingCloseConn struct {
+	net.Conn
+	started  chan struct{}
+	release  chan struct{}
+	returned chan struct{}
+	once     sync.Once
+}
+
+func (c *destinationBlockingCloseConn) Close() error {
+	c.once.Do(func() {
+		close(c.started)
+		<-c.release
+		_ = c.Conn.Close()
+		close(c.returned)
+	})
+	return nil
+}
+
+func TestDestinationSessionCloseBoundsBlockedChildClose(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	cfg, _, dialer, _ := newDestinationTestConfig(t, now, publicKey)
+	session, err := NewDestinationSession(context.Background(), cfg, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childConn, err := session.OpenChild(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	child := childConn.(*destinationChildConn)
+	remote := <-dialer.opened
+	blocked := &destinationBlockingCloseConn{
+		Conn: child.Conn, started: make(chan struct{}),
+		release: make(chan struct{}), returned: make(chan struct{}),
+	}
+	child.Conn = blocked
+	session.closeTimeout = 50 * time.Millisecond
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- session.Close() }()
+	select {
+	case <-blocked.started:
+	case <-time.After(time.Second):
+		t.Fatal("destination child close did not reach the blocking connection")
+	}
+	select {
+	case err := <-closeDone:
+		if err == nil {
+			t.Fatal("destination session hid the blocked child cleanup timeout")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("destination session close waited indefinitely for a blocked child close")
+	}
+	select {
+	case <-session.Done():
+	case <-time.After(time.Second):
+		t.Fatal("destination session did not close after its bounded cleanup timeout")
+	}
+
+	close(blocked.release)
+	select {
+	case <-blocked.returned:
+	case <-time.After(time.Second):
+		t.Fatal("blocked child close did not finish after release")
+	}
+	deadline := time.After(time.Second)
+	for {
+		session.mu.Lock()
+		_, exists := session.children[child.id]
+		session.mu.Unlock()
+		if !exists {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("child close did not release its session registration")
+		case <-time.After(time.Millisecond):
+		}
+	}
+	_ = remote.Close()
+}
