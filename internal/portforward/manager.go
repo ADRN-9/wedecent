@@ -59,17 +59,17 @@ type ManagerLimits struct {
 }
 
 type ManagerConfig struct {
-	LocalDeviceID        mesh.DeviceID
-	Verifier             Verifier
-	ReplayPath           string
+	LocalDeviceID          mesh.DeviceID
+	Verifier               Verifier
+	ReplayPath             string
 	AuthorizationPublicKey ed25519.PublicKey
-	PermissionAuthorizer PermissionAuthorizer
-	Connector            Connector
-	ListenerAuthorizer   ListenerAuthorizer
-	Audit                AuditWriter
-	Limits               ManagerLimits
-	Listen               func(string, string) (net.Listener, error)
-	Now                  func() time.Time
+	PermissionAuthorizer   PermissionAuthorizer
+	Connector              Connector
+	ListenerAuthorizer     ListenerAuthorizer
+	Audit                  AuditWriter
+	Limits                 ManagerLimits
+	Listen                 func(string, string) (net.Listener, error)
+	Now                    func() time.Time
 }
 
 type ForwardInfo struct {
