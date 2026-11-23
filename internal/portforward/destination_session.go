@@ -48,8 +48,10 @@ type DestinationSession struct {
 	policy            DestinationPolicy
 	dialer            ContextDialer
 	audit             AuditWriter
-	trustChecker      PeerTrustChecker
-	trustPollInterval time.Duration
+	trustChecker       PeerTrustChecker
+	routerTrustChecker PeerTrustChecker
+	routerID           mesh.DeviceID
+	trustPollInterval  time.Duration
 	expiryReason      string
 	idleTimeout       time.Duration
 	maxChildren       int
@@ -178,8 +180,10 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		policy:            cfg.Policy,
 		dialer:            cfg.Dialer,
 		audit:             cfg.Audit,
-		trustChecker:      cfg.TrustChecker,
-		trustPollInterval: trustPollInterval,
+		trustChecker:       cfg.TrustChecker,
+		routerTrustChecker: cfg.RouterTrustChecker,
+		routerID:           claims.Router,
+		trustPollInterval:  trustPollInterval,
 		expiryReason:      expiryReason,
 		idleTimeout:       time.Duration(claims.Limits.IdleTimeoutSeconds) * time.Second,
 		maxChildren:       min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
@@ -221,6 +225,25 @@ func (s *DestinationSession) watchTrust() {
 			if !trusted {
 				_ = s.closeWithReason("peer_trust_revoked")
 				return
+			}
+			if s.routerID != "" {
+				routerTrusted, routerErr := s.routerTrustChecker.IsTrusted(s.ctx, string(s.routerID))
+				if s.ctx.Err() != nil {
+					reason := s.expiryReason
+					if !errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
+						reason = "parent_session_closed"
+					}
+					_ = s.closeWithReason(reason)
+					return
+				}
+				if routerErr != nil {
+					_ = s.closeWithReason("router_trust_unavailable")
+					return
+				}
+				if !routerTrusted {
+					_ = s.closeWithReason("router_trust_revoked")
+					return
+				}
 			}
 		}
 	}
