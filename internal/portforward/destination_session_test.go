@@ -589,6 +589,12 @@ func TestDestinationSessionCloseDoesNotWaitForPendingChildOpen(t *testing.T) {
 	cfg, _, _, _ := newDestinationTestConfig(t, now, publicKey)
 	cfg.Dialer = waitCanceledDestinationDialer{}
 	auditLog := &blockingDestinationAudit{started: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(auditLog.release)
+		}
+	}()
 	cfg.Audit = auditLog
 	parentCtx, cancelParent := context.WithCancel(context.Background())
 	session, err := NewDestinationSession(parentCtx, cfg, auth)
@@ -615,6 +621,7 @@ func TestDestinationSessionCloseDoesNotWaitForPendingChildOpen(t *testing.T) {
 	}
 
 	close(auditLog.release)
+	released = true
 	select {
 	case err := <-openDone:
 		if !errors.Is(err, ErrDestinationSessionClosed) && !errors.Is(err, context.Canceled) {
@@ -663,6 +670,12 @@ func TestDestinationSessionCloseBoundsBlockedChildClose(t *testing.T) {
 		Conn: child.Conn, started: make(chan struct{}),
 		release: make(chan struct{}), returned: make(chan struct{}),
 	}
+	released := false
+	defer func() {
+		if !released {
+			close(blocked.release)
+		}
+	}()
 	child.Conn = blocked
 	session.closeTimeout = 50 * time.Millisecond
 
@@ -688,6 +701,7 @@ func TestDestinationSessionCloseBoundsBlockedChildClose(t *testing.T) {
 	}
 
 	close(blocked.release)
+	released = true
 	select {
 	case <-blocked.returned:
 	case <-time.After(time.Second):

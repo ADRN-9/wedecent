@@ -1383,6 +1383,12 @@ func TestManagerStopBoundsBlockedSessionClose(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
 	session := &managerBlockingCloseSession{started: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(session.release)
+		}
+	}()
 	manager, auth, _ := newManagerForTest(t, testInitiator, claims, managerBlockingCloseConnector{session: session}, nil, nil, nil)
 	if _, err := manager.Start(context.Background(), auth); err != nil {
 		t.Fatal(err)
@@ -1406,6 +1412,7 @@ func TestManagerStopBoundsBlockedSessionClose(t *testing.T) {
 		t.Fatal("Stop remained blocked behind ForwardingSession.Close")
 	}
 	close(session.release)
+	released = true
 	waitForwardStopped(t, forward)
 	if len(manager.List()) != 0 {
 		t.Fatal("forward remained registered after bounded Stop completed")
@@ -1416,6 +1423,12 @@ func TestManagerRevokeDeviceHonorsContextDuringBlockedSessionClose(t *testing.T)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
 	session := &managerBlockingCloseSession{started: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(session.release)
+		}
+	}()
 	manager, auth, _ := newManagerForTest(t, testInitiator, claims, managerBlockingCloseConnector{session: session}, nil, nil, nil)
 	if _, err := manager.Start(context.Background(), auth); err != nil {
 		t.Fatal(err)
@@ -1442,6 +1455,7 @@ func TestManagerRevokeDeviceHonorsContextDuringBlockedSessionClose(t *testing.T)
 		t.Fatal("RevokeDevice ignored its context while session close was blocked")
 	}
 	close(session.release)
+	released = true
 	waitForwardStopped(t, forward)
 	if len(manager.List()) != 0 {
 		t.Fatal("forward remained registered after bounded revocation completed")
