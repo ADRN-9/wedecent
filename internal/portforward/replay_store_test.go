@@ -294,6 +294,9 @@ func TestFileReplayMigratesLegacyUnanchoredStateOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), legacyJTI, expiry); !errors.Is(err, ErrAuthorizationReplay) {
+		t.Fatalf("legacy replay entry was not retained during migration: %v", err)
+	}
 	if err := replay.ConsumePortForwardAuthorization(context.Background(), nextJTI, expiry); err != nil {
 		t.Fatalf("legacy replay state migration failed: %v", err)
 	}
