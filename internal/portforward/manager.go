@@ -18,6 +18,8 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 )
 
+const managerShutdownTimeout = 5 * time.Second
+
 var (
 	ErrManagerConfig         = errors.New("portforward: invalid manager configuration")
 	ErrManagerClosed         = errors.New("portforward: manager is closed")
@@ -505,7 +507,7 @@ func (m *Manager) stop(ctx context.Context, forwardingID, reason string) error {
 	}
 
 	// Bound the entire termination operation, not only the accept-loop tail.
-	timer := time.NewTimer(5 * time.Second)
+	timer := time.NewTimer(managerShutdownTimeout)
 	defer timer.Stop()
 	terminateDone := make(chan error, 1)
 	go func() {
@@ -610,19 +612,36 @@ func (m *Manager) Close() error {
 	if shouldCancel && cancel != nil {
 		cancel()
 	}
-	m.starts.Wait()
-	if watcherDone != nil {
-		<-watcherDone
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), managerShutdownTimeout)
+	defer cancelShutdown()
+	var errs []error
+	startsDone := make(chan struct{})
+	go func() {
+		m.starts.Wait()
+		close(startsDone)
+	}()
+	select {
+	case <-startsDone:
+	case <-shutdownCtx.Done():
+		errs = append(errs, fmt.Errorf("portforward: start operations did not stop: %w", shutdownCtx.Err()))
 	}
+	if watcherDone != nil {
+		select {
+		case <-watcherDone:
+		case <-shutdownCtx.Done():
+			errs = append(errs, fmt.Errorf("portforward: trust watcher did not stop: %w", shutdownCtx.Err()))
+		}
+	}
+
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.forwards))
 	for id := range m.forwards {
 		ids = append(ids, id)
 	}
 	m.mu.Unlock()
-	var errs []error
 	for _, id := range ids {
-		if err := m.stop(context.Background(), id, "manager_closed"); err != nil {
+		if err := m.stop(shutdownCtx, id, "manager_closed"); err != nil {
 			errs = append(errs, err)
 		}
 	}
