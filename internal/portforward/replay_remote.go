@@ -17,6 +17,7 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"crypto/tls"
 	"strings"
 	"time"
 
@@ -33,12 +34,12 @@ const (
 // RemoteReplay delegates single-use state to the independent control-plane
 // ledger. The service account cannot delete or reset that ledger.
 type RemoteReplay struct {
-	Endpoint string
-	APIKey   string
-	DeviceID mesh.DeviceID
-	Signer   crypto.Signer
-	Client   *http.Client
-	Now      func() time.Time
+	endpoint string
+	apiKey   string
+	deviceID mesh.DeviceID
+	signer   crypto.Signer
+	client   *http.Client
+	now      func() time.Time
 }
 
 type remoteReplayRequest struct {
@@ -75,24 +76,26 @@ func NewRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer cry
 		parsed.Path != "/functions/v1/port-forward-replay" || parsed.Hostname() == "" {
 		return nil, ErrReplayUnavailable
 	}
-	switch parsed.Scheme {
-	case "https":
-	case "http":
-		host := parsed.Hostname()
-		ip := net.ParseIP(host)
-		if ip == nil || !ip.IsLoopback() {
-			return nil, ErrReplayUnavailable
-		}
-	default:
+	if parsed.Scheme != "https" {
 		return nil, ErrReplayUnavailable
 	}
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, ErrReplayUnavailable
+	}
+	transport := defaultTransport.Clone()
+	transport.TLSClientConfig = &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		ServerName: parsed.Hostname(),
+	}
 	return &RemoteReplay{
-		Endpoint: endpoint,
-		APIKey:   apiKey,
-		DeviceID: deviceID,
-		Signer:   signer,
-		Client: &http.Client{
-			Timeout: remoteReplayTimeout,
+		endpoint: endpoint,
+		apiKey:   apiKey,
+		deviceID: deviceID,
+		signer:   signer,
+		client: &http.Client{
+			Transport: transport,
+			Timeout:   remoteReplayTimeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
 				return http.ErrUseLastResponse
 			},
@@ -107,7 +110,7 @@ func (r *RemoteReplay) ConsumePortForwardAuthorization(context.Context, string, 
 }
 
 func (r *RemoteReplay) ConsumeVerifiedPortForwardAuthorization(ctx context.Context, authorization Authorization) error {
-	if ctx == nil || r == nil || r.Signer == nil || r.Client == nil {
+	if ctx == nil || r == nil || r.signer == nil || r.client == nil {
 		return ErrReplayUnavailable
 	}
 	if err := ctx.Err(); err != nil {
@@ -117,12 +120,12 @@ func (r *RemoteReplay) ConsumeVerifiedPortForwardAuthorization(ctx context.Conte
 	if err := ValidateClaims(claims); err != nil {
 		return ErrAuthorizationInvalid
 	}
-	if r.DeviceID != claims.InitiatingDevice && r.DeviceID != claims.DestinationDevice {
+	if r.deviceID != claims.InitiatingDevice && r.deviceID != claims.DestinationDevice {
 		return ErrAuthorizationMismatch
 	}
 	now := time.Now().UTC()
-	if r.Now != nil {
-		now = r.Now().UTC()
+	if r.now != nil {
+		now = r.now().UTC()
 	}
 	if claims.IssuedAtUnixMS > now.UnixMilli() {
 		return ErrAuthorizationNotYetValid
@@ -143,18 +146,18 @@ func (r *RemoteReplay) ConsumeVerifiedPortForwardAuthorization(ctx context.Conte
 	digestInput = append(digestInput, message...)
 	digestInput = append(digestInput, capabilitySignature...)
 	authorizationDigest := sha256.Sum256(digestInput)
-	deviceMessage := remoteReplayDeviceMessage(r.DeviceID, claims.JTI, claims.ExpiresAtUnixMS, authorizationDigest)
-	deviceSignature, err := r.Signer.Sign(rand.Reader, deviceMessage, crypto.Hash(0))
+	deviceMessage := remoteReplayDeviceMessage(r.deviceID, claims.JTI, claims.ExpiresAtUnixMS, authorizationDigest)
+	deviceSignature, err := r.signer.Sign(rand.Reader, deviceMessage, crypto.Hash(0))
 	if err != nil {
 		return fmt.Errorf("%w: device replay proof signing failed", ErrReplayUnavailable)
 	}
-	publicKey, ok := r.Signer.Public().(ed25519.PublicKey)
+	publicKey, ok := r.signer.Public().(ed25519.PublicKey)
 	if !ok || len(deviceSignature) != ed25519.SignatureSize ||
 		!ed25519.Verify(publicKey, deviceMessage, deviceSignature) {
 		return fmt.Errorf("%w: device replay proof signer mismatch", ErrReplayUnavailable)
 	}
 	payload, err := json.Marshal(remoteReplayRequest{
-		DeviceID:            string(r.DeviceID),
+		DeviceID:            string(r.deviceID),
 		Authorization:       cloneAuthorization(authorization),
 		AuthorizationSHA256: hex.EncodeToString(authorizationDigest[:]),
 		DeviceSignature:     base64.RawURLEncoding.EncodeToString(deviceSignature),
@@ -162,15 +165,15 @@ func (r *RemoteReplay) ConsumeVerifiedPortForwardAuthorization(ctx context.Conte
 	if err != nil {
 		return ErrReplayUnavailable
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.Endpoint, bytes.NewReader(payload))
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return ErrReplayUnavailable
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Cache-Control", "no-store")
-	request.Header.Set("apikey", r.APIKey)
-	client := *r.Client
+	request.Header.Set("apikey", r.apiKey)
+	client := *r.client
 	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	if client.Timeout <= 0 {
 		client.Timeout = remoteReplayTimeout

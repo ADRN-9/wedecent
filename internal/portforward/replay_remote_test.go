@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -49,14 +50,31 @@ func newRemoteReplayFixture(t *testing.T, handler http.Handler) (*RemoteReplay, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := httptest.NewServer(handler)
+	server := httptest.NewTLSServer(handler)
 	t.Cleanup(server.Close)
 	replay, err := NewRemoteReplay(server.URL+"/functions/v1/port-forward-replay", "public-anon-key", mesh.DeviceID(identity.DeviceID(devicePublic)), devicePrivate)
 	if err != nil {
 		t.Fatal(err)
 	}
-	replay.Now = func() time.Time { return now }
+	replay.client.Transport = replayTestTransport(t, server)
+	replay.now = func() time.Time { return now }
 	return replay, authorization, devicePublic, controlPublic
+}
+
+func replayTestTransport(t *testing.T, server *httptest.Server) http.RoundTripper {
+	t.Helper()
+	transport, ok := server.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("test server transport is not an HTTP transport")
+	}
+	clone := transport.Clone()
+	if clone.TLSClientConfig == nil {
+		clone.TLSClientConfig = &tls.Config{}
+	} else {
+		clone.TLSClientConfig = clone.TLSClientConfig.Clone()
+	}
+	clone.TLSClientConfig.MinVersion = tls.VersionTLS13
+	return clone
 }
 
 func verifyRemoteReplayTestRequest(t *testing.T, request remoteReplayTestRequest, publicKey ed25519.PublicKey) {
@@ -289,10 +307,11 @@ func TestRemoteReplayConcurrentConsumptionAndRestart(t *testing.T) {
 	if successes.Load() != 1 || replays.Load() != attempts-1 {
 		t.Fatalf("successes=%d replays=%d", successes.Load(), replays.Load())
 	}
-	restarted, err := NewRemoteReplay(replay.Endpoint, replay.APIKey, replay.DeviceID, replay.Signer)
+	restarted, err := NewRemoteReplay(replay.endpoint, replay.apiKey, replay.deviceID, replay.signer)
 	if err != nil {
 		t.Fatal(err)
 	}
+	restarted.client.Transport = replay.client.Transport
 	if err := restarted.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrAuthorizationReplay) {
 		t.Fatalf("post-restart replay error = %v", err)
 	}
@@ -334,6 +353,7 @@ func TestRemoteReplayRejectsUnsafeEndpointAndWrongDeviceKey(t *testing.T) {
 	}
 	deviceID := mesh.DeviceID(identity.DeviceID(publicKey))
 	for _, endpoint := range []string{
+		"http://127.0.0.1/functions/v1/port-forward-replay",
 		"http://example.com/functions/v1/port-forward-replay",
 		"https://example.com/other",
 		"https://user:pass@example.com/functions/v1/port-forward-replay",
@@ -354,16 +374,17 @@ func TestRemoteReplayRejectsUnsafeEndpointAndWrongDeviceKey(t *testing.T) {
 
 func TestRemoteReplayRejectsRedirectWithoutForwardingProof(t *testing.T) {
 	var redirected atomic.Bool
-	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+	target := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
 		redirected.Store(true)
 	}))
 	defer target.Close()
-	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+	source := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		http.Redirect(w, request, target.URL+"/functions/v1/port-forward-replay", http.StatusTemporaryRedirect)
 	}))
 	defer source.Close()
 	replay, authorization, _, _ := newRemoteReplayFixture(t, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
-	replay.Endpoint = source.URL + "/functions/v1/port-forward-replay"
+	replay.endpoint = source.URL + "/functions/v1/port-forward-replay"
+	replay.client.Transport = replayTestTransport(t, source)
 	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrReplayUnavailable) {
 		t.Fatalf("redirect error = %v", err)
 	}
