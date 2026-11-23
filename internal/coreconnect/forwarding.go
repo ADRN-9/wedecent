@@ -96,6 +96,7 @@ func (b *Backend) OpenPortForwarding(ctx context.Context, auth portforward.Autho
 
 	client := &session.Client{
 		Identity: b.identity, Trust: b.trust, Dialer: dialer, ConnectionGrant: grant,
+		ForceInBandAuthorization: claims.Router != "",
 	}
 	return client.OpenManagedPortForwardSession(ctx, peer, auth)
 }
