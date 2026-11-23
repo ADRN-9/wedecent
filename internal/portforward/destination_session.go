@@ -24,6 +24,7 @@ type DestinationConfig struct {
 	AuthenticatedPeerID  mesh.DeviceID
 	Verifier             Verifier
 	TrustChecker         PeerTrustChecker
+	TrustPollInterval    time.Duration
 	PermissionAuthorizer PermissionAuthorizer
 	Resolver             IPResolver
 	Dialer               ContextDialer
@@ -41,6 +42,8 @@ type DestinationSession struct {
 	policy      DestinationPolicy
 	dialer      ContextDialer
 	audit       AuditWriter
+	trustChecker PeerTrustChecker
+	trustPollInterval time.Duration
 	maxChildren int
 	dialTimeout time.Duration
 	ctx         context.Context
@@ -75,6 +78,13 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	}
 	if err := cfg.Policy.Validate(); err != nil {
 		return nil, err
+	}
+	trustPollInterval := cfg.TrustPollInterval
+	if trustPollInterval == 0 {
+		trustPollInterval = 250 * time.Millisecond
+	}
+	if trustPollInterval < 10*time.Millisecond || trustPollInterval > 5*time.Second {
+		return nil, ErrManagerConfig
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -142,17 +152,34 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		policy:      cfg.Policy,
 		dialer:      cfg.Dialer,
 		audit:       cfg.Audit,
+		trustChecker: cfg.TrustChecker,
+		trustPollInterval: trustPollInterval,
 		maxChildren: min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
 		dialTimeout: cfg.DialTimeout,
 		ctx:         sessionCtx,
 		cancel:      cancel,
 		children:    make(map[uint64]*destinationChildConn),
 	}
-	go func() {
-		<-sessionCtx.Done()
-		_ = session.Close()
-	}()
+	go session.watchTrust()
 	return session, nil
+}
+
+func (s *DestinationSession) watchTrust() {
+	ticker := time.NewTicker(s.trustPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-s.ctx.Done():
+			_ = s.Close()
+			return
+		case <-ticker.C:
+			trusted, err := s.trustChecker.IsTrusted(s.ctx, string(s.peerID))
+			if err != nil || !trusted {
+				_ = s.Close()
+				return
+			}
+		}
+	}
 }
 
 func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
