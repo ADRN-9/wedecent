@@ -29,6 +29,7 @@ type typedPortForwardParent struct {
 	acceptMu  sync.Mutex
 	session   *portforward.DestinationSession
 	children  map[uint32]*typedPortForwardChild
+	closing   bool
 	closed    bool
 	closeOnce sync.Once
 	closeErr  error
@@ -58,13 +59,13 @@ type typedPortForwardChild struct {
 }
 
 type typedPortForwardServer struct {
-	ctx      context.Context
-	localID  mesh.DeviceID
-	peerID   mesh.DeviceID
-	routerID mesh.DeviceID
-	runtime  *PortForwardRuntime
-	registry *typedParentStreamRegistry
-	write    typedTerminalFrameWriter
+	ctx            context.Context
+	localID        mesh.DeviceID
+	peerID         mesh.DeviceID
+	routerID       mesh.DeviceID
+	runtime        *PortForwardRuntime
+	registry       *typedParentStreamRegistry
+	write          typedTerminalFrameWriter
 	cleanupTimeout time.Duration
 
 	mu       sync.Mutex
@@ -164,7 +165,7 @@ func (s *typedPortForwardServer) openParent(ctx context.Context, frame protocol.
 		return nil
 	}
 	s.mu.Lock()
-	attached := !s.closed && !parent.closed && s.parents[frame.StreamID] == parent
+	attached := !s.closed && !parent.closing && !parent.closed && s.parents[frame.StreamID] == parent
 	if attached {
 		go s.watchDestinationParent(parent)
 	}
@@ -176,7 +177,7 @@ func (s *typedPortForwardServer) publishParentAcceptance(parent *typedPortForwar
 	parent.acceptMu.Lock()
 	defer parent.acceptMu.Unlock()
 	s.mu.Lock()
-	attached := !s.closed && !parent.closed && s.parents[parent.id] == parent
+	attached := !s.closed && !parent.closing && !parent.closed && s.parents[parent.id] == parent
 	s.mu.Unlock()
 	if !attached {
 		return false, nil
@@ -185,7 +186,7 @@ func (s *typedPortForwardServer) publishParentAcceptance(parent *typedPortForwar
 		return false, err
 	}
 	s.mu.Lock()
-	attached = !s.closed && !parent.closed && s.parents[parent.id] == parent
+	attached = !s.closed && !parent.closing && !parent.closed && s.parents[parent.id] == parent
 	s.mu.Unlock()
 	if !attached {
 		return false, nil
@@ -202,7 +203,7 @@ func (s *typedPortForwardServer) publishChildAcceptance(parent *typedPortForward
 	parent.acceptMu.Lock()
 	defer parent.acceptMu.Unlock()
 	s.mu.Lock()
-	attached := !s.closed && !parent.closed && s.parents[parent.id] == parent && !child.isClosed()
+	attached := !s.closed && !parent.closing && !parent.closed && s.parents[parent.id] == parent && !child.isClosed()
 	if attached {
 		s.children[child.id] = child
 		parent.children[child.id] = child
@@ -217,7 +218,7 @@ func (s *typedPortForwardServer) publishChildAcceptance(parent *typedPortForward
 	}
 	child.sendMu.Lock()
 	s.mu.Lock()
-	attached = !s.closed && !parent.closed &&
+	attached = !s.closed && !parent.closing && !parent.closed &&
 		s.parents[parent.id] == parent && s.children[child.id] == child &&
 		!child.isClosed()
 	s.mu.Unlock()
@@ -242,7 +243,7 @@ func (s *typedPortForwardServer) watchDestinationParent(parent *typedPortForward
 	case <-parent.session.Done():
 	}
 	s.mu.Lock()
-	closed := s.closed || parent.closed
+	closed := s.closed || parent.closing || parent.closed
 	s.mu.Unlock()
 	if !closed {
 		_ = s.closeParent(parent.id, "destination_session_ended", false)
@@ -265,7 +266,7 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 	}
 	s.mu.Lock()
 	parent := s.parents[metadata.ParentStreamID]
-	if s.closed || parent == nil || parent.closed {
+	if s.closed || parent == nil || parent.closing || parent.closed {
 		s.mu.Unlock()
 		_ = s.registry.close(frame.StreamID, protocol.StreamKindPortForwardChild)
 		return s.sendStreamError(frame.StreamID, "parent_stream_unavailable", "forwarding parent stream is unavailable")
@@ -276,7 +277,7 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 	if err != nil {
 		_ = s.registry.close(frame.StreamID, protocol.StreamKindPortForwardChild)
 		s.mu.Lock()
-		attached := !s.closed && !parent.closed && s.parents[parent.id] == parent
+		attached := !s.closed && !parent.closing && !parent.closed && s.parents[parent.id] == parent
 		s.mu.Unlock()
 		if !attached {
 			return nil
@@ -325,7 +326,7 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 	// Parent closure may race with the acceptance write. Never start workers
 	// after the parent has detached this child.
 	s.mu.Lock()
-	attached := !s.closed && !parent.closed &&
+	attached := !s.closed && !parent.closing && !parent.closed &&
 		s.parents[parent.id] == parent && s.children[child.id] == child &&
 		!child.isClosed()
 	if attached {
@@ -806,7 +807,23 @@ func (s *typedPortForwardServer) detachChild(streamID uint32) {
 	_ = s.registry.close(streamID, protocol.StreamKindPortForwardChild)
 }
 
-func (s *typedPortForwardServer) markParentClosed(parent *typedPortForwardParent) bool {
+func (s *typedPortForwardServer) beginParentClose(parent *typedPortForwardParent) {
+	if parent == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.parents[parent.id] == parent && !parent.closed {
+		parent.closing = true
+		for _, child := range parent.children {
+			child.signalClose()
+		}
+	}
+	s.mu.Unlock()
+}
+
+// detachParentAfterAcceptance is the parent-detachment linearization point.
+// It waits for any in-flight acceptance ACK before removing the parent.
+func (s *typedPortForwardServer) detachParentAfterAcceptance(parent *typedPortForwardParent) bool {
 	if parent == nil {
 		return false
 	}
@@ -818,9 +835,7 @@ func (s *typedPortForwardServer) markParentClosed(parent *typedPortForwardParent
 		return false
 	}
 	parent.closed = true
-	for _, child := range parent.children {
-		child.signalClose()
-	}
+	delete(s.parents, parent.id)
 	return true
 }
 
@@ -835,10 +850,10 @@ func (s *typedPortForwardServer) closeParent(streamID uint32, reason string, ack
 	s.mu.Lock()
 	parent := s.parents[streamID]
 	s.mu.Unlock()
-	if parent != nil {
-		s.markParentClosed(parent)
-	}
 	if parent == nil {
+		return nil
+	}
+	s.beginParentClose(parent)
 		return nil
 	}
 
@@ -848,6 +863,7 @@ func (s *typedPortForwardServer) closeParent(streamID uint32, reason string, ack
 		if err := parent.session.Close(); err != nil {
 			errs = append(errs, err)
 		}
+		s.detachParentAfterAcceptance(parent)
 		s.mu.Lock()
 		children := make([]uint32, 0, len(parent.children))
 		for id := range parent.children {
@@ -866,9 +882,6 @@ func (s *typedPortForwardServer) closeParent(streamID uint32, reason string, ack
 		}
 		parent.closeErr = errors.Join(errs...)
 		s.mu.Lock()
-		if s.parents[streamID] == parent {
-			delete(s.parents, streamID)
-		}
 		if parent.closeErr != nil {
 			s.closeErr = errors.Join(s.closeErr, parent.closeErr)
 		}
@@ -889,7 +902,7 @@ func (s *typedPortForwardServer) CloseAll() error {
 	}
 	s.mu.Unlock()
 	for _, parent := range parents {
-		s.markParentClosed(parent)
+		s.beginParentClose(parent)
 	}
 
 	results := make(chan error, len(parents))

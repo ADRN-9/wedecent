@@ -106,14 +106,20 @@ func TestTypedPortForwardChildAcceptanceSerializesParentClosure(t *testing.T) {
 		parent.acceptMu.Unlock()
 		t.Fatal("acceptance publication did not hold the parent gate")
 	}
-	closed := make(chan struct{})
+	server.beginParentClose(parent)
+	select {
+	case <-child.done:
+	case <-time.After(time.Second):
+		t.Fatal("parent close did not cancel the child while ACK publication was blocked")
+	}
+	detached := make(chan struct{})
 	go func() {
-		server.markParentClosed(parent)
-		close(closed)
+		server.detachParentAfterAcceptance(parent)
+		close(detached)
 	}()
 	select {
-	case <-closed:
-		t.Fatal("parent closure passed an in-flight acceptance publication")
+	case <-detached:
+		t.Fatal("parent detached before the in-flight acceptance ACK completed")
 	default:
 	}
 	close(releaseAccepted)
@@ -122,9 +128,9 @@ func TestTypedPortForwardChildAcceptanceSerializesParentClosure(t *testing.T) {
 		t.Fatalf("child acceptance = %v, %v; want accepted", result.ok, result.err)
 	}
 	select {
-	case <-closed:
+	case <-detached:
 	case <-time.After(time.Second):
-		t.Fatal("parent closure did not finish after acceptance publication")
+		t.Fatal("parent detachment did not finish after acceptance publication")
 	}
 	if !parent.closed {
 		t.Fatal("parent was not marked closed")
@@ -179,9 +185,9 @@ func TestTypedPortForwardChildCloseBoundsBlockedConnection(t *testing.T) {
 		done: done, cancel: func() { close(done) },
 	}
 	server := &typedPortForwardServer{
-		parents: map[uint32]*typedPortForwardParent{parentID: parent},
-		children: map[uint32]*typedPortForwardChild{childID: child},
-		registry: newTypedParentStreamRegistry(),
+		parents:        map[uint32]*typedPortForwardParent{parentID: parent},
+		children:       map[uint32]*typedPortForwardChild{childID: child},
+		registry:       newTypedParentStreamRegistry(),
 		cleanupTimeout: 25 * time.Millisecond,
 	}
 	parent.children[childID] = child
@@ -213,4 +219,3 @@ func TestTypedPortForwardChildCloseBoundsBlockedConnection(t *testing.T) {
 		t.Fatal("owned child close worker did not finish after release")
 	}
 }
-

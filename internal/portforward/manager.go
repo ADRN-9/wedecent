@@ -191,13 +191,13 @@ type activeForward struct {
 }
 
 type activeChild struct {
-	id        uint64
-	forwardID string
-	devices   []mesh.DeviceID
-	ctx       context.Context
-	cancel    context.CancelFunc
-	local     net.Conn
-	remote    net.Conn
+	id          uint64
+	forwardID   string
+	devices     []mesh.DeviceID
+	ctx         context.Context
+	cancel      context.CancelFunc
+	local       net.Conn
+	remote      net.Conn
 	done        chan struct{}
 	cleanupOnce sync.Once
 	cleanupErr  error

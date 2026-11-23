@@ -337,6 +337,12 @@ func TestFileReplayMigratesLegacyUnanchoredStateOnce(t *testing.T) {
 	if err := lock.Close(); err != nil {
 		t.Fatal(err)
 	}
+	if err := setReplayFileOwner(path + ".lock"); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureReplayFile(path + ".lock"); err != nil {
+		t.Fatalf("legacy replay lock is not private: %v", err)
+	}
 	replay, err := NewFileReplay(path, testInitiator)
 	if err != nil {
 		t.Fatal(err)
