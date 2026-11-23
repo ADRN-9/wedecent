@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"wedecent.com/wedecent/internal/audit"
@@ -959,29 +960,99 @@ func expectedClosedConnError(err error) bool {
 	return err == nil || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe)
 }
 
+var ErrHalfCloseUnsupported = errors.New("portforward: transport does not support TCP half-close")
+
 type idleConn struct {
 	net.Conn
 	idle time.Duration
+
+	lastActivity atomic.Int64
+	done         chan struct{}
+	closeOnce    sync.Once
+	closeErr     error
 }
 
-func (c idleConn) Read(p []byte) (int, error) {
-	_ = c.Conn.SetReadDeadline(time.Now().Add(c.idle))
-	return c.Conn.Read(p)
+func newIdleConn(conn net.Conn, idle time.Duration) *idleConn {
+	wrapped := &idleConn{Conn: conn, idle: idle, done: make(chan struct{})}
+	wrapped.touch()
+	if idle > 0 {
+		go wrapped.watchIdle()
+	}
+	return wrapped
 }
-func (c idleConn) Write(p []byte) (int, error) {
-	_ = c.Conn.SetWriteDeadline(time.Now().Add(c.idle))
-	return c.Conn.Write(p)
+
+func (c *idleConn) touch() {
+	c.lastActivity.Store(time.Now().UnixNano())
 }
-func (c idleConn) CloseWrite() error {
+
+func (c *idleConn) watchIdle() {
+	interval := c.idle / 4
+	if interval < 10*time.Millisecond {
+		interval = 10 * time.Millisecond
+	}
+	if interval > time.Second {
+		interval = time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-c.done:
+			return
+		case now := <-ticker.C:
+			last := time.Unix(0, c.lastActivity.Load())
+			if now.Sub(last) >= c.idle {
+				_ = c.Close()
+				return
+			}
+		}
+	}
+}
+
+func (c *idleConn) Read(p []byte) (int, error) {
+	n, err := c.Conn.Read(p)
+	if n > 0 {
+		c.touch()
+	}
+	return n, err
+}
+
+func (c *idleConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n > 0 {
+		c.touch()
+	}
+	return n, err
+}
+
+func (c *idleConn) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.closeOnce.Do(func() {
+		close(c.done)
+		c.closeErr = c.Conn.Close()
+	})
+	return c.closeErr
+}
+
+func (c *idleConn) CloseWrite() error {
 	if writer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return writer.CloseWrite()
 	}
-	return c.Conn.Close()
+	return ErrHalfCloseUnsupported
+}
+
+func (c *idleConn) CloseRead() error {
+	if reader, ok := c.Conn.(interface{ CloseRead() error }); ok {
+		return reader.CloseRead()
+	}
+	return ErrHalfCloseUnsupported
 }
 
 func bridge(ctx context.Context, left, right net.Conn, idle time.Duration) error {
-	l := idleConn{Conn: left, idle: idle}
-	r := idleConn{Conn: right, idle: idle}
+	l := newIdleConn(left, idle)
+	r := newIdleConn(right, idle)
 	var closeOnce sync.Once
 	var closeErr error
 	closeBoth := func() {
@@ -999,11 +1070,12 @@ func bridge(ctx context.Context, left, right net.Conn, idle time.Duration) error
 	stop := context.AfterFunc(ctx, closeBoth)
 	defer stop()
 	results := make(chan error, 2)
-	pump := func(dst, src idleConn) {
+	pump := func(dst, src *idleConn) {
 		_, err := io.Copy(dst, src)
 		if err == nil {
-			_ = dst.CloseWrite()
-		} else {
+			err = dst.CloseWrite()
+		}
+		if err != nil {
 			closeBoth()
 		}
 		results <- err
