@@ -723,3 +723,26 @@ func TestDestinationSessionCloseBoundsBlockedChildClose(t *testing.T) {
 	}
 	_ = remote.Close()
 }
+
+
+type destinationAuditCallRecorder struct {
+	called chan struct{}
+}
+
+func (w *destinationAuditCallRecorder) Append(audit.Event) error {
+	close(w.called)
+	return nil
+}
+
+func TestAppendDestinationAuditUntilExpiredDeadlineDoesNotInvokeWriter(t *testing.T) {
+	writer := &destinationAuditCallRecorder{called: make(chan struct{})}
+	err := appendDestinationAuditUntil(writer, audit.Event{}, time.Now().Add(-time.Second))
+	if err == nil {
+		t.Fatal("expired audit deadline was accepted")
+	}
+	select {
+	case <-writer.called:
+		t.Fatal("audit writer was invoked after the shutdown deadline")
+	default:
+	}
+}

@@ -529,3 +529,170 @@ func TestManagedPortForwardShutdownDoesNotWaitForOccupiedWriteLock(t *testing.T)
 		t.Fatal("session shutdown waited for the occupied transport write lock")
 	}
 }
+
+
+type parentCloseBlockingConn struct {
+	net.Conn
+	remote  net.Conn
+	started chan struct{}
+	release chan struct{}
+	closed  chan struct{}
+	once    sync.Once
+}
+
+func (c *parentCloseBlockingConn) Close() error {
+	c.once.Do(func() {
+		close(c.started)
+		<-c.release
+		_ = c.Conn.Close()
+		close(c.closed)
+	})
+	return nil
+}
+
+type parentCloseBlockingDialer struct {
+	opened chan *parentCloseBlockingConn
+}
+
+func (d *parentCloseBlockingDialer) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if network != "tcp" || address != "10.20.30.40:443" {
+		return nil, errors.New("unexpected parent-close test dial")
+	}
+	local, remote := net.Pipe()
+	conn := &parentCloseBlockingConn{
+		Conn: local, remote: remote,
+		started: make(chan struct{}), release: make(chan struct{}), closed: make(chan struct{}),
+	}
+	select {
+	case d.opened <- conn:
+		return conn, nil
+	case <-ctx.Done():
+		_ = conn.Close()
+		_ = remote.Close()
+		return nil, ctx.Err()
+	}
+}
+
+func TestTypedForwardParentCloseDoesNotWaitForBlockedChildClose(t *testing.T) {
+	clientID, serverID, _ := managedSessionTestIdentities(t, "tcp://ignored.test:7443")
+	fingerprint, err := identity.FingerprintPublicKey(clientID.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverTrust, err := trust.Open(filepath.Join(t.TempDir(), "server-trust.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := serverTrust.Put(trust.Peer{ID: clientID.ID, Fingerprint: fingerprint}); err != nil {
+		t.Fatal(err)
+	}
+	publicKey, signingKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	sourceID, destinationID := mesh.DeviceID(clientID.ID), mesh.DeviceID(serverID.ID)
+	claims := portforward.Claims{
+		Version: portforward.AuthorizationVersion, Issuer: portforward.AuthorizationIssuer,
+		Audience: portforward.AuthorizationAudience, Permission: portforward.PermissionLocal,
+		ForwardingID: "00000000-0000-4000-8000-000000000301", Direction: portforward.DirectionLocal,
+		InitiatingDevice: sourceID, DestinationDevice: destinationID,
+		Route: mesh.Route{
+			ID: "00000000-0000-4000-8000-000000000302", Source: sourceID, Destination: destinationID,
+			Hops: []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
+		},
+		DestinationAddress: "forward.test", DestinationPort: 443,
+		Listener: portforward.DefaultListenerPolicy(43125), Protocol: portforward.ProtocolTCP,
+		Limits: portforward.ResourceLimits{MaxConnections: 1, MaxDurationSeconds: 30, IdleTimeoutSeconds: 5},
+	}
+	auth, err := (portforward.AuthorizationIssuer{
+		Signer: signingKey, Lifetime: 30 * time.Second, Now: func() time.Time { return now },
+	}).Issue(context.Background(), claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dialer := &parentCloseBlockingDialer{opened: make(chan *parentCloseBlockingConn, 1)}
+	runtime := &PortForwardRuntime{
+		Verifier: &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
+		TrustChecker: serverTrust, PermissionAuthorizer: portforward.CapabilityPermissionAuthorizer{},
+		Resolver: forwardingTestResolver{}, Dialer: dialer,
+		Policy: portforward.DestinationPolicy{
+			AllowedPorts: []portforward.PortRange{{First: 443, Last: 443}},
+			AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.30.0/24")},
+		},
+		Audit: forwardingTestAudit{}, MaxConnections: 1, DialTimeout: 5 * time.Second,
+	}
+	server := newTypedPortForwardServer(context.Background(), serverID.ID, clientID.ID, "", runtime, newTypedParentStreamRegistry(), func(protocol.Frame) error { return nil })
+	parentMetadata, err := protocol.JSON(portForwardParentOpen{Authorization: auth})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentPayload, err := protocol.JSON(protocol.StreamOpen{
+		Kind: protocol.StreamKindPortForwardParent, Metadata: parentMetadata, InitialWindow: managedPortForwardReceiveWindow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentID, childID := protocol.MinTypedStreamID, protocol.MinTypedStreamID+1
+	if err := server.Handle(context.Background(), protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: parentID, Payload: parentPayload}); err != nil {
+		t.Fatal(err)
+	}
+	childMetadata, err := protocol.JSON(portForwardChildOpen{ParentStreamID: parentID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPayload, err := protocol.JSON(protocol.StreamOpen{
+		Kind: protocol.StreamKindPortForwardChild, Metadata: childMetadata, InitialWindow: managedPortForwardReceiveWindow,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Handle(context.Background(), protocol.Frame{Type: protocol.TypeStreamOpen, StreamID: childID, Payload: childPayload}); err != nil {
+		t.Fatal(err)
+	}
+	blocked := <-dialer.opened
+	released := false
+	defer func() {
+		if !released {
+			close(blocked.release)
+		}
+		_ = blocked.remote.Close()
+	}()
+
+	server.mu.Lock()
+	child := server.children[childID]
+	server.mu.Unlock()
+	if child == nil {
+		t.Fatal("forwarding child was not registered")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- server.closeParent(parentID, "test_parent_close", false) }()
+	select {
+	case <-blocked.started:
+	case <-time.After(time.Second):
+		t.Fatal("destination child close did not reach the blocking connection")
+	}
+	select {
+	case err := <-closeDone:
+		if err == nil {
+			t.Fatal("parent close hid the destination child cleanup timeout")
+		}
+	case <-time.After(6 * time.Second):
+		t.Fatal("parent close waited on a second Close call after destination cleanup timed out")
+	}
+	select {
+	case <-child.done:
+	case <-time.After(time.Second):
+		t.Fatal("parent close did not signal child completion")
+	}
+	close(blocked.release)
+	released = true
+	select {
+	case <-blocked.closed:
+	case <-time.After(time.Second):
+		t.Fatal("blocked destination connection did not close after release")
+	}
+}

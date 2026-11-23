@@ -24,10 +24,12 @@ type portForwardChildOpen struct {
 }
 
 type typedPortForwardParent struct {
-	id      uint32
-	session *portforward.DestinationSession
-	children map[uint32]*typedPortForwardChild
-	closed  bool
+	id        uint32
+	session   *portforward.DestinationSession
+	children  map[uint32]*typedPortForwardChild
+	closed    bool
+	closeOnce sync.Once
+	closeErr  error
 }
 
 type typedPortForwardChild struct {
@@ -42,7 +44,8 @@ type typedPortForwardChild struct {
 	writeCh     chan struct{}
 	writeBuffer []byte
 	done        chan struct{}
-	closeOnce  sync.Once
+	doneOnce    sync.Once
+	closeOnce   sync.Once
 }
 
 type typedPortForwardServer struct {
@@ -516,10 +519,8 @@ func (s *typedPortForwardServer) closeChild(streamID uint32, reason string, ackn
 		return nil
 	}
 	var closeErr error
-	child.closeOnce.Do(func() {
-		close(child.done)
-		closeErr = child.conn.Close()
-	})
+	child.doneOnce.Do(func() { close(child.done) })
+	child.closeOnce.Do(func() { closeErr = child.conn.Close() })
 	_ = s.registry.close(streamID, protocol.StreamKindPortForwardChild)
 	if acknowledge {
 		payload, _ := protocol.JSON(protocol.StreamClose{Reason: "peer_close"})
@@ -533,46 +534,67 @@ func (s *typedPortForwardServer) closeChild(streamID uint32, reason string, ackn
 	return closeErr
 }
 
+func (s *typedPortForwardServer) detachChild(streamID uint32) {
+	s.mu.Lock()
+	child := s.children[streamID]
+	if child != nil {
+		delete(s.children, streamID)
+		delete(child.parent.children, streamID)
+	}
+	s.mu.Unlock()
+	if child == nil {
+		return
+	}
+	// The parent DestinationSession has already attempted to close every
+	// child. Do not call destinationChildConn.Close a second time: its
+	// sync.Once may still be executing a blocked underlying Close.
+	child.doneOnce.Do(func() { close(child.done) })
+	_ = s.registry.close(streamID, protocol.StreamKindPortForwardChild)
+}
+
 func (s *typedPortForwardServer) closeParent(streamID uint32, reason string, acknowledge bool) error {
 	s.mu.Lock()
 	parent := s.parents[streamID]
 	if parent != nil {
 		parent.closed = true
-		delete(s.parents, streamID)
 	}
 	s.mu.Unlock()
 	if parent == nil {
 		return nil
 	}
-	var errs []error
-	if err := parent.session.Close(); err != nil {
-		errs = append(errs, err)
-	}
-	s.mu.Lock()
-	children := make([]uint32, 0, len(parent.children))
-	for id := range parent.children {
-		children = append(children, id)
-	}
-	s.mu.Unlock()
-	for _, childID := range children {
-		if err := s.closeChild(childID, reason, false); err != nil {
+
+	parent.closeOnce.Do(func() {
+		var errs []error
+		if err := parent.session.Close(); err != nil {
 			errs = append(errs, err)
 		}
-	}
-	_ = s.registry.close(streamID, protocol.StreamKindPortForwardParent)
-	if acknowledge {
-		payload, _ := protocol.JSON(protocol.StreamClose{Reason: "peer_close"})
-		if err := s.write(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: streamID, Payload: payload}); err != nil {
-			errs = append(errs, err)
-		}
-	}
-	closeErr := errors.Join(errs...)
-	if closeErr != nil {
 		s.mu.Lock()
-		s.closeErr = errors.Join(s.closeErr, closeErr)
+		children := make([]uint32, 0, len(parent.children))
+		for id := range parent.children {
+			children = append(children, id)
+		}
 		s.mu.Unlock()
-	}
-	return closeErr
+		for _, childID := range children {
+			s.detachChild(childID)
+		}
+		_ = s.registry.close(streamID, protocol.StreamKindPortForwardParent)
+		if acknowledge {
+			payload, _ := protocol.JSON(protocol.StreamClose{Reason: "peer_close"})
+			if err := s.write(protocol.Frame{Type: protocol.TypeStreamClose, StreamID: streamID, Payload: payload}); err != nil {
+				errs = append(errs, err)
+			}
+		}
+		parent.closeErr = errors.Join(errs...)
+		s.mu.Lock()
+		if s.parents[streamID] == parent {
+			delete(s.parents, streamID)
+		}
+		if parent.closeErr != nil {
+			s.closeErr = errors.Join(s.closeErr, parent.closeErr)
+		}
+		s.mu.Unlock()
+	})
+	return parent.closeErr
 }
 
 func (s *typedPortForwardServer) CloseAll() error {
@@ -586,9 +608,21 @@ func (s *typedPortForwardServer) CloseAll() error {
 		parents = append(parents, id)
 	}
 	s.mu.Unlock()
-	var errs []error
+
+	results := make(chan error, len(parents))
+	var wg sync.WaitGroup
 	for _, id := range parents {
-		if err := s.closeParent(id, "parent_session_closed", false); err != nil {
+		wg.Add(1)
+		go func(parentID uint32) {
+			defer wg.Done()
+			results <- s.closeParent(parentID, "parent_session_closed", false)
+		}(id)
+	}
+	wg.Wait()
+	close(results)
+	var errs []error
+	for err := range results {
+		if err != nil {
 			errs = append(errs, err)
 		}
 	}

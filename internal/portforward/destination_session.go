@@ -476,12 +476,12 @@ var _ ForwardingSession = (*DestinationSession)(nil)
 
 
 func appendDestinationAuditUntil(writer AuditWriter, event audit.Event, deadline time.Time) error {
-	done := make(chan error, 1)
-	go func() { done <- writer.Append(event) }()
 	remaining := time.Until(deadline)
 	if remaining <= 0 {
 		return errors.New("portforward: destination shutdown audit append exceeded timeout")
 	}
+	done := make(chan error, 1)
+	go func() { done <- writer.Append(event) }()
 	timer := time.NewTimer(remaining)
 	defer timer.Stop()
 	select {
