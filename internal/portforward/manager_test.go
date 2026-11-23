@@ -509,6 +509,58 @@ func (a *blockingListenerAdmin) AuthorizePortForwardListener(ctx context.Context
 	}
 }
 
+func TestManagerCloseCancelsPendingStart(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	admin := &blockingListenerAdmin{started: make(chan struct{}), release: make(chan struct{})}
+	listenCalls := 0
+	manager, auth, _ := newManagerForTest(
+		t,
+		testInitiator,
+		claims,
+		&pipeConnector{},
+		nil,
+		admin,
+		func(string, string) (net.Listener, error) {
+			listenCalls++
+			return newQueueListener(), nil
+		},
+	)
+
+	startResult := make(chan error, 1)
+	go func() {
+		_, err := manager.Start(context.Background(), auth)
+		startResult <- err
+	}()
+	select {
+	case <-admin.started:
+	case <-time.After(time.Second):
+		t.Fatal("start did not reach listener authorization")
+	}
+
+	closeResult := make(chan error, 1)
+	go func() { closeResult <- manager.Close() }()
+	select {
+	case err := <-closeResult:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("manager close did not cancel the pending start")
+	}
+	select {
+	case err := <-startResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("pending Start error = %v, want context cancellation", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending start did not exit after manager close")
+	}
+	if listenCalls != 0 || len(manager.List()) != 0 {
+		t.Fatal("manager close allowed a pending listener to start")
+	}
+}
+
 func TestManagerDeviceRevocationCancelsPendingStart(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
