@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	ErrWrongDestinationDevice = errors.New("portforward: capability is not bound to this destination device")
+	ErrWrongDestinationDevice   = errors.New("portforward: capability is not bound to this destination device")
 	ErrDestinationSessionClosed = errors.New("portforward: destination forwarding session is closed")
 )
 
@@ -31,17 +31,17 @@ type DestinationConfig struct {
 }
 
 type DestinationSession struct {
-	claims       Claims
-	localID      mesh.DeviceID
-	peerID       mesh.DeviceID
-	approved     ApprovedDestination
-	policy       DestinationPolicy
-	dialer       ContextDialer
-	audit        AuditWriter
-	maxChildren  int
-	dialTimeout  time.Duration
-	ctx          context.Context
-	cancel       context.CancelFunc
+	claims      Claims
+	localID     mesh.DeviceID
+	peerID      mesh.DeviceID
+	approved    ApprovedDestination
+	policy      DestinationPolicy
+	dialer      ContextDialer
+	audit       AuditWriter
+	maxChildren int
+	dialTimeout time.Duration
+	ctx         context.Context
+	cancel      context.CancelFunc
 
 	mu        sync.Mutex
 	closed    bool
@@ -55,9 +55,9 @@ type DestinationSession struct {
 
 type destinationChildConn struct {
 	net.Conn
-	session *DestinationSession
-	id      uint64
-	once    sync.Once
+	session  *DestinationSession
+	id       uint64
+	once     sync.Once
 	closeErr error
 }
 
@@ -125,18 +125,18 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	}
 	sessionCtx, cancel := context.WithDeadline(context.Background(), deadline)
 	session := &DestinationSession{
-		claims: claims,
-		localID: cfg.LocalDeviceID,
-		peerID: cfg.AuthenticatedPeerID,
-		approved: approved,
-		policy: cfg.Policy,
-		dialer: cfg.Dialer,
-		audit: cfg.Audit,
+		claims:      claims,
+		localID:     cfg.LocalDeviceID,
+		peerID:      cfg.AuthenticatedPeerID,
+		approved:    approved,
+		policy:      cfg.Policy,
+		dialer:      cfg.Dialer,
+		audit:       cfg.Audit,
 		maxChildren: min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
 		dialTimeout: cfg.DialTimeout,
-		ctx: sessionCtx,
-		cancel: cancel,
-		children: make(map[uint64]*destinationChildConn),
+		ctx:         sessionCtx,
+		cancel:      cancel,
+		children:    make(map[uint64]*destinationChildConn),
 	}
 	go func() {
 		<-sessionCtx.Done()
@@ -274,17 +274,16 @@ func (c *destinationChildConn) Close() error {
 
 func destinationAuditEvent(claims Claims, localID, peerID mesh.DeviceID, eventType, outcome, reason string) audit.Event {
 	return audit.Event{
-		Type: eventType,
-		Outcome: outcome,
-		ActorID: string(localID),
-		PeerID: string(peerID),
-		Transport: ProtocolTCP,
-		Reason: reason,
+		Type:         eventType,
+		Outcome:      outcome,
+		ActorID:      string(localID),
+		PeerID:       string(peerID),
+		Transport:    ProtocolTCP,
+		Reason:       reason,
 		ForwardingID: claims.ForwardingID,
-		Direction: string(claims.Direction),
-		Destination: net.JoinHostPort(claims.DestinationAddress, strconv.Itoa(int(claims.DestinationPort))),
+		Direction:    string(claims.Direction),
+		Destination:  net.JoinHostPort(claims.DestinationAddress, strconv.Itoa(int(claims.DestinationPort))),
 	}
 }
-
 
 var _ ForwardingSession = (*DestinationSession)(nil)
