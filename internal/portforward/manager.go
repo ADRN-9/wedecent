@@ -55,6 +55,35 @@ type PermissionAuthorizer interface {
 	AuthorizePortForward(context.Context, Claims) error
 }
 
+// CapabilityPermissionAuthorizer enforces the dedicated direction-specific
+// permission carried by the already-verified control-plane capability.
+type CapabilityPermissionAuthorizer struct{}
+
+func (CapabilityPermissionAuthorizer) AuthorizePortForward(ctx context.Context, claims Claims) error {
+	if ctx == nil {
+		return ErrPermissionDenied
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := ValidateClaims(claims); err != nil {
+		return ErrPermissionDenied
+	}
+	switch claims.Direction {
+	case DirectionLocal:
+		if claims.Permission != PermissionLocal {
+			return ErrPermissionDenied
+		}
+	case DirectionRemote:
+		if claims.Permission != PermissionRemote {
+			return ErrPermissionDenied
+		}
+	default:
+		return ErrPermissionDenied
+	}
+	return nil
+}
+
 type ListenerAuthorizer interface {
 	AuthorizePortForwardListener(context.Context, Claims) error
 }
