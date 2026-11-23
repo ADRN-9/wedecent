@@ -12,8 +12,12 @@ import (
 	"wedecent.com/wedecent/internal/protocol"
 )
 
-func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, transport string, capabilities []protocol.Capability) {
+func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, transport string, capabilities []protocol.Capability, routerIDs ...string) {
 	fileNegotiated := hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1)
+	forwardNegotiated := hasSessionCapability(capabilities, protocol.CapabilityPortForwardV1)
+	if forwardNegotiated && (s.PortForwarding == nil || !s.PortForwarding.Ready()) {
+		return
+	}
 	if fileNegotiated && (s.FileTransfer == nil || !s.FileTransfer.Ready()) {
 		// Capability negotiation must never outrun the authoritative runtime.
 		return
@@ -72,13 +76,36 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 			return nil
 		})
 	}
+	routerID := ""
+	if len(routerIDs) > 0 {
+		routerID = routerIDs[0]
+	}
+	var forwardServer *typedPortForwardServer
+	if forwardNegotiated {
+		forwardServer = newTypedPortForwardServer(sessionCtx, s.Identity.ID, peerID, routerID, s.PortForwarding, registry, func(frame protocol.Frame) error {
+			if err := writeFrame(frame); err != nil {
+				return err
+			}
+			signalActivity()
+			return nil
+		})
+	}
 	defer func() {
 		cancelSession()
+		var cleanupErrs []error
+		if forwardServer != nil {
+			if err := forwardServer.CloseAll(); err != nil {
+				cleanupErrs = append(cleanupErrs, err)
+			}
+		}
 		if fileServer != nil {
 			fileServer.CloseAll()
 		}
 		typedServer.CloseAll()
 		streamAudit.closeAll(closeReason)
+		if len(cleanupErrs) > 0 {
+			s.log().Error("typed forwarding cleanup failed", "peer_id", peerID, "error", errors.Join(cleanupErrs...))
+		}
 	}()
 
 	done := make(chan struct{})
@@ -124,7 +151,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 			}
 			return
 		case frame := <-frameCh:
-			handled, err := routeTypedApplicationFrame(sessionCtx, capabilities, registry, typedServer, fileServer, frame)
+			handled, err := routeTypedApplicationFrame(sessionCtx, capabilities, registry, typedServer, fileServer, forwardServer, frame)
 			if handled {
 				if err != nil {
 					closeReason = "typed_stream_protocol_error"
