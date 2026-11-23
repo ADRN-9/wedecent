@@ -1358,6 +1358,106 @@ func TestManagerTrustRevocationDuringBlockedChildCleanup(t *testing.T) {
 	}
 }
 
+func TestManagerRejectsChildAcceptanceAfterTerminationBegins(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	session := &managerBlockingCloseSession{started: make(chan struct{}), release: make(chan struct{})}
+	released := false
+	defer func() {
+		if !released {
+			close(session.release)
+		}
+	}()
+	manager, auth, _ := newManagerForTest(t, testInitiator, claims, managerBlockingCloseConnector{session: session}, nil, nil, nil)
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	forward := managerForwardForTest(t, manager, claims.ForwardingID)
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(context.Background(), claims.ForwardingID) }()
+	select {
+	case <-session.started:
+	case <-time.After(time.Second):
+		t.Fatal("termination did not begin parent cleanup")
+	}
+	local, peer := net.Pipe()
+	defer peer.Close()
+	if child, ok := manager.reserveChild(forward, local); ok {
+		_ = local.Close()
+		t.Fatalf("accepted child %v after parent shutdown linearized", child.id)
+	}
+	_ = local.Close()
+	close(session.release)
+	released = true
+	if err := <-stopDone; err != nil {
+		t.Fatalf("stop after blocked parent cleanup: %v", err)
+	}
+	if manager.connections != 0 {
+		t.Fatalf("connections after parent stop = %d, want 0", manager.connections)
+	}
+}
+
+type managerBlockingAudit struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	calls   int
+}
+
+func (a *managerBlockingAudit) Append(audit.Event) error {
+	a.mu.Lock()
+	a.calls++
+	a.mu.Unlock()
+	a.once.Do(func() {
+		close(a.started)
+		<-a.release
+	})
+	return nil
+}
+
+func TestManagerBoundsAndSerializesBlockedAuditAppends(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	manager, auth, _ := newManagerForTest(t, testInitiator, claims, &pipeConnector{}, nil, nil, nil)
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	auditLog := &managerBlockingAudit{started: make(chan struct{}), release: make(chan struct{})}
+	manager.audit = auditLog
+	manager.auditTimeout = 50 * time.Millisecond
+	released := false
+	defer func() {
+		if !released {
+			close(auditLog.release)
+		}
+	}()
+	forward := managerForwardForTest(t, manager, claims.ForwardingID)
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(context.Background(), claims.ForwardingID) }()
+	select {
+	case <-auditLog.started:
+	case <-time.After(time.Second):
+		t.Fatal("termination did not reach the blocked audit append")
+	}
+	secondErr := manager.record(claims, "port_forward.test", "attempt", "")
+	if !errors.Is(secondErr, context.DeadlineExceeded) || !errors.Is(secondErr, ErrAuditIncomplete) {
+		t.Fatalf("second audit append error = %v, want bounded audit timeout", secondErr)
+	}
+	auditLog.mu.Lock()
+	calls := auditLog.calls
+	auditLog.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("audit writer calls = %d, want exactly one outstanding append", calls)
+	}
+	if err := <-stopDone; !errors.Is(err, ErrAuditIncomplete) {
+		t.Fatalf("Stop audit result = %v, want ErrAuditIncomplete", err)
+	}
+	close(auditLog.release)
+	released = true
+	waitForwardStopped(t, forward)
+}
+
 type managerBlockingCloseSession struct {
 	started chan struct{}
 	release chan struct{}

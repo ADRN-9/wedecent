@@ -18,7 +18,10 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 )
 
-const managerShutdownTimeout = 5 * time.Second
+const (
+	managerShutdownTimeout = 5 * time.Second
+	managerAuditTimeout    = 5 * time.Second
+)
 
 var (
 	ErrManagerConfig         = errors.New("portforward: invalid manager configuration")
@@ -29,6 +32,7 @@ var (
 	ErrWrongListenerDevice   = errors.New("portforward: capability is not bound to this listener device")
 	ErrListenerAdminRequired = errors.New("portforward: router-administration authorization is required")
 	ErrForwardLimit          = errors.New("portforward: resource limit reached")
+	ErrAuditIncomplete       = errors.New("portforward: audit append did not complete")
 	ErrPermissionDenied      = errors.New("portforward: dedicated forwarding permission denied")
 	ErrPeerNotTrusted        = errors.New("portforward: remote device is not trusted")
 )
@@ -149,6 +153,9 @@ type Manager struct {
 	connector            Connector
 	listenerAuthorizer   ListenerAuthorizer
 	audit                AuditWriter
+	auditMu              sync.Mutex
+	auditSlots           chan struct{}
+	auditTimeout         time.Duration
 	limits               ManagerLimits
 	listen               func(string, string) (net.Listener, error)
 	now                  func() time.Time
@@ -167,6 +174,7 @@ type Manager struct {
 type activeForward struct {
 	lifecycleMu     sync.Mutex
 	started         bool
+	closing         bool
 	claims          Claims
 	session         ForwardingSession
 	listener        net.Listener
@@ -190,7 +198,9 @@ type activeChild struct {
 	cancel    context.CancelFunc
 	local     net.Conn
 	remote    net.Conn
-	done      chan struct{}
+	done        chan struct{}
+	cleanupOnce sync.Once
+	cleanupErr  error
 }
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
@@ -235,6 +245,8 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		connector:            cfg.Connector,
 		listenerAuthorizer:   cfg.ListenerAuthorizer,
 		audit:                cfg.Audit,
+		auditSlots:           make(chan struct{}, 1),
+		auditTimeout:         managerAuditTimeout,
 		limits:               cfg.Limits,
 		listen:               listen,
 		now:                  now,
@@ -858,7 +870,7 @@ func (m *Manager) acceptLoop(f *activeForward) {
 func (m *Manager) reserveChild(f *activeForward, local net.Conn) (*activeChild, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.forwards[f.claims.ForwardingID] != f || !f.started || f.ctx.Err() != nil {
+	if m.forwards[f.claims.ForwardingID] != f || !f.started || f.closing || f.ctx.Err() != nil {
 		return nil, false
 	}
 	if len(f.children) >= int(f.claims.Limits.MaxConnections) || len(f.children) >= m.limits.MaxConnectionsPerForward || m.connections >= m.limits.MaxConnections {
@@ -887,7 +899,6 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 			auditErr := m.record(f.claims, "port_forward.connection_cleanup", "failed", "connection_close_failed")
 			m.recordBackgroundError(errors.Join(err, auditErr))
 		}
-		close(child.done)
 	}()
 	if err := m.record(f.claims, "port_forward.connection_opened", "attempt", ""); err != nil {
 		go m.terminate(f, "audit_persistence_failed")
@@ -910,7 +921,7 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 		return
 	}
 	m.mu.Lock()
-	if child.ctx.Err() != nil || m.forwards[child.forwardID] != f {
+	if child.ctx.Err() != nil || f.closing || m.forwards[child.forwardID] != f {
 		m.mu.Unlock()
 		_ = remote.Close()
 		return
@@ -935,73 +946,101 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 	}
 }
 
-func (m *Manager) releaseChild(f *activeForward, child *activeChild) error {
+func (m *Manager) startChildCleanup(f *activeForward, child *activeChild) <-chan struct{} {
 	child.cancel()
-	var closeErrs []error
-	if err := child.local.Close(); err != nil && !expectedClosedConnError(err) {
-		closeErrs = append(closeErrs, err)
+	child.cleanupOnce.Do(func() {
+		m.mu.Lock()
+		local, remote := child.local, child.remote
+		m.mu.Unlock()
+		go func() {
+			results := make(chan error, 2)
+			count := 0
+			if local != nil {
+				count++
+				go func() {
+					err := local.Close()
+					if expectedClosedConnError(err) {
+						err = nil
+					}
+					results <- err
+				}()
+			}
+			if remote != nil {
+				count++
+				go func() {
+					err := remote.Close()
+					if expectedClosedConnError(err) {
+						err = nil
+					}
+					results <- err
+				}()
+			}
+			var closeErrs []error
+			for i := 0; i < count; i++ {
+				if err := <-results; err != nil {
+					closeErrs = append(closeErrs, err)
+				}
+			}
+			child.cleanupErr = errors.Join(closeErrs...)
+			m.mu.Lock()
+			if f.children[child.id] == child {
+				delete(f.children, child.id)
+				if m.connections > 0 {
+					m.connections--
+				}
+				for _, device := range child.devices {
+					decrement(m.deviceConnections, device)
+				}
+			}
+			m.mu.Unlock()
+			close(child.done)
+		}()
+	})
+	return child.done
+}
+
+func (m *Manager) releaseChild(f *activeForward, child *activeChild) error {
+	done := m.startChildCleanup(f, child)
+	timer := time.NewTimer(managerShutdownTimeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return child.cleanupErr
+	case <-timer.C:
+		return errors.New("portforward: child cleanup exceeded 5 seconds")
 	}
-	if child.remote != nil {
-		if err := child.remote.Close(); err != nil && !expectedClosedConnError(err) {
-			closeErrs = append(closeErrs, err)
-		}
-	}
-	m.mu.Lock()
-	if _, ok := f.children[child.id]; ok {
-		delete(f.children, child.id)
-		if m.connections > 0 {
-			m.connections--
-		}
-		for _, device := range child.devices {
-			decrement(m.deviceConnections, device)
-		}
-	}
-	m.mu.Unlock()
-	return errors.Join(closeErrs...)
 }
 
 func (m *Manager) terminate(f *activeForward, reason string) error {
-	// Cancellation and listener closure must not wait behind Start's lifecycle
-	// serialization (which can include a durable audit append).
+	// Admission closure and cancellation share reserveChild's mutex so no child
+	// can be published after parent shutdown linearizes.
+	m.mu.Lock()
+	f.closing = true
 	f.cancel()
+	children := make([]*activeChild, 0, len(f.children))
+	for _, child := range f.children {
+		child.cancel()
+		children = append(children, child)
+	}
+	m.mu.Unlock()
 	listenerErr := f.listener.Close()
 	f.lifecycleMu.Lock()
 	f.stopOnce.Do(func() {
-		type childCleanup struct {
-			child  *activeChild
-			local  net.Conn
-			remote net.Conn
-		}
-		m.mu.Lock()
-		children := make([]childCleanup, 0, len(f.children))
-		for _, child := range f.children {
-			child.cancel()
-			children = append(children, childCleanup{child: child, local: child.local, remote: child.remote})
-		}
-		m.mu.Unlock()
-
 		var cleanupErrs []error
 		if listenerErr != nil && !expectedClosedConnError(listenerErr) {
 			cleanupErrs = append(cleanupErrs, listenerErr)
 		}
 
-		// Close the authenticated parent before waiting for children. This
-		// interrupts pending OpenChild operations and blocked stream writes.
+		// Each child has one cleanup owner. Both endpoints close concurrently,
+		// and resource counters remain charged until both Close calls return.
+		for _, child := range children {
+			m.startChildCleanup(f, child)
+		}
+
+		// Parent close interrupts pending destination opens and stream writes.
 		var sessionErr error
 		if f.session != nil {
 			sessionErr = f.session.Close()
-		}
-		for _, child := range children {
-			if child.local != nil {
-				if err := child.local.Close(); err != nil && !expectedClosedConnError(err) {
-					cleanupErrs = append(cleanupErrs, err)
-				}
-			}
-			if child.remote != nil {
-				if err := child.remote.Close(); err != nil && !expectedClosedConnError(err) {
-					cleanupErrs = append(cleanupErrs, err)
-				}
-			}
 		}
 
 		timer := time.NewTimer(5 * time.Second)
@@ -1054,7 +1093,30 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 }
 
 func (m *Manager) record(c Claims, eventType, outcome, reason string) error {
-	return m.audit.Append(audit.Event{
+	if m == nil || m.audit == nil {
+		return ErrAuditIncomplete
+	}
+	m.auditMu.Lock()
+	slots := m.auditSlots
+	if slots == nil {
+		slots = make(chan struct{}, 1)
+		m.auditSlots = slots
+	}
+	timeout := m.auditTimeout
+	if timeout <= 0 {
+		timeout = managerAuditTimeout
+	}
+	writer := m.audit
+	m.auditMu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	select {
+	case slots <- struct{}{}:
+	case <-ctx.Done():
+		return errors.Join(ErrAuditIncomplete, ctx.Err())
+	}
+	event := audit.Event{
 		Type:         eventType,
 		Outcome:      outcome,
 		ActorID:      string(c.InitiatingDevice),
@@ -1064,7 +1126,20 @@ func (m *Manager) record(c Claims, eventType, outcome, reason string) error {
 		ForwardingID: c.ForwardingID,
 		Direction:    string(c.Direction),
 		Destination:  net.JoinHostPort(c.DestinationAddress, strconv.Itoa(int(c.DestinationPort))),
-	})
+	}
+	result := make(chan error, 1)
+	go func() {
+		defer func() { <-slots }()
+		result <- writer.Append(event)
+	}()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		// A stuck writer retains the sole slot; callers cannot spawn unbounded
+		// append workers while this operation remains outstanding.
+		return errors.Join(ErrAuditIncomplete, ctx.Err())
+	}
 }
 
 func (m *Manager) info(f *activeForward) ForwardInfo {
