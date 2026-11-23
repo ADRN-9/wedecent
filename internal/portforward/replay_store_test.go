@@ -28,10 +28,10 @@ func TestAuthorizationIssuerCreatesBoundedSingleUseCapability(t *testing.T) {
 	claims.ExpiresAtUnixMS = 0
 	claims.Route.ExpiresAt = time.Time{}
 	issuer := AuthorizationIssuer{
-		Signer: privateKey,
+		Signer:   privateKey,
 		Lifetime: 30 * time.Second,
-		Now: func() time.Time { return now },
-		Random: bytes.NewReader(bytes.Repeat([]byte{0x42}, 16)),
+		Now:      func() time.Time { return now },
+		Random:   bytes.NewReader(bytes.Repeat([]byte{0x42}, 16)),
 	}
 	auth, err := issuer.Issue(context.Background(), claims)
 	if err != nil {
