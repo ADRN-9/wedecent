@@ -111,7 +111,7 @@ type Manager struct {
 	routerTrustChecker   PeerTrustChecker
 	trustPollInterval    time.Duration
 	trustWatcherDone     chan struct{}
-	backgroundErr       error
+	backgroundErr        error
 	permissionAuthorizer PermissionAuthorizer
 	connector            Connector
 	listenerAuthorizer   ListenerAuthorizer
