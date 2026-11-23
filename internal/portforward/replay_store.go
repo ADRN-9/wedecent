@@ -37,6 +37,13 @@ type replayAnchor struct {
 	Generation uint64 `json:"generation"`
 }
 
+type replayInitialization struct {
+	Version  int    `json:"version"`
+	DeviceID string `json:"device_id"`
+	Status   string `json:"status"`
+	Legacy   bool   `json:"legacy,omitempty"`
+}
+
 // FileReplay provides cross-process, durable, device-scoped single-use JTI
 // consumption. Use a distinct file and local device ID at each endpoint.
 type FileReplay struct {
@@ -44,6 +51,7 @@ type FileReplay struct {
 	DeviceID   mesh.DeviceID
 	MaxEntries int
 	Now        func() time.Time
+	AllowLegacyMigration bool
 }
 
 func NewFileReplay(path string, deviceID mesh.DeviceID) (*FileReplay, error) {
@@ -59,6 +67,10 @@ func NewFileReplay(path string, deviceID mesh.DeviceID) (*FileReplay, error) {
 // NewPersistentAuthorizationVerifier constructs a verifier with durable replay
 // storage scoped to one endpoint identity. The public key is not secret.
 func NewPersistentAuthorizationVerifier(path string, localDeviceID mesh.DeviceID, publicKey ed25519.PublicKey) (*AuthorizationVerifier, error) {
+	return NewPersistentAuthorizationVerifierWithLegacyMigration(path, localDeviceID, publicKey, false)
+}
+
+func NewPersistentAuthorizationVerifierWithLegacyMigration(path string, localDeviceID mesh.DeviceID, publicKey ed25519.PublicKey, allowLegacyMigration bool) (*AuthorizationVerifier, error) {
 	if len(publicKey) != ed25519.PublicKeySize {
 		return nil, ErrAuthorizationInvalid
 	}
@@ -66,6 +78,7 @@ func NewPersistentAuthorizationVerifier(path string, localDeviceID mesh.DeviceID
 	if err != nil {
 		return nil, err
 	}
+	replay.AllowLegacyMigration = allowLegacyMigration
 	return &AuthorizationVerifier{
 		PublicKey: append(ed25519.PublicKey(nil), publicKey...),
 		Replay:    replay,
@@ -105,7 +118,10 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 		return ErrReplayUnavailable
 	}
 
-	unlock, createdLock, err := lockReplayFile(r.Path)
+	if err := ensureReplayInitialization(r.Path, r.DeviceID, r.AllowLegacyMigration); err != nil {
+		return fmt.Errorf("%w: replay initialization: %v", ErrReplayUnavailable, err)
+	}
+	unlock, _, err := lockReplayFile(r.Path)
 	if err != nil {
 		return fmt.Errorf("%w: lock replay store: %v", ErrReplayUnavailable, err)
 	}
@@ -121,7 +137,7 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 		return ErrAuthorizationInvalid
 	}
 
-	snapshot, err := loadReplaySnapshot(r.Path, r.DeviceID, createdLock)
+	snapshot, err := loadReplaySnapshot(r.Path, r.DeviceID, r.AllowLegacyMigration)
 	if err != nil {
 		return fmt.Errorf("%w: read replay store: %v", ErrReplayUnavailable, err)
 	}
@@ -150,61 +166,354 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 	}
 	entries[jti] = expiresAt.UTC().UnixMilli()
 	nextGeneration := snapshot.Generation + 1
-	anchor := replayAnchor{Version: replayStoreVersion, DeviceID: string(r.DeviceID), Generation: nextGeneration}
-	// Persist the monotonic anchor first. A crash can make the store unavailable,
-	// but cannot silently accept an older replay snapshot.
-	if err := writeReplayAnchor(r.Path+".anchor", anchor); err != nil {
-		return fmt.Errorf("%w: persist replay anchor: %v", ErrReplayUnavailable, err)
+	// The staged snapshot is durable before the anchor advances. Startup can
+	// finish this exact transaction after any crash point without resetting
+	// replay history or accepting a previous generation.
+	if err := writeReplayPending(r.Path, r.DeviceID, nextGeneration, entries); err != nil {
+		return fmt.Errorf("%w: stage replay consumption: %v", ErrReplayUnavailable, err)
 	}
-	if err := writeReplayEntries(r.Path, r.DeviceID, nextGeneration, entries); err != nil {
-		return fmt.Errorf("%w: persist replay consumption: %v", ErrReplayUnavailable, err)
+	anchor, err := readReplayAnchor(r.Path+".anchor", r.DeviceID)
+	if err != nil {
+		return fmt.Errorf("%w: read replay anchor before commit: %v", ErrReplayUnavailable, err)
+	}
+	if err := recoverReplayPending(r.Path, r.DeviceID, anchor, false); err != nil {
+		return fmt.Errorf("%w: commit replay consumption: %v", ErrReplayUnavailable, err)
 	}
 	return nil
 }
 
-func loadReplaySnapshot(path string, deviceID mesh.DeviceID, createdLock bool) (replaySnapshot, error) {
-	anchorPath := path + ".anchor"
-	anchor, anchorErr := readReplayAnchor(anchorPath, deviceID)
-	if anchorErr == nil {
-		snapshot, err := readReplaySnapshot(path, deviceID)
+func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacyMigration bool) error {
+	dir := filepath.Dir(path)
+	if err := secureReplayDirectory(dir); err != nil {
+		return err
+	}
+	initPath := path + ".init"
+	marker, err := readReplayInitialization(initPath, deviceID)
+	if err == nil {
+		lockExists, lockErr := replayPathExists(path + ".lock")
+		if lockErr != nil {
+			return lockErr
+		}
+		stateExists, stateErr := replayPathExists(path)
+		if stateErr != nil {
+			return stateErr
+		}
+		anchorExists, anchorErr := replayPathExists(path + ".anchor")
+		if anchorErr != nil {
+			return anchorErr
+		}
+		pendingExists, pendingErr := replayPathExists(path + ".pending")
+		if pendingErr != nil {
+			return pendingErr
+		}
+		if marker.Status == "ready" && !lockExists {
+			return errors.New("replay lock was deleted after initialization")
+		}
+		if marker.Legacy && !lockExists {
+			return errors.New("legacy replay lock is missing")
+		}
+		if marker.Status == "pending" && !lockExists && (stateExists || anchorExists || pendingExists) {
+			return errors.New("replay lock is missing during pending initialization")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+
+	stateExists, err := replayPathExists(path)
+	if err != nil {
+		return err
+	}
+	anchorExists, err := replayPathExists(path + ".anchor")
+	if err != nil {
+		return err
+	}
+	lockExists, err := replayPathExists(path + ".lock")
+	if err != nil {
+		return err
+	}
+	pendingExists, err := replayPathExists(path + ".pending")
+	if err != nil {
+		return err
+	}
+	if anchorExists || pendingExists {
+		return errors.New("replay initialization marker is missing for an anchored or pending store")
+	}
+	if stateExists || lockExists {
+		if !allowLegacyMigration || !stateExists || !lockExists {
+			return errors.New("unmarked replay state cannot be safely initialized or rolled forward")
+		}
+		legacy, readErr := readReplaySnapshot(path, deviceID)
+		if readErr != nil || legacy.Version != legacyReplayStoreVersion {
+			return errors.New("unmarked replay state is not an explicitly permitted legacy store")
+		}
+		return createReplayInitialization(initPath, replayInitialization{
+			Version: replayStoreVersion, DeviceID: string(deviceID), Status: "pending", Legacy: true,
+		})
+	}
+	return createReplayInitialization(initPath, replayInitialization{
+		Version: replayStoreVersion, DeviceID: string(deviceID), Status: "pending",
+	})
+}
+
+func replayPathExists(path string) (bool, error) {
+	_, err := os.Lstat(path)
+	if err == nil {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	return false, err
+}
+
+func createReplayInitialization(path string, marker replayInitialization) error {
+	data, err := json.Marshal(marker)
+	if err != nil {
+		return err
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if errors.Is(err, os.ErrExist) {
+		existing, readErr := readReplayInitialization(path, mesh.DeviceID(marker.DeviceID))
+		if readErr != nil {
+			return readErr
+		}
+		if existing.Version != marker.Version || existing.DeviceID != marker.DeviceID {
+			return errors.New("concurrent replay initialization has a different device scope")
+		}
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := secureReplayFile(path); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	for len(data) > 0 {
+		n, writeErr := file.Write(data)
+		if writeErr != nil {
+			_ = file.Close()
+			_ = os.Remove(path)
+			return writeErr
+		}
+		if n == 0 {
+			_ = file.Close()
+			_ = os.Remove(path)
+			return io.ErrShortWrite
+		}
+		data = data[n:]
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	if err := file.Close(); err != nil {
+		_ = os.Remove(path)
+		return err
+	}
+	return syncReplayDirectory(filepath.Dir(path))
+}
+
+func readReplayInitialization(path string, deviceID mesh.DeviceID) (replayInitialization, error) {
+	data, err := readReplayJSON(path, 4096)
+	if err != nil {
+		return replayInitialization{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var marker replayInitialization
+	if err := decoder.Decode(&marker); err != nil {
+		return replayInitialization{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return replayInitialization{}, errors.New("replay initialization marker contains trailing JSON")
+		}
+		return replayInitialization{}, err
+	}
+	if marker.Version != replayStoreVersion || marker.DeviceID != string(deviceID) ||
+		(marker.Status != "pending" && marker.Status != "ready") {
+		return replayInitialization{}, errors.New("replay initialization marker scope or status mismatch")
+	}
+	return marker, nil
+}
+
+func writeReplayInitialization(path string, marker replayInitialization) error {
+	if marker.Status != "pending" && marker.Status != "ready" {
+		return errors.New("invalid replay initialization status")
+	}
+	return writeReplayJSON(path+".init", marker, ".portforward-init-*", 4096)
+}
+
+func loadReplaySnapshot(path string, deviceID mesh.DeviceID, allowLegacyMigration bool) (replaySnapshot, error) {
+	marker, err := readReplayInitialization(path+".init", deviceID)
+	if err != nil {
+		return replaySnapshot{}, err
+	}
+	if marker.Status == "ready" {
+		anchor, err := readReplayAnchor(path+".anchor", deviceID)
+		if err != nil {
+			return replaySnapshot{}, errors.New("initialized replay anchor is missing or invalid")
+		}
+		if err := recoverReplayPending(path, deviceID, anchor, false); err != nil {
+			return replaySnapshot{}, err
+		}
+		anchor, err = readReplayAnchor(path+".anchor", deviceID)
 		if err != nil {
 			return replaySnapshot{}, err
 		}
-		if snapshot.Version != replayStoreVersion {
-			return replaySnapshot{}, errors.New("replay state version does not match protected anchor")
-		}
-		if snapshot.Generation != anchor.Generation {
-			return replaySnapshot{}, errors.New("replay state generation does not match protected anchor")
+		snapshot, err := readReplaySnapshot(path, deviceID)
+		if err != nil || snapshot.Version != replayStoreVersion || snapshot.Generation != anchor.Generation {
+			return replaySnapshot{}, errors.New("replay state does not match its durable generation anchor")
 		}
 		return snapshot, nil
-	}
-	if !errors.Is(anchorErr, os.ErrNotExist) {
-		return replaySnapshot{}, anchorErr
 	}
 
-	// Existing C93 stores are anchored on first C94 use. Missing state or lock
-	// files after initialization are rejected by the platform lock helper.
-	if !createdLock {
-		snapshot, err := readReplaySnapshot(path, deviceID)
-		if err != nil || snapshot.Version != legacyReplayStoreVersion {
-			return replaySnapshot{}, errors.New("replay anchor is missing for a non-legacy store")
-		}
-		snapshot.Version = replayStoreVersion
-		if err := writeReplayEntries(path, deviceID, snapshot.Generation, snapshot.Entries); err != nil {
-			return replaySnapshot{}, err
-		}
-		anchor := replayAnchor{Version: replayStoreVersion, DeviceID: string(deviceID), Generation: snapshot.Generation}
-		if err := writeReplayAnchor(anchorPath, anchor); err != nil {
-			return replaySnapshot{}, err
-		}
-		return snapshot, nil
-	}
-	if _, err := os.Lstat(path); err == nil {
-		return replaySnapshot{}, errors.New("replay lock was recreated for an existing state file")
-	} else if !errors.Is(err, os.ErrNotExist) {
+	pendingExists, err := replayPathExists(path+".pending")
+	if err != nil {
 		return replaySnapshot{}, err
 	}
-	return replaySnapshot{Version: replayStoreVersion, DeviceID: string(deviceID), Entries: make(map[string]int64)}, nil
+	if pendingExists {
+		anchor, anchorErr := readReplayAnchor(path+".anchor", deviceID)
+		if anchorErr != nil && !errors.Is(anchorErr, os.ErrNotExist) {
+			return replaySnapshot{}, anchorErr
+		}
+		if err := recoverReplayPending(path, deviceID, anchor, true); err != nil {
+			return replaySnapshot{}, err
+		}
+	} else {
+		stateExists, stateErr := replayPathExists(path)
+		if stateErr != nil {
+			return replaySnapshot{}, stateErr
+		}
+		anchorExists, anchorErr := replayPathExists(path+".anchor")
+		if anchorErr != nil {
+			return replaySnapshot{}, anchorErr
+		}
+		if stateExists && anchorExists {
+			anchor, err := readReplayAnchor(path+".anchor", deviceID)
+			if err != nil {
+				return replaySnapshot{}, err
+			}
+			snapshot, err := readReplaySnapshot(path, deviceID)
+			if err != nil || snapshot.Version != replayStoreVersion || snapshot.Generation != anchor.Generation {
+				return replaySnapshot{}, errors.New("pending replay state and anchor are inconsistent")
+			}
+		} else if !stateExists && !anchorExists && !marker.Legacy {
+			empty := make(map[string]int64)
+			if err := writeReplayPending(path, deviceID, 0, empty); err != nil {
+				return replaySnapshot{}, err
+			}
+			if err := recoverReplayPending(path, deviceID, replayAnchor{}, true); err != nil {
+				return replaySnapshot{}, err
+			}
+		} else if marker.Legacy && stateExists && !anchorExists && allowLegacyMigration {
+			legacy, err := readReplaySnapshot(path, deviceID)
+			if err != nil || legacy.Version != legacyReplayStoreVersion {
+				return replaySnapshot{}, errors.New("legacy replay store changed during migration")
+			}
+			if err := writeReplayPending(path, deviceID, 0, legacy.Entries); err != nil {
+				return replaySnapshot{}, err
+			}
+			if err := recoverReplayPending(path, deviceID, replayAnchor{}, true); err != nil {
+				return replaySnapshot{}, err
+			}
+		} else {
+			return replaySnapshot{}, errors.New("pending replay initialization cannot safely recover missing state")
+		}
+	}
+
+	anchor, err := readReplayAnchor(path+".anchor", deviceID)
+	if err != nil {
+		return replaySnapshot{}, err
+	}
+	snapshot, err := readReplaySnapshot(path, deviceID)
+	if err != nil || snapshot.Version != replayStoreVersion || snapshot.Generation != anchor.Generation {
+		return replaySnapshot{}, errors.New("recovered replay state does not match its generation anchor")
+	}
+	marker.Status = "ready"
+	marker.Legacy = false
+	if err := writeReplayInitialization(path, marker); err != nil {
+		return replaySnapshot{}, err
+	}
+	return snapshot, nil
+}
+
+func writeReplayPending(path string, deviceID mesh.DeviceID, generation uint64, entries map[string]int64) error {
+	return writeReplayJSON(path+".pending", replaySnapshot{
+		Version: replayStoreVersion, DeviceID: string(deviceID), Generation: generation, Entries: entries,
+	}, ".portforward-pending-*", maxReplayStoreSize)
+}
+
+func recoverReplayPending(path string, deviceID mesh.DeviceID, anchor replayAnchor, allowMissingAnchor bool) error {
+	pendingPath := path + ".pending"
+	pending, err := readReplaySnapshot(pendingPath, deviceID)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil || pending.Version != replayStoreVersion {
+		return errors.New("pending replay transaction is malformed")
+	}
+	anchorExists, err := replayPathExists(path+".anchor")
+	if err != nil {
+		return err
+	}
+	if !anchorExists && !allowMissingAnchor {
+		return errors.New("initialized replay anchor is missing during transaction recovery")
+	}
+	if anchorExists {
+		anchor, err = readReplayAnchor(path+".anchor", deviceID)
+		if err != nil {
+			return err
+		}
+		if pending.Generation < anchor.Generation || pending.Generation > anchor.Generation+1 {
+			return errors.New("pending replay generation is outside the recoverable window")
+		}
+	} else if pending.Generation > 1 {
+		return errors.New("pending replay generation cannot initialize a missing anchor")
+	}
+
+	state, stateErr := readReplaySnapshot(path, deviceID)
+	stateExists := stateErr == nil
+	if stateErr != nil && !errors.Is(stateErr, os.ErrNotExist) {
+		return stateErr
+	}
+	if stateExists {
+		if state.Version == replayStoreVersion {
+			if state.Generation > pending.Generation || state.Generation+1 < pending.Generation {
+				return errors.New("pending replay transaction would roll back state")
+			}
+		} else if state.Version != legacyReplayStoreVersion {
+			return errors.New("pending replay state has an unsupported version")
+		}
+	}
+	if !anchorExists || anchor.Generation < pending.Generation {
+		if anchorExists && pending.Generation != anchor.Generation+1 {
+			return errors.New("pending replay transaction skipped a generation")
+		}
+		if err := writeReplayAnchor(path+".anchor", replayAnchor{
+			Version: replayStoreVersion, DeviceID: string(deviceID), Generation: pending.Generation,
+		}); err != nil {
+			return err
+		}
+	}
+	if stateExists && state.Version == replayStoreVersion && state.Generation == pending.Generation {
+		if err := os.Remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return syncReplayDirectory(filepath.Dir(path))
+	}
+	return replaceReplayFile(pendingPath, path)
 }
 
 func readReplayAnchor(path string, deviceID mesh.DeviceID) (replayAnchor, error) {
