@@ -26,7 +26,7 @@ func (cfg serveConfig) portForwardConfigured() bool {
 	return strings.TrimSpace(cfg.PortForwardAuthorizationPublicKey) != "" ||
 		strings.TrimSpace(cfg.PortForwardAllowedPorts) != "" ||
 		strings.TrimSpace(cfg.PortForwardAllowedPrivateCIDRs) != "" ||
-		cfg.PortForwardAllowPublic || cfg.PortForwardMaxConnections != 0
+		cfg.PortForwardAllowPublic || cfg.PortForwardMaxConnections != 0 || cfg.PortForwardAllowLegacyReplayMigration
 }
 
 func (cfg serveConfig) validatePortForward() error {
