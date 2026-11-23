@@ -30,18 +30,27 @@ func (r *destinationTestResolver) LookupNetIP(ctx context.Context, network, host
 }
 
 type destinationTestTrust struct {
+	mu      sync.RWMutex
 	trusted map[string]bool
 	err     error
 }
 
-func (t destinationTestTrust) IsTrusted(ctx context.Context, id string) (bool, error) {
+func (t *destinationTestTrust) IsTrusted(ctx context.Context, id string) (bool, error) {
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	t.mu.RLock()
+	defer t.mu.RUnlock()
 	if t.err != nil {
 		return false, t.err
 	}
 	return t.trusted[id], nil
+}
+
+func (t *destinationTestTrust) revoke(id string) {
+	t.mu.Lock()
+	delete(t.trusted, id)
+	t.mu.Unlock()
 }
 
 type destinationTestDialer struct {
@@ -91,7 +100,7 @@ func newDestinationTestConfig(t *testing.T, now time.Time, publicKey ed25519.Pub
 		LocalDeviceID:        testDestination,
 		AuthenticatedPeerID:  testInitiator,
 		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
-		TrustChecker:         destinationTestTrust{trusted: map[string]bool{string(testInitiator): true}},
+		TrustChecker:         &destinationTestTrust{trusted: map[string]bool{string(testInitiator): true}},
 		PermissionAuthorizer: allowPortForwardPermission{},
 		Resolver:             &destinationTestResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}},
 		Dialer:               dialer,
@@ -195,7 +204,7 @@ func TestDestinationSessionRejectsUntrustedAuthenticatedPeerBeforeReplayConsumpt
 	claims := testClaims(now, DirectionLocal)
 	auth, publicKey := signDestinationTestAuthorization(t, claims)
 	cfg, replay, _, _ := newDestinationTestConfig(t, now, publicKey)
-	cfg.TrustChecker = destinationTestTrust{trusted: map[string]bool{}}
+	cfg.TrustChecker = &destinationTestTrust{trusted: map[string]bool{}}
 	if _, err := NewDestinationSession(context.Background(), cfg, auth); !errors.Is(err, ErrPeerNotTrusted) {
 		t.Fatalf("untrusted authenticated peer error = %v", err)
 	}
@@ -235,13 +244,42 @@ func TestDestinationSessionRequiresSeparateRouteAuthorization(t *testing.T) {
 	auth, publicKey := signDestinationTestAuthorization(t, claims)
 	cfg, replay, dialer, _ := newDestinationTestConfig(t, now, publicKey)
 	cfg.AuthenticatedPeerID = testRouter
-	cfg.TrustChecker = destinationTestTrust{trusted: map[string]bool{string(testRouter): true}}
+	cfg.TrustChecker = &destinationTestTrust{trusted: map[string]bool{string(testRouter): true}}
 	if _, err := NewDestinationSession(context.Background(), cfg, auth); !errors.Is(err, ErrRouteAuthorizationRequired) {
 		t.Fatalf("missing route authorization error = %v", err)
 	}
 	if len(replay.used) != 1 || len(dialer.snapshot()) != 0 {
 		t.Fatal("missing route authorization did not fail closed")
 	}
+}
+
+func TestDestinationSessionTrustRevocationClosesChildStreams(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	cfg, _, dialer, _ := newDestinationTestConfig(t, now, publicKey)
+	trustChecker := &destinationTestTrust{trusted: map[string]bool{string(testInitiator): true}}
+	cfg.TrustChecker = trustChecker
+	cfg.TrustPollInterval = 20 * time.Millisecond
+	session, err := NewDestinationSession(context.Background(), cfg, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := session.OpenChild(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	remote := <-dialer.opened
+	trustChecker.revoke(string(testInitiator))
+	select {
+	case <-session.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("destination session did not close after peer trust revocation")
+	}
+	if _, err := child.Write([]byte("after-revocation")); err == nil {
+		t.Fatal("child stream remained writable after peer trust revocation")
+	}
+	_ = remote.Close()
 }
 
 func TestDestinationSessionBoundsChildrenAndExpiresActiveStreams(t *testing.T) {
