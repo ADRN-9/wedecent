@@ -55,6 +55,82 @@ func testClaims(now time.Time, direction Direction) Claims {
 	}
 }
 
+func testRoutedClaims(now time.Time, direction Direction) Claims {
+	claims := testClaims(now, direction)
+	source, destination := claims.Route.Source, claims.Route.Destination
+	claims.Router = testRouter
+	claims.Route.Hops = []mesh.RouteHop{
+		{From: source, To: testRouter, Transport: mesh.TransportName("internet"), Cost: 12},
+		{From: testRouter, To: destination, Transport: mesh.TransportName("internet"), Cost: 13},
+	}
+	return claims
+}
+
+func testRouteAuthorization(t *testing.T, claims Claims) (mesh.RouteAuthorization, ed25519.PublicKey) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	jti, err := mesh.NewRouteAuthorizationJTI()
+	if err != nil {
+		t.Fatal(err)
+	}
+	routeClaims := mesh.NewRouteAuthorizationClaims(
+		claims.Route,
+		claims.Router,
+		jti,
+		time.UnixMilli(claims.IssuedAtUnixMS),
+	)
+	authorization, err := mesh.SignRouteAuthorization(privateKey, "route-key-1", routeClaims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authorization, publicKey
+}
+
+func TestPortForwardRequiresIndependentRouteAuthorization(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testRoutedClaims(now, DirectionLocal)
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := SignAuthorization(privateKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ValidateRouteAuthorizationBinding(auth); !errors.Is(err, ErrRouteAuthorizationRequired) {
+		t.Fatalf("missing route authorization error = %v", err)
+	}
+
+	routeAuth, routePublicKey := testRouteAuthorization(t, claims)
+	auth.RouteAuthorization = routeAuth
+	if err := ValidateRouteAuthorizationBinding(auth); err != nil {
+		t.Fatalf("valid independent route authorization rejected: %v", err)
+	}
+	routeVerifier := mesh.RouteAuthorizationVerifier{
+		KeyID: "route-key-1",
+		PublicKey: routePublicKey,
+		Replay: mesh.NewMemoryRouteAuthorizationReplay(),
+		Now: func() time.Time { return now },
+	}
+	if err := routeVerifier.VerifyAndConsume(context.Background(), routeAuth, claims.Route, claims.Router); err != nil {
+		t.Fatalf("routing trust-domain verification failed: %v", err)
+	}
+
+	changed := cloneAuthorization(auth)
+	changed.RouteAuthorization.Claims.Route.Hops[0].Cost++
+	if err := ValidateRouteAuthorizationBinding(changed); !errors.Is(err, ErrRouteAuthorizationMismatch) {
+		t.Fatalf("mismatched route authorization error = %v", err)
+	}
+	changed = cloneAuthorization(auth)
+	changed.RouteAuthorization.Signature = "invalid"
+	if err := routeVerifier.VerifyAndConsume(context.Background(), changed.RouteAuthorization, claims.Route, claims.Router); !errors.Is(err, mesh.ErrRouteAuthorizationSignature) {
+		t.Fatalf("tampered route signature error = %v", err)
+	}
+}
+
 func TestAuthorizationRejectsMissingCapability(t *testing.T) {
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
