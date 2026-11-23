@@ -344,6 +344,13 @@ func (c *webRelaySignalWriteConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
+func (c *webRelaySignalWriteConn) NetConn() net.Conn {
+	if unwrapped, ok := c.Conn.(interface{ NetConn() net.Conn }); ok {
+		return unwrapped.NetConn()
+	}
+	return c.Conn
+}
+
 func TestWebSocketTransportAbortInterruptsBlockedWrite(t *testing.T) {
 	local, peer := net.Pipe()
 	raw := &webRelaySignalWriteConn{Conn: &webRelayWrappedNetConn{Conn: local}, started: make(chan struct{})}
