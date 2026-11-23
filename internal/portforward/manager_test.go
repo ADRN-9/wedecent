@@ -423,3 +423,34 @@ func TestManagerLimitsArePositiveAndBounded(t *testing.T) {
 		t.Fatalf("NewManager error = %v", err)
 	}
 }
+
+func TestManagerConnectionAuditFailureTerminatesForward(t *testing.T) {
+	claims := testClaims(time.Now().UTC().Truncate(time.Millisecond), DirectionLocal)
+	log := &memoryAudit{failType: "port_forward.connection_opened", failOutcome: "attempt"}
+	manager, auth, listener := newManagerForTest(t, testInitiator, claims, &pipeConnector{}, log, nil, nil)
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+	client, core := net.Pipe()
+	if !listener.inject(core) {
+		t.Fatal("listener closed before accept")
+	}
+	select {
+	case <-listener.closed:
+	case <-time.After(time.Second):
+		t.Fatal("listener remained active after audit persistence failure")
+	}
+	deadline := time.After(time.Second)
+	for len(manager.List()) != 0 {
+		select {
+		case <-deadline:
+			t.Fatal("forward remained registered after audit persistence failure")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	_ = client.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := client.Read(make([]byte, 1)); err == nil {
+		t.Fatal("child connection survived audit persistence failure")
+	}
+	_ = client.Close()
+}

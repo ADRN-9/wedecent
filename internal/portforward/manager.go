@@ -464,6 +464,7 @@ func (m *Manager) reserveChild(f *activeForward, local net.Conn) (*activeChild, 
 func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 	defer func() { m.releaseChild(f, child); close(child.done) }()
 	if err := m.record(f.claims, "port_forward.connection_opened", "attempt", ""); err != nil {
+		go m.terminate(f, "audit_persistence_failed")
 		return
 	}
 	dialCtx, cancel := context.WithTimeout(child.ctx, m.limits.DialTimeout)
@@ -477,7 +478,9 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 		if remote != nil {
 			_ = remote.Close()
 		}
-		_ = m.record(f.claims, "port_forward.connection_opened", "failed", "destination_open_failed")
+		if auditErr := m.record(f.claims, "port_forward.connection_opened", "failed", "destination_open_failed"); auditErr != nil {
+			go m.terminate(f, "audit_persistence_failed")
+		}
 		return
 	}
 	m.mu.Lock()
@@ -489,6 +492,7 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 	child.remote = remote
 	m.mu.Unlock()
 	if err := m.record(f.claims, "port_forward.connection_opened", "success", ""); err != nil {
+		go m.terminate(f, "audit_persistence_failed")
 		return
 	}
 	idle := time.Duration(f.claims.Limits.IdleTimeoutSeconds) * time.Second
@@ -500,7 +504,9 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 	if err != nil {
 		reason, outcome = "connection_failed", "failed"
 	}
-	_ = m.record(f.claims, "port_forward.connection_closed", outcome, reason)
+	if err := m.record(f.claims, "port_forward.connection_closed", outcome, reason); err != nil {
+		go m.terminate(f, "audit_persistence_failed")
+	}
 }
 
 func (m *Manager) releaseChild(f *activeForward, child *activeChild) {
