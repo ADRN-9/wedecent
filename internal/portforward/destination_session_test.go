@@ -691,9 +691,14 @@ func TestDestinationSessionCloseBoundsBlockedChildClose(t *testing.T) {
 		t.Fatal("destination child close did not reach the blocking connection")
 	}
 	select {
+	case <-child.Done():
+	case <-time.After(20 * time.Millisecond):
+		t.Fatal("child cancellation was not signalled before blocked connection cleanup")
+	}
+	select {
 	case err := <-closeDone:
-		if err == nil {
-			t.Fatal("destination session hid the blocked child cleanup timeout")
+		if !errors.Is(err, ErrDestinationCleanupIncomplete) {
+			t.Fatalf("destination session close error = %v, want bounded cleanup timeout", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("destination session close waited indefinitely for a blocked child close")
@@ -750,3 +755,86 @@ func TestAppendDestinationAuditUntilExpiredDeadlineDoesNotInvokeWriter(t *testin
 	default:
 	}
 }
+
+
+type blockingDestinationSuccessAudit struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (a *blockingDestinationSuccessAudit) Append(event audit.Event) error {
+	if event.Type == "port_forward.destination_child" && event.Outcome == "success" {
+		a.once.Do(func() {
+			close(a.started)
+			<-a.release
+		})
+	}
+	return nil
+}
+
+func TestDestinationSessionRevocationCancelsChildBeforeBlockedAuditCompletes(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	cfg, _, dialer, _ := newDestinationTestConfig(t, now, publicKey)
+	cfg.TrustPollInterval = 10 * time.Millisecond
+	auditLog := &blockingDestinationSuccessAudit{
+		started: make(chan struct{}), release: make(chan struct{}),
+	}
+	cfg.Audit = auditLog
+	session, err := NewDestinationSession(context.Background(), cfg, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.closeTimeout = 100 * time.Millisecond
+	released := false
+	defer func() {
+		if !released {
+			close(auditLog.release)
+		}
+	}()
+
+	openDone := make(chan error, 1)
+	go func() {
+		_, err := session.OpenChild(context.Background())
+		openDone <- err
+	}()
+	select {
+	case <-auditLog.started:
+	case <-time.After(time.Second):
+		t.Fatal("child open did not reach the blocked success audit append")
+	}
+	remote := <-dialer.opened
+	defer remote.Close()
+
+	cfg.TrustChecker.(*destinationTestTrust).revoke(string(testInitiator))
+	select {
+	case <-session.Done():
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("revocation did not signal destination-session cancellation promptly")
+	}
+	select {
+	case err := <-openDone:
+		if !errors.Is(err, ErrDestinationAuditIncomplete) {
+			t.Fatalf("child open error = %v, want canceled audit operation", err)
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("blocked child audit append prevented child-open cancellation")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- session.Close() }()
+	select {
+	case err := <-closeDone:
+		if err == nil {
+			t.Fatal("session close hid the in-flight audit dependency")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("session close waited indefinitely for the blocked audit append")
+	}
+
+	close(auditLog.release)
+	released = true
+}
+
