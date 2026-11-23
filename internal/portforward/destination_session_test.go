@@ -2,7 +2,6 @@ package portforward
 
 import (
 	"context"
-	"wedecent.com/wedecent/internal/audit"
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
@@ -12,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"wedecent.com/wedecent/internal/audit"
 )
 
 type destinationTestResolver struct {
