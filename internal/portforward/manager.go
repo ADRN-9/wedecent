@@ -204,6 +204,9 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	if !sameClaims(claims, verified) {
 		return ForwardInfo{}, ErrAuthorizationMismatch
 	}
+	if err := ValidateRouteAuthorizationBinding(auth); err != nil {
+		return ForwardInfo{}, err
+	}
 	if err := m.permissionAuthorizer.AuthorizePortForward(ctx, claims); err != nil {
 		if auditErr := m.record(claims, "port_forward.start", "denied", "permission_denied"); auditErr != nil {
 			return ForwardInfo{}, auditErr
