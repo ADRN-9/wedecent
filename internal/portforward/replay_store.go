@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -129,6 +131,9 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if err := cleanupReplayStaging(r.Path); err != nil {
+		return errors.Join(ErrReplayUnavailable, fmt.Errorf("clean replay staging files: %w", err))
+	}
 	now = replayStoreNow(r)
 	if !expiresAt.After(now) {
 		return ErrAuthorizationExpired
@@ -193,6 +198,9 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 		return fmt.Errorf("lock replay store initialization: %w", err)
 	}
 	defer unlockReplay()
+	if err := cleanupReplayStaging(path); err != nil {
+		return fmt.Errorf("clean replay staging files: %w", err)
+	}
 	marker, err := readReplayInitializationLocked(initPath, deviceID)
 	if err == nil {
 		if lockCreated {
@@ -256,11 +264,11 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 		if readErr != nil || legacy.Version != legacyReplayStoreVersion {
 			return errors.New("unmarked replay state is not an explicitly permitted legacy store")
 		}
-		return createReplayInitialization(initPath, replayInitialization{
+		return createReplayInitialization(path, replayInitialization{
 			Version: replayStoreVersion, DeviceID: string(deviceID), Status: "pending", Legacy: true,
 		})
 	}
-	return createReplayInitialization(initPath, replayInitialization{
+	return createReplayInitialization(path, replayInitialization{
 		Version: replayStoreVersion, DeviceID: string(deviceID), Status: "pending",
 	})
 }
@@ -282,52 +290,46 @@ func createReplayInitialization(path string, marker replayInitialization) error 
 		return err
 	}
 	dir := filepath.Dir(path)
-	file, err := os.CreateTemp(dir, ".portforward-init-*")
+	file, err := os.CreateTemp(dir, replayStagingPattern(path, "init"))
 	if err != nil {
 		return err
 	}
 	tempPath := file.Name()
-	cleanup := func() {
-		_ = file.Close()
-		_ = os.Remove(tempPath)
+	cleanup := func(primary error) error {
+		return cleanupReplayTemp(primary, file, tempPath)
 	}
 	if err := file.Chmod(0o600); err != nil {
-		cleanup()
-		return err
+		return cleanup(err)
 	}
 	if err := setReplayFileOwner(tempPath); err != nil {
-		cleanup()
-		return fmt.Errorf("set initial replay marker owner: %w", err)
+		return cleanup(fmt.Errorf("set initial replay marker owner: %w", err))
 	}
 	if err := secureReplayFile(tempPath); err != nil {
-		cleanup()
-		return err
+		return cleanup(err)
 	}
 	for len(data) > 0 {
 		n, writeErr := file.Write(data)
 		if writeErr != nil {
-			cleanup()
-			return writeErr
+			return cleanup(writeErr)
 		}
 		if n == 0 {
-			cleanup()
-			return io.ErrShortWrite
+			return cleanup(io.ErrShortWrite)
 		}
 		data = data[n:]
 	}
 	if err := file.Sync(); err != nil {
-		cleanup()
-		return err
+		return cleanup(err)
 	}
 	if err := file.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return err
+		return cleanupReplayTemp(err, nil, tempPath)
 	}
-	if err := createReplayFileExclusive(tempPath, path); errors.Is(err, os.ErrExist) {
-		_ = os.Remove(tempPath)
+	if err := createReplayFileExclusive(tempPath, path+".init"); errors.Is(err, os.ErrExist) {
+		if cleanupErr := removeReplayTemp(tempPath); cleanupErr != nil {
+			return errors.Join(err, cleanupErr)
+		}
 		var existing replayInitialization
 		for attempt := 0; attempt < 5; attempt++ {
-			existing, err = readReplayInitializationLocked(path, mesh.DeviceID(marker.DeviceID))
+			existing, err = readReplayInitializationLocked(path+".init", mesh.DeviceID(marker.DeviceID))
 			if err == nil {
 				break
 			}
@@ -341,8 +343,7 @@ func createReplayInitialization(path string, marker replayInitialization) error 
 		}
 		return nil
 	} else if err != nil {
-		_ = os.Remove(tempPath)
-		return err
+		return cleanupReplayTemp(err, nil, tempPath)
 	}
 	return nil
 }
@@ -377,7 +378,7 @@ func writeReplayInitialization(path string, marker replayInitialization) error {
 	if marker.Status != "pending" && marker.Status != "ready" {
 		return errors.New("invalid replay initialization status")
 	}
-	return writeReplayJSON(path+".init", marker, ".portforward-init-*", 4096)
+	return writeReplayJSON(path+".init", marker, replayStagingPattern(path, "init"), 4096)
 }
 
 func loadReplaySnapshot(path string, deviceID mesh.DeviceID, allowLegacyMigration bool) (replaySnapshot, error) {
@@ -478,7 +479,7 @@ func loadReplaySnapshot(path string, deviceID mesh.DeviceID, allowLegacyMigratio
 func writeReplayPending(path string, deviceID mesh.DeviceID, generation uint64, entries map[string]int64) error {
 	return writeReplayJSON(path+".pending", replaySnapshot{
 		Version: replayStoreVersion, DeviceID: string(deviceID), Generation: generation, Entries: entries,
-	}, ".portforward-pending-*", maxReplayStoreSize)
+	}, replayStagingPattern(path, "pending"), maxReplayStoreSize)
 }
 
 func recoverReplayPending(path string, deviceID mesh.DeviceID, anchor replayAnchor, allowMissingAnchor bool) error {
@@ -635,13 +636,13 @@ func readReplayJSON(path string, maxSize int64) ([]byte, error) {
 }
 
 func writeReplayAnchor(path string, anchor replayAnchor) error {
-	return writeReplayJSON(path, anchor, ".portforward-anchor-*", 4096)
+	return writeReplayJSON(path, anchor, replayStagingPattern(path, "anchor"), 4096)
 }
 
 func writeReplayEntries(path string, deviceID mesh.DeviceID, generation uint64, entries map[string]int64) error {
 	return writeReplayJSON(path, replaySnapshot{
 		Version: replayStoreVersion, DeviceID: string(deviceID), Generation: generation, Entries: entries,
-	}, ".portforward-replay-*", maxReplayStoreSize)
+	}, replayStagingPattern(path, "replay"), maxReplayStoreSize)
 }
 
 func writeReplayJSON(path string, value any, pattern string, maxSize int64) error {
@@ -661,47 +662,139 @@ func writeReplayJSON(path string, value any, pattern string, maxSize int64) erro
 		return err
 	}
 	tempPath := file.Name()
-	cleanup := func() {
-		_ = file.Close()
-		_ = os.Remove(tempPath)
+	cleanup := func(primary error) error {
+		return cleanupReplayTemp(primary, file, tempPath)
 	}
 	if err := file.Chmod(0o600); err != nil {
-		cleanup()
-		return err
+		return cleanup(err)
 	}
 	if err := setReplayFileOwner(tempPath); err != nil {
-		cleanup()
-		return fmt.Errorf("set replay file owner: %w", err)
+		return cleanup(fmt.Errorf("set replay file owner: %w", err))
 	}
 	if err := secureReplayFile(tempPath); err != nil {
-		cleanup()
-		return err
+		return cleanup(err)
 	}
 	for len(data) > 0 {
 		n, writeErr := file.Write(data)
 		if writeErr != nil {
-			cleanup()
-			return writeErr
+			return cleanup(writeErr)
 		}
 		if n == 0 {
-			cleanup()
-			return io.ErrShortWrite
+			return cleanup(io.ErrShortWrite)
 		}
 		data = data[n:]
 	}
 	if err := file.Sync(); err != nil {
-		cleanup()
-		return err
+		return cleanup(err)
 	}
 	if err := file.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return err
+		return cleanupReplayTemp(err, nil, tempPath)
 	}
 	if err := replaceReplayFile(tempPath, path); err != nil {
-		_ = os.Remove(tempPath)
-		return err
+		return cleanupReplayTemp(err, nil, tempPath)
 	}
 	return nil
+}
+
+// replayStagingPrefix isolates temporary files belonging to one replay store.
+func replayStagingPrefix(path string) string {
+	digest := sha256.Sum256([]byte(filepath.Clean(path)))
+	return ".portforward-" + hex.EncodeToString(digest[:16]) + "-"
+}
+
+func replayStagingPattern(path, kind string) string {
+	return replayStagingPrefix(path) + kind + "-*"
+}
+
+func validReplayStagingSuffix(suffix string) bool {
+	if len(suffix) == 0 || len(suffix) > 64 {
+		return false
+	}
+	for _, char := range suffix {
+		if !((char >= 'a' && char <= 'z') ||
+			(char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9')) {
+			return false
+		}
+	}
+	return true
+}
+
+// cleanupReplayStaging must run while the replay store's cross-process lock is held.
+// Only recognized, private, regular staging files for this exact store are removed.
+// Durable path+".pending" recovery records and files belonging to other stores are untouched.
+// Legacy unscoped temporary names are not swept because their store ownership is ambiguous.
+func cleanupReplayStaging(path string) error {
+	return cleanupReplayStagingWith(path, os.Remove)
+}
+
+func cleanupReplayStagingWith(path string, remove func(string) error) error {
+	dir := filepath.Dir(path)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return fmt.Errorf("read replay staging directory: %w", err)
+	}
+	prefix := replayStagingPrefix(path)
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		kind, suffix, ok := strings.Cut(strings.TrimPrefix(name, prefix), "-")
+		if !ok || !validReplayStagingSuffix(suffix) {
+			return fmt.Errorf("unexpected replay staging filename %q", name)
+		}
+		switch kind {
+		case "init", "anchor", "replay", "pending":
+		default:
+			return fmt.Errorf("unexpected replay staging kind %q", kind)
+		}
+
+		tempPath := filepath.Join(dir, name)
+		info, err := os.Lstat(tempPath)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return fmt.Errorf("inspect replay staging file %s: %w", name, err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return fmt.Errorf("replay staging entry %s is not a regular file", name)
+		}
+		if err := secureReplayFile(tempPath); err != nil {
+			return fmt.Errorf("refuse insecure replay staging file %s: %w", name, err)
+		}
+		if err := removeReplayTempWith(tempPath, remove); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func removeReplayTemp(path string) error {
+	return removeReplayTempWith(path, os.Remove)
+}
+
+func removeReplayTempWith(path string, remove func(string) error) error {
+	if err := remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove replay staging file %s: %w", filepath.Base(path), err)
+	}
+	return nil
+}
+
+func cleanupReplayTemp(primary error, file *os.File, path string) error {
+	return cleanupReplayTempWith(primary, file, path, os.Remove)
+}
+
+func cleanupReplayTempWith(primary error, file *os.File, path string, remove func(string) error) error {
+	var cleanupErr error
+	if file != nil {
+		if err := file.Close(); err != nil {
+			cleanupErr = fmt.Errorf("close replay staging file %s: %w", filepath.Base(path), err)
+		}
+	}
+	cleanupErr = errors.Join(cleanupErr, removeReplayTempWith(path, remove))
+	return errors.Join(primary, cleanupErr)
 }
 
 func replayStoreNow(replay *FileReplay) time.Time {

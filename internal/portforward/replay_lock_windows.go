@@ -170,37 +170,37 @@ func openReplayLockFile(lockPath string) (*os.File, bool, error) {
 		return nil, false, err
 	}
 	tempPath := temp.Name()
-	cleanup := func() {
-		_ = temp.Close()
-		_ = os.Remove(tempPath)
+	cleanup := func(primary error) error {
+		return cleanupReplayTemp(primary, temp, tempPath)
 	}
 	if err := temp.Chmod(0o600); err != nil {
-		cleanup()
-		return nil, false, err
+		return nil, false, cleanup(err)
 	}
 	if err := setReplayFileOwner(tempPath); err != nil {
-		cleanup()
-		return nil, false, fmt.Errorf("set replay lock owner: %w", err)
+		return nil, false, cleanup(fmt.Errorf("set replay lock owner: %w", err))
 	}
 	if err := secureReplayFile(tempPath); err != nil {
-		cleanup()
-		return nil, false, err
+		return nil, false, cleanup(err)
 	}
 	if err := temp.Sync(); err != nil {
-		cleanup()
-		return nil, false, err
+		return nil, false, cleanup(err)
 	}
 	if err := temp.Close(); err != nil {
-		_ = os.Remove(tempPath)
-		return nil, false, err
+		return nil, false, cleanupReplayTemp(err, nil, tempPath)
 	}
 	if err := createReplayFileExclusive(tempPath, lockPath); err != nil {
-		_ = os.Remove(tempPath)
+		cleanupErr := removeReplayTemp(tempPath)
 		if os.IsExist(err) {
 			file, openErr := openReplayLockHandle(lockPath)
+			if cleanupErr != nil {
+				if file != nil {
+					cleanupErr = errors.Join(cleanupErr, file.Close())
+				}
+				return nil, false, errors.Join(cleanupErr, openErr)
+			}
 			return file, false, openErr
 		}
-		return nil, false, err
+		return nil, false, errors.Join(err, cleanupErr)
 	}
 	file, err := openReplayLockHandle(lockPath)
 	if err != nil {

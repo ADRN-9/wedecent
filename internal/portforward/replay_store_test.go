@@ -866,3 +866,285 @@ func TestFileReplayInitializationCrashHelper(t *testing.T) {
 	}
 	select {}
 }
+func TestFileReplayCleansOrphanedStagingFilesAndPreservesDurablePendingState(t *testing.T) {
+	path := newReplayTestPath(t)
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	pendingJTI := base64.RawURLEncoding.EncodeToString([]byte("pendingstate0001"))
+	nextJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
+	expiry := time.Now().UTC().Add(time.Minute)
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, expiry); err != nil {
+		t.Fatalf("initialize replay store: %v", err)
+	}
+
+	snapshot, err := readReplaySnapshot(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingEntries := make(map[string]int64, len(snapshot.Entries)+1)
+	for jti, expiresAt := range snapshot.Entries {
+		pendingEntries[jti] = expiresAt
+	}
+	pendingEntries[pendingJTI] = expiry.UnixMilli()
+	if err := writeReplayPending(path, testInitiator, snapshot.Generation+1, pendingEntries); err != nil {
+		t.Fatalf("publish durable pending transaction: %v", err)
+	}
+
+	var orphaned []string
+	for _, kind := range []string{"init", "anchor", "replay", "pending"} {
+		orphaned = append(orphaned, createReplayStagingTestFile(t, path, kind))
+	}
+	otherStorePath := filepath.Join(filepath.Dir(path), "other-replay.json")
+	otherStoreStaging := createReplayStagingTestFile(t, otherStorePath, "replay")
+
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), nextJTI, expiry); err != nil {
+		t.Fatalf("consume after orphan cleanup and pending recovery: %v", err)
+	}
+	for _, tempPath := range orphaned {
+		if _, err := os.Lstat(tempPath); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("orphaned staging file %s remains: %v", filepath.Base(tempPath), err)
+		}
+	}
+	if _, err := os.Lstat(otherStoreStaging); err != nil {
+		t.Fatalf("cleanup removed another replay store's staging file: %v", err)
+	}
+	if _, err := os.Lstat(path + ".pending"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("durable pending transaction was not recovered: %v", err)
+	}
+
+	recovered, err := readReplaySnapshot(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, jti := range []string{firstJTI, pendingJTI, nextJTI} {
+		if _, ok := recovered.Entries[jti]; !ok {
+			t.Errorf("replay recovery lost committed JTI %s", jti)
+		}
+	}
+	if recovered.Generation != snapshot.Generation+2 {
+		t.Fatalf("replay generation = %d, want %d", recovered.Generation, snapshot.Generation+2)
+	}
+}
+
+func TestFileReplayStagingCleanupReportsRemovalFailures(t *testing.T) {
+	path := newReplayTestPath(t)
+	tempPath := createReplayStagingTestFile(t, path, "replay")
+	unlock, _, err := lockReplayFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removeFailure := errors.New("injected staging removal failure")
+	err = cleanupReplayStagingWith(path, func(string) error { return removeFailure })
+	unlock()
+	if !errors.Is(err, removeFailure) {
+		t.Fatalf("staging cleanup error = %v, want injected removal failure", err)
+	}
+	if _, err := os.Stat(tempPath); err != nil {
+		t.Fatalf("failed removal unexpectedly removed staging file: %v", err)
+	}
+
+	primaryFailure := errors.New("primary replay write failure")
+	file, err := os.OpenFile(tempPath, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := cleanupReplayTempWith(primaryFailure, file, tempPath, func(string) error {
+		return removeFailure
+	})
+	if !errors.Is(joined, primaryFailure) || !errors.Is(joined, removeFailure) {
+		t.Fatalf("cleanup did not preserve both primary and removal errors: %v", joined)
+	}
+}
+
+func TestFileReplayStagingCleanupRejectsUnexpectedEntriesWithoutChangingState(t *testing.T) {
+	tests := []struct {
+		name      string
+		entry     string
+		directory bool
+	}{
+		{name: "unknown_kind", entry: "unexpected-123"},
+		{name: "malformed_suffix", entry: "init-!!!"},
+		{name: "non_regular_entry", entry: "replay-123", directory: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path := newReplayTestPath(t)
+			replay, err := NewFileReplay(path, testInitiator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			firstJTI := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+			nextJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
+			expiry := time.Now().UTC().Add(time.Minute)
+			if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, expiry); err != nil {
+				t.Fatal(err)
+			}
+			before, err := readReplaySnapshot(path, testInitiator)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			entryPath := filepath.Join(filepath.Dir(path), replayStagingPrefix(path)+test.entry)
+			if test.directory {
+				if err := os.Mkdir(entryPath, 0o700); err != nil {
+					t.Fatal(err)
+				}
+			} else if err := os.WriteFile(entryPath, []byte("unexpected staging metadata"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			err = replay.ConsumePortForwardAuthorization(context.Background(), nextJTI, expiry)
+			if !errors.Is(err, ErrReplayUnavailable) {
+				t.Fatalf("malformed staging entry error = %v, want fail-closed ErrReplayUnavailable", err)
+			}
+			after, err := readReplaySnapshot(path, testInitiator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if after.Generation != before.Generation || len(after.Entries) != len(before.Entries) {
+				t.Fatalf("malformed staging entry changed replay state: before=%#v after=%#v", before, after)
+			}
+			if _, ok := after.Entries[firstJTI]; !ok {
+				t.Fatal("malformed staging entry cleanup lost existing replay state")
+			}
+			if _, ok := after.Entries[nextJTI]; ok {
+				t.Fatal("authorization was consumed despite malformed staging metadata")
+			}
+			if _, err := os.Lstat(entryPath); err != nil {
+				t.Fatalf("unexpected staging entry was removed: %v", err)
+			}
+		})
+	}
+}
+
+func TestFileReplayConcurrentInitializationAndStagingCleanup(t *testing.T) {
+	path := newReplayTestPath(t)
+	orphan := createReplayStagingTestFile(t, path, "anchor")
+	const workers = 24
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	failures := make([]error, 0)
+	expiry := time.Now().UTC().Add(time.Minute)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			replay, err := NewFileReplay(path, testInitiator)
+			if err == nil {
+				raw := make([]byte, 16)
+				raw[0], raw[1] = byte(index), byte(index>>8)
+				jti := base64.RawURLEncoding.EncodeToString(raw)
+				err = replay.ConsumePortForwardAuthorization(context.Background(), jti, expiry)
+			}
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, err)
+				mu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if len(failures) != 0 {
+		t.Fatalf("concurrent initialization/cleanup failures: %v", failures)
+	}
+	snapshot, err := readReplaySnapshot(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Entries) != workers || snapshot.Generation != workers {
+		t.Fatalf("concurrent replay state entries=%d generation=%d, want %d", len(snapshot.Entries), snapshot.Generation, workers)
+	}
+	if _, err := os.Lstat(orphan); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("concurrent cleanup left orphan staging file: %v", err)
+	}
+}
+
+func TestFileReplayStagingCleanupWaitsForActiveStoreLock(t *testing.T) {
+	path := newReplayTestPath(t)
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, _, err := lockReplayFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	activeStaging := createReplayStagingTestFile(t, path, "replay")
+	done := make(chan error, 1)
+	started := make(chan struct{})
+	go func() {
+		close(started)
+		done <- replay.ConsumePortForwardAuthorization(
+			context.Background(),
+			base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210")),
+			time.Now().UTC().Add(time.Minute),
+		)
+	}()
+	<-started
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		replayProcessLocks.Lock()
+		lock := replayProcessLocks.byPath[filepath.Clean(path)]
+		refs := 0
+		if lock != nil {
+			refs = lock.refs
+		}
+		replayProcessLocks.Unlock()
+		if refs >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			unlock()
+			<-done
+			t.Fatal("concurrent replay operation did not wait on the held store lock")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case err := <-done:
+		unlock()
+		t.Fatalf("replay operation completed while store lock was held: %v", err)
+	default:
+	}
+	if _, err := os.Stat(activeStaging); err != nil {
+		unlock()
+		<-done
+		t.Fatalf("active staging file was removed before lock release: %v", err)
+	}
+
+	unlock()
+	if err := <-done; err != nil {
+		t.Fatalf("replay operation after lock release: %v", err)
+	}
+	if _, err := os.Lstat(activeStaging); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan staging file was not cleaned after lock release: %v", err)
+	}
+}
+
+func createReplayStagingTestFile(t *testing.T, path, kind string) string {
+	t.Helper()
+	file, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, kind))
+	if err != nil {
+		t.Fatalf("create %s replay staging fixture: %v", kind, err)
+	}
+	if _, err := file.Write([]byte("interrupted staging contents")); err != nil {
+		closeErr := file.Close()
+		t.Fatalf("write %s replay staging fixture: %v (close: %v)", kind, err, closeErr)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close %s replay staging fixture: %v", kind, err)
+	}
+	return file.Name()
+}
