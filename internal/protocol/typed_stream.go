@@ -11,6 +11,8 @@ type StreamKind string
 
 const (
 	StreamKindTerminal               StreamKind = "terminal"
+	StreamKindPortForwardParent      StreamKind = "port-forward-parent"
+	StreamKindPortForwardChild       StreamKind = "port-forward-child"
 	MinTypedStreamID                 uint32     = 2
 	MaxTypedStreamChunk                         = 64 << 10
 	MaxTypedStreamWindow                        = 1 << 20
@@ -50,6 +52,10 @@ type StreamWindowUpdate struct {
 type StreamClose struct {
 	Reason string `json:"reason,omitempty"`
 }
+
+// StreamHalfClose signals that the sender will send no more data on this
+// stream. The opposite direction remains open until separately closed.
+type StreamHalfClose struct{}
 
 type StreamError struct {
 	Code    string `json:"code"`
@@ -104,6 +110,42 @@ func ValidateStreamOpen(streamID uint32, open StreamOpen) error {
 	}
 	if len(open.Term) > MaxTypedStreamTermLength {
 		return errors.New("terminal stream type is too long")
+	}
+	return nil
+}
+
+func ValidatePortForwardParentOpen(streamID uint32, open StreamOpen) error {
+	if err := validateStreamOpenWindow(streamID, open); err != nil {
+		return err
+	}
+	if open.Kind != StreamKindPortForwardParent || open.Cols != 0 || open.Rows != 0 || open.Term != "" {
+		return errors.New("invalid port forwarding parent stream open")
+	}
+	if len(open.Metadata) == 0 || len(open.Metadata) > MaxTypedStreamOpenMetadata {
+		return errors.New("port forwarding parent metadata is out of range")
+	}
+	return nil
+}
+
+func ValidatePortForwardChildOpen(streamID uint32, open StreamOpen) error {
+	if err := validateStreamOpenWindow(streamID, open); err != nil {
+		return err
+	}
+	if open.Kind != StreamKindPortForwardChild || open.Cols != 0 || open.Rows != 0 || open.Term != "" {
+		return errors.New("invalid port forwarding child stream open")
+	}
+	if len(open.Metadata) == 0 || len(open.Metadata) > MaxTypedStreamOpenMetadata {
+		return errors.New("port forwarding child metadata is out of range")
+	}
+	return nil
+}
+
+func ValidateStreamHalfClose(streamID uint32, payload []byte) error {
+	if err := validateTypedStreamID(streamID); err != nil {
+		return err
+	}
+	if len(payload) != 0 {
+		return errors.New("typed stream half-close payload must be empty")
 	}
 	return nil
 }
