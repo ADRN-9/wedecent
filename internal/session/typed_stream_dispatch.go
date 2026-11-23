@@ -17,9 +17,13 @@ func routeTypedApplicationFrame(
 	registry *typedParentStreamRegistry,
 	terminalServer *typedTerminalServer,
 	fileServer *typedFileServer,
-	forwardServer *typedPortForwardServer,
 	frame protocol.Frame,
+	forwardServers ...*typedPortForwardServer,
 ) (bool, error) {
+	var forwardServer *typedPortForwardServer
+	if len(forwardServers) > 0 {
+		forwardServer = forwardServers[0]
+	}
 	if !isTypedTerminalFrame(frame.Type) {
 		return false, nil
 	}
