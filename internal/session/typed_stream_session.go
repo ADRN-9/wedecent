@@ -151,7 +151,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 			}
 			return
 		case frame := <-frameCh:
-			handled, err := routeTypedApplicationFrame(sessionCtx, capabilities, registry, typedServer, fileServer, forwardServer, frame)
+			handled, err := routeTypedApplicationFrame(sessionCtx, capabilities, registry, typedServer, fileServer, frame, forwardServer)
 			if handled {
 				if err != nil {
 					closeReason = "typed_stream_protocol_error"
