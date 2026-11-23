@@ -199,11 +199,13 @@ func TestFileReplayConcurrentInitializationAcrossProcesses(t *testing.T) {
 		barrier := path + ".start"
 		expiry := time.Now().UTC().Add(time.Minute).UnixMilli()
 		roundChildren := make([]*childProcess, 0, workers)
+		jtis := make([]string, 0, workers)
 
 		for i := 0; i < workers; i++ {
 			raw := make([]byte, 16)
 			raw[0], raw[1] = byte(round+1), byte(i+1)
 			jti := base64.RawURLEncoding.EncodeToString(raw)
+			jtis = append(jtis, jti)
 			cmd := exec.Command(os.Args[0], "-test.run=^TestFileReplayConcurrentProcessHelper$")
 			cmd.Env = append(os.Environ(),
 				"WEDECENT_REPLAY_PROCESS_PATH="+path,
@@ -227,6 +229,31 @@ func TestFileReplayConcurrentInitializationAcrossProcesses(t *testing.T) {
 			if err := child.cmd.Wait(); err != nil {
 				t.Errorf("replay process round %d worker %d failed: %v\n%s", round, i, err, child.output.String())
 			}
+		}
+
+		snapshot, err := readReplaySnapshot(path, testInitiator)
+		if err != nil {
+			t.Fatalf("read replay snapshot after process round %d: %v", round, err)
+		}
+		anchor, err := readReplayAnchor(path+".anchor", testInitiator)
+		if err != nil {
+			t.Fatalf("read replay anchor after process round %d: %v", round, err)
+		}
+		if len(snapshot.Entries) != workers || snapshot.Generation != workers || anchor.Generation != workers {
+			t.Fatalf("round %d lost concurrent replay updates: entries=%d snapshot_generation=%d anchor_generation=%d, want %d",
+				round, len(snapshot.Entries), snapshot.Generation, anchor.Generation, workers)
+		}
+		for _, jti := range jtis {
+			if _, ok := snapshot.Entries[jti]; !ok {
+				t.Errorf("round %d lost successful process replay entry %s", round, jti)
+			}
+		}
+		marker, err := readReplayInitializationLocked(path+".init", testInitiator)
+		if err != nil || marker.Status != "ready" {
+			t.Errorf("round %d initialization marker = %#v, error = %v; want ready", round, marker, err)
+		}
+		if _, err := os.Lstat(path + ".pending"); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("round %d retained pending transaction after successful processes: %v", round, err)
 		}
 	}
 }
