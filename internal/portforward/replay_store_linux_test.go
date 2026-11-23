@@ -26,12 +26,12 @@ func TestLinuxFileReplayRejectsInsecurePreexistingPermissions(t *testing.T) {
 		{
 			name:   "lock_file",
 			target: func(path string) string { return path + ".lock" },
-			mode: 0o644,
+			mode:   0o644,
 		},
 		{
 			name:   "replay_directory",
 			target: func(path string) string { return filepath.Dir(path) },
-			mode: 0o755,
+			mode:   0o755,
 		},
 	}
 
