@@ -44,8 +44,13 @@ type typedPortForwardChild struct {
 	writeCh     chan struct{}
 	writeBuffer []byte
 	done        chan struct{}
+	cancel      func()
 	doneOnce    sync.Once
 	closeOnce   sync.Once
+	writeMu     sync.Mutex
+	sendMu      sync.Mutex
+	closing     bool
+	closeErr    error
 }
 
 type typedPortForwardServer struct {
@@ -148,11 +153,22 @@ func (s *typedPortForwardServer) openParent(ctx context.Context, frame protocol.
 		_ = s.closeParent(frame.StreamID, "registry_accept_failed", false)
 		return err
 	}
+	s.mu.Lock()
+	attached := !s.closed && !parent.closed && s.parents[frame.StreamID] == parent
+	s.mu.Unlock()
+	if !attached {
+		return nil
+	}
 	if err := s.sendAccepted(frame.StreamID); err != nil {
 		_ = s.closeParent(frame.StreamID, "transport_write_failed", false)
 		return err
 	}
-	go s.watchDestinationParent(parent)
+	s.mu.Lock()
+	attached = !s.closed && !parent.closed && s.parents[frame.StreamID] == parent
+	if attached {
+		go s.watchDestinationParent(parent)
+	}
+	s.mu.Unlock()
 	return nil
 }
 
@@ -166,8 +182,10 @@ func (s *typedPortForwardServer) watchDestinationParent(parent *typedPortForward
 	closed := s.closed || parent.closed
 	s.mu.Unlock()
 	if !closed {
-		_ = s.sendStreamError(parent.id, "forwarding_session_ended", "forwarding authorization is no longer active")
 		_ = s.closeParent(parent.id, "destination_session_ended", false)
+		if s.ctx.Err() == nil {
+			_ = s.sendStreamError(parent.id, "forwarding_session_ended", "forwarding authorization is no longer active")
+		}
 	}
 }
 
@@ -208,33 +226,102 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 		_ = s.registry.close(frame.StreamID, protocol.StreamKindPortForwardChild)
 		return err
 	}
+	done := make(chan struct{})
+	cancel := func() { close(done) }
+	if lifecycle, ok := conn.(interface {
+		Done() <-chan struct{}
+		Cancel()
+	}); ok {
+		done = lifecycle.Done()
+		cancel = lifecycle.Cancel
+	}
 	child := &typedPortForwardChild{
 		id: frame.StreamID, parent: parent, conn: conn,
 		sendCredit: sendCredit, recvCredit: recvCredit,
-		creditCh: make(chan struct{}, 1), writeCh: make(chan struct{}, 1), done: make(chan struct{}),
+		creditCh: make(chan struct{}, 1), writeCh: make(chan struct{}, 1),
+		done: done, cancel: cancel,
 	}
 	s.mu.Lock()
 	if s.closed || parent.closed || s.parents[parent.id] != parent {
 		s.mu.Unlock()
-		// The parent DestinationSession owns any child it registered before
-		// shutdown. Do not issue a duplicate Close against its sync.Once.
+		child.signalClose()
+		// DestinationSession owns any child registered before parent shutdown.
 		_ = s.registry.close(frame.StreamID, protocol.StreamKindPortForwardChild)
-		return s.sendStreamError(frame.StreamID, "parent_stream_unavailable", "forwarding parent stream is unavailable")
+		return nil
 	}
 	s.children[frame.StreamID] = child
 	parent.children[frame.StreamID] = child
 	s.mu.Unlock()
+
 	if err := s.registry.accept(frame.StreamID, protocol.StreamKindPortForwardChild); err != nil {
 		_ = s.closeChild(frame.StreamID, "registry_accept_failed", false)
 		return err
 	}
-	if err := s.sendAccepted(frame.StreamID); err != nil {
-		_ = s.closeChild(frame.StreamID, "transport_write_failed", false)
-		return err
+
+	// Acceptance is linearized while the child is still attached to its parent.
+	s.mu.Lock()
+	attached := !s.closed && !parent.closed &&
+		s.parents[parent.id] == parent && s.children[child.id] == child &&
+		!child.isClosed()
+	s.mu.Unlock()
+	if !attached {
+		s.detachChild(child.id)
+		return nil
 	}
-	go s.forwardInput(child)
-	go s.forwardOutput(child)
+	child.sendMu.Lock()
+	if child.isClosed() {
+		child.sendMu.Unlock()
+		s.detachChild(child.id)
+		return nil
+	}
+	ackErr := s.sendAccepted(child.id)
+	child.sendMu.Unlock()
+	if ackErr != nil {
+		_ = s.closeChild(child.id, "transport_write_failed", false)
+		return ackErr
+	}
+
+	// Parent closure may race with the acceptance write. Never start workers
+	// after the parent has detached this child.
+	s.mu.Lock()
+	attached = !s.closed && !parent.closed &&
+		s.parents[parent.id] == parent && s.children[child.id] == child &&
+		!child.isClosed()
+	if attached {
+		go s.forwardInput(child)
+		go s.forwardOutput(child)
+	}
+	s.mu.Unlock()
 	return nil
+}
+
+func (child *typedPortForwardChild) isClosed() bool {
+	if child == nil {
+		return true
+	}
+	select {
+	case <-child.done:
+		return true
+	default:
+	}
+	child.mu.Lock()
+	closing := child.closing
+	child.mu.Unlock()
+	return closing
+}
+
+func (child *typedPortForwardChild) signalClose() {
+	if child == nil {
+		return
+	}
+	child.mu.Lock()
+	child.closing = true
+	for i := range child.writeBuffer {
+		child.writeBuffer[i] = 0
+	}
+	child.writeBuffer = nil
+	child.mu.Unlock()
+	child.doneOnce.Do(child.cancel)
 }
 
 func (s *typedPortForwardServer) data(frame protocol.Frame) error {
@@ -246,11 +333,9 @@ func (s *typedPortForwardServer) data(frame protocol.Frame) error {
 		return fmt.Errorf("%w: forwarding child is not open", errTypedStreamProtocol)
 	}
 	child.mu.Lock()
-	select {
-	case <-child.done:
+	if child.closing || channelClosed(child.done) {
 		child.mu.Unlock()
 		return fmt.Errorf("%w: forwarding child is closed", errTypedStreamProtocol)
-	default:
 	}
 	if err := child.recvCredit.consume(uint32(len(frame.Payload))); err != nil {
 		child.mu.Unlock()
@@ -271,7 +356,15 @@ func (s *typedPortForwardServer) data(frame protocol.Frame) error {
 
 func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
 	for {
+		if child.isClosed() || s.ctx.Err() != nil {
+			return
+		}
 		child.mu.Lock()
+		if child.closing || channelClosed(child.done) {
+			child.writeBuffer = nil
+			child.mu.Unlock()
+			return
+		}
 		count := len(child.writeBuffer)
 		if count > protocol.MaxTypedStreamChunk {
 			count = protocol.MaxTypedStreamChunk
@@ -296,20 +389,31 @@ func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
 		}
 
 		for remaining := data; len(remaining) > 0; {
+			child.writeMu.Lock()
+			if child.isClosed() || s.ctx.Err() != nil {
+				child.writeMu.Unlock()
+				return
+			}
 			n, err := child.conn.Write(remaining)
+			child.writeMu.Unlock()
 			if err != nil || n <= 0 {
 				if err == nil {
 					err = io.ErrShortWrite
 				}
-				_ = s.closeChild(child.id, "destination_write_failed", false)
-				if s.ctx.Err() == nil {
-					_ = s.sendStreamError(child.id, "destination_write_failed", "destination connection write failed")
+				if !child.isClosed() {
+					_ = s.closeChild(child.id, "destination_write_failed", false)
+					if s.ctx.Err() == nil {
+						_ = s.sendStreamError(child.id, "destination_write_failed", "destination connection write failed")
+					}
 				}
 				return
 			}
 			remaining = remaining[n:]
 		}
 
+		if child.isClosed() || s.ctx.Err() != nil {
+			return
+		}
 		child.mu.Lock()
 		err := child.recvCredit.add(uint32(len(data)))
 		child.mu.Unlock()
@@ -320,6 +424,9 @@ func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
 		payload, err := protocol.JSON(protocol.StreamWindowUpdate{Bytes: uint32(len(data))})
 		if err != nil {
 			_ = s.closeChild(child.id, "window_update_encode_failed", false)
+			return
+		}
+		if child.isClosed() || s.ctx.Err() != nil {
 			return
 		}
 		if err := s.write(protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: child.id, Payload: payload}); err != nil {
@@ -337,6 +444,9 @@ func (s *typedPortForwardServer) windowUpdate(frame protocol.Frame) error {
 	child := s.child(frame.StreamID)
 	if child == nil {
 		return fmt.Errorf("%w: forwarding child is not open", errTypedStreamProtocol)
+	}
+	if child.isClosed() {
+		return fmt.Errorf("%w: forwarding child is closed", errTypedStreamProtocol)
 	}
 	child.mu.Lock()
 	err := child.sendCredit.add(update.Bytes)
@@ -358,6 +468,9 @@ func (s *typedPortForwardServer) halfClose(frame protocol.Frame) error {
 	child := s.child(frame.StreamID)
 	if child == nil {
 		return fmt.Errorf("%w: forwarding child is not open", errTypedStreamProtocol)
+	}
+	if child.isClosed() {
+		return fmt.Errorf("%w: forwarding child is closed", errTypedStreamProtocol)
 	}
 	writer, ok := child.conn.(interface{ CloseWrite() error })
 	if !ok {
@@ -413,28 +526,42 @@ func (s *typedPortForwardServer) peerError(frame protocol.Frame) error {
 func (s *typedPortForwardServer) forwardOutput(child *typedPortForwardChild) {
 	buffer := make([]byte, protocol.MaxTypedStreamChunk)
 	for {
+		if child.isClosed() || s.ctx.Err() != nil {
+			return
+		}
 		n, readErr := child.conn.Read(buffer)
+		if child.isClosed() || s.ctx.Err() != nil {
+			return
+		}
 		if n > 0 {
 			if err := s.sendData(child, buffer[:n]); err != nil {
-				_ = s.closeChild(child.id, "transport_write_failed", false)
+				if !child.isClosed() {
+					_ = s.closeChild(child.id, "transport_write_failed", false)
+				}
 				return
 			}
 		}
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) {
-				if err := s.write(protocol.Frame{Type: protocol.TypeStreamHalfClose, StreamID: child.id}); err != nil {
-					_ = s.closeChild(child.id, "transport_write_failed", false)
+				if !child.isClosed() && s.ctx.Err() == nil {
+					if err := s.write(protocol.Frame{Type: protocol.TypeStreamHalfClose, StreamID: child.id}); err != nil {
+						_ = s.closeChild(child.id, "transport_write_failed", false)
+					}
 				}
 				return
 			}
-			if !errors.Is(readErr, net.ErrClosed) && !errors.Is(readErr, io.ErrClosedPipe) {
+			if !errors.Is(readErr, net.ErrClosed) && !errors.Is(readErr, io.ErrClosedPipe) && !child.isClosed() {
 				_ = s.sendStreamError(child.id, "destination_read_failed", "destination connection read failed")
 			}
-			_ = s.closeChild(child.id, "destination_read_failed", false)
+			if !child.isClosed() {
+				_ = s.closeChild(child.id, "destination_read_failed", false)
+			}
 			return
 		}
 		if n == 0 {
-			_ = s.closeChild(child.id, "destination_read_failed", false)
+			if !child.isClosed() {
+				_ = s.closeChild(child.id, "destination_read_failed", false)
+			}
 			return
 		}
 	}
@@ -442,9 +569,16 @@ func (s *typedPortForwardServer) forwardOutput(child *typedPortForwardChild) {
 
 func (s *typedPortForwardServer) sendData(child *typedPortForwardChild, data []byte) error {
 	for offset := 0; offset < len(data); {
+		if child.isClosed() || s.ctx.Err() != nil {
+			return io.ErrClosedPipe
+		}
 		var count int
 		for count == 0 {
 			child.mu.Lock()
+			if child.closing || channelClosed(child.done) {
+				child.mu.Unlock()
+				return io.ErrClosedPipe
+			}
 			available := child.sendCredit.available()
 			if available > 0 {
 				count = len(data) - offset
@@ -470,7 +604,17 @@ func (s *typedPortForwardServer) sendData(child *typedPortForwardChild, data []b
 				}
 			}
 		}
-		if err := s.write(protocol.Frame{Type: protocol.TypeStreamData, StreamID: child.id, Payload: append([]byte(nil), data[offset:offset+count]...)}); err != nil {
+		child.sendMu.Lock()
+		if child.isClosed() || s.ctx.Err() != nil {
+			child.sendMu.Unlock()
+			return io.ErrClosedPipe
+		}
+		err := s.write(protocol.Frame{
+			Type: protocol.TypeStreamData, StreamID: child.id,
+			Payload: append([]byte(nil), data[offset:offset+count]...),
+		})
+		child.sendMu.Unlock()
+		if err != nil {
 			return err
 		}
 		offset += count
@@ -519,9 +663,9 @@ func (s *typedPortForwardServer) closeChild(streamID uint32, reason string, ackn
 	if child == nil {
 		return nil
 	}
-	var closeErr error
-	child.doneOnce.Do(func() { close(child.done) })
-	child.closeOnce.Do(func() { closeErr = child.conn.Close() })
+	child.signalClose()
+	child.closeOnce.Do(func() { child.closeErr = child.conn.Close() })
+	closeErr := child.closeErr
 	_ = s.registry.close(streamID, protocol.StreamKindPortForwardChild)
 	if acknowledge {
 		payload, _ := protocol.JSON(protocol.StreamClose{Reason: "peer_close"})
@@ -546,10 +690,8 @@ func (s *typedPortForwardServer) detachChild(streamID uint32) {
 	if child == nil {
 		return
 	}
-	// The parent DestinationSession has already attempted to close every
-	// child. Do not call destinationChildConn.Close a second time: its
-	// sync.Once may still be executing a blocked underlying Close.
-	child.doneOnce.Do(func() { close(child.done) })
+	// DestinationSession owns the underlying child connection and cleanup.
+	child.signalClose()
 	_ = s.registry.close(streamID, protocol.StreamKindPortForwardChild)
 }
 
@@ -558,6 +700,9 @@ func (s *typedPortForwardServer) closeParent(streamID uint32, reason string, ack
 	parent := s.parents[streamID]
 	if parent != nil {
 		parent.closed = true
+		for _, child := range parent.children {
+			child.signalClose()
+		}
 	}
 	s.mu.Unlock()
 	if parent == nil {
@@ -566,6 +711,7 @@ func (s *typedPortForwardServer) closeParent(streamID uint32, reason string, ack
 
 	parent.closeOnce.Do(func() {
 		var errs []error
+		// Child cancellation is signalled above before any network cleanup.
 		if err := parent.session.Close(); err != nil {
 			errs = append(errs, err)
 		}
@@ -605,8 +751,12 @@ func (s *typedPortForwardServer) CloseAll() error {
 	s.mu.Lock()
 	s.closed = true
 	parents := make([]uint32, 0, len(s.parents))
-	for id := range s.parents {
+	for id, parent := range s.parents {
 		parents = append(parents, id)
+		parent.closed = true
+		for _, child := range parent.children {
+			child.signalClose()
+		}
 	}
 	s.mu.Unlock()
 
