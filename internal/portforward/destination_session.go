@@ -3,9 +3,7 @@ package portforward
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net"
-	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -120,8 +118,13 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		return nil, err
 	}
 
-	sessionCtx, cancel := context.WithCancel(context.Background())
-	return &DestinationSession{
+	deadline := time.UnixMilli(claims.ExpiresAtUnixMS)
+	maxDurationDeadline := time.UnixMilli(claims.IssuedAtUnixMS).Add(time.Duration(claims.Limits.MaxDurationSeconds) * time.Second)
+	if maxDurationDeadline.Before(deadline) {
+		deadline = maxDurationDeadline
+	}
+	sessionCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	session := &DestinationSession{
 		claims: claims,
 		localID: cfg.LocalDeviceID,
 		peerID: cfg.AuthenticatedPeerID,
@@ -134,7 +137,12 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		ctx: sessionCtx,
 		cancel: cancel,
 		children: make(map[uint64]*destinationChildConn),
-	}, nil
+	}
+	go func() {
+		<-sessionCtx.Done()
+		_ = session.Close()
+	}()
+	return session, nil
 }
 
 func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
@@ -193,6 +201,10 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	if err := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "success", "")); err != nil {
 		_ = child.Close()
 		return nil, err
+	}
+	if s.ctx.Err() != nil {
+		_ = child.Close()
+		return nil, ErrDestinationSessionClosed
 	}
 	return child, nil
 }
@@ -274,15 +286,5 @@ func destinationAuditEvent(claims Claims, localID, peerID mesh.DeviceID, eventTy
 	}
 }
 
-func (s *DestinationSession) ApprovedDestination() (string, []netip.Addr, uint16) {
-	if s == nil {
-		return "", nil, 0
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.approved.Host, append([]netip.Addr(nil), s.approved.IPs...), s.approved.Port
-}
 
 var _ ForwardingSession = (*DestinationSession)(nil)
-
-var _ = fmt.Sprintf
