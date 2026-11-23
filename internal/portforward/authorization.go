@@ -40,6 +40,8 @@ var (
 	ErrAuthorizationNotYetValid = errors.New("portforward: authorization is not yet valid")
 	ErrAuthorizationMismatch    = errors.New("portforward: authorization does not match local endpoint")
 	ErrAuthorizationReplay      = errors.New("portforward: authorization has already been used")
+	ErrRouteAuthorizationRequired = errors.New("portforward: separate route authorization is required")
+	ErrRouteAuthorizationMismatch = errors.New("portforward: route authorization does not match forwarding route")
 	ErrReplayUnavailable        = errors.New("portforward: replay protection is unavailable")
 )
 
@@ -103,9 +105,10 @@ type Claims struct {
 }
 
 type Authorization struct {
-	KeyID     string `json:"kid"`
-	Claims    Claims `json:"claims"`
-	Signature string `json:"signature"`
+	KeyID              string                 `json:"kid"`
+	Claims             Claims                 `json:"claims"`
+	Signature          string                 `json:"signature"`
+	RouteAuthorization mesh.RouteAuthorization `json:"route_authorization,omitempty"`
 }
 
 type ReplayStore interface {
@@ -458,5 +461,70 @@ func cloneClaims(c Claims) Claims {
 
 func cloneAuthorization(a Authorization) Authorization {
 	a.Claims = cloneClaims(a.Claims)
+	a.RouteAuthorization.Claims.Route = cloneMeshRoute(a.RouteAuthorization.Claims.Route)
 	return a
+}
+
+func cloneMeshRoute(route mesh.Route) mesh.Route {
+	route.Hops = append([]mesh.RouteHop(nil), route.Hops...)
+	return route
+}
+
+// ValidateRouteAuthorizationBinding checks that the separate routing capability
+// authorizes the exact route embedded in the port-forward capability. The router
+// remains responsible for verifying and consuming the route capability itself.
+func ValidateRouteAuthorizationBinding(auth Authorization) error {
+	claims := auth.Claims
+	routeAuth := auth.RouteAuthorization
+	if claims.Router == "" {
+		if routeAuth.KeyID != "" || routeAuth.Signature != "" || routeAuth.Claims.JTI != "" {
+			return ErrRouteAuthorizationMismatch
+		}
+		return nil
+	}
+	if routeAuth.KeyID == "" || routeAuth.Signature == "" {
+		return ErrRouteAuthorizationRequired
+	}
+	if len(routeAuth.KeyID) > 128 || strings.ContainsAny(routeAuth.KeyID, " \\t\\r\\n") {
+		return ErrRouteAuthorizationMismatch
+	}
+	signature, err := base64.RawURLEncoding.Strict().DecodeString(routeAuth.Signature)
+	if err != nil || len(signature) != ed25519.SignatureSize ||
+		base64.RawURLEncoding.EncodeToString(signature) != routeAuth.Signature {
+		return ErrRouteAuthorizationMismatch
+	}
+	routeClaims := routeAuth.Claims
+	if routeClaims.Version != mesh.RouteAuthorizationVersion ||
+		routeClaims.Issuer != mesh.RouteAuthorizationIssuer ||
+		routeClaims.Audience != mesh.RouteAuthorizationAudience ||
+		routeClaims.Permission != mesh.RouteAuthorizationPermission ||
+		routeClaims.Router != claims.Router ||
+		routeClaims.IssuedAtUnixMS <= 0 ||
+		routeClaims.ExpiresUnixMS != claims.ExpiresAtUnixMS ||
+		routeClaims.ExpiresUnixMS-routeClaims.IssuedAtUnixMS > mesh.MaxRouteAuthorizationLifetime.Milliseconds() {
+		return ErrRouteAuthorizationMismatch
+	}
+	rawJTI, err := base64.RawURLEncoding.Strict().DecodeString(routeClaims.JTI)
+	if err != nil || len(rawJTI) != 16 || base64.RawURLEncoding.EncodeToString(rawJTI) != routeClaims.JTI {
+		return ErrRouteAuthorizationMismatch
+	}
+	if routeClaims.Route.ExpiresAt.UTC().UnixMilli() != claims.ExpiresAtUnixMS ||
+		!sameMeshRoute(routeClaims.Route, claims.Route) {
+		return ErrRouteAuthorizationMismatch
+	}
+	return nil
+}
+
+func sameMeshRoute(a, b mesh.Route) bool {
+	if a.ID != b.ID || a.Source != b.Source || a.Destination != b.Destination ||
+		a.ExpiresAt.UTC().UnixMilli() != b.ExpiresAt.UTC().UnixMilli() ||
+		len(a.Hops) != len(b.Hops) {
+		return false
+	}
+	for i := range a.Hops {
+		if a.Hops[i] != b.Hops[i] {
+			return false
+		}
+	}
+	return true
 }
