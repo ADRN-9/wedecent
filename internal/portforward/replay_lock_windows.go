@@ -137,6 +137,58 @@ func verifyReplayACL(path string) error {
 	return nil
 }
 
+func openReplayLockFile(lockPath string) (*os.File, bool, error) {
+	if _, err := os.Lstat(lockPath); err == nil {
+		file, openErr := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+		return file, false, openErr
+	} else if !os.IsNotExist(err) {
+		return nil, false, err
+	}
+
+	temp, err := os.CreateTemp(filepath.Dir(lockPath), ".portforward-lock-*")
+	if err != nil {
+		return nil, false, err
+	}
+	tempPath := temp.Name()
+	cleanup := func() {
+		_ = temp.Close()
+		_ = os.Remove(tempPath)
+	}
+	if err := temp.Chmod(0o600); err != nil {
+		cleanup()
+		return nil, false, err
+	}
+	if err := setReplayFileOwner(tempPath); err != nil {
+		cleanup()
+		return nil, false, fmt.Errorf("set replay lock owner: %w", err)
+	}
+	if err := secureReplayFile(tempPath); err != nil {
+		cleanup()
+		return nil, false, err
+	}
+	if err := temp.Sync(); err != nil {
+		cleanup()
+		return nil, false, err
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(tempPath)
+		return nil, false, err
+	}
+	if err := createReplayFileExclusive(tempPath, lockPath); err != nil {
+		_ = os.Remove(tempPath)
+		if os.IsExist(err) {
+			file, openErr := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+			return file, false, openErr
+		}
+		return nil, false, err
+	}
+	file, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, true, err
+	}
+	return file, true, nil
+}
+
 func lockReplayFile(path string) (func(), bool, error) {
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
@@ -158,20 +210,9 @@ func lockReplayFile(path string) (func(), bool, error) {
 		return nil, false, lockErr
 	}
 
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
-	created := true
-	if os.IsExist(err) {
-		created = false
-		file, err = os.OpenFile(lockPath, os.O_RDWR, 0o600)
-	}
+	file, created, err := openReplayLockFile(lockPath)
 	if err != nil {
 		return nil, false, err
-	}
-	if created {
-		if err := setReplayFileOwner(lockPath); err != nil {
-			_ = file.Close()
-			return nil, false, fmt.Errorf("set replay lock owner: %w", err)
-		}
 	}
 	openedInfo, err := file.Stat()
 	if err != nil {

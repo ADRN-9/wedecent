@@ -128,6 +128,19 @@ func TestFileReplayProcessHelper(t *testing.T) {
 	}
 }
 
+func TestFileReplayInitialMarkerAndLockHavePrivateOwnership(t *testing.T) {
+	dir := newReplayTestDir(t)
+	path := filepath.Join(dir, "replay.json")
+	if err := ensureReplayInitialization(path, testInitiator, false); err != nil {
+		t.Fatal(err)
+	}
+	for _, file := range []string{path + ".init", path + ".init.lock"} {
+		if err := secureReplayFile(file); err != nil {
+			t.Fatalf("initial replay metadata %s is not private: %v", filepath.Base(file), err)
+		}
+	}
+}
+
 func TestFileReplayConsumptionIsAtomicAcrossInstances(t *testing.T) {
 	path := newReplayTestPath(t)
 	jti := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
@@ -160,6 +173,40 @@ func TestFileReplayConsumptionIsAtomicAcrossInstances(t *testing.T) {
 	wg.Wait()
 	if successes != 1 || replays != workers-1 || len(failures) != 0 {
 		t.Fatalf("successes=%d replays=%d failures=%v", successes, replays, failures)
+	}
+}
+
+func TestFileReplayConcurrentInitializationIsSerialized(t *testing.T) {
+	path := newReplayTestPath(t)
+	const workers = 24
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	failures := make([]error, 0)
+	expiry := time.Now().UTC().Add(time.Minute)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			replay, err := NewFileReplay(path, testInitiator)
+			if err == nil {
+				raw := make([]byte, 16)
+				raw[0], raw[1] = byte(index), byte(index>>8)
+				jti := base64.RawURLEncoding.EncodeToString(raw)
+				err = replay.ConsumePortForwardAuthorization(context.Background(), jti, expiry)
+			}
+			if err != nil {
+				mu.Lock()
+				failures = append(failures, err)
+				mu.Unlock()
+			}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	if len(failures) != 0 {
+		t.Fatalf("concurrent replay initialization/consumption failures: %v", failures)
 	}
 }
 
@@ -354,7 +401,7 @@ func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 	if err := secureReplayDirectory(dir); err != nil {
 		t.Fatalf("verify replay directory security: %v", err)
 	}
-	for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init.lock"} {
+	for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init", path + ".init.lock"} {
 		if err := secureReplayFile(file); err != nil {
 			t.Fatalf("verify replay file %s: %v", filepath.Base(file), err)
 		}
@@ -365,7 +412,7 @@ func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 		} else if info.Mode().Perm() != 0o700 {
 			t.Fatalf("replay directory permissions = %o, want 700", info.Mode().Perm())
 		}
-		for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init.lock"} {
+		for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init", path + ".init.lock"} {
 			info, err := os.Stat(file)
 			if err != nil {
 				t.Fatal(err)

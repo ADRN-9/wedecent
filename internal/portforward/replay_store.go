@@ -188,24 +188,12 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 		return err
 	}
 	initPath := path + ".init"
-	initLockFile, err := os.OpenFile(initPath+".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
-	if err == nil {
-		if ownerErr := setReplayFileOwner(initPath + ".lock"); ownerErr != nil {
-			_ = initLockFile.Close()
-			return fmt.Errorf("set replay initialization lock owner: %w", ownerErr)
-		}
-		if closeErr := initLockFile.Close(); closeErr != nil {
-			return closeErr
-		}
-	} else if !errors.Is(err, os.ErrExist) {
-		return err
-	}
 	unlockInit, _, err := lockReplayFile(initPath)
 	if err != nil {
 		return fmt.Errorf("lock replay initialization: %w", err)
 	}
 	defer unlockInit()
-	marker, err := readReplayInitialization(initPath, deviceID)
+	marker, err := readReplayInitializationLocked(initPath, deviceID)
 	if err == nil {
 		lockExists, lockErr := replayPathExists(path + ".lock")
 		if lockErr != nil {
@@ -304,6 +292,10 @@ func createReplayInitialization(path string, marker replayInitialization) error 
 		cleanup()
 		return err
 	}
+	if err := setReplayFileOwner(tempPath); err != nil {
+		cleanup()
+		return fmt.Errorf("set initial replay marker owner: %w", err)
+	}
 	if err := secureReplayFile(tempPath); err != nil {
 		cleanup()
 		return err
@@ -332,7 +324,7 @@ func createReplayInitialization(path string, marker replayInitialization) error 
 		_ = os.Remove(tempPath)
 		var existing replayInitialization
 		for attempt := 0; attempt < 5; attempt++ {
-			existing, err = readReplayInitialization(path, mesh.DeviceID(marker.DeviceID))
+			existing, err = readReplayInitializationLocked(path, mesh.DeviceID(marker.DeviceID))
 			if err == nil {
 				break
 			}
@@ -352,7 +344,7 @@ func createReplayInitialization(path string, marker replayInitialization) error 
 	return nil
 }
 
-func readReplayInitialization(path string, deviceID mesh.DeviceID) (replayInitialization, error) {
+func readReplayInitializationLocked(path string, deviceID mesh.DeviceID) (replayInitialization, error) {
 	data, err := readReplayJSON(path, 4096)
 	if err != nil {
 		return replayInitialization{}, err
@@ -385,7 +377,12 @@ func writeReplayInitialization(path string, marker replayInitialization) error {
 }
 
 func loadReplaySnapshot(path string, deviceID mesh.DeviceID, allowLegacyMigration bool) (replaySnapshot, error) {
-	marker, err := readReplayInitialization(path+".init", deviceID)
+	unlockInit, _, err := lockReplayFile(path + ".init")
+	if err != nil {
+		return replaySnapshot{}, fmt.Errorf("lock replay initialization marker: %w", err)
+	}
+	defer unlockInit()
+	marker, err := readReplayInitializationLocked(path+".init", deviceID)
 	if err != nil {
 		return replaySnapshot{}, err
 	}

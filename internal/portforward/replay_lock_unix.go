@@ -59,6 +59,19 @@ func replayOwnedByCurrentUser(info os.FileInfo) bool {
 	return ok && stat.Uid == uint32(unix.Geteuid())
 }
 
+func openReplayLockFile(lockPath string) (*os.File, bool, error) {
+	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	created := true
+	if os.IsExist(err) {
+		created = false
+		file, err = os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	return file, created, nil
+}
+
 func lockReplayFile(path string) (func(), bool, error) {
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
@@ -80,12 +93,7 @@ func lockReplayFile(path string) (func(), bool, error) {
 		return nil, false, lockErr
 	}
 
-	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
-	created := true
-	if os.IsExist(err) {
-		created = false
-		file, err = os.OpenFile(lockPath, os.O_RDWR, 0o600)
-	}
+	file, created, err := openReplayLockFile(lockPath)
 	if err != nil {
 		return nil, false, err
 	}
