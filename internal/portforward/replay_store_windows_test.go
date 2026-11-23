@@ -45,7 +45,6 @@ func setReplayTestFileACL(path, additionalACE string) error {
 	)
 }
 
-
 func setReplayTestFileOwner(path string, sidText string) error {
 	sid, err := windows.StringToSid(sidText)
 	if err != nil {

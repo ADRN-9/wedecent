@@ -1244,7 +1244,6 @@ func TestFileReplayStagingCleanupWaitsForActiveStoreLock(t *testing.T) {
 	}
 }
 
-
 func TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging(t *testing.T) {
 	path := newReplayTestPath(t)
 	replay, err := NewFileReplay(path, testInitiator)
