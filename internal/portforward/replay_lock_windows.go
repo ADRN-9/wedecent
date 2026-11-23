@@ -46,6 +46,9 @@ func verifyReplayACL(path string) error {
 	if err != nil {
 		return fmt.Errorf("read replay ACL: %w", err)
 	}
+	if sd == nil {
+		return errors.New("replay object security descriptor is unavailable")
+	}
 	owner, _, err := sd.Owner()
 	if err != nil {
 		return fmt.Errorf("read replay object owner: %w", err)
