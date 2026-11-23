@@ -17,13 +17,13 @@ var (
 	ErrDestinationSessionClosed = errors.New("portforward: destination forwarding session is closed")
 )
 
+// DestinationConfig.TrustChecker must reference the trust domain for
+// AuthenticatedPeerID: device trust for direct peers or route-router trust for routed peers.
 type DestinationConfig struct {
 	LocalDeviceID        mesh.DeviceID
 	AuthenticatedPeerID  mesh.DeviceID
 	Verifier             Verifier
-	// TrustChecker must reference the trust domain for AuthenticatedPeerID:
-	// device trust for direct peers or route-router trust for routed peers.
-	TrustChecker PeerTrustChecker
+	TrustChecker         PeerTrustChecker
 	PermissionAuthorizer PermissionAuthorizer
 	Resolver             IPResolver
 	Dialer               ContextDialer
