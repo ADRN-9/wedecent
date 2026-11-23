@@ -280,6 +280,11 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 		s.releaseReservation(childID)
 		return nil, err
 	}
+	if s.ctx.Err() != nil {
+		s.releaseReservation(childID)
+		auditErr := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "failed", "parent_session_closed"))
+		return nil, errors.Join(ErrDestinationSessionClosed, auditErr)
+	}
 
 	dialCtx, cancelDial := context.WithTimeout(ctx, s.dialTimeout)
 	childCtx, cancelChild := context.WithCancel(dialCtx)
