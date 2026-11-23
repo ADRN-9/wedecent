@@ -302,7 +302,7 @@ func TestDestinationSessionBoundsChildrenAndExpiresActiveStreams(t *testing.T) {
 		t.Fatalf("over-limit child error = %v", err)
 	}
 	remote := <-dialer.opened
-	_ = remote
+	defer remote.Close()
 	select {
 	case <-session.ctx.Done():
 	case <-time.After(3 * time.Second):
