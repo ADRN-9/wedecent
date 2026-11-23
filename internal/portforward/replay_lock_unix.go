@@ -10,9 +10,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-func lockReplayFile(path string) (func(), error) {
+func lockReplayFile(path string) (func(), bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	lockPath := path + ".lock"
 	if info, err := os.Lstat(lockPath); err == nil {
@@ -34,7 +34,7 @@ func lockReplayFile(path string) (func(), error) {
 	pathInfo, err := os.Lstat(lockPath)
 	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, pathInfo) {
 		_ = file.Close()
-		return nil, fmt.Errorf("replay lock changed during open")
+		return nil, false, fmt.Errorf("replay lock changed during open")
 	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
@@ -42,10 +42,10 @@ func lockReplayFile(path string) (func(), error) {
 	}
 	if err := unix.Flock(int(file.Fd()), unix.LOCK_EX); err != nil {
 		_ = file.Close()
-		return nil, fmt.Errorf("lock replay store: %w", err)
+		return nil, false, fmt.Errorf("lock replay store: %w", err)
 	}
 	return func() {
 		_ = unix.Flock(int(file.Fd()), unix.LOCK_UN)
 		_ = file.Close()
-	}, nil
+	}, created, nil
 }
