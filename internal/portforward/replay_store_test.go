@@ -185,6 +185,26 @@ func TestFileReplayPrunesExpiredEntriesAndRejectsExpiredConsumption(t *testing.T
 	}
 }
 
+func TestFileReplayRejectsDeletedStateAfterInitialization(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	secondJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
+	expiry := time.Now().UTC().Add(time.Minute)
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, expiry); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), secondJTI, expiry); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("deleted replay state error = %v, want fail-closed unavailable", err)
+	}
+}
+
 func TestFileReplayRejectsWrongDeviceScopeAndCorruptState(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "portforward-replay.json")
 	first, err := NewFileReplay(path, testInitiator)
