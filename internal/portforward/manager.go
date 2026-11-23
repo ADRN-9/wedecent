@@ -80,6 +80,8 @@ type ForwardInfo struct {
 }
 
 type Manager struct {
+	ctx                  context.Context
+	cancel               context.CancelFunc
 	localID              mesh.DeviceID
 	verifier             Verifier
 	permissionAuthorizer PermissionAuthorizer
@@ -138,7 +140,10 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if now == nil {
 		now = time.Now
 	}
+	managerCtx, cancel := context.WithCancel(context.Background())
 	return &Manager{
+		ctx:                  managerCtx,
+		cancel:               cancel,
 		localID:              cfg.LocalDeviceID,
 		verifier:             cfg.Verifier,
 		permissionAuthorizer: cfg.PermissionAuthorizer,
@@ -173,7 +178,13 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	if ctx == nil {
 		return ForwardInfo{}, ErrAuthorizationInvalid
 	}
-	if err := ctx.Err(); err != nil {
+	startCtx, cancelStart := context.WithCancel(ctx)
+	stopManagerCancel := context.AfterFunc(m.ctx, cancelStart)
+	defer func() {
+		stopManagerCancel()
+		cancelStart()
+	}()
+	if err := startCtx.Err(); err != nil {
 		return ForwardInfo{}, err
 	}
 	claims := cloneClaims(auth.Claims)
@@ -197,7 +208,7 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		}
 	}()
 
-	verified, err := m.verifier.VerifyAndConsume(ctx, auth)
+	verified, err := m.verifier.VerifyAndConsume(startCtx, auth)
 	if err != nil {
 		return ForwardInfo{}, err
 	}
@@ -207,13 +218,13 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	if err := ValidateRouteAuthorizationBinding(auth); err != nil {
 		return ForwardInfo{}, err
 	}
-	if err := m.permissionAuthorizer.AuthorizePortForward(ctx, claims); err != nil {
+	if err := m.permissionAuthorizer.AuthorizePortForward(startCtx, claims); err != nil {
 		if auditErr := m.record(claims, "port_forward.start", "denied", "permission_denied"); auditErr != nil {
 			return ForwardInfo{}, auditErr
 		}
 		return ForwardInfo{}, err
 	}
-	if err := m.authorizeListener(ctx, claims); err != nil {
+	if err := m.authorizeListener(startCtx, claims); err != nil {
 		if auditErr := m.record(claims, "port_forward.start", "denied", "listener_policy_denied"); auditErr != nil {
 			return ForwardInfo{}, auditErr
 		}
@@ -235,7 +246,7 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		_ = m.record(claims, "port_forward.start", "failed", "listener_bind_failed")
 		return ForwardInfo{}, fmt.Errorf("portforward: bind listener: %w", err)
 	}
-	if err := ctx.Err(); err != nil {
+	if err := startCtx.Err(); err != nil {
 		_ = listener.Close()
 		return ForwardInfo{}, err
 	}
@@ -248,7 +259,7 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	if managerDeadline := now.Add(m.limits.MaxDuration); managerDeadline.Before(deadline) {
 		deadline = managerDeadline
 	}
-	forwardCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	forwardCtx, cancel := context.WithDeadline(m.ctx, deadline)
 	f := &activeForward{
 		claims:          claims,
 		authorization:   cloneAuthorization(auth),
@@ -261,7 +272,7 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		children:        make(map[uint64]*activeChild),
 	}
 	m.mu.Lock()
-	if err := ctx.Err(); err != nil {
+	if err := startCtx.Err(); err != nil {
 		m.mu.Unlock()
 		cancel()
 		_ = listener.Close()
@@ -388,8 +399,13 @@ func (m *Manager) Close() error {
 		return nil
 	}
 	m.mu.Lock()
+	shouldCancel := !m.closed
 	m.closed = true
+	cancel := m.cancel
 	m.mu.Unlock()
+	if shouldCancel && cancel != nil {
+		cancel()
+	}
 	m.starts.Wait()
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.forwards))
