@@ -73,16 +73,16 @@ func newDestinationTestConfig(t *testing.T, now time.Time, publicKey ed25519.Pub
 	dialer := &destinationTestDialer{opened: make(chan net.Conn, 8)}
 	log := &memoryAudit{}
 	return DestinationConfig{
-		LocalDeviceID: testDestination,
-		AuthenticatedPeerID: testInitiator,
-		Verifier: AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		LocalDeviceID:        testDestination,
+		AuthenticatedPeerID:  testInitiator,
+		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
 		PermissionAuthorizer: allowPortForwardPermission{},
-		Resolver: &destinationTestResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}},
-		Dialer: dialer,
-		Policy: DestinationPolicy{AllowPublic: true, AllowedPorts: []PortRange{{First: 443, Last: 443}}},
-		Audit: log,
-		MaxConnections: 4,
-		DialTimeout: time.Second,
+		Resolver:             &destinationTestResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}},
+		Dialer:               dialer,
+		Policy:               DestinationPolicy{AllowPublic: true, AllowedPorts: []PortRange{{First: 443, Last: 443}}},
+		Audit:                log,
+		MaxConnections:       4,
+		DialTimeout:          time.Second,
 	}, replay, dialer, log
 }
 
