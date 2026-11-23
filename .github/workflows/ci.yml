@@ -61,6 +61,10 @@ jobs:
           cache: true
       - name: Verify Go formatting (read-only)
         run: test -z "$(gofmt -l cmd internal)"
+      - name: Test port-forward session and transport packages
+        run: go test ./internal/session ./internal/portforward ./internal/transport
+      - name: Race-test port-forward session and transport packages
+        run: go test -race ./internal/session ./internal/portforward ./internal/transport
       - name: Vet
         run: go vet ./...
       - name: Test Unix service packaging
