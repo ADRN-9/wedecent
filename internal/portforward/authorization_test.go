@@ -27,7 +27,7 @@ func testClaims(now time.Time, direction Direction) Claims {
 	if direction == DirectionRemote {
 		source, destination = testDestination, testInitiator
 	}
-	expires := now.Add(5 * time.Minute).UTC().Truncate(time.Millisecond)
+	expires := now.Add(90 * time.Second).UTC().Truncate(time.Millisecond)
 	return Claims{
 		Version:           AuthorizationVersion,
 		Issuer:            AuthorizationIssuer,
@@ -52,6 +52,27 @@ func testClaims(now time.Time, direction Direction) Claims {
 		IssuedAtUnixMS:     now.UnixMilli(),
 		ExpiresAtUnixMS:    expires.UnixMilli(),
 		Limits:             ResourceLimits{MaxConnections: 4, MaxDurationSeconds: 120, IdleTimeoutSeconds: 30},
+	}
+}
+
+func TestAuthorizationRejectsMissingCapability(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	replay := NewMemoryReplay(8)
+	replay.Now = func() time.Time { return now }
+	verifier := AuthorizationVerifier{
+		PublicKey: publicKey,
+		Replay:    replay,
+		Now:       func() time.Time { return now },
+	}
+	if _, err := verifier.VerifyAndConsume(context.Background(), Authorization{}); !errors.Is(err, ErrAuthorizationInvalid) {
+		t.Fatalf("missing authorization error = %v", err)
+	}
+	if len(replay.used) != 0 {
+		t.Fatal("missing authorization changed replay state")
 	}
 }
 
