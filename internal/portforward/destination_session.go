@@ -24,20 +24,20 @@ var (
 // consulted when the capability binds a router. Both authenticated identities
 // must come from their respective verified TLS peer certificates.
 type DestinationConfig struct {
-	LocalDeviceID        mesh.DeviceID
-	AuthenticatedPeerID  mesh.DeviceID
+	LocalDeviceID         mesh.DeviceID
+	AuthenticatedPeerID   mesh.DeviceID
 	AuthenticatedRouterID mesh.DeviceID
-	Verifier             Verifier
-	TrustChecker         PeerTrustChecker
-	RouterTrustChecker   PeerTrustChecker
-	TrustPollInterval    time.Duration
-	PermissionAuthorizer PermissionAuthorizer
-	Resolver             IPResolver
-	Dialer               ContextDialer
-	Policy               DestinationPolicy
-	Audit                AuditWriter
-	MaxConnections       int
-	DialTimeout          time.Duration
+	Verifier              Verifier
+	TrustChecker          PeerTrustChecker
+	RouterTrustChecker    PeerTrustChecker
+	TrustPollInterval     time.Duration
+	PermissionAuthorizer  PermissionAuthorizer
+	Resolver              IPResolver
+	Dialer                ContextDialer
+	Policy                DestinationPolicy
+	Audit                 AuditWriter
+	MaxConnections        int
+	DialTimeout           time.Duration
 }
 
 type DestinationSession struct {
@@ -52,10 +52,10 @@ type DestinationSession struct {
 	routerTrustChecker PeerTrustChecker
 	routerID           mesh.DeviceID
 	trustPollInterval  time.Duration
-	expiryReason      string
-	idleTimeout       time.Duration
-	maxChildren       int
-	dialTimeout       time.Duration
+	expiryReason       string
+	idleTimeout        time.Duration
+	maxChildren        int
+	dialTimeout        time.Duration
 	ctx               context.Context
 	cancel            context.CancelFunc
 
