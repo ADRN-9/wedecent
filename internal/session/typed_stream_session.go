@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"io"
-	"sync"
 	"time"
 
 	"wedecent.com/wedecent/internal/audit"
@@ -27,13 +26,46 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		return
 	}
 
-	var writeMu sync.Mutex
-	writeFrame := func(frame protocol.Frame) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
-		return protocol.WriteFrame(conn, frame)
+	sessionCtx, cancelSession := context.WithCancel(context.Background())
+	defer cancelSession()
+	writeLock := make(chan struct{}, 1)
+	writeFrameWithContext := func(ctx context.Context, frame protocol.Frame) error {
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case writeLock <- struct{}{}:
+		}
+		defer func() { <-writeLock }()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		deadline := time.Now().Add(2 * time.Second)
+		if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
+			deadline = ctxDeadline
+		}
+		if err := conn.SetWriteDeadline(deadline); err != nil {
+			cancelSession()
+			_ = conn.Close()
+			return err
+		}
+		writeErr := protocol.WriteFrame(conn, frame)
+		resetErr := conn.SetWriteDeadline(time.Time{})
+		if err := errors.Join(writeErr, resetErr); err != nil {
+			cancelSession()
+			_ = conn.Close()
+			return err
+		}
+		return nil
 	}
-	if err := writeFrame(accepted); err != nil {
+	writeFrame := func(frame protocol.Frame) error {
+		return writeFrameWithContext(sessionCtx, frame)
+	}
+	if err := writeFrameWithContext(context.Background(), accepted); err != nil {
+		cancelSession()
+		_ = conn.Close()
 		return
 	}
 
@@ -54,8 +86,6 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		}
 	}
 
-	sessionCtx, cancelSession := context.WithCancel(context.Background())
-	defer cancelSession()
 	registry := newTypedParentStreamRegistry()
 	streamAudit := newTypedTerminalAuditTracker(peerID, transport, s.recordAudit)
 	typedServer := newTypedTerminalServerWithRegistry(s.Shell, func(frame protocol.Frame) error {
@@ -92,6 +122,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 	}
 	defer func() {
 		cancelSession()
+		_ = conn.Close()
 		var cleanupErrs []error
 		if forwardServer != nil {
 			if err := forwardServer.CloseAll(); err != nil {
@@ -116,6 +147,8 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		for {
 			frame, err := protocol.ReadFrame(conn)
 			if err != nil {
+				cancelSession()
+				_ = conn.Close()
 				select {
 				case readErrCh <- err:
 				case <-done:
@@ -131,18 +164,19 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 	}()
 
 	expireSession := func(reason string) {
-		cancelSession()
+		if forwardServer != nil {
+			if err := forwardServer.CloseAll(); err != nil {
+				s.log().Warn("typed forwarding policy cleanup failed", "peer_id", peerID, "error", err)
+			}
+		}
 		if fileServer != nil {
 			fileServer.CloseAll()
 		}
 		typedServer.CloseAll()
 		streamAudit.closeAll(closeReason)
-		if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
-			s.log().Warn("typed session close deadline could not be set", "peer_id", peerID, "error", err)
-			_ = conn.Close()
-			return
-		}
-		if err := writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: sessionPolicyExitCode, Reason: reason})}); err != nil {
+		writeCtx, cancelWrite := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancelWrite()
+		if err := writeFrameWithContext(writeCtx, protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: sessionPolicyExitCode, Reason: reason})}); err != nil {
 			s.log().Warn("typed session close frame failed", "peer_id", peerID, "error", err)
 			_ = conn.Close()
 			return

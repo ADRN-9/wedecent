@@ -163,6 +163,7 @@ type Manager struct {
 }
 
 type activeForward struct {
+	lifecycleMu     sync.Mutex
 	claims          Claims
 	session         ForwardingSession
 	listener        net.Listener
@@ -418,33 +419,32 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		stopDone:        make(chan struct{}),
 		children:        make(map[uint64]*activeChild),
 	}
+	f.lifecycleMu.Lock()
 	m.mu.Lock()
 	if err := startCtx.Err(); err != nil {
 		m.mu.Unlock()
+		f.lifecycleMu.Unlock()
 		cancel()
 		_ = listener.Close()
 		return ForwardInfo{}, err
 	}
 	if m.closed {
 		m.mu.Unlock()
+		f.lifecycleMu.Unlock()
 		cancel()
 		_ = listener.Close()
 		return ForwardInfo{}, ErrManagerClosed
 	}
 	if _, ok := m.reservations[claims.ForwardingID]; !ok {
 		m.mu.Unlock()
+		f.lifecycleMu.Unlock()
 		cancel()
 		_ = listener.Close()
 		return ForwardInfo{}, ErrForwardRevoked
 	}
-	if err := m.record(claims, "port_forward.started", "success", ""); err != nil {
-		m.mu.Unlock()
-		cancel()
-		_ = listener.Close()
-		return ForwardInfo{}, err
-	}
 	if err := ctx.Err(); err != nil {
 		m.mu.Unlock()
+		f.lifecycleMu.Unlock()
 		cancel()
 		_ = listener.Close()
 		return ForwardInfo{}, err
@@ -454,7 +454,18 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	m.mu.Unlock()
 	sessionOwned = true
 	reserved = false
+	if err := m.record(claims, "port_forward.started", "success", ""); err != nil {
+		f.lifecycleMu.Unlock()
+		_ = m.terminate(f, "audit_persistence_failed")
+		return ForwardInfo{}, err
+	}
+	if err := startCtx.Err(); err != nil {
+		f.lifecycleMu.Unlock()
+		_ = m.terminate(f, "start_cancelled")
+		return ForwardInfo{}, err
+	}
 	go m.acceptLoop(f)
+	f.lifecycleMu.Unlock()
 	return m.info(f), nil
 }
 
@@ -888,19 +899,38 @@ func (m *Manager) releaseChild(f *activeForward, child *activeChild) error {
 }
 
 func (m *Manager) terminate(f *activeForward, reason string) error {
+	f.lifecycleMu.Lock()
 	f.stopOnce.Do(func() {
+		type childCleanup struct {
+			child  *activeChild
+			local  net.Conn
+			remote net.Conn
+		}
 		m.mu.Lock()
 		f.cancel()
+		children := make([]childCleanup, 0, len(f.children))
+		for _, child := range f.children {
+			child.cancel()
+			children = append(children, childCleanup{child: child, local: child.local, remote: child.remote})
+		}
+		m.mu.Unlock()
+
 		var cleanupErrs []error
 		if err := f.listener.Close(); err != nil && !expectedClosedConnError(err) {
 			cleanupErrs = append(cleanupErrs, err)
 		}
-		children := make([]*activeChild, 0, len(f.children))
-		for _, child := range f.children {
-			children = append(children, child)
-			child.cancel()
-			if err := child.local.Close(); err != nil && !expectedClosedConnError(err) {
-				cleanupErrs = append(cleanupErrs, err)
+
+		// Close the authenticated parent before waiting for children. This
+		// interrupts pending OpenChild operations and blocked stream writes.
+		var sessionErr error
+		if f.session != nil {
+			sessionErr = f.session.Close()
+		}
+		for _, child := range children {
+			if child.local != nil {
+				if err := child.local.Close(); err != nil && !expectedClosedConnError(err) {
+					cleanupErrs = append(cleanupErrs, err)
+				}
 			}
 			if child.remote != nil {
 				if err := child.remote.Close(); err != nil && !expectedClosedConnError(err) {
@@ -908,10 +938,29 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 				}
 			}
 		}
-		m.mu.Unlock()
+
+		timer := time.NewTimer(5 * time.Second)
+		timedOut := false
 		for _, child := range children {
-			<-child.done
+			if timedOut {
+				break
+			}
+			select {
+			case <-child.child.done:
+			case <-timer.C:
+				timedOut = true
+			}
 		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		if timedOut {
+			cleanupErrs = append(cleanupErrs, errors.New("portforward: child shutdown exceeded 5 seconds"))
+		}
+
 		m.mu.Lock()
 		if m.forwards[f.claims.ForwardingID] == f {
 			delete(m.forwards, f.claims.ForwardingID)
@@ -920,10 +969,7 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 			}
 		}
 		m.mu.Unlock()
-		var sessionErr error
-		if f.session != nil {
-			sessionErr = f.session.Close()
-		}
+
 		outcome := "success"
 		auditReason := reason
 		if len(cleanupErrs) > 0 || sessionErr != nil {
@@ -934,6 +980,7 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 		f.stopErr = errors.Join(errors.Join(cleanupErrs...), sessionErr, auditErr)
 		close(f.stopDone)
 	})
+	f.lifecycleMu.Unlock()
 	<-f.stopDone
 	return f.stopErr
 }

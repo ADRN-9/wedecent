@@ -18,6 +18,7 @@ import (
 const (
 	managedPortForwardReceiveWindow uint32 = 256 << 10
 	managedPortForwardMaxChildren = 64
+	managedPortForwardWriteTimeout = 5 * time.Second
 )
 
 type managedPortForwardState struct {
@@ -49,8 +50,8 @@ type managedPortForwardState struct {
 type ManagedPortForwardSession struct {
 	conn *tls.Conn
 
-	writeMu sync.Mutex
-	mu      sync.Mutex
+	writeLock chan struct{}
+	mu        sync.Mutex
 	states  map[uint32]*managedPortForwardState
 	nextID  uint32
 	parent  uint32
@@ -162,6 +163,7 @@ func (c *Client) OpenManagedPortForwardSession(ctx context.Context, peer trust.P
 	s := &ManagedPortForwardSession{
 		conn: conn, states: make(map[uint32]*managedPortForwardState),
 		nextID: protocol.MinTypedStreamID, done: make(chan struct{}),
+		writeLock: make(chan struct{}, 1),
 	}
 	go s.monitor()
 	if err := s.openParent(ctx, auth); err != nil {
@@ -530,36 +532,63 @@ func (s *ManagedPortForwardSession) closeState(state *managedPortForwardState, e
 }
 
 func (s *ManagedPortForwardSession) writeFrameContext(ctx context.Context, frame protocol.Frame, deadline time.Time) error {
+	if s == nil || s.conn == nil {
+		return io.ErrClosedPipe
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-s.done:
+		return io.ErrClosedPipe
+	case s.writeLock <- struct{}{}:
+	}
+	defer func() { <-s.writeLock }()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if ctxDeadline, ok := ctx.Deadline(); ok && (deadline.IsZero() || ctxDeadline.Before(deadline)) {
-		deadline = ctxDeadline
+	select {
+	case <-s.done:
+		return io.ErrClosedPipe
+	default:
 	}
-	if !deadline.IsZero() {
-		if err := s.conn.SetWriteDeadline(deadline); err != nil {
-			return err
-		}
+
+	writeDeadline := time.Now().Add(managedPortForwardWriteTimeout)
+	if !deadline.IsZero() && deadline.Before(writeDeadline) {
+		writeDeadline = deadline
 	}
+	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(writeDeadline) {
+		writeDeadline = ctxDeadline
+	}
+	if err := s.conn.SetWriteDeadline(writeDeadline); err != nil {
+		_ = s.finish()
+		return err
+	}
+	stopCancel := context.AfterFunc(ctx, func() {
+		// A canceled write may have emitted a partial frame; discard the parent.
+		_ = s.conn.Close()
+	})
 	writeErr := protocol.WriteFrame(s.conn, frame)
-	var resetErr error
-	if !deadline.IsZero() {
-		resetErr = s.conn.SetWriteDeadline(time.Time{})
-	}
+	stopCancel()
+	resetErr := s.conn.SetWriteDeadline(time.Time{})
 	if ctxErr := ctx.Err(); ctxErr != nil {
-		return errors.Join(ctxErr, resetErr)
+		finishErr := s.finish()
+		return errors.Join(ctxErr, writeErr, resetErr, finishErr)
 	}
-	return errors.Join(writeErr, resetErr)
+	if writeErr != nil || resetErr != nil {
+		finishErr := s.finish()
+		return errors.Join(writeErr, resetErr, finishErr)
+	}
+	return nil
 }
 
 func (s *ManagedPortForwardSession) finish() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
+		// Close the parent transport before waiting for child state cleanup.
+		connErr := s.conn.Close()
 		s.mu.Lock()
 		states := make([]*managedPortForwardState, 0, len(s.states))
 		for _, state := range s.states {
@@ -571,7 +600,7 @@ func (s *ManagedPortForwardSession) finish() error {
 			state.acceptOnce.Do(func() { state.accepted <- io.ErrClosedPipe })
 			s.closeState(state, io.ErrClosedPipe)
 		}
-		s.closeErr = s.conn.Close()
+		s.closeErr = connErr
 	})
 	return s.closeErr
 }
@@ -580,14 +609,8 @@ func (s *ManagedPortForwardSession) Close() error {
 	if s == nil {
 		return nil
 	}
-	s.mu.Lock()
-	parentID := s.parent
-	parent := s.states[parentID]
-	s.mu.Unlock()
-	if parent != nil && !channelClosed(parent.done) {
-		payload, _ := protocol.JSON(protocol.StreamClose{Reason: "forwarding_session_closed"})
-		_ = s.writeFrameContext(context.Background(), protocol.Frame{Type: protocol.TypeStreamClose, StreamID: parentID, Payload: payload}, time.Time{})
-	}
+	// Local shutdown is authoritative; a remote close frame is best-effort
+	// protocol hygiene and must never gate transport closure.
 	return s.finish()
 }
 

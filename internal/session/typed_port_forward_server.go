@@ -35,11 +35,13 @@ type typedPortForwardChild struct {
 	parent *typedPortForwardParent
 	conn   net.Conn
 
-	mu         sync.Mutex
-	sendCredit typedStreamCredit
-	recvCredit typedStreamCredit
-	creditCh   chan struct{}
-	done       chan struct{}
+	mu          sync.Mutex
+	sendCredit  typedStreamCredit
+	recvCredit  typedStreamCredit
+	creditCh    chan struct{}
+	writeCh     chan struct{}
+	writeBuffer []byte
+	done        chan struct{}
 	closeOnce  sync.Once
 }
 
@@ -206,7 +208,7 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 	child := &typedPortForwardChild{
 		id: frame.StreamID, parent: parent, conn: conn,
 		sendCredit: sendCredit, recvCredit: recvCredit,
-		creditCh: make(chan struct{}, 1), done: make(chan struct{}),
+		creditCh: make(chan struct{}, 1), writeCh: make(chan struct{}, 1), done: make(chan struct{}),
 	}
 	s.mu.Lock()
 	if s.closed || parent.closed || s.parents[parent.id] != parent {
@@ -226,6 +228,7 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 		_ = s.closeChild(frame.StreamID, "transport_write_failed", false)
 		return err
 	}
+	go s.forwardInput(child)
 	go s.forwardOutput(child)
 	return nil
 }
@@ -239,40 +242,87 @@ func (s *typedPortForwardServer) data(frame protocol.Frame) error {
 		return fmt.Errorf("%w: forwarding child is not open", errTypedStreamProtocol)
 	}
 	child.mu.Lock()
+	select {
+	case <-child.done:
+		child.mu.Unlock()
+		return fmt.Errorf("%w: forwarding child is closed", errTypedStreamProtocol)
+	default:
+	}
 	if err := child.recvCredit.consume(uint32(len(frame.Payload))); err != nil {
 		child.mu.Unlock()
 		return fmt.Errorf("%w: %v", errTypedStreamProtocol, err)
 	}
+	if len(child.writeBuffer)+len(frame.Payload) > int(portForwardReceiveWindow) {
+		child.mu.Unlock()
+		return fmt.Errorf("%w: forwarding destination queue exceeded its receive window", errTypedStreamProtocol)
+	}
+	child.writeBuffer = append(child.writeBuffer, frame.Payload...)
 	child.mu.Unlock()
-	for remaining := frame.Payload; len(remaining) > 0; {
-		n, err := child.conn.Write(remaining)
-		if err != nil || n == 0 {
-			_ = s.sendStreamError(frame.StreamID, "destination_write_failed", "destination connection write failed")
-			_ = s.closeChild(frame.StreamID, "destination_write_failed", false)
-			if err != nil {
-				return nil
-			}
-			return nil
-		}
-		remaining = remaining[n:]
-	}
-	update := protocol.StreamWindowUpdate{Bytes: uint32(len(frame.Payload))}
-	payload, err := protocol.JSON(update)
-	if err != nil {
-		return err
-	}
-	if err := s.write(protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: frame.StreamID, Payload: payload}); err != nil {
-		_ = s.closeChild(frame.StreamID, "transport_write_failed", false)
-		return err
-	}
-	child.mu.Lock()
-	err = child.recvCredit.add(uint32(len(frame.Payload)))
-	child.mu.Unlock()
-	if err != nil {
-		_ = s.closeChild(frame.StreamID, "credit_accounting_failed", false)
-		return fmt.Errorf("%w: %v", errTypedStreamProtocol, err)
+	select {
+	case child.writeCh <- struct{}{}:
+	default:
 	}
 	return nil
+}
+
+func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
+	for {
+		child.mu.Lock()
+		count := len(child.writeBuffer)
+		if count > protocol.MaxTypedStreamChunk {
+			count = protocol.MaxTypedStreamChunk
+		}
+		var data []byte
+		if count > 0 {
+			data = append([]byte(nil), child.writeBuffer[:count]...)
+			copy(child.writeBuffer, child.writeBuffer[count:])
+			child.writeBuffer = child.writeBuffer[:len(child.writeBuffer)-count]
+		}
+		child.mu.Unlock()
+
+		if len(data) == 0 {
+			select {
+			case <-s.ctx.Done():
+				return
+			case <-child.done:
+				return
+			case <-child.writeCh:
+				continue
+			}
+		}
+
+		for remaining := data; len(remaining) > 0; {
+			n, err := child.conn.Write(remaining)
+			if err != nil || n <= 0 {
+				if err == nil {
+					err = io.ErrShortWrite
+				}
+				if s.ctx.Err() == nil {
+					_ = s.sendStreamError(child.id, "destination_write_failed", "destination connection write failed")
+				}
+				_ = s.closeChild(child.id, "destination_write_failed", false)
+				return
+			}
+			remaining = remaining[n:]
+		}
+
+		payload, err := protocol.JSON(protocol.StreamWindowUpdate{Bytes: uint32(len(data))})
+		if err != nil {
+			_ = s.closeChild(child.id, "window_update_encode_failed", false)
+			return
+		}
+		if err := s.write(protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: child.id, Payload: payload}); err != nil {
+			_ = s.closeChild(child.id, "transport_write_failed", false)
+			return
+		}
+		child.mu.Lock()
+		err = child.recvCredit.add(uint32(len(data)))
+		child.mu.Unlock()
+		if err != nil {
+			_ = s.closeChild(child.id, "credit_accounting_failed", false)
+			return
+		}
+	}
 }
 
 func (s *typedPortForwardServer) windowUpdate(frame protocol.Frame) error {
