@@ -7,8 +7,8 @@ import (
 	"errors"
 	"io"
 	"net"
-	"sync"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
