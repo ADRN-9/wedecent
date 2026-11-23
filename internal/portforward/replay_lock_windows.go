@@ -57,7 +57,7 @@ func verifyReplayACL(path string) error {
 	if err != nil {
 		return fmt.Errorf("read current user SID: %w", err)
 	}
-	if user == nil || user.User.Sid == nil || !owner.Equals(user.User.Sid) {
+	if user == nil || user.User.Sid == nil || !windows.EqualSid(owner, user.User.Sid) {
 		return errors.New("replay object is not owned by the current user")
 	}
 	dacl, _, err := sd.DACL()
