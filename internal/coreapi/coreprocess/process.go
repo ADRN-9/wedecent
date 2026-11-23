@@ -161,6 +161,20 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	if cfg.Forwarding != nil {
 		forwardingConfig := *cfg.Forwarding
 		forwardingConfig.LocalDeviceID = mesh.DeviceID(id.ID)
+		if forwardingConfig.Connector == nil {
+			forwardingBackend, ok := connectionBackend.(coreconnect.ForwardingBackend)
+			if !ok {
+				_ = connectionService.Close()
+				return nil, errors.New("core process: configured connection backend does not support authenticated forwarding")
+			}
+			forwardingConfig.Connector = coreconnect.ForwardingConnector{Backend: forwardingBackend}
+		}
+		if forwardingConfig.PermissionAuthorizer == nil {
+			forwardingConfig.PermissionAuthorizer = portforward.CapabilityPermissionAuthorizer{}
+		}
+		if forwardingConfig.Limits == (portforward.ManagerLimits{}) {
+			forwardingConfig.Limits = portforward.DefaultManagerLimits()
+		}
 		if forwardingConfig.TrustChecker == nil {
 			forwardingConfig.TrustChecker = devices
 		}
