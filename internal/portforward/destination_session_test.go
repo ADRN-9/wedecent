@@ -346,6 +346,40 @@ func TestDestinationSessionTrustRevocationClosesChildStreams(t *testing.T) {
 	_ = remote.Close()
 }
 
+func TestDestinationSessionRouterTrustRevocationClosesChildren(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testRoutedClaims(now, DirectionLocal)
+	auth, publicKey := signDestinationTestAuthorization(t, claims)
+	auth.RouteAuthorization, _ = testRouteAuthorization(t, claims)
+	cfg, _, dialer, _ := newDestinationTestConfig(t, now, publicKey)
+	routerTrust := &destinationTestTrust{trusted: map[string]bool{string(testRouter): true}}
+	cfg.AuthenticatedRouterID = testRouter
+	cfg.RouterTrustChecker = routerTrust
+	session, err := NewDestinationSession(context.Background(), cfg, auth)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := session.OpenChild(context.Background())
+	if err != nil {
+		_ = session.Close()
+		t.Fatal(err)
+	}
+	remote := <-dialer.opened
+	defer remote.Close()
+	routerTrust.revoke(string(testRouter))
+	select {
+	case <-session.ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatal("destination session did not close after router trust revocation")
+	}
+	if err := session.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.Write([]byte("after-router-revocation")); err == nil {
+		t.Fatal("child remained writable after router trust revocation")
+	}
+}
+
 func TestDestinationSessionParentCancellationClosesChildren(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
