@@ -297,15 +297,22 @@ func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
 				if err == nil {
 					err = io.ErrShortWrite
 				}
+				_ = s.closeChild(child.id, "destination_write_failed", false)
 				if s.ctx.Err() == nil {
 					_ = s.sendStreamError(child.id, "destination_write_failed", "destination connection write failed")
 				}
-				_ = s.closeChild(child.id, "destination_write_failed", false)
 				return
 			}
 			remaining = remaining[n:]
 		}
 
+		child.mu.Lock()
+		err := child.recvCredit.add(uint32(len(data)))
+		child.mu.Unlock()
+		if err != nil {
+			_ = s.closeChild(child.id, "credit_accounting_failed", false)
+			return
+		}
 		payload, err := protocol.JSON(protocol.StreamWindowUpdate{Bytes: uint32(len(data))})
 		if err != nil {
 			_ = s.closeChild(child.id, "window_update_encode_failed", false)
@@ -313,13 +320,6 @@ func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
 		}
 		if err := s.write(protocol.Frame{Type: protocol.TypeStreamWindowUpdate, StreamID: child.id, Payload: payload}); err != nil {
 			_ = s.closeChild(child.id, "transport_write_failed", false)
-			return
-		}
-		child.mu.Lock()
-		err = child.recvCredit.add(uint32(len(data)))
-		child.mu.Unlock()
-		if err != nil {
-			_ = s.closeChild(child.id, "credit_accounting_failed", false)
 			return
 		}
 	}
