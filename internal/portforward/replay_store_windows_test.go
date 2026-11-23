@@ -225,7 +225,6 @@ func TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash(t *testing.T) {
 	}
 }
 
-
 func TestWindowsReplayRejectsUnauthorizedOrphanStagingACL(t *testing.T) {
 	path := newReplayTestPath(t)
 	replay, err := NewFileReplay(path, testInitiator)
