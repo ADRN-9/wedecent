@@ -15,15 +15,21 @@ import (
 var (
 	ErrWrongDestinationDevice   = errors.New("portforward: capability is not bound to this destination device")
 	ErrDestinationSessionClosed = errors.New("portforward: destination forwarding session is closed")
+	ErrRouterIdentityMismatch   = errors.New("portforward: authenticated router identity does not match authorization")
+	ErrRouterNotTrusted         = errors.New("portforward: routing trust domain does not trust the router")
 )
 
-// DestinationConfig.TrustChecker must reference the trust domain for
-// AuthenticatedPeerID: device trust for direct peers or route-router trust for routed peers.
+// DestinationConfig.TrustChecker must be the endpoint-device trust domain.
+// RouterTrustChecker must be the independent routing trust domain and is only
+// consulted when the capability binds a router. Both authenticated identities
+// must come from their respective verified TLS peer certificates.
 type DestinationConfig struct {
 	LocalDeviceID        mesh.DeviceID
 	AuthenticatedPeerID  mesh.DeviceID
+	AuthenticatedRouterID mesh.DeviceID
 	Verifier             Verifier
 	TrustChecker         PeerTrustChecker
+	RouterTrustChecker   PeerTrustChecker
 	TrustPollInterval    time.Duration
 	PermissionAuthorizer PermissionAuthorizer
 	Resolver             IPResolver
@@ -45,6 +51,7 @@ type DestinationSession struct {
 	trustChecker      PeerTrustChecker
 	trustPollInterval time.Duration
 	expiryReason      string
+	idleTimeout       time.Duration
 	maxChildren       int
 	dialTimeout       time.Duration
 	ctx               context.Context
@@ -101,18 +108,34 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		destinationDevice = claims.InitiatingDevice
 		peerDevice = claims.DestinationDevice
 	}
-	if claims.Router != "" {
-		peerDevice = claims.Router
-	}
 	if cfg.LocalDeviceID != destinationDevice {
 		return nil, ErrWrongDestinationDevice
 	}
 	if cfg.AuthenticatedPeerID != peerDevice {
 		return nil, ErrAuthorizationMismatch
 	}
+	if claims.Router == "" {
+		if cfg.AuthenticatedRouterID != "" {
+			return nil, ErrRouterIdentityMismatch
+		}
+	} else {
+		if cfg.AuthenticatedRouterID != claims.Router {
+			return nil, ErrRouterIdentityMismatch
+		}
+		if cfg.RouterTrustChecker == nil {
+			return nil, ErrRouterNotTrusted
+		}
+		routerTrusted, routerTrustErr := cfg.RouterTrustChecker.IsTrusted(ctx, string(cfg.AuthenticatedRouterID))
+		if routerTrustErr != nil || !routerTrusted {
+			return nil, errors.Join(ErrRouterNotTrusted, routerTrustErr)
+		}
+	}
 	trusted, trustErr := cfg.TrustChecker.IsTrusted(ctx, string(cfg.AuthenticatedPeerID))
 	if trustErr != nil || !trusted {
 		return nil, errors.Join(ErrPeerNotTrusted, trustErr)
+	}
+	if err := ValidateRouteAuthorizationBinding(auth); err != nil {
+		return nil, err
 	}
 
 	verified, err := cfg.Verifier.VerifyAndConsume(ctx, auth)
@@ -121,9 +144,6 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	}
 	if !sameClaims(claims, verified) {
 		return nil, ErrAuthorizationMismatch
-	}
-	if err := ValidateRouteAuthorizationBinding(auth); err != nil {
-		return nil, err
 	}
 	if err := cfg.PermissionAuthorizer.AuthorizePortForward(ctx, claims); err != nil {
 		return nil, err
@@ -146,7 +166,10 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	if !deadline.After(time.Now()) {
 		return nil, ErrAuthorizationExpired
 	}
-	sessionCtx, cancel := context.WithDeadline(context.Background(), deadline)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sessionCtx, cancel := context.WithDeadline(ctx, deadline)
 	session := &DestinationSession{
 		claims:            claims,
 		localID:           cfg.LocalDeviceID,
@@ -158,6 +181,7 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 		trustChecker:      cfg.TrustChecker,
 		trustPollInterval: trustPollInterval,
 		expiryReason:      expiryReason,
+		idleTimeout:       time.Duration(claims.Limits.IdleTimeoutSeconds) * time.Second,
 		maxChildren:       min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
 		dialTimeout:       cfg.DialTimeout,
 		ctx:               sessionCtx,
@@ -244,7 +268,11 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 		return nil, errors.Join(dialErr, auditErr)
 	}
 
-	child := &destinationChildConn{Conn: conn, session: s, id: childID}
+	child := &destinationChildConn{
+		Conn:    idleConn{Conn: conn, idle: s.idleTimeout},
+		session: s,
+		id:      childID,
+	}
 	s.mu.Lock()
 	if s.closed || s.children[childID] != nil {
 		delete(s.children, childID)
@@ -321,13 +349,17 @@ func (c *destinationChildConn) Close() error {
 	}
 	c.once.Do(func() {
 		connErr := c.Conn.Close()
+		outcome, reason := "success", ""
+		if connErr != nil {
+			outcome, reason = "failed", "child_connection_close_failed"
+		}
 		auditErr := c.session.audit.Append(destinationAuditEvent(
 			c.session.claims,
 			c.session.localID,
 			c.session.peerID,
 			"port_forward.destination_child_closed",
-			"success",
-			"",
+			outcome,
+			reason,
 		))
 		c.session.mu.Lock()
 		delete(c.session.children, c.id)
