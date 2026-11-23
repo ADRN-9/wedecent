@@ -881,6 +881,35 @@ func TestFileReplayInitializationCrashHelper(t *testing.T) {
 	}
 }
 
+func TestRejectExistingFileReplayStateFailsClosed(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	if err := RejectExistingFileReplayState(path); err != nil {
+		t.Fatalf("empty path rejected: %v", err)
+	}
+	for _, suffix := range []string{"", ".init", ".lock", ".anchor", ".pending", ".lock.bootstrap"} {
+		artifact := path + suffix
+		if err := os.WriteFile(artifact, []byte("existing replay state"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := RejectExistingFileReplayState(path); !errors.Is(err, ErrReplayUnavailable) {
+			t.Fatalf("artifact %q error = %v", suffix, err)
+		}
+		if err := os.Remove(artifact); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staging, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, "pending"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := staging.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := RejectExistingFileReplayState(path); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("staging artifact error = %v", err)
+	}
+}
+
 func TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap(t *testing.T) {
 	path := newReplayTestPath(t)
 	replay, err := NewFileReplay(path, testInitiator)

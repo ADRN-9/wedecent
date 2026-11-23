@@ -77,6 +77,24 @@ func verifyRemoteReplayTestRequest(t *testing.T, request remoteReplayTestRequest
 	}
 }
 
+func TestRemoteReplayCanonicalMessageMatchesGoFixture(t *testing.T) {
+	issued := time.Date(2027, 1, 15, 8, 0, 0, 0, time.UTC)
+	claims := testClaims(issued, DirectionLocal)
+	message, err := canonicalMessage("ed25519-fixture-key", claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "AAAAGHdlZGVjZW50LXBvcnQtZm9yd2FyZC12MQAAAAEAAAATZWQyNTUxOS1maXh0dXJlLWtleQAAABZ3ZWRlY2VudC1jb250cm9sLXBsYW5lAAAAF3dlZGVjZW50LXBvcnQtZm9yd2FyZGVyAAAAEnBvcnRfZm9yd2FyZC5sb2NhbAAAABZNREV5TXpRMU5qYzRPV0ZpWTJSbFpnAAAAJDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMQAAAAVsb2NhbAAAABN3ZF9hYWFhYWFhYWFhYWFhYWFhAAAAE3dkX2JiYmJiYmJiYmJiYmJiYmIAAAAAAAAAJDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMgAAABN3ZF9hYWFhYWFhYWFhYWFhYWFhAAAAE3dkX2JiYmJiYmJiYmJiYmJiYmIAAAALZXhhbXBsZS5jb20AAAAJMTI3LjAuMC4xAAAACGxvb3BiYWNrAAAAA3RjcAAAAaMYXFAAAAABoxhdr5AAAAAAAAABuwAAAAAAAKhzAAAAAAAAAAQAAAAAAAAAeAAAAAAAAAAeAAAAAQAAABN3ZF9hYWFhYWFhYWFhYWFhYWFhAAAAE3dkX2JiYmJiYmJiYmJiYmJiYmIAAAAIaW50ZXJuZXQAAAAAAAAADA"
+	if got := base64.RawURLEncoding.EncodeToString(message); got != want {
+		t.Fatalf("canonical message fixture mismatch:\n got %s\nwant %s", got, want)
+	}
+	digestInput := append(append([]byte(nil), message...), bytes.Repeat([]byte{1}, ed25519.SignatureSize)...)
+	digest := sha256.Sum256(digestInput)
+	if got := hex.EncodeToString(digest[:]); got != "050c6b5504afa088641d4b7f877450ee8f67c8cd2820fa0fb350713a503877d0" {
+		t.Fatalf("authorization digest fixture = %s", got)
+	}
+}
+
 func TestRemoteReplaySendsVerifiedCapabilityAndDeviceProof(t *testing.T) {
 	var devicePublic ed25519.PublicKey
 	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {

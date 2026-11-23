@@ -50,11 +50,22 @@ test('canonical capability message is deterministic and binds claims', () => {
   const original = canonicalPortForwardAuthorizationMessage(fixture)
   const repeated = canonicalPortForwardAuthorizationMessage(fixture)
   assert.deepEqual([...original], [...repeated])
+  assert.equal(encodeBase64URL(original), 'AAAAGHdlZGVjZW50LXBvcnQtZm9yd2FyZC12MQAAAAEAAAATZWQyNTUxOS1maXh0dXJlLWtleQAAABZ3ZWRlY2VudC1jb250cm9sLXBsYW5lAAAAF3dlZGVjZW50LXBvcnQtZm9yd2FyZGVyAAAAEnBvcnRfZm9yd2FyZC5sb2NhbAAAABZNREV5TXpRMU5qYzRPV0ZpWTJSbFpnAAAAJDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMQAAAAVsb2NhbAAAABN3ZF9hYWFhYWFhYWFhYWFhYWFhAAAAE3dkX2JiYmJiYmJiYmJiYmJiYmIAAAAAAAAAJDAwMDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMgAAABN3ZF9hYWFhYWFhYWFhYWFhYWFhAAAAE3dkX2JiYmJiYmJiYmJiYmJiYmIAAAALZXhhbXBsZS5jb20AAAAJMTI3LjAuMC4xAAAACGxvb3BiYWNrAAAAA3RjcAAAAaMYXFAAAAABoxhdr5AAAAAAAAABuwAAAAAAAKhzAAAAAAAAAAQAAAAAAAAAeAAAAAAAAAAeAAAAAQAAABN3ZF9hYWFhYWFhYWFhYWFhYWFhAAAAE3dkX2JiYmJiYmJiYmJiYmJiYmIAAAAIaW50ZXJuZXQAAAAAAAAADA')
+  const digestInput = new Uint8Array(original.length + 64)
+  digestInput.set(original)
+  digestInput.fill(1, original.length)
+  return crypto.subtle.digest('SHA-256', digestInput).then((digest) => {
+    assert.equal(
+      Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+      '050c6b5504afa088641d4b7f877450ee8f67c8cd2820fa0fb350713a503877d0',
+    )
+  }).then(() => {
   const changed = canonicalPortForwardAuthorizationMessage({
     ...fixture,
     claims: { ...fixture.claims, destination_port: 444 },
   })
   assert.notDeepEqual([...original], [...changed])
+  })
 })
 
 test('canonical capability rejects malformed or overlong claims', () => {
