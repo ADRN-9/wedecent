@@ -854,9 +854,6 @@ func (s *typedPortForwardServer) closeParent(streamID uint32, reason string, ack
 		return nil
 	}
 	s.beginParentClose(parent)
-		return nil
-	}
-
 	parent.closeOnce.Do(func() {
 		var errs []error
 		// Child cancellation is signalled above before any network cleanup.
