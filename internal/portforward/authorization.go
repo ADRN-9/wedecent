@@ -500,6 +500,8 @@ func ValidateRouteAuthorizationBinding(auth Authorization) error {
 		routeClaims.Permission != mesh.RouteAuthorizationPermission ||
 		routeClaims.Router != claims.Router ||
 		routeClaims.IssuedAtUnixMS <= 0 ||
+		routeClaims.IssuedAtUnixMS > claims.IssuedAtUnixMS ||
+		routeClaims.ExpiresUnixMS <= routeClaims.IssuedAtUnixMS ||
 		routeClaims.ExpiresUnixMS != claims.ExpiresAtUnixMS ||
 		routeClaims.ExpiresUnixMS-routeClaims.IssuedAtUnixMS > mesh.MaxRouteAuthorizationLifetime.Milliseconds() {
 		return ErrRouteAuthorizationMismatch
