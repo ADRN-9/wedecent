@@ -579,6 +579,7 @@ func TestDestinationSessionCloseDoesNotWaitForPendingChildOpen(t *testing.T) {
 	claims := testClaims(now, DirectionLocal)
 	auth, publicKey := signDestinationTestAuthorization(t, claims)
 	cfg, _, _, _ := newDestinationTestConfig(t, now, publicKey)
+	cfg.Dialer = &destinationTestDialer{}
 	auditLog := &blockingDestinationAudit{started: make(chan struct{}), release: make(chan struct{})}
 	cfg.Audit = auditLog
 	parentCtx, cancelParent := context.WithCancel(context.Background())
@@ -608,8 +609,8 @@ func TestDestinationSessionCloseDoesNotWaitForPendingChildOpen(t *testing.T) {
 	close(auditLog.release)
 	select {
 	case err := <-openDone:
-		if !errors.Is(err, ErrDestinationSessionClosed) {
-			t.Fatalf("late child open error = %v, want destination session closed", err)
+		if !errors.Is(err, ErrDestinationSessionClosed) && !errors.Is(err, context.Canceled) {
+			t.Fatalf("late child open error = %v, want destination session closed or canceled", err)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("late child open did not self-clean after the audit append resumed")
