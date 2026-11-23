@@ -304,6 +304,11 @@ jobs:
             sha256sum -c SHA256SUMS.txt
             sha256sum -c PACKAGE_SHA256SUMS.txt
           )
+          for directory in \
+            dist/wedecent-linux-amd64 dist/wedecent-linux-arm64 \
+            dist/wedecent-macos-amd64 dist/wedecent-macos-arm64; do
+            (cd "$directory" && sha256sum -c SHA256SUMS.txt)
+          done
 
   windows-signing:
     needs: verify-artifacts
@@ -331,6 +336,23 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Fail closed on missing protected signing inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
+          [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
+          [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256" ]]
+          for name in WEDECENT_WINDOWS_AUTHENTICODE_SIGNER WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER; do
+            value="${!name}"
+            [[ "$value" == /* && -f "$value" && -x "$value" && ! -L "$value" ]]
+          done
+          for command in gh python git sha256sum realpath; do
+            command -v "$command" >/dev/null 2>&1
+          done
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: wedecent-windows-${{ github.sha }}
@@ -431,6 +453,23 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Fail closed on missing protected publication inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
+          [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
+          [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256" ]]
+          for name in WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER WEDECENT_R2_CREATE_ONLY_UPLOADER; do
+            value="${!name}"
+            [[ "$value" == /* && -f "$value" && -x "$value" && ! -L "$value" ]]
+          done
+          for command in gh python3 curl sha256sum realpath; do
+            command -v "$command" >/dev/null 2>&1
+          done
       - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: wedecent-windows-signed-${{ github.sha }}
@@ -492,6 +531,27 @@ jobs:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Fail closed on missing protected stable-update inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
+          [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
+          [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
+          [[ -n "$WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256" ]]
+          for name in WEDECENT_UPDATE_MANIFEST_SIGNER WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER; do
+            value="${!name}"
+            [[ "$value" == /* && -f "$value" && -x "$value" && ! -L "$value" ]]
+          done
+          [[ "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" == /* ]]
+          [[ -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
+          [[ "$WEDECENT_UPDATE_SEQUENCE" =~ ^[1-9][0-9]*$ ]]
+          [[ -n "$WEDECENT_UPDATE_PUBLISHED_AT" ]]
+          for command in curl sha256sum realpath; do
+            command -v "$command" >/dev/null 2>&1
+          done
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.0'
