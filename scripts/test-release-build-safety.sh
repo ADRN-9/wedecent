@@ -100,4 +100,66 @@ fi
   exit 1
 }
 
-printf 'Release build output containment and overwrite regressions passed.\n'
+
+RELEASE_FIXTURE="$WORK/installer-release"
+mkdir -p "$RELEASE_FIXTURE"
+INSTALLER_BINARIES=(wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe)
+for name in "${INSTALLER_BINARIES[@]}"; do
+  printf 'installer fixture: %s\n' "$name" > "$RELEASE_FIXTURE/$name"
+done
+printf 'version=0.0.0-diagnostic\nbuild_mode=diagnostic\n' > "$RELEASE_FIXTURE/VERSION.txt"
+(
+  cd "$RELEASE_FIXTURE"
+  sha256sum "${INSTALLER_BINARIES[@]}" > SHA256SUMS.txt
+)
+PACKAGE_OUT="$WORK/installer-package"
+RELEASE_DIR="$RELEASE_FIXTURE" OUT_DIR="$PACKAGE_OUT" \
+  "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null
+(
+  cd "$PACKAGE_OUT"
+  sha256sum -c PACKAGE_SHA256SUMS.txt >/dev/null
+)
+
+mkdir -p "$WORK/existing-installer-package"
+printf 'preserve installer output\n' > "$WORK/existing-installer-package/sentinel"
+if RELEASE_DIR="$RELEASE_FIXTURE" OUT_DIR="$WORK/existing-installer-package" \
+   "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null 2>&1; then
+  printf 'test-release-build-safety: installer builder overwrote an existing output\n' >&2
+  exit 1
+fi
+[[ "$(cat "$WORK/existing-installer-package/sentinel")" == 'preserve installer output' ]] || {
+  printf 'test-release-build-safety: existing installer output was modified\n' >&2
+  exit 1
+}
+
+if RELEASE_DIR="$RELEASE_FIXTURE" OUT_DIR="$WORK/installer-output-link" \
+   "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null 2>&1; then
+  printf 'test-release-build-safety: installer builder accepted a symlink output\n' >&2
+  exit 1
+fi
+if RELEASE_DIR="$RELEASE_FIXTURE" OUT_DIR="$WORK/parent-link/nested-package" \
+   "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null 2>&1; then
+  printf 'test-release-build-safety: installer builder accepted a symlink parent\n' >&2
+  exit 1
+fi
+
+ln -s "$RELEASE_FIXTURE" "$WORK/release-link"
+if RELEASE_DIR="$WORK/release-link" OUT_DIR="$WORK/symlink-input-package" \
+   "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null 2>&1; then
+  printf 'test-release-build-safety: installer builder accepted a symlink release input\n' >&2
+  exit 1
+fi
+
+mkdir -p "$OUTSIDE/installer-package"
+printf 'preserve outside installer output\n' > "$OUTSIDE/installer-package/sentinel"
+if RELEASE_DIR="$RELEASE_FIXTURE" OUT_DIR="$OUTSIDE/installer-package" \
+   "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null 2>&1; then
+  printf 'test-release-build-safety: installer builder accepted an output outside dist\n' >&2
+  exit 1
+fi
+[[ "$(cat "$OUTSIDE/installer-package/sentinel")" == 'preserve outside installer output' ]] || {
+  printf 'test-release-build-safety: outside installer output was modified\n' >&2
+  exit 1
+}
+
+printf 'Release build and installer output containment and overwrite regressions passed.\n'

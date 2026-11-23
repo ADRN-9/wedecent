@@ -60,6 +60,27 @@ wedecent_require_approved_replay_trust() {
   REPLAY_AUTHORITY_APPROVAL_SHA256="$approval"
 }
 
+wedecent_require_production_release_context() {
+  local version="$1"
+  local expected="${GITHUB_SHA:-}"
+
+  [[ "${GITHUB_ACTIONS:-}" == "true" ]] ||
+    wedecent_release_fail "production signing and publication must run in GitHub Actions" || return 1
+  [[ "${GITHUB_REPOSITORY:-}" == "ADRN-9/wedecent" ]] ||
+    wedecent_release_fail "production release context is not ADRN-9/wedecent" || return 1
+  [[ "${WEDECENT_PRODUCTION_RELEASE_APPROVED:-}" == "true" ]] ||
+    wedecent_release_fail "protected production-release environment approval marker is missing" || return 1
+  [[ "${GITHUB_REF_TYPE:-}" == "tag" && "${GITHUB_REF_NAME:-}" == "v$version" ]] ||
+    wedecent_release_fail "release artifact version does not match the protected Git tag" || return 1
+  [[ "$expected" =~ ^[0-9a-f]{40}$ ]] ||
+    wedecent_release_fail "trusted GitHub GITHUB_SHA is missing or malformed" || return 1
+  if [[ -n "${WEDECENT_EXPECTED_SOURCE_SHA:-}" && "${WEDECENT_EXPECTED_SOURCE_SHA}" != "$expected" ]]; then
+    wedecent_release_fail "WEDECENT_EXPECTED_SOURCE_SHA overrides the trusted GitHub GITHUB_SHA" || return 1
+  fi
+  WEDECENT_EXPECTED_SOURCE_SHA="$expected"
+  export WEDECENT_EXPECTED_SOURCE_SHA
+}
+
 wedecent_require_production_provenance() {
   local root="$1"
   local version="$2"

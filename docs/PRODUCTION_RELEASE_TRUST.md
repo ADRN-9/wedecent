@@ -60,6 +60,6 @@ Before signing, installer preparation, or public publication, the scripts requir
 - valid source-tree provenance metadata;
 - both wd-core and wd-agent containing the approved anchors.
 
-The expected source SHA must come from the protected release workflow's immutable GitHub context, not from artifact metadata supplied by an untrusted caller. Do not accept a SHA copied from an untrusted archive as independent provenance.
+Signing, installer preparation, and publication require GitHub Actions context for ADRN-9/wedecent, a tag whose name matches the artifact version, and the protected approval marker. GITHUB_SHA is authoritative. If WEDECENT_EXPECTED_SOURCE_SHA is supplied, it must exactly equal GITHUB_SHA; an override is rejected. Do not accept a SHA copied from an untrusted archive as independent provenance.
 
-This work does not provision production trust anchors, a Windows Authenticode signing identity, a Linux/macOS signing identity, or public-storage credentials. Those are human/provider dependencies. No signing, publication, merge, or deployment is performed by the repository build jobs.
+The production workflow builds Windows, Linux, and macOS artifacts, but it does not sign or publish them. This work does not provision production trust anchors, a Windows Authenticode signing identity, a Linux/macOS signing identity, or public-storage credentials. Those are human/provider dependencies. No signing, publication, merge, or deployment is performed by the repository build jobs.

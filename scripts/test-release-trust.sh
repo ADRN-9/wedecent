@@ -12,8 +12,14 @@ fail() {
 HOSTNAME='replay.example.test'
 PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 APPROVAL="$(wedecent_replay_authority_approval_digest "$HOSTNAME" "$PINS")"
-SOURCE_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+SOURCE_SHA="${GITHUB_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
 TREE_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+export GITHUB_ACTIONS=true
+export GITHUB_REPOSITORY='ADRN-9/wedecent'
+export GITHUB_SHA="$SOURCE_SHA"
+export GITHUB_REF_TYPE=tag
+export GITHUB_REF_NAME='v0.0.0-test'
+export WEDECENT_PRODUCTION_RELEASE_APPROVED=true
 WORK="$(mktemp -d)"
 trap 'rm -rf -- "$WORK"' EXIT
 FIXTURE="$WORK/release"
@@ -43,6 +49,13 @@ done
 
 wedecent_require_approved_replay_trust || fail 'approved test trust configuration was rejected'
 wedecent_verify_release_metadata "$FIXTURE" || fail 'valid production release fixture was rejected'
+
+if (WEDECENT_EXPECTED_SOURCE_SHA='cccccccccccccccccccccccccccccccccccccccc'; wedecent_verify_release_metadata "$FIXTURE"); then
+  fail 'caller-overridden expected source SHA was accepted'
+fi
+if (unset WEDECENT_PRODUCTION_RELEASE_APPROVED; wedecent_verify_release_metadata "$FIXTURE"); then
+  fail 'release verification accepted a missing protected-environment approval marker'
+fi
 
 cp "$FIXTURE/VERSION.txt" "$WORK/VERSION.good"
 sed 's/^replay_authority_hostname=replay.example.test$/replay_authority_hostname=other.example.test/' \
