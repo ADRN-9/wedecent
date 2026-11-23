@@ -374,6 +374,39 @@ func TestManagerMultiplexesMultipleChildrenOverOneParentSession(t *testing.T) {
 	if _, err := io.ReadFull(secondRemote, secondBytes); err != nil || string(secondBytes) != "two" {
 		t.Fatalf("second child payload = %q, error = %v", secondBytes, err)
 	}
+
+	_ = firstClient.Close()
+	deadline := time.After(time.Second)
+	for len(manager.List()) == 0 || manager.List()[0].ActiveConnections != 1 {
+		select {
+		case <-deadline:
+			t.Fatal("first child did not release its parent-session slot")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	thirdClient, thirdCore := net.Pipe()
+	if !listener.inject(thirdCore) {
+		t.Fatal("sequential child listener injection failed")
+	}
+	defer thirdClient.Close()
+	var thirdRemote net.Conn
+	select {
+	case thirdRemote = <-connector.opened:
+	case <-time.After(time.Second):
+		t.Fatal("sequential child stream was not opened")
+	}
+	defer thirdRemote.Close()
+	if connector.callCount() != 1 {
+		t.Fatalf("sequential child opened %d parent sessions, want one", connector.callCount())
+	}
+	if _, err := thirdClient.Write([]byte("three")); err != nil {
+		t.Fatal(err)
+	}
+	thirdBytes := make([]byte, 5)
+	if _, err := io.ReadFull(thirdRemote, thirdBytes); err != nil || string(thirdBytes) != "three" {
+		t.Fatalf("sequential child payload = %q, error = %v", thirdBytes, err)
+	}
+
 	if err := manager.Stop(context.Background(), claims.ForwardingID); err != nil {
 		t.Fatal(err)
 	}
