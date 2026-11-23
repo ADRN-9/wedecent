@@ -4,7 +4,7 @@ Status: Local Core lifecycle and authorization foundations are implemented; forw
 
 ## Authorization contract
 
-The internal/portforward package defines a separate Ed25519-signed capability profile. It is not a terminal grant and does not reuse mesh.forward or router-administration trust. The canonical signed message is domain separated as wedecent-port-forward-v1 and binds:
+The internal/portforward package defines a separate Ed25519-signed capability profile. It is not a terminal grant and does not imply mesh.forward or router-administration permission. The canonical signed message is domain separated as wedecent-port-forward-v1 and binds:
 
 - forwarding ID, direction, initiating and destination device IDs;
 - optional router ID and the exact ordered route (ID, endpoints, hops, transports, costs and expiry);
@@ -12,7 +12,7 @@ The internal/portforward package defines a separate Ed25519-signed capability pr
 - exact listener address, port and exposure policy;
 - issue/expiry times, single-use JTI and bounded connection/duration/idle limits.
 
-For local forwarding the listener is on the initiating device and the route runs initiator-to-destination. For remote forwarding the listener is on the destination device and the route runs destination-to-initiator; the destination host/port is on the route's final endpoint. The listener endpoint is derived from the direction and checked against the Local Core identity.
+For local forwarding the listener is on the initiating device and the route runs initiator-to-destination. For remote forwarding the listener is on the destination device and the route runs destination-to-initiator; the destination host/port is on the route's final endpoint. The listener endpoint is derived from the direction and checked against the Local Core identity. A routed path additionally requires a separately signed mesh.RouteAuthorization; the port-forward capability's route description is not itself a routing grant. Local Core checks that both capabilities bind the exact same route, while the router independently verifies and consumes the route capability under the routing trust domain.
 
 The signer accepts crypto.Signer rather than private-key byte slices, derives its key ID from the Ed25519 public key and verifies the signature against that public key before returning a capability. Capabilities are valid for at most 120 seconds. The verifier checks canonical signature/JTI encodings, key ID, signature, exact claims, expiry and atomic replay consumption. MemoryReplay is explicitly for tests/development only; production must supply durable per-device replay storage. Each endpoint consumes the JTI in its own Local Core store; replay state must not be shared globally between the two endpoint devices.
 
@@ -22,7 +22,7 @@ coreprocess.Config.Forwarding can compose a forwarding manager into the Local Co
 
 Local and remote listeners default to loopback through DefaultListenerPolicy. Non-loopback or privileged listeners require the separate ListenerAuthorizer seam; a signed forwarding capability alone cannot grant public exposure. Listener bind addresses must be literal canonical IPs; wildcard, link-local and invalid exposure combinations fail closed.
 
-The Connector seam receives the complete signed Authorization, must open an authenticated WeDecent stream, preserve the forwarding ID and signed authorization at the destination endpoint, and honor context cancellation. The destination endpoint must independently verify the signature, local device identity, route and permission, then consume the JTI in its own device-scoped replay store. The destination-side typed-stream open/dial handler is not yet connected in this batch.
+The Connector seam receives the complete signed Authorization, including the independently signed route authorization when a router is present. It must open an authenticated WeDecent stream, preserve both capabilities and the forwarding ID, and honor context cancellation. The destination endpoint must independently verify the port-forward signature, local device identity and dedicated permission, then consume the port-forward JTI in its own device-scoped replay store. The router must independently verify and consume the separate mesh.RouteAuthorization; neither capability substitutes for the other. The destination-side typed-stream open/dial handler is not yet connected in this batch.
 
 ## Destination policy
 
