@@ -18,7 +18,7 @@ The signer accepts crypto.Signer rather than private-key byte slices, derives it
 
 ## Local Core lifecycle
 
-coreprocess.Config.Forwarding can compose a forwarding manager into the Local Core runtime. It is optional and disabled unless configured. Manager construction requires a Local Core PermissionAuthorizer that checks the exact port.forward.local or port.forward.remote grant; terminal.connect and mesh.forward are never substitutes. The manager owns listener creation, authorization, connection limits, child connection lifecycle, cancellation, revocation and audit writes. Device revocation also cancels in-flight start reservations. The desktop renderer is not given socket or destination-dialing APIs.
+coreprocess.Config.Forwarding can compose a forwarding manager into the Local Core runtime. It is optional and disabled unless configured. Manager construction requires a Local Core PermissionAuthorizer that checks the exact port_forward.local or port_forward.remote grant; terminal.connect and mesh.forward are never substitutes. The manager owns listener creation, authorization, connection limits, child connection lifecycle, cancellation, revocation and audit writes. Device revocation also cancels in-flight start reservations. The desktop renderer is not given socket or destination-dialing APIs.
 
 Local and remote listeners default to loopback through DefaultListenerPolicy. Non-loopback or privileged listeners require the separate ListenerAuthorizer seam; a signed forwarding capability alone cannot grant public exposure. Listener bind addresses must be literal canonical IPs; wildcard, link-local and invalid exposure combinations fail closed.
 
