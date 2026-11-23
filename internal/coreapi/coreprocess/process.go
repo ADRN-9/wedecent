@@ -16,6 +16,7 @@ import (
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
 	"wedecent.com/wedecent/internal/coreconnect"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/mesh"
 	"wedecent.com/wedecent/internal/portforward"
 	"wedecent.com/wedecent/internal/trust"
 )
@@ -157,7 +158,7 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	var forwardingManager *portforward.Manager
 	if cfg.Forwarding != nil {
 		forwardingConfig := *cfg.Forwarding
-		forwardingConfig.LocalDeviceID = id.ID
+		forwardingConfig.LocalDeviceID = mesh.DeviceID(id.ID)
 		if forwardingConfig.Audit == nil {
 			forwardingAudit, auditErr := audit.Open(stateDir)
 			if auditErr != nil {
