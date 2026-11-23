@@ -216,10 +216,14 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
-      - name: Check route authorization encoder syntax
-        run: node --check supabase/functions/_shared/route-authorization.mjs
+      - name: Check route authorization encoder and signer syntax
+        run: |
+          node --check supabase/functions/_shared/route-authorization.mjs
+          node --check supabase/functions/_shared/route-authorization-signer.mjs
       - name: Test Go-compatible route authorization signing
         run: node --test supabase/functions/_shared/route-authorization.test.mjs
+      - name: Test non-extractable route authorization signer
+        run: node --test supabase/functions/_shared/route-authorization-signer.test.mjs
       - name: Type-check route authorization Edge Function
         run: deno check supabase/functions/route-authorization/index.ts
 

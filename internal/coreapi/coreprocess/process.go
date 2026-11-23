@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"wedecent.com/wedecent/internal/account"
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/coreapi"
 	"wedecent.com/wedecent/internal/coreapi/ipc"
 	"wedecent.com/wedecent/internal/coreapi/localipc"
@@ -15,6 +16,7 @@ import (
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
 	"wedecent.com/wedecent/internal/coreconnect"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/portforward"
 	"wedecent.com/wedecent/internal/trust"
 )
 
@@ -28,6 +30,7 @@ type Config struct {
 	ConnectionBackend coreapi.ConnectionBackend
 	RouteSource       coreconnect.RouteRequestSource
 	RouterService     v1.RouterService
+	Forwarding        *portforward.ManagerConfig
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection
@@ -35,19 +38,24 @@ type Config struct {
 type Runtime struct {
 	Server      *ipc.Server
 	Connections *coreapi.ConnectionService
+	Forwarding  *portforward.Manager
 }
 
 func (r *Runtime) Close() error {
-	if r == nil || r.Connections == nil {
-		return nil
-	}
-	return r.Connections.Close()
+	if r == nil { return nil }
+	var errs []error
+	if r.Forwarding != nil { errs = append(errs, r.Forwarding.Close()) }
+	if r.Connections != nil { errs = append(errs, r.Connections.Close()) }
+	return errors.Join(errs...)
 }
 
 // Open composes the Local Core API from existing client state. Identity state is
 // never created or renewed. Account credentials are accepted only by the account
 // service and returned auth tokens remain inside the core/session store.
 func Open(cfg Config) (*ipc.Server, error) {
+	if cfg.Forwarding != nil {
+		return nil, errors.New("core process: forwarding requires OpenRuntime lifecycle ownership")
+	}
 	runtime, err := OpenRuntime(cfg)
 	if err != nil {
 		return nil, err
@@ -140,20 +148,42 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose connection service: %w", err)
 	}
+	var forwardingManager *portforward.Manager
+	if cfg.Forwarding != nil {
+		forwardingConfig := *cfg.Forwarding
+		forwardingConfig.LocalDeviceID = id.ID
+		if forwardingConfig.Audit == nil {
+			forwardingAudit, auditErr := audit.Open(stateDir)
+			if auditErr != nil {
+				_ = connectionService.Close()
+				return nil, fmt.Errorf("core process: open forwarding audit log: %w", auditErr)
+			}
+			forwardingConfig.Audit = forwardingAudit
+		}
+		forwardingManager, err = portforward.NewManager(forwardingConfig)
+		if err != nil {
+			_ = connectionService.Close()
+			return nil, fmt.Errorf("core process: compose port forwarding manager: %w", err)
+		}
+	}
+
 	fileTransferService, err := coreapi.NewFileTransferService(coreapi.FileTransferServiceConfig{
 		Connections: connectionService,
 	})
 	if err != nil {
+		if forwardingManager != nil { _ = forwardingManager.Close() }
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose file transfer service: %w", err)
 	}
 	idempotentConnections, err := coreapi.NewConnectIdempotencyService(connectionService)
 	if err != nil {
+		if forwardingManager != nil { _ = forwardingManager.Close() }
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose connect idempotency service: %w", err)
 	}
 	idempotentTerminal, err := coreapi.NewTerminalWriteIdempotencyService(connectionService)
 	if err != nil {
+		if forwardingManager != nil { _ = forwardingManager.Close() }
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose terminal write idempotency service: %w", err)
 	}
@@ -170,10 +200,11 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		Router:       cfg.RouterService,
 	})
 	if err != nil {
+		if forwardingManager != nil { _ = forwardingManager.Close() }
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose IPC server: %w", err)
 	}
-	return &Runtime{Server: server, Connections: connectionService}, nil
+	return &Runtime{Server: server, Connections: connectionService, Forwarding: forwardingManager}, nil
 }
 
 // OpenReadOnly preserves a credential-free composition for callers that do not

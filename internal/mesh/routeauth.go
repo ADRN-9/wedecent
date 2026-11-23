@@ -3,6 +3,7 @@ package mesh
 import (
 	"bytes"
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
@@ -190,11 +191,15 @@ func NewRouteAuthorizationClaims(
 // The returned authorization owns a clone of the route hop slice so later
 // mutation by the caller cannot change what the object claims to authorize.
 func SignRouteAuthorization(
-	privateKey ed25519.PrivateKey,
+	signer crypto.Signer,
 	keyID string,
 	claims RouteAuthorizationClaims,
 ) (RouteAuthorization, error) {
-	if len(privateKey) != ed25519.PrivateKeySize {
+	if signer == nil {
+		return RouteAuthorization{}, ErrRouteAuthorizationInvalid
+	}
+	publicKey, ok := signer.Public().(ed25519.PublicKey)
+	if !ok || len(publicKey) != ed25519.PublicKeySize {
 		return RouteAuthorization{}, ErrRouteAuthorizationInvalid
 	}
 
@@ -211,9 +216,11 @@ func SignRouteAuthorization(
 		return RouteAuthorization{}, err
 	}
 
-	auth.Signature = base64.RawURLEncoding.EncodeToString(
-		ed25519.Sign(privateKey, message),
-	)
+	signature, err := signer.Sign(rand.Reader, message, crypto.Hash(0))
+	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(publicKey, message, signature) {
+		return RouteAuthorization{}, fmt.Errorf("%w: signer/public-key mismatch", ErrRouteAuthorizationSignature)
+	}
+	auth.Signature = base64.RawURLEncoding.EncodeToString(signature)
 	return auth, nil
 }
 

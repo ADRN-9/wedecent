@@ -33,8 +33,11 @@ type Event struct {
 	ActorID   string    `json:"actor_id,omitempty"`
 	PeerID    string    `json:"peer_id,omitempty"`
 	Transport string    `json:"transport,omitempty"`
-	StreamID  uint32    `json:"stream_id,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
+	StreamID     uint32    `json:"stream_id,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	ForwardingID string    `json:"forwarding_id,omitempty"`
+	Direction    string    `json:"direction,omitempty"`
+	Destination  string    `json:"destination,omitempty"`
 }
 
 type Log struct {
@@ -121,6 +124,9 @@ func validateEvent(event *Event) error {
 	event.PeerID = strings.TrimSpace(event.PeerID)
 	event.Transport = strings.TrimSpace(event.Transport)
 	event.Reason = strings.TrimSpace(event.Reason)
+	event.ForwardingID = strings.TrimSpace(event.ForwardingID)
+	event.Direction = strings.TrimSpace(event.Direction)
+	event.Destination = strings.TrimSpace(event.Destination)
 	if !eventNamePattern.MatchString(event.Type) {
 		return errors.New("audit event type is invalid")
 	}
@@ -130,6 +136,8 @@ func validateEvent(event *Event) error {
 	for name, value := range map[string]string{
 		"actor_id": event.ActorID, "peer_id": event.PeerID,
 		"transport": event.Transport, "reason": event.Reason,
+		"forwarding_id": event.ForwardingID, "direction": event.Direction,
+		"destination": event.Destination,
 	} {
 		if len(value) > maxFieldLength {
 			return fmt.Errorf("audit field %s exceeds size limit", name)
