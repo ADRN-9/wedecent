@@ -21,6 +21,7 @@ type DestinationConfig struct {
 	LocalDeviceID        mesh.DeviceID
 	AuthenticatedPeerID  mesh.DeviceID
 	Verifier             Verifier
+	TrustChecker         PeerTrustChecker
 	PermissionAuthorizer PermissionAuthorizer
 	Resolver             IPResolver
 	Dialer               ContextDialer
@@ -64,7 +65,7 @@ type destinationChildConn struct {
 func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Authorization) (*DestinationSession, error) {
 	if ctx == nil || !deviceIDPattern.MatchString(string(cfg.LocalDeviceID)) ||
 		!deviceIDPattern.MatchString(string(cfg.AuthenticatedPeerID)) ||
-		cfg.Verifier == nil || cfg.PermissionAuthorizer == nil ||
+		cfg.Verifier == nil || cfg.TrustChecker == nil || cfg.PermissionAuthorizer == nil ||
 		cfg.Resolver == nil || cfg.Dialer == nil || cfg.Audit == nil ||
 		cfg.MaxConnections < 1 || cfg.MaxConnections > 64 ||
 		cfg.DialTimeout < time.Second || cfg.DialTimeout > 30*time.Second {
@@ -95,6 +96,10 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	}
 	if cfg.AuthenticatedPeerID != peerDevice {
 		return nil, ErrAuthorizationMismatch
+	}
+	trusted, trustErr := cfg.TrustChecker.IsTrusted(ctx, string(cfg.AuthenticatedPeerID))
+	if trustErr != nil || !trusted {
+		return nil, errors.Join(ErrPeerNotTrusted, trustErr)
 	}
 
 	verified, err := cfg.Verifier.VerifyAndConsume(ctx, auth)
