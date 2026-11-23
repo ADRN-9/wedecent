@@ -211,6 +211,7 @@ func managerTestLimits() ManagerLimits {
 }
 
 type managerTestTrustChecker struct {
+	mu      *sync.RWMutex
 	trusted map[string]bool
 }
 
@@ -218,7 +219,19 @@ func (t managerTestTrustChecker) IsTrusted(ctx context.Context, id string) (bool
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
+	if t.mu != nil {
+		t.mu.RLock()
+		defer t.mu.RUnlock()
+	}
 	return t.trusted[id], nil
+}
+
+func (t managerTestTrustChecker) revoke(id string) {
+	if t.mu != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+	}
+	delete(t.trusted, id)
 }
 
 func newManagerForTest(t *testing.T, local mesh.DeviceID, claims Claims, connector Connector, auditLog *memoryAudit, admin ListenerAuthorizer, listen func(string, string) (net.Listener, error)) (*Manager, Authorization, *queueListener) {
@@ -1045,4 +1058,266 @@ func TestManagerConnectionAuditFailureTerminatesForward(t *testing.T) {
 		t.Fatal("child connection survived audit persistence failure")
 	}
 	_ = client.Close()
+}
+
+
+type managerSignalWriteConn struct {
+	net.Conn
+	started chan struct{}
+	once    sync.Once
+}
+
+func (c *managerSignalWriteConn) Write(p []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	return c.Conn.Write(p)
+}
+
+type managerBlockedForwardingSession struct {
+	mu       sync.Mutex
+	closed   bool
+	children map[net.Conn]struct{}
+	opened   chan net.Conn
+	started  chan struct{}
+}
+
+func (s *managerBlockedForwardingSession) OpenChild(ctx context.Context) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	local, remote := net.Pipe()
+	child := &managerSignalWriteConn{Conn: local, started: s.started}
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = child.Close()
+		_ = remote.Close()
+		return nil, ErrManagerClosed
+	}
+	s.children[child] = struct{}{}
+	s.mu.Unlock()
+	select {
+	case s.opened <- remote:
+		return child, nil
+	case <-ctx.Done():
+		_ = child.Close()
+		_ = remote.Close()
+		return nil, ctx.Err()
+	}
+}
+
+func (s *managerBlockedForwardingSession) Close() error {
+	s.mu.Lock()
+	s.closed = true
+	children := make([]net.Conn, 0, len(s.children))
+	for child := range s.children {
+		children = append(children, child)
+	}
+	s.children = make(map[net.Conn]struct{})
+	s.mu.Unlock()
+	var errs []error
+	for _, child := range children {
+		if err := child.Close(); err != nil && !expectedClosedConnError(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+type managerBlockedConnector struct {
+	opened  chan net.Conn
+	started chan struct{}
+}
+
+func (c *managerBlockedConnector) Open(ctx context.Context, _ Authorization) (ForwardingSession, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return &managerBlockedForwardingSession{
+		children: make(map[net.Conn]struct{}),
+		opened: c.opened, started: c.started,
+	}, nil
+}
+
+type managerBlockingCloseConn struct {
+	net.Conn
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	closeErr error
+}
+
+func (c *managerBlockingCloseConn) Close() error {
+	c.once.Do(func() {
+		close(c.started)
+		<-c.release
+		c.closeErr = c.Conn.Close()
+	})
+	return c.closeErr
+}
+
+func newManagerForTestWithTrustChecker(
+	t *testing.T,
+	local mesh.DeviceID,
+	claims Claims,
+	connector Connector,
+	trustChecker PeerTrustChecker,
+	pollInterval time.Duration,
+) (*Manager, Authorization, *queueListener) {
+	t.Helper()
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth, err := SignAuthorization(privateKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := NewMemoryReplay(32)
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	replay.Now = func() time.Time { return now }
+	verifier := AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }}
+	listener := newQueueListener()
+	auditLog := &memoryAudit{}
+	manager, err := NewManager(ManagerConfig{
+		LocalDeviceID: local,
+		Verifier: verifier,
+		TrustChecker: trustChecker,
+		RouterTrustChecker: managerTestTrustChecker{trusted: map[string]bool{string(testRouter): true}},
+		TrustPollInterval: pollInterval,
+		PermissionAuthorizer: allowPortForwardPermission{},
+		Connector: connector,
+		Audit: auditLog,
+		Limits: managerTestLimits(),
+		Listen: func(network, address string) (net.Listener, error) {
+			if network != "tcp" || address != "127.0.0.1:43123" {
+				t.Errorf("listen(%q,%q)", network, address)
+			}
+			return listener, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = manager.Close() })
+	return manager, auth, listener
+}
+
+func writeUntilBridgeReads(t *testing.T, client net.Conn) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Write([]byte("blocked-write"))
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("local client write failed before bridge blocked: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("bridge did not consume the local client payload")
+	}
+}
+
+func TestManagerStopDoesNotHoldManagerLockDuringBlockedChildCleanup(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	connector := &managerBlockedConnector{opened: make(chan net.Conn, 1), started: make(chan struct{})}
+	manager, auth, listener := newManagerForTest(t, testInitiator, claims, connector, nil, nil, nil)
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+
+	client, core := net.Pipe()
+	release := make(chan struct{})
+	blockingLocal := &managerBlockingCloseConn{Conn: core, started: make(chan struct{}), release: release}
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+		_ = client.Close()
+	}()
+	if !listener.inject(blockingLocal) {
+		t.Fatal("listener closed before child injection")
+	}
+	remote := <-connector.opened
+	defer remote.Close()
+	writeUntilBridgeReads(t, client)
+	select {
+	case <-connector.started:
+	case <-time.After(time.Second):
+		t.Fatal("forwarding child never entered its blocked destination write")
+	}
+
+	stopDone := make(chan error, 1)
+	go func() { stopDone <- manager.Stop(context.Background(), claims.ForwardingID) }()
+	select {
+	case <-blockingLocal.started:
+	case <-time.After(time.Second):
+		t.Fatal("shutdown did not begin local child cleanup")
+	}
+	listDone := make(chan struct{})
+	go func() {
+		_ = manager.List()
+		close(listDone)
+	}()
+	select {
+	case <-listDone:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("Manager.List was blocked by network cleanup holding Manager.mu")
+	}
+
+	close(release)
+	released = true
+	select {
+	case err := <-stopDone:
+		if err != nil {
+			t.Fatalf("manager stop failed after child cleanup release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("manager stop did not finish after blocked child cleanup was released")
+	}
+}
+
+func TestManagerTrustRevocationDuringBlockedChildCleanup(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	trustChecker := managerTestTrustChecker{
+		mu: &sync.RWMutex{},
+		trusted: map[string]bool{string(testDestination): true},
+	}
+	connector := &managerBlockedConnector{opened: make(chan net.Conn, 1), started: make(chan struct{})}
+	manager, auth, listener := newManagerForTestWithTrustChecker(t, testInitiator, claims, connector, trustChecker, 10*time.Millisecond)
+	if _, err := manager.Start(context.Background(), auth); err != nil {
+		t.Fatal(err)
+	}
+
+	client, core := net.Pipe()
+	defer client.Close()
+	if !listener.inject(core) {
+		t.Fatal("listener closed before child injection")
+	}
+	remote := <-connector.opened
+	defer remote.Close()
+	writeUntilBridgeReads(t, client)
+	select {
+	case <-connector.started:
+	case <-time.After(time.Second):
+		t.Fatal("forwarding child never entered its blocked destination write")
+	}
+
+	trustChecker.revoke(string(testDestination))
+	deadline := time.After(2 * time.Second)
+	for len(manager.List()) != 0 {
+		select {
+		case <-deadline:
+			t.Fatal("trust revocation did not stop the blocked forwarding child")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	_ = remote.SetReadDeadline(time.Now().Add(time.Second))
+	if _, err := remote.Read(make([]byte, 1)); err == nil {
+		t.Fatal("destination stream remained open after trust revocation")
+	}
 }

@@ -173,6 +173,7 @@ type activeForward struct {
 	done            chan struct{}
 	stopDone        chan struct{}
 	stopOnce        sync.Once
+	doneOnce        sync.Once
 	stopErr         error
 	children        map[uint64]*activeChild
 }
@@ -771,7 +772,7 @@ func (m *Manager) authorizeListener(ctx context.Context, c Claims) error {
 }
 
 func (m *Manager) acceptLoop(f *activeForward) {
-	defer close(f.done)
+	defer f.doneOnce.Do(func() { close(f.done) })
 	stopClose := context.AfterFunc(f.ctx, func() { _ = f.listener.Close() })
 	defer stopClose()
 	for {
@@ -978,6 +979,7 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 		}
 		auditErr := m.record(f.claims, "port_forward.stopped", outcome, auditReason)
 		f.stopErr = errors.Join(errors.Join(cleanupErrs...), sessionErr, auditErr)
+		f.doneOnce.Do(func() { close(f.done) })
 		close(f.stopDone)
 	})
 	f.lifecycleMu.Unlock()

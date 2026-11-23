@@ -568,7 +568,7 @@ func (s *ManagedPortForwardSession) writeFrameContext(ctx context.Context, frame
 	}
 	stopCancel := context.AfterFunc(ctx, func() {
 		// A canceled write may have emitted a partial frame; discard the parent.
-		_ = s.conn.Close()
+		_ = s.conn.NetConn().Close()
 	})
 	writeErr := protocol.WriteFrame(s.conn, frame)
 	stopCancel()
@@ -588,7 +588,7 @@ func (s *ManagedPortForwardSession) finish() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
 		// Close the parent transport before waiting for child state cleanup.
-		connErr := s.conn.Close()
+		connErr := s.conn.NetConn().Close()
 		s.mu.Lock()
 		states := make([]*managedPortForwardState, 0, len(s.states))
 		for _, state := range s.states {
