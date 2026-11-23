@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"strings"
 	"testing"
 	"time"
 
@@ -253,6 +254,26 @@ func newManagerForTestWithPermission(t *testing.T, local mesh.DeviceID, claims C
 		t.Fatal(err)
 	}
 	return manager, auth, listener
+}
+
+type bridgeCloseErrorConn struct {
+	net.Conn
+}
+
+func (c bridgeCloseErrorConn) Close() error {
+	_ = c.Conn.Close()
+	return errors.New("simulated transport close failure")
+}
+
+func TestBridgeReportsConnectionCloseFailures(t *testing.T) {
+	left, leftPeer := net.Pipe()
+	right, rightPeer := net.Pipe()
+	_ = leftPeer.Close()
+	_ = rightPeer.Close()
+	err := bridge(context.Background(), bridgeCloseErrorConn{Conn: left}, bridgeCloseErrorConn{Conn: right}, time.Second)
+	if err == nil || !strings.Contains(err.Error(), "simulated transport close failure") {
+		t.Fatalf("bridge close result = %v, want propagated close failure", err)
+	}
 }
 
 func TestManagerStartsLocalForwardAndBridgesAuthenticatedStream(t *testing.T) {
