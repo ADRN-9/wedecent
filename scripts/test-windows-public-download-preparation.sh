@@ -66,21 +66,23 @@ EOF_VERIFIER
 chmod 0700 "$VERIFIER"
 ln -s -- "$VERIFIER" "$VERIFIER_LINK"
 
+DIAGNOSTIC_OUT="$WORK/diagnostic-public"
+MISSING_ANCHOR_OUT="$WORK/missing-anchor-public"
 cp "$RELEASE/VERSION.txt" "$WORK/VERSION.production"
 sed 's/^build_mode=production$/build_mode=diagnostic/' "$WORK/VERSION.production" > "$RELEASE/VERSION.txt"
 if WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
-   "$PREPARE" --version v0.3.0-rc.9 --signed-release "$RELEASE" --out-dir "$BAD" >/dev/null 2>&1; then
+   "$PREPARE" --version v0.3.0-rc.9 --signed-release "$RELEASE" --out-dir "$DIAGNOSTIC_OUT" >/dev/null 2>&1; then
   fail 'public-download preparation accepted a diagnostic artifact'
 fi
-[[ ! -e "$BAD" ]] || fail 'diagnostic public-download rejection published output'
+[[ ! -e "$DIAGNOSTIC_OUT" ]] || fail 'diagnostic public-download rejection published output'
 mv "$WORK/VERSION.production" "$RELEASE/VERSION.txt"
 
 if env -u WEDECENT_REPLAY_AUTHORITY_HOSTNAME -u WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 \
    -u WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
-   "$PREPARE" --version v0.3.0-rc.9 --signed-release "$RELEASE" --out-dir "$BAD" >/dev/null 2>&1; then
+   "$PREPARE" --version v0.3.0-rc.9 --signed-release "$RELEASE" --out-dir "$MISSING_ANCHOR_OUT" >/dev/null 2>&1; then
   fail 'public-download preparation accepted missing production trust anchors'
 fi
-[[ ! -e "$BAD" ]] || fail 'missing-anchor public-download rejection published output'
+[[ ! -e "$MISSING_ANCHOR_OUT" ]] || fail 'missing-anchor public-download rejection published output'
 
 snapshot_release() {
   (
