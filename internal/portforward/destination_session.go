@@ -178,6 +178,14 @@ func (s *DestinationSession) watchTrust() {
 			return
 		case <-ticker.C:
 			trusted, err := s.trustChecker.IsTrusted(s.ctx, string(s.peerID))
+			if s.ctx.Err() != nil {
+				reason := "authorization_expired"
+				if !errors.Is(s.ctx.Err(), context.DeadlineExceeded) {
+					reason = "parent_session_closed"
+				}
+				_ = s.closeWithReason(reason)
+				return
+			}
 			if err != nil {
 				_ = s.closeWithReason("peer_trust_unavailable")
 				return
