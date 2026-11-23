@@ -474,12 +474,12 @@ func (s *typedPortForwardServer) halfClose(frame protocol.Frame) error {
 	}
 	writer, ok := child.conn.(interface{ CloseWrite() error })
 	if !ok {
-		_ = s.sendStreamError(frame.StreamID, "half_close_unsupported", "destination transport does not support TCP half-close")
+		_ = s.writeChildError(child, "half_close_unsupported", "destination transport does not support TCP half-close")
 		_ = s.closeChild(frame.StreamID, "half_close_unsupported", false)
 		return nil
 	}
 	if err := writer.CloseWrite(); err != nil {
-		_ = s.sendStreamError(frame.StreamID, "half_close_failed", "destination TCP half-close failed")
+		_ = s.writeChildError(child, "half_close_failed", "destination TCP half-close failed")
 		_ = s.closeChild(frame.StreamID, "half_close_failed", false)
 	}
 	return nil
@@ -604,16 +604,13 @@ func (s *typedPortForwardServer) sendData(child *typedPortForwardChild, data []b
 				}
 			}
 		}
-		child.sendMu.Lock()
 		if child.isClosed() || s.ctx.Err() != nil {
-			child.sendMu.Unlock()
 			return io.ErrClosedPipe
 		}
 		err := s.writeChildFrame(child, protocol.Frame{
 			Type: protocol.TypeStreamData, StreamID: child.id,
 			Payload: append([]byte(nil), data[offset:offset+count]...),
 		})
-		child.sendMu.Unlock()
 		if err != nil {
 			return err
 		}
