@@ -76,6 +76,7 @@ func verifyReplayACL(path string) error {
 		"S-1-5-32-544": true,
 		"SY":           true,
 		"BA":           true,
+		"LA":           true, // Local Administrator is a privileged administrator SID.
 		"CO":           true,
 		"OW":           true,
 	}
