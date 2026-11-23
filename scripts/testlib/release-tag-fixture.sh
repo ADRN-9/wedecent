@@ -35,7 +35,10 @@ wedecent_test_release_tag_add() {
       return 1
     }
   else
-    git -C "$WEDECENT_TEST_TAG_ROOT" tag -a "$tag" -m 'WeDecent test release tag' "$source_sha"
+    git -C "$WEDECENT_TEST_TAG_ROOT" \
+      -c user.name='WeDecent test tag fixture' \
+      -c user.email='release-tags@example.invalid' \
+      tag -a "$tag" -m 'WeDecent test release tag' "$source_sha"
     WEDECENT_TEST_TAGS+=("$tag")
   fi
   git -C "$WEDECENT_TEST_TAG_ROOT" push -q --force "$WEDECENT_TEST_TAG_REMOTE" "$ref:$ref"
