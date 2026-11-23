@@ -63,12 +63,12 @@ done
 [[ -d "$ROOT/installer" && ! -L "$ROOT/installer" ]] || fail "installer assets directory must not be a symlink"
 [[ -d "$ROOT/installer/windows" && ! -L "$ROOT/installer/windows" ]] || fail "Windows installer assets directory must not be a symlink"
 [[ "$(cd "$ROOT/installer/windows" && pwd -P)" == "$ROOT/installer/windows" ]] || fail "Windows installer assets path contains a symlink component"
-installer_files=(install.ps1 uninstall.ps1 hardware-diagnostics.ps1)
+installer_files=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
 for name in "${installer_files[@]}"; do
   [[ -f "$ROOT/installer/windows/$name" && ! -L "$ROOT/installer/windows/$name" ]] ||
     fail "installer asset is missing or is a symlink: $name"
 done
-[[ -f "$ROOT/installer/README.windows.md" && ! -L "$ROOT/installer/README.windows.md" ]] ||
+[[ -f "$ROOT/installer/windows/README.md" && ! -L "$ROOT/installer/windows/README.md" ]] ||
   fail "Windows installer README is missing or is a symlink"
 
 STAGE="$(mktemp -d "$OUT_PARENT/.wedecent-installer.XXXXXX")" || fail "cannot create installer staging directory"
@@ -93,7 +93,7 @@ done
 for name in "${installer_files[@]}"; do
   cp -- "$ROOT/installer/windows/$name" "$STAGE/$name"
 done
-cat "$ROOT/installer/README.windows.md" > "$STAGE/README.txt"
+cat "$ROOT/installer/windows/README.md" > "$STAGE/README.txt"
 
 (
   cd "$STAGE"
