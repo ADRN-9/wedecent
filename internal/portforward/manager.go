@@ -33,7 +33,8 @@ type AuditWriter interface{ Append(audit.Event) error }
 
 type Connector interface {
 	// Open establishes one authenticated parent forwarding session and consumes
-	// the forwarding capability once. Child TCP connections use that session.
+	// the forwarding capability once. ctx bounds the handshake only; the returned
+	// session remains alive until Close. Child TCP connections use that session.
 	Open(context.Context, Authorization) (ForwardingSession, error)
 }
 
