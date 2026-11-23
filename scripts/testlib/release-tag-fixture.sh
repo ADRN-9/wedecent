@@ -29,7 +29,8 @@ wedecent_test_release_tags_init() {
 wedecent_test_release_tag_add() {
   local tag="$1"
   local source_sha="${2:-${GITHUB_SHA:-}}"
-  local ref="refs/tags/$tag"
+  local ref
+  ref="refs/tags/$tag"
   [[ "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)([.-][0-9A-Za-z.-]+)?$ ]] || {
     printf 'release-tag-fixture: invalid tag name: %s\n' "$tag" >&2
     return 1
