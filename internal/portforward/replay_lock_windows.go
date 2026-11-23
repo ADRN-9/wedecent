@@ -137,9 +137,29 @@ func verifyReplayACL(path string) error {
 	return nil
 }
 
+func openReplayLockHandle(lockPath string) (*os.File, error) {
+	name, err := windows.UTF16PtrFromString(lockPath)
+	if err != nil {
+		return nil, err
+	}
+	handle, err := windows.CreateFile(
+		name,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return os.NewFile(uintptr(handle), lockPath), nil
+}
+
 func openReplayLockFile(lockPath string) (*os.File, bool, error) {
 	if _, err := os.Lstat(lockPath); err == nil {
-		file, openErr := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+		file, openErr := openReplayLockHandle(lockPath)
 		return file, false, openErr
 	} else if !os.IsNotExist(err) {
 		return nil, false, err
@@ -177,12 +197,12 @@ func openReplayLockFile(lockPath string) (*os.File, bool, error) {
 	if err := createReplayFileExclusive(tempPath, lockPath); err != nil {
 		_ = os.Remove(tempPath)
 		if os.IsExist(err) {
-			file, openErr := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+			file, openErr := openReplayLockHandle(lockPath)
 			return file, false, openErr
 		}
 		return nil, false, err
 	}
-	file, err := os.OpenFile(lockPath, os.O_RDWR, 0o600)
+	file, err := openReplayLockHandle(lockPath)
 	if err != nil {
 		return nil, true, err
 	}

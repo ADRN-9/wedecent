@@ -134,7 +134,7 @@ func TestFileReplayInitialMarkerAndLockHavePrivateOwnership(t *testing.T) {
 	if err := ensureReplayInitialization(path, testInitiator, false); err != nil {
 		t.Fatal(err)
 	}
-	for _, file := range []string{path + ".init", path + ".init.lock"} {
+	for _, file := range []string{path + ".init", path + ".lock"} {
 		if err := secureReplayFile(file); err != nil {
 			t.Fatalf("initial replay metadata %s is not private: %v", filepath.Base(file), err)
 		}
@@ -407,7 +407,7 @@ func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 	if err := secureReplayDirectory(dir); err != nil {
 		t.Fatalf("verify replay directory security: %v", err)
 	}
-	for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init", path + ".init.lock"} {
+	for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init"} {
 		if err := secureReplayFile(file); err != nil {
 			t.Fatalf("verify replay file %s: %v", filepath.Base(file), err)
 		}
@@ -418,7 +418,7 @@ func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 		} else if info.Mode().Perm() != 0o700 {
 			t.Fatalf("replay directory permissions = %o, want 700", info.Mode().Perm())
 		}
-		for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init", path + ".init.lock"} {
+		for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init"} {
 			info, err := os.Stat(file)
 			if err != nil {
 				t.Fatal(err)
