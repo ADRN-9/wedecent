@@ -3,6 +3,7 @@
 package portforward
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,16 +47,25 @@ func verifyReplayACL(path string) error {
 		return fmt.Errorf("read replay ACL: %w", err)
 	}
 	owner, _, err := sd.Owner()
-	if err != nil || owner == nil {
-		return fmt.Errorf("replay object owner is unavailable: %w", err)
+	if err != nil {
+		return fmt.Errorf("read replay object owner: %w", err)
+	}
+	if owner == nil {
+		return errors.New("replay object owner is unavailable")
 	}
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil || user == nil || user.User.Sid == nil || !owner.Equals(user.User.Sid) {
-		return fmt.Errorf("replay object is not owned by the current user: %w", err)
+	if err != nil {
+		return fmt.Errorf("read current user SID: %w", err)
+	}
+	if user == nil || user.User.Sid == nil || !owner.Equals(user.User.Sid) {
+		return errors.New("replay object is not owned by the current user")
 	}
 	dacl, _, err := sd.DACL()
-	if err != nil || dacl == nil {
-		return fmt.Errorf("replay object has no restrictive DACL: %w", err)
+	if err != nil {
+		return fmt.Errorf("read replay object DACL: %w", err)
+	}
+	if dacl == nil {
+		return errors.New("replay object has no restrictive DACL")
 	}
 	allowed := map[string]bool{
 		owner.String():       true,
