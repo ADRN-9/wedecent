@@ -177,7 +177,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		now = time.Now
 	}
 	pollInterval := cfg.TrustPollInterval
-	if cfg.TrustChecker != nil {
+	if cfg.TrustChecker != nil || cfg.RouterTrustChecker != nil {
 		if pollInterval == 0 {
 			pollInterval = 250 * time.Millisecond
 		}
@@ -206,7 +206,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		forwardCounts:        make(map[mesh.DeviceID]int),
 		deviceConnections:    make(map[mesh.DeviceID]int),
 	}
-	if manager.trustChecker != nil {
+	if manager.trustChecker != nil || manager.routerTrustChecker != nil {
 		manager.trustWatcherDone = make(chan struct{})
 		go manager.watchTrust()
 	}
