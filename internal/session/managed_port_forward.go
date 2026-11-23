@@ -81,7 +81,7 @@ func (c *Client) OpenManagedPortForwardSession(ctx context.Context, peer trust.P
 	if strings.TrimSpace(auth.Signature) == "" || len(auth.Signature) > 256 {
 		return nil, portforward.ErrAuthorizationInvalid
 	}
-	inBandAuthorization := !strings.HasPrefix(strings.ToLower(strings.TrimSpace(peer.Endpoint)), "wsrelay://")
+	inBandAuthorization := c.ForceInBandAuthorization || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(peer.Endpoint)), "wsrelay://")
 	if inBandAuthorization {
 		grant := strings.TrimSpace(c.ConnectionGrant)
 		if grant == "" || len(grant) > 16*1024 || strings.ContainsAny(grant, "\r\n\t ") {
