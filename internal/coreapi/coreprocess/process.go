@@ -38,10 +38,10 @@ type Config struct {
 // Runtime owns the Local Core IPC server plus process-scoped connection
 // lifecycle. Closing it cancels in-flight opens and tears down active sessions.
 type Runtime struct {
-	Server      *ipc.Server
-	Connections *coreapi.ConnectionService
-	Forwarding      *portforward.Manager
-	PortForwarding  *coreapi.PortForwardService
+	Server         *ipc.Server
+	Connections    *coreapi.ConnectionService
+	Forwarding     *portforward.Manager
+	PortForwarding *coreapi.PortForwardService
 }
 
 func (r *Runtime) Close() error {
