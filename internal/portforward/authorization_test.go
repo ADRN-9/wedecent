@@ -110,10 +110,10 @@ func TestPortForwardRequiresIndependentRouteAuthorization(t *testing.T) {
 		t.Fatalf("valid independent route authorization rejected: %v", err)
 	}
 	routeVerifier := mesh.RouteAuthorizationVerifier{
-		KeyID: "route-key-1",
+		KeyID:     "route-key-1",
 		PublicKey: routePublicKey,
-		Replay: mesh.NewMemoryRouteAuthorizationReplay(),
-		Now: func() time.Time { return now },
+		Replay:    mesh.NewMemoryRouteAuthorizationReplay(),
+		Now:       func() time.Time { return now },
 	}
 	if err := routeVerifier.VerifyAndConsume(context.Background(), routeAuth, claims.Route, claims.Router); err != nil {
 		t.Fatalf("routing trust-domain verification failed: %v", err)
@@ -325,8 +325,8 @@ func TestAuthorizationRejectsExpiredAndFutureCapabilities(t *testing.T) {
 	replay.Now = func() time.Time { return now }
 	verifier := AuthorizationVerifier{
 		PublicKey: publicKey,
-		Replay: replay,
-		Now: func() time.Time { return now },
+		Replay:    replay,
+		Now:       func() time.Time { return now },
 	}
 
 	expiredClaims := testClaims(now, DirectionLocal)

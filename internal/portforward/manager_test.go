@@ -187,10 +187,10 @@ func newManagerForTestWithPermission(t *testing.T, local mesh.DeviceID, claims C
 		Verifier:             verifier,
 		PermissionAuthorizer: permission,
 		Connector:            connector,
-		ListenerAuthorizer:  admin,
-		Audit:                 auditLog,
-		Limits:                managerTestLimits(),
-		Listen:                listen,
+		ListenerAuthorizer:   admin,
+		Audit:                auditLog,
+		Limits:               managerTestLimits(),
+		Listen:               listen,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -343,10 +343,10 @@ func TestManagerRejectsMissingLocalPermissionAuthorizer(t *testing.T) {
 	}
 	_, err = NewManager(ManagerConfig{
 		LocalDeviceID: testInitiator,
-		Verifier: AuthorizationVerifier{PublicKey: publicKey, Replay: NewMemoryReplay(8)},
-		Connector: &pipeConnector{},
-		Audit: &memoryAudit{},
-		Limits: managerTestLimits(),
+		Verifier:      AuthorizationVerifier{PublicKey: publicKey, Replay: NewMemoryReplay(8)},
+		Connector:     &pipeConnector{},
+		Audit:         &memoryAudit{},
+		Limits:        managerTestLimits(),
 	})
 	if !errors.Is(err, ErrManagerConfig) {
 		t.Fatalf("NewManager error = %v, want missing permission-authority rejection", err)

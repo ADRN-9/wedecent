@@ -58,15 +58,15 @@ type ManagerLimits struct {
 }
 
 type ManagerConfig struct {
-	LocalDeviceID       mesh.DeviceID
-	Verifier            Verifier
+	LocalDeviceID        mesh.DeviceID
+	Verifier             Verifier
 	PermissionAuthorizer PermissionAuthorizer
-	Connector           Connector
-	ListenerAuthorizer ListenerAuthorizer
-	Audit              AuditWriter
-	Limits             ManagerLimits
-	Listen             func(string, string) (net.Listener, error)
-	Now                func() time.Time
+	Connector            Connector
+	ListenerAuthorizer   ListenerAuthorizer
+	Audit                AuditWriter
+	Limits               ManagerLimits
+	Listen               func(string, string) (net.Listener, error)
+	Now                  func() time.Time
 }
 
 type ForwardInfo struct {
@@ -86,11 +86,11 @@ type Manager struct {
 	verifier             Verifier
 	permissionAuthorizer PermissionAuthorizer
 	connector            Connector
-	listenerAuthorizer ListenerAuthorizer
-	audit              AuditWriter
-	limits             ManagerLimits
-	listen             func(string, string) (net.Listener, error)
-	now                func() time.Time
+	listenerAuthorizer   ListenerAuthorizer
+	audit                AuditWriter
+	limits               ManagerLimits
+	listen               func(string, string) (net.Listener, error)
+	now                  func() time.Time
 
 	mu                sync.Mutex
 	closed            bool
@@ -148,15 +148,15 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		verifier:             cfg.Verifier,
 		permissionAuthorizer: cfg.PermissionAuthorizer,
 		connector:            cfg.Connector,
-		listenerAuthorizer: cfg.ListenerAuthorizer,
-		audit:              cfg.Audit,
-		limits:             cfg.Limits,
-		listen:             listen,
-		now:                now,
-		forwards:           make(map[string]*activeForward),
-		reservations:       make(map[string]Claims),
-		forwardCounts:      make(map[mesh.DeviceID]int),
-		deviceConnections:  make(map[mesh.DeviceID]int),
+		listenerAuthorizer:   cfg.ListenerAuthorizer,
+		audit:                cfg.Audit,
+		limits:               cfg.Limits,
+		listen:               listen,
+		now:                  now,
+		forwards:             make(map[string]*activeForward),
+		reservations:         make(map[string]Claims),
+		forwardCounts:        make(map[mesh.DeviceID]int),
+		deviceConnections:    make(map[mesh.DeviceID]int),
 	}, nil
 }
 

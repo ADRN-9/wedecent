@@ -34,15 +34,15 @@ const (
 const authorizationDomain = "wedecent-port-forward-v1"
 
 var (
-	ErrAuthorizationInvalid     = errors.New("portforward: invalid authorization")
-	ErrAuthorizationSignature   = errors.New("portforward: invalid authorization signature")
-	ErrAuthorizationExpired     = errors.New("portforward: authorization expired")
-	ErrAuthorizationNotYetValid = errors.New("portforward: authorization is not yet valid")
-	ErrAuthorizationMismatch    = errors.New("portforward: authorization does not match local endpoint")
-	ErrAuthorizationReplay      = errors.New("portforward: authorization has already been used")
+	ErrAuthorizationInvalid       = errors.New("portforward: invalid authorization")
+	ErrAuthorizationSignature     = errors.New("portforward: invalid authorization signature")
+	ErrAuthorizationExpired       = errors.New("portforward: authorization expired")
+	ErrAuthorizationNotYetValid   = errors.New("portforward: authorization is not yet valid")
+	ErrAuthorizationMismatch      = errors.New("portforward: authorization does not match local endpoint")
+	ErrAuthorizationReplay        = errors.New("portforward: authorization has already been used")
 	ErrRouteAuthorizationRequired = errors.New("portforward: separate route authorization is required")
 	ErrRouteAuthorizationMismatch = errors.New("portforward: route authorization does not match forwarding route")
-	ErrReplayUnavailable        = errors.New("portforward: replay protection is unavailable")
+	ErrReplayUnavailable          = errors.New("portforward: replay protection is unavailable")
 )
 
 var (
@@ -105,9 +105,9 @@ type Claims struct {
 }
 
 type Authorization struct {
-	KeyID              string                 `json:"kid"`
-	Claims             Claims                 `json:"claims"`
-	Signature          string                 `json:"signature"`
+	KeyID              string                  `json:"kid"`
+	Claims             Claims                  `json:"claims"`
+	Signature          string                  `json:"signature"`
 	RouteAuthorization mesh.RouteAuthorization `json:"route_authorization,omitempty"`
 }
 
