@@ -72,15 +72,17 @@ func (l *queueListener) inject(conn net.Conn) bool {
 }
 
 type pipeConnector struct {
-	mu     sync.Mutex
-	calls  int
-	opened chan net.Conn
-	block  <-chan struct{}
+	mu                sync.Mutex
+	calls             int
+	lastAuthorization Authorization
+	opened            chan net.Conn
+	block             <-chan struct{}
 }
 
-func (c *pipeConnector) Open(ctx context.Context, claims Claims) (net.Conn, error) {
+func (c *pipeConnector) Open(ctx context.Context, auth Authorization) (net.Conn, error) {
 	c.mu.Lock()
 	c.calls++
+	c.lastAuthorization = cloneAuthorization(auth)
 	c.mu.Unlock()
 	left, right := net.Pipe()
 	if c.opened != nil {
@@ -100,7 +102,41 @@ func (c *pipeConnector) Open(ctx context.Context, claims Claims) (net.Conn, erro
 	}
 	return left, nil
 }
-func (c *pipeConnector) callCount() int { c.mu.Lock(); defer c.mu.Unlock(); return c.calls }
+func (c *pipeConnector) callCount() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.calls
+}
+
+func (c *pipeConnector) lastAuth() Authorization {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return cloneAuthorization(c.lastAuthorization)
+}
+
+type allowPortForwardPermission struct{}
+
+func (allowPortForwardPermission) AuthorizePortForward(_ context.Context, claims Claims) error {
+	want := PermissionLocal
+	if claims.Direction == DirectionRemote {
+		want = PermissionRemote
+	}
+	if claims.Permission != want {
+		return ErrPermissionDenied
+	}
+	return nil
+}
+
+type grantPortForwardPermission struct {
+	permission string
+}
+
+func (a grantPortForwardPermission) AuthorizePortForward(_ context.Context, claims Claims) error {
+	if claims.Permission != a.permission {
+		return ErrPermissionDenied
+	}
+	return nil
+}
 
 type allowListenerAdmin struct {
 	calls int
@@ -117,6 +153,10 @@ func managerTestLimits() ManagerLimits {
 }
 
 func newManagerForTest(t *testing.T, local mesh.DeviceID, claims Claims, connector Connector, auditLog *memoryAudit, admin ListenerAuthorizer, listen func(string, string) (net.Listener, error)) (*Manager, Authorization, *queueListener) {
+	return newManagerForTestWithPermission(t, local, claims, connector, auditLog, admin, allowPortForwardPermission{}, listen)
+}
+
+func newManagerForTestWithPermission(t *testing.T, local mesh.DeviceID, claims Claims, connector Connector, auditLog *memoryAudit, admin ListenerAuthorizer, permission PermissionAuthorizer, listen func(string, string) (net.Listener, error)) (*Manager, Authorization, *queueListener) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -142,7 +182,16 @@ func newManagerForTest(t *testing.T, local mesh.DeviceID, claims Claims, connect
 	if auditLog == nil {
 		auditLog = &memoryAudit{}
 	}
-	manager, err := NewManager(ManagerConfig{LocalDeviceID: local, Verifier: verifier, Connector: connector, ListenerAuthorizer: admin, Audit: auditLog, Limits: managerTestLimits(), Listen: listen})
+	manager, err := NewManager(ManagerConfig{
+		LocalDeviceID:        local,
+		Verifier:             verifier,
+		PermissionAuthorizer: permission,
+		Connector:            connector,
+		ListenerAuthorizer:  admin,
+		Audit:                 auditLog,
+		Limits:                managerTestLimits(),
+		Listen:                listen,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,6 +218,10 @@ func TestManagerStartsLocalForwardAndBridgesAuthenticatedStream(t *testing.T) {
 	var remote net.Conn
 	select {
 	case remote = <-connector.opened:
+		forwarded := connector.lastAuth()
+		if forwarded.Signature != auth.Signature || forwarded.Claims.ForwardingID != claims.ForwardingID {
+			t.Fatal("destination connector did not receive the original signed authorization")
+		}
 	case <-time.After(time.Second):
 		t.Fatal("connector was not called")
 	}
@@ -226,6 +279,61 @@ func TestManagerRemoteForwardRunsOnRemoteListenerDevice(t *testing.T) {
 	}
 	if _, err := listener.Accept(); !errors.Is(err, net.ErrClosed) {
 		t.Fatalf("listener error = %v", err)
+	}
+}
+
+func TestManagerRejectsMissingAuthorization(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	manager, _, _ := newManagerForTest(t, testInitiator, claims, &pipeConnector{}, nil, nil, nil)
+	if _, err := manager.Start(context.Background(), Authorization{}); !errors.Is(err, ErrAuthorizationInvalid) {
+		t.Fatalf("Start error = %v, want missing-authorization rejection", err)
+	}
+	if len(manager.List()) != 0 {
+		t.Fatal("missing authorization created a listener")
+	}
+}
+
+func TestManagerRejectsMissingLocalPermissionAuthorizer(t *testing.T) {
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = NewManager(ManagerConfig{
+		LocalDeviceID: testInitiator,
+		Verifier: AuthorizationVerifier{PublicKey: publicKey, Replay: NewMemoryReplay(8)},
+		Connector: &pipeConnector{},
+		Audit: &memoryAudit{},
+		Limits: managerTestLimits(),
+	})
+	if !errors.Is(err, ErrManagerConfig) {
+		t.Fatalf("NewManager error = %v, want missing permission-authority rejection", err)
+	}
+}
+
+func TestManagerEnforcesDirectionSpecificPermission(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionRemote)
+	claims.Permission = PermissionRemote
+	listenCalls := 0
+	manager, auth, _ := newManagerForTestWithPermission(
+		t,
+		testDestination,
+		claims,
+		&pipeConnector{},
+		nil,
+		nil,
+		grantPortForwardPermission{permission: PermissionLocal},
+		func(string, string) (net.Listener, error) {
+			listenCalls++
+			return newQueueListener(), nil
+		},
+	)
+	if _, err := manager.Start(context.Background(), auth); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("Start error = %v, want dedicated-permission rejection", err)
+	}
+	if listenCalls != 0 || len(manager.List()) != 0 {
+		t.Fatal("wrong direction permission created a listener")
 	}
 }
 
@@ -343,6 +451,79 @@ func TestManagerEnforcesPerForwardConnectionLimitAndStopsChildren(t *testing.T) 
 	_ = secondClient.Close()
 }
 
+type blockingListenerAdmin struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (a *blockingListenerAdmin) AuthorizePortForwardListener(ctx context.Context, _ Claims) error {
+	a.once.Do(func() { close(a.started) })
+	select {
+	case <-a.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestManagerDeviceRevocationCancelsPendingStart(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	claims.Listener = ListenerPolicy{Address: "1.1.1.1", Port: 43123, Exposure: ExposurePublic}
+	admin := &blockingListenerAdmin{started: make(chan struct{}), release: make(chan struct{})}
+	listener := newQueueListenerAddress("1.1.1.1")
+	manager, auth, _ := newManagerForTest(
+		t,
+		testInitiator,
+		claims,
+		&pipeConnector{},
+		nil,
+		admin,
+		func(string, string) (net.Listener, error) { return listener, nil },
+	)
+
+	startResult := make(chan error, 1)
+	go func() {
+		_, err := manager.Start(context.Background(), auth)
+		startResult <- err
+	}()
+	select {
+	case <-admin.started:
+	case <-time.After(time.Second):
+		t.Fatal("start did not reach pending listener authorization")
+	}
+
+	count, err := manager.RevokeDevice(context.Background(), testDestination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatalf("revoked count = %d, want pending start included", count)
+	}
+	close(admin.release)
+
+	select {
+	case err := <-startResult:
+		if !errors.Is(err, ErrForwardRevoked) {
+			t.Fatalf("pending Start error = %v, want revoked", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pending start did not stop after device revocation")
+	}
+	select {
+	case <-listener.closed:
+	case <-time.After(time.Second):
+		t.Fatal("listener leaked after pending-start revocation")
+	}
+	if len(manager.List()) != 0 {
+		t.Fatal("revoked pending forward became active")
+	}
+	if err := manager.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestManagerDeviceRevocationTerminatesForward(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
@@ -418,7 +599,7 @@ func TestManagerRejectsDuplicateForwardingIDWithoutConsumingSecondCapability(t *
 func TestManagerLimitsArePositiveAndBounded(t *testing.T) {
 	limits := managerTestLimits()
 	limits.MaxConnections = 0
-	_, err := NewManager(ManagerConfig{LocalDeviceID: testInitiator, Verifier: AuthorizationVerifier{}, Connector: &pipeConnector{}, Audit: &memoryAudit{}, Limits: limits})
+	_, err := NewManager(ManagerConfig{LocalDeviceID: testInitiator, Verifier: AuthorizationVerifier{}, PermissionAuthorizer: allowPortForwardPermission{}, Connector: &pipeConnector{}, Audit: &memoryAudit{}, Limits: limits})
 	if !errors.Is(err, ErrManagerConfig) {
 		t.Fatalf("NewManager error = %v", err)
 	}
