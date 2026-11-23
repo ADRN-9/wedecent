@@ -30,7 +30,7 @@ func testClaims(now time.Time, direction Direction) Claims {
 	expires := now.Add(90 * time.Second).UTC().Truncate(time.Millisecond)
 	return Claims{
 		Version:           AuthorizationVersion,
-		Issuer:            AuthorizationIssuer,
+		Issuer:            AuthorizationIssuerID,
 		Audience:          AuthorizationAudience,
 		Permission:        PermissionLocal,
 		JTI:               base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef")),

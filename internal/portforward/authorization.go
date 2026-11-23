@@ -22,7 +22,7 @@ import (
 
 const (
 	AuthorizationVersion     = 1
-	AuthorizationIssuer      = "wedecent-control-plane"
+	AuthorizationIssuerID    = "wedecent-control-plane"
 	AuthorizationAudience    = "wedecent-port-forwarder"
 	PermissionLocal          = "port_forward.local"
 	PermissionRemote         = "port_forward.remote"
@@ -268,7 +268,7 @@ func (r *MemoryReplay) ConsumePortForwardAuthorization(ctx context.Context, jti 
 }
 
 func ValidateClaims(c Claims) error {
-	if c.Version != AuthorizationVersion || c.Issuer != AuthorizationIssuer || c.Audience != AuthorizationAudience || c.Protocol != ProtocolTCP {
+	if c.Version != AuthorizationVersion || c.Issuer != AuthorizationIssuerID || c.Audience != AuthorizationAudience || c.Protocol != ProtocolTCP {
 		return ErrAuthorizationInvalid
 	}
 	if !forwardIDPattern.MatchString(c.ForwardingID) || !jtiPattern.MatchString(c.JTI) {
