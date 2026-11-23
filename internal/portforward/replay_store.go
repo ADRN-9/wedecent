@@ -250,7 +250,7 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 	}
 	if stateExists || (lockExists && !lockCreated) {
 		if !allowLegacyMigration || !stateExists || !lockExists {
-			return errors.New("unmarked replay state cannot be safely initialized or rolled forward")
+			return fmt.Errorf("unmarked replay state cannot be safely initialized or rolled forward (state=%t lock=%t lock_created=%t anchor=%t pending=%t)", stateExists, lockExists, lockCreated, anchorExists, pendingExists)
 		}
 		legacy, readErr := readReplaySnapshot(path, deviceID)
 		if readErr != nil || legacy.Version != legacyReplayStoreVersion {
