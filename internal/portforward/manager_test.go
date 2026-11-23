@@ -16,6 +16,114 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 )
 
+type countedReplayStore struct {
+	mu    sync.Mutex
+	calls int
+	err   error
+}
+
+func (r *countedReplayStore) ConsumePortForwardAuthorization(context.Context, string, time.Time) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	return r.err
+}
+
+func (r *countedReplayStore) callCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.calls
+}
+
+type countedForwardConnector struct{ calls int }
+
+func (c *countedForwardConnector) Open(context.Context, Authorization) (ForwardingSession, error) {
+	c.calls++
+	return nil, errors.New("connector must not be reached")
+}
+
+func TestManagerRunsLocalPermissionPreflightBeforeRemoteConsumption(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization, err := SignAuthorization(privateKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := &countedReplayStore{err: ErrReplayUnavailable}
+	connector := &countedForwardConnector{}
+	listenCalls := 0
+	peerID := remoteEndpointDevice(claims, testInitiator)
+	manager, err := NewManager(ManagerConfig{
+		LocalDeviceID:        testInitiator,
+		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		TrustChecker:         managerTestTrustChecker{trusted: map[string]bool{string(peerID): true}},
+		RouterTrustChecker:   managerTestTrustChecker{trusted: map[string]bool{string(testRouter): true}},
+		PermissionAuthorizer: grantPortForwardPermission{permission: PermissionRemote},
+		Connector:            connector,
+		Audit:                &memoryAudit{},
+		Limits:               managerTestLimits(),
+		Listen: func(string, string) (net.Listener, error) {
+			listenCalls++
+			return newQueueListener(), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	if _, err := manager.Start(context.Background(), authorization); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("Start error = %v, want local permission rejection", err)
+	}
+	if replay.callCount() != 0 || connector.calls != 0 || listenCalls != 0 || len(manager.List()) != 0 {
+		t.Fatalf("preflight side effects: replay=%d connector=%d listen=%d forwards=%d", replay.callCount(), connector.calls, listenCalls, len(manager.List()))
+	}
+}
+
+func TestManagerRemoteReplayUnavailableCreatesNoSessionOrListener(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorization, err := SignAuthorization(privateKey, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := &countedReplayStore{err: ErrReplayUnavailable}
+	connector := &countedForwardConnector{}
+	listenCalls := 0
+	peerID := remoteEndpointDevice(claims, testInitiator)
+	manager, err := NewManager(ManagerConfig{
+		LocalDeviceID:        testInitiator,
+		Verifier:             AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }},
+		TrustChecker:         managerTestTrustChecker{trusted: map[string]bool{string(peerID): true}},
+		RouterTrustChecker:   managerTestTrustChecker{trusted: map[string]bool{string(testRouter): true}},
+		PermissionAuthorizer: allowPortForwardPermission{},
+		Connector:            connector,
+		Audit:                &memoryAudit{},
+		Limits:               managerTestLimits(),
+		Listen: func(string, string) (net.Listener, error) {
+			listenCalls++
+			return newQueueListener(), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	if _, err := manager.Start(context.Background(), authorization); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("Start error = %v, want replay authority failure", err)
+	}
+	if replay.callCount() != 1 || connector.calls != 0 || listenCalls != 0 || len(manager.List()) != 0 {
+		t.Fatalf("outage side effects: replay=%d connector=%d listen=%d forwards=%d", replay.callCount(), connector.calls, listenCalls, len(manager.List()))
+	}
+}
+
 type memoryAudit struct {
 	mu          sync.Mutex
 	events      []audit.Event

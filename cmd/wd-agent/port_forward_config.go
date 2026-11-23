@@ -154,7 +154,7 @@ func openAgentPortForwardRuntime(cfg serveConfig, id *identity.Identity, peers *
 	if err := portforward.RejectExistingFileReplayState(legacyReplayPath); err != nil {
 		return nil, fmt.Errorf("legacy file replay state cannot be trusted or migrated automatically: %w", err)
 	}
-	remoteReplay, err := portforward.NewRemoteReplay(
+	remoteReplay, err := portforward.NewProductionRemoteReplay(
 		strings.TrimSpace(cfg.PortForwardReplayURL),
 		strings.TrimSpace(cfg.PortForwardReplayAPIKey),
 		mesh.DeviceID(id.ID),

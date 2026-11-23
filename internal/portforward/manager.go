@@ -115,6 +115,7 @@ type ManagerConfig struct {
 	LocalDeviceID              mesh.DeviceID
 	Verifier                   Verifier
 	ReplayPath                 string
+	AllowFileReplay            bool // Explicit test/development-only opt-in; never set by Local Core.
 	AuthorizationPublicKey     ed25519.PublicKey
 	AllowLegacyReplayMigration bool
 	TrustChecker               PeerTrustChecker
@@ -206,12 +207,17 @@ type activeChild struct {
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
 	verifier := cfg.Verifier
-	if verifier == nil && cfg.ReplayPath != "" && len(cfg.AuthorizationPublicKey) == ed25519.PublicKeySize {
+	if verifier == nil {
+		if !cfg.AllowFileReplay || cfg.ReplayPath == "" || len(cfg.AuthorizationPublicKey) != ed25519.PublicKeySize {
+			return nil, ErrManagerConfig
+		}
 		persistentVerifier, err := NewPersistentAuthorizationVerifierWithLegacyMigration(cfg.ReplayPath, cfg.LocalDeviceID, cfg.AuthorizationPublicKey, cfg.AllowLegacyReplayMigration)
 		if err != nil {
 			return nil, ErrManagerConfig
 		}
 		verifier = persistentVerifier
+	} else if cfg.AllowFileReplay || cfg.ReplayPath != "" {
+		return nil, ErrManagerConfig
 	}
 	if !deviceIDPattern.MatchString(string(cfg.LocalDeviceID)) || verifier == nil || cfg.PermissionAuthorizer == nil || cfg.Connector == nil || cfg.Audit == nil || !validManagerLimits(cfg.Limits) {
 		return nil, ErrManagerConfig
@@ -344,13 +350,8 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 			return ForwardInfo{}, errors.Join(ErrRouterNotTrusted, routerTrustErr)
 		}
 	}
-	verified, err := m.verifier.VerifyAndConsume(startCtx, auth)
-	if err != nil {
-		return ForwardInfo{}, err
-	}
-	if !sameClaims(claims, verified) {
-		return ForwardInfo{}, ErrAuthorizationMismatch
-	}
+	// Complete deterministic local policy and durable audit preflight before
+	// consuming the single-use capability at the independent replay authority.
 	if err := m.permissionAuthorizer.AuthorizePortForward(startCtx, claims); err != nil {
 		if auditErr := m.record(claims, "port_forward.start", "denied", "permission_denied"); auditErr != nil {
 			return ForwardInfo{}, auditErr
@@ -365,6 +366,14 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	}
 	if err := m.record(claims, "port_forward.start", "attempt", ""); err != nil {
 		return ForwardInfo{}, err
+	}
+	verified, err := m.verifier.VerifyAndConsume(startCtx, auth)
+	if err != nil {
+		auditErr := m.record(claims, "port_forward.start", "failed", "authorization_replay_consume_failed")
+		return ForwardInfo{}, errors.Join(err, auditErr)
+	}
+	if !sameClaims(claims, verified) {
+		return ForwardInfo{}, ErrAuthorizationMismatch
 	}
 
 	if !m.hasReservation(claims.ForwardingID) {

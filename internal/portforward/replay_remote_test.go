@@ -7,14 +7,18 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -99,6 +103,115 @@ func verifyRemoteReplayTestRequest(t *testing.T, request remoteReplayTestRequest
 	deviceSignature, err := base64.RawURLEncoding.Strict().DecodeString(request.DeviceSignature)
 	if err != nil || !ed25519.Verify(publicKey, deviceMessage, deviceSignature) {
 		t.Fatal("device replay proof signature is invalid")
+	}
+}
+
+func TestPinnedRemoteReplayConsumesAuthorizationAndBindsAuthority(t *testing.T) {
+	var devicePublic ed25519.PublicKey
+	handler := http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		var body remoteReplayTestRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Error(err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		verifyRemoteReplayTestRequest(t, body, devicePublic)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"accepted":true,"generation":"1","state_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}`))
+	})
+	server := httptest.NewTLSServer(handler)
+	defer server.Close()
+	devicePublic, devicePrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPublic, controlPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	claims.InitiatingDevice = mesh.DeviceID(identity.DeviceID(devicePublic))
+	claims.Route.Source = claims.InitiatingDevice
+	claims.Route.Hops[0].From = claims.InitiatingDevice
+	authorization, err := SignAuthorization(controlPrivate, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := server.Listener.Addr().(*net.TCPAddr).Port
+	pin := sha256.Sum256(server.Certificate().RawSubjectPublicKeyInfo)
+	endpoint := server.URL + remoteReplayFunctionPath
+	replay, err := NewPinnedRemoteReplay(endpoint, "public-anon-key", parsed.Hostname(), uint16(port), hex.EncodeToString(pin[:]), mesh.DeviceID(identity.DeviceID(devicePublic)), devicePrivate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pinnedTransport := replay.client.Transport.(*http.Transport)
+	transport := replayTestTransport(t, server).(*http.Transport)
+	transport.TLSClientConfig.ServerName = pinnedTransport.TLSClientConfig.ServerName
+	transport.TLSClientConfig.VerifyConnection = pinnedTransport.TLSClientConfig.VerifyConnection
+	replay.client.Transport = transport
+	replay.now = func() time.Time { return now }
+	if _, err := (AuthorizationVerifier{PublicKey: controlPublic, Replay: replay, Now: func() time.Time { return now }}).VerifyAndConsume(context.Background(), authorization); err != nil {
+		t.Fatalf("pinned remote replay consumption failed: %v", err)
+	}
+	if pinnedTransport.TLSClientConfig.MinVersion != tls.VersionTLS13 || pinnedTransport.TLSClientConfig.ServerName != parsed.Hostname() || pinnedTransport.TLSClientConfig.VerifyConnection == nil {
+		t.Fatal("pinned replay transport must enforce TLS 1.3, exact hostname and SPKI verification")
+	}
+	if replay.client.CheckRedirect == nil {
+		t.Fatal("pinned replay client must disable redirects")
+	}
+}
+
+func TestPinnedRemoteReplayRejectsWrongEndpointPinAndServiceRoleKey(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	defer server.Close()
+	parsed, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(server.Listener.Addr().(*net.TCPAddr).Port)
+	pin := sha256.Sum256(server.Certificate().RawSubjectPublicKeyInfo)
+	deviceID := mesh.DeviceID(identity.DeviceID(publicKey))
+	validEndpoint := server.URL + remoteReplayFunctionPath
+	if _, err := NewPinnedRemoteReplay(validEndpoint, "public-anon-key", parsed.Hostname(), port, hex.EncodeToString(pin[:]), deviceID, privateKey); err != nil {
+		t.Fatalf("valid pinned endpoint rejected: %v", err)
+	}
+	wrongPin := sha256.Sum256([]byte("wrong SPKI"))
+	replay, err := NewPinnedRemoteReplay(validEndpoint, "public-anon-key", parsed.Hostname(), port, hex.EncodeToString(wrongPin[:]), deviceID, privateKey)
+	if err != nil {
+		t.Fatalf("constructor should accept a syntactically valid pin: %v", err)
+	}
+	state := tls.ConnectionState{PeerCertificates: []*x509.Certificate{server.Certificate()}}
+	if err := replay.client.Transport.(*http.Transport).TLSClientConfig.VerifyConnection(state); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("wrong SPKI pin verification error = %v", err)
+	}
+	badEndpoints := []string{
+		"https://other.example.test:" + strconv.Itoa(int(port)) + remoteReplayFunctionPath,
+		"https://"+parsed.Hostname()+":"+strconv.Itoa(int(port))+"/other",
+		"http://"+parsed.Hostname()+":"+strconv.Itoa(int(port))+remoteReplayFunctionPath,
+		"https://"+parsed.Hostname()+":"+strconv.Itoa(int(port))+remoteReplayFunctionPath+"?redirect=1",
+		"https://"+parsed.Hostname()+":"+strconv.Itoa(int(port+1))+remoteReplayFunctionPath,
+	}
+	for _, endpoint := range badEndpoints {
+		if _, err := NewPinnedRemoteReplay(endpoint, "public-anon-key", parsed.Hostname(), port, hex.EncodeToString(pin[:]), deviceID, privateKey); !errors.Is(err, ErrReplayUnavailable) {
+			t.Errorf("unsafe endpoint %q error = %v", endpoint, err)
+		}
+	}
+	serviceRolePayload := base64.RawURLEncoding.EncodeToString([]byte(`{"role":"service_role"}`))
+	serviceRoleKey := "eyJhbGciOiJub25lIn0." + serviceRolePayload + ".signature"
+	if _, err := NewPinnedRemoteReplay(validEndpoint, serviceRoleKey, parsed.Hostname(), port, hex.EncodeToString(pin[:]), deviceID, privateKey); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("service-role key error = %v", err)
+	}
+	if _, err := NewPinnedRemoteReplay(validEndpoint, "sb_secret_not-public", parsed.Hostname(), port, hex.EncodeToString(pin[:]), deviceID, privateKey); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("secret API key error = %v", err)
 	}
 }
 

@@ -3,16 +3,17 @@ package portforward
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"path/filepath"
 	"testing"
 )
 
-func TestManagerBuildsDeviceScopedPersistentVerifierFromConfig(t *testing.T) {
+func TestManagerRequiresExplicitFileReplayOptIn(t *testing.T) {
 	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := NewManager(ManagerConfig{
+	config := ManagerConfig{
 		LocalDeviceID:          testInitiator,
 		ReplayPath:             filepath.Join(t.TempDir(), "portforward-replay.json"),
 		AuthorizationPublicKey: publicKey,
@@ -20,7 +21,12 @@ func TestManagerBuildsDeviceScopedPersistentVerifierFromConfig(t *testing.T) {
 		Connector:              &pipeConnector{},
 		Audit:                  &memoryAudit{},
 		Limits:                 managerTestLimits(),
-	})
+	}
+	if _, err := NewManager(config); !errors.Is(err, ErrManagerConfig) {
+		t.Fatalf("implicit FileReplay selection error = %v, want ErrManagerConfig", err)
+	}
+	config.AllowFileReplay = true
+	manager, err := NewManager(config)
 	if err != nil {
 		t.Fatal(err)
 	}

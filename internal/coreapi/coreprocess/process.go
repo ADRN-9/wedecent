@@ -2,6 +2,8 @@ package coreprocess
 
 import (
 	"context"
+	"crypto"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -24,6 +26,8 @@ import (
 
 var ErrServerRequired = errors.New("core process: IPC server is required")
 
+var newLocalCoreRemoteReplay = portforward.NewProductionRemoteReplay
+
 type Config struct {
 	ClientStateDir    string
 	SupabaseURL       string
@@ -32,7 +36,9 @@ type Config struct {
 	ConnectionBackend coreapi.ConnectionBackend
 	RouteSource       coreconnect.RouteRequestSource
 	RouterService     v1.RouterService
-	Forwarding        *portforward.ManagerConfig
+	Forwarding                 *portforward.ManagerConfig
+	ForwardingReplayEndpoint   string
+	ForwardingReplayAPIKey     string
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection
@@ -56,6 +62,26 @@ func (r *Runtime) Close() error {
 		errs = append(errs, r.Connections.Close())
 	}
 	return errors.Join(errs...)
+}
+
+func newLocalCoreForwardingVerifier(endpoint, apiKey string, deviceID mesh.DeviceID, signer crypto.Signer, publicKey ed25519.PublicKey) (*portforward.AuthorizationVerifier, error) {
+	if strings.TrimSpace(endpoint) == "" || strings.TrimSpace(apiKey) == "" {
+		return nil, errors.New("independent replay endpoint and public Data API key are required")
+	}
+	if len(publicKey) != ed25519.PublicKeySize {
+		return nil, portforward.ErrAuthorizationInvalid
+	}
+	replay, err := newLocalCoreRemoteReplay(endpoint, apiKey, deviceID, signer)
+	if err != nil {
+		return nil, err
+	}
+	if replay == nil {
+		return nil, portforward.ErrReplayUnavailable
+	}
+	return &portforward.AuthorizationVerifier{
+		PublicKey: append(ed25519.PublicKey(nil), publicKey...),
+		Replay:    replay,
+	}, nil
 }
 
 // Open composes the Local Core API from existing client state. Identity state is
@@ -87,6 +113,30 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	id, err := identity.Load(stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("core process: load identity: %w", err)
+	}
+
+	var forwardingVerifier *portforward.AuthorizationVerifier
+	if cfg.Forwarding != nil {
+		if cfg.Forwarding.Verifier != nil || cfg.Forwarding.ReplayPath != "" || cfg.Forwarding.AllowFileReplay {
+			return nil, errors.New("core process: Local Core forwarding forbids custom and file-backed replay verifiers")
+		}
+		replayPath, pathErr := filepath.Abs(filepath.Join(stateDir, "portforward-replay.json"))
+		if pathErr != nil {
+			return nil, fmt.Errorf("core process: resolve legacy replay path: %w", pathErr)
+		}
+		if replayErr := portforward.RejectExistingFileReplayState(replayPath); replayErr != nil {
+			return nil, fmt.Errorf("core process: legacy file replay state requires offline preservation, capability revocation and endpoint identity recovery; see docs/PORT_FORWARDING_SECURITY.md: %w", replayErr)
+		}
+		forwardingVerifier, err = newLocalCoreForwardingVerifier(
+			cfg.ForwardingReplayEndpoint,
+			cfg.ForwardingReplayAPIKey,
+			mesh.DeviceID(id.ID),
+			id.PrivateKey,
+			cfg.Forwarding.AuthorizationPublicKey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("core process: configure independent source-side replay authority: %w", err)
+		}
 	}
 
 	sessionPath := account.SessionPath(stateDir)
@@ -186,9 +236,9 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 			}
 			forwardingConfig.RouterTrustChecker = routerTrust
 		}
-		if forwardingConfig.Verifier == nil && len(forwardingConfig.AuthorizationPublicKey) == 32 && forwardingConfig.ReplayPath == "" {
-			forwardingConfig.ReplayPath = filepath.Join(stateDir, "portforward-replay.json")
-		}
+		forwardingConfig.Verifier = forwardingVerifier
+		forwardingConfig.ReplayPath = ""
+		forwardingConfig.AllowFileReplay = false
 		if forwardingConfig.Audit == nil {
 			forwardingAudit, auditErr := audit.Open(stateDir)
 			if auditErr != nil {

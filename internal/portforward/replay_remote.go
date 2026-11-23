@@ -7,6 +7,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
@@ -14,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -54,10 +56,48 @@ type remoteReplayResponse struct {
 	StateHash  string `json:"state_hash"`
 }
 
-// NewRemoteReplay requires the exact Supabase Edge Function endpoint and a
-// public Data API key. The key is not a secret; device and capability
-// signatures are the authorization boundary.
+// replayAuthorityHostname and replayAuthoritySPKISHA256 are release trust anchors.
+// Set them with Go linker -X flags; service configuration cannot change them.
+var (
+	replayAuthorityHostname   string
+	replayAuthoritySPKISHA256 string
+)
+
+const remoteReplayFunctionPath = "/functions/v1/port-forward-replay"
+
+// NewRemoteReplay is an unpinned constructor for isolated tests and development.
+// Production callers must use NewProductionRemoteReplay.
 func NewRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer crypto.Signer) (*RemoteReplay, error) {
+	return newRemoteReplay(endpoint, apiKey, "", 0, nil, deviceID, signer)
+}
+
+// NewProductionRemoteReplay uses hostname and SPKI pins embedded in the binary.
+// The endpoint URL may select no authority other than that independently trusted
+// host on port 443 and the fixed replay function path.
+func NewProductionRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer crypto.Signer) (*RemoteReplay, error) {
+	hostname := strings.TrimSpace(replayAuthorityHostname)
+	pins := strings.TrimSpace(replayAuthoritySPKISHA256)
+	if hostname == "" || pins == "" {
+		return nil, fmt.Errorf("%w: replay authority hostname and SPKI pins are not embedded in this build", ErrReplayUnavailable)
+	}
+	return NewPinnedRemoteReplay(endpoint, apiKey, hostname, 443, pins, deviceID, signer)
+}
+
+// NewPinnedRemoteReplay binds the endpoint to an independently trusted hostname,
+// port, and one or more SHA-256 hashes of the TLS leaf certificate SPKI.
+func NewPinnedRemoteReplay(endpoint, apiKey, trustedHostname string, trustedPort uint16, spkiPins string, deviceID mesh.DeviceID, signer crypto.Signer) (*RemoteReplay, error) {
+	if strings.TrimSpace(trustedHostname) != trustedHostname ||
+		!validReplayAuthorityHostname(trustedHostname) || trustedPort == 0 {
+		return nil, ErrReplayUnavailable
+	}
+	pins, err := parseReplaySPKIPins(spkiPins)
+	if err != nil {
+		return nil, err
+	}
+	return newRemoteReplay(endpoint, apiKey, trustedHostname, trustedPort, pins, deviceID, signer)
+}
+
+func newRemoteReplay(endpoint, apiKey, trustedHostname string, trustedPort uint16, spkiPins [][sha256.Size]byte, deviceID mesh.DeviceID, signer crypto.Signer) (*RemoteReplay, error) {
 	endpoint = strings.TrimSpace(endpoint)
 	apiKey = strings.TrimSpace(apiKey)
 	if !deviceIDPattern.MatchString(string(deviceID)) || signer == nil {
@@ -67,26 +107,38 @@ func NewRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer cry
 	if !ok || len(publicKey) != ed25519.PublicKeySize || identity.DeviceID(publicKey) != string(deviceID) {
 		return nil, ErrReplayUnavailable
 	}
-	if apiKey == "" || len(apiKey) > 4096 || strings.ContainsAny(apiKey, "\r\n\t ") {
-		return nil, ErrReplayUnavailable
+	if !validPublicReplayAPIKey(apiKey) {
+		return nil, fmt.Errorf("%w: only a public Supabase Data API key may be used; service-role keys are forbidden", ErrReplayUnavailable)
 	}
-	parsed, err := url.Parse(endpoint)
-	if err != nil || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" ||
-		parsed.Path != "/functions/v1/port-forward-replay" || parsed.Hostname() == "" {
-		return nil, ErrReplayUnavailable
-	}
-	if parsed.Scheme != "https" {
-		return nil, ErrReplayUnavailable
+	parsed, err := validateRemoteReplayEndpoint(endpoint, trustedHostname, trustedPort)
+	if err != nil {
+		return nil, err
 	}
 	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return nil, ErrReplayUnavailable
 	}
-	transport := defaultTransport.Clone()
-	transport.TLSClientConfig = &tls.Config{
+	tlsConfig := &tls.Config{
 		MinVersion: tls.VersionTLS13,
 		ServerName: parsed.Hostname(),
 	}
+	if len(spkiPins) > 0 {
+		pins := append([][sha256.Size]byte(nil), spkiPins...)
+		tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return fmt.Errorf("%w: replay authority supplied no peer certificate", ErrReplayUnavailable)
+			}
+			actual := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
+			for _, expected := range pins {
+				if subtle.ConstantTimeCompare(actual[:], expected[:]) == 1 {
+					return nil
+				}
+			}
+			return fmt.Errorf("%w: replay authority SPKI pin mismatch", ErrReplayUnavailable)
+		}
+	}
+	transport := defaultTransport.Clone()
+	transport.TLSClientConfig = tlsConfig
 	return &RemoteReplay{
 		endpoint: endpoint,
 		apiKey:   apiKey,
@@ -100,6 +152,108 @@ func NewRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer cry
 			},
 		},
 	}, nil
+}
+
+func validateRemoteReplayEndpoint(endpoint, trustedHostname string, trustedPort uint16) (*url.URL, error) {
+	if endpoint == "" || strings.TrimSpace(endpoint) != endpoint {
+		return nil, ErrReplayUnavailable
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil || parsed.Scheme != "https" || parsed.User != nil ||
+		parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" ||
+		parsed.Opaque != "" || parsed.Path != remoteReplayFunctionPath ||
+		parsed.RawPath != "" || parsed.Hostname() == "" || strings.HasSuffix(parsed.Host, ":") {
+		return nil, ErrReplayUnavailable
+	}
+	hostname := parsed.Hostname()
+	if !validReplayAuthorityHostname(hostname) {
+		return nil, ErrReplayUnavailable
+	}
+	port := uint64(443)
+	if rawPort := parsed.Port(); rawPort != "" {
+		port, err = strconv.ParseUint(rawPort, 10, 16)
+		if err != nil || port == 0 || strconv.FormatUint(port, 10) != rawPort {
+			return nil, ErrReplayUnavailable
+		}
+	}
+	if trustedHostname != "" && (hostname != trustedHostname || uint16(port) != trustedPort) {
+		return nil, fmt.Errorf("%w: replay endpoint does not match the embedded authority hostname and port", ErrReplayUnavailable)
+	}
+	if trustedHostname == "" && trustedPort != 0 {
+		return nil, ErrReplayUnavailable
+	}
+	return parsed, nil
+}
+
+func validReplayAuthorityHostname(hostname string) bool {
+	if hostname == "" || strings.TrimSpace(hostname) != hostname ||
+		strings.ToLower(hostname) != hostname || strings.HasSuffix(hostname, ".") {
+		return false
+	}
+	if net.ParseIP(hostname) != nil {
+		return true
+	}
+	if len(hostname) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(hostname, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if !(char >= 'a' && char <= 'z' || char >= '0' && char <= '9' || char == '-') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func parseReplaySPKIPins(raw string) ([][sha256.Size]byte, error) {
+	parts := strings.Split(strings.TrimSpace(raw), ",")
+	if len(parts) == 0 || len(parts) > 4 {
+		return nil, ErrReplayUnavailable
+	}
+	pins := make([][sha256.Size]byte, 0, len(parts))
+	seen := make(map[[sha256.Size]byte]struct{}, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if len(part) != sha256.Size*2 {
+			return nil, ErrReplayUnavailable
+		}
+		decoded, err := hex.DecodeString(part)
+		if err != nil || len(decoded) != sha256.Size {
+			return nil, ErrReplayUnavailable
+		}
+		var pin [sha256.Size]byte
+		copy(pin[:], decoded)
+		if _, exists := seen[pin]; exists {
+			return nil, ErrReplayUnavailable
+		}
+		seen[pin] = struct{}{}
+		pins = append(pins, pin)
+	}
+	return pins, nil
+}
+
+func validPublicReplayAPIKey(apiKey string) bool {
+	if apiKey == "" || len(apiKey) > 4096 || strings.ContainsAny(apiKey, "\r\n\t ") ||
+		strings.HasPrefix(strings.ToLower(apiKey), "sb_secret_") {
+		return false
+	}
+	parts := strings.Split(apiKey, ".")
+	if len(parts) == 3 {
+		payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+		if err == nil {
+			var claims struct {
+				Role string `json:"role"`
+			}
+			if json.Unmarshal(payload, &claims) == nil && claims.Role != "" && claims.Role != "anon" && claims.Role != "authenticated" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // ConsumePortForwardAuthorization deliberately fails: a remote authority must

@@ -48,6 +48,9 @@ wd-agent serve \
   --discover=false
 ```
 
+
+Port-forward replay endpoints are additionally constrained by the release binary's independently embedded authority hostname and TLS SPKI pin set. The JSON file and CLI flags may supply the endpoint URL, but cannot authorize a different hostname, port, path, or certificate key. Production builds must embed `replayAuthorityHostname` and `replayAuthoritySPKISHA256` as documented in `docs/PORT_FORWARDING_SECURITY.md`; without those trust anchors, forwarding startup fails closed.
+
 ## Supported keys
 
 Every current `wd-agent serve` setting has a JSON equivalent:

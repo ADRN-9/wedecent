@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 
 	"wedecent.com/wedecent/internal/appdirs"
@@ -47,13 +46,19 @@ func run(args []string) error {
 	publishableKey := fs.String("publishable-key", strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_PUBLISHABLE_KEY")), "Supabase publishable key (or WEDECENT_SUPABASE_PUBLISHABLE_KEY)")
 	routerAgentID := fs.String("router-agent-id", strings.TrimSpace(os.Getenv("WEDECENT_ROUTER_AGENT_ID")), "local router agent device ID (or WEDECENT_ROUTER_AGENT_ID)")
 	routerAgentFingerprint := fs.String("router-agent-fingerprint", strings.TrimSpace(os.Getenv("WEDECENT_ROUTER_AGENT_FINGERPRINT")), "local router agent public-key fingerprint (or WEDECENT_ROUTER_AGENT_FINGERPRINT)")
-	forwardingPublicKeyPath := fs.String("port-forward-authorization-public-key", "", "path to the trusted Ed25519 public key used to verify port-forwarding capabilities (forwarding stays disabled when omitted)")
-	forwardingLegacyMigration := fs.Bool("port-forward-allow-legacy-replay-migration", false, "explicitly migrate an unanchored legacy v1 replay store once; remove this flag after successful initialization")
+	forwardingPublicKeyPath := fs.String("port-forward-authorization-public-key", "", "path to the trusted Ed25519 public key used to verify port-forwarding capabilities")
+	forwardingReplayURL := fs.String("port-forward-replay-url", strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_URL")), "independent replay authority URL (or WEDECENT_PORT_FORWARD_REPLAY_URL)")
+	replayAPIKeyDefault := strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_API_KEY"))
+	if replayAPIKeyDefault == "" {
+		replayAPIKeyDefault = strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_ANON_KEY"))
+	}
+	forwardingReplayAPIKey := fs.String("port-forward-replay-api-key", replayAPIKeyDefault, "public Supabase Data API key (never a service-role key)")
+	forwardingLegacyMigration := fs.Bool("port-forward-allow-legacy-replay-migration", false, "deprecated; local replay migration is not supported by production Local Core")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New("usage: wd-core [--state directory] [--supabase-url URL] [--publishable-key key] [--router-agent-id id --router-agent-fingerprint SHA256:hex] [--port-forward-authorization-public-key path]")
+		return errors.New("usage: wd-core [--state directory] [--supabase-url URL] [--publishable-key key] [--router-agent-id id --router-agent-fingerprint SHA256:hex] [--port-forward-authorization-public-key path --port-forward-replay-url https://HOST/functions/v1/port-forward-replay --port-forward-replay-api-key PUBLIC_KEY]")
 	}
 
 	agentID := strings.TrimSpace(*routerAgentID)
@@ -72,14 +77,20 @@ func run(args []string) error {
 		if err != nil {
 			return fmt.Errorf("load forwarding authorization trust anchor: %w", err)
 		}
-		config.Forwarding = &portforward.ManagerConfig{
-			AuthorizationPublicKey:     publicKey,
-			AllowLegacyReplayMigration: *forwardingLegacyMigration,
-			ReplayPath:                 filepath.Join(*clientStateDir, "portforward-replay.json"),
-			Limits:                     portforward.DefaultManagerLimits(),
+		if strings.TrimSpace(*forwardingReplayURL) == "" || strings.TrimSpace(*forwardingReplayAPIKey) == "" {
+			return errors.New("Local Core port forwarding requires --port-forward-replay-url and a public --port-forward-replay-api-key; the endpoint hostname and SPKI pins must also be embedded in the release build")
 		}
-	} else if *forwardingLegacyMigration {
-		return errors.New("--port-forward-allow-legacy-replay-migration requires --port-forward-authorization-public-key")
+		if *forwardingLegacyMigration {
+			return errors.New("--port-forward-allow-legacy-replay-migration is unsupported; preserve legacy replay artifacts and follow the documented identity recovery procedure")
+		}
+		config.Forwarding = &portforward.ManagerConfig{
+			AuthorizationPublicKey: publicKey,
+			Limits:                 portforward.DefaultManagerLimits(),
+		}
+		config.ForwardingReplayEndpoint = strings.TrimSpace(*forwardingReplayURL)
+		config.ForwardingReplayAPIKey = strings.TrimSpace(*forwardingReplayAPIKey)
+	} else if *forwardingLegacyMigration || strings.TrimSpace(*forwardingReplayURL) != "" || strings.TrimSpace(*forwardingReplayAPIKey) != "" {
+		return errors.New("port-forward replay configuration requires --port-forward-authorization-public-key")
 	}
 	if agentID != "" {
 		controller, err := identity.Load(*clientStateDir)
