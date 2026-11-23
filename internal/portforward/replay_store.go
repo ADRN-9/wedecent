@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	replayStoreVersion       = 2
-	legacyReplayStoreVersion = 1
-	maxReplayStoreSize       = 16 << 20
-	defaultReplayLimit       = 100000
+	replayStoreVersion             = 2
+	legacyReplayStoreVersion       = 1
+	maxReplayStoreSize             = 16 << 20
+	defaultReplayLimit             = 100000
 	replayInitializationRetryLimit = 20
 )
 
