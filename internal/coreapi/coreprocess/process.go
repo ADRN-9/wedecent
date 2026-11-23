@@ -17,6 +17,7 @@ import (
 	"wedecent.com/wedecent/internal/coreconnect"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
+	"wedecent.com/wedecent/internal/meshnet"
 	"wedecent.com/wedecent/internal/portforward"
 	"wedecent.com/wedecent/internal/trust"
 )
@@ -162,6 +163,14 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		forwardingConfig.LocalDeviceID = mesh.DeviceID(id.ID)
 		if forwardingConfig.TrustChecker == nil {
 			forwardingConfig.TrustChecker = devices
+		}
+		if forwardingConfig.RouterTrustChecker == nil {
+			routerTrust, trustErr := meshnet.OpenRouteSourceRoutersTrust(stateDir)
+			if trustErr != nil {
+				_ = connectionService.Close()
+				return nil, fmt.Errorf("core process: open route-router trust for forwarding: %w", trustErr)
+			}
+			forwardingConfig.RouterTrustChecker = routerTrust
 		}
 		if forwardingConfig.Verifier == nil && len(forwardingConfig.AuthorizationPublicKey) == 32 && forwardingConfig.ReplayPath == "" {
 			forwardingConfig.ReplayPath = filepath.Join(stateDir, "portforward-replay.json")
