@@ -185,12 +185,17 @@ func TestDestinationSessionAuthenticatesOnceAndMultiplexesChildConnections(t *te
 		t.Fatalf("sequential child stream was not admitted: %v", err)
 	}
 	thirdRemote := <-dialer.opened
-	if _, err := third.Write([]byte("third")); err != nil {
-		t.Fatal(err)
-	}
+	thirdWriteDone := make(chan error, 1)
+	go func() {
+		_, err := third.Write([]byte("third"))
+		thirdWriteDone <- err
+	}()
 	thirdBytes := make([]byte, 5)
 	if _, err := io.ReadFull(thirdRemote, thirdBytes); err != nil || string(thirdBytes) != "third" {
 		t.Fatalf("third child payload = %q, error = %v", thirdBytes, err)
+	}
+	if err := <-thirdWriteDone; err != nil {
+		t.Fatal(err)
 	}
 	if len(replay.used) != 1 || len(dialer.snapshot()) != 3 {
 		t.Fatal("sequential child stream re-consumed the parent capability or skipped pinned dialing")

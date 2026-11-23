@@ -188,6 +188,19 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 		return err
 	}
 	initPath := path + ".init"
+	initLockFile, err := os.OpenFile(initPath+".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err == nil {
+		if closeErr := initLockFile.Close(); closeErr != nil {
+			return closeErr
+		}
+	} else if !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	unlockInit, _, err := lockReplayFile(initPath)
+	if err != nil {
+		return fmt.Errorf("lock replay initialization: %w", err)
+	}
+	defer unlockInit()
 	marker, err := readReplayInitialization(initPath, deviceID)
 	if err == nil {
 		lockExists, lockErr := replayPathExists(path + ".lock")

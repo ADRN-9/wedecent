@@ -820,6 +820,9 @@ func (m *Manager) authorizeListener(ctx context.Context, c Claims) error {
 			return ErrListenerAdminRequired
 		}
 		if err := m.listenerAuthorizer.AuthorizePortForwardListener(ctx, c); err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				return err
+			}
 			return fmt.Errorf("%w: %v", ErrListenerAdminRequired, err)
 		}
 	}

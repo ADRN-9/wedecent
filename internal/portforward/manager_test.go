@@ -540,29 +540,44 @@ func TestManagerMultiplexesMultipleChildrenOverOneParentSession(t *testing.T) {
 		t.Fatal("parent session did not receive the signed forwarding capability")
 	}
 
+	type pipeReadResult struct {
+		payload string
+		err     error
+	}
+	readResults := make(chan pipeReadResult, 2)
+	for _, remote := range []net.Conn{firstRemote, secondRemote} {
+		go func(conn net.Conn) {
+			payload := make([]byte, 3)
+			_, err := io.ReadFull(conn, payload)
+			readResults <- pipeReadResult{payload: string(payload), err: err}
+		}(remote)
+	}
 	firstWriteDone := make(chan error, 1)
+	secondWriteDone := make(chan error, 1)
 	go func() {
 		_, err := firstClient.Write([]byte("one"))
 		firstWriteDone <- err
 	}()
-	firstBytes := make([]byte, 3)
-	if _, err := io.ReadFull(firstRemote, firstBytes); err != nil || string(firstBytes) != "one" {
-		t.Fatalf("first child payload = %q, error = %v", firstBytes, err)
-	}
-	if err := <-firstWriteDone; err != nil {
-		t.Fatal(err)
-	}
-	secondWriteDone := make(chan error, 1)
 	go func() {
 		_, err := secondClient.Write([]byte("two"))
 		secondWriteDone <- err
 	}()
-	secondBytes := make([]byte, 3)
-	if _, err := io.ReadFull(secondRemote, secondBytes); err != nil || string(secondBytes) != "two" {
-		t.Fatalf("second child payload = %q, error = %v", secondBytes, err)
+	if err := <-firstWriteDone; err != nil {
+		t.Fatal(err)
 	}
 	if err := <-secondWriteDone; err != nil {
 		t.Fatal(err)
+	}
+	seen := make(map[string]bool, 2)
+	for i := 0; i < 2; i++ {
+		result := <-readResults
+		if result.err != nil {
+			t.Fatalf("read forwarded child payload: %v", result.err)
+		}
+		seen[result.payload] = true
+	}
+	if !seen["one"] || !seen["two"] {
+		t.Fatalf("forwarded child payloads = %#v, want one and two", seen)
 	}
 
 	_ = firstClient.Close()
@@ -589,12 +604,17 @@ func TestManagerMultiplexesMultipleChildrenOverOneParentSession(t *testing.T) {
 	if connector.callCount() != 1 {
 		t.Fatalf("sequential child opened %d parent sessions, want one", connector.callCount())
 	}
-	if _, err := thirdClient.Write([]byte("three")); err != nil {
-		t.Fatal(err)
-	}
+	thirdWriteDone := make(chan error, 1)
+	go func() {
+		_, err := thirdClient.Write([]byte("three"))
+		thirdWriteDone <- err
+	}()
 	thirdBytes := make([]byte, 5)
 	if _, err := io.ReadFull(thirdRemote, thirdBytes); err != nil || string(thirdBytes) != "three" {
 		t.Fatalf("sequential child payload = %q, error = %v", thirdBytes, err)
+	}
+	if err := <-thirdWriteDone; err != nil {
+		t.Fatal(err)
 	}
 
 	if err := manager.Stop(context.Background(), claims.ForwardingID); err != nil {

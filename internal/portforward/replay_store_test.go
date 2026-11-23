@@ -294,6 +294,7 @@ func TestFileReplayMigratesLegacyUnanchoredStateOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	replay.AllowLegacyMigration = true
 	if err := replay.ConsumePortForwardAuthorization(context.Background(), legacyJTI, expiry); !errors.Is(err, ErrAuthorizationReplay) {
 		t.Fatalf("legacy replay entry was not retained during migration: %v", err)
 	}
@@ -353,7 +354,7 @@ func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 	if err := secureReplayDirectory(dir); err != nil {
 		t.Fatalf("verify replay directory security: %v", err)
 	}
-	for _, file := range []string{path, path + ".lock", path + ".anchor"} {
+	for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init.lock"} {
 		if err := secureReplayFile(file); err != nil {
 			t.Fatalf("verify replay file %s: %v", filepath.Base(file), err)
 		}
@@ -364,7 +365,7 @@ func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 		} else if info.Mode().Perm() != 0o700 {
 			t.Fatalf("replay directory permissions = %o, want 700", info.Mode().Perm())
 		}
-		for _, file := range []string{path, path + ".lock", path + ".anchor"} {
+		for _, file := range []string{path, path + ".lock", path + ".anchor", path + ".init.lock"} {
 			info, err := os.Stat(file)
 			if err != nil {
 				t.Fatal(err)
@@ -414,8 +415,14 @@ func TestFileReplayRecoversPendingCommitAcrossCrashBoundaries(t *testing.T) {
 	for _, stage := range stages {
 		t.Run(stage.name, func(t *testing.T) {
 			path := newReplayTestPath(t)
-			if _, err := NewFileReplay(path, testInitiator); err != nil {
+			initial, err := NewFileReplay(path, testInitiator)
+			if err != nil {
 				t.Fatal(err)
+			}
+			initialJTI := base64.RawURLEncoding.EncodeToString([]byte("cccccccccccccccc"))
+			initialExpiry := time.Now().UTC().Add(time.Minute)
+			if err := initial.ConsumePortForwardAuthorization(context.Background(), initialJTI, initialExpiry); err != nil {
+				t.Fatalf("initialize replay snapshot: %v", err)
 			}
 			current, err := readReplaySnapshot(path, testInitiator)
 			if err != nil {
