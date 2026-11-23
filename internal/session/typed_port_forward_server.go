@@ -212,6 +212,12 @@ func (s *typedPortForwardServer) openChild(ctx context.Context, frame protocol.F
 	conn, err := parent.session.OpenChild(ctx)
 	if err != nil {
 		_ = s.registry.close(frame.StreamID, protocol.StreamKindPortForwardChild)
+		s.mu.Lock()
+		attached := !s.closed && !parent.closed && s.parents[parent.id] == parent
+		s.mu.Unlock()
+		if !attached {
+			return nil
+		}
 		return s.sendStreamError(frame.StreamID, "destination_connection_denied", "destination connection could not be opened")
 	}
 	sendCredit, err := newTypedStreamCredit(open.InitialWindow)
