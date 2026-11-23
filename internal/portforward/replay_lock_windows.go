@@ -24,6 +24,16 @@ func lockReplayFile(path string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, err
+	}
+	pathInfo, err := os.Lstat(lockPath)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, pathInfo) {
+		_ = file.Close()
+		return nil, fmt.Errorf("replay lock changed during open")
+	}
 	if err := file.Chmod(0o600); err != nil {
 		_ = file.Close()
 		return nil, err
