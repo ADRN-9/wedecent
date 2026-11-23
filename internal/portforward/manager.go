@@ -489,12 +489,27 @@ func (m *Manager) stop(ctx context.Context, forwardingID, reason string) error {
 	if f == nil {
 		return nil
 	}
-	err := m.terminate(f, reason)
+	terminateDone := make(chan error, 1)
+	go func() {
+		terminateDone <- m.terminate(f, reason)
+	}()
+	var terminateErr error
+	select {
+	case terminateErr = <-terminateDone:
+	case <-ctx.Done():
+		// Cleanup continues in the background; the caller's deadline bounds
+		// how long Stop itself waits.
+		return ctx.Err()
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
 	select {
 	case <-f.done:
-		return err
+		return terminateErr
 	case <-ctx.Done():
-		return errors.Join(err, ctx.Err())
+		return errors.Join(terminateErr, ctx.Err())
+	case <-timer.C:
+		return errors.Join(terminateErr, errors.New("portforward: accept loop shutdown exceeded 5 seconds"))
 	}
 }
 
