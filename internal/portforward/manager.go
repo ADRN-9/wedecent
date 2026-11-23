@@ -110,6 +110,7 @@ type ManagerConfig struct {
 	Verifier               Verifier
 	ReplayPath             string
 	AuthorizationPublicKey ed25519.PublicKey
+	AllowLegacyReplayMigration bool
 	TrustChecker           PeerTrustChecker
 	RouterTrustChecker     PeerTrustChecker
 	TrustPollInterval      time.Duration
@@ -189,7 +190,7 @@ type activeChild struct {
 func NewManager(cfg ManagerConfig) (*Manager, error) {
 	verifier := cfg.Verifier
 	if verifier == nil && cfg.ReplayPath != "" && len(cfg.AuthorizationPublicKey) == ed25519.PublicKeySize {
-		persistentVerifier, err := NewPersistentAuthorizationVerifier(cfg.ReplayPath, cfg.LocalDeviceID, cfg.AuthorizationPublicKey)
+		persistentVerifier, err := NewPersistentAuthorizationVerifierWithLegacyMigration(cfg.ReplayPath, cfg.LocalDeviceID, cfg.AuthorizationPublicKey, cfg.AllowLegacyReplayMigration)
 		if err != nil {
 			return nil, ErrManagerConfig
 		}
