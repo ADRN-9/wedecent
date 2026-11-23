@@ -137,6 +137,79 @@ func verifyReplayACL(path string) error {
 	return nil
 }
 
+func openReplayBootstrapLockHandle(lockPath string) (*os.File, bool, error) {
+	name, err := windows.UTF16PtrFromString(lockPath)
+	if err != nil {
+		return nil, false, err
+	}
+	handle, err := windows.CreateFile(
+		name,
+		windows.GENERIC_READ|windows.GENERIC_WRITE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+		nil,
+		windows.CREATE_NEW,
+		windows.FILE_ATTRIBUTE_NORMAL,
+		0,
+	)
+	created := err == nil
+	if err != nil {
+		if !errors.Is(err, windows.ERROR_FILE_EXISTS) && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+			return nil, false, err
+		}
+		handle, err = windows.CreateFile(
+			name,
+			windows.GENERIC_READ|windows.GENERIC_WRITE,
+			windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
+			nil,
+			windows.OPEN_EXISTING,
+			windows.FILE_ATTRIBUTE_NORMAL,
+			0,
+		)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+	return os.NewFile(uintptr(handle), lockPath), created, nil
+}
+
+// lockReplayBootstrapFile serializes lock-file publication and all cleanup of
+// lock-bootstrap staging files. The handle denies delete sharing so its path
+// cannot be replaced while another process is using it.
+func lockReplayBootstrapFile(path string) (func(), error) {
+	bootstrapPath := path + ".lock.bootstrap"
+	file, created, err := openReplayBootstrapLockHandle(bootstrapPath)
+	if err != nil {
+		return nil, fmt.Errorf("open replay bootstrap lock: %w", err)
+	}
+	closeWithError := func(primary error) error {
+		return errors.Join(primary, file.Close())
+	}
+	if created {
+		if err := setReplayFileOwner(bootstrapPath); err != nil {
+			return nil, closeWithError(fmt.Errorf("set replay bootstrap lock owner: %w", err))
+		}
+	}
+	openedInfo, err := file.Stat()
+	if err != nil {
+		return nil, closeWithError(err)
+	}
+	pathInfo, err := os.Lstat(bootstrapPath)
+	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, pathInfo) {
+		return nil, closeWithError(fmt.Errorf("replay bootstrap lock changed during open"))
+	}
+	if err := secureReplayFile(bootstrapPath); err != nil {
+		return nil, closeWithError(err)
+	}
+	var overlapped windows.Overlapped
+	if err := windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
+		return nil, closeWithError(fmt.Errorf("lock replay bootstrap: %w", err))
+	}
+	return func() {
+		_ = windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped)
+		_ = file.Close()
+	}, nil
+}
+
 func openReplayLockHandle(lockPath string) (*os.File, error) {
 	name, err := windows.UTF16PtrFromString(lockPath)
 	if err != nil {
@@ -165,7 +238,11 @@ func openReplayLockFile(lockPath string) (*os.File, bool, error) {
 		return nil, false, err
 	}
 
-	temp, err := os.CreateTemp(filepath.Dir(lockPath), ".portforward-lock-*")
+	storePath := strings.TrimSuffix(lockPath, ".lock")
+	if storePath == lockPath {
+		return nil, false, fmt.Errorf("invalid replay lock path")
+	}
+	temp, err := os.CreateTemp(filepath.Dir(lockPath), replayStagingPattern(storePath, "lock"))
 	if err != nil {
 		return nil, false, err
 	}
@@ -214,6 +291,16 @@ func lockReplayFileOS(path string) (func(), bool, error) {
 	if err := secureReplayDirectory(dir); err != nil {
 		return nil, false, err
 	}
+	bootstrapUnlock, err := lockReplayBootstrapFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	bootstrapHeld := true
+	defer func() {
+		if bootstrapHeld {
+			bootstrapUnlock()
+		}
+	}()
 	lockPath := path + ".lock"
 	_, anchorErr := os.Lstat(path + ".anchor")
 	_, stateErr := os.Lstat(path)
@@ -253,8 +340,10 @@ func lockReplayFileOS(path string) (func(), bool, error) {
 		_ = file.Close()
 		return nil, false, fmt.Errorf("lock replay store: %w", err)
 	}
+	bootstrapHeld = false
 	return func() {
 		_ = windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped)
 		_ = file.Close()
+		bootstrapUnlock()
 	}, created, nil
 }

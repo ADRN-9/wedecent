@@ -763,7 +763,7 @@ func cleanupReplayStagingWith(path string, remove func(string) error) error {
 			return fmt.Errorf("unexpected replay staging filename %q", name)
 		}
 		switch kind {
-		case "init", "anchor", "replay", "pending":
+		case "init", "anchor", "replay", "pending", "lock":
 		default:
 			return fmt.Errorf("unexpected replay staging kind %q", kind)
 		}
@@ -807,7 +807,7 @@ func cleanupReplayTemp(primary error, file *os.File, path string) error {
 	return cleanupReplayTempWith(primary, file, path, os.Remove)
 }
 
-func cleanupReplayTempWith(primary error, file *os.File, path string, remove func(string) error) error {
+func cleanupReplayTempWith(primary error, file interface{ Close() error }, path string, remove func(string) error) error {
 	var cleanupErr error
 	if file != nil {
 		if err := file.Close(); err != nil {
