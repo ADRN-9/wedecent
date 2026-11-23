@@ -60,7 +60,7 @@ func NewPersistentAuthorizationVerifier(path string, localDeviceID mesh.DeviceID
 	}
 	return &AuthorizationVerifier{
 		PublicKey: append(ed25519.PublicKey(nil), publicKey...),
-		Replay: replay,
+		Replay:    replay,
 	}, nil
 }
 
