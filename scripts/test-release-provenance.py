@@ -7,8 +7,11 @@ import hashlib
 import importlib.util
 import json
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
+
+sys.dont_write_bytecode = True
 
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPT = ROOT / "scripts" / "release-provenance.py"
