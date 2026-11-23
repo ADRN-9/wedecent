@@ -93,11 +93,11 @@ done
 for name in "${installer_files[@]}"; do
   cp -- "$ROOT/installer/windows/$name" "$STAGE/$name"
 done
-cat "$ROOT/installer/windows/README.md" > "$STAGE/README.txt"
+cat "$ROOT/installer/windows/README.md" > "$STAGE/README.md"
 
 (
   cd "$STAGE"
-  sha256sum "${binaries[@]}" VERSION.txt SHA256SUMS.txt "${installer_files[@]}" README.txt > PACKAGE_SHA256SUMS.txt
+  sha256sum "${binaries[@]}" VERSION.txt SHA256SUMS.txt "${installer_files[@]}" README.md > PACKAGE_SHA256SUMS.txt
   sha256sum -c PACKAGE_SHA256SUMS.txt
 ) || fail "installer package checksum verification failed"
 

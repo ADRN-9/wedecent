@@ -62,6 +62,15 @@ replay_authority_approval_sha256=$TEST_REPLAY_APPROVAL
 EOF_VERSION
 OUT_DIR="$RELEASE" "$ROOT/scripts/refresh-windows-release-checksums.sh" >/dev/null
 [[ "$(wc -l < "$RELEASE/SHA256SUMS.txt" | tr -d '[:space:]')" == '5' ]] || fail 'checksum refresh did not emit five binary entries'
+
+BUILT_PACKAGE="$WORK/built-package"
+RELEASE_DIR="$RELEASE" OUT_DIR="$BUILT_PACKAGE" "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null
+[[ -f "$BUILT_PACKAGE/README.md" && ! -e "$BUILT_PACKAGE/README.txt" ]] ||
+  fail 'installer package builder did not produce the README.md expected by signing and publication'
+(
+  cd "$BUILT_PACKAGE"
+  sha256sum -c PACKAGE_SHA256SUMS.txt >/dev/null
+) || fail 'built installer package checksums did not verify'
 for name in "${binaries[@]}"; do
   [[ "$(awk -v file="$name" '$2 == file { count++ } END { print count + 0 }' "$RELEASE/SHA256SUMS.txt")" == '1' ]] ||
     fail "checksum refresh did not emit exactly one entry for $name"

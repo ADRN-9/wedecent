@@ -1,4 +1,4 @@
-name: Production release build
+name: Production release
 
 on:
   push:
@@ -6,17 +6,23 @@ on:
       - 'v*'
 
 permissions:
-  actions: write
   contents: read
 
 concurrency:
   group: production-release-${{ github.ref }}
   cancel-in-progress: false
 
+env:
+  WEDECENT_PROVENANCE_PREDICATE_TYPE: https://wedecent.com/attestations/release-provenance/v1
+
 jobs:
   windows:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     environment:
       name: wedecent-production-release
     env:
@@ -28,6 +34,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -37,10 +44,50 @@ jobs:
       - name: Build production Windows release
         shell: bash
         run: ./scripts/build-windows-release.sh
+      - name: Build production Windows installer package
+        shell: bash
+        run: ./scripts/build-windows-installer-package.sh
+      - name: Create Windows release provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist/provenance"
+          python ./scripts/release-provenance.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --directory "$GITHUB_WORKSPACE/dist/wedecent-windows-amd64" \
+            --output "$GITHUB_WORKSPACE/dist/provenance/wedecent-windows-amd64.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact-name wedecent-windows-amd64 \
+            --platform windows/amd64
+          python ./scripts/release-provenance.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --directory "$GITHUB_WORKSPACE/dist/wedecent-windows-installer" \
+            --output "$GITHUB_WORKSPACE/dist/provenance/wedecent-windows-installer.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact-name wedecent-windows-installer \
+            --platform windows/amd64
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/provenance/wedecent-windows-amd64.json
+          predicate-type: ${{ env.WEDECENT_PROVENANCE_PREDICATE_TYPE }}
+          predicate-path: dist/provenance/wedecent-windows-amd64.json
+          create-storage-record: false
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/provenance/wedecent-windows-installer.json
+          predicate-type: ${{ env.WEDECENT_PROVENANCE_PREDICATE_TYPE }}
+          predicate-path: dist/provenance/wedecent-windows-installer.json
+          create-storage-record: false
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: wedecent-windows-amd64-${{ github.sha }}
-          path: dist/wedecent-windows-amd64/
+          name: wedecent-windows-${{ github.sha }}
+          path: |
+            dist/wedecent-windows-amd64/
+            dist/wedecent-windows-installer/
+            dist/provenance/wedecent-windows-amd64.json
+            dist/provenance/wedecent-windows-installer.json
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
@@ -48,6 +95,10 @@ jobs:
   linux:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     environment:
       name: wedecent-production-release
     env:
@@ -59,6 +110,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -69,12 +121,46 @@ jobs:
         run: |
           GOARCH=amd64 ./scripts/build-linux-release.sh
           GOARCH=arm64 ./scripts/build-linux-release.sh
+      - name: Create Linux release provenance
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist/provenance"
+          python3 ./scripts/release-provenance.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --directory "$GITHUB_WORKSPACE/dist/wedecent-linux-amd64" \
+            --output "$GITHUB_WORKSPACE/dist/provenance/wedecent-linux-amd64.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact-name wedecent-linux-amd64 \
+            --platform linux/amd64
+          python3 ./scripts/release-provenance.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --directory "$GITHUB_WORKSPACE/dist/wedecent-linux-arm64" \
+            --output "$GITHUB_WORKSPACE/dist/provenance/wedecent-linux-arm64.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact-name wedecent-linux-arm64 \
+            --platform linux/arm64
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/provenance/wedecent-linux-amd64.json
+          predicate-type: ${{ env.WEDECENT_PROVENANCE_PREDICATE_TYPE }}
+          predicate-path: dist/provenance/wedecent-linux-amd64.json
+          create-storage-record: false
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/provenance/wedecent-linux-arm64.json
+          predicate-type: ${{ env.WEDECENT_PROVENANCE_PREDICATE_TYPE }}
+          predicate-path: dist/provenance/wedecent-linux-arm64.json
+          create-storage-record: false
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wedecent-linux-${{ github.sha }}
           path: |
             dist/wedecent-linux-amd64/
             dist/wedecent-linux-arm64/
+            dist/provenance/wedecent-linux-amd64.json
+            dist/provenance/wedecent-linux-arm64.json
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
@@ -82,6 +168,10 @@ jobs:
   macos:
     runs-on: macos-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     environment:
       name: wedecent-production-release
     env:
@@ -93,6 +183,7 @@ jobs:
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
@@ -103,12 +194,315 @@ jobs:
         run: |
           GOARCH=amd64 ./scripts/build-macos-release.sh
           GOARCH=arm64 ./scripts/build-macos-release.sh
+      - name: Create macOS release provenance
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist/provenance"
+          python3 ./scripts/release-provenance.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --directory "$GITHUB_WORKSPACE/dist/wedecent-macos-amd64" \
+            --output "$GITHUB_WORKSPACE/dist/provenance/wedecent-macos-amd64.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact-name wedecent-macos-amd64 \
+            --platform darwin/amd64
+          python3 ./scripts/release-provenance.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --directory "$GITHUB_WORKSPACE/dist/wedecent-macos-arm64" \
+            --output "$GITHUB_WORKSPACE/dist/provenance/wedecent-macos-arm64.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact-name wedecent-macos-arm64 \
+            --platform darwin/arm64
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/provenance/wedecent-macos-amd64.json
+          predicate-type: ${{ env.WEDECENT_PROVENANCE_PREDICATE_TYPE }}
+          predicate-path: dist/provenance/wedecent-macos-amd64.json
+          create-storage-record: false
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/provenance/wedecent-macos-arm64.json
+          predicate-type: ${{ env.WEDECENT_PROVENANCE_PREDICATE_TYPE }}
+          predicate-path: dist/provenance/wedecent-macos-arm64.json
+          create-storage-record: false
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: wedecent-macos-${{ github.sha }}
           path: |
             dist/wedecent-macos-amd64/
             dist/wedecent-macos-arm64/
+            dist/provenance/wedecent-macos-amd64.json
+            dist/provenance/wedecent-macos-arm64.json
           if-no-files-found: error
           retention-days: 90
           compression-level: 0
+
+  verify-artifacts:
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: wedecent-windows-${{ github.sha }}
+          path: dist
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: wedecent-linux-${{ github.sha }}
+          path: dist
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: wedecent-macos-${{ github.sha }}
+          path: dist
+      - name: Verify all platform provenance attestations
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_provenance() {
+            local directory="$1"
+            local statement="$2"
+            local artifact_name="$3"
+            local platform="$4"
+            gh attestation verify "$statement" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/production-release-build.yml" \
+              --predicate-type "$WEDECENT_PROVENANCE_PREDICATE_TYPE" \
+              --source-ref "$GITHUB_REF" >/dev/null
+            python3 ./scripts/release-provenance.py verify \
+              --repo-root "$GITHUB_WORKSPACE" \
+              --directory "$directory" \
+              --provenance "$statement" \
+              --repository "$GITHUB_REPOSITORY" \
+              --expected-commit "$GITHUB_SHA" \
+              --artifact-name "$artifact_name" \
+              --platform "$platform"
+          }
+          verify_provenance dist/wedecent-windows-amd64 dist/provenance/wedecent-windows-amd64.json wedecent-windows-amd64 windows/amd64
+          verify_provenance dist/wedecent-windows-installer dist/provenance/wedecent-windows-installer.json wedecent-windows-installer windows/amd64
+          verify_provenance dist/wedecent-linux-amd64 dist/provenance/wedecent-linux-amd64.json wedecent-linux-amd64 linux/amd64
+          verify_provenance dist/wedecent-linux-arm64 dist/provenance/wedecent-linux-arm64.json wedecent-linux-arm64 linux/arm64
+          verify_provenance dist/wedecent-macos-amd64 dist/provenance/wedecent-macos-amd64.json wedecent-macos-amd64 darwin/amd64
+          verify_provenance dist/wedecent-macos-arm64 dist/provenance/wedecent-macos-arm64.json wedecent-macos-arm64 darwin/arm64
+          (
+            cd dist/wedecent-windows-amd64
+            sha256sum -c SHA256SUMS.txt
+          )
+          (
+            cd dist/wedecent-windows-installer
+            sha256sum -c SHA256SUMS.txt
+            sha256sum -c PACKAGE_SHA256SUMS.txt
+          )
+
+  windows-signing:
+    needs: verify-artifacts
+    runs-on: [self-hosted, windows, wedecent-signing]
+    timeout-minutes: 45
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+      attestations: write
+    environment:
+      name: wedecent-production-signing
+    env:
+      WEDECENT_BUILD_MODE: production
+      WEDECENT_PRODUCTION_RELEASE_APPROVED: ${{ vars.WEDECENT_PRODUCTION_RELEASE_APPROVED }}
+      WEDECENT_REPLAY_AUTHORITY_HOSTNAME: ${{ vars.WEDECENT_REPLAY_AUTHORITY_HOSTNAME }}
+      WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256: ${{ vars.WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 }}
+      WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256: ${{ vars.WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 }}
+      WEDECENT_WINDOWS_AUTHENTICODE_SIGNER: ${{ vars.WEDECENT_WINDOWS_AUTHENTICODE_SIGNER }}
+      WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER: ${{ vars.WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: wedecent-windows-${{ github.sha }}
+          path: dist
+      - name: Verify unsigned Windows provenance before signing
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_provenance() {
+            local directory="$1"
+            local statement="$2"
+            local artifact_name="$3"
+            gh attestation verify "$statement" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/production-release-build.yml" \
+              --predicate-type "$WEDECENT_PROVENANCE_PREDICATE_TYPE" \
+              --source-ref "$GITHUB_REF" >/dev/null
+            python ./scripts/release-provenance.py verify \
+              --repo-root "$GITHUB_WORKSPACE" \
+              --directory "$directory" \
+              --provenance "$statement" \
+              --repository "$GITHUB_REPOSITORY" \
+              --expected-commit "$GITHUB_SHA" \
+              --artifact-name "$artifact_name" \
+              --platform windows/amd64
+          }
+          verify_provenance dist/wedecent-windows-amd64 dist/provenance/wedecent-windows-amd64.json wedecent-windows-amd64
+          verify_provenance dist/wedecent-windows-installer dist/provenance/wedecent-windows-installer.json wedecent-windows-installer
+      - name: Finalize signed Windows release and installer
+        shell: bash
+        run: |
+          ./scripts/finalize-windows-signed-artifacts.sh
+      - name: Create signed Windows provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$GITHUB_WORKSPACE/dist/provenance-signed"
+          python ./scripts/release-provenance.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --directory "$GITHUB_WORKSPACE/dist/wedecent-windows-signed/release" \
+            --output "$GITHUB_WORKSPACE/dist/provenance-signed/wedecent-windows-signed-release.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact-name wedecent-windows-signed-release \
+            --platform windows/amd64
+          python ./scripts/release-provenance.py create \
+            --repo-root "$GITHUB_WORKSPACE" \
+            --directory "$GITHUB_WORKSPACE/dist/wedecent-windows-signed/installer" \
+            --output "$GITHUB_WORKSPACE/dist/provenance-signed/wedecent-windows-signed-installer.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-commit "$GITHUB_SHA" \
+            --artifact-name wedecent-windows-signed-installer \
+            --platform windows/amd64
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/provenance-signed/wedecent-windows-signed-release.json
+          predicate-type: ${{ env.WEDECENT_PROVENANCE_PREDICATE_TYPE }}
+          predicate-path: dist/provenance-signed/wedecent-windows-signed-release.json
+          create-storage-record: false
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/provenance-signed/wedecent-windows-signed-installer.json
+          predicate-type: ${{ env.WEDECENT_PROVENANCE_PREDICATE_TYPE }}
+          predicate-path: dist/provenance-signed/wedecent-windows-signed-installer.json
+          create-storage-record: false
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: wedecent-windows-signed-${{ github.sha }}
+          path: |
+            dist/wedecent-windows-signed/
+            dist/provenance-signed/
+          if-no-files-found: error
+          retention-days: 90
+          compression-level: 0
+
+  publish-windows-downloads:
+    needs: windows-signing
+    runs-on: [self-hosted, linux, wedecent-release-publisher]
+    timeout-minutes: 30
+    permissions:
+      actions: read
+      attestations: read
+      contents: read
+    environment:
+      name: wedecent-production-publication
+    env:
+      WEDECENT_BUILD_MODE: production
+      WEDECENT_PRODUCTION_RELEASE_APPROVED: ${{ vars.WEDECENT_PRODUCTION_RELEASE_APPROVED }}
+      WEDECENT_REPLAY_AUTHORITY_HOSTNAME: ${{ vars.WEDECENT_REPLAY_AUTHORITY_HOSTNAME }}
+      WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256: ${{ vars.WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 }}
+      WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256: ${{ vars.WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 }}
+      WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER: ${{ vars.WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER }}
+      WEDECENT_R2_CREATE_ONLY_UPLOADER: ${{ vars.WEDECENT_R2_CREATE_ONLY_UPLOADER }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: wedecent-windows-signed-${{ github.sha }}
+          path: dist
+      - name: Verify signed Windows provenance before publication
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify_provenance() {
+            local directory="$1"
+            local statement="$2"
+            local artifact_name="$3"
+            gh attestation verify "$statement" \
+              --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/production-release-build.yml" \
+              --predicate-type "$WEDECENT_PROVENANCE_PREDICATE_TYPE" \
+              --source-ref "$GITHUB_REF" >/dev/null
+            python3 ./scripts/release-provenance.py verify \
+              --repo-root "$GITHUB_WORKSPACE" \
+              --directory "$directory" \
+              --provenance "$statement" \
+              --repository "$GITHUB_REPOSITORY" \
+              --expected-commit "$GITHUB_SHA" \
+              --artifact-name "$artifact_name" \
+              --platform windows/amd64
+          }
+          verify_provenance dist/wedecent-windows-signed/release dist/provenance-signed/wedecent-windows-signed-release.json wedecent-windows-signed-release
+          verify_provenance dist/wedecent-windows-signed/installer dist/provenance-signed/wedecent-windows-signed-installer.json wedecent-windows-signed-installer
+      - name: Publish immutable signed Windows downloads
+        shell: bash
+        run: |
+          version="$(tr -d '\r\n' < VERSION)"
+          ./scripts/publish-windows-downloads.sh \
+            --version "v$version" \
+            --signed-release "$GITHUB_WORKSPACE/dist/wedecent-windows-signed/release" \
+            --signed-installer "$GITHUB_WORKSPACE/dist/wedecent-windows-signed/installer"
+
+  publish-stable-update:
+    needs: publish-windows-downloads
+    runs-on: [self-hosted, linux, wedecent-release-publisher]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    environment:
+      name: wedecent-production-publication
+    env:
+      WEDECENT_PRODUCTION_RELEASE_APPROVED: ${{ vars.WEDECENT_PRODUCTION_RELEASE_APPROVED }}
+      WEDECENT_REPLAY_AUTHORITY_HOSTNAME: ${{ vars.WEDECENT_REPLAY_AUTHORITY_HOSTNAME }}
+      WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256: ${{ vars.WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 }}
+      WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256: ${{ vars.WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 }}
+      WEDECENT_UPDATE_MANIFEST_SIGNER: ${{ vars.WEDECENT_UPDATE_MANIFEST_SIGNER }}
+      WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER: ${{ vars.WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER }}
+      WEDECENT_UPDATE_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_PUBLIC_KEY_PATH }}
+      WEDECENT_UPDATE_SEQUENCE: ${{ github.run_number }}
+      WEDECENT_UPDATE_PUBLISHED_AT: ${{ github.run_started_at }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Publish stable update metadata after immutable artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(tr -d '\r\n' < VERSION)"
+          ./scripts/publish-windows-stable-update.sh \
+            --version "v$version" \
+            --sequence "$WEDECENT_UPDATE_SEQUENCE" \
+            --published-at "$WEDECENT_UPDATE_PUBLISHED_AT" \
+            --public-key "$WEDECENT_UPDATE_PUBLIC_KEY_PATH"
