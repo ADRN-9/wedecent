@@ -247,6 +247,67 @@ func TestFileReplayRejectsDeletedLockAfterInitialization(t *testing.T) {
 	}
 }
 
+func TestFileReplayRejectsDeletedGenerationAnchor(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	secondJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
+	expiry := time.Now().UTC().Add(time.Minute)
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, expiry); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path + ".anchor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), secondJTI, expiry); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("deleted generation anchor error = %v, want fail-closed replay unavailable", err)
+	}
+}
+
+func TestFileReplayMigratesLegacyUnanchoredStateOnce(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "portforward-replay.json")
+	if err := secureReplayDirectory(dir); err != nil {
+		t.Fatal(err)
+	}
+	legacyJTI := base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef"))
+	nextJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
+	expiry := time.Now().UTC().Add(time.Minute)
+	if err := writeReplayJSON(path, replaySnapshot{
+		Version: legacyReplayStoreVersion,
+		DeviceID: string(testInitiator),
+		Entries: map[string]int64{legacyJTI: expiry.UnixMilli()},
+	}, ".legacy-replay-*", maxReplayStoreSize); err != nil {
+		t.Fatal(err)
+	}
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), nextJTI, expiry); err != nil {
+		t.Fatalf("legacy replay state migration failed: %v", err)
+	}
+	snapshot, err := readReplaySnapshot(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.Version != replayStoreVersion || snapshot.Generation != 1 {
+		t.Fatalf("migrated replay state = version %d generation %d", snapshot.Version, snapshot.Generation)
+	}
+	if _, ok := snapshot.Entries[legacyJTI]; !ok {
+		t.Fatal("legacy replay entries were lost during migration")
+	}
+}
 func TestFileReplayRejectsOlderStateGeneration(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "portforward-replay.json")
 	replay, err := NewFileReplay(path, testInitiator)
