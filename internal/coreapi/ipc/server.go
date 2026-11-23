@@ -34,6 +34,7 @@ const (
 	ErrorRouterFailed                 = "router_operation_failed"
 	ErrorPortForwardUnavailable       = "port_forward_unavailable"
 	ErrorPortForwardLimit             = "port_forward_limit"
+	ErrorPortForwardNotFound          = "port_forward_not_found"
 	ErrorPortForwardFailed            = "port_forward_failed"
 	ErrorInternal                     = "internal_error"
 )
@@ -336,6 +337,8 @@ func (s *Server) finish(response Response, result any, err error) Response {
 			return errorResponse(response, ErrorPortForwardUnavailable, "port forwarding is unavailable")
 		case errors.Is(err, coreapi.ErrPortForwardLimit):
 			return errorResponse(response, ErrorPortForwardLimit, "port forwarding limit reached")
+		case errors.Is(err, coreapi.ErrPortForwardNotFound):
+			return errorResponse(response, ErrorPortForwardNotFound, "port forwarding not found")
 		case errors.Is(err, coreapi.ErrPortForwardOperation):
 			return errorResponse(response, ErrorPortForwardFailed, "port forwarding operation failed")
 		default:
