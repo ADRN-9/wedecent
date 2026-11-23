@@ -359,9 +359,13 @@ func (c *wsNetConn) Close() error {
 	close(c.done)
 	c.closeMu.Unlock()
 
-	c.writeMu.Lock()
-	_ = c.writeFrame(0x8, []byte{0x03, 0xE8})
-	c.writeMu.Unlock()
+	// Try a bounded close frame only when no writer owns the transport.
+	// Never wait behind a potentially blocked data writer.
+	if c.writeMu.TryLock() {
+		_ = c.raw.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
+		_ = c.writeFrame(0x8, []byte{0x03, 0xE8})
+		c.writeMu.Unlock()
+	}
 	return c.raw.Close()
 }
 
