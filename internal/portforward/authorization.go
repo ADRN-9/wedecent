@@ -27,7 +27,7 @@ const (
 	PermissionLocal          = "port_forward.local"
 	PermissionRemote         = "port_forward.remote"
 	ProtocolTCP              = "tcp"
-	MaxAuthorizationLifetime = time.Hour
+	MaxAuthorizationLifetime = 120 * time.Second
 	MaxRouteHops             = 2
 )
 
@@ -160,6 +160,9 @@ func SignAuthorization(signer crypto.Signer, claims Claims) (Authorization, erro
 }
 
 func (v AuthorizationVerifier) VerifyAndConsume(ctx context.Context, auth Authorization) (Claims, error) {
+	if ctx == nil {
+		return Claims{}, ErrAuthorizationInvalid
+	}
 	if err := ctx.Err(); err != nil {
 		return Claims{}, err
 	}
@@ -177,8 +180,8 @@ func (v AuthorizationVerifier) VerifyAndConsume(ctx context.Context, auth Author
 	if err != nil || auth.KeyID != keyID {
 		return Claims{}, ErrAuthorizationSignature
 	}
-	signature, err := base64.RawURLEncoding.DecodeString(auth.Signature)
-	if err != nil || len(signature) != ed25519.SignatureSize {
+	signature, err := base64.RawURLEncoding.Strict().DecodeString(auth.Signature)
+	if err != nil || len(signature) != ed25519.SignatureSize || base64.RawURLEncoding.EncodeToString(signature) != auth.Signature {
 		return Claims{}, ErrAuthorizationSignature
 	}
 	message, err := canonicalMessage(auth.KeyID, claims)
@@ -215,15 +218,28 @@ func NewMemoryReplay(maxEntries int) *MemoryReplay {
 }
 
 func (r *MemoryReplay) ConsumePortForwardAuthorization(ctx context.Context, jti string, expiresAt time.Time) error {
+	if ctx == nil {
+		return ErrAuthorizationInvalid
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if r == nil {
 		return ErrReplayUnavailable
 	}
+	if !jtiPattern.MatchString(jti) {
+		return ErrAuthorizationInvalid
+	}
+	rawJTI, err := base64.RawURLEncoding.Strict().DecodeString(jti)
+	if err != nil || len(rawJTI) != 16 || base64.RawURLEncoding.EncodeToString(rawJTI) != jti {
+		return ErrAuthorizationInvalid
+	}
 	now := time.Now().UTC()
 	if r.Now != nil {
 		now = r.Now().UTC()
+	}
+	if !expiresAt.After(now) {
+		return ErrAuthorizationExpired
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -255,8 +271,8 @@ func ValidateClaims(c Claims) error {
 	if !forwardIDPattern.MatchString(c.ForwardingID) || !jtiPattern.MatchString(c.JTI) {
 		return ErrAuthorizationInvalid
 	}
-	rawJTI, err := base64.RawURLEncoding.DecodeString(c.JTI)
-	if err != nil || len(rawJTI) != 16 {
+	rawJTI, err := base64.RawURLEncoding.Strict().DecodeString(c.JTI)
+	if err != nil || len(rawJTI) != 16 || base64.RawURLEncoding.EncodeToString(rawJTI) != c.JTI {
 		return ErrAuthorizationInvalid
 	}
 	if !deviceIDPattern.MatchString(string(c.InitiatingDevice)) || !deviceIDPattern.MatchString(string(c.DestinationDevice)) || c.InitiatingDevice == c.DestinationDevice {
@@ -438,4 +454,9 @@ func canonicalMessage(keyID string, c Claims) ([]byte, error) {
 func cloneClaims(c Claims) Claims {
 	c.Route.Hops = append([]mesh.RouteHop(nil), c.Route.Hops...)
 	return c
+}
+
+func cloneAuthorization(a Authorization) Authorization {
+	a.Claims = cloneClaims(a.Claims)
+	return a
 }
