@@ -42,10 +42,16 @@ type Runtime struct {
 }
 
 func (r *Runtime) Close() error {
-	if r == nil { return nil }
+	if r == nil {
+		return nil
+	}
 	var errs []error
-	if r.Forwarding != nil { errs = append(errs, r.Forwarding.Close()) }
-	if r.Connections != nil { errs = append(errs, r.Connections.Close()) }
+	if r.Forwarding != nil {
+		errs = append(errs, r.Forwarding.Close())
+	}
+	if r.Connections != nil {
+		errs = append(errs, r.Connections.Close())
+	}
 	return errors.Join(errs...)
 }
 
@@ -171,7 +177,9 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		Connections: connectionService,
 	})
 	if err != nil {
-		if forwardingManager != nil { _ = forwardingManager.Close() }
+		if forwardingManager != nil {
+			_ = forwardingManager.Close()
+		}
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose file transfer service: %w", err)
 	}

@@ -17,57 +17,87 @@ import (
 )
 
 const (
-	testInitiator mesh.DeviceID = "wd_aaaaaaaaaaaaaaaa"
-	testDestination mesh.DeviceID = "wd_bbbbbbbbbbbbbbbb"
-	testRouter mesh.DeviceID = "wd_cccccccccccccccc"
+	testInitiator   = mesh.DeviceID("wd_aaaaaaaaaaaaaaaa")
+	testDestination = mesh.DeviceID("wd_bbbbbbbbbbbbbbbb")
+	testRouter      = mesh.DeviceID("wd_cccccccccccccccc")
 )
 
 func testClaims(now time.Time, direction Direction) Claims {
 	source, destination := testInitiator, testDestination
-	if direction == DirectionRemote { source, destination = testDestination, testInitiator }
-	expires := now.Add(5*time.Minute).UTC().Truncate(time.Millisecond)
+	if direction == DirectionRemote {
+		source, destination = testDestination, testInitiator
+	}
+	expires := now.Add(5 * time.Minute).UTC().Truncate(time.Millisecond)
 	return Claims{
-		Version: AuthorizationVersion, Issuer: AuthorizationIssuer, Audience: AuthorizationAudience,
-		Permission: PermissionLocal, JTI: base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef")),
-		ForwardingID: "00000000-0000-4000-8000-000000000001", Direction: direction,
-		InitiatingDevice: testInitiator, DestinationDevice: testDestination,
+		Version: AuthorizationVersion,
+		Issuer: AuthorizationIssuer,
+		Audience: AuthorizationAudience,
+		Permission: PermissionLocal,
+		JTI: base64.RawURLEncoding.EncodeToString([]byte("0123456789abcdef")),
+		ForwardingID: "00000000-0000-4000-8000-000000000001",
+		Direction: direction,
+		InitiatingDevice: testInitiator,
+		DestinationDevice: testDestination,
 		Route: mesh.Route{
-			ID: "00000000-0000-4000-8000-000000000002", Source: source, Destination: destination,
+			ID: "00000000-0000-4000-8000-000000000002",
+			Source: source,
+			Destination: destination,
 			Hops: []mesh.RouteHop{{From: source, To: destination, Transport: mesh.TransportName("internet"), Cost: 12}},
 			ExpiresAt: expires,
 		},
-		DestinationAddress: "example.com", DestinationPort: 443,
-		Listener: DefaultListenerPolicy(43123), Protocol: ProtocolTCP,
-		IssuedAtUnixMS: now.UnixMilli(), ExpiresAtUnixMS: expires.UnixMilli(),
+		DestinationAddress: "example.com",
+		DestinationPort: 443,
+		Listener: DefaultListenerPolicy(43123),
+		Protocol: ProtocolTCP,
+		IssuedAtUnixMS: now.UnixMilli(),
+		ExpiresAtUnixMS: expires.UnixMilli(),
 		Limits: ResourceLimits{MaxConnections: 4, MaxDurationSeconds: 120, IdleTimeoutSeconds: 30},
 	}
 }
 
 func TestAuthorizationSignVerifyAndReplay(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
 	auth, err := SignAuthorization(privateKey, claims)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	wantKeyID, err := AuthorizationKeyID(publicKey)
-	if err != nil { t.Fatal(err) }
-	if auth.KeyID != wantKeyID { t.Fatalf("key ID = %q, want %q", auth.KeyID, wantKeyID) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.KeyID != wantKeyID {
+		t.Fatalf("key ID = %q, want %q", auth.KeyID, wantKeyID)
+	}
 	replay := NewMemoryReplay(16)
 	replay.Now = func() time.Time { return now }
 	verifier := AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }}
 	got, err := verifier.VerifyAndConsume(context.Background(), auth)
-	if err != nil { t.Fatal(err) }
-	if got.ForwardingID != claims.ForwardingID || got.Direction != DirectionLocal { t.Fatalf("claims = %#v", got) }
-	if _, err := verifier.VerifyAndConsume(context.Background(), auth); !errors.Is(err, ErrAuthorizationReplay) { t.Fatalf("replay error = %v", err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ForwardingID != claims.ForwardingID || got.Direction != DirectionLocal {
+		t.Fatalf("claims = %#v", got)
+	}
+	if _, err := verifier.VerifyAndConsume(context.Background(), auth); !errors.Is(err, ErrAuthorizationReplay) {
+		t.Fatalf("replay error = %v", err)
+	}
 }
 
 func TestAuthorizationRejectsTamperingAndDoesNotConsumeValidCapability(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	auth, err := SignAuthorization(privateKey, testClaims(now, DirectionLocal))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	mutations := []func(*Authorization){
 		func(a *Authorization) { a.Claims.Direction = DirectionRemote },
 		func(a *Authorization) { a.Claims.DestinationPort++ },
@@ -83,18 +113,28 @@ func TestAuthorizationRejectsTamperingAndDoesNotConsumeValidCapability(t *testin
 		replay := NewMemoryReplay(16)
 		replay.Now = func() time.Time { return now }
 		verifier := AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }}
-		if _, err := verifier.VerifyAndConsume(context.Background(), changed); err == nil { t.Fatalf("mutation %d accepted", i) }
-		if _, err := verifier.VerifyAndConsume(context.Background(), auth); err != nil { t.Fatalf("mutation consumed valid JTI: %v", err) }
+		if _, err := verifier.VerifyAndConsume(context.Background(), changed); err == nil {
+			t.Fatalf("mutation %d accepted", i)
+		}
+		if _, err := verifier.VerifyAndConsume(context.Background(), auth); err != nil {
+			t.Fatalf("mutation consumed valid JTI: %v", err)
+		}
 	}
 }
 
 func TestAuthorizationBindsRemoteDirectionAndListenerDevice(t *testing.T) {
 	claims := testClaims(time.Now().UTC().Truncate(time.Millisecond), DirectionRemote)
 	claims.Permission = PermissionRemote
-	if err := ValidateClaims(claims); err != nil { t.Fatal(err) }
-	if ListenerDevice(claims) != testDestination { t.Fatalf("listener device = %q", ListenerDevice(claims)) }
+	if err := ValidateClaims(claims); err != nil {
+		t.Fatal(err)
+	}
+	if ListenerDevice(claims) != testDestination {
+		t.Fatalf("listener device = %q", ListenerDevice(claims))
+	}
 	claims.Route.Source, claims.Route.Destination = testInitiator, testDestination
-	if err := ValidateClaims(claims); err == nil { t.Fatal("incorrect remote route accepted") }
+	if err := ValidateClaims(claims); err == nil {
+		t.Fatal("incorrect remote route accepted")
+	}
 }
 
 func TestAuthorizationRejectsUnsafeOrMalformedClaims(t *testing.T) {
@@ -113,11 +153,17 @@ func TestAuthorizationRejectsUnsafeOrMalformedClaims(t *testing.T) {
 	for i, mutate := range mutations {
 		claims := cloneClaims(base)
 		mutate(&claims)
-		if err := ValidateClaims(claims); err == nil { t.Fatalf("unsafe claim mutation %d accepted", i) }
+		if err := ValidateClaims(claims); err == nil {
+			t.Fatalf("unsafe claim mutation %d accepted", i)
+		}
 	}
 }
 
-type mismatchedSigner struct { signer ed25519.PrivateKey; public ed25519.PublicKey }
+type mismatchedSigner struct {
+	signer ed25519.PrivateKey
+	public ed25519.PublicKey
+}
+
 func (s mismatchedSigner) Public() crypto.PublicKey { return s.public }
 func (s mismatchedSigner) Sign(random io.Reader, message []byte, opts crypto.SignerOpts) ([]byte, error) {
 	return s.signer.Sign(random, message, opts)
@@ -125,9 +171,13 @@ func (s mismatchedSigner) Sign(random io.Reader, message []byte, opts crypto.Sig
 
 func TestSignerMustMatchSeparatelySuppliedPublicMaterial(t *testing.T) {
 	_, first, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	secondPublic, _, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := SignAuthorization(mismatchedSigner{signer: first, public: secondPublic}, testClaims(time.Now().UTC().Truncate(time.Millisecond), DirectionLocal)); !errors.Is(err, ErrAuthorizationSignature) {
 		t.Fatalf("mismatched signer error = %v", err)
 	}
@@ -135,10 +185,14 @@ func TestSignerMustMatchSeparatelySuppliedPublicMaterial(t *testing.T) {
 
 func TestAuthorizationReplayConsumptionIsAtomic(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	auth, err := SignAuthorization(privateKey, testClaims(now, DirectionLocal))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	replay := NewMemoryReplay(128)
 	replay.Now = func() time.Time { return now }
 	verifier := AuthorizationVerifier{PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }}
@@ -149,9 +203,17 @@ func TestAuthorizationReplayConsumptionIsAtomic(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			_, err := verifier.VerifyAndConsume(context.Background(), auth)
-			if err == nil { successes.Add(1) } else if errors.Is(err, ErrAuthorizationReplay) { replays.Add(1) } else { t.Errorf("verify: %v", err) }
+			if err == nil {
+				successes.Add(1)
+			} else if errors.Is(err, ErrAuthorizationReplay) {
+				replays.Add(1)
+			} else {
+				t.Errorf("verify: %v", err)
+			}
 		}()
 	}
 	wg.Wait()
-	if successes.Load() != 1 || replays.Load() != 63 { t.Fatalf("successes=%d replays=%d", successes.Load(), replays.Load()) }
+	if successes.Load() != 1 || replays.Load() != 63 {
+		t.Fatalf("successes=%d replays=%d", successes.Load(), replays.Load())
+	}
 }
