@@ -24,9 +24,16 @@ const (
 )
 
 type replaySnapshot struct {
-	Version  int               `json:"version"`
-	DeviceID string            `json:"device_id"`
-	Entries  map[string]int64  `json:"entries"`
+	Version    int              `json:"version"`
+	DeviceID   string           `json:"device_id"`
+	Generation uint64           `json:"generation"`
+	Entries    map[string]int64 `json:"entries"`
+}
+
+type replayAnchor struct {
+	Version    int    `json:"version"`
+	DeviceID   string `json:"device_id"`
+	Generation uint64 `json:"generation"`
 }
 
 // FileReplay provides cross-process, durable, device-scoped single-use JTI
@@ -113,10 +120,11 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 		return ErrAuthorizationInvalid
 	}
 
-	entries, err := readReplayEntries(r.Path, r.DeviceID, createdLock)
+	snapshot, err := loadReplaySnapshot(r.Path, r.DeviceID, createdLock)
 	if err != nil {
 		return fmt.Errorf("%w: read replay store: %v", ErrReplayUnavailable, err)
 	}
+	entries := snapshot.Entries
 	nowMS := now.UnixMilli()
 	for key, expiryMS := range entries {
 		if expiryMS <= nowMS {
@@ -136,26 +144,128 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	if snapshot.Generation == ^uint64(0) {
+		return ErrReplayUnavailable
+	}
 	entries[jti] = expiresAt.UTC().UnixMilli()
-	if err := writeReplayEntries(r.Path, r.DeviceID, entries); err != nil {
+	nextGeneration := snapshot.Generation + 1
+	anchor := replayAnchor{Version: replayStoreVersion, DeviceID: string(r.DeviceID), Generation: nextGeneration}
+	// Persist the monotonic anchor first. A crash can make the store unavailable,
+	// but cannot silently accept an older replay snapshot.
+	if err := writeReplayAnchor(r.Path+".anchor", anchor); err != nil {
+		return fmt.Errorf("%w: persist replay anchor: %v", ErrReplayUnavailable, err)
+	}
+	if err := writeReplayEntries(r.Path, r.DeviceID, nextGeneration, entries); err != nil {
 		return fmt.Errorf("%w: persist replay consumption: %v", ErrReplayUnavailable, err)
 	}
 	return nil
 }
 
-func readReplayEntries(path string, deviceID mesh.DeviceID, allowMissing bool) (map[string]int64, error) {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		if allowMissing {
-			return make(map[string]int64), nil
+func loadReplaySnapshot(path string, deviceID mesh.DeviceID, createdLock bool) (replaySnapshot, error) {
+	anchorPath := path + ".anchor"
+	anchor, anchorErr := readReplayAnchor(anchorPath, deviceID)
+	if anchorErr == nil {
+		snapshot, err := readReplaySnapshot(path, deviceID)
+		if err != nil {
+			return replaySnapshot{}, err
 		}
-		return nil, errors.New("replay state file is missing after initialization")
+		if snapshot.Generation != anchor.Generation {
+			return replaySnapshot{}, errors.New("replay state generation does not match protected anchor")
+		}
+		return snapshot, nil
 	}
+	if !errors.Is(anchorErr, os.ErrNotExist) {
+		return replaySnapshot{}, anchorErr
+	}
+
+	// Existing C93 stores are anchored on first C94 use. Missing state or lock
+	// files after initialization are rejected by the platform lock helper.
+	if !createdLock {
+		snapshot, err := readReplaySnapshot(path, deviceID)
+		if err != nil {
+			return replaySnapshot{}, errors.New("replay anchor is missing for an existing store")
+		}
+		anchor := replayAnchor{Version: replayStoreVersion, DeviceID: string(deviceID), Generation: snapshot.Generation}
+		if err := writeReplayAnchor(anchorPath, anchor); err != nil {
+			return replaySnapshot{}, err
+		}
+		return snapshot, nil
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return replaySnapshot{}, errors.New("replay lock was recreated for an existing state file")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return replaySnapshot{}, err
+	}
+	return replaySnapshot{Version: replayStoreVersion, DeviceID: string(deviceID), Entries: make(map[string]int64)}, nil
+}
+
+func readReplayAnchor(path string, deviceID mesh.DeviceID) (replayAnchor, error) {
+	data, err := readReplayJSON(path, 4096)
+	if err != nil {
+		return replayAnchor{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var anchor replayAnchor
+	if err := decoder.Decode(&anchor); err != nil {
+		return replayAnchor{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return replayAnchor{}, errors.New("replay anchor contains trailing JSON")
+		}
+		return replayAnchor{}, err
+	}
+	if anchor.Version != replayStoreVersion || anchor.DeviceID != string(deviceID) {
+		return replayAnchor{}, errors.New("replay anchor scope or version mismatch")
+	}
+	return anchor, nil
+}
+
+func readReplaySnapshot(path string, deviceID mesh.DeviceID) (replaySnapshot, error) {
+	data, err := readReplayJSON(path, maxReplayStoreSize)
+	if err != nil {
+		return replaySnapshot{}, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	var snapshot replaySnapshot
+	if err := decoder.Decode(&snapshot); err != nil {
+		return replaySnapshot{}, err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return replaySnapshot{}, errors.New("replay store contains trailing JSON")
+		}
+		return replaySnapshot{}, err
+	}
+	if snapshot.Version != replayStoreVersion || snapshot.DeviceID != string(deviceID) || snapshot.Entries == nil || len(snapshot.Entries) > defaultReplayLimit {
+		return replaySnapshot{}, errors.New("replay store scope or version mismatch")
+	}
+	for jti, expiryMS := range snapshot.Entries {
+		if !jtiPattern.MatchString(jti) || expiryMS <= 0 {
+			return replaySnapshot{}, errors.New("replay store contains invalid entry")
+		}
+		decoded, err := base64.RawURLEncoding.Strict().DecodeString(jti)
+		if err != nil || len(decoded) != 16 || base64.RawURLEncoding.EncodeToString(decoded) != jti {
+			return replaySnapshot{}, errors.New("replay store contains invalid JTI")
+		}
+	}
+	return snapshot, nil
+}
+
+func readReplayJSON(path string, maxSize int64) ([]byte, error) {
+	info, err := os.Lstat(path)
 	if err != nil {
 		return nil, err
 	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxReplayStoreSize {
-		return nil, errors.New("replay store is not a bounded regular file")
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxSize {
+		return nil, errors.New("replay metadata is not a bounded regular file")
+	}
+	if err := secureReplayFile(path); err != nil {
+		return nil, err
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -168,61 +278,41 @@ func readReplayEntries(path string, deviceID mesh.DeviceID, allowMissing bool) (
 	}
 	pathInfo, err := os.Lstat(path)
 	if err != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, pathInfo) {
-		return nil, errors.New("replay store changed during open")
+		return nil, errors.New("replay metadata changed during open")
 	}
-	if err := file.Chmod(0o600); err != nil {
-		return nil, err
-	}
-	data, err := io.ReadAll(io.LimitReader(file, maxReplayStoreSize+1))
+	data, err := io.ReadAll(io.LimitReader(file, maxSize+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(data) == 0 || len(data) > maxReplayStoreSize {
-		return nil, errors.New("replay store size is invalid")
+	if len(data) == 0 || int64(len(data)) > maxSize {
+		return nil, errors.New("replay metadata size is invalid")
 	}
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	decoder.DisallowUnknownFields()
-	var snapshot replaySnapshot
-	if err := decoder.Decode(&snapshot); err != nil {
-		return nil, err
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return nil, errors.New("replay store contains trailing JSON")
-		}
-		return nil, err
-	}
-	if snapshot.Version != replayStoreVersion || snapshot.DeviceID != string(deviceID) || snapshot.Entries == nil || len(snapshot.Entries) > defaultReplayLimit {
-		return nil, errors.New("replay store scope or version mismatch")
-	}
-	for jti, expiryMS := range snapshot.Entries {
-		if !jtiPattern.MatchString(jti) || expiryMS <= 0 {
-			return nil, errors.New("replay store contains invalid entry")
-		}
-		decoded, err := base64.RawURLEncoding.Strict().DecodeString(jti)
-		if err != nil || len(decoded) != 16 || base64.RawURLEncoding.EncodeToString(decoded) != jti {
-			return nil, errors.New("replay store contains invalid JTI")
-		}
-	}
-	return snapshot.Entries, nil
+	return data, nil
 }
 
-func writeReplayEntries(path string, deviceID mesh.DeviceID, entries map[string]int64) error {
+func writeReplayAnchor(path string, anchor replayAnchor) error {
+	return writeReplayJSON(path, anchor, ".portforward-anchor-*", 4096)
+}
+
+func writeReplayEntries(path string, deviceID mesh.DeviceID, generation uint64, entries map[string]int64) error {
+	return writeReplayJSON(path, replaySnapshot{
+		Version: replayStoreVersion, DeviceID: string(deviceID), Generation: generation, Entries: entries,
+	}, ".portforward-replay-*", maxReplayStoreSize)
+}
+
+func writeReplayJSON(path string, value any, pattern string, maxSize int64) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	if err := secureReplayDirectory(dir); err != nil {
 		return err
 	}
-	data, err := json.Marshal(replaySnapshot{
-		Version: replayStoreVersion, DeviceID: string(deviceID), Entries: entries,
-	})
+	data, err := json.Marshal(value)
 	if err != nil {
 		return err
 	}
-	if len(data) == 0 || len(data) > maxReplayStoreSize {
-		return errors.New("replay store exceeds size limit")
+	if len(data) == 0 || int64(len(data)) > maxSize {
+		return errors.New("replay metadata exceeds size limit")
 	}
-	file, err := os.CreateTemp(dir, ".portforward-replay-*")
+	file, err := os.CreateTemp(dir, pattern)
 	if err != nil {
 		return err
 	}
