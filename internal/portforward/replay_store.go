@@ -188,13 +188,16 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 		return err
 	}
 	initPath := path + ".init"
-	unlockReplay, _, err := lockReplayFile(path)
+	unlockReplay, lockCreated, err := lockReplayFile(path)
 	if err != nil {
 		return fmt.Errorf("lock replay store initialization: %w", err)
 	}
 	defer unlockReplay()
 	marker, err := readReplayInitializationLocked(initPath, deviceID)
 	if err == nil {
+		if lockCreated {
+			return errors.New("replay lock was deleted after initialization")
+		}
 		lockExists, lockErr := replayPathExists(path + ".lock")
 		if lockErr != nil {
 			return lockErr
@@ -245,7 +248,7 @@ func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacy
 	if anchorExists || pendingExists {
 		return errors.New("replay initialization marker is missing for an anchored or pending store")
 	}
-	if stateExists || lockExists {
+	if stateExists || (lockExists && !lockCreated) {
 		if !allowLegacyMigration || !stateExists || !lockExists {
 			return errors.New("unmarked replay state cannot be safely initialized or rolled forward")
 		}
