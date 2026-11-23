@@ -106,6 +106,8 @@ type Manager struct {
 	verifier             Verifier
 	trustChecker         PeerTrustChecker
 	trustPollInterval    time.Duration
+	trustWatcherDone     chan struct{}
+	backgroundErr       error
 	permissionAuthorizer PermissionAuthorizer
 	connector            Connector
 	listenerAuthorizer   ListenerAuthorizer
@@ -200,6 +202,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		deviceConnections:    make(map[mesh.DeviceID]int),
 	}
 	if manager.trustChecker != nil {
+		manager.trustWatcherDone = make(chan struct{})
 		go manager.watchTrust()
 	}
 	return manager, nil
@@ -495,11 +498,15 @@ func (m *Manager) Close() error {
 	shouldCancel := !m.closed
 	m.closed = true
 	cancel := m.cancel
+	watcherDone := m.trustWatcherDone
 	m.mu.Unlock()
 	if shouldCancel && cancel != nil {
 		cancel()
 	}
 	m.starts.Wait()
+	if watcherDone != nil {
+		<-watcherDone
+	}
 	m.mu.Lock()
 	ids := make([]string, 0, len(m.forwards))
 	for id := range m.forwards {
@@ -512,6 +519,10 @@ func (m *Manager) Close() error {
 			errs = append(errs, err)
 		}
 	}
+	m.mu.Lock()
+	backgroundErr := m.backgroundErr
+	m.mu.Unlock()
+	errs = append(errs, backgroundErr)
 	return errors.Join(errs...)
 }
 
@@ -554,7 +565,17 @@ func (m *Manager) referencedPeerDevices() []mesh.DeviceID {
 	return result
 }
 
+func (m *Manager) recordBackgroundError(err error) {
+	if err == nil {
+		return
+	}
+	m.mu.Lock()
+	m.backgroundErr = errors.Join(m.backgroundErr, err)
+	m.mu.Unlock()
+}
+
 func (m *Manager) watchTrust() {
+	defer close(m.trustWatcherDone)
 	ticker := time.NewTicker(m.trustPollInterval)
 	defer ticker.Stop()
 	for {
@@ -563,9 +584,18 @@ func (m *Manager) watchTrust() {
 			return
 		case <-ticker.C:
 			for _, peerID := range m.referencedPeerDevices() {
-				trusted, err := m.trustChecker.IsTrusted(m.ctx, string(peerID))
-				if err != nil || !trusted {
-					_, _ = m.RevokeDevice(context.Background(), peerID)
+				trusted, trustErr := m.trustChecker.IsTrusted(m.ctx, string(peerID))
+				if m.ctx.Err() != nil {
+					return
+				}
+				if trustErr != nil || !trusted {
+					_, revokeErr := m.RevokeDevice(context.Background(), peerID)
+					if trustErr != nil {
+						m.recordBackgroundError(fmt.Errorf("portforward: peer trust check for %s failed: %w", peerID, trustErr))
+					}
+					if revokeErr != nil {
+						m.recordBackgroundError(fmt.Errorf("portforward: revoke untrusted peer %s: %w", peerID, revokeErr))
+					}
 				}
 			}
 		}
@@ -682,7 +712,13 @@ func (m *Manager) reserveChild(f *activeForward, local net.Conn) (*activeChild, 
 }
 
 func (m *Manager) handleChild(f *activeForward, child *activeChild) {
-	defer func() { m.releaseChild(f, child); close(child.done) }()
+	defer func() {
+		if err := m.releaseChild(f, child); err != nil {
+			auditErr := m.record(f.claims, "port_forward.connection_cleanup", "failed", "connection_close_failed")
+			m.recordBackgroundError(errors.Join(err, auditErr))
+		}
+		close(child.done)
+	}()
 	if err := m.record(f.claims, "port_forward.connection_opened", "attempt", ""); err != nil {
 		go m.terminate(f, "audit_persistence_failed")
 		return
@@ -729,11 +765,16 @@ func (m *Manager) handleChild(f *activeForward, child *activeChild) {
 	}
 }
 
-func (m *Manager) releaseChild(f *activeForward, child *activeChild) {
+func (m *Manager) releaseChild(f *activeForward, child *activeChild) error {
 	child.cancel()
-	_ = child.local.Close()
+	var closeErrs []error
+	if err := child.local.Close(); err != nil && !expectedClosedConnError(err) {
+		closeErrs = append(closeErrs, err)
+	}
 	if child.remote != nil {
-		_ = child.remote.Close()
+		if err := child.remote.Close(); err != nil && !expectedClosedConnError(err) {
+			closeErrs = append(closeErrs, err)
+		}
 	}
 	m.mu.Lock()
 	if _, ok := f.children[child.id]; ok {
@@ -746,20 +787,28 @@ func (m *Manager) releaseChild(f *activeForward, child *activeChild) {
 		}
 	}
 	m.mu.Unlock()
+	return errors.Join(closeErrs...)
 }
 
 func (m *Manager) terminate(f *activeForward, reason string) error {
 	f.stopOnce.Do(func() {
 		m.mu.Lock()
 		f.cancel()
-		_ = f.listener.Close()
+		var cleanupErrs []error
+		if err := f.listener.Close(); err != nil && !expectedClosedConnError(err) {
+			cleanupErrs = append(cleanupErrs, err)
+		}
 		children := make([]*activeChild, 0, len(f.children))
 		for _, child := range f.children {
 			children = append(children, child)
 			child.cancel()
-			_ = child.local.Close()
+			if err := child.local.Close(); err != nil && !expectedClosedConnError(err) {
+				cleanupErrs = append(cleanupErrs, err)
+			}
 			if child.remote != nil {
-				_ = child.remote.Close()
+				if err := child.remote.Close(); err != nil && !expectedClosedConnError(err) {
+					cleanupErrs = append(cleanupErrs, err)
+				}
 			}
 		}
 		m.mu.Unlock()
@@ -780,12 +829,12 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 		}
 		outcome := "success"
 		auditReason := reason
-		if sessionErr != nil {
+		if len(cleanupErrs) > 0 || sessionErr != nil {
 			outcome = "failed"
-			auditReason = "parent_session_cleanup_failed"
+			auditReason = "forward_cleanup_failed"
 		}
 		auditErr := m.record(f.claims, "port_forward.stopped", outcome, auditReason)
-		f.stopErr = errors.Join(sessionErr, auditErr)
+		f.stopErr = errors.Join(errors.Join(cleanupErrs...), sessionErr, auditErr)
 		close(f.stopDone)
 	})
 	<-f.stopDone
@@ -848,6 +897,10 @@ func sameClaims(a, b Claims) bool {
 	left, err1 := canonicalMessage("comparison", a)
 	right, err2 := canonicalMessage("comparison", b)
 	return err1 == nil && err2 == nil && string(left) == string(right)
+}
+
+func expectedClosedConnError(err error) bool {
+	return err == nil || errors.Is(err, net.ErrClosed) || errors.Is(err, io.ErrClosedPipe)
 }
 
 type idleConn struct {
