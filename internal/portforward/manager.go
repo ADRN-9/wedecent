@@ -774,7 +774,13 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 		if f.session != nil {
 			sessionErr = f.session.Close()
 		}
-		auditErr := m.record(f.claims, "port_forward.stopped", "success", reason)
+		outcome := "success"
+		auditReason := reason
+		if sessionErr != nil {
+			outcome = "failed"
+			auditReason = "parent_session_cleanup_failed"
+		}
+		auditErr := m.record(f.claims, "port_forward.stopped", outcome, auditReason)
 		f.stopErr = errors.Join(sessionErr, auditErr)
 		close(f.stopDone)
 	})
