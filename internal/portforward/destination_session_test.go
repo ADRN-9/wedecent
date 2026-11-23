@@ -165,14 +165,33 @@ func TestDestinationSessionAuthenticatesOnceAndMultiplexesChildConnections(t *te
 	if _, err := io.ReadFull(secondRemote, secondBytes); err != nil || string(secondBytes) != "second" {
 		t.Fatalf("second child payload = %q, error = %v", secondBytes, err)
 	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	third, err := session.OpenChild(context.Background())
+	if err != nil {
+		t.Fatalf("sequential child stream was not admitted: %v", err)
+	}
+	thirdRemote := <-dialer.opened
+	if _, err := third.Write([]byte("third")); err != nil {
+		t.Fatal(err)
+	}
+	thirdBytes := make([]byte, 5)
+	if _, err := io.ReadFull(thirdRemote, thirdBytes); err != nil || string(thirdBytes) != "third" {
+		t.Fatalf("third child payload = %q, error = %v", thirdBytes, err)
+	}
+	if len(replay.used) != 1 || len(dialer.snapshot()) != 3 {
+		t.Fatal("sequential child stream re-consumed the parent capability or skipped pinned dialing")
+	}
 
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
 	}
 	_ = firstRemote.Close()
 	_ = secondRemote.Close()
-	if _, err := first.Write([]byte("after-close")); err == nil {
-		t.Fatal("first child remained writable after parent session close")
+	_ = thirdRemote.Close()
+	if _, err := third.Write([]byte("after-close")); err == nil {
+		t.Fatal("third child remained writable after parent session close")
 	}
 }
 
