@@ -14,7 +14,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -178,7 +177,7 @@ func TestRemoteReplayRejectsJTIAfterPairedLocalSnapshotAnchorRollback(t *testing
 		t.Fatalf("consume A through independent authority: %v", err)
 	}
 
-	localPath := filepath.Join(t.TempDir(), "portforward-replay.json")
+	localPath := newReplayTestPath(t)
 	local, err := NewFileReplay(localPath, remote.DeviceID)
 	if err != nil {
 		t.Fatal(err)
