@@ -159,14 +159,6 @@ func lockReplayFile(path string) (func(), bool, error) {
 		_ = file.Close()
 		return nil, false, fmt.Errorf("replay lock changed during open")
 	}
-	if created {
-		_, anchorErr = os.Lstat(path + ".anchor")
-		_, stateErr = os.Lstat(path)
-		if !os.IsNotExist(anchorErr) || !os.IsNotExist(stateErr) {
-			_ = file.Close()
-			return nil, false, fmt.Errorf("replay lock was recreated for an existing store")
-		}
-	}
 	if err := secureReplayFile(lockPath); err != nil {
 		_ = file.Close()
 		return nil, false, err
