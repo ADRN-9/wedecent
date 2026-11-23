@@ -10,7 +10,8 @@ import (
 const (
 	MethodPortForwardStart = "port_forward.start"
 	MethodPortForwardStop  = "port_forward.stop"
-	MethodPortForwardList  = "port_forward.list"
+	MethodPortForwardList   = "port_forward.list"
+	MethodPortForwardStatus = "port_forward.status"
 )
 
 type PortForwardStatus struct {
@@ -31,10 +32,15 @@ type PortForwardStopRequest struct {
 	ForwardingID string `json:"forwarding_id"`
 }
 
+type PortForwardStatusRequest struct {
+	ForwardingID string `json:"forwarding_id"`
+}
+
 // PortForwardService accepts only signed capabilities. Local Core retains
 // authorization, listener, networking and secret authority.
 type PortForwardService interface {
 	StartPortForward(context.Context, PortForwardStartRequest) (PortForwardStatus, error)
 	StopPortForward(context.Context, PortForwardStopRequest) error
+	GetPortForwardStatus(context.Context, PortForwardStatusRequest) (PortForwardStatus, error)
 	ListPortForwards(context.Context) ([]PortForwardStatus, error)
 }
