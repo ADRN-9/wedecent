@@ -131,11 +131,21 @@ wedecent_metadata_value() {
   ' "$file"
 }
 
+wedecent_python() {
+  if command -v python3 >/dev/null 2>&1; then
+    python3 "$@"
+  elif command -v python >/dev/null 2>&1; then
+    python "$@"
+  else
+    wedecent_release_fail "Python 3 is required for independent binary inspection"
+  fi
+}
+
 wedecent_verify_binary_trust() {
   local binary="$1"
   local hostname="$2"
   local pins="$3"
-  python3 "$WEDECENT_RELEASE_ROOT/scripts/verify-release-binary-trust.py" "$binary" "$hostname" "$pins"
+  wedecent_python "$WEDECENT_RELEASE_ROOT/scripts/verify-release-binary-trust.py" "$binary" "$hostname" "$pins"
 }
 
 wedecent_verify_release_metadata() {

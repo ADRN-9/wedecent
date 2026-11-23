@@ -44,6 +44,22 @@ done
 wedecent_require_approved_replay_trust || fail 'approved test trust configuration was rejected'
 wedecent_verify_release_metadata "$FIXTURE" || fail 'valid production release fixture was rejected'
 
+cp "$FIXTURE/VERSION.txt" "$WORK/VERSION.good"
+sed 's/^replay_authority_hostname=replay.example.test$/replay_authority_hostname=other.example.test/' \
+  "$WORK/VERSION.good" > "$FIXTURE/VERSION.txt"
+if wedecent_verify_release_metadata "$FIXTURE"; then
+  fail 'mismatched release hostname was accepted'
+fi
+mv "$WORK/VERSION.good" "$FIXTURE/VERSION.txt"
+
+cp "$FIXTURE/VERSION.txt" "$WORK/VERSION.good"
+sed "s|^replay_authority_spki_sha256=$PINS$|replay_authority_spki_sha256=cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc|" \
+  "$WORK/VERSION.good" > "$FIXTURE/VERSION.txt"
+if wedecent_verify_release_metadata "$FIXTURE"; then
+  fail 'mismatched release SPKI pins were accepted'
+fi
+mv "$WORK/VERSION.good" "$FIXTURE/VERSION.txt"
+
 if (unset WEDECENT_REPLAY_AUTHORITY_HOSTNAME; wedecent_require_approved_replay_trust); then
   fail 'missing hostname was accepted'
 fi
