@@ -67,8 +67,8 @@ jobs:
         run: test -z "$(gofmt -l cmd internal)"
       - name: Stress Linux replay initialization and crash recovery
         run: |
-          go test ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions)$' -count=3 -v
-          go test -race ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions)$' -count=1 -v
+          go test ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions)$' -count=3 -v
+          go test -race ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions)$' -count=1 -v
       - name: Test port-forward session and transport packages
         run: go test ./internal/session ./internal/portforward ./internal/transport
       - name: Race-test port-forward session and transport packages
@@ -130,7 +130,7 @@ jobs:
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
       - name: Test Windows replay-store security regressions
-        run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
+        run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
       - name: Test native Windows agent
         run: go test ./...
       - name: Build native Windows binaries

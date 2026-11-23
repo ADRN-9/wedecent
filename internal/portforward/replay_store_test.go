@@ -926,7 +926,7 @@ func TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap(t *testin
 	}
 	expiry := time.Now().UTC().Add(time.Minute)
 	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("rollbackfirst001"))
-	secondJTI := base64.RawURLEncoding.EncodeToString([]byte("rollbacksecond1"))
+	secondJTI := base64.RawURLEncoding.EncodeToString([]byte("rollbacksecond01"))
 
 	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, expiry); err != nil {
 		t.Fatalf("consume first authorization: %v", err)
@@ -987,7 +987,7 @@ func TestFileReplayCleansOrphanedStagingFilesAndPreservesDurablePendingState(t *
 	}
 
 	var orphaned []string
-	for _, kind := range []string{"init", "anchor", "replay", "pending"} {
+	for _, kind := range []string{"init", "anchor", "replay", "pending", "lock"} {
 		orphaned = append(orphaned, createReplayStagingTestFile(t, path, kind))
 	}
 	otherStorePath := filepath.Join(filepath.Dir(path), "other-replay.json")
@@ -1251,7 +1251,7 @@ func TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("crossprocessfirst"))
+	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("crossprocfirst01"))
 	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, time.Now().UTC().Add(time.Minute)); err != nil {
 		t.Fatal(err)
 	}
@@ -1305,7 +1305,7 @@ func TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging(t *testing.T)
 	go func() {
 		done <- replay.ConsumePortForwardAuthorization(
 			context.Background(),
-			base64.RawURLEncoding.EncodeToString([]byte("crossprocessnext1")),
+			base64.RawURLEncoding.EncodeToString([]byte("crossprocnext001")),
 			time.Now().UTC().Add(time.Minute),
 		)
 	}()
