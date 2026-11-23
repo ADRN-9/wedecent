@@ -164,6 +164,7 @@ type Manager struct {
 
 type activeForward struct {
 	lifecycleMu     sync.Mutex
+	started         bool
 	claims          Claims
 	session         ForwardingSession
 	listener        net.Listener
@@ -466,6 +467,19 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		cleanupErr := m.terminate(f, "start_cancelled")
 		return ForwardInfo{}, errors.Join(err, cleanupErr)
 	}
+	m.mu.Lock()
+	if m.closed || startCtx.Err() != nil {
+		m.mu.Unlock()
+		f.lifecycleMu.Unlock()
+		startErr := startCtx.Err()
+		if startErr == nil {
+			startErr = ErrManagerClosed
+		}
+		cleanupErr := m.terminate(f, "start_cancelled")
+		return ForwardInfo{}, errors.Join(startErr, cleanupErr)
+	}
+	f.started = true
+	m.mu.Unlock()
 	f.acceptStarted = true
 	go m.acceptLoop(f)
 	f.lifecycleMu.Unlock()
@@ -564,7 +578,9 @@ func (m *Manager) List() []ForwardInfo {
 	m.mu.Lock()
 	forwards := make([]*activeForward, 0, len(m.forwards))
 	for _, f := range m.forwards {
-		forwards = append(forwards, f)
+		if f.started {
+			forwards = append(forwards, f)
+		}
 	}
 	m.mu.Unlock()
 	result := make([]ForwardInfo, 0, len(forwards))
@@ -814,7 +830,7 @@ func (m *Manager) acceptLoop(f *activeForward) {
 func (m *Manager) reserveChild(f *activeForward, local net.Conn) (*activeChild, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if m.forwards[f.claims.ForwardingID] != f || f.ctx.Err() != nil {
+	if m.forwards[f.claims.ForwardingID] != f || !f.started || f.ctx.Err() != nil {
 		return nil, false
 	}
 	if len(f.children) >= int(f.claims.Limits.MaxConnections) || len(f.children) >= m.limits.MaxConnectionsPerForward || m.connections >= m.limits.MaxConnections {

@@ -609,8 +609,8 @@ func (s *ManagedPortForwardSession) Close() error {
 	if s == nil {
 		return nil
 	}
-	// Local shutdown is authoritative; a remote close frame is best-effort
-	// protocol hygiene and must never gate transport closure.
+	// Closing the authenticated transport terminates the parent and all children;
+	// local shutdown must not depend on a successful remote control-frame write.
 	return s.finish()
 }
 
