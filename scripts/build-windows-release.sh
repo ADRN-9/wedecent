@@ -43,6 +43,20 @@ mkdir -p "$OUT_DIR"
 
 LDFLAGS="-buildid= -X=wedecent.com/wedecent/internal/buildinfo.Version=$VERSION -X=wedecent.com/wedecent/internal/buildinfo.Commit=$COMMIT -X=wedecent.com/wedecent/internal/buildinfo.BuiltAt=$BUILT_AT"
 
+REPLAY_AUTHORITY_HOSTNAME="${WEDECENT_REPLAY_AUTHORITY_HOSTNAME:-}"
+REPLAY_AUTHORITY_SPKI_SHA256="${WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256:-}"
+REQUIRE_REPLAY_AUTHORITY_TRUST="${WEDECENT_REQUIRE_REPLAY_AUTHORITY_TRUST:-0}"
+[[ "$REQUIRE_REPLAY_AUTHORITY_TRUST" == 0 || "$REQUIRE_REPLAY_AUTHORITY_TRUST" == 1 ]] || fail "WEDECENT_REQUIRE_REPLAY_AUTHORITY_TRUST must be 0 or 1"
+if [[ -n "$REPLAY_AUTHORITY_HOSTNAME" || -n "$REPLAY_AUTHORITY_SPKI_SHA256" ]]; then
+  [[ -n "$REPLAY_AUTHORITY_HOSTNAME" && -n "$REPLAY_AUTHORITY_SPKI_SHA256" ]] || fail "replay authority hostname and SPKI pins must be configured together"
+  [[ "$REPLAY_AUTHORITY_HOSTNAME" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$ ]] || fail "replay authority hostname must be a canonical lowercase DNS hostname"
+  [[ "$REPLAY_AUTHORITY_SPKI_SHA256" =~ ^[0-9a-fA-F]{64}(,[0-9a-fA-F]{64}){0,3}$ ]] || fail "replay authority SPKI pins must be one to four comma-separated SHA-256 hex digests"
+  LDFLAGS+=" -X=wedecent.com/wedecent/internal/portforward.replayAuthorityHostname=$REPLAY_AUTHORITY_HOSTNAME"
+  LDFLAGS+=" -X=wedecent.com/wedecent/internal/portforward.replayAuthoritySPKISHA256=$REPLAY_AUTHORITY_SPKI_SHA256"
+elif [[ "$REQUIRE_REPLAY_AUTHORITY_TRUST" == 1 ]]; then
+  fail "production release requires WEDECENT_REPLAY_AUTHORITY_HOSTNAME and WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256"
+fi
+
 build_one() {
   local package="$1"
   local output="$2"

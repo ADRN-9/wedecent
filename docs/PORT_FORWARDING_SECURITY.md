@@ -35,6 +35,8 @@ The replay authority hostname and SPKI SHA-256 pins are release trust anchors em
 -X wedecent.com/wedecent/internal/portforward.replayAuthoritySPKISHA256=<sha256-spki-hex>[,<next-sha256-spki-hex>]
 ```
 
+The Windows release builder accepts `WEDECENT_REPLAY_AUTHORITY_HOSTNAME` and `WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256` and appends these linker settings to both endpoint binaries. Production release invocations must also set `WEDECENT_REQUIRE_REPLAY_AUTHORITY_TRUST=1`, which makes missing trust anchors a build failure. CI/diagnostic bundles may omit the values, but those binaries intentionally cannot enable port forwarding. Linux and macOS release builders must pass the equivalent linker flags.
+
 The endpoint URL must use HTTPS, the exact embedded hostname, port 443 (implicit or explicit), and exactly `/functions/v1/port-forward-replay`; query strings, fragments, user information, alternate ports, redirects, and other hosts are rejected. Go's normal certificate-chain and hostname verification remain enabled, TLS 1.3 is mandatory, and the leaf certificate's DER SubjectPublicKeyInfo SHA-256 must match one of the embedded pins. At most four pins can be embedded for controlled overlap during rotation. Service-role and `sb_secret_` API keys are rejected; Local Core receives only a public Data API key.
 
 **Pin rotation:** first release a binary containing both the current and next SPKI pins; rotate the authority certificate while both are accepted; then release a binary containing only the new pin. Hostname changes require a separately reviewed release trust-anchor update. Never rotate pins by editing service-account configuration.
