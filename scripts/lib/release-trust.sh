@@ -67,6 +67,8 @@ wedecent_require_production_provenance() {
 
   [[ "${GITHUB_ACTIONS:-}" == "true" ]] ||
     wedecent_release_fail "production builds must run in GitHub Actions" || return 1
+  [[ "${WEDECENT_PRODUCTION_RELEASE_APPROVED:-}" == "true" ]] ||
+    wedecent_release_fail "protected production-release environment approval marker is missing" || return 1
   [[ "${GITHUB_REPOSITORY:-}" == "ADRN-9/wedecent" ]] ||
     wedecent_release_fail "production build repository context is not ADRN-9/wedecent" || return 1
   [[ "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] ||
@@ -324,7 +326,7 @@ wedecent_release_cleanup() {
 }
 
 wedecent_release_finish() {
-  local name expected actual host_os
+  local name expected actual host_os host_arch
   cat > "$WEDECENT_RELEASE_STAGE/VERSION.txt" <<EOF_RELEASE
 version=$VERSION
 commit=$RELEASE_COMMIT
@@ -362,7 +364,12 @@ EOF_RELEASE
       MINGW*|MSYS*) host_os=windows ;;
       *) host_os=unknown ;;
     esac
-    if [[ "$host_os" == "$RELEASE_PLATFORM" ]]; then
+    case "$(uname -m)" in
+      x86_64|amd64) host_arch=amd64 ;;
+      arm64|aarch64) host_arch=arm64 ;;
+      *) host_arch=unknown ;;
+    esac
+    if [[ "$host_os" == "$RELEASE_PLATFORM" && "$host_arch" == "$RELEASE_ARCH" ]]; then
       expected="$(printf 'hostname=%s\nspki_sha256=%s\n' "$TRUST_HOSTNAME" "$TRUST_PINS")"
       case "$RELEASE_PLATFORM" in
         windows)

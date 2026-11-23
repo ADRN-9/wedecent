@@ -8,6 +8,7 @@ Provision a protected GitHub Actions environment named wedecent-production-relea
 
 - Restrict deployment branches/tags to the protected v* release-tag pattern.
 - Require at least one independent reviewer to approve access to the environment.
+- Set WEDECENT_PRODUCTION_RELEASE_APPROVED to the exact value true in that protected environment.
 - Store the following environment variables in that protected environment:
   - WEDECENT_REPLAY_AUTHORITY_HOSTNAME
   - WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256
@@ -21,7 +22,7 @@ The hostname must be a canonical lowercase DNS name. SPKI pins must be one to fo
 
 The digest is SHA-256 of that byte sequence. The build scripts recompute it and reject missing, partial, malformed, duplicate, or unapproved values. Do not set these variables until the replay-authority operator has supplied and approved the real production hostname and SPKI pins. Test values are permitted only in regression fixtures.
 
-The protected environment is the approval boundary; the digest binds the exact hostname/pin tuple and detects accidental or unauthorized substitution. Environment reviewers and administrators must be independent from the code author where organizational policy requires separation of duties.
+The protected environment is the approval boundary; the build workflow references that environment for every platform job, and the explicit approval marker must be true. The digest binds the exact hostname/pin tuple and detects accidental or unauthorized substitution. The workflow is .github/workflows/production-release-build.yml and uploads immutable, exact-SHA build artifacts only; it does not sign or publish them. Environment reviewers and administrators must be independent from the code author where organizational policy requires separation of duties.
 
 ## Build modes and provenance
 
@@ -31,7 +32,7 @@ All three release builders default to production:
 - scripts/build-linux-release.sh
 - scripts/build-macos-release.sh
 
-Production mode requires GitHub Actions context for ADRN-9/wedecent, the exact checked-out GITHUB_SHA, the matching vVERSION tag, a clean source tree, the canonical repository origin, and a commit-derived SOURCE_DATE_EPOCH. Caller-supplied commit overrides and dirty-tree overrides are rejected. The checked-out commit and Git tree are recorded in VERSION.txt.
+Production mode requires the protected environment approval marker, GitHub Actions context for ADRN-9/wedecent, the exact checked-out GITHUB_SHA, the matching vVERSION tag, a clean source tree, the canonical repository origin, and a commit-derived SOURCE_DATE_EPOCH. Caller-supplied commit overrides and dirty-tree overrides are rejected. The checked-out commit and Git tree are recorded in VERSION.txt.
 
 For local development and ordinary CI, explicitly use WEDECENT_BUILD_MODE=diagnostic. Diagnostic artifacts carry build_mode=diagnostic, embed no replay-authority anchors, and are rejected by signing, installer-preparation, and publication boundaries. A diagnostic build is not a production release.
 

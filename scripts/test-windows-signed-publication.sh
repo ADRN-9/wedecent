@@ -7,6 +7,16 @@ fail() {
 }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-trust.sh"
+TEST_REPLAY_HOSTNAME='replay.example.test'
+TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
+TEST_SOURCE_SHA='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TEST_TREE_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+export WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$TEST_REPLAY_HOSTNAME"
+export WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$TEST_REPLAY_PINS"
+export WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$TEST_REPLAY_APPROVAL"
+export WEDECENT_EXPECTED_SOURCE_SHA="$TEST_SOURCE_SHA"
 PUBLISH="$ROOT/scripts/publish-windows-downloads.sh"
 DIST_ROOT="$ROOT/dist"
 mkdir -p -- "$DIST_ROOT"
@@ -24,14 +34,20 @@ scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
 RELEASE_ARCHIVE='wedecent-v0.3.0-rc.9-windows-amd64.zip'
 INSTALLER_ARCHIVE='wedecent-v0.3.0-rc.9-windows-installer.zip'
 for name in "${binaries[@]}"; do
-  printf 'signed fixture: %s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" > "$RELEASE/$name"
+  printf 'signed fixture: %s\n%s\n%s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS" > "$RELEASE/$name"
 done
-cat > "$RELEASE/VERSION.txt" <<'EOF_VERSION'
+cat > "$RELEASE/VERSION.txt" <<EOF_VERSION
 version=0.3.0-rc.9
-commit=test
+commit=$TEST_SOURCE_SHA
+source_commit=$TEST_SOURCE_SHA
+source_tree=$TEST_TREE_SHA
 built_at=1970-01-01T00:00:00Z
-go=test
+go=go1.27.0
 platform=windows/amd64
+build_mode=production
+replay_authority_hostname=$TEST_REPLAY_HOSTNAME
+replay_authority_spki_sha256=$TEST_REPLAY_PINS
+replay_authority_approval_sha256=$TEST_REPLAY_APPROVAL
 EOF_VERSION
 (
   cd "$RELEASE"
@@ -185,6 +201,18 @@ run_publish() {
 }
 
 OUTPUT="$WORK/output.txt"
+: > "$CURL_LOG"
+cp "$RELEASE/VERSION.txt" "$WORK/VERSION.production"
+sed 's/^build_mode=production$/build_mode=diagnostic/' "$WORK/VERSION.production" > "$RELEASE/VERSION.txt"
+cp "$RELEASE/VERSION.txt" "$INSTALLER/VERSION.txt"
+if run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run >/dev/null 2>&1; then
+  fail 'public publisher accepted a diagnostic artifact'
+fi
+[[ ! -s "$CURL_LOG" ]] || fail 'diagnostic publication performed network requests'
+mv "$WORK/VERSION.production" "$RELEASE/VERSION.txt"
+cp "$RELEASE/VERSION.txt" "$INSTALLER/VERSION.txt"
+refresh_installer
+
 : > "$CURL_LOG"
 run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run > "$OUTPUT"
 grep -Fq 'Dry run: signed release and installer verified; no upload performed.' "$OUTPUT" ||
