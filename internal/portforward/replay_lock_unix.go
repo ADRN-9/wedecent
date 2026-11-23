@@ -25,16 +25,11 @@ func secureReplayDirectory(path string) error {
 	if !replayOwnedByCurrentUser(info) {
 		return fmt.Errorf("replay directory is not owned by the current user")
 	}
-	if info.Mode().Perm() != 0o700 {
-		if err := os.Chmod(path, 0o700); err != nil {
-			return fmt.Errorf("secure replay directory permissions: %w", err)
-		}
+	if info.Mode().Perm() != 0o700 ||
+		info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+		return fmt.Errorf("replay directory permissions must be exactly 0700")
 	}
-	info, err = os.Lstat(path)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() ||
-		info.Mode().Perm() != 0o700 || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || !replayOwnedByCurrentUser(info) {
-		return fmt.Errorf("replay directory ownership or permissions are unsafe")
-	}
+	return nil
 	return nil
 }
 
