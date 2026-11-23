@@ -35,19 +35,19 @@ type DestinationConfig struct {
 }
 
 type DestinationSession struct {
-	claims      Claims
-	localID     mesh.DeviceID
-	peerID      mesh.DeviceID
-	approved    ApprovedDestination
-	policy      DestinationPolicy
-	dialer      ContextDialer
-	audit       AuditWriter
-	trustChecker PeerTrustChecker
+	claims            Claims
+	localID           mesh.DeviceID
+	peerID            mesh.DeviceID
+	approved          ApprovedDestination
+	policy            DestinationPolicy
+	dialer            ContextDialer
+	audit             AuditWriter
+	trustChecker      PeerTrustChecker
 	trustPollInterval time.Duration
-	maxChildren int
-	dialTimeout time.Duration
-	ctx         context.Context
-	cancel      context.CancelFunc
+	maxChildren       int
+	dialTimeout       time.Duration
+	ctx               context.Context
+	cancel            context.CancelFunc
 
 	mu        sync.Mutex
 	closed    bool
@@ -145,20 +145,20 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	}
 	sessionCtx, cancel := context.WithDeadline(context.Background(), deadline)
 	session := &DestinationSession{
-		claims:      claims,
-		localID:     cfg.LocalDeviceID,
-		peerID:      cfg.AuthenticatedPeerID,
-		approved:    approved,
-		policy:      cfg.Policy,
-		dialer:      cfg.Dialer,
-		audit:       cfg.Audit,
-		trustChecker: cfg.TrustChecker,
+		claims:            claims,
+		localID:           cfg.LocalDeviceID,
+		peerID:            cfg.AuthenticatedPeerID,
+		approved:          approved,
+		policy:            cfg.Policy,
+		dialer:            cfg.Dialer,
+		audit:             cfg.Audit,
+		trustChecker:      cfg.TrustChecker,
 		trustPollInterval: trustPollInterval,
-		maxChildren: min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
-		dialTimeout: cfg.DialTimeout,
-		ctx:         sessionCtx,
-		cancel:      cancel,
-		children:    make(map[uint64]*destinationChildConn),
+		maxChildren:       min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
+		dialTimeout:       cfg.DialTimeout,
+		ctx:               sessionCtx,
+		cancel:            cancel,
+		children:          make(map[uint64]*destinationChildConn),
 	}
 	go session.watchTrust()
 	return session, nil
