@@ -96,20 +96,27 @@ func (c *Client) OpenManagedMultiplexTerminal(ctx context.Context, peer trust.Pe
 	if ctxDeadline, ok := ctx.Deadline(); ok && ctxDeadline.Before(deadline) {
 		deadline = ctxDeadline
 	}
-	_ = conn.SetDeadline(deadline)
+	if err := conn.SetDeadline(deadline); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 
 	capabilities := []protocol.Capability{protocol.CapabilityTypedStreamsV1}
 	frameType := protocol.TypeOpenSession
 	var payload []byte
 	if inBandAuthorization {
 		frameType = protocol.TypeOpenAuthorizedSession
-		payload, _ = protocol.JSON(protocol.OpenAuthorizedSession{
+		payload, err = protocol.JSON(protocol.OpenAuthorizedSession{
 			Cols: cols, Rows: rows, Term: term,
 			ConnectionGrant: strings.TrimSpace(c.ConnectionGrant),
 			Capabilities:    capabilities,
 		})
 	} else {
-		payload, _ = protocol.JSON(protocol.OpenSession{Cols: cols, Rows: rows, Term: term, Capabilities: capabilities})
+		payload, err = protocol.JSON(protocol.OpenSession{Cols: cols, Rows: rows, Term: term, Capabilities: capabilities})
+	}
+	if err != nil {
+		_ = conn.Close()
+		return nil, err
 	}
 	if err := protocol.WriteFrame(conn, protocol.Frame{Type: frameType, Payload: payload}); err != nil {
 		_ = conn.Close()
@@ -146,7 +153,10 @@ func (c *Client) OpenManagedMultiplexTerminal(ctx context.Context, peer trust.Pe
 		}
 		typed = true
 	}
-	_ = conn.SetDeadline(time.Time{})
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		_ = conn.Close()
+		return nil, err
+	}
 
 	s := &ManagedMultiplexTerminal{
 		conn:       conn,
@@ -784,15 +794,15 @@ func (s *ManagedMultiplexTerminal) writeFrameContext(ctx context.Context, frame 
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
 	}
-	_ = s.conn.SetWriteDeadline(deadline)
-	defer s.conn.SetWriteDeadline(time.Time{})
-	if err := protocol.WriteFrame(s.conn, frame); err != nil {
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
-		}
+	if err := s.conn.SetWriteDeadline(deadline); err != nil {
 		return err
 	}
-	return nil
+	writeErr := protocol.WriteFrame(s.conn, frame)
+	resetErr := s.conn.SetWriteDeadline(time.Time{})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return errors.Join(ctxErr, resetErr)
+	}
+	return errors.Join(writeErr, resetErr)
 }
 
 func (s *ManagedMultiplexTerminal) finish() error {
@@ -810,8 +820,8 @@ func (s *ManagedMultiplexTerminal) finish() error {
 			child.acceptOnce.Do(func() { child.accepted <- io.ErrClosedPipe })
 			child.closeOnce.Do(func() { close(child.done) })
 		}
-		_ = s.conn.SetDeadline(time.Now().Add(managedTerminalCloseTimeout))
-		closeErr = s.conn.Close()
+		deadlineErr := s.conn.SetDeadline(time.Now().Add(managedTerminalCloseTimeout))
+		closeErr = errors.Join(deadlineErr, s.conn.Close())
 	})
 	return closeErr
 }
