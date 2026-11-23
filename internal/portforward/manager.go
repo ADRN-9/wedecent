@@ -34,8 +34,10 @@ type AuditWriter interface{ Append(audit.Event) error }
 
 type Connector interface {
 	// Open establishes one authenticated parent forwarding session and consumes
-	// the forwarding capability once. ctx bounds the handshake only; the returned
-	// session remains alive until Close. Child TCP connections use that session.
+	// the forwarding capability once. It must authenticate the initiating endpoint
+	// end-to-end and, for routed paths, separately authenticate the router TLS peer
+	// against Authorization.Claims.Router. ctx bounds the handshake only; the
+	// returned session remains alive until Close. Child TCP connections use it.
 	Open(context.Context, Authorization) (ForwardingSession, error)
 }
 
@@ -79,6 +81,7 @@ type ManagerConfig struct {
 	ReplayPath             string
 	AuthorizationPublicKey ed25519.PublicKey
 	TrustChecker           PeerTrustChecker
+	RouterTrustChecker     PeerTrustChecker
 	TrustPollInterval      time.Duration
 	PermissionAuthorizer   PermissionAuthorizer
 	Connector              Connector
@@ -105,6 +108,7 @@ type Manager struct {
 	localID              mesh.DeviceID
 	verifier             Verifier
 	trustChecker         PeerTrustChecker
+	routerTrustChecker   PeerTrustChecker
 	trustPollInterval    time.Duration
 	trustWatcherDone     chan struct{}
 	backgroundErr       error
@@ -188,6 +192,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		localID:              cfg.LocalDeviceID,
 		verifier:             verifier,
 		trustChecker:         cfg.TrustChecker,
+		routerTrustChecker:   cfg.RouterTrustChecker,
 		trustPollInterval:    pollInterval,
 		permissionAuthorizer: cfg.PermissionAuthorizer,
 		connector:            cfg.Connector,
@@ -256,13 +261,6 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		}
 	}()
 
-	verified, err := m.verifier.VerifyAndConsume(startCtx, auth)
-	if err != nil {
-		return ForwardInfo{}, err
-	}
-	if !sameClaims(claims, verified) {
-		return ForwardInfo{}, ErrAuthorizationMismatch
-	}
 	if err := ValidateRouteAuthorizationBinding(auth); err != nil {
 		return ForwardInfo{}, err
 	}
@@ -275,6 +273,22 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		if trustErr != nil || !trusted {
 			return ForwardInfo{}, errors.Join(ErrPeerNotTrusted, trustErr)
 		}
+	}
+	if claims.Router != "" {
+		if m.routerTrustChecker == nil {
+			return ForwardInfo{}, ErrRouterNotTrusted
+		}
+		routerTrusted, routerTrustErr := m.routerTrustChecker.IsTrusted(startCtx, string(claims.Router))
+		if routerTrustErr != nil || !routerTrusted {
+			return ForwardInfo{}, errors.Join(ErrRouterNotTrusted, routerTrustErr)
+		}
+	}
+	verified, err := m.verifier.VerifyAndConsume(startCtx, auth)
+	if err != nil {
+		return ForwardInfo{}, err
+	}
+	if !sameClaims(claims, verified) {
+		return ForwardInfo{}, ErrAuthorizationMismatch
 	}
 	if err := m.permissionAuthorizer.AuthorizePortForward(startCtx, claims); err != nil {
 		if auditErr := m.record(claims, "port_forward.start", "denied", "permission_denied"); auditErr != nil {
@@ -543,6 +557,28 @@ func (m *Manager) hasReservation(forwardingID string) bool {
 	return ok
 }
 
+func (m *Manager) referencedRouterDevices() []mesh.DeviceID {
+	m.mu.Lock()
+	routers := make(map[mesh.DeviceID]struct{}, len(m.forwards)+len(m.reservations))
+	for _, forward := range m.forwards {
+		if forward.claims.Router != "" {
+			routers[forward.claims.Router] = struct{}{}
+		}
+	}
+	for _, claims := range m.reservations {
+		if claims.Router != "" {
+			routers[claims.Router] = struct{}{}
+		}
+	}
+	m.mu.Unlock()
+	result := make([]mesh.DeviceID, 0, len(routers))
+	for router := range routers {
+		result = append(result, router)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
+}
+
 func (m *Manager) referencedPeerDevices() []mesh.DeviceID {
 	m.mu.Lock()
 	peers := make(map[mesh.DeviceID]struct{}, len(m.forwards)+len(m.reservations))
@@ -583,18 +619,37 @@ func (m *Manager) watchTrust() {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
-			for _, peerID := range m.referencedPeerDevices() {
-				trusted, trustErr := m.trustChecker.IsTrusted(m.ctx, string(peerID))
-				if m.ctx.Err() != nil {
-					return
-				}
-				if trustErr != nil || !trusted {
-					_, revokeErr := m.RevokeDevice(context.Background(), peerID)
-					if trustErr != nil {
-						m.recordBackgroundError(fmt.Errorf("portforward: peer trust check for %s failed: %w", peerID, trustErr))
+			if m.trustChecker != nil {
+				for _, peerID := range m.referencedPeerDevices() {
+					trusted, trustErr := m.trustChecker.IsTrusted(m.ctx, string(peerID))
+					if m.ctx.Err() != nil {
+						return
 					}
-					if revokeErr != nil {
-						m.recordBackgroundError(fmt.Errorf("portforward: revoke untrusted peer %s: %w", peerID, revokeErr))
+					if trustErr != nil || !trusted {
+						_, revokeErr := m.RevokeDevice(context.Background(), peerID)
+						if trustErr != nil {
+							m.recordBackgroundError(fmt.Errorf("portforward: peer trust check for %s failed: %w", peerID, trustErr))
+						}
+						if revokeErr != nil {
+							m.recordBackgroundError(fmt.Errorf("portforward: revoke untrusted peer %s: %w", peerID, revokeErr))
+						}
+					}
+				}
+			}
+			if m.routerTrustChecker != nil {
+				for _, routerID := range m.referencedRouterDevices() {
+					trusted, trustErr := m.routerTrustChecker.IsTrusted(m.ctx, string(routerID))
+					if m.ctx.Err() != nil {
+						return
+					}
+					if trustErr != nil || !trusted {
+						_, revokeErr := m.RevokeDevice(context.Background(), routerID)
+						if trustErr != nil {
+							m.recordBackgroundError(fmt.Errorf("portforward: router trust check for %s failed: %w", routerID, trustErr))
+						}
+						if revokeErr != nil {
+							m.recordBackgroundError(fmt.Errorf("portforward: revoke untrusted router %s: %w", routerID, revokeErr))
+						}
 					}
 				}
 			}
