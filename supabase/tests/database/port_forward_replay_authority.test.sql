@@ -115,14 +115,14 @@ update public.port_forward_replay_authority
        )
  where device_id = 'wd_aaaaaaaaaaaaaaaa';
 select throws_ok(
-    $
+    $throws$
     select public.consume_port_forward_authorization(
         'wd_aaaaaaaaaaaaaaaa',
         'CCCCCCCCCCCCCCCCCCCCCC',
         pg_catalog.clock_timestamp() + interval '60 seconds',
         pg_catalog.decode(repeat('33', 32), 'hex')
     )
-    $,
+    $throws$,
     '55000',
     'port-forward replay authority state integrity mismatch',
     'restoring a matching older authority generation is detected by the append-only ledger'
@@ -141,14 +141,14 @@ update public.port_forward_replay_authority
    set state_hash = pg_catalog.decode(repeat('00', 32), 'hex')
  where device_id = 'wd_aaaaaaaaaaaaaaaa';
 select throws_ok(
-    $
+    $throws$
     select public.consume_port_forward_authorization(
         'wd_aaaaaaaaaaaaaaaa',
         'EEEEEEEEEEEEEEEEEEEEEE',
         pg_catalog.clock_timestamp() + interval '60 seconds',
         pg_catalog.decode(repeat('55', 32), 'hex')
     )
-    $,
+    $throws$,
     '55000',
     'port-forward replay authority state integrity mismatch',
     'corrupt or mismatched authority hash fails closed'

@@ -176,12 +176,12 @@ func TestRemoteReplayRejectsJTIAfterPairedLocalSnapshotAnchorRollback(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	now := remote.Now().UTC()
+	now := remote.now().UTC()
 	makeAuthorization := func(jti string) Authorization {
 		claims := testClaims(now, DirectionLocal)
-		claims.InitiatingDevice = remote.DeviceID
-		claims.Route.Source = remote.DeviceID
-		claims.Route.Hops[0].From = remote.DeviceID
+		claims.InitiatingDevice = remote.deviceID
+		claims.Route.Source = remote.deviceID
+		claims.Route.Hops[0].From = remote.deviceID
 		claims.JTI = base64.RawURLEncoding.EncodeToString([]byte(jti))
 		authorization, signErr := SignAuthorization(controlPrivate, claims)
 		if signErr != nil {
@@ -196,7 +196,7 @@ func TestRemoteReplayRejectsJTIAfterPairedLocalSnapshotAnchorRollback(t *testing
 	}
 
 	localPath := newReplayTestPath(t)
-	local, err := NewFileReplay(localPath, remote.DeviceID)
+	local, err := NewFileReplay(localPath, remote.deviceID)
 	if err != nil {
 		t.Fatal(err)
 	}
