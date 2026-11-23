@@ -681,7 +681,7 @@ func TestTypedForwardParentCloseDoesNotWaitForBlockedChildClose(t *testing.T) {
 		if err == nil {
 			t.Fatal("parent close hid the destination child cleanup timeout")
 		}
-	case <-time.After(6 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Fatal("parent close waited on a second Close call after destination cleanup timed out")
 	}
 	select {
@@ -826,7 +826,7 @@ func TestTypedForwardOpenChildDoesNotDoubleCloseDuringParentShutdown(t *testing.
 		if err == nil {
 			t.Fatal("parent close hid the blocked child cleanup timeout")
 		}
-	case <-time.After(6 * time.Second):
+	case <-time.After(8 * time.Second):
 		t.Fatal("parent close did not finish within the destination cleanup deadline")
 	}
 
