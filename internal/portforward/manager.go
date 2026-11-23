@@ -400,6 +400,10 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 }
 
 func (m *Manager) Stop(ctx context.Context, forwardingID string) error {
+	return m.stop(ctx, forwardingID, "explicit_stop")
+}
+
+func (m *Manager) stop(ctx context.Context, forwardingID, reason string) error {
 	if m == nil {
 		return ErrManagerClosed
 	}
@@ -412,7 +416,7 @@ func (m *Manager) Stop(ctx context.Context, forwardingID string) error {
 	if f == nil {
 		return nil
 	}
-	err := m.terminate(f, "explicit_stop")
+	err := m.terminate(f, reason)
 	select {
 	case <-f.done:
 		return err
@@ -458,7 +462,7 @@ func (m *Manager) RevokeDevice(ctx context.Context, deviceID mesh.DeviceID) (int
 		}
 	}
 	for _, id := range ids {
-		if err := m.Stop(context.Background(), id); err != nil {
+		if err := m.stop(context.Background(), id, "device_revoked"); err != nil {
 			errs = append(errs, err)
 		}
 	}
@@ -504,7 +508,7 @@ func (m *Manager) Close() error {
 	m.mu.Unlock()
 	var errs []error
 	for _, id := range ids {
-		if err := m.Stop(context.Background(), id); err != nil {
+		if err := m.stop(context.Background(), id, "manager_closed"); err != nil {
 			errs = append(errs, err)
 		}
 	}
