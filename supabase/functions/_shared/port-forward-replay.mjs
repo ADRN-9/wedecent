@@ -180,11 +180,17 @@ export function canonicalPortForwardAuthorizationMessage(authorization) {
   return concatenate(parts)
 }
 
+function asArrayBuffer(bytes) {
+  const copy = new Uint8Array(bytes.byteLength)
+  copy.set(bytes)
+  return copy.buffer
+}
+
 export async function deviceIDFromPublicKey(publicKeyBytes) {
   if (!(publicKeyBytes instanceof Uint8Array) || publicKeyBytes.length !== 32) {
     fail('device public key has an invalid length')
   }
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', publicKeyBytes))
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', asArrayBuffer(publicKeyBytes)))
   const alphabet = 'abcdefghijklmnopqrstuvwxyz234567'
   let accumulator = 0
   let bits = 0
