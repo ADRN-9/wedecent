@@ -22,13 +22,13 @@ coreprocess.Config.Forwarding can compose a forwarding manager into the Local Co
 
 Local and remote listeners default to loopback through DefaultListenerPolicy. Non-loopback or privileged listeners require the separate ListenerAuthorizer seam; a signed forwarding capability alone cannot grant public exposure. Listener bind addresses must be literal canonical IPs; wildcard, link-local and invalid exposure combinations fail closed.
 
-The Connector seam receives the complete signed Authorization, including the independently signed route authorization when a router is present. It must open an authenticated WeDecent stream, preserve both capabilities and the forwarding ID, and honor context cancellation. The destination endpoint must independently verify the port-forward signature, local device identity and dedicated permission, then consume the port-forward JTI in its own device-scoped replay store. The router must independently verify and consume the separate mesh.RouteAuthorization; neither capability substitutes for the other. The destination-side typed-stream open/dial handler is not yet connected in this batch.
+The Connector seam now opens one authenticated parent forwarding session with the complete signed Authorization, including the independent route authorization when a router is present. The capability is consumed once per endpoint session; each accepted TCP connection is a child stream authorized by that parent session rather than a replay of the same single-use token. ForwardingSession.OpenChild multiplexes those child streams, and Close terminates them. DestinationSession now checks the Local Core destination device ID and the authenticated peer device ID, independently verifies and consumes the forwarding capability, enforces the dedicated permission, pins the approved DNS/IP result, dials only the approved IP literals, applies connection and lifetime limits, and audits child lifecycle. For routed paths it checks the route-capability binding; the router must independently verify and consume mesh.RouteAuthorization. The actual TLS typed-stream wire adapter and client-side stream multiplexer are not yet connected, so this session engine is not yet reachable over a real two-device connection.
 
 ## Destination policy
 
 ResolveApprovedDestination canonicalizes IPv4/IPv6 and DNS names, validates every DNS answer, rejects the entire answer set if any address is prohibited, and blocks loopback, link-local, multicast, unspecified, reserved, private-by-default and known cloud-metadata addresses. Private networks require explicit CIDR allowlists; ports require explicit ranges. The returned approval is sealed to its exact host, port, pinned IP set and policy so callers cannot mutate DNS results or substitute a broader policy before dialing. DialApprovedTCP dials only the approved IP literals and never resolves the hostname again.
 
-The destination-side connector must invoke these helpers immediately before dialing. That integration remains a required follow-up; the listener manager cannot resolve a hostname on behalf of a different destination device.
+DestinationSession invokes these helpers on the destination device before each child dial. The authenticated typed-stream adapter must pass the TLS peer certificate device ID as AuthenticatedPeerID; transport addresses or relay metadata must never populate this field.
 
 ## Audit and failure handling
 
@@ -42,8 +42,8 @@ Port-forward authorizations use a distinct signing domain and must have a separa
 
 ## Not yet production complete
 
-- Control-plane durable issuance, key provisioning, revocation/expiry outbox integration and production replay-state backup/retention. FileReplay is implemented as local durable replay storage but has not yet been run through exact-HEAD CI or two-device integration.
-- Destination-side authenticated typed-stream open/dial handling, client-side multiplexed stream support and the single-use parent/child authorization lifecycle.
+- Control-plane durable issuance, key provisioning, revocation/expiry outbox integration and production replay-state backup/retention. AuthorizationIssuer and FileReplay are implemented as package APIs, but production key provisioning and a managed issuer service are not integrated. FileReplay has not yet been verified by exact-HEAD CI.
+- Authenticated TLS typed-stream wire handling and client-side multiplexed stream support. DestinationSession and the parent/child authorization lifecycle are implemented as package APIs, but they are not yet connected to the session protocol or a real two-device E2E.
 - Router-admin adapter wired to the separate router-admin trust store; public listeners remain unavailable until it is configured.
 - Trust-revocation hooks wired from every device-trust mutation path into Manager.RevokeDevice.
 - IPC methods, desktop UI, E2E tests across two Local Core instances and route relay, and production policy configuration.
