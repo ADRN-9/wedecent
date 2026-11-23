@@ -123,6 +123,9 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	if maxDurationDeadline.Before(deadline) {
 		deadline = maxDurationDeadline
 	}
+	if !deadline.After(time.Now()) {
+		return nil, ErrAuthorizationExpired
+	}
 	sessionCtx, cancel := context.WithDeadline(context.Background(), deadline)
 	session := &DestinationSession{
 		claims:      claims,
@@ -154,7 +157,7 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	}
 
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || s.ctx.Err() != nil {
 		s.mu.Unlock()
 		return nil, ErrDestinationSessionClosed
 	}
