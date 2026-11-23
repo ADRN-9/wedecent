@@ -103,7 +103,6 @@ func TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner(t *testing.T) {
 	}
 }
 
-
 func TestWindowsReplayLockBootstrapCrashHelper(t *testing.T) {
 	path := os.Getenv("WEDECENT_REPLAY_LOCK_CRASH_PATH")
 	if path == "" {
@@ -225,28 +224,7 @@ func TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash(t *testing.T) {
 		t.Fatalf("crashed Windows lock staging file remains: %v", err)
 	}
 }
-func TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash(t *testing.T) {
-	path := newReplayTestPath(t)
-	startAndTerminateReplayInitializationProcess(t, path, "lock_staging")
-	matches, err := filepath.Glob(replayStagingPattern(path, "lock"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(matches) != 1 {
-		t.Fatalf("crashed lock bootstrap left %d staging files, want 1", len(matches))
-	}
-	replay, err := NewFileReplay(path, testInitiator)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jti := base64.RawURLEncoding.EncodeToString([]byte("windowscrash0001"))
-	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute)); err != nil {
-		t.Fatalf("replay store did not recover after lock bootstrap crash: %v", err)
-	}
-	if _, err := os.Lstat(matches[0]); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("crashed Windows lock staging file remains: %v", err)
-	}
-}
+
 func TestWindowsReplayRejectsUnauthorizedDirectoryACL(t *testing.T) {
 	dir := newReplayTestDir(t)
 	if err := setReplayTestFileACL(dir, "(A;OICI;FA;;;BU)"); err != nil {
