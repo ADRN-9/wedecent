@@ -16,12 +16,12 @@ import (
 const destinationSessionCloseTimeout = 5 * time.Second
 
 var (
-	ErrWrongDestinationDevice   = errors.New("portforward: capability is not bound to this destination device")
-	ErrDestinationSessionClosed = errors.New("portforward: destination forwarding session is closed")
-	ErrRouterIdentityMismatch   = errors.New("portforward: authenticated router identity does not match authorization")
-	ErrRouterNotTrusted         = errors.New("portforward: routing trust domain does not trust the router")
+	ErrWrongDestinationDevice       = errors.New("portforward: capability is not bound to this destination device")
+	ErrDestinationSessionClosed     = errors.New("portforward: destination forwarding session is closed")
+	ErrRouterIdentityMismatch       = errors.New("portforward: authenticated router identity does not match authorization")
+	ErrRouterNotTrusted             = errors.New("portforward: routing trust domain does not trust the router")
 	ErrDestinationCleanupIncomplete = errors.New("portforward: destination cleanup did not finish before its deadline")
-	ErrDestinationAuditIncomplete = errors.New("portforward: destination audit operation did not finish before its deadline")
+	ErrDestinationAuditIncomplete   = errors.New("portforward: destination audit operation did not finish before its deadline")
 )
 
 // DestinationConfig.TrustChecker must be the endpoint-device trust domain.
@@ -46,13 +46,13 @@ type DestinationConfig struct {
 }
 
 type DestinationSession struct {
-	claims            Claims
-	localID           mesh.DeviceID
-	peerID            mesh.DeviceID
-	approved          ApprovedDestination
-	policy            DestinationPolicy
-	dialer            ContextDialer
-	audit             AuditWriter
+	claims             Claims
+	localID            mesh.DeviceID
+	peerID             mesh.DeviceID
+	approved           ApprovedDestination
+	policy             DestinationPolicy
+	dialer             ContextDialer
+	audit              AuditWriter
 	trustChecker       PeerTrustChecker
 	routerTrustChecker PeerTrustChecker
 	routerID           mesh.DeviceID
@@ -62,18 +62,18 @@ type DestinationSession struct {
 	maxChildren        int
 	dialTimeout        time.Duration
 	closeTimeout       time.Duration
-	ctx               context.Context
-	cancel            context.CancelFunc
+	ctx                context.Context
+	cancel             context.CancelFunc
 
-	mu        sync.Mutex
-	closed    bool
-	nextChild uint64
-	children  map[uint64]*destinationChildConn
+	mu         sync.Mutex
+	closed     bool
+	nextChild  uint64
+	children   map[uint64]*destinationChildConn
 	auditSlots chan struct{}
-	closeOnce sync.Once
-	closeErr  error
-	auditErr  error
-	done      chan struct{}
+	closeOnce  sync.Once
+	closeErr   error
+	auditErr   error
+	done       chan struct{}
 }
 
 type destinationChildConn struct {
@@ -185,27 +185,27 @@ func NewDestinationSession(ctx context.Context, cfg DestinationConfig, auth Auth
 	}
 	sessionCtx, cancel := context.WithDeadline(ctx, deadline)
 	session := &DestinationSession{
-		claims:            claims,
-		localID:           cfg.LocalDeviceID,
-		peerID:            cfg.AuthenticatedPeerID,
-		approved:          approved,
-		policy:            cfg.Policy,
-		dialer:            cfg.Dialer,
-		audit:             cfg.Audit,
+		claims:             claims,
+		localID:            cfg.LocalDeviceID,
+		peerID:             cfg.AuthenticatedPeerID,
+		approved:           approved,
+		policy:             cfg.Policy,
+		dialer:             cfg.Dialer,
+		audit:              cfg.Audit,
 		trustChecker:       cfg.TrustChecker,
 		routerTrustChecker: cfg.RouterTrustChecker,
 		routerID:           claims.Router,
 		trustPollInterval:  trustPollInterval,
-		expiryReason:      expiryReason,
-		idleTimeout:       time.Duration(claims.Limits.IdleTimeoutSeconds) * time.Second,
-		maxChildren:       min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
-		dialTimeout:       cfg.DialTimeout,
-		closeTimeout:      destinationSessionCloseTimeout,
-		ctx:               sessionCtx,
-		cancel:            cancel,
-		children:          make(map[uint64]*destinationChildConn),
-		auditSlots:        make(chan struct{}, 1),
-		done:              make(chan struct{}),
+		expiryReason:       expiryReason,
+		idleTimeout:        time.Duration(claims.Limits.IdleTimeoutSeconds) * time.Second,
+		maxChildren:        min(int(claims.Limits.MaxConnections), cfg.MaxConnections),
+		dialTimeout:        cfg.DialTimeout,
+		closeTimeout:       destinationSessionCloseTimeout,
+		ctx:                sessionCtx,
+		cancel:             cancel,
+		children:           make(map[uint64]*destinationChildConn),
+		auditSlots:         make(chan struct{}, 1),
+		done:               make(chan struct{}),
 	}
 	go session.watchTrust()
 	return session, nil
@@ -608,7 +608,6 @@ func destinationAuditEvent(claims Claims, localID, peerID mesh.DeviceID, eventTy
 }
 
 var _ ForwardingSession = (*DestinationSession)(nil)
-
 
 func appendDestinationAuditUntil(writer AuditWriter, event audit.Event, deadline time.Time) error {
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)

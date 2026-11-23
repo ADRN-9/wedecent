@@ -166,19 +166,19 @@ func openAgentPortForwardRuntime(cfg serveConfig, id *identity.Identity, peers *
 		return nil, err
 	}
 	runtime := &session.PortForwardRuntime{
-		Verifier: verifier,
-		TrustChecker: peers,
-		RouterTrustChecker: routerTrust,
+		Verifier:             verifier,
+		TrustChecker:         peers,
+		RouterTrustChecker:   routerTrust,
 		PermissionAuthorizer: portforward.CapabilityPermissionAuthorizer{},
-		Resolver: net.DefaultResolver,
-		Dialer: &net.Dialer{Timeout: 10 * time.Second},
+		Resolver:             net.DefaultResolver,
+		Dialer:               &net.Dialer{Timeout: 10 * time.Second},
 		Policy: portforward.DestinationPolicy{
 			AllowedPorts: ports, AllowedPrivate: privateCIDRs, AllowPublic: cfg.PortForwardAllowPublic,
 		},
-		Audit: auditLog,
+		Audit:             auditLog,
 		TrustPollInterval: 250 * time.Millisecond,
-		MaxConnections: cfg.PortForwardMaxConnections,
-		DialTimeout: 10 * time.Second,
+		MaxConnections:    cfg.PortForwardMaxConnections,
+		DialTimeout:       10 * time.Second,
 	}
 	if !runtime.Ready() {
 		return nil, errors.New("destination forwarding runtime failed closed: required trust, policy, or audit configuration is invalid")

@@ -15,33 +15,33 @@ import (
 const maxServeConfigBytes = 64 * 1024
 
 type serveFileConfig struct {
-	StateDir               *string `json:"state"`
-	Name                   *string `json:"name"`
-	ListenAddr             *string `json:"listen"`
-	RFCOMMChannel          *int    `json:"rfcomm_channel"`
-	SerialDevice           *string `json:"serial"`
-	Shell                  *string `json:"shell"`
-	Discover               *bool   `json:"discover"`
-	MaxConnections         *int    `json:"max_connections"`
-	SessionIdleTimeout     *string `json:"session_idle_timeout"`
-	SessionMaxDuration     *string `json:"session_max_duration"`
-	RelayAddr              *string `json:"relay"`
-	WebRelay               *string `json:"web_relay"`
-	RelaySlots             *int    `json:"relay_slots"`
-	RelayCA                *string `json:"relay_ca"`
-	RelayServerName        *string `json:"relay_server_name"`
-	AuthorizationURL       *string `json:"authorization_url"`
-	RouteControlListenAddr *string `json:"route_control_listen"`
-	RouteControlTransport  *string `json:"route_control_transport"`
-	RouteTunnelListenAddr  *string `json:"route_tunnel_listen"`
-	RouteTunnelTransport   *string `json:"route_tunnel_transport"`
-	RouteMaxConnections    *int    `json:"route_max_connections"`
-	PortForwardAuthorizationPublicKey *string `json:"port_forward_authorization_public_key"`
-	PortForwardAllowedPorts *string `json:"port_forward_allowed_ports"`
-	PortForwardAllowedPrivateCIDRs *string `json:"port_forward_allowed_private_cidrs"`
-	PortForwardAllowPublic *bool `json:"port_forward_allow_public"`
-	PortForwardMaxConnections *int `json:"port_forward_max_connections"`
-	PortForwardAllowLegacyReplayMigration *bool `json:"port_forward_allow_legacy_replay_migration"`
+	StateDir                              *string `json:"state"`
+	Name                                  *string `json:"name"`
+	ListenAddr                            *string `json:"listen"`
+	RFCOMMChannel                         *int    `json:"rfcomm_channel"`
+	SerialDevice                          *string `json:"serial"`
+	Shell                                 *string `json:"shell"`
+	Discover                              *bool   `json:"discover"`
+	MaxConnections                        *int    `json:"max_connections"`
+	SessionIdleTimeout                    *string `json:"session_idle_timeout"`
+	SessionMaxDuration                    *string `json:"session_max_duration"`
+	RelayAddr                             *string `json:"relay"`
+	WebRelay                              *string `json:"web_relay"`
+	RelaySlots                            *int    `json:"relay_slots"`
+	RelayCA                               *string `json:"relay_ca"`
+	RelayServerName                       *string `json:"relay_server_name"`
+	AuthorizationURL                      *string `json:"authorization_url"`
+	RouteControlListenAddr                *string `json:"route_control_listen"`
+	RouteControlTransport                 *string `json:"route_control_transport"`
+	RouteTunnelListenAddr                 *string `json:"route_tunnel_listen"`
+	RouteTunnelTransport                  *string `json:"route_tunnel_transport"`
+	RouteMaxConnections                   *int    `json:"route_max_connections"`
+	PortForwardAuthorizationPublicKey     *string `json:"port_forward_authorization_public_key"`
+	PortForwardAllowedPorts               *string `json:"port_forward_allowed_ports"`
+	PortForwardAllowedPrivateCIDRs        *string `json:"port_forward_allowed_private_cidrs"`
+	PortForwardAllowPublic                *bool   `json:"port_forward_allow_public"`
+	PortForwardMaxConnections             *int    `json:"port_forward_max_connections"`
+	PortForwardAllowLegacyReplayMigration *bool   `json:"port_forward_allow_legacy_replay_migration"`
 }
 
 func init() {

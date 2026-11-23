@@ -540,19 +540,29 @@ func TestManagerMultiplexesMultipleChildrenOverOneParentSession(t *testing.T) {
 		t.Fatal("parent session did not receive the signed forwarding capability")
 	}
 
-	if _, err := firstClient.Write([]byte("one")); err != nil {
-		t.Fatal(err)
-	}
+	firstWriteDone := make(chan error, 1)
+	go func() {
+		_, err := firstClient.Write([]byte("one"))
+		firstWriteDone <- err
+	}()
 	firstBytes := make([]byte, 3)
 	if _, err := io.ReadFull(firstRemote, firstBytes); err != nil || string(firstBytes) != "one" {
 		t.Fatalf("first child payload = %q, error = %v", firstBytes, err)
 	}
-	if _, err := secondClient.Write([]byte("two")); err != nil {
+	if err := <-firstWriteDone; err != nil {
 		t.Fatal(err)
 	}
+	secondWriteDone := make(chan error, 1)
+	go func() {
+		_, err := secondClient.Write([]byte("two"))
+		secondWriteDone <- err
+	}()
 	secondBytes := make([]byte, 3)
 	if _, err := io.ReadFull(secondRemote, secondBytes); err != nil || string(secondBytes) != "two" {
 		t.Fatalf("second child payload = %q, error = %v", secondBytes, err)
+	}
+	if err := <-secondWriteDone; err != nil {
+		t.Fatal(err)
 	}
 
 	_ = firstClient.Close()
@@ -786,8 +796,7 @@ func TestManagerEnforcesPerForwardConnectionLimitAndStopsChildren(t *testing.T) 
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
 	claims.Limits.MaxConnections = 1
-	block := make(chan struct{})
-	connector := &pipeConnector{block: block, opened: make(chan net.Conn, 2)}
+	connector := &pipeConnector{opened: make(chan net.Conn, 2)}
 	manager, auth, listener := newManagerForTest(t, testInitiator, claims, connector, nil, nil, nil)
 	if _, err := manager.Start(context.Background(), auth); err != nil {
 		t.Fatal(err)
@@ -842,6 +851,7 @@ func (a *blockingListenerAdmin) AuthorizePortForwardListener(ctx context.Context
 func TestManagerCloseCancelsPendingStart(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
+	claims.Listener = ListenerPolicy{Address: "1.1.1.1", Port: 43123, Exposure: ExposurePublic}
 	admin := &blockingListenerAdmin{started: make(chan struct{}), release: make(chan struct{})}
 	listenCalls := 0
 	manager, auth, _ := newManagerForTest(
@@ -897,6 +907,7 @@ func TestManagerDeviceRevocationCancelsPendingStart(t *testing.T) {
 	claims.Listener = ListenerPolicy{Address: "1.1.1.1", Port: 43123, Exposure: ExposurePublic}
 	admin := &blockingListenerAdmin{started: make(chan struct{}), release: make(chan struct{})}
 	listener := newQueueListenerAddress("1.1.1.1")
+	listenCalls := 0
 	manager, auth, _ := newManagerForTest(
 		t,
 		testInitiator,
@@ -904,7 +915,10 @@ func TestManagerDeviceRevocationCancelsPendingStart(t *testing.T) {
 		&pipeConnector{},
 		nil,
 		admin,
-		func(string, string) (net.Listener, error) { return listener, nil },
+		func(string, string) (net.Listener, error) {
+			listenCalls++
+			return listener, nil
+		},
 	)
 
 	startResult := make(chan error, 1)
@@ -935,10 +949,13 @@ func TestManagerDeviceRevocationCancelsPendingStart(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("pending start did not stop after device revocation")
 	}
+	if listenCalls != 0 {
+		t.Fatalf("listener opened %d times after pending-start revocation", listenCalls)
+	}
 	select {
 	case <-listener.closed:
-	case <-time.After(time.Second):
-		t.Fatal("listener leaked after pending-start revocation")
+		t.Fatal("listener was created before pending-start revocation")
+	default:
 	}
 	if len(manager.List()) != 0 {
 		t.Fatal("revoked pending forward became active")
@@ -1060,7 +1077,6 @@ func TestManagerConnectionAuditFailureTerminatesForward(t *testing.T) {
 	_ = client.Close()
 }
 
-
 type managerSignalWriteConn struct {
 	net.Conn
 	started chan struct{}
@@ -1134,15 +1150,15 @@ func (c *managerBlockedConnector) Open(ctx context.Context, _ Authorization) (Fo
 	}
 	return &managerBlockedForwardingSession{
 		children: make(map[net.Conn]struct{}),
-		opened: c.opened, started: c.started,
+		opened:   c.opened, started: c.started,
 	}, nil
 }
 
 type managerBlockingCloseConn struct {
 	net.Conn
-	started chan struct{}
-	release chan struct{}
-	once    sync.Once
+	started  chan struct{}
+	release  chan struct{}
+	once     sync.Once
 	closeErr error
 }
 
@@ -1179,15 +1195,15 @@ func newManagerForTestWithTrustChecker(
 	listener := newQueueListener()
 	auditLog := &memoryAudit{}
 	manager, err := NewManager(ManagerConfig{
-		LocalDeviceID: local,
-		Verifier: verifier,
-		TrustChecker: trustChecker,
-		RouterTrustChecker: managerTestTrustChecker{trusted: map[string]bool{string(testRouter): true}},
-		TrustPollInterval: pollInterval,
+		LocalDeviceID:        local,
+		Verifier:             verifier,
+		TrustChecker:         trustChecker,
+		RouterTrustChecker:   managerTestTrustChecker{trusted: map[string]bool{string(testRouter): true}},
+		TrustPollInterval:    pollInterval,
 		PermissionAuthorizer: allowPortForwardPermission{},
-		Connector: connector,
-		Audit: auditLog,
-		Limits: managerTestLimits(),
+		Connector:            connector,
+		Audit:                auditLog,
+		Limits:               managerTestLimits(),
 		Listen: func(network, address string) (net.Listener, error) {
 			if network != "tcp" || address != "127.0.0.1:43123" {
 				t.Errorf("listen(%q,%q)", network, address)
@@ -1284,7 +1300,7 @@ func TestManagerTrustRevocationDuringBlockedChildCleanup(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(now, DirectionLocal)
 	trustChecker := managerTestTrustChecker{
-		mu: &sync.RWMutex{},
+		mu:      &sync.RWMutex{},
 		trusted: map[string]bool{string(testDestination): true},
 	}
 	connector := &managerBlockedConnector{opened: make(chan net.Conn, 1), started: make(chan struct{})}
@@ -1321,7 +1337,6 @@ func TestManagerTrustRevocationDuringBlockedChildCleanup(t *testing.T) {
 		t.Fatal("destination stream remained open after trust revocation")
 	}
 }
-
 
 type managerBlockingCloseSession struct {
 	started chan struct{}

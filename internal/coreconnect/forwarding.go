@@ -87,9 +87,9 @@ func (b *Backend) OpenPortForwarding(ctx context.Context, auth portforward.Autho
 		dialer = transport.MultiDialer{
 			Relay: b.relayOptions,
 			WebRelay: transport.WebRelayOptions{
-				TicketSource: relayauth.NewTicketSource(b.identity),
+				TicketSource:    relayauth.NewTicketSource(b.identity),
 				ConnectionGrant: relayGrant,
-				Timeout: 15 * time.Second,
+				Timeout:         15 * time.Second,
 			},
 		}
 		peer = selectedPeer

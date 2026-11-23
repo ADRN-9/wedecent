@@ -17,8 +17,8 @@ import (
 
 const (
 	managedPortForwardReceiveWindow uint32 = 256 << 10
-	managedPortForwardMaxChildren = 64
-	managedPortForwardWriteTimeout = 5 * time.Second
+	managedPortForwardMaxChildren          = 64
+	managedPortForwardWriteTimeout         = 5 * time.Second
 )
 
 type transportAborter interface {
@@ -78,10 +78,10 @@ type ManagedPortForwardSession struct {
 
 	writeLock chan struct{}
 	mu        sync.Mutex
-	states  map[uint32]*managedPortForwardState
-	nextID  uint32
-	parent  uint32
-	alloc   int
+	states    map[uint32]*managedPortForwardState
+	nextID    uint32
+	parent    uint32
+	alloc     int
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -800,29 +800,39 @@ func (c *ManagedPortForwardConn) Close() error {
 }
 
 func (c *ManagedPortForwardConn) LocalAddr() net.Addr {
-	if c == nil { return nil }
+	if c == nil {
+		return nil
+	}
 	return c.local
 }
 func (c *ManagedPortForwardConn) RemoteAddr() net.Addr {
-	if c == nil { return nil }
+	if c == nil {
+		return nil
+	}
 	return c.remote
 }
 func (c *ManagedPortForwardConn) SetDeadline(t time.Time) error {
-	if c == nil || c.state == nil { return io.ErrClosedPipe }
+	if c == nil || c.state == nil {
+		return io.ErrClosedPipe
+	}
 	c.state.mu.Lock()
 	c.state.readDead, c.state.writeDead = t, t
 	c.state.mu.Unlock()
 	return nil
 }
 func (c *ManagedPortForwardConn) SetReadDeadline(t time.Time) error {
-	if c == nil || c.state == nil { return io.ErrClosedPipe }
+	if c == nil || c.state == nil {
+		return io.ErrClosedPipe
+	}
 	c.state.mu.Lock()
 	c.state.readDead = t
 	c.state.mu.Unlock()
 	return nil
 }
 func (c *ManagedPortForwardConn) SetWriteDeadline(t time.Time) error {
-	if c == nil || c.state == nil { return io.ErrClosedPipe }
+	if c == nil || c.state == nil {
+		return io.ErrClosedPipe
+	}
 	c.state.mu.Lock()
 	c.state.writeDead = t
 	c.state.mu.Unlock()

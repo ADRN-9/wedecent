@@ -76,7 +76,7 @@ func TestAuthorizationIssuerRejectsInvalidLifetimeAndCallerOwnedReplayFields(t *
 }
 
 func TestFileReplayPersistsAcrossProcessRestart(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	expiry := time.Now().UTC().Add(time.Minute).UnixMilli()
 	run := func(expectReplay bool) {
 		t.Helper()
@@ -129,7 +129,7 @@ func TestFileReplayProcessHelper(t *testing.T) {
 }
 
 func TestFileReplayConsumptionIsAtomicAcrossInstances(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	jti := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
 	expiry := time.Now().UTC().Add(time.Minute)
 	const workers = 24
@@ -164,7 +164,7 @@ func TestFileReplayConsumptionIsAtomicAcrossInstances(t *testing.T) {
 }
 
 func TestFileReplayPrunesExpiredEntriesAndRejectsExpiredConsumption(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	replay, err := NewFileReplay(path, testInitiator)
 	if err != nil {
@@ -187,7 +187,7 @@ func TestFileReplayPrunesExpiredEntriesAndRejectsExpiredConsumption(t *testing.T
 }
 
 func TestFileReplayRejectsDeletedStateAfterInitialization(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	replay, err := NewFileReplay(path, testInitiator)
 	if err != nil {
 		t.Fatal(err)
@@ -207,7 +207,7 @@ func TestFileReplayRejectsDeletedStateAfterInitialization(t *testing.T) {
 }
 
 func TestFileReplayRejectsDeletedStateAndLockTogether(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	replay, err := NewFileReplay(path, testInitiator)
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func TestFileReplayRejectsDeletedStateAndLockTogether(t *testing.T) {
 }
 
 func TestFileReplayRejectsDeletedLockAfterInitialization(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	replay, err := NewFileReplay(path, testInitiator)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +248,7 @@ func TestFileReplayRejectsDeletedLockAfterInitialization(t *testing.T) {
 }
 
 func TestFileReplayRejectsDeletedGenerationAnchor(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	replay, err := NewFileReplay(path, testInitiator)
 	if err != nil {
 		t.Fatal(err)
@@ -268,7 +268,7 @@ func TestFileReplayRejectsDeletedGenerationAnchor(t *testing.T) {
 }
 
 func TestFileReplayMigratesLegacyUnanchoredStateOnce(t *testing.T) {
-	dir := t.TempDir()
+	dir := newReplayTestDir(t)
 	path := filepath.Join(dir, "portforward-replay.json")
 	if err := secureReplayDirectory(dir); err != nil {
 		t.Fatal(err)
@@ -277,9 +277,9 @@ func TestFileReplayMigratesLegacyUnanchoredStateOnce(t *testing.T) {
 	nextJTI := base64.RawURLEncoding.EncodeToString([]byte("fedcba9876543210"))
 	expiry := time.Now().UTC().Add(time.Minute)
 	if err := writeReplayJSON(path, replaySnapshot{
-		Version: legacyReplayStoreVersion,
+		Version:  legacyReplayStoreVersion,
 		DeviceID: string(testInitiator),
-		Entries: map[string]int64{legacyJTI: expiry.UnixMilli()},
+		Entries:  map[string]int64{legacyJTI: expiry.UnixMilli()},
 	}, ".legacy-replay-*", maxReplayStoreSize); err != nil {
 		t.Fatal(err)
 	}
@@ -312,7 +312,7 @@ func TestFileReplayMigratesLegacyUnanchoredStateOnce(t *testing.T) {
 	}
 }
 func TestFileReplayRejectsOlderStateGeneration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	replay, err := NewFileReplay(path, testInitiator)
 	if err != nil {
 		t.Fatal(err)
@@ -340,7 +340,7 @@ func TestFileReplayRejectsOlderStateGeneration(t *testing.T) {
 }
 
 func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "replay-state")
+	dir := newReplayTestDir(t)
 	path := filepath.Join(dir, "replay.json")
 	replay, err := NewFileReplay(path, testInitiator)
 	if err != nil {
@@ -377,7 +377,7 @@ func TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions(t *testing.T) {
 }
 
 func TestFileReplayRejectsWrongDeviceScopeAndCorruptState(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "portforward-replay.json")
+	path := newReplayTestPath(t)
 	first, err := NewFileReplay(path, testInitiator)
 	if err != nil {
 		t.Fatal(err)
@@ -399,4 +399,97 @@ func TestFileReplayRejectsWrongDeviceScopeAndCorruptState(t *testing.T) {
 	if err := first.ConsumePortForwardAuthorization(context.Background(), base64.RawURLEncoding.EncodeToString([]byte("aaaaaaaaaaaaaaaa")), time.Now().UTC().Add(time.Minute)); !errors.Is(err, ErrReplayUnavailable) {
 		t.Fatalf("corrupt state error = %v", err)
 	}
+}
+
+func TestFileReplayRecoversPendingCommitAcrossCrashBoundaries(t *testing.T) {
+	stages := []struct {
+		name          string
+		advanceAnchor bool
+		publishState  bool
+	}{
+		{name: "pending_written"},
+		{name: "anchor_written", advanceAnchor: true},
+		{name: "snapshot_published", advanceAnchor: true, publishState: true},
+	}
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			path := newReplayTestPath(t)
+			if _, err := NewFileReplay(path, testInitiator); err != nil {
+				t.Fatal(err)
+			}
+			current, err := readReplaySnapshot(path, testInitiator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entries := make(map[string]int64, len(current.Entries)+1)
+			for jti, expiry := range current.Entries {
+				entries[jti] = expiry
+			}
+			pendingJTI := base64.RawURLEncoding.EncodeToString([]byte("aaaaaaaaaaaaaaaa"))
+			nextJTI := base64.RawURLEncoding.EncodeToString([]byte("bbbbbbbbbbbbbbbb"))
+			expiry := time.Now().UTC().Add(time.Minute)
+			entries[pendingJTI] = expiry.UnixMilli()
+			generation := current.Generation + 1
+			if err := writeReplayPending(path, testInitiator, generation, entries); err != nil {
+				t.Fatal(err)
+			}
+			if stage.advanceAnchor {
+				if err := writeReplayAnchor(path+".anchor", replayAnchor{
+					Version: replayStoreVersion, DeviceID: string(testInitiator), Generation: generation,
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if stage.publishState {
+				if err := writeReplayEntries(path, testInitiator, generation, entries); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			recovered, err := NewFileReplay(path, testInitiator)
+			if err != nil {
+				t.Fatalf("recover after simulated crash: %v", err)
+			}
+			if err := recovered.ConsumePortForwardAuthorization(context.Background(), pendingJTI, expiry); !errors.Is(err, ErrAuthorizationReplay) {
+				t.Fatalf("pending authorization after recovery = %v, want replay", err)
+			}
+			if err := recovered.ConsumePortForwardAuthorization(context.Background(), nextJTI, expiry); err != nil {
+				t.Fatalf("new authorization after recovery: %v", err)
+			}
+			snapshot, err := readReplaySnapshot(path, testInitiator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			anchor, err := readReplayAnchor(path+".anchor", testInitiator)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.Generation != anchor.Generation || snapshot.Generation != generation+1 {
+				t.Fatalf("recovered state generation=%d anchor=%d, want %d", snapshot.Generation, anchor.Generation, generation+1)
+			}
+			if _, ok := snapshot.Entries[pendingJTI]; !ok {
+				t.Fatal("recovery lost the pending replay entry")
+			}
+			if _, err := os.Stat(path + ".pending"); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("pending transaction remains after recovery: %v", err)
+			}
+		})
+	}
+}
+
+func newReplayTestDir(t *testing.T) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "replay-state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatalf("create private replay test directory: %v", err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatalf("set private replay test directory owner: %v", err)
+	}
+	return dir
+}
+
+func newReplayTestPath(t *testing.T) string {
+	t.Helper()
+	return filepath.Join(newReplayTestDir(t), "portforward-replay.json")
 }

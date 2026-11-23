@@ -57,7 +57,7 @@ func (r *PortForwardRuntime) OpenDestinationSession(
 		AuthenticatedPeerID:   peerID,
 		AuthenticatedRouterID: routerID,
 		Verifier:              r.Verifier,
-		TrustChecker:           r.TrustChecker,
+		TrustChecker:          r.TrustChecker,
 		RouterTrustChecker:    r.RouterTrustChecker,
 		TrustPollInterval:     r.TrustPollInterval,
 		PermissionAuthorizer:  r.PermissionAuthorizer,

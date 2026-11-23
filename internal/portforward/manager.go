@@ -108,21 +108,21 @@ type ManagerLimits struct {
 }
 
 type ManagerConfig struct {
-	LocalDeviceID          mesh.DeviceID
-	Verifier               Verifier
-	ReplayPath             string
-	AuthorizationPublicKey ed25519.PublicKey
+	LocalDeviceID              mesh.DeviceID
+	Verifier                   Verifier
+	ReplayPath                 string
+	AuthorizationPublicKey     ed25519.PublicKey
 	AllowLegacyReplayMigration bool
-	TrustChecker           PeerTrustChecker
-	RouterTrustChecker     PeerTrustChecker
-	TrustPollInterval      time.Duration
-	PermissionAuthorizer   PermissionAuthorizer
-	Connector              Connector
-	ListenerAuthorizer     ListenerAuthorizer
-	Audit                  AuditWriter
-	Limits                 ManagerLimits
-	Listen                 func(string, string) (net.Listener, error)
-	Now                    func() time.Time
+	TrustChecker               PeerTrustChecker
+	RouterTrustChecker         PeerTrustChecker
+	TrustPollInterval          time.Duration
+	PermissionAuthorizer       PermissionAuthorizer
+	Connector                  Connector
+	ListenerAuthorizer         ListenerAuthorizer
+	Audit                      AuditWriter
+	Limits                     ManagerLimits
+	Listen                     func(string, string) (net.Listener, error)
+	Now                        func() time.Time
 }
 
 type ForwardInfo struct {
@@ -255,7 +255,7 @@ func DefaultManagerLimits() ManagerLimits {
 		MaxForwards: 16, MaxForwardsPerDevice: 4,
 		MaxConnections: 128, MaxConnectionsPerDevice: 32,
 		MaxConnectionsPerForward: 16,
-		MaxDuration: 30 * time.Minute, IdleTimeout: 5 * time.Minute,
+		MaxDuration:              30 * time.Minute, IdleTimeout: 5 * time.Minute,
 		DialTimeout: 10 * time.Second,
 	}
 }

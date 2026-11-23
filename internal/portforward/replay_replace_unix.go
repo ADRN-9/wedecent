@@ -37,4 +37,3 @@ func replaceReplayFile(source, destination string) error {
 	defer dir.Close()
 	return dir.Sync()
 }
-

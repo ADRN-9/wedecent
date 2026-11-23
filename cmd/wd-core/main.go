@@ -73,10 +73,10 @@ func run(args []string) error {
 			return fmt.Errorf("load forwarding authorization trust anchor: %w", err)
 		}
 		config.Forwarding = &portforward.ManagerConfig{
-			AuthorizationPublicKey: publicKey,
+			AuthorizationPublicKey:     publicKey,
 			AllowLegacyReplayMigration: *forwardingLegacyMigration,
-			ReplayPath: filepath.Join(*clientStateDir, "portforward-replay.json"),
-			Limits: portforward.DefaultManagerLimits(),
+			ReplayPath:                 filepath.Join(*clientStateDir, "portforward-replay.json"),
+			Limits:                     portforward.DefaultManagerLimits(),
 		}
 	} else if *forwardingLegacyMigration {
 		return errors.New("--port-forward-allow-legacy-replay-migration requires --port-forward-authorization-public-key")

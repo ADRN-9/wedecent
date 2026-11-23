@@ -11,9 +11,9 @@ import (
 )
 
 type fakePortForwardService struct {
-	starts  int
-	stops   []string
-	status  []v1.PortForwardStatus
+	starts int
+	stops  []string
+	status []v1.PortForwardStatus
 }
 
 func (s *fakePortForwardService) StartPortForward(_ context.Context, _ v1.PortForwardStartRequest) (v1.PortForwardStatus, error) {

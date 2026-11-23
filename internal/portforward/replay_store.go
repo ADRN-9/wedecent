@@ -47,10 +47,10 @@ type replayInitialization struct {
 // FileReplay provides cross-process, durable, device-scoped single-use JTI
 // consumption. Use a distinct file and local device ID at each endpoint.
 type FileReplay struct {
-	Path       string
-	DeviceID   mesh.DeviceID
-	MaxEntries int
-	Now        func() time.Time
+	Path                 string
+	DeviceID             mesh.DeviceID
+	MaxEntries           int
+	Now                  func() time.Time
 	AllowLegacyMigration bool
 }
 
@@ -391,7 +391,7 @@ func loadReplaySnapshot(path string, deviceID mesh.DeviceID, allowLegacyMigratio
 		return snapshot, nil
 	}
 
-	pendingExists, err := replayPathExists(path+".pending")
+	pendingExists, err := replayPathExists(path + ".pending")
 	if err != nil {
 		return replaySnapshot{}, err
 	}
@@ -408,7 +408,7 @@ func loadReplaySnapshot(path string, deviceID mesh.DeviceID, allowLegacyMigratio
 		if stateErr != nil {
 			return replaySnapshot{}, stateErr
 		}
-		anchorExists, anchorErr := replayPathExists(path+".anchor")
+		anchorExists, anchorErr := replayPathExists(path + ".anchor")
 		if anchorErr != nil {
 			return replaySnapshot{}, anchorErr
 		}
@@ -476,7 +476,7 @@ func recoverReplayPending(path string, deviceID mesh.DeviceID, anchor replayAnch
 	if err != nil || pending.Version != replayStoreVersion {
 		return errors.New("pending replay transaction is malformed")
 	}
-	anchorExists, err := replayPathExists(path+".anchor")
+	anchorExists, err := replayPathExists(path + ".anchor")
 	if err != nil {
 		return err
 	}

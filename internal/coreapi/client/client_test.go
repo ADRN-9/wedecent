@@ -241,7 +241,6 @@ func TestClientRejectsExcessiveTimeout(t *testing.T) {
 	}
 }
 
-
 func TestClientPortForwardMethodsUseLocalCore(t *testing.T) {
 	status := v1.PortForwardStatus{
 		ID: "forward-1", ListenerAddress: "127.0.0.1:43123",

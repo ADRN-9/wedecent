@@ -71,13 +71,13 @@ func verifyReplayACL(path string) error {
 		return errors.New("replay object has no restrictive DACL")
 	}
 	allowed := map[string]bool{
-		owner.String():       true,
-		"S-1-5-18":          true,
-		"S-1-5-32-544":      true,
-		"SY":                true,
-		"BA":                true,
-		"CO":                true,
-		"OW":                true,
+		owner.String(): true,
+		"S-1-5-18":     true,
+		"S-1-5-32-544": true,
+		"SY":           true,
+		"BA":           true,
+		"CO":           true,
+		"OW":           true,
 	}
 	sddl := sd.String()
 	start := strings.Index(sddl, "D:")

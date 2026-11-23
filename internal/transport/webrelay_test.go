@@ -324,7 +324,6 @@ func writeServerBinaryFrame(w io.Writer, payload []byte) error {
 	return err
 }
 
-
 type webRelaySignalWriteConn struct {
 	net.Conn
 	started chan struct{}

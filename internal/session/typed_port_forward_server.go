@@ -50,17 +50,18 @@ type typedPortForwardChild struct {
 	writeMu     sync.Mutex
 	sendMu      sync.Mutex
 	closing     bool
+	inputEOF    bool
 	closeErr    error
 }
 
 type typedPortForwardServer struct {
-	ctx       context.Context
-	localID   mesh.DeviceID
-	peerID    mesh.DeviceID
-	routerID  mesh.DeviceID
-	runtime   *PortForwardRuntime
-	registry  *typedParentStreamRegistry
-	write     typedTerminalFrameWriter
+	ctx      context.Context
+	localID  mesh.DeviceID
+	peerID   mesh.DeviceID
+	routerID mesh.DeviceID
+	runtime  *PortForwardRuntime
+	registry *typedParentStreamRegistry
+	write    typedTerminalFrameWriter
 
 	mu       sync.Mutex
 	parents  map[uint32]*typedPortForwardParent
@@ -77,15 +78,15 @@ func newTypedPortForwardServer(
 	write typedTerminalFrameWriter,
 ) *typedPortForwardServer {
 	return &typedPortForwardServer{
-		ctx:       ctx,
-		localID:   mesh.DeviceID(localID),
-		peerID:    mesh.DeviceID(peerID),
-		routerID:  mesh.DeviceID(routerID),
-		runtime:   runtime,
-		registry:  registry,
-		write:     write,
-		parents:   make(map[uint32]*typedPortForwardParent),
-		children:  make(map[uint32]*typedPortForwardChild),
+		ctx:      ctx,
+		localID:  mesh.DeviceID(localID),
+		peerID:   mesh.DeviceID(peerID),
+		routerID: mesh.DeviceID(routerID),
+		runtime:  runtime,
+		registry: registry,
+		write:    write,
+		parents:  make(map[uint32]*typedPortForwardParent),
+		children: make(map[uint32]*typedPortForwardChild),
 	}
 }
 
@@ -340,7 +341,7 @@ func (s *typedPortForwardServer) data(frame protocol.Frame) error {
 		return fmt.Errorf("%w: forwarding child is not open", errTypedStreamProtocol)
 	}
 	child.mu.Lock()
-	if child.closing || channelClosed(child.done) {
+	if child.closing || child.inputEOF || channelClosed(child.done) {
 		child.mu.Unlock()
 		return fmt.Errorf("%w: forwarding child is closed", errTypedStreamProtocol)
 	}
@@ -385,6 +386,35 @@ func (s *typedPortForwardServer) forwardInput(child *typedPortForwardChild) {
 		child.mu.Unlock()
 
 		if len(data) == 0 {
+			child.mu.Lock()
+			inputEOF := child.inputEOF
+			child.mu.Unlock()
+			if inputEOF {
+				child.writeMu.Lock()
+				if child.isClosed() || s.ctx.Err() != nil {
+					child.writeMu.Unlock()
+					return
+				}
+				writer, ok := child.conn.(interface{ CloseWrite() error })
+				var closeErr error
+				if !ok {
+					closeErr = portforward.ErrHalfCloseUnsupported
+				} else {
+					closeErr = writer.CloseWrite()
+				}
+				child.writeMu.Unlock()
+				if closeErr != nil && !child.isClosed() {
+					code := "half_close_failed"
+					message := "destination TCP half-close failed"
+					if errors.Is(closeErr, portforward.ErrHalfCloseUnsupported) {
+						code = "half_close_unsupported"
+						message = "destination transport does not support TCP half-close"
+					}
+					_ = s.writeChildError(child, code, message)
+					_ = s.closeChild(child.id, code, false)
+				}
+				return
+			}
 			select {
 			case <-s.ctx.Done():
 				return
@@ -476,18 +506,16 @@ func (s *typedPortForwardServer) halfClose(frame protocol.Frame) error {
 	if child == nil {
 		return fmt.Errorf("%w: forwarding child is not open", errTypedStreamProtocol)
 	}
-	if child.isClosed() {
+	child.mu.Lock()
+	if child.closing || channelClosed(child.done) {
+		child.mu.Unlock()
 		return fmt.Errorf("%w: forwarding child is closed", errTypedStreamProtocol)
 	}
-	writer, ok := child.conn.(interface{ CloseWrite() error })
-	if !ok {
-		_ = s.writeChildError(child, "half_close_unsupported", "destination transport does not support TCP half-close")
-		_ = s.closeChild(frame.StreamID, "half_close_unsupported", false)
-		return nil
-	}
-	if err := writer.CloseWrite(); err != nil {
-		_ = s.writeChildError(child, "half_close_failed", "destination TCP half-close failed")
-		_ = s.closeChild(frame.StreamID, "half_close_failed", false)
+	child.inputEOF = true
+	child.mu.Unlock()
+	select {
+	case child.writeCh <- struct{}{}:
+	default:
 	}
 	return nil
 }

@@ -242,14 +242,14 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	}
 
 	server, err := ipc.NewServerWithServices(ipc.Services{
-		Status:       readService,
-		Devices:      readService,
-		Account:      accountService,
-		Connections:  idempotentConnections,
-		Terminal:     idempotentTerminal,
-		FileTransfer: fileTransferService,
-		Transports:   networkService,
-		Routes:       networkService,
+		Status:         readService,
+		Devices:        readService,
+		Account:        accountService,
+		Connections:    idempotentConnections,
+		Terminal:       idempotentTerminal,
+		FileTransfer:   fileTransferService,
+		Transports:     networkService,
+		Routes:         networkService,
 		Router:         cfg.RouterService,
 		PortForwarding: forwardingService,
 	})

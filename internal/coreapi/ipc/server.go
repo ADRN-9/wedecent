@@ -40,27 +40,27 @@ const (
 )
 
 type Services struct {
-	Status       v1.StatusService
-	Devices      v1.DeviceService
-	Account      v1.AccountService
-	Connections  v1.ConnectionService
-	Terminal     v1.TerminalService
-	FileTransfer v1.FileTransferService
-	Transports   v1.TransportService
-	Routes       v1.RouteService
+	Status         v1.StatusService
+	Devices        v1.DeviceService
+	Account        v1.AccountService
+	Connections    v1.ConnectionService
+	Terminal       v1.TerminalService
+	FileTransfer   v1.FileTransferService
+	Transports     v1.TransportService
+	Routes         v1.RouteService
 	Router         v1.RouterService
 	PortForwarding v1.PortForwardService
 }
 
 type Server struct {
-	status      v1.StatusService
-	devices     v1.DeviceService
-	account     v1.AccountService
-	connections v1.ConnectionService
-	terminal    v1.TerminalService
-	files       v1.FileTransferService
-	transports  v1.TransportService
-	routes      v1.RouteService
+	status         v1.StatusService
+	devices        v1.DeviceService
+	account        v1.AccountService
+	connections    v1.ConnectionService
+	terminal       v1.TerminalService
+	files          v1.FileTransferService
+	transports     v1.TransportService
+	routes         v1.RouteService
 	router         v1.RouterService
 	portForwarding v1.PortForwardService
 }
@@ -78,14 +78,14 @@ func NewServerWithServices(services Services) (*Server, error) {
 		return nil, errors.New("coreapi ipc: status and device services are required")
 	}
 	return &Server{
-		status:      services.Status,
-		devices:     services.Devices,
-		account:     services.Account,
-		connections: services.Connections,
-		terminal:    services.Terminal,
-		files:       services.FileTransfer,
-		transports:  services.Transports,
-		routes:      services.Routes,
+		status:         services.Status,
+		devices:        services.Devices,
+		account:        services.Account,
+		connections:    services.Connections,
+		terminal:       services.Terminal,
+		files:          services.FileTransfer,
+		transports:     services.Transports,
+		routes:         services.Routes,
 		router:         services.Router,
 		portForwarding: services.PortForwarding,
 	}, nil

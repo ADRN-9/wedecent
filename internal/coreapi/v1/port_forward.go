@@ -8,20 +8,20 @@ import (
 )
 
 const (
-	MethodPortForwardStart = "port_forward.start"
-	MethodPortForwardStop  = "port_forward.stop"
+	MethodPortForwardStart  = "port_forward.start"
+	MethodPortForwardStop   = "port_forward.stop"
 	MethodPortForwardList   = "port_forward.list"
 	MethodPortForwardStatus = "port_forward.status"
 )
 
 type PortForwardStatus struct {
-	ID                 string                  `json:"id"`
-	Direction          portforward.Direction   `json:"direction"`
-	ListenerAddress    string                  `json:"listener_address"`
-	DestinationAddress string                  `json:"destination_address"`
-	DestinationPort    uint16                  `json:"destination_port"`
-	ExpiresAt          time.Time               `json:"expires_at"`
-	ActiveConnections  int                     `json:"active_connections"`
+	ID                 string                `json:"id"`
+	Direction          portforward.Direction `json:"direction"`
+	ListenerAddress    string                `json:"listener_address"`
+	DestinationAddress string                `json:"destination_address"`
+	DestinationPort    uint16                `json:"destination_port"`
+	ExpiresAt          time.Time             `json:"expires_at"`
+	ActiveConnections  int                   `json:"active_connections"`
 }
 
 type PortForwardStartRequest struct {

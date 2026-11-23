@@ -153,19 +153,29 @@ func TestDestinationSessionAuthenticatesOnceAndMultiplexesChildConnections(t *te
 
 	firstRemote := <-dialer.opened
 	secondRemote := <-dialer.opened
-	if _, err := first.Write([]byte("first")); err != nil {
-		t.Fatal(err)
-	}
+	firstWriteDone := make(chan error, 1)
+	go func() {
+		_, err := first.Write([]byte("first"))
+		firstWriteDone <- err
+	}()
 	firstBytes := make([]byte, 5)
 	if _, err := io.ReadFull(firstRemote, firstBytes); err != nil || string(firstBytes) != "first" {
 		t.Fatalf("first child payload = %q, error = %v", firstBytes, err)
 	}
-	if _, err := second.Write([]byte("second")); err != nil {
+	if err := <-firstWriteDone; err != nil {
 		t.Fatal(err)
 	}
+	secondWriteDone := make(chan error, 1)
+	go func() {
+		_, err := second.Write([]byte("second"))
+		secondWriteDone <- err
+	}()
 	secondBytes := make([]byte, 6)
 	if _, err := io.ReadFull(secondRemote, secondBytes); err != nil || string(secondBytes) != "second" {
 		t.Fatalf("second child payload = %q, error = %v", secondBytes, err)
+	}
+	if err := <-secondWriteDone; err != nil {
+		t.Fatal(err)
 	}
 	if err := first.Close(); err != nil {
 		t.Fatal(err)
@@ -450,10 +460,10 @@ func TestDestinationSessionIdleWatchClosesAnActuallyIdleChild(t *testing.T) {
 func TestDestinationChildCloseWriteDoesNotCloseConnectionWhenUnsupported(t *testing.T) {
 	left, right := net.Pipe()
 	session := &DestinationSession{
-		claims: testClaims(time.Now().UTC(), DirectionLocal),
-		localID: testDestination,
-		peerID: testInitiator,
-		audit: &memoryAudit{},
+		claims:   testClaims(time.Now().UTC(), DirectionLocal),
+		localID:  testDestination,
+		peerID:   testInitiator,
+		audit:    &memoryAudit{},
 		children: make(map[uint64]*destinationChildConn),
 	}
 	child := &destinationChildConn{Conn: newIdleConn(left, time.Second), session: session, id: 1}
@@ -461,8 +471,20 @@ func TestDestinationChildCloseWriteDoesNotCloseConnectionWhenUnsupported(t *test
 	if err := child.CloseWrite(); !errors.Is(err, ErrHalfCloseUnsupported) {
 		t.Fatalf("unsupported half-close error = %v", err)
 	}
+	readDone := make(chan error, 1)
+	go func() {
+		payload := make([]byte, len("still-open"))
+		_, readErr := io.ReadFull(right, payload)
+		if readErr == nil && string(payload) != "still-open" {
+			readErr = errors.New("unexpected payload")
+		}
+		readDone <- readErr
+	}()
 	if _, err := child.Write([]byte("still-open")); err != nil {
 		t.Fatalf("unsupported half-close destroyed the connection: %v", err)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatalf("read after unsupported half-close: %v", err)
 	}
 	_ = child.Close()
 	_ = right.Close()
@@ -478,18 +500,20 @@ func TestDestinationSessionAppliesSignedIdleTimeoutToEveryChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := session.OpenChild(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = <-dialer.opened
-	wrapped, ok := child.(*destinationChildConn)
-	if !ok {
-		t.Fatalf("destination child concrete type = %T, want *destinationChildConn", child)
-	}
-	idle, ok := wrapped.Conn.(*idleConn)
-	if !ok || idle.idle != 5*time.Second {
-		t.Fatalf("destination child idle policy = %#v, want signed 5s idle timeout", wrapped.Conn)
+	for i := 0; i < 2; i++ {
+		child, err := session.OpenChild(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = <-dialer.opened
+		wrapped, ok := child.(*destinationChildConn)
+		if !ok {
+			t.Fatalf("destination child concrete type = %T, want *destinationChildConn", child)
+		}
+		idle, ok := wrapped.Conn.(*idleConn)
+		if !ok || idle.idle != 5*time.Second {
+			t.Fatalf("destination child %d idle policy = %#v, want signed 5s idle timeout", i, wrapped.Conn)
+		}
 	}
 	if err := session.Close(); err != nil {
 		t.Fatal(err)
@@ -561,7 +585,6 @@ func TestDestinationSessionBoundsChildrenAndExpiresActiveStreams(t *testing.T) {
 	}
 	_ = child.Close()
 }
-
 
 type blockingDestinationAudit struct {
 	started chan struct{}
@@ -635,7 +658,6 @@ func TestDestinationSessionCloseDoesNotWaitForPendingChildOpen(t *testing.T) {
 		t.Fatal("late child open did not self-clean after the audit append resumed")
 	}
 }
-
 
 type destinationBlockingCloseConn struct {
 	net.Conn
@@ -733,7 +755,6 @@ func TestDestinationSessionCloseBoundsBlockedChildClose(t *testing.T) {
 	_ = remote.Close()
 }
 
-
 type destinationAuditCallRecorder struct {
 	called chan struct{}
 }
@@ -755,7 +776,6 @@ func TestAppendDestinationAuditUntilExpiredDeadlineDoesNotInvokeWriter(t *testin
 	default:
 	}
 }
-
 
 type blockingDestinationSuccessAudit struct {
 	started chan struct{}
@@ -837,4 +857,3 @@ func TestDestinationSessionRevocationCancelsChildBeforeBlockedAuditCompletes(t *
 	close(auditLog.release)
 	released = true
 }
-

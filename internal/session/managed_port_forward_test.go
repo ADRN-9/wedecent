@@ -120,25 +120,25 @@ func TestManagedPortForwardUsesAuthenticatedTLSAndPreservesTCPHalfClose(t *testi
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	sourceID, destinationID := mesh.DeviceID(clientID.ID), mesh.DeviceID(serverID.ID)
 	claims := portforward.Claims{
-		Version: portforward.AuthorizationVersion,
-		Issuer: portforward.AuthorizationIssuerID,
-		Audience: portforward.AuthorizationAudience,
-		Permission: portforward.PermissionLocal,
-		ForwardingID: "00000000-0000-4000-8000-000000000101",
-		Direction: portforward.DirectionLocal,
-		InitiatingDevice: sourceID,
+		Version:           portforward.AuthorizationVersion,
+		Issuer:            portforward.AuthorizationIssuerID,
+		Audience:          portforward.AuthorizationAudience,
+		Permission:        portforward.PermissionLocal,
+		ForwardingID:      "00000000-0000-4000-8000-000000000101",
+		Direction:         portforward.DirectionLocal,
+		InitiatingDevice:  sourceID,
 		DestinationDevice: destinationID,
 		Route: mesh.Route{
-			ID: "00000000-0000-4000-8000-000000000102",
-			Source: sourceID,
+			ID:          "00000000-0000-4000-8000-000000000102",
+			Source:      sourceID,
 			Destination: destinationID,
-			Hops: []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
+			Hops:        []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
 		},
 		DestinationAddress: "forward.example.com",
-		DestinationPort: 443,
-		Listener: portforward.DefaultListenerPolicy(43123),
-		Protocol: portforward.ProtocolTCP,
-		Limits: portforward.ResourceLimits{MaxConnections: 2, MaxDurationSeconds: 30, IdleTimeoutSeconds: 5},
+		DestinationPort:    443,
+		Listener:           portforward.DefaultListenerPolicy(43123),
+		Protocol:           portforward.ProtocolTCP,
+		Limits:             portforward.ResourceLimits{MaxConnections: 2, MaxDurationSeconds: 30, IdleTimeoutSeconds: 5},
 	}
 	auth, err := (portforward.AuthorizationIssuer{
 		Signer: signingKey, Lifetime: 30 * time.Second, Now: func() time.Time { return now },
@@ -148,28 +148,28 @@ func TestManagedPortForwardUsesAuthenticatedTLSAndPreservesTCPHalfClose(t *testi
 	}
 
 	forwardRuntime := &PortForwardRuntime{
-		Verifier: &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
-		TrustChecker: serverTrust,
+		Verifier:             &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
+		TrustChecker:         serverTrust,
 		PermissionAuthorizer: portforward.CapabilityPermissionAuthorizer{},
-		Resolver: forwardingTestResolver{},
-		Dialer: forwardingTestDialer{address: destinationListener.Addr().String()},
+		Resolver:             forwardingTestResolver{},
+		Dialer:               forwardingTestDialer{address: destinationListener.Addr().String()},
 		Policy: portforward.DestinationPolicy{
-			AllowedPorts: []portforward.PortRange{{First: 443, Last: 443}},
+			AllowedPorts:   []portforward.PortRange{{First: 443, Last: 443}},
 			AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.30.0/24")},
 		},
-		Audit: forwardingTestAudit{},
+		Audit:          forwardingTestAudit{},
 		MaxConnections: 2,
-		DialTimeout: 5 * time.Second,
+		DialTimeout:    5 * time.Second,
 	}
 	if !forwardRuntime.Ready() {
 		t.Fatal("destination forwarding runtime is not ready")
 	}
 	server := &Server{
-		Identity: serverID,
-		Trust: serverTrust,
+		Identity:         serverID,
+		Trust:            serverTrust,
 		DirectAuthorizer: forwardingTestDirectAuthorizer{},
-		PortForwarding: forwardRuntime,
-		Policy: SessionPolicy{IdleTimeout: time.Minute, MaxDuration: time.Minute},
+		PortForwarding:   forwardRuntime,
+		Policy:           SessionPolicy{IdleTimeout: time.Minute, MaxDuration: time.Minute},
 	}
 
 	clientSide, serverSide := net.Pipe()
@@ -183,7 +183,7 @@ func TestManagedPortForwardUsesAuthenticatedTLSAndPreservesTCPHalfClose(t *testi
 	defer cancel()
 	client := &Client{
 		Identity: clientID, Trust: clientTrust, Dialer: dialer,
-		ConnectionGrant: "test.connection.grant",
+		ConnectionGrant:          "test.connection.grant",
 		ForceInBandAuthorization: true,
 	}
 	managed, err := client.OpenManagedPortForwardSession(ctx, peer, auth)
@@ -220,7 +220,6 @@ func TestManagedPortForwardUsesAuthenticatedTLSAndPreservesTCPHalfClose(t *testi
 		t.Fatal("authenticated forwarding parent did not terminate")
 	}
 }
-
 
 type blockingForwardTestConn struct {
 	net.Conn
@@ -303,25 +302,25 @@ func TestTypedForwardBlockedChildDoesNotStallSiblingAndParentDisconnectClosesIt(
 	now := time.Now().UTC().Truncate(time.Millisecond)
 	sourceID, destinationID := mesh.DeviceID(clientID.ID), mesh.DeviceID(serverID.ID)
 	claims := portforward.Claims{
-		Version: portforward.AuthorizationVersion,
-		Issuer: portforward.AuthorizationIssuerID,
-		Audience: portforward.AuthorizationAudience,
-		Permission: portforward.PermissionLocal,
-		ForwardingID: "00000000-0000-4000-8000-000000000201",
-		Direction: portforward.DirectionLocal,
-		InitiatingDevice: sourceID,
+		Version:           portforward.AuthorizationVersion,
+		Issuer:            portforward.AuthorizationIssuerID,
+		Audience:          portforward.AuthorizationAudience,
+		Permission:        portforward.PermissionLocal,
+		ForwardingID:      "00000000-0000-4000-8000-000000000201",
+		Direction:         portforward.DirectionLocal,
+		InitiatingDevice:  sourceID,
 		DestinationDevice: destinationID,
 		Route: mesh.Route{
-			ID: "00000000-0000-4000-8000-000000000202",
-			Source: sourceID,
+			ID:          "00000000-0000-4000-8000-000000000202",
+			Source:      sourceID,
 			Destination: destinationID,
-			Hops: []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
+			Hops:        []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
 		},
 		DestinationAddress: "forward.example.com",
-		DestinationPort: 443,
-		Listener: portforward.DefaultListenerPolicy(43124),
-		Protocol: portforward.ProtocolTCP,
-		Limits: portforward.ResourceLimits{MaxConnections: 2, MaxDurationSeconds: 30, IdleTimeoutSeconds: 5},
+		DestinationPort:    443,
+		Listener:           portforward.DefaultListenerPolicy(43124),
+		Protocol:           portforward.ProtocolTCP,
+		Limits:             portforward.ResourceLimits{MaxConnections: 2, MaxDurationSeconds: 30, IdleTimeoutSeconds: 5},
 	}
 	auth, err := (portforward.AuthorizationIssuer{
 		Signer: signingKey, Lifetime: 30 * time.Second, Now: func() time.Time { return now },
@@ -332,18 +331,18 @@ func TestTypedForwardBlockedChildDoesNotStallSiblingAndParentDisconnectClosesIt(
 
 	destinationDialer := &blockingForwardTestDialer{opened: make(chan *blockingForwardTestConn, 2)}
 	forwardRuntime := &PortForwardRuntime{
-		Verifier: &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
-		TrustChecker: serverTrust,
+		Verifier:             &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
+		TrustChecker:         serverTrust,
 		PermissionAuthorizer: portforward.CapabilityPermissionAuthorizer{},
-		Resolver: forwardingTestResolver{},
-		Dialer: destinationDialer,
+		Resolver:             forwardingTestResolver{},
+		Dialer:               destinationDialer,
 		Policy: portforward.DestinationPolicy{
-			AllowedPorts: []portforward.PortRange{{First: 443, Last: 443}},
+			AllowedPorts:   []portforward.PortRange{{First: 443, Last: 443}},
 			AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.30.0/24")},
 		},
-		Audit: forwardingTestAudit{},
+		Audit:          forwardingTestAudit{},
 		MaxConnections: 2,
-		DialTimeout: 5 * time.Second,
+		DialTimeout:    5 * time.Second,
 	}
 	if !forwardRuntime.Ready() {
 		t.Fatal("destination forwarding runtime is not ready")
@@ -351,8 +350,8 @@ func TestTypedForwardBlockedChildDoesNotStallSiblingAndParentDisconnectClosesIt(
 	server := &Server{
 		Identity: serverID, Trust: serverTrust,
 		DirectAuthorizer: forwardingTestDirectAuthorizer{},
-		PortForwarding: forwardRuntime,
-		Policy: SessionPolicy{IdleTimeout: time.Minute, MaxDuration: time.Minute},
+		PortForwarding:   forwardRuntime,
+		Policy:           SessionPolicy{IdleTimeout: time.Minute, MaxDuration: time.Minute},
 	}
 
 	clientSide, serverSide := net.Pipe()
@@ -366,7 +365,7 @@ func TestTypedForwardBlockedChildDoesNotStallSiblingAndParentDisconnectClosesIt(
 	defer cancel()
 	client := &Client{
 		Identity: clientID, Trust: clientTrust, Dialer: dialer,
-		ConnectionGrant: "test.connection.grant",
+		ConnectionGrant:          "test.connection.grant",
 		ForceInBandAuthorization: true,
 	}
 	managed, err := client.OpenManagedPortForwardSession(ctx, peer, auth)
@@ -532,7 +531,6 @@ func TestManagedPortForwardShutdownDoesNotWaitForOccupiedWriteLock(t *testing.T)
 	}
 }
 
-
 type parentCloseBlockingConn struct {
 	net.Conn
 	remote  net.Conn
@@ -630,11 +628,11 @@ func TestTypedForwardParentCloseDoesNotWaitForBlockedChildClose(t *testing.T) {
 	}
 	dialer := &parentCloseBlockingDialer{opened: make(chan *parentCloseBlockingConn, 1)}
 	runtime := &PortForwardRuntime{
-		Verifier: &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
+		Verifier:     &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
 		TrustChecker: serverTrust, PermissionAuthorizer: portforward.CapabilityPermissionAuthorizer{},
 		Resolver: forwardingTestResolver{}, Dialer: dialer,
 		Policy: portforward.DestinationPolicy{
-			AllowedPorts: []portforward.PortRange{{First: 443, Last: 443}},
+			AllowedPorts:   []portforward.PortRange{{First: 443, Last: 443}},
 			AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.30.0/24")},
 		},
 		Audit: forwardingTestAudit{}, MaxConnections: 1, DialTimeout: 5 * time.Second,
@@ -716,7 +714,6 @@ func TestTypedForwardParentCloseDoesNotWaitForBlockedChildClose(t *testing.T) {
 	}
 }
 
-
 type parentCloseBlockingAudit struct {
 	started chan struct{}
 	release chan struct{}
@@ -780,11 +777,11 @@ func TestTypedForwardOpenChildDoesNotDoubleCloseDuringParentShutdown(t *testing.
 		}
 	}()
 	runtime := &PortForwardRuntime{
-		Verifier: &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
+		Verifier:     &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
 		TrustChecker: serverTrust, PermissionAuthorizer: portforward.CapabilityPermissionAuthorizer{},
 		Resolver: forwardingTestResolver{}, Dialer: dialer,
 		Policy: portforward.DestinationPolicy{
-			AllowedPorts: []portforward.PortRange{{First: 443, Last: 443}},
+			AllowedPorts:   []portforward.PortRange{{First: 443, Last: 443}},
 			AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.30.0/24")},
 		},
 		Audit: auditLog, MaxConnections: 1, DialTimeout: 5 * time.Second,
@@ -882,7 +879,6 @@ func TestTypedForwardOpenChildDoesNotDoubleCloseDuringParentShutdown(t *testing.
 	}
 }
 
-
 type countedForwardConn struct {
 	reads  atomic.Int32
 	writes atomic.Int32
@@ -896,12 +892,12 @@ func (c *countedForwardConn) Write(p []byte) (int, error) {
 	c.writes.Add(1)
 	return len(p), nil
 }
-func (*countedForwardConn) Close() error                       { return nil }
-func (*countedForwardConn) LocalAddr() net.Addr                { return forwardingTestAddr("local") }
-func (*countedForwardConn) RemoteAddr() net.Addr               { return forwardingTestAddr("remote") }
-func (*countedForwardConn) SetDeadline(time.Time) error        { return nil }
-func (*countedForwardConn) SetReadDeadline(time.Time) error    { return nil }
-func (*countedForwardConn) SetWriteDeadline(time.Time) error   { return nil }
+func (*countedForwardConn) Close() error                     { return nil }
+func (*countedForwardConn) LocalAddr() net.Addr              { return forwardingTestAddr("local") }
+func (*countedForwardConn) RemoteAddr() net.Addr             { return forwardingTestAddr("remote") }
+func (*countedForwardConn) SetDeadline(time.Time) error      { return nil }
+func (*countedForwardConn) SetReadDeadline(time.Time) error  { return nil }
+func (*countedForwardConn) SetWriteDeadline(time.Time) error { return nil }
 
 type forwardingTestAddr string
 
@@ -995,11 +991,11 @@ func TestTypedForwardParentCloseDuringChildAcceptanceDoesNotStartDetachedWorkers
 	}
 	dialer := &parentCloseBlockingDialer{opened: make(chan *parentCloseBlockingConn, 1)}
 	runtime := &PortForwardRuntime{
-		Verifier: &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
+		Verifier:     &portforward.AuthorizationVerifier{PublicKey: publicKey, Replay: portforward.NewMemoryReplay(8), Now: func() time.Time { return now }},
 		TrustChecker: serverTrust, PermissionAuthorizer: portforward.CapabilityPermissionAuthorizer{},
 		Resolver: forwardingTestResolver{}, Dialer: dialer,
 		Policy: portforward.DestinationPolicy{
-			AllowedPorts: []portforward.PortRange{{First: 443, Last: 443}},
+			AllowedPorts:   []portforward.PortRange{{First: 443, Last: 443}},
 			AllowedPrivate: []netip.Prefix{netip.MustParsePrefix("10.20.30.0/24")},
 		},
 		Audit: forwardingTestAudit{}, MaxConnections: 1, DialTimeout: 5 * time.Second,
@@ -1106,4 +1102,3 @@ func TestTypedForwardParentCloseDuringChildAcceptanceDoesNotStartDetachedWorkers
 		t.Fatal("parent close did not finish after child cleanup was released")
 	}
 }
-

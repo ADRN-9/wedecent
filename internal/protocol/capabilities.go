@@ -8,7 +8,7 @@ type Capability string
 const (
 	CapabilityTypedStreamsV1 Capability = "typed-streams-v1"
 	CapabilityFileTransferV1 Capability = "file-transfer-v1"
-	CapabilityPortForwardV1 Capability = "port-forward-v1"
+	CapabilityPortForwardV1  Capability = "port-forward-v1"
 )
 
 func SupportedCapability(value Capability) bool {
