@@ -130,7 +130,7 @@ jobs:
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
       - name: Test Windows replay-store security regressions
-        run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
+        run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash|TestWindowsReplayRejectsUnauthorizedOrphanStagingACL|TestWindowsReplayRejectsInsecurePreexistingBootstrapLock|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
       - name: Test native Windows agent
         run: go test ./...
       - name: Build native Windows binaries

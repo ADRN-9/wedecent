@@ -225,6 +225,72 @@ func TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash(t *testing.T) {
 	}
 }
 
+
+func TestWindowsReplayRejectsUnauthorizedOrphanStagingACL(t *testing.T) {
+	path := newReplayTestPath(t)
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := base64.RawURLEncoding.EncodeToString([]byte("orphanaclfirst01"))
+	second := base64.RawURLEncoding.EncodeToString([]byte("orphanaclsecond1"))
+	expiry := time.Now().UTC().Add(time.Minute)
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), first, expiry); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, "replay"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	orphanPath := file.Name()
+	if _, err := file.Write([]byte("orphan with an unauthorized ACL")); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestFileACL(orphanPath, "(A;;FA;;;BU)"); err != nil {
+		t.Fatal(err)
+	}
+
+	err = replay.ConsumePortForwardAuthorization(context.Background(), second, expiry)
+	if !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("unauthorized orphan staging ACL error = %v, want fail-closed ErrReplayUnavailable", err)
+	}
+	if _, err := os.Lstat(orphanPath); err != nil {
+		t.Fatalf("cleanup removed or lost staging file with unauthorized ACL: %v", err)
+	}
+	snapshot, err := readReplaySnapshot(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := snapshot.Entries[first]; !ok {
+		t.Fatal("unauthorized staging ACL handling lost existing replay state")
+	}
+	if _, ok := snapshot.Entries[second]; ok {
+		t.Fatal("authorization was consumed despite unauthorized staging ACL")
+	}
+}
+
+func TestWindowsReplayRejectsInsecurePreexistingBootstrapLock(t *testing.T) {
+	path := newReplayTestPath(t)
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := base64.RawURLEncoding.EncodeToString([]byte("bootstrapfirst01"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), first, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestFileACL(path+".lock.bootstrap", "(A;;FA;;;BU)"); err != nil {
+		t.Fatal(err)
+	}
+	second := base64.RawURLEncoding.EncodeToString([]byte("bootstrapsecond1"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), second, time.Now().UTC().Add(time.Minute)); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("insecure bootstrap lock ACL error = %v, want fail-closed ErrReplayUnavailable", err)
+	}
+}
 func TestWindowsReplayRejectsUnauthorizedDirectoryACL(t *testing.T) {
 	dir := newReplayTestDir(t)
 	if err := setReplayTestFileACL(dir, "(A;OICI;FA;;;BU)"); err != nil {

@@ -54,7 +54,7 @@ A published `.lock` with no `.init` marker is not by itself proof that replay hi
 4. Only when the marker, state, anchor, and pending transaction are all absent—and the only replay artifact is the published `.lock`—the interrupted operation could not yet have consumed a JTI. With the service stopped and the offline copy retained, move `.lock` to a clearly named quarantine file (do not destroy it), then restart the service so it can create a fresh lock and initialization marker.
 5. On Windows, leave `.lock.bootstrap` in place. It serializes lock publication; it is not replay history and must not be removed as part of this recovery. If it is missing or fails ACL verification, preserve the directory and investigate rather than broadening its ACL.
 
-If any artifact is malformed, ownership/ACL verification fails, or the file set is ambiguous, stop and fail closed. Never reset replay state by deleting individual files.
+If any artifact is malformed, ownership/ACL verification fails, or the file set is ambiguous, stop and fail closed. Never reset replay state by deleting individual files. The older unscoped Windows temporary names `.portforward-lock-*` from pre-store-scoped releases are intentionally not swept automatically: their store ownership and active-process status cannot be established from their filename. Preserve them during routine startup; any manual quarantine must follow the stopped-service/offline-copy procedure and must not be performed while an older agent process may still be running.
 
 ## Staging routed-terminal workflow
 
