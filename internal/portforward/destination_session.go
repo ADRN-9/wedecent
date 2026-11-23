@@ -297,18 +297,27 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 		id:      childID,
 	}
 	s.mu.Lock()
-	if s.closed || s.children[childID] != nil {
+	if s.closed || s.ctx.Err() != nil || s.children[childID] != nil {
 		delete(s.children, childID)
 		s.mu.Unlock()
-		_ = conn.Close()
-		return nil, ErrDestinationSessionClosed
+		closeErr := conn.Close()
+		outcome, reason := "success", "parent_session_closed_before_child_open"
+		if closeErr != nil {
+			outcome, reason = "failed", "child_connection_cleanup_failed"
+		}
+		auditErr := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", outcome, reason))
+		if closeErr != nil || auditErr != nil {
+			s.mu.Lock()
+			s.auditErr = errors.Join(s.auditErr, closeErr, auditErr)
+			s.mu.Unlock()
+		}
+		return nil, errors.Join(ErrDestinationSessionClosed, closeErr, auditErr)
 	}
 	s.children[childID] = child
 	s.mu.Unlock()
 
 	if err := s.audit.Append(destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "success", "")); err != nil {
-		_ = child.Close()
-		return nil, err
+		return nil, errors.Join(err, child.Close())
 	}
 	if s.ctx.Err() != nil {
 		_ = child.Close()
