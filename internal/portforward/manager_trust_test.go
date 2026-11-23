@@ -71,7 +71,7 @@ func TestManagerTrustStoreRevocationTerminatesParentAndChildStreams(t *testing.T
 	if len(manager.List()) != 1 {
 		t.Fatal("forward did not become active")
 	}
-	if _, err := store.DeletePeer(string(testDestination)); err != nil {
+	if _, _, err := store.DeletePeer(string(testDestination)); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +144,7 @@ func TestManagerTrustStoreRevocationCancelsPendingStart(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("start did not reach listener authorization")
 	}
-	if _, err := store.DeletePeer(string(testDestination)); err != nil {
+	if _, _, err := store.DeletePeer(string(testDestination)); err != nil {
 		t.Fatal(err)
 	}
 
