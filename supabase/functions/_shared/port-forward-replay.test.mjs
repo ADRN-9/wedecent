@@ -5,6 +5,7 @@ import test from 'node:test'
 import {
   canonicalPortForwardAuthorizationMessage,
   decodeBase64URLStrict,
+  deviceIDFromPublicKey,
   encodeBase64URL,
   remoteReplayDeviceMessage,
 } from './port-forward-replay.mjs'
@@ -84,4 +85,9 @@ test('device replay proof is domain separated and binds the authorization digest
   const changed = remoteReplayDeviceMessage('wd_aaaaaaaaaaaaaaaa', fixture.claims.jti, fixture.claims.exp_unix_ms, 'b'.repeat(64))
   assert.notDeepEqual([...first], [...changed])
   assert.match(encodeBase64URL(new Uint8Array([1, 2, 3])), /^[A-Za-z0-9_-]+$/)
+})
+
+
+test('device ID derivation matches the Go Ed25519 identity format', async () => {
+  assert.equal(await deviceIDFromPublicKey(new Uint8Array(32)), 'wd_mzuhvlpymk6xo3ep')
 })

@@ -2,6 +2,7 @@ import { createClient } from "npm:@supabase/supabase-js@2";
 import {
   canonicalPortForwardAuthorizationMessage,
   decodeBase64URLStrict,
+  deviceIDFromPublicKey,
   encodeBase64URL,
   remoteReplayDeviceMessage,
 } from "../_shared/port-forward-replay.mjs";
@@ -129,6 +130,9 @@ Deno.serve(async (request) => {
     }
 
     const devicePublicKey = decodeBase64URLStrict(device.public_key, 32);
+    if (await deviceIDFromPublicKey(devicePublicKey) !== deviceID) {
+      return json({ error: "enrolled device key does not match device identity" }, 403);
+    }
     const deviceKey = await crypto.subtle.importKey("raw", asArrayBuffer(devicePublicKey), { name: "Ed25519" }, false, ["verify"]);
     const deviceSignature = decodeBase64URLStrict(String(body.device_signature ?? ""), 64);
     const proof = remoteReplayDeviceMessage(deviceID, verified.jti, verified.expiresAtUnixMS, verified.digestHex);

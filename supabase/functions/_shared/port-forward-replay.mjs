@@ -180,6 +180,28 @@ export function canonicalPortForwardAuthorizationMessage(authorization) {
   return concatenate(parts)
 }
 
+export async function deviceIDFromPublicKey(publicKeyBytes) {
+  if (!(publicKeyBytes instanceof Uint8Array) || publicKeyBytes.length !== 32) {
+    fail('device public key has an invalid length')
+  }
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', publicKeyBytes))
+  const alphabet = 'abcdefghijklmnopqrstuvwxyz234567'
+  let accumulator = 0
+  let bits = 0
+  let encoded = ''
+  for (const byte of digest.subarray(0, 10)) {
+    accumulator = (accumulator << 8) | byte
+    bits += 8
+    while (bits >= 5) {
+      bits -= 5
+      encoded += alphabet[(accumulator >> bits) & 31]
+      accumulator &= (1 << bits) - 1
+    }
+  }
+  if (bits !== 0 || encoded.length !== 16) fail('device identity derivation failed')
+  return 'wd_' + encoded
+}
+
 export function remoteReplayDeviceMessage(deviceID, jti, expiresAtUnixMS, authorizationSHA256) {
   if (!deviceIDPattern.test(deviceID) || !jtiPattern.test(jti) || !/^[0-9a-f]{64}$/.test(authorizationSHA256)) {
     fail('device replay proof fields are invalid')
