@@ -39,7 +39,8 @@ type Config struct {
 type Runtime struct {
 	Server      *ipc.Server
 	Connections *coreapi.ConnectionService
-	Forwarding  *portforward.Manager
+	Forwarding      *portforward.Manager
+	PortForwarding  *coreapi.PortForwardService
 }
 
 func (r *Runtime) Close() error {
@@ -180,6 +181,16 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		}
 	}
 
+	var forwardingService *coreapi.PortForwardService
+	if forwardingManager != nil {
+		forwardingService, err = coreapi.NewPortForwardService(forwardingManager)
+		if err != nil {
+			_ = forwardingManager.Close()
+			_ = connectionService.Close()
+			return nil, fmt.Errorf("core process: compose port forwarding service: %w", err)
+		}
+	}
+
 	fileTransferService, err := coreapi.NewFileTransferService(coreapi.FileTransferServiceConfig{
 		Connections: connectionService,
 	})
@@ -216,7 +227,8 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		FileTransfer: fileTransferService,
 		Transports:   networkService,
 		Routes:       networkService,
-		Router:       cfg.RouterService,
+		Router:         cfg.RouterService,
+		PortForwarding: forwardingService,
 	})
 	if err != nil {
 		if forwardingManager != nil {
@@ -225,7 +237,7 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose IPC server: %w", err)
 	}
-	return &Runtime{Server: server, Connections: connectionService, Forwarding: forwardingManager}, nil
+	return &Runtime{Server: server, Connections: connectionService, Forwarding: forwardingManager, PortForwarding: forwardingService}, nil
 }
 
 // OpenReadOnly preserves a credential-free composition for callers that do not
