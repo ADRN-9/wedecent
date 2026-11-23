@@ -67,8 +67,8 @@ jobs:
         run: test -z "$(gofmt -l cmd internal)"
       - name: Stress Linux replay initialization and crash recovery
         run: |
-          go test ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker)$' -count=3 -v
-          go test -race ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker)$' -count=1 -v
+          go test ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions)$' -count=3 -v
+          go test -race ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions)$' -count=1 -v
       - name: Test port-forward session and transport packages
         run: go test ./internal/session ./internal/portforward ./internal/transport
       - name: Race-test port-forward session and transport packages
