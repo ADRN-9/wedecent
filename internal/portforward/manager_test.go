@@ -210,6 +210,17 @@ func managerTestLimits() ManagerLimits {
 	return ManagerLimits{MaxForwards: 8, MaxForwardsPerDevice: 4, MaxConnections: 8, MaxConnectionsPerDevice: 4, MaxConnectionsPerForward: 4, MaxDuration: 3 * time.Minute, IdleTimeout: 30 * time.Second, DialTimeout: time.Second}
 }
 
+type managerTestTrustChecker struct {
+	trusted map[string]bool
+}
+
+func (t managerTestTrustChecker) IsTrusted(ctx context.Context, id string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return t.trusted[id], nil
+}
+
 func newManagerForTest(t *testing.T, local mesh.DeviceID, claims Claims, connector Connector, auditLog *memoryAudit, admin ListenerAuthorizer, listen func(string, string) (net.Listener, error)) (*Manager, Authorization, *queueListener) {
 	return newManagerForTestWithPermission(t, local, claims, connector, auditLog, admin, allowPortForwardPermission{}, listen)
 }
@@ -240,9 +251,14 @@ func newManagerForTestWithPermission(t *testing.T, local mesh.DeviceID, claims C
 	if auditLog == nil {
 		auditLog = &memoryAudit{}
 	}
+	peerID := remoteEndpointDevice(claims, local)
+	trustedPeers := map[string]bool{string(peerID): true}
+	trustedRouters := map[string]bool{string(testRouter): true}
 	manager, err := NewManager(ManagerConfig{
 		LocalDeviceID:        local,
 		Verifier:             verifier,
+		TrustChecker:         managerTestTrustChecker{trusted: trustedPeers},
+		RouterTrustChecker:   managerTestTrustChecker{trusted: trustedRouters},
 		PermissionAuthorizer: permission,
 		Connector:            connector,
 		ListenerAuthorizer:   admin,
