@@ -65,7 +65,10 @@ func NewPersistentAuthorizationVerifier(path string, localDeviceID mesh.DeviceID
 }
 
 func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti string, expiresAt time.Time) error {
-	if r == nil || ctx == nil || !deviceIDPattern.MatchString(string(r.DeviceID)) || r.Path == "" {
+	if ctx == nil {
+		return ErrAuthorizationInvalid
+	}
+	if r == nil || !deviceIDPattern.MatchString(string(r.DeviceID)) || r.Path == "" {
 		return ErrReplayUnavailable
 	}
 	if err := ctx.Err(); err != nil {
