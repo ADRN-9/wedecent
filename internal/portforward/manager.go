@@ -756,19 +756,19 @@ func (m *Manager) watchTrust() {
 			if m.trustChecker != nil {
 				for _, peerID := range m.referencedPeerDevices() {
 					trusted, trustErr := m.trustChecker.IsTrusted(m.ctx, string(peerID))
+					if trustErr != nil && m.ctx.Err() == nil {
+						m.recordBackgroundError(fmt.Errorf("portforward: peer trust check for %s failed: %w", peerID, trustErr))
+					}
 					if m.ctx.Err() != nil {
 						return
 					}
 					if trustErr != nil || !trusted {
 						_, revokeErr := m.RevokeDevice(m.ctx, peerID)
+						if revokeErr != nil && m.ctx.Err() == nil {
+							m.recordBackgroundError(fmt.Errorf("portforward: revoke untrusted peer %s: %w", peerID, revokeErr))
+						}
 						if m.ctx.Err() != nil {
 							return
-						}
-						if trustErr != nil {
-							m.recordBackgroundError(fmt.Errorf("portforward: peer trust check for %s failed: %w", peerID, trustErr))
-						}
-						if revokeErr != nil {
-							m.recordBackgroundError(fmt.Errorf("portforward: revoke untrusted peer %s: %w", peerID, revokeErr))
 						}
 					}
 				}
@@ -776,19 +776,19 @@ func (m *Manager) watchTrust() {
 			if m.routerTrustChecker != nil {
 				for _, routerID := range m.referencedRouterDevices() {
 					trusted, trustErr := m.routerTrustChecker.IsTrusted(m.ctx, string(routerID))
+					if trustErr != nil && m.ctx.Err() == nil {
+						m.recordBackgroundError(fmt.Errorf("portforward: router trust check for %s failed: %w", routerID, trustErr))
+					}
 					if m.ctx.Err() != nil {
 						return
 					}
 					if trustErr != nil || !trusted {
 						_, revokeErr := m.RevokeDevice(m.ctx, routerID)
+						if revokeErr != nil && m.ctx.Err() == nil {
+							m.recordBackgroundError(fmt.Errorf("portforward: revoke untrusted router %s: %w", routerID, revokeErr))
+						}
 						if m.ctx.Err() != nil {
 							return
-						}
-						if trustErr != nil {
-							m.recordBackgroundError(fmt.Errorf("portforward: router trust check for %s failed: %w", routerID, trustErr))
-						}
-						if revokeErr != nil {
-							m.recordBackgroundError(fmt.Errorf("portforward: revoke untrusted router %s: %w", routerID, revokeErr))
 						}
 					}
 				}
