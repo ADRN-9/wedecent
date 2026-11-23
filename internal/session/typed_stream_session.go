@@ -137,8 +137,16 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		}
 		typedServer.CloseAll()
 		streamAudit.closeAll(closeReason)
-		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
-		_ = writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: sessionPolicyExitCode, Reason: reason})})
+		if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			s.log().Warn("typed session close deadline could not be set", "peer_id", peerID, "error", err)
+			_ = conn.Close()
+			return
+		}
+		if err := writeFrame(protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: sessionPolicyExitCode, Reason: reason})}); err != nil {
+			s.log().Warn("typed session close frame failed", "peer_id", peerID, "error", err)
+			_ = conn.Close()
+			return
+		}
 		waitForPeerClose(frameCh, readErrCh, 2*time.Second)
 	}
 
