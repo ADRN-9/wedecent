@@ -346,6 +346,35 @@ func TestRemoteReplayAmbiguousCommitFailsClosedAndRetryDetectsReplay(t *testing.
 	}
 }
 
+func TestRemoteReplayRequiresTLS13AndConfiguredHostname(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay, err := NewRemoteReplay(
+		"https://replay.example.test/functions/v1/port-forward-replay",
+		"public-anon-key",
+		mesh.DeviceID(identity.DeviceID(publicKey)),
+		privateKey,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	transport, ok := replay.client.Transport.(*http.Transport)
+	if !ok || transport.TLSClientConfig == nil {
+		t.Fatal("remote replay transport has no explicit TLS configuration")
+	}
+	if transport.TLSClientConfig.MinVersion != tls.VersionTLS13 {
+		t.Fatalf("TLS minimum = %d, want TLS 1.3", transport.TLSClientConfig.MinVersion)
+	}
+	if transport.TLSClientConfig.ServerName != "replay.example.test" {
+		t.Fatalf("TLS ServerName = %q, want configured endpoint host", transport.TLSClientConfig.ServerName)
+	}
+	if replay.client.CheckRedirect == nil {
+		t.Fatal("remote replay client must disable redirects")
+	}
+}
+
 func TestRemoteReplayRejectsUnsafeEndpointAndWrongDeviceKey(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
