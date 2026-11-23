@@ -15,9 +15,11 @@ func lockReplayFile(path string) (func(), error) {
 		return nil, err
 	}
 	lockPath := path + ".lock"
-	if info, err := os.Lstat(lockPath); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("replay lock must not be a symbolic link")
-	} else if err != nil && !os.IsNotExist(err) {
+	if info, err := os.Lstat(lockPath); err == nil {
+		if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+			return nil, fmt.Errorf("replay lock must be a regular file")
+		}
+	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
 	file, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
