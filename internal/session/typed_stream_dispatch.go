@@ -17,6 +17,7 @@ func routeTypedApplicationFrame(
 	registry *typedParentStreamRegistry,
 	terminalServer *typedTerminalServer,
 	fileServer *typedFileServer,
+	forwardServer *typedPortForwardServer,
 	frame protocol.Frame,
 ) (bool, error) {
 	if !isTypedTerminalFrame(frame.Type) {
@@ -37,6 +38,14 @@ func routeTypedApplicationFrame(
 		switch open.Kind {
 		case protocol.StreamKindTerminal:
 			return routeTypedTerminalFrame(capabilities, terminalServer, frame)
+		case protocol.StreamKindPortForwardParent, protocol.StreamKindPortForwardChild:
+			if !hasSessionCapability(capabilities, protocol.CapabilityPortForwardV1) {
+				return true, fmt.Errorf("%w: forwarding stream received without negotiation", errTypedStreamProtocol)
+			}
+			if forwardServer == nil {
+				return true, fmt.Errorf("%w: typed forwarding server unavailable", errTypedStreamProtocol)
+			}
+			return true, forwardServer.Handle(ctx, frame)
 		case protocol.StreamKindFileUpload, protocol.StreamKindFileDownload:
 			if !hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1) {
 				return true, fmt.Errorf("%w: file stream received without negotiation", errTypedStreamProtocol)
@@ -57,6 +66,14 @@ func routeTypedApplicationFrame(
 	switch kind {
 	case protocol.StreamKindTerminal:
 		return routeTypedTerminalFrame(capabilities, terminalServer, frame)
+	case protocol.StreamKindPortForwardParent, protocol.StreamKindPortForwardChild:
+		if !hasSessionCapability(capabilities, protocol.CapabilityPortForwardV1) {
+			return true, fmt.Errorf("%w: forwarding stream received without negotiation", errTypedStreamProtocol)
+		}
+		if forwardServer == nil {
+			return true, fmt.Errorf("%w: typed forwarding server unavailable", errTypedStreamProtocol)
+		}
+		return true, forwardServer.Handle(ctx, frame)
 	case protocol.StreamKindFileUpload, protocol.StreamKindFileDownload:
 		if !hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1) {
 			return true, fmt.Errorf("%w: file stream received without negotiation", errTypedStreamProtocol)
