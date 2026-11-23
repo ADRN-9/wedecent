@@ -1050,7 +1050,7 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 				break
 			}
 			select {
-			case <-child.child.done:
+			case <-child.done:
 			case <-timer.C:
 				timedOut = true
 			}
