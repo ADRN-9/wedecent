@@ -32,7 +32,7 @@ func (forwardingTestResolver) LookupNetIP(ctx context.Context, network, host str
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if network != "ip" || host != "forward.test" {
+	if network != "ip" || host != "forward.example.com" {
 		return nil, errors.New("unexpected test resolver query")
 	}
 	return []netip.Addr{netip.MustParseAddr("10.20.30.40")}, nil
@@ -133,7 +133,7 @@ func TestManagedPortForwardUsesAuthenticatedTLSAndPreservesTCPHalfClose(t *testi
 			Destination: destinationID,
 			Hops: []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
 		},
-		DestinationAddress: "forward.test",
+		DestinationAddress: "forward.example.com",
 		DestinationPort: 443,
 		Listener: portforward.DefaultListenerPolicy(43123),
 		Protocol: portforward.ProtocolTCP,
@@ -316,7 +316,7 @@ func TestTypedForwardBlockedChildDoesNotStallSiblingAndParentDisconnectClosesIt(
 			Destination: destinationID,
 			Hops: []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
 		},
-		DestinationAddress: "forward.test",
+		DestinationAddress: "forward.example.com",
 		DestinationPort: 443,
 		Listener: portforward.DefaultListenerPolicy(43124),
 		Protocol: portforward.ProtocolTCP,
@@ -605,7 +605,7 @@ func TestTypedForwardParentCloseDoesNotWaitForBlockedChildClose(t *testing.T) {
 			ID: "00000000-0000-4000-8000-000000000302", Source: sourceID, Destination: destinationID,
 			Hops: []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
 		},
-		DestinationAddress: "forward.test", DestinationPort: 443,
+		DestinationAddress: "forward.example.com", DestinationPort: 443,
 		Listener: portforward.DefaultListenerPolicy(43125), Protocol: portforward.ProtocolTCP,
 		Limits: portforward.ResourceLimits{MaxConnections: 1, MaxDurationSeconds: 30, IdleTimeoutSeconds: 5},
 	}
@@ -743,7 +743,7 @@ func TestTypedForwardOpenChildDoesNotDoubleCloseDuringParentShutdown(t *testing.
 			ID: "00000000-0000-4000-8000-000000000304", Source: sourceID, Destination: destinationID,
 			Hops: []mesh.RouteHop{{From: sourceID, To: destinationID, Transport: mesh.TransportInternet, Cost: 1}},
 		},
-		DestinationAddress: "forward.test", DestinationPort: 443,
+		DestinationAddress: "forward.example.com", DestinationPort: 443,
 		Listener: portforward.DefaultListenerPolicy(43126), Protocol: portforward.ProtocolTCP,
 		Limits: portforward.ResourceLimits{MaxConnections: 1, MaxDurationSeconds: 30, IdleTimeoutSeconds: 5},
 	}

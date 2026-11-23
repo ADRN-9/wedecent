@@ -332,8 +332,13 @@ func (s *DestinationSession) OpenChild(ctx context.Context) (net.Conn, error) {
 	if err := s.appendAudit(opCtx, destinationAuditEvent(s.claims, s.localID, s.peerID, "port_forward.destination_child", "success", "")); err != nil {
 		return nil, errors.Join(err, s.closeWithReason("child_open_audit_failed"))
 	}
-	if opCtx.Err() != nil || channelClosed(child.Done()) {
+	if opCtx.Err() != nil {
 		return nil, ErrDestinationSessionClosed
+	}
+	select {
+	case <-child.Done():
+		return nil, ErrDestinationSessionClosed
+	default:
 	}
 	return child, nil
 }

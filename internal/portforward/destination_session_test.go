@@ -483,9 +483,13 @@ func TestDestinationSessionAppliesSignedIdleTimeoutToEveryChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = <-dialer.opened
-	idle, ok := child.Conn.(idleConn)
+	wrapped, ok := child.(*destinationChildConn)
+	if !ok {
+		t.Fatalf("destination child concrete type = %T, want *destinationChildConn", child)
+	}
+	idle, ok := wrapped.Conn.(idleConn)
 	if !ok || idle.idle != 5*time.Second {
-		t.Fatalf("destination child idle policy = %#v, want signed 5s idle timeout", child.Conn)
+		t.Fatalf("destination child idle policy = %#v, want signed 5s idle timeout", wrapped.Conn)
 	}
 	if err := session.Close(); err != nil {
 		t.Fatal(err)

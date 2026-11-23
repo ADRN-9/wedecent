@@ -13,7 +13,6 @@ import (
 	"wedecent.com/wedecent/internal/relayauth"
 	"wedecent.com/wedecent/internal/session"
 	"wedecent.com/wedecent/internal/transport"
-	"wedecent.com/wedecent/internal/trust"
 )
 
 // OpenPortForwarding opens one authenticated TLS parent carrying a signed
