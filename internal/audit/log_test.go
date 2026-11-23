@@ -125,14 +125,14 @@ func TestAppendWritesPortForwardAuditFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := Event{
-		Type: "port_forward.started",
-		Outcome: "success",
-		ActorID: "wd_aaaaaaaaaaaaaaaa",
-		PeerID: "wd_bbbbbbbbbbbbbbbb",
-		Transport: "tcp",
+		Type:         "port_forward.started",
+		Outcome:      "success",
+		ActorID:      "wd_aaaaaaaaaaaaaaaa",
+		PeerID:       "wd_bbbbbbbbbbbbbbbb",
+		Transport:    "tcp",
 		ForwardingID: "00000000-0000-4000-8000-000000000001",
-		Direction: "local",
-		Destination: "example.com:443",
+		Direction:    "local",
+		Destination:  "example.com:443",
 	}
 	if err := log.Append(event); err != nil {
 		t.Fatal(err)

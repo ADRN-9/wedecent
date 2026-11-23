@@ -44,10 +44,10 @@ var (
 )
 
 var (
-	deviceIDPattern  = regexp.MustCompile(\`^wd_[a-z2-7]{16}$\`)
-	forwardIDPattern = regexp.MustCompile(\`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$\`)
-	jtiPattern       = regexp.MustCompile(\`^[A-Za-z0-9_-]{22}$\`)
-	dnsLabelPattern  = regexp.MustCompile(\`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$\`)
+	deviceIDPattern  = regexp.MustCompile(`^wd_[a-z2-7]{16}$`)
+	forwardIDPattern = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+	jtiPattern       = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
+	dnsLabelPattern  = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 )
 
 type Direction string
@@ -70,42 +70,42 @@ func DefaultListenerPolicy(port uint16) ListenerPolicy {
 }
 
 type ListenerPolicy struct {
-	Address  string           \`json:"address"\`
-	Port     uint16           \`json:"port"\`
-	Exposure ListenerExposure \`json:"exposure"\`
+	Address  string           `json:"address"`
+	Port     uint16           `json:"port"`
+	Exposure ListenerExposure `json:"exposure"`
 }
 
 type ResourceLimits struct {
-	MaxConnections     uint16 \`json:"max_connections"\`
-	MaxDurationSeconds uint32 \`json:"max_duration_seconds"\`
-	IdleTimeoutSeconds uint32 \`json:"idle_timeout_seconds"\`
+	MaxConnections     uint16 `json:"max_connections"`
+	MaxDurationSeconds uint32 `json:"max_duration_seconds"`
+	IdleTimeoutSeconds uint32 `json:"idle_timeout_seconds"`
 }
 
 type Claims struct {
-	Version            int            \`json:"v"\`
-	Issuer             string         \`json:"iss"\`
-	Audience           string         \`json:"aud"\`
-	Permission         string         \`json:"permission"\`
-	JTI                string         \`json:"jti"\`
-	ForwardingID       string         \`json:"forwarding_id"\`
-	Direction          Direction      \`json:"direction"\`
-	InitiatingDevice   mesh.DeviceID  \`json:"initiating_device"\`
-	DestinationDevice  mesh.DeviceID  \`json:"destination_device"\`
-	Router             mesh.DeviceID  \`json:"router,omitempty"\`
-	Route              mesh.Route     \`json:"route"\`
-	DestinationAddress string         \`json:"destination_address"\`
-	DestinationPort    uint16         \`json:"destination_port"\`
-	Listener           ListenerPolicy \`json:"listener"\`
-	Protocol           string         \`json:"protocol"\`
-	IssuedAtUnixMS     int64          \`json:"iat_unix_ms"\`
-	ExpiresAtUnixMS    int64          \`json:"exp_unix_ms"\`
-	Limits             ResourceLimits \`json:"limits"\`
+	Version            int            `json:"v"`
+	Issuer             string         `json:"iss"`
+	Audience           string         `json:"aud"`
+	Permission         string         `json:"permission"`
+	JTI                string         `json:"jti"`
+	ForwardingID       string         `json:"forwarding_id"`
+	Direction          Direction      `json:"direction"`
+	InitiatingDevice   mesh.DeviceID  `json:"initiating_device"`
+	DestinationDevice  mesh.DeviceID  `json:"destination_device"`
+	Router             mesh.DeviceID  `json:"router,omitempty"`
+	Route              mesh.Route     `json:"route"`
+	DestinationAddress string         `json:"destination_address"`
+	DestinationPort    uint16         `json:"destination_port"`
+	Listener           ListenerPolicy `json:"listener"`
+	Protocol           string         `json:"protocol"`
+	IssuedAtUnixMS     int64          `json:"iat_unix_ms"`
+	ExpiresAtUnixMS    int64          `json:"exp_unix_ms"`
+	Limits             ResourceLimits `json:"limits"`
 }
 
 type Authorization struct {
-	KeyID     string \`json:"kid"\`
-	Claims    Claims \`json:"claims"\`
-	Signature string \`json:"signature"\`
+	KeyID     string `json:"kid"`
+	Claims    Claims `json:"claims"`
+	Signature string `json:"signature"`
 }
 
 type ReplayStore interface {

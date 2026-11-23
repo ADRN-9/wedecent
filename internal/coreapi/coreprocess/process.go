@@ -185,13 +185,17 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	}
 	idempotentConnections, err := coreapi.NewConnectIdempotencyService(connectionService)
 	if err != nil {
-		if forwardingManager != nil { _ = forwardingManager.Close() }
+		if forwardingManager != nil {
+			_ = forwardingManager.Close()
+		}
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose connect idempotency service: %w", err)
 	}
 	idempotentTerminal, err := coreapi.NewTerminalWriteIdempotencyService(connectionService)
 	if err != nil {
-		if forwardingManager != nil { _ = forwardingManager.Close() }
+		if forwardingManager != nil {
+			_ = forwardingManager.Close()
+		}
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose terminal write idempotency service: %w", err)
 	}
@@ -208,7 +212,9 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 		Router:       cfg.RouterService,
 	})
 	if err != nil {
-		if forwardingManager != nil { _ = forwardingManager.Close() }
+		if forwardingManager != nil {
+			_ = forwardingManager.Close()
+		}
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose IPC server: %w", err)
 	}

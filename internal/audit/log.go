@@ -27,12 +27,12 @@ var eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}$`)
 // arbitrary payload field. Terminal data, pairing secrets, grants,
 // credentials, and private keys must never be written to the audit log.
 type Event struct {
-	Time      time.Time `json:"time"`
-	Type      string    `json:"type"`
-	Outcome   string    `json:"outcome"`
-	ActorID   string    `json:"actor_id,omitempty"`
-	PeerID    string    `json:"peer_id,omitempty"`
-	Transport string    `json:"transport,omitempty"`
+	Time         time.Time `json:"time"`
+	Type         string    `json:"type"`
+	Outcome      string    `json:"outcome"`
+	ActorID      string    `json:"actor_id,omitempty"`
+	PeerID       string    `json:"peer_id,omitempty"`
+	Transport    string    `json:"transport,omitempty"`
 	StreamID     uint32    `json:"stream_id,omitempty"`
 	Reason       string    `json:"reason,omitempty"`
 	ForwardingID string    `json:"forwarding_id,omitempty"`
