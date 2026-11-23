@@ -115,6 +115,12 @@ type ReplayStore interface {
 	ConsumePortForwardAuthorization(context.Context, string, time.Time) error
 }
 
+// VerifiedAuthorizationReplayStore consumes the complete capability only after
+// the local verifier has checked its control-plane signature and claims.
+type VerifiedAuthorizationReplayStore interface {
+	ConsumeVerifiedPortForwardAuthorization(context.Context, Authorization) error
+}
+
 type Verifier interface {
 	VerifyAndConsume(context.Context, Authorization) (Claims, error)
 }
@@ -202,8 +208,16 @@ func (v AuthorizationVerifier) VerifyAndConsume(ctx context.Context, auth Author
 	if claims.ExpiresAtUnixMS <= nowMS {
 		return Claims{}, ErrAuthorizationExpired
 	}
-	if err := v.Replay.ConsumePortForwardAuthorization(ctx, claims.JTI, time.UnixMilli(claims.ExpiresAtUnixMS).UTC()); err != nil {
-		return Claims{}, err
+	var replayErr error
+	if bound, ok := v.Replay.(VerifiedAuthorizationReplayStore); ok {
+		verified := cloneAuthorization(auth)
+		verified.Claims = claims
+		replayErr = bound.ConsumeVerifiedPortForwardAuthorization(ctx, verified)
+	} else {
+		replayErr = v.Replay.ConsumePortForwardAuthorization(ctx, claims.JTI, time.UnixMilli(claims.ExpiresAtUnixMS).UTC())
+	}
+	if replayErr != nil {
+		return Claims{}, replayErr
 	}
 	return claims, nil
 }
