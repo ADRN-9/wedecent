@@ -27,6 +27,7 @@ var (
 	ErrListenerAdminRequired = errors.New("portforward: router-administration authorization is required")
 	ErrForwardLimit          = errors.New("portforward: resource limit reached")
 	ErrPermissionDenied      = errors.New("portforward: dedicated forwarding permission denied")
+	ErrPeerNotTrusted        = errors.New("portforward: remote device is not trusted")
 )
 
 type AuditWriter interface{ Append(audit.Event) error }
@@ -55,6 +56,12 @@ type ListenerAuthorizer interface {
 	AuthorizePortForwardListener(context.Context, Claims) error
 }
 
+// PeerTrustChecker reads the persisted endpoint-device trust store. Errors are
+// treated as loss of trust so an unreadable store cannot keep a session alive.
+type PeerTrustChecker interface {
+	IsTrusted(context.Context, string) (bool, error)
+}
+
 type ManagerLimits struct {
 	MaxForwards              int
 	MaxForwardsPerDevice     int
@@ -71,6 +78,8 @@ type ManagerConfig struct {
 	Verifier               Verifier
 	ReplayPath             string
 	AuthorizationPublicKey ed25519.PublicKey
+	TrustChecker           PeerTrustChecker
+	TrustPollInterval      time.Duration
 	PermissionAuthorizer   PermissionAuthorizer
 	Connector              Connector
 	ListenerAuthorizer     ListenerAuthorizer
@@ -95,6 +104,8 @@ type Manager struct {
 	cancel               context.CancelFunc
 	localID              mesh.DeviceID
 	verifier             Verifier
+	trustChecker         PeerTrustChecker
+	trustPollInterval    time.Duration
 	permissionAuthorizer PermissionAuthorizer
 	connector            Connector
 	listenerAuthorizer   ListenerAuthorizer
@@ -159,12 +170,23 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 	if now == nil {
 		now = time.Now
 	}
+	pollInterval := cfg.TrustPollInterval
+	if cfg.TrustChecker != nil {
+		if pollInterval == 0 {
+			pollInterval = 250 * time.Millisecond
+		}
+		if pollInterval < 10*time.Millisecond || pollInterval > 5*time.Second {
+			return nil, ErrManagerConfig
+		}
+	}
 	managerCtx, cancel := context.WithCancel(context.Background())
-	return &Manager{
+	manager := &Manager{
 		ctx:                  managerCtx,
 		cancel:               cancel,
 		localID:              cfg.LocalDeviceID,
 		verifier:             verifier,
+		trustChecker:         cfg.TrustChecker,
+		trustPollInterval:    pollInterval,
 		permissionAuthorizer: cfg.PermissionAuthorizer,
 		connector:            cfg.Connector,
 		listenerAuthorizer:   cfg.ListenerAuthorizer,
@@ -176,7 +198,11 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		reservations:         make(map[string]Claims),
 		forwardCounts:        make(map[mesh.DeviceID]int),
 		deviceConnections:    make(map[mesh.DeviceID]int),
-	}, nil
+	}
+	if manager.trustChecker != nil {
+		go manager.watchTrust()
+	}
+	return manager, nil
 }
 
 func validManagerLimits(l ManagerLimits) bool {
@@ -237,6 +263,16 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	if err := ValidateRouteAuthorizationBinding(auth); err != nil {
 		return ForwardInfo{}, err
 	}
+	if m.trustChecker != nil {
+		peerID := remoteEndpointDevice(claims, m.localID)
+		if peerID == "" {
+			return ForwardInfo{}, ErrAuthorizationMismatch
+		}
+		trusted, trustErr := m.trustChecker.IsTrusted(startCtx, string(peerID))
+		if trustErr != nil || !trusted {
+			return ForwardInfo{}, errors.Join(ErrPeerNotTrusted, trustErr)
+		}
+	}
 	if err := m.permissionAuthorizer.AuthorizePortForward(startCtx, claims); err != nil {
 		if auditErr := m.record(claims, "port_forward.start", "denied", "permission_denied"); auditErr != nil {
 			return ForwardInfo{}, auditErr
@@ -253,6 +289,9 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		return ForwardInfo{}, err
 	}
 
+	if !m.hasReservation(claims.ForwardingID) {
+		return ForwardInfo{}, ErrForwardRevoked
+	}
 	openCtx, cancelOpen := context.WithTimeout(startCtx, m.limits.DialTimeout)
 	forwardSession, openErr := m.connector.Open(openCtx, cloneAuthorization(auth))
 	openCtxErr := openCtx.Err()
@@ -279,6 +318,9 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 			_ = forwardSession.Close()
 		}
 	}()
+	if !m.hasReservation(claims.ForwardingID) {
+		return ForwardInfo{}, ErrForwardRevoked
+	}
 
 	address := net.JoinHostPort(claims.Listener.Address, strconv.Itoa(int(claims.Listener.Port)))
 	listener, err := m.listen("tcp", address)
@@ -467,6 +509,63 @@ func (m *Manager) Close() error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+func remoteEndpointDevice(claims Claims, localID mesh.DeviceID) mesh.DeviceID {
+	if claims.InitiatingDevice == localID {
+		return claims.DestinationDevice
+	}
+	if claims.DestinationDevice == localID {
+		return claims.InitiatingDevice
+	}
+	return ""
+}
+
+func (m *Manager) hasReservation(forwardingID string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.reservations[forwardingID]
+	return ok
+}
+
+func (m *Manager) referencedPeerDevices() []mesh.DeviceID {
+	m.mu.Lock()
+	peers := make(map[mesh.DeviceID]struct{}, len(m.forwards)+len(m.reservations))
+	for _, forward := range m.forwards {
+		if peer := remoteEndpointDevice(forward.claims, m.localID); peer != "" {
+			peers[peer] = struct{}{}
+		}
+	}
+	for _, claims := range m.reservations {
+		if peer := remoteEndpointDevice(claims, m.localID); peer != "" {
+			peers[peer] = struct{}{}
+		}
+	}
+	m.mu.Unlock()
+	result := make([]mesh.DeviceID, 0, len(peers))
+	for peer := range peers {
+		result = append(result, peer)
+	}
+	sort.Slice(result, func(i, j int) bool { return result[i] < result[j] })
+	return result
+}
+
+func (m *Manager) watchTrust() {
+	ticker := time.NewTicker(m.trustPollInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-m.ctx.Done():
+			return
+		case <-ticker.C:
+			for _, peerID := range m.referencedPeerDevices() {
+				trusted, err := m.trustChecker.IsTrusted(m.ctx, string(peerID))
+				if err != nil || !trusted {
+					_, _ = m.RevokeDevice(context.Background(), peerID)
+				}
+			}
+		}
+	}
 }
 
 func (m *Manager) reserveForward(c Claims) error {
