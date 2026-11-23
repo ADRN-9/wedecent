@@ -67,13 +67,19 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 	}
 	tlsConn := tls.Server(raw, identity.ServerTLS(s.Identity))
 	if handshakeTimeout > 0 {
-		_ = tlsConn.SetDeadline(time.Now().Add(handshakeTimeout))
+		if err := tlsConn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			s.log().Warn("TLS handshake deadline could not be set", "remote", raw.RemoteAddr(), "error", err)
+			return
+		}
 	}
 	if err := tlsConn.Handshake(); err != nil {
 		s.log().Warn("TLS handshake failed", "remote", raw.RemoteAddr(), "error", err)
 		return
 	}
-	_ = tlsConn.SetDeadline(time.Time{})
+	if err := tlsConn.SetDeadline(time.Time{}); err != nil {
+		s.log().Warn("TLS handshake deadline could not be cleared", "remote", raw.RemoteAddr(), "error", err)
+		return
+	}
 	first, err := protocol.ReadFrame(tlsConn)
 	if err != nil {
 		return
