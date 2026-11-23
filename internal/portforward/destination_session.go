@@ -275,6 +275,20 @@ func (c *destinationChildConn) Close() error {
 	return c.closeErr
 }
 
+func (c *destinationChildConn) CloseWrite() error {
+	if writer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return writer.CloseWrite()
+	}
+	return c.Close()
+}
+
+func (c *destinationChildConn) CloseRead() error {
+	if reader, ok := c.Conn.(interface{ CloseRead() error }); ok {
+		return reader.CloseRead()
+	}
+	return c.Close()
+}
+
 func destinationAuditEvent(claims Claims, localID, peerID mesh.DeviceID, eventType, outcome, reason string) audit.Event {
 	return audit.Event{
 		Type:         eventType,
