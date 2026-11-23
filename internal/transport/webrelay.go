@@ -365,7 +365,20 @@ func (c *wsNetConn) Abort() error {
 		close(c.done)
 	}
 	c.closeMu.Unlock()
-	return c.raw.Close()
+	return abortUnderlyingConn(c.raw)
+}
+
+func abortUnderlyingConn(conn net.Conn) error {
+	if conn == nil {
+		return nil
+	}
+	if aborter, ok := conn.(interface{ Abort() error }); ok {
+		return aborter.Abort()
+	}
+	if unwrapped, ok := conn.(interface{ NetConn() net.Conn }); ok {
+		return abortUnderlyingConn(unwrapped.NetConn())
+	}
+	return conn.Close()
 }
 
 func (c *wsNetConn) LocalAddr() net.Addr                { return c.raw.LocalAddr() }

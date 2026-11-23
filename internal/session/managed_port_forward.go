@@ -31,11 +31,20 @@ func abortTLSConn(conn *tls.Conn) error {
 	if conn == nil {
 		return nil
 	}
-	raw := conn.NetConn()
-	if aborter, ok := raw.(transportAborter); ok {
+	return abortNetConn(conn.NetConn())
+}
+
+func abortNetConn(conn net.Conn) error {
+	if conn == nil {
+		return nil
+	}
+	if aborter, ok := conn.(transportAborter); ok {
 		return aborter.Abort()
 	}
-	return raw.Close()
+	if unwrapped, ok := conn.(interface{ NetConn() net.Conn }); ok {
+		return abortNetConn(unwrapped.NetConn())
+	}
+	return conn.Close()
 }
 
 type managedPortForwardState struct {

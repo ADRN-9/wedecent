@@ -331,6 +331,14 @@ type webRelaySignalWriteConn struct {
 	once    sync.Once
 }
 
+type webRelayWrappedNetConn struct {
+	net.Conn
+}
+
+func (c *webRelayWrappedNetConn) NetConn() net.Conn {
+	return c.Conn
+}
+
 func (c *webRelaySignalWriteConn) Write(p []byte) (int, error) {
 	c.once.Do(func() { close(c.started) })
 	return c.Conn.Write(p)
@@ -338,7 +346,7 @@ func (c *webRelaySignalWriteConn) Write(p []byte) (int, error) {
 
 func TestWebSocketTransportAbortInterruptsBlockedWrite(t *testing.T) {
 	local, peer := net.Pipe()
-	raw := &webRelaySignalWriteConn{Conn: local, started: make(chan struct{})}
+	raw := &webRelaySignalWriteConn{Conn: &webRelayWrappedNetConn{Conn: local}, started: make(chan struct{})}
 	conn := &wsNetConn{raw: raw, br: bufio.NewReader(raw), done: make(chan struct{})}
 	writeDone := make(chan error, 1)
 	go func() {
