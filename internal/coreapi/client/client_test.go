@@ -240,3 +240,117 @@ func TestClientRejectsExcessiveTimeout(t *testing.T) {
 		t.Fatalf("error = %v, want invalid config", err)
 	}
 }
+
+
+func TestClientPortForwardMethodsUseLocalCore(t *testing.T) {
+	status := v1.PortForwardStatus{
+		ID: "forward-1", ListenerAddress: "127.0.0.1:43123",
+		DestinationAddress: "example.com", DestinationPort: 443, ActiveConnections: 2,
+	}
+	dialer := &scriptedDialer{t: t, handlers: []func(net.Conn){
+		func(conn net.Conn) {
+			req, err := ipc.ReadRequest(conn)
+			if err != nil {
+				t.Errorf("read start request: %v", err)
+				return
+			}
+			if req.Method != v1.MethodPortForwardStart {
+				t.Errorf("start method = %q", req.Method)
+			}
+			var params v1.PortForwardStartRequest
+			if err := ipc.DecodeParams(req.Params, &params); err != nil {
+				t.Errorf("decode start params: %v", err)
+				return
+			}
+			result, _ := ipc.MarshalResult(status)
+			_ = ipc.WriteResponse(conn, ipc.Response{Version: v1.Version, ID: req.ID, Result: result})
+		},
+		func(conn net.Conn) {
+			req, err := ipc.ReadRequest(conn)
+			if err != nil {
+				t.Errorf("read stop request: %v", err)
+				return
+			}
+			if req.Method != v1.MethodPortForwardStop {
+				t.Errorf("stop method = %q", req.Method)
+			}
+			var params v1.PortForwardStopRequest
+			if err := ipc.DecodeParams(req.Params, &params); err != nil {
+				t.Errorf("decode stop params: %v", err)
+				return
+			}
+			if params.ForwardingID != status.ID {
+				t.Errorf("stop forwarding ID = %q", params.ForwardingID)
+			}
+			result, _ := ipc.MarshalResult(nil)
+			_ = ipc.WriteResponse(conn, ipc.Response{Version: v1.Version, ID: req.ID, Result: result})
+		},
+		func(conn net.Conn) {
+			req, err := ipc.ReadRequest(conn)
+			if err != nil {
+				t.Errorf("read status request: %v", err)
+				return
+			}
+			if req.Method != v1.MethodPortForwardStatus {
+				t.Errorf("status method = %q", req.Method)
+			}
+			var params v1.PortForwardStatusRequest
+			if err := ipc.DecodeParams(req.Params, &params); err != nil {
+				t.Errorf("decode status params: %v", err)
+				return
+			}
+			if params.ForwardingID != status.ID {
+				t.Errorf("status forwarding ID = %q", params.ForwardingID)
+			}
+			result, _ := ipc.MarshalResult(status)
+			_ = ipc.WriteResponse(conn, ipc.Response{Version: v1.Version, ID: req.ID, Result: result})
+		},
+		func(conn net.Conn) {
+			req, err := ipc.ReadRequest(conn)
+			if err != nil {
+				t.Errorf("read list request: %v", err)
+				return
+			}
+			if req.Method != v1.MethodPortForwardList || len(req.Params) != 0 {
+				t.Errorf("list request = %#v", req)
+			}
+			result, _ := ipc.MarshalResult([]v1.PortForwardStatus{status})
+			_ = ipc.WriteResponse(conn, ipc.Response{Version: v1.Version, ID: req.ID, Result: result})
+		},
+	}}
+	client, err := New(Config{
+		Dial: dialer.Dial, Timeout: time.Second,
+		Random: bytes.NewReader(bytes.Repeat([]byte{0x7a}, 72)),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started, err := client.StartPortForward(context.Background(), v1.PortForwardStartRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if started != status {
+		t.Fatalf("started status = %#v, want %#v", started, status)
+	}
+	if err := client.StopPortForward(context.Background(), v1.PortForwardStopRequest{ForwardingID: status.ID}); err != nil {
+		t.Fatal(err)
+	}
+	gotStatus, err := client.GetPortForwardStatus(context.Background(), v1.PortForwardStatusRequest{ForwardingID: status.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotStatus != status {
+		t.Fatalf("status = %#v, want %#v", gotStatus, status)
+	}
+	gotList, err := client.ListPortForwards(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotList) != 1 || gotList[0] != status {
+		t.Fatalf("list = %#v, want one status %#v", gotList, status)
+	}
+	if dialer.callCount() != 4 {
+		t.Fatalf("dial calls = %d, want 4", dialer.callCount())
+	}
+}
