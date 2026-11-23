@@ -365,6 +365,19 @@ func (c *wsNetConn) Close() error {
 	return c.raw.Close()
 }
 
+// Abort closes the underlying socket without waiting for the WebSocket writer
+// lock or attempting a close control frame. It is used for forced session
+// teardown when a TLS write may be blocked inside this transport.
+func (c *wsNetConn) Abort() error {
+	c.closeMu.Lock()
+	if !c.closed {
+		c.closed = true
+		close(c.done)
+	}
+	c.closeMu.Unlock()
+	return c.raw.Close()
+}
+
 func (c *wsNetConn) LocalAddr() net.Addr                { return c.raw.LocalAddr() }
 func (c *wsNetConn) RemoteAddr() net.Addr               { return c.raw.RemoteAddr() }
 func (c *wsNetConn) SetDeadline(t time.Time) error      { return c.raw.SetDeadline(t) }

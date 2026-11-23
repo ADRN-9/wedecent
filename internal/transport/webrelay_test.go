@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -321,4 +322,44 @@ func writeServerBinaryFrame(w io.Writer, payload []byte) error {
 	}
 	_, err := w.Write(append([]byte{0x82, byte(len(payload))}, payload...))
 	return err
+}
+
+
+type webRelaySignalWriteConn struct {
+	net.Conn
+	started chan struct{}
+	once    sync.Once
+}
+
+func (c *webRelaySignalWriteConn) Write(p []byte) (int, error) {
+	c.once.Do(func() { close(c.started) })
+	return c.Conn.Write(p)
+}
+
+func TestWebSocketTransportAbortInterruptsBlockedWrite(t *testing.T) {
+	local, peer := net.Pipe()
+	raw := &webRelaySignalWriteConn{Conn: local, started: make(chan struct{})}
+	conn := &wsNetConn{raw: raw, br: bufio.NewReader(raw), done: make(chan struct{})}
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := conn.Write([]byte("blocked"))
+		writeDone <- err
+	}()
+	select {
+	case <-raw.started:
+	case <-time.After(time.Second):
+		t.Fatal("WebSocket writer did not reach the underlying connection")
+	}
+	if err := conn.Abort(); err != nil {
+		t.Fatalf("abort failed: %v", err)
+	}
+	select {
+	case err := <-writeDone:
+		if err == nil {
+			t.Fatal("blocked WebSocket write succeeded after transport abort")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("transport abort did not interrupt the blocked WebSocket write")
+	}
+	_ = peer.Close()
 }

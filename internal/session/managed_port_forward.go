@@ -21,6 +21,23 @@ const (
 	managedPortForwardWriteTimeout = 5 * time.Second
 )
 
+type transportAborter interface {
+	Abort() error
+}
+
+// abortTLSConn bypasses transport-level graceful close frames so a blocked
+// writer cannot prevent the underlying connection from being interrupted.
+func abortTLSConn(conn *tls.Conn) error {
+	if conn == nil {
+		return nil
+	}
+	raw := conn.NetConn()
+	if aborter, ok := raw.(transportAborter); ok {
+		return aborter.Abort()
+	}
+	return raw.Close()
+}
+
 type managedPortForwardState struct {
 	id     uint32
 	parent bool
@@ -568,7 +585,7 @@ func (s *ManagedPortForwardSession) writeFrameContext(ctx context.Context, frame
 	}
 	stopCancel := context.AfterFunc(ctx, func() {
 		// A canceled write may have emitted a partial frame; discard the parent.
-		_ = s.conn.NetConn().Close()
+		_ = abortTLSConn(s.conn)
 	})
 	writeErr := protocol.WriteFrame(s.conn, frame)
 	stopCancel()
@@ -588,7 +605,7 @@ func (s *ManagedPortForwardSession) finish() error {
 	s.closeOnce.Do(func() {
 		close(s.done)
 		// Close the parent transport before waiting for child state cleanup.
-		connErr := s.conn.NetConn().Close()
+		connErr := abortTLSConn(s.conn)
 		s.mu.Lock()
 		states := make([]*managedPortForwardState, 0, len(s.states))
 		for _, state := range s.states {

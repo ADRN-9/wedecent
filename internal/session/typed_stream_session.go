@@ -48,14 +48,14 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		}
 		if err := conn.SetWriteDeadline(deadline); err != nil {
 			cancelSession()
-			_ = conn.NetConn().Close()
+			_ = abortTLSConn(conn)
 			return err
 		}
 		writeErr := protocol.WriteFrame(conn, frame)
 		resetErr := conn.SetWriteDeadline(time.Time{})
 		if err := errors.Join(writeErr, resetErr); err != nil {
 			cancelSession()
-			_ = conn.NetConn().Close()
+			_ = abortTLSConn(conn)
 			return err
 		}
 		return nil
@@ -65,7 +65,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 	}
 	if err := writeFrameWithContext(context.Background(), accepted); err != nil {
 		cancelSession()
-		_ = conn.NetConn().Close()
+		_ = abortTLSConn(conn)
 		return
 	}
 
@@ -122,7 +122,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 	}
 	defer func() {
 		cancelSession()
-		_ = conn.NetConn().Close()
+		_ = abortTLSConn(conn)
 		var cleanupErrs []error
 		if forwardServer != nil {
 			if err := forwardServer.CloseAll(); err != nil {
@@ -148,7 +148,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 			frame, err := protocol.ReadFrame(conn)
 			if err != nil {
 				cancelSession()
-				_ = conn.NetConn().Close()
+				_ = abortTLSConn(conn)
 				select {
 				case readErrCh <- err:
 				case <-done:
@@ -178,7 +178,7 @@ func (s *Server) handleTypedTerminalSession(conn *tls.Conn, peerID, peerName, tr
 		defer cancelWrite()
 		if err := writeFrameWithContext(writeCtx, protocol.Frame{Type: protocol.TypeClose, Payload: mustJSON(protocol.Close{ExitCode: sessionPolicyExitCode, Reason: reason})}); err != nil {
 			s.log().Warn("typed session close frame failed", "peer_id", peerID, "error", err)
-			_ = conn.NetConn().Close()
+			_ = abortTLSConn(conn)
 			return
 		}
 		waitForPeerClose(frameCh, readErrCh, 2*time.Second)
