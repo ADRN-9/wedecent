@@ -134,6 +134,16 @@ begin
             using errcode = '55000';
     end if;
 
+    if exists (
+        select 1
+          from public.port_forward_replay_entries as future_entry
+         where future_entry.device_id = p_device_id
+           and future_entry.generation > authority.generation
+    ) then
+        raise exception 'port-forward replay authority state integrity mismatch'
+            using errcode = '55000';
+    end if;
+
     if authority.generation = 0 then
         if authority.state_hash <> initial_hash
            or exists (

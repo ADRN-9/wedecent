@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(16);
+select plan(17);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -106,20 +106,52 @@ select ok(
 );
 
 update public.port_forward_replay_authority
-   set state_hash = pg_catalog.decode(repeat('00', 32), 'hex')
+   set generation = 1,
+       state_hash = (
+           select state_hash
+             from public.port_forward_replay_entries
+            where device_id = 'wd_aaaaaaaaaaaaaaaa'
+              and generation = 1
+       )
  where device_id = 'wd_aaaaaaaaaaaaaaaa';
 select throws_ok(
-    $$
+    $
     select public.consume_port_forward_authorization(
         'wd_aaaaaaaaaaaaaaaa',
         'CCCCCCCCCCCCCCCCCCCCCC',
         pg_catalog.clock_timestamp() + interval '60 seconds',
         pg_catalog.decode(repeat('33', 32), 'hex')
     )
-    $$,
+    $,
     '55000',
     'port-forward replay authority state integrity mismatch',
-    'corrupt or mismatched authority state fails closed'
+    'restoring a matching older authority generation is detected by the append-only ledger'
+);
+
+update public.port_forward_replay_authority
+   set generation = 2,
+       state_hash = (
+           select state_hash
+             from public.port_forward_replay_entries
+            where device_id = 'wd_aaaaaaaaaaaaaaaa'
+              and generation = 2
+       )
+ where device_id = 'wd_aaaaaaaaaaaaaaaa';
+update public.port_forward_replay_authority
+   set state_hash = pg_catalog.decode(repeat('00', 32), 'hex')
+ where device_id = 'wd_aaaaaaaaaaaaaaaa';
+select throws_ok(
+    $
+    select public.consume_port_forward_authorization(
+        'wd_aaaaaaaaaaaaaaaa',
+        'EEEEEEEEEEEEEEEEEEEEEE',
+        pg_catalog.clock_timestamp() + interval '60 seconds',
+        pg_catalog.decode(repeat('55', 32), 'hex')
+    )
+    $,
+    '55000',
+    'port-forward replay authority state integrity mismatch',
+    'corrupt or mismatched authority hash fails closed'
 );
 
 update public.devices
