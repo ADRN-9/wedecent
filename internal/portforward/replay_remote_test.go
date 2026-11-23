@@ -173,7 +173,7 @@ func TestRemoteReplayRejectsJTIAfterPairedLocalSnapshotAnchorRollback(t *testing
 	}
 	authorizationA := makeAuthorization("replayauth000001")
 	authorizationB := makeAuthorization("replayauth000002")
-	if _, err := AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}.VerifyAndConsume(context.Background(), authorizationA); err != nil {
+	if _, err := (AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}).VerifyAndConsume(context.Background(), authorizationA); err != nil {
 		t.Fatalf("consume A through independent authority: %v", err)
 	}
 
@@ -194,7 +194,7 @@ func TestRemoteReplayRejectsJTIAfterPairedLocalSnapshotAnchorRollback(t *testing
 		t.Fatal(err)
 	}
 
-	if _, err := AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}.VerifyAndConsume(context.Background(), authorizationB); err != nil {
+	if _, err := (AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}).VerifyAndConsume(context.Background(), authorizationB); err != nil {
 		t.Fatalf("consume B through independent authority: %v", err)
 	}
 	if err := local.ConsumePortForwardAuthorization(context.Background(), authorizationB.Claims.JTI, time.UnixMilli(authorizationB.Claims.ExpiresAtUnixMS)); err != nil {
@@ -211,7 +211,7 @@ func TestRemoteReplayRejectsJTIAfterPairedLocalSnapshotAnchorRollback(t *testing
 	if err := local.ConsumePortForwardAuthorization(context.Background(), authorizationB.Claims.JTI, time.UnixMilli(authorizationB.Claims.ExpiresAtUnixMS)); err != nil {
 		t.Fatalf("historical file store should demonstrate paired rollback acceptance: %v", err)
 	}
-	if _, err := AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}.VerifyAndConsume(context.Background(), authorizationB); !errors.Is(err, ErrAuthorizationReplay) {
+	if _, err := (AuthorizationVerifier{PublicKey: controlPublic, Replay: remote, Now: func() time.Time { return now }}).VerifyAndConsume(context.Background(), authorizationB); !errors.Is(err, ErrAuthorizationReplay) {
 		t.Fatalf("independent authority accepted B after paired local rollback: %v", err)
 	}
 }
