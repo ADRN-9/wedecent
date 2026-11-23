@@ -285,6 +285,12 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 		_ = listener.Close()
 		return ForwardInfo{}, err
 	}
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		cancel()
+		_ = listener.Close()
+		return ForwardInfo{}, err
+	}
 	delete(m.reservations, claims.ForwardingID)
 	m.forwards[claims.ForwardingID] = f
 	m.mu.Unlock()
@@ -352,7 +358,7 @@ func (m *Manager) RevokeDevice(ctx context.Context, deviceID mesh.DeviceID) (int
 		}
 	}
 	for _, id := range ids {
-		if err := m.Stop(ctx, id); err != nil {
+		if err := m.Stop(context.Background(), id); err != nil {
 			errs = append(errs, err)
 		}
 	}
