@@ -209,7 +209,7 @@ func openReplayLockFile(lockPath string) (*os.File, bool, error) {
 	return file, true, nil
 }
 
-func lockReplayFile(path string) (func(), bool, error) {
+func lockReplayFileOS(path string) (func(), bool, error) {
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
 		return nil, false, err

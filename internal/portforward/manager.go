@@ -1097,6 +1097,9 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 			auditReason = "forward_cleanup_failed"
 		}
 		auditErr := m.record(f.claims, "port_forward.stopped", outcome, auditReason)
+		if errors.Is(sessionErr, context.Canceled) {
+			sessionErr = nil
+		}
 		f.stopErr = errors.Join(errors.Join(cleanupErrs...), sessionErr, auditErr)
 		if !f.acceptStarted {
 			f.doneOnce.Do(func() { close(f.done) })
