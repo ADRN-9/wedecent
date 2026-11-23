@@ -3,13 +3,14 @@ package session
 import (
 	"context"
 	"crypto/ed25519"
-	"crypto/tls"
 	"crypto/rand"
+	"crypto/tls"
 	"errors"
 	"io"
 	"net"
 	"net/netip"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 

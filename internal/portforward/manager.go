@@ -174,6 +174,7 @@ type activeForward struct {
 	stopDone        chan struct{}
 	stopOnce        sync.Once
 	doneOnce        sync.Once
+	acceptStarted   bool
 	stopErr         error
 	children        map[uint64]*activeChild
 }
@@ -457,14 +458,15 @@ func (m *Manager) Start(ctx context.Context, auth Authorization) (ForwardInfo, e
 	reserved = false
 	if err := m.record(claims, "port_forward.started", "success", ""); err != nil {
 		f.lifecycleMu.Unlock()
-		_ = m.terminate(f, "audit_persistence_failed")
-		return ForwardInfo{}, err
+		cleanupErr := m.terminate(f, "audit_persistence_failed")
+		return ForwardInfo{}, errors.Join(err, cleanupErr)
 	}
 	if err := startCtx.Err(); err != nil {
 		f.lifecycleMu.Unlock()
-		_ = m.terminate(f, "start_cancelled")
-		return ForwardInfo{}, err
+		cleanupErr := m.terminate(f, "start_cancelled")
+		return ForwardInfo{}, errors.Join(err, cleanupErr)
 	}
+	f.acceptStarted = true
 	go m.acceptLoop(f)
 	f.lifecycleMu.Unlock()
 	return m.info(f), nil
@@ -979,7 +981,9 @@ func (m *Manager) terminate(f *activeForward, reason string) error {
 		}
 		auditErr := m.record(f.claims, "port_forward.stopped", outcome, auditReason)
 		f.stopErr = errors.Join(errors.Join(cleanupErrs...), sessionErr, auditErr)
-		f.doneOnce.Do(func() { close(f.done) })
+		if !f.acceptStarted {
+			f.doneOnce.Do(func() { close(f.done) })
+		}
 		close(f.stopDone)
 	})
 	f.lifecycleMu.Unlock()
