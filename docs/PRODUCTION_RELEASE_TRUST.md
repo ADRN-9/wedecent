@@ -106,7 +106,7 @@ The publication runner uses the `self-hosted, linux, wedecent-release-publisher`
 - `WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER`
 - `WEDECENT_UPDATE_PUBLIC_KEY_PATH`
 
-The immutable-object uploader must perform atomic create-only writes. The stable-pair publisher must compare both current object digests and atomically replace the manifest/signature pair or leave both objects unchanged. The stable update private key must remain in an HSM/KMS or equivalent protected signer; only the public key is supplied to the verifier. The stable sequence is the workflow run number and the timestamp is the workflow run start time.
+The immutable-object uploader must perform atomic create-only writes. The stable-pair publisher must compare both current object digests and atomically replace the manifest/signature pair or leave both objects unchanged. The stable update private key must remain in an HSM/KMS or equivalent protected signer; only the public key is supplied to the verifier. The stable sequence is the workflow run number; the publication timestamp is generated in UTC immediately before the stable-manifest publication step.
 
 The workflow references GitHub environments but cannot inspect or enforce their reviewer configuration. A missing or unprotected environment, missing tag ruleset, missing self-hosted runner, missing adapter, missing trust anchor, or missing credential must block the corresponding gate; do not bypass it or replace it with a caller-supplied marker.
 
