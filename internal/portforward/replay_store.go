@@ -20,8 +20,8 @@ import (
 const (
 	replayStoreVersion       = 2
 	legacyReplayStoreVersion = 1
-	maxReplayStoreSize = 16 << 20
-	defaultReplayLimit = 100000
+	maxReplayStoreSize       = 16 << 20
+	defaultReplayLimit       = 100000
 )
 
 type replaySnapshot struct {
