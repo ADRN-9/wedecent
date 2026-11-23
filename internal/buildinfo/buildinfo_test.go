@@ -9,8 +9,10 @@ import (
 
 func TestCurrentNormalizesEmptyInjectedValues(t *testing.T) {
 	oldVersion, oldCommit, oldBuiltAt := Version, Commit, BuiltAt
+	oldHostname, oldPins := ReplayAuthorityHostname, ReplayAuthoritySPKISHA256
 	t.Cleanup(func() {
 		Version, Commit, BuiltAt = oldVersion, oldCommit, oldBuiltAt
+		ReplayAuthorityHostname, ReplayAuthoritySPKISHA256 = oldHostname, oldPins
 	})
 
 	Version, Commit, BuiltAt = "", " ", "\t"
@@ -50,5 +52,23 @@ func TestWriteIncludesReleaseMetadata(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Fatalf("output %q does not contain %q", out.String(), want)
 		}
+	}
+}
+
+func TestWriteReleaseTrustIncludesEmbeddedAnchors(t *testing.T) {
+	oldHostname, oldPins := ReplayAuthorityHostname, ReplayAuthoritySPKISHA256
+	t.Cleanup(func() {
+		ReplayAuthorityHostname, ReplayAuthoritySPKISHA256 = oldHostname, oldPins
+	})
+	ReplayAuthorityHostname = "replay.example.test"
+	ReplayAuthoritySPKISHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+	var out bytes.Buffer
+	if err := WriteReleaseTrust(&out); err != nil {
+		t.Fatal(err)
+	}
+	want := "hostname=replay.example.test\nspki_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+	if out.String() != want {
+		t.Fatalf("release trust output = %q, want %q", out.String(), want)
 	}
 }

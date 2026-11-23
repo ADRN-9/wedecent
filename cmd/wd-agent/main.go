@@ -50,6 +50,8 @@ func main() {
 		err = runIdentity(os.Args[2:])
 	case "version":
 		err = buildinfo.Write(os.Stdout, "wd-agent")
+	case "release-trust":
+		err = buildinfo.WriteReleaseTrust(os.Stdout)
 	case "enrollment-proof":
 		err = runEnrollmentProof(os.Args[2:])
 	case "service":

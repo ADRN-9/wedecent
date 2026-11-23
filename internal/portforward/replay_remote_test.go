@@ -25,6 +25,7 @@ import (
 	"testing"
 	"time"
 
+	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
 )
@@ -108,7 +109,7 @@ func verifyRemoteReplayTestRequest(t *testing.T, request remoteReplayTestRequest
 }
 
 func TestProductionRemoteReplayRequiresEmbeddedTrustAnchors(t *testing.T) {
-	if strings.TrimSpace(replayAuthorityHostname) != "" && strings.TrimSpace(replayAuthoritySPKISHA256) != "" {
+	if strings.TrimSpace(buildinfo.ReplayAuthorityHostname) != "" && strings.TrimSpace(buildinfo.ReplayAuthoritySPKISHA256) != "" {
 		t.Skip("release build supplies embedded replay authority trust anchors")
 	}
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)

@@ -21,6 +21,17 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "release-trust" {
+		if len(os.Args) != 2 {
+			fmt.Fprintln(os.Stderr, "wd-core: release-trust takes no arguments")
+			os.Exit(2)
+		}
+		if err := buildinfo.WriteReleaseTrust(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "wd-core:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "version" {
 		if err := buildinfo.Write(os.Stdout, "wd-core"); err != nil {
 			fmt.Fprintln(os.Stderr, "wd-core:", err)

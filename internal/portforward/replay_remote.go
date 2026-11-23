@@ -22,6 +22,7 @@ import (
 	"strings"
 	"time"
 
+	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
 )
@@ -56,13 +57,6 @@ type remoteReplayResponse struct {
 	StateHash  string `json:"state_hash"`
 }
 
-// replayAuthorityHostname and replayAuthoritySPKISHA256 are release trust anchors.
-// Set them with Go linker -X flags; service configuration cannot change them.
-var (
-	replayAuthorityHostname   string
-	replayAuthoritySPKISHA256 string
-)
-
 const remoteReplayFunctionPath = "/functions/v1/port-forward-replay"
 
 // NewRemoteReplay is an unpinned constructor for isolated tests and development.
@@ -75,8 +69,8 @@ func NewRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer cry
 // The endpoint URL may select no authority other than that independently trusted
 // host on port 443 and the fixed replay function path.
 func NewProductionRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer crypto.Signer) (*RemoteReplay, error) {
-	hostname := strings.TrimSpace(replayAuthorityHostname)
-	pins := strings.TrimSpace(replayAuthoritySPKISHA256)
+	hostname := strings.TrimSpace(buildinfo.ReplayAuthorityHostname)
+	pins := strings.TrimSpace(buildinfo.ReplayAuthoritySPKISHA256)
 	if hostname == "" || pins == "" {
 		return nil, fmt.Errorf("%w: replay authority hostname and SPKI pins are not embedded in this build", ErrReplayUnavailable)
 	}
