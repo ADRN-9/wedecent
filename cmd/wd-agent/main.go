@@ -277,6 +277,11 @@ type serveConfig struct {
 	RouteTunnelListenAddr     string
 	RouteTunnelTransport      string
 	RouteMaxConnections       int
+	PortForwardAuthorizationPublicKey string
+	PortForwardAllowedPorts string
+	PortForwardAllowedPrivateCIDRs string
+	PortForwardAllowPublic bool
+	PortForwardMaxConnections int
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
@@ -443,12 +448,48 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		defaultRouteMaxConnections,
 		"maximum concurrent accepted connections per routing listener",
 	)
+	fs.StringVar(
+		&cfg.PortForwardAuthorizationPublicKey,
+		"port-forward-authorization-public-key",
+		"",
+		"path to the trusted Ed25519 public key used to verify forwarding capabilities",
+	)
+	fs.StringVar(
+		&cfg.PortForwardAllowedPorts,
+		"port-forward-allowed-ports",
+		"",
+		"comma-separated allowed TCP ports or ranges, e.g. 22,443,8000-8100",
+	)
+	fs.StringVar(
+		&cfg.PortForwardAllowedPrivateCIDRs,
+		"port-forward-allowed-private-cidrs",
+		"",
+		"comma-separated private destination CIDRs; empty denies private destinations",
+	)
+	fs.BoolVar(
+		&cfg.PortForwardAllowPublic,
+		"port-forward-allow-public",
+		false,
+		"allow globally routable destination addresses (metadata and reserved ranges remain denied)",
+	)
+	fs.IntVar(
+		&cfg.PortForwardMaxConnections,
+		"port-forward-max-connections",
+		0,
+		"maximum concurrent destination child connections (default 16 when enabled; maximum 64)",
+	)
 
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
 
 	cfg.FileTransferRoot = strings.TrimSpace(cfg.FileTransferRoot)
+	cfg.PortForwardAuthorizationPublicKey = strings.TrimSpace(cfg.PortForwardAuthorizationPublicKey)
+	cfg.PortForwardAllowedPorts = strings.TrimSpace(cfg.PortForwardAllowedPorts)
+	cfg.PortForwardAllowedPrivateCIDRs = strings.TrimSpace(cfg.PortForwardAllowedPrivateCIDRs)
+	if cfg.PortForwardAuthorizationPublicKey != "" && cfg.PortForwardMaxConnections == 0 {
+		cfg.PortForwardMaxConnections = 16
+	}
 	cfg.RouteControlListenAddr = strings.TrimSpace(
 		cfg.RouteControlListenAddr,
 	)
@@ -502,6 +543,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		return serveConfig{}, fmt.Errorf("session policy: %w", err)
 	}
 	if err := cfg.validateFileTransfer(); err != nil {
+		return serveConfig{}, err
+	}
+	if err := cfg.validatePortForward(); err != nil {
 		return serveConfig{}, err
 	}
 
@@ -592,6 +636,14 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		defer fileTransferRuntime.Store.Close()
 	}
 
+	portForwardRuntime, err := openAgentPortForwardRuntime(cfg, id, store)
+	if err != nil {
+		return err
+	}
+	if portForwardRuntime != nil && directAuthorizer == nil {
+		return errors.New("destination port forwarding requires --authorization-url or --web-relay for the authenticated endpoint session")
+	}
+
 	server := &session.Server{
 		Identity:         id,
 		Trust:            store,
@@ -600,6 +652,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		Logger:           slog.Default(),
 		DirectAuthorizer: directAuthorizer,
 		FileTransfer:     fileTransferRuntime,
+		PortForwarding:   portForwardRuntime,
 		Policy:           cfg.sessionPolicy(),
 	}
 
