@@ -30,7 +30,6 @@ func secureReplayDirectory(path string) error {
 		return fmt.Errorf("replay directory permissions must be exactly 0700")
 	}
 	return nil
-	return nil
 }
 
 func secureReplayFile(path string) error {

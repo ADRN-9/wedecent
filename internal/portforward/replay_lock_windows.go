@@ -107,8 +107,9 @@ func verifyReplayACL(path string) error {
 			return fmt.Errorf("replay object DACL is malformed")
 		}
 		fields := strings.Split(section[open+1:open+1+close], ";")
+		ace := section[open+1 : open+1+close]
 		if len(fields) != 6 || fields[0] != "A" || !allowed[fields[5]] {
-			return fmt.Errorf("replay object DACL grants access outside the current user, SYSTEM and Administrators")
+			return fmt.Errorf("replay object DACL grants access outside the current user, SYSTEM and Administrators (ACE %q; DACL %q)", ace, sd.String())
 		}
 		aceCount++
 		section = section[open+close+2:]
