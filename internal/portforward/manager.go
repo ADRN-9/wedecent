@@ -2,6 +2,7 @@ package portforward
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"io"
@@ -60,6 +61,8 @@ type ManagerLimits struct {
 type ManagerConfig struct {
 	LocalDeviceID        mesh.DeviceID
 	Verifier             Verifier
+	ReplayPath           string
+	AuthorizationPublicKey ed25519.PublicKey
 	PermissionAuthorizer PermissionAuthorizer
 	Connector            Connector
 	ListenerAuthorizer   ListenerAuthorizer
@@ -129,7 +132,15 @@ type activeChild struct {
 }
 
 func NewManager(cfg ManagerConfig) (*Manager, error) {
-	if !deviceIDPattern.MatchString(string(cfg.LocalDeviceID)) || cfg.Verifier == nil || cfg.PermissionAuthorizer == nil || cfg.Connector == nil || cfg.Audit == nil || !validManagerLimits(cfg.Limits) {
+	verifier := cfg.Verifier
+	if verifier == nil && cfg.ReplayPath != "" && len(cfg.AuthorizationPublicKey) == ed25519.PublicKeySize {
+		persistentVerifier, err := NewPersistentAuthorizationVerifier(cfg.ReplayPath, cfg.LocalDeviceID, cfg.AuthorizationPublicKey)
+		if err != nil {
+			return nil, ErrManagerConfig
+		}
+		verifier = persistentVerifier
+	}
+	if !deviceIDPattern.MatchString(string(cfg.LocalDeviceID)) || verifier == nil || cfg.PermissionAuthorizer == nil || cfg.Connector == nil || cfg.Audit == nil || !validManagerLimits(cfg.Limits) {
 		return nil, ErrManagerConfig
 	}
 	listen := cfg.Listen
@@ -145,7 +156,7 @@ func NewManager(cfg ManagerConfig) (*Manager, error) {
 		ctx:                  managerCtx,
 		cancel:               cancel,
 		localID:              cfg.LocalDeviceID,
-		verifier:             cfg.Verifier,
+		verifier:             verifier,
 		permissionAuthorizer: cfg.PermissionAuthorizer,
 		connector:            cfg.Connector,
 		listenerAuthorizer:   cfg.ListenerAuthorizer,
