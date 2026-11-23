@@ -36,6 +36,11 @@ type serveFileConfig struct {
 	RouteTunnelListenAddr  *string `json:"route_tunnel_listen"`
 	RouteTunnelTransport   *string `json:"route_tunnel_transport"`
 	RouteMaxConnections    *int    `json:"route_max_connections"`
+	PortForwardAuthorizationPublicKey *string `json:"port_forward_authorization_public_key"`
+	PortForwardAllowedPorts *string `json:"port_forward_allowed_ports"`
+	PortForwardAllowedPrivateCIDRs *string `json:"port_forward_allowed_private_cidrs"`
+	PortForwardAllowPublic *bool `json:"port_forward_allow_public"`
+	PortForwardMaxConnections *int `json:"port_forward_max_connections"`
 }
 
 func init() {
@@ -157,7 +162,7 @@ func loadServeConfigArgs(path string) ([]string, error) {
 }
 
 func (cfg serveFileConfig) flagArgs() []string {
-	args := make([]string, 0, 21)
+	args := make([]string, 0, 26)
 	addString := func(name string, value *string) {
 		if value != nil {
 			args = append(args, "--"+name+"="+*value)
@@ -195,5 +200,10 @@ func (cfg serveFileConfig) flagArgs() []string {
 	addString("route-tunnel-listen", cfg.RouteTunnelListenAddr)
 	addString("route-tunnel-transport", cfg.RouteTunnelTransport)
 	addInt("route-max-connections", cfg.RouteMaxConnections)
+	addString("port-forward-authorization-public-key", cfg.PortForwardAuthorizationPublicKey)
+	addString("port-forward-allowed-ports", cfg.PortForwardAllowedPorts)
+	addString("port-forward-allowed-private-cidrs", cfg.PortForwardAllowedPrivateCIDRs)
+	addBool("port-forward-allow-public", cfg.PortForwardAllowPublic)
+	addInt("port-forward-max-connections", cfg.PortForwardMaxConnections)
 	return args
 }
