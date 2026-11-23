@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	replayStoreVersion = 1
+	replayStoreVersion       = 2
+	legacyReplayStoreVersion = 1
 	maxReplayStoreSize = 16 << 20
 	defaultReplayLimit = 100000
 )
@@ -169,6 +170,9 @@ func loadReplaySnapshot(path string, deviceID mesh.DeviceID, createdLock bool) (
 		if err != nil {
 			return replaySnapshot{}, err
 		}
+		if snapshot.Version != replayStoreVersion {
+			return replaySnapshot{}, errors.New("replay state version does not match protected anchor")
+		}
 		if snapshot.Generation != anchor.Generation {
 			return replaySnapshot{}, errors.New("replay state generation does not match protected anchor")
 		}
@@ -182,9 +186,10 @@ func loadReplaySnapshot(path string, deviceID mesh.DeviceID, createdLock bool) (
 	// files after initialization are rejected by the platform lock helper.
 	if !createdLock {
 		snapshot, err := readReplaySnapshot(path, deviceID)
-		if err != nil {
-			return replaySnapshot{}, errors.New("replay anchor is missing for an existing store")
+		if err != nil || snapshot.Version != legacyReplayStoreVersion {
+			return replaySnapshot{}, errors.New("replay anchor is missing for a non-legacy store")
 		}
+		snapshot.Version = replayStoreVersion
 		anchor := replayAnchor{Version: replayStoreVersion, DeviceID: string(deviceID), Generation: snapshot.Generation}
 		if err := writeReplayAnchor(anchorPath, anchor); err != nil {
 			return replaySnapshot{}, err
@@ -241,7 +246,8 @@ func readReplaySnapshot(path string, deviceID mesh.DeviceID) (replaySnapshot, er
 		}
 		return replaySnapshot{}, err
 	}
-	if snapshot.Version != replayStoreVersion || snapshot.DeviceID != string(deviceID) || snapshot.Entries == nil || len(snapshot.Entries) > defaultReplayLimit {
+	if snapshot.Version != replayStoreVersion && snapshot.Version != legacyReplayStoreVersion ||
+		snapshot.DeviceID != string(deviceID) || snapshot.Entries == nil || len(snapshot.Entries) > defaultReplayLimit {
 		return replaySnapshot{}, errors.New("replay store scope or version mismatch")
 	}
 	for jti, expiryMS := range snapshot.Entries {
