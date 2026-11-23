@@ -761,6 +761,9 @@ func (m *Manager) watchTrust() {
 					}
 					if trustErr != nil || !trusted {
 						_, revokeErr := m.RevokeDevice(m.ctx, peerID)
+						if m.ctx.Err() != nil {
+							return
+						}
 						if trustErr != nil {
 							m.recordBackgroundError(fmt.Errorf("portforward: peer trust check for %s failed: %w", peerID, trustErr))
 						}
@@ -778,6 +781,9 @@ func (m *Manager) watchTrust() {
 					}
 					if trustErr != nil || !trusted {
 						_, revokeErr := m.RevokeDevice(m.ctx, routerID)
+						if m.ctx.Err() != nil {
+							return
+						}
 						if trustErr != nil {
 							m.recordBackgroundError(fmt.Errorf("portforward: router trust check for %s failed: %w", routerID, trustErr))
 						}
