@@ -125,10 +125,14 @@ func TestAppendWritesPortForwardAuditFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	event := Event{
-		Type: "port_forward.started", Outcome: "success",
-		ActorID: "wd_aaaaaaaaaaaaaaaa", PeerID: "wd_bbbbbbbbbbbbbbbb",
-		Transport: "tcp", ForwardingID: "00000000-0000-4000-8000-000000000001",
-	if err := log.Append(Event{Type: "port_forward.started", Outcome: "success", Destination: "example.com" + string(rune(10)) + "secret"}); err == nil {
+		Type: "port_forward.started",
+		Outcome: "success",
+		ActorID: "wd_aaaaaaaaaaaaaaaa",
+		PeerID: "wd_bbbbbbbbbbbbbbbb",
+		Transport: "tcp",
+		ForwardingID: "00000000-0000-4000-8000-000000000001",
+		Direction: "local",
+		Destination: "example.com:443",
 	}
 	if err := log.Append(event); err != nil {
 		t.Fatal(err)
@@ -144,7 +148,8 @@ func TestAppendWritesPortForwardAuditFields(t *testing.T) {
 	if got.ForwardingID != event.ForwardingID || got.Direction != event.Direction || got.Destination != event.Destination {
 		t.Fatalf("forwarding audit fields lost: %+v", got)
 	}
-	if err := log.Append(Event{Type: "port_forward.started", Outcome: "success", Destination: "example.com\\nsecret"}); err == nil {
+	badDestination := "example.com" + string(rune(10)) + "secret"
+	if err := log.Append(Event{Type: "port_forward.started", Outcome: "success", Destination: badDestination}); err == nil {
 		t.Fatal("forwarding audit accepted control characters")
 	}
 }
