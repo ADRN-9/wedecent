@@ -11,8 +11,8 @@ source "$ROOT/scripts/lib/release-trust.sh"
 TEST_REPLAY_HOSTNAME='replay.example.test'
 TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
-TEST_SOURCE_SHA="${GITHUB_SHA:-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa}"
-TEST_TREE_SHA='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+TEST_SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
+TEST_TREE_SHA="$(git -C "$ROOT" rev-parse --verify "${TEST_SOURCE_SHA}^{tree}")"
 export GITHUB_ACTIONS=true
 export GITHUB_REPOSITORY='ADRN-9/wedecent'
 export GITHUB_SHA="$TEST_SOURCE_SHA"
