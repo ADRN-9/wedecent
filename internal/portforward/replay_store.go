@@ -32,10 +32,10 @@ type replaySnapshot struct {
 // FileReplay provides cross-process, durable, device-scoped single-use JTI
 // consumption. Use a distinct file and local device ID at each endpoint.
 type FileReplay struct {
-	Path      string
-	DeviceID  mesh.DeviceID
+	Path       string
+	DeviceID   mesh.DeviceID
 	MaxEntries int
-	Now       func() time.Time
+	Now        func() time.Time
 }
 
 func NewFileReplay(path string, deviceID mesh.DeviceID) (*FileReplay, error) {
