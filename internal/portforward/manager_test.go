@@ -1352,15 +1352,30 @@ func (c managerBlockingCloseConnector) Open(ctx context.Context, _ Authorization
 	return c.session, nil
 }
 
-func waitManagerRemovedForward(t *testing.T, manager *Manager) {
+func managerForwardForTest(t *testing.T, manager *Manager, id string) *activeForward {
 	t.Helper()
-	deadline := time.After(2 * time.Second)
-	for len(manager.List()) != 0 {
-		select {
-		case <-deadline:
-			t.Fatal("forward remained registered after cleanup was released")
-		case <-time.After(5 * time.Millisecond):
-		}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	forward := manager.forwards[id]
+	if forward == nil {
+		t.Fatalf("forward %q is not registered", id)
+	}
+	return forward
+}
+
+func waitForwardStopped(t *testing.T, forward *activeForward) {
+	t.Helper()
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-forward.stopDone:
+	case <-timer.C:
+		t.Fatal("forward termination did not complete after cleanup was released")
+	}
+	select {
+	case <-forward.done:
+	case <-timer.C:
+		t.Fatal("forward accept loop did not stop after cleanup was released")
 	}
 }
 
@@ -1372,6 +1387,7 @@ func TestManagerStopBoundsBlockedSessionClose(t *testing.T) {
 	if _, err := manager.Start(context.Background(), auth); err != nil {
 		t.Fatal(err)
 	}
+	forward := managerForwardForTest(t, manager, claims.ForwardingID)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	stopDone := make(chan error, 1)
@@ -1390,7 +1406,10 @@ func TestManagerStopBoundsBlockedSessionClose(t *testing.T) {
 		t.Fatal("Stop remained blocked behind ForwardingSession.Close")
 	}
 	close(session.release)
-	waitManagerRemovedForward(t, manager)
+	waitForwardStopped(t, forward)
+	if len(manager.List()) != 0 {
+		t.Fatal("forward remained registered after bounded Stop completed")
+	}
 }
 
 func TestManagerRevokeDeviceHonorsContextDuringBlockedSessionClose(t *testing.T) {
@@ -1401,6 +1420,7 @@ func TestManagerRevokeDeviceHonorsContextDuringBlockedSessionClose(t *testing.T)
 	if _, err := manager.Start(context.Background(), auth); err != nil {
 		t.Fatal(err)
 	}
+	forward := managerForwardForTest(t, manager, claims.ForwardingID)
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 	revokeDone := make(chan error, 1)
@@ -1422,5 +1442,8 @@ func TestManagerRevokeDeviceHonorsContextDuringBlockedSessionClose(t *testing.T)
 		t.Fatal("RevokeDevice ignored its context while session close was blocked")
 	}
 	close(session.release)
-	waitManagerRemovedForward(t, manager)
+	waitForwardStopped(t, forward)
+	if len(manager.List()) != 0 {
+		t.Fatal("forward remained registered after bounded revocation completed")
+	}
 }
