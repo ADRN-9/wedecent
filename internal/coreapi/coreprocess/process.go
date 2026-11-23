@@ -159,6 +159,9 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	if cfg.Forwarding != nil {
 		forwardingConfig := *cfg.Forwarding
 		forwardingConfig.LocalDeviceID = mesh.DeviceID(id.ID)
+		if forwardingConfig.Verifier == nil && len(forwardingConfig.AuthorizationPublicKey) == 32 && forwardingConfig.ReplayPath == "" {
+			forwardingConfig.ReplayPath = filepath.Join(stateDir, "portforward-replay.json")
+		}
 		if forwardingConfig.Audit == nil {
 			forwardingAudit, auditErr := audit.Open(stateDir)
 			if auditErr != nil {
