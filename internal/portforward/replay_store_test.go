@@ -865,6 +865,43 @@ func TestFileReplayInitializationCrashHelper(t *testing.T) {
 		if err := ensureReplayInitialization(path, testInitiator, false); err != nil {
 			t.Fatalf("publish pending initialization marker: %v", err)
 		}
+	case "lock_staging":
+		unlock, created, err := lockReplayFileOS(path)
+		if err != nil {
+			t.Fatalf("create replay lock before bootstrap staging crash: %v", err)
+		}
+		if !created {
+			t.Fatal("expected bootstrap crash helper to create the replay lock")
+		}
+		defer unlock()
+		file, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, "lock"))
+		if err != nil {
+			t.Fatalf("create replay lock bootstrap staging file: %v", err)
+		}
+		tempPath := file.Name()
+		if err := file.Chmod(0o600); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := setReplayFileOwner(tempPath); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := secureReplayFile(tempPath); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if _, err := file.Write([]byte("interrupted lock bootstrap")); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Sync(); err != nil {
+			_ = file.Close()
+			t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			t.Fatal(err)
+		}
 	default:
 		t.Fatalf("unsupported initialization crash mode %q", mode)
 	}
@@ -879,6 +916,48 @@ func TestFileReplayInitializationCrashHelper(t *testing.T) {
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
+}
+
+func TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap(t *testing.T) {
+	path := newReplayTestPath(t)
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiry := time.Now().UTC().Add(time.Minute)
+	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("rollbackfirst001"))
+	secondJTI := base64.RawURLEncoding.EncodeToString([]byte("rollbacksecond1"))
+
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, expiry); err != nil {
+		t.Fatalf("consume first authorization: %v", err)
+	}
+	olderSnapshot, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	olderAnchor, err := os.ReadFile(path + ".anchor")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), secondJTI, expiry); err != nil {
+		t.Fatalf("consume second authorization: %v", err)
+	}
+
+	// Simulate an attacker who can write as the service account restoring both
+	// mutually consistent files. File permissions and the generation comparison
+	// cannot distinguish this paired rollback from the earlier valid state.
+	if err := os.WriteFile(path, olderSnapshot, 0o600); err != nil {
+		t.Fatalf("restore older replay snapshot: %v", err)
+	}
+	if err := os.WriteFile(path+".anchor", olderAnchor, 0o600); err != nil {
+		t.Fatalf("restore matching older replay anchor: %v", err)
+	}
+
+	err = replay.ConsumePortForwardAuthorization(context.Background(), secondJTI, expiry)
+	if err != nil {
+		t.Fatalf("paired snapshot-and-anchor rollback was unexpectedly detected: %v", err)
+	}
+	t.Log("SECURITY GAP: same-account paired rollback replayed a previously consumed authorization; an independent monotonic authority is required to prevent this threat")
 }
 func TestFileReplayCleansOrphanedStagingFilesAndPreservesDurablePendingState(t *testing.T) {
 	path := newReplayTestPath(t)
@@ -943,6 +1022,10 @@ func TestFileReplayCleansOrphanedStagingFilesAndPreservesDurablePendingState(t *
 	}
 }
 
+type replayTestCloser func() error
+
+func (closer replayTestCloser) Close() error { return closer() }
+
 func TestFileReplayStagingCleanupReportsRemovalFailures(t *testing.T) {
 	path := newReplayTestPath(t)
 	tempPath := createReplayStagingTestFile(t, path, "replay")
@@ -970,6 +1053,20 @@ func TestFileReplayStagingCleanupReportsRemovalFailures(t *testing.T) {
 	})
 	if !errors.Is(joined, primaryFailure) || !errors.Is(joined, removeFailure) {
 		t.Fatalf("cleanup did not preserve both primary and removal errors: %v", joined)
+	}
+
+	closeFailure := errors.New("injected temporary-file close failure")
+	closePath := createReplayStagingTestFile(t, path, "pending")
+	closed := false
+	closeErr := cleanupReplayTempWith(primaryFailure, replayTestCloser(func() error {
+		closed = true
+		return closeFailure
+	}), closePath, os.Remove)
+	if !closed || !errors.Is(closeErr, primaryFailure) || !errors.Is(closeErr, closeFailure) {
+		t.Fatalf("close failure was not joined with the primary error: %v", closeErr)
+	}
+	if _, err := os.Lstat(closePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary file was not removed after injected close failure: %v", err)
 	}
 }
 
@@ -1147,6 +1244,171 @@ func TestFileReplayStagingCleanupWaitsForActiveStoreLock(t *testing.T) {
 	}
 }
 
+
+func TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging(t *testing.T) {
+	path := newReplayTestPath(t)
+	replay, err := NewFileReplay(path, testInitiator)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstJTI := base64.RawURLEncoding.EncodeToString([]byte("crossprocessfirst"))
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), firstJTI, time.Now().UTC().Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
+	readyPath := path + ".active-ready"
+	stopPath := path + ".active-stop"
+	var output bytes.Buffer
+	cmd := exec.Command(os.Args[0], "-test.run=^TestFileReplayCrossProcessStagingLockHelper$")
+	cmd.Env = append(os.Environ(),
+		"WEDECENT_REPLAY_ACTIVE_PATH="+path,
+		"WEDECENT_REPLAY_ACTIVE_READY="+readyPath,
+		"WEDECENT_REPLAY_ACTIVE_STOP="+stopPath,
+	)
+	cmd.Stdout, cmd.Stderr = &output, &output
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start cross-process staging holder: %v", err)
+	}
+	t.Cleanup(func() {
+		if cmd.ProcessState == nil {
+			_ = os.WriteFile(stopPath, []byte("stop"), 0o600)
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+		_ = os.Remove(readyPath)
+		_ = os.Remove(stopPath)
+	})
+
+	deadline := time.Now().Add(10 * time.Second)
+	var activePath string
+	for {
+		data, readErr := os.ReadFile(readyPath)
+		if readErr == nil {
+			activePath = string(data)
+			break
+		}
+		if !errors.Is(readErr, os.ErrNotExist) {
+			t.Fatalf("read active staging readiness: %v", readErr)
+		}
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			waitErr := cmd.Wait()
+			t.Fatalf("cross-process staging holder did not reach barrier: wait=%v output=%s", waitErr, output.String())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if activePath == "" {
+		t.Fatal("cross-process helper did not report its active staging path")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- replay.ConsumePortForwardAuthorization(
+			context.Background(),
+			base64.RawURLEncoding.EncodeToString([]byte("crossprocessnext1")),
+			time.Now().UTC().Add(time.Minute),
+		)
+	}()
+	deadline = time.Now().Add(5 * time.Second)
+	for {
+		replayProcessLocks.Lock()
+		lock := replayProcessLocks.byPath[filepath.Clean(path)]
+		refs := 0
+		if lock != nil {
+			refs = lock.refs
+		}
+		replayProcessLocks.Unlock()
+		if refs > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = os.WriteFile(stopPath, []byte("stop"), 0o600)
+			_ = cmd.Wait()
+			<-done
+			t.Fatal("parent replay operation did not enter the cross-process lock path")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	time.Sleep(50 * time.Millisecond)
+	select {
+	case err := <-done:
+		_ = os.WriteFile(stopPath, []byte("stop"), 0o600)
+		_ = cmd.Wait()
+		t.Fatalf("replay cleanup completed while another process held the store lock: %v", err)
+	default:
+	}
+	if _, err := os.Stat(activePath); err != nil {
+		_ = os.WriteFile(stopPath, []byte("stop"), 0o600)
+		_ = cmd.Wait()
+		<-done
+		t.Fatalf("active staging file disappeared before cross-process lock release: %v", err)
+	}
+
+	if err := os.WriteFile(stopPath, []byte("stop"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Wait(); err == nil {
+		t.Fatal("cross-process staging holder exited normally, expected abrupt process exit")
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("replay operation after cross-process lock release: %v", err)
+	}
+	if _, err := os.Lstat(activePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("orphan staging file was not removed after cross-process lock release: %v", err)
+	}
+}
+
+func TestFileReplayCrossProcessStagingLockHelper(t *testing.T) {
+	path := os.Getenv("WEDECENT_REPLAY_ACTIVE_PATH")
+	if path == "" {
+		return
+	}
+	readyPath := os.Getenv("WEDECENT_REPLAY_ACTIVE_READY")
+	stopPath := os.Getenv("WEDECENT_REPLAY_ACTIVE_STOP")
+	if readyPath == "" || stopPath == "" {
+		t.Fatal("cross-process staging helper requires readiness and stop paths")
+	}
+	unlock, _, err := lockReplayFile(path)
+	if err != nil {
+		t.Fatalf("acquire cross-process replay lock: %v", err)
+	}
+	file, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, "replay"))
+	if err != nil {
+		t.Fatalf("create active replay staging file: %v", err)
+	}
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := setReplayFileOwner(file.Name()); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := secureReplayFile(file.Name()); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if _, err := file.Write([]byte("active cross-process staging file")); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Sync(); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(readyPath, []byte(file.Name()), 0o600); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(stopPath); err == nil {
+			os.Exit(23)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inspect cross-process stop marker: %v", err)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
 func createReplayStagingTestFile(t *testing.T, path, kind string) string {
 	t.Helper()
 	file, err := os.CreateTemp(filepath.Dir(path), replayStagingPattern(path, kind))
