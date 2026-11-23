@@ -346,8 +346,12 @@ func (s *Server) handleTerminalWithRouter(conn *tls.Conn, first protocol.Frame, 
 		// Bound terminal-output drain before the final close frame. Setting a
 		// write deadline first unblocks a PTY forwarding goroutine stuck on a
 		// peer that stopped reading.
-		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_ = pty.Close()
+		if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			s.log().Warn("terminal close deadline could not be set", "peer_id", peer.ID, "error", err)
+			_ = conn.Close()
+			return
+		}
 		if ptyReadDone != nil {
 			drainTimer := time.NewTimer(500 * time.Millisecond)
 			select {
