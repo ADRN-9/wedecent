@@ -115,6 +115,50 @@ func TestDialApprovedTCPRejectsTamperedApprovedAddress(t *testing.T) {
 	}
 }
 
+func TestDialApprovedTCPRejectsMutatedPinnedIP(t *testing.T) {
+	policy := publicPolicy()
+	resolver := &testResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}}
+	approved, err := ResolveApprovedDestination(context.Background(), resolver, policy, "example.com", 443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	approved.IPs[0] = netip.MustParseAddr("93.184.216.35")
+	dialer := &captureDialer{}
+	if _, err := DialApprovedTCP(context.Background(), dialer, policy, approved); !errors.Is(err, ErrDestinationDenied) {
+		t.Fatalf("mutated pinned address error = %v", err)
+	}
+	if dialer.address != "" {
+		t.Fatalf("mutated pinned address was dialed: %q", dialer.address)
+	}
+}
+
+func TestDialApprovedTCPRejectsChangedPolicy(t *testing.T) {
+	policy := publicPolicy()
+	resolver := &testResolver{addresses: []netip.Addr{netip.MustParseAddr("93.184.216.34")}}
+	approved, err := ResolveApprovedDestination(context.Background(), resolver, policy, "example.com", 443)
+	if err != nil {
+		t.Fatal(err)
+	}
+	changedPolicy := publicPolicy()
+	changedPolicy.AllowedPorts = append(changedPolicy.AllowedPorts, PortRange{First: 8443, Last: 8443})
+	dialer := &captureDialer{}
+	if _, err := DialApprovedTCP(context.Background(), dialer, changedPolicy, approved); !errors.Is(err, ErrDestinationDenied) {
+		t.Fatalf("changed policy error = %v", err)
+	}
+	if dialer.address != "" {
+		t.Fatalf("changed policy reached dialer: %q", dialer.address)
+	}
+}
+
+func TestDestinationHelpersRejectNilContext(t *testing.T) {
+	if _, err := ResolveApprovedDestination(nil, nil, publicPolicy(), "93.184.216.34", 443); !errors.Is(err, ErrDestinationResolution) {
+		t.Fatalf("nil resolver context error = %v", err)
+	}
+	if _, err := DialApprovedTCP(nil, &captureDialer{}, publicPolicy(), ApprovedDestination{}); !errors.Is(err, ErrDestinationDenied) {
+		t.Fatalf("nil dial context error = %v", err)
+	}
+}
+
 func TestDestinationPolicyRequiresCanonicalHostname(t *testing.T) {
 	for _, host := range []string{"Example.com", "example.com.", "localhost", "service.local", "metadata.google.internal", "a..example.com", "-bad.example.com", "example.com/path"} {
 		if _, err := ResolveApprovedDestination(context.Background(), nil, publicPolicy(), host, 443); err == nil {
