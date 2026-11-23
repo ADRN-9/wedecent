@@ -350,23 +350,9 @@ func (c *wsNetConn) Write(p []byte) (int, error) {
 }
 
 func (c *wsNetConn) Close() error {
-	c.closeMu.Lock()
-	if c.closed {
-		c.closeMu.Unlock()
-		return nil
-	}
-	c.closed = true
-	close(c.done)
-	c.closeMu.Unlock()
-
-	// Try a bounded close frame only when no writer owns the transport.
-	// Never wait behind a potentially blocked data writer.
-	if c.writeMu.TryLock() {
-		_ = c.raw.SetWriteDeadline(time.Now().Add(100 * time.Millisecond))
-		_ = c.writeFrame(0x8, []byte{0x03, 0xE8})
-		c.writeMu.Unlock()
-	}
-	return c.raw.Close()
+	// A TCP close is sufficient to terminate the relay stream. Do not require
+	// a WebSocket close frame before local shutdown.
+	return c.Abort()
 }
 
 // Abort closes the underlying socket without waiting for the WebSocket writer
