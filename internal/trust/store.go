@@ -1,6 +1,7 @@
 package trust
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -45,6 +46,27 @@ func (s *Store) Get(id string) (Peer, bool) {
 	}
 	p, ok := s.Peers[id]
 	return p, ok
+}
+
+// IsTrusted reloads the persisted trust state and reports errors instead of
+// treating an unreadable store as an untrusted or trusted peer.
+func (s *Store) IsTrusted(ctx context.Context, id string) (bool, error) {
+	if s == nil || ctx == nil {
+		return false, errors.New("trust store: invalid trust check")
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.reloadLocked(); err != nil {
+		return false, err
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	_, ok := s.Peers[id]
+	return ok, nil
 }
 
 func (s *Store) FindByFingerprint(fp string) (Peer, bool) {
