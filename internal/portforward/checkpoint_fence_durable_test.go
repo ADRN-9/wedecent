@@ -11,6 +11,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -305,7 +306,7 @@ func TestFileCheckpointFenceConcurrentReservationsHaveSingleWinner(t *testing.T)
 		go func(i int) {
 			defer wg.Done()
 			candidate := request
-			candidate.OperationID = "concurrent-fence-operation-" + string(rune('a'+i))
+			candidate.OperationID = "concurrent-fence-operation-" + strconv.Itoa(i)
 			store := primary
 			if i%2 == 1 {
 				store = secondPrimary
