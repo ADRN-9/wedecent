@@ -72,3 +72,11 @@ CI run 45353560190 tested commit `70116d6f77404d0055418c74c2cdec65d80b9193`.
 The run against `70116d6f77404d0055418c74c2cdec65d80b9193` therefore did not pass the duplicate-forwarding/JTI tests; the observed result was `{"reason":"idempotency-conflict","accepted":false}`. This was caused by inconsistent retry fixture inputs, not a replay acceptance or authorization bypass.
 
 A new exact-HEAD CI run (45353560190) and Desktop run (45353559983) were started for `f18ecb42296f8d8f949dfd1bb2d053673bc4cd44`. At documentation time, the corrected Supabase concurrency step had not yet completed; Linux, Windows, macOS CI and all three Desktop platform checks were still running. No pass is claimed for the corrected duplicate/JTI tests until that exact-HEAD run completes.
+
+## C146 capability-lifetime fixture correction
+
+CI run 45353560190 tested commit `f18ecb42296f8d8f949dfd1bb2d053673bc4cd44`. The existing 72 pgTAP assertions passed, but the concurrency harness failed on its first authorization attempt because the fixed test expiry was set 10 minutes after issue time. The production authorization correctly enforces a maximum capability lifetime of 120 seconds.
+
+The fixture now sets the expiry 90 seconds after the current time while retaining one captured issue/expiry pair for all retries. With the issue time captured one second before the test starts, the signed lifetime remains within the production 120-second bound and identical across idempotent retries. This correction is commit `8a6b82b312949142679b5a1f6563d02ca569e0c0`.
+
+Exact-HEAD CI run 45353868208 and Desktop run 45353868172 were started for this correction. Their final results are pending. Do not treat the duplicate-forwarding or JTI-reuse cases as verified until the concurrency job passes on this SHA.
