@@ -250,7 +250,7 @@ savepoint interrupted_consume;
 select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000011', repeat('J', 22), repeat('a', 64), false);
 rollback to savepoint interrupted_consume;
 select is(
-    (pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000011', repeat('J', 22), repeat('a', 64))->>'accepted'),
+    (pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000011', repeat('J', 22), repeat('a', 64), false)->>'accepted'),
     'true',
     'rolled-back interrupted consumption leaves no partial authorization or JTI'
 );
