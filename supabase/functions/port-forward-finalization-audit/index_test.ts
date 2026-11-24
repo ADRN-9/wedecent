@@ -1,6 +1,5 @@
 import { digest, verifyFinalizationEvidence } from "./index.ts";
 
-const encoder = new TextEncoder();
 const evidence = {
   primary_receipt: { public_key: btoa("x".repeat(32)) },
   witness_acknowledgements: [],
@@ -16,13 +15,7 @@ async function rejectsWith(message: string, configure: () => void) {
   Deno.env.delete("WEDECENT_CHECKPOINT_WITNESS_QUORUM");
   configure();
   try {
-    const sum = [...new Uint8Array(await crypto.subtle.digest("SHA-256", encoder.encode(
-      JSON.stringify({
-        primary_receipt: evidence.primary_receipt,
-        revocation_proofs: evidence.revocation_proofs,
-        witness_acknowledgements: evidence.witness_acknowledgements,
-      }),
-    )))].map((x) => x.toString(16).padStart(2, "0")).join("");
+    const sum = await digest(evidence);
     await verifyFinalizationEvidence({}, "0".repeat(64), new Uint8Array(32), evidence, sum);
     throw new Error("expected trust configuration rejection");
   } catch (error) {
