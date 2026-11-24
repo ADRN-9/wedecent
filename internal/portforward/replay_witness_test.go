@@ -3725,6 +3725,12 @@ func TestLifecycleFenceRejectsSubstitutedAndIncompleteParticipantHeads(t *testin
 	if _, err := client.Fencing.ExecuteWithCheckpointHeads(context.Background(), fenceRequest, substituted); !errors.Is(err, ErrCheckpointStale) {
 		t.Fatalf("substituted authoritative checkpoint head accepted: %v", err)
 	}
+	if _, err := client.Primary.Consume(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Fencing.ExecuteWithCheckpointHeads(context.Background(), fenceRequest, heads); !errors.Is(err, ErrCheckpointStale) {
+		t.Fatalf("stale but previously valid checkpoint-head vector accepted: %v", err)
+	}
 	if _, err := client.Fencing.ExecuteWithCheckpointHeads(context.Background(), fenceRequest, heads[:1]); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("incomplete participant vector accepted: %v", err)
 	}
