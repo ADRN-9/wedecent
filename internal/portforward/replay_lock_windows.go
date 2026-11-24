@@ -35,6 +35,13 @@ func prepareReplayDirectory(path string) error {
 		if !errors.Is(err, os.ErrExist) {
 			return err
 		}
+		// Repair an orphaned owner only after proving its DACL is restrictive.
+		if err := verifyReplayDACL(path); err != nil {
+			return fmt.Errorf("refuse replay directory with unauthorized DACL: %w", err)
+		}
+		if err := setReplayFileOwner(path); err != nil {
+			return fmt.Errorf("set replay directory owner: %w", err)
+		}
 		return secureReplayDirectory(path)
 	}
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
