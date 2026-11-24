@@ -5,6 +5,7 @@ fail() { printf 'checkpoint-reservation-concurrency: %s\n' "$*" >&2; exit 1; }
 command -v supabase >/dev/null 2>&1 || fail 'supabase CLI required'
 command -v psql >/dev/null 2>&1 || fail 'psql required'
 command -v grep >/dev/null 2>&1 || fail 'grep required'
+command -v docker >/dev/null 2>&1 || fail 'docker required'
 WORK="$(mktemp -d)"
 cleanup() {
   for file in "$WORK"/*.pid; do
@@ -265,10 +266,16 @@ assertq 3 "select checkpoint_head_generation from public.port_forward_replay_aut
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "select public.wd_c195_commit('$OP_G','finalize')" >/dev/null
 assertq 3 "select checkpoint_head_generation from public.port_forward_replay_authority where device_id='wd_eeeeeeeeeeeeeeee'"
 
-# Restart local PostgreSQL and verify durable commit evidence survives.
-supabase stop
-./scripts/start-supabase-db-ci.sh
-refresh_db_url
+# Restart the database container itself and verify durable commit evidence survives.
+DB_CONTAINER="$(docker ps --format '{{.Names}}' | grep '^supabase_db_' | head -n 1)"
+[[ -n "$DB_CONTAINER" ]] || fail 'local Supabase PostgreSQL container not found'
+docker restart "$DB_CONTAINER" >/dev/null
+ready=false
+for _ in $(seq 1 120); do
+  if psql "$DB_URL" -X -Atqc 'select 1' >/dev/null 2>&1; then ready=true; break; fi
+  sleep 1
+done
+[[ "$ready" == true ]] || fail 'PostgreSQL did not recover after container restart'
 assertq 3 "select checkpoint_head_generation from public.port_forward_replay_authority where device_id='wd_eeeeeeeeeeeeeeee'"
 assertq 1 "select count(*) from public.checkpoint_operation_events where operation_id='$OP_G' and event_type='committed'"
 
