@@ -1106,6 +1106,7 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 	primary := newDeterministicCheckpointProvider(t)
 	primary.register(initiator)
 	primary.register(destination)
+	primary.register(routerMembership)
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -1133,6 +1134,7 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 	for _, witness := range witnesses {
 		witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch
 		witness.revoked[witnessScope(destination)] = destination.RevocationEpoch
+		witness.revoked[witnessScope(routerMembership)] = routerMembership.RevocationEpoch
 		witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch: initiator.RevocationEpoch, used: map[string][32]byte{}}
 	}
 	now := start
@@ -1207,6 +1209,7 @@ func TestExpiredFinalizationRejectsMembershipRevocationAfterWitnessCommit(t *tes
 	primary := newDeterministicCheckpointProvider(t)
 	primary.register(initiator)
 	primary.register(destination)
+	primary.register(routerMembership)
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -1234,6 +1237,7 @@ func TestExpiredFinalizationRejectsMembershipRevocationAfterWitnessCommit(t *tes
 	for _, witness := range witnesses {
 		witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch
 		witness.revoked[witnessScope(destination)] = destination.RevocationEpoch
+		witness.revoked[witnessScope(routerMembership)] = routerMembership.RevocationEpoch
 		witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch: initiator.RevocationEpoch, used: map[string][32]byte{}}
 	}
 	now := start
