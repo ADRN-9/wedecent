@@ -2027,7 +2027,7 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 	client.Witnesses[2].Witness = unavailableWitness{CheckpointWitness: witnesses[2]}
 
 	released := false
-	err = client.FinalizeWithAudit(context.Background(), request, func() error {
+	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 		released = true
 		return nil
 	})
@@ -2088,7 +2088,7 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 		Quorum: client.Quorum, Pending: restarted,
 	}
 	released = false
-	if err := restartedClient.FinalizeWithAudit(context.Background(), request, func() error {
+	if err := restartedClient.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 		released = true
 		return nil
 	}); !errors.Is(err, ErrCheckpointConflict) || released {
@@ -2102,7 +2102,7 @@ func TestPersistedQuorumRecoveryDoesNotRequireWitnessAvailability(t *testing.T) 
 	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 	witnesses[2].available = false
 	called := false
-	if err := client.FinalizeWithAudit(context.Background(), request, func() error {
+	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 		called = true
 		return nil
 	}); err != nil || !called {
@@ -2121,7 +2121,7 @@ func TestInvalidSignedConflictCannotPoisonPersistedQuorum(t *testing.T) {
 	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: invalid}
 	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 	called := false
-	if err := client.FinalizeWithAudit(context.Background(), request, func() error {
+	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 		called = true
 		return nil
 	}); err != nil || !called {
@@ -2139,7 +2139,7 @@ func TestRepeatedEquivocationDetectionIsIdempotentAndTerminal(t *testing.T) {
 	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 	for attempt := 0; attempt < 2; attempt++ {
 		called := false
-		err := client.FinalizeWithAudit(context.Background(), request, func() error {
+		err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 			called = true
 			return nil
 		})
@@ -2180,7 +2180,7 @@ func TestConcurrentFinalizationRunsCallbackAtMostOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- provider.FinalizeWithAudit(context.Background(), request, func() error {
+			errs <- provider.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 				mu.Lock()
 				callbacks++
 				mu.Unlock()
@@ -2232,7 +2232,7 @@ func TestEquivocationEvidencePersistenceInterruptionFailsClosed(t *testing.T) {
 		return writeReplayJSON(store.Path, value, replayStagingPattern(store.Path, "pendingops"), checkpointPendingMaxSize)
 	}
 	called := false
-	err = client.FinalizeWithAudit(context.Background(), request, func() error {
+	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 		called = true
 		return nil
 	})
@@ -2247,7 +2247,7 @@ func TestEquivocationEvidencePersistenceInterruptionFailsClosed(t *testing.T) {
 		t.Fatalf("interrupted evidence was partially persisted: count=%d err=%v", len(evidence), err)
 	}
 	called = false
-	if err := client.FinalizeWithAudit(context.Background(), request, func() error {
+	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 		called = true
 		return nil
 	}); !errors.Is(err, ErrCheckpointConflict) || called {
@@ -2317,7 +2317,7 @@ func TestPersistedQuorumEquivocationRepeatedRecovery(t *testing.T) {
 			client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
 			client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 			called := false
-			err := client.FinalizeWithAudit(context.Background(), request, func() error {
+			err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
 				called = true
 				return nil
 			})
