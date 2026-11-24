@@ -46,8 +46,8 @@ async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:st
  raw(publicKey);const size=chunks.reduce((n,x)=>n+x.length,0);const message=new Uint8Array(size);let offset=0;for(const part of chunks){message.set(part,offset);offset+=part.length}
  const key=await crypto.subtle.importKey("raw",bufferSource(publicKey),{name:"Ed25519"},false,["verify"]);
  if(!await crypto.subtle.verify({name:"Ed25519"},key,bufferSource(signature),bufferSource(message)))throw Error("device checkpoint signature rejected");
- const fp=new Uint8Array(await crypto.subtle.digest("SHA-256",message));const prefix=enc.encode("wedecent-checkpoint-finalization-v1\n");const opInput=new Uint8Array(prefix.length+fp.length);opInput.set(prefix);opInput.set(fp,prefix.length);
- const op=new Uint8Array(await crypto.subtle.digest("SHA-256",opInput));const expected=[...op].map(x=>x.toString(16).padStart(2,"0")).join("");
+ const fp=new Uint8Array(await crypto.subtle.digest("SHA-256",bufferSource(message)));const prefix=enc.encode("wedecent-checkpoint-finalization-v1\n");const opInput=new Uint8Array(prefix.length+fp.length);opInput.set(prefix);opInput.set(fp,prefix.length);
+ const op=new Uint8Array(await crypto.subtle.digest("SHA-256",bufferSource(opInput)));const expected=[...op].map(x=>x.toString(16).padStart(2,"0")).join("");
  if(expected!==operationID)throw Error("operation ID does not bind signed checkpoint request");
  return fp;
 }
