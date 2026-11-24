@@ -879,8 +879,9 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Entries) != 0 {
-		t.Fatalf("successful retry did not finish compaction: entries=%d", len(snapshot.Entries))
+	entry, ok := snapshot.Entries[checkpointPendingKey(request)]
+	if !ok || entry.State != "resolved" || committedCheckpointAckCount(entry.Acknowledgements) < client.Quorum {
+		t.Fatalf("successful retry discarded terminal evidence: entry=%+v", entry)
 	}
 }
 
@@ -1337,7 +1338,7 @@ func TestPendingJournalInterruptedPublicationPreservesPreviousEvidence(t *testin
 	if !bytes.Equal(before, after) {
 		t.Fatal("failed publication changed durable journal bytes")
 	}
-	store.writeSnapshot = nil
+	store.compactHook = nil
 	if existing, err := store.Begin(context.Background(), first); err != nil || !existing {
 		t.Fatalf("previous pending evidence lost: existing=%t err=%v", existing, err)
 	}
@@ -1366,11 +1367,8 @@ func TestFilePendingJournalRejectsForgedAcknowledgementInUnrelatedEntry(t *testi
 	if err := provider.ValidateConfiguration(); err != nil {
 		t.Fatal(err)
 	}
-	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
-		if snapshot, ok := value.(checkpointPendingSnapshot); ok && len(snapshot.Entries) == 0 {
-			return errors.New("injected compaction publication failure")
-		}
-		return writeReplayJSON(path, value, pattern, maxSize)
+	store.compactHook = func(context.Context) error {
+		return errors.New("injected compaction publication failure")
 	}
 	if _, err := provider.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointUnavailable) {
 		t.Fatalf("expected retained acknowledgement evidence after interrupted compaction: %v", err)
