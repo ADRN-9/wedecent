@@ -66,7 +66,12 @@ function rowObject(value: unknown): Record<string, unknown> | null {
 async function authorizationDigest(
   authorization: Record<string, unknown>,
   publicKeyBytes: Uint8Array,
-): Promise<{ jti: string; expiresAtUnixMS: number; digestHex: string }> {
+): Promise<{
+  jti: string; issuedAtUnixMS: number; expiresAtUnixMS: number;
+  forwardingID: string; direction: string; initiatingDevice: string;
+  destinationDevice: string; routerDevice: string | null;
+  route: Record<string, unknown>; digestHex: string;
+}> {
   const claims = authorization.claims as Record<string, unknown>;
   const canonical = canonicalPortForwardAuthorizationMessage(authorization);
   const signature = decodeBase64URLStrict(authorization.signature as string, 64);
@@ -174,7 +179,18 @@ Deno.serve(async (request) => {
 
     const { data, error } = await admin.rpc("consume_port_forward_authorization", {
       p_device_id: deviceID,
+      p_device_public_key: device.public_key,
+      p_forwarding_id: verified.forwardingID,
+      p_direction: verified.direction,
+      p_initiating_device_id: verified.initiatingDevice,
+      p_destination_device_id: verified.destinationDevice,
+      p_router_device_id: verified.routerDevice,
+      p_route_authorization_id: routeBinding?.id ?? null,
+      p_route_authorization_jti: routeBinding?.jti ?? null,
+      p_route_source_device_id: routeBinding?.sourceDeviceID ?? null,
+      p_route_destination_device_id: routeBinding?.destinationDeviceID ?? null,
       p_jti: verified.jti,
+      p_issued_at: new Date(verified.issuedAtUnixMS).toISOString(),
       p_expires_at: new Date(verified.expiresAtUnixMS).toISOString(),
       p_authorization_sha256: `\\x${verified.digestHex}`,
     });
