@@ -38,7 +38,7 @@ Witness state and keys must not be shared between witness identities or administ
 
 If the primary commit response is ambiguous, the coordinator reads the stable operation ID back from the primary and only returns success when a matching committed operation is durably present.
 
-The quorum is always `floor(n/2)+1` and at least three configured witnesses are required. No single-provider fallback exists.
+The quorum is always `floor(n/2)+1`; between three and 31 configured witnesses are accepted. No single-provider fallback exists.
 
 ## TLS and endpoint pinning
 
@@ -52,7 +52,7 @@ The journal implementation currently has a Linux `flock` adapter. Non-Linux buil
 
 Operate the primary and each witness on separately administered hosts or trust domains, with separate durable volumes and separately provisioned private keys. A shared filesystem, common administrator, shared credentials, or three processes under one provider do not establish independent witnesses. Backups must preserve append-only history; restoring an older primary journal is expected to be rejected by witnesses that have advanced, causing fail-closed unavailability rather than accepting stale generations.
 
-The file journal is a single-node durable authority, not a replicated database or high-availability primary. It has no automated anti-rollback anchor, backup restore reconciliation, key rotation protocol, remote replication, or operator-safe compaction. Protect the journal and private keys with host access controls and encrypted backups. Never copy a primary private key to witnesses.
+The file journal is a single-node durable authority, not a replicated database or high-availability primary. Each operation currently replays the append-only log under the file lock, so journal growth increases operation cost; production compaction must preserve signed history and operation-ID uniqueness. It has no automated anti-rollback anchor, backup restore reconciliation, key rotation protocol, remote replication, or operator-safe compaction. Protect the journal and private keys with host access controls and encrypted backups. Never copy a primary private key to witnesses.
 
 ## Verification added
 
