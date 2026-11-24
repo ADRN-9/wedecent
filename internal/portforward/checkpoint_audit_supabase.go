@@ -207,7 +207,7 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 	if err != nil {
 		return err
 	}
-	canonical, err := json.Marshal(payload)
+	canonical, err := checkpointAuditCanonicalJSON(payload)
 	if err != nil {
 		return err
 	}
@@ -216,7 +216,7 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 	if err != nil {
 		return err
 	}
-	evidenceCanonical, err := json.Marshal(evidencePayload)
+	evidenceCanonical, err := checkpointAuditCanonicalJSON(evidencePayload)
 	if err != nil {
 		return err
 	}
@@ -299,6 +299,39 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 		return errors.New("checkpoint audit timestamp invalid")
 	}
 	return ctx.Err()
+}
+
+func checkpointAuditCanonicalJSON(value any) ([]byte, error) {
+	raw, err := json.Marshal(value)
+	if err != nil { return nil, err }
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil { return nil, err }
+	if err := validateCheckpointAuditJSONNumbers(decoded); err != nil { return nil, err }
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF { return nil, errors.New("checkpoint audit JSON has trailing data") }
+	var canonical bytes.Buffer
+	encoder := json.NewEncoder(&canonical)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(decoded); err != nil { return nil, err }
+	return bytes.TrimSuffix(canonical.Bytes(), []byte{ '\\n' }), nil
+}
+
+func validateCheckpointAuditJSONNumbers(value any) error {
+	const maxSafe = int64(1<<53 - 1)
+	switch typed := value.(type) {
+	case json.Number:
+		number, err := strconv.ParseInt(string(typed), 10, 64)
+		if err != nil || number > maxSafe || number < -maxSafe {
+			return errors.New("checkpoint audit JSON number is not a safe integer")
+		}
+	case []any:
+		for _, item := range typed { if err := validateCheckpointAuditJSONNumbers(item); err != nil { return err } }
+	case map[string]any:
+		for _, item := range typed { if err := validateCheckpointAuditJSONNumbers(item); err != nil { return err } }
+	}
+	return nil
 }
 
 func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvidence) (map[string]any, error) {
