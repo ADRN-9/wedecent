@@ -756,7 +756,7 @@ func replayCheckpointFenceLog(file *os.File, apply func(checkpointFenceDiskEvent
 
 func appendCheckpointFenceEvent(file *os.File, event checkpointFenceDiskEvent) error {
 	payload, err := json.Marshal(event)
-	if err != nil || len(payload) > checkpointFenceLogMaxRecord {
+	if err != nil || len(payload)+1 > checkpointFenceLogMaxRecord {
 		return errors.Join(ErrCheckpointFenceStore, err)
 	}
 	payload = append(payload, '\n')
@@ -774,18 +774,6 @@ func appendCheckpointFenceEvent(file *os.File, event checkpointFenceDiskEvent) e
 		return errors.Join(ErrCheckpointFenceStore, err)
 	}
 	return nil
-}
-
-func (p *FileCheckpointFencePrimary) SetClockForTesting(now func() time.Time) {
-	if p != nil && now != nil {
-		p.now = now
-	}
-}
-
-func (w *FileCheckpointFenceWitness) SetClockForTesting(now func() time.Time) {
-	if w != nil && now != nil {
-		w.now = now
-	}
 }
 
 func withCheckpointFenceLog(ctx context.Context, path string, fn func(*os.File) error) error {
