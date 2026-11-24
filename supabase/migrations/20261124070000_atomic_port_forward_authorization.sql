@@ -782,7 +782,7 @@ revoke all on function public.consume_port_forward_authorization(
     text, timestamptz, timestamptz, bytea
 ) from public, anon, authenticated;
 grant execute on function public.consume_port_forward_authorization(
-    text, uuid, text, text, text, text, uuid, text, text, text,
+    text, text, uuid, text, text, text, text, uuid, text, text, text,
     text, timestamptz, timestamptz, bytea
 ) to service_role;
 
