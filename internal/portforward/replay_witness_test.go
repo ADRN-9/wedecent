@@ -28,6 +28,10 @@ type testAtomicCheckpointPrimary struct {
 	loseCommitResponse bool
 }
 
+func (a *testAtomicCheckpointPrimary) CheckpointAuthorityKeyID() string {
+	return checkpointProviderKeyID(a.replay.private.Public().(ed25519.PublicKey))
+}
+
 func (a *testAtomicCheckpointPrimary) Consume(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
