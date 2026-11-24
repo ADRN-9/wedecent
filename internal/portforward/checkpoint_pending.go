@@ -136,7 +136,7 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 func (s *FileCheckpointPendingStore) Compact(ctx context.Context, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) error {
 	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) { return ErrReplayUnavailable }
 	_, err := s.update(ctx, func(snapshot *checkpointPendingSnapshot) (bool, error) {
-		compactAcknowledgedPendingEntries(&snapshot, acknowledgements, witnesses, quorum)
+		compactAcknowledgedPendingEntries(snapshot, acknowledgements, witnesses, quorum)
 		return false, nil
 	})
 	return err
