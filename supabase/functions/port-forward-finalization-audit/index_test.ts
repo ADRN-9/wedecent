@@ -1,4 +1,28 @@
 import {
+import {
+  checkpointHeadMessage,
+  checkpointReceiptMessage,
+  concat,
+  h32,
+  sha,
+  witnessAckMessage,
+  witnessHeadMessage,
+} from "./index.ts";
+
+Deno.test("shared Go and TypeScript checkpoint cryptographic golden vectors", async () => {
+  const vector = JSON.parse(await Deno.readTextFile(new URL("../../../testdata/portforward/checkpoint_crypto_vectors.json", import.meta.url)));
+  const hex = (value: Uint8Array) => [...value].map((x) => x.toString(16).padStart(2, "0")).join("");
+  const requestMessage = Uint8Array.from(vector.request.message_hex.match(/../g), (x: string) => parseInt(x, 16));
+  if (hex(await sha(requestMessage)) !== vector.request.fingerprint_sha256) throw new Error("request fingerprint vector mismatch");
+  const operationID = hex(await sha(concat(new TextEncoder().encode("wedecent-checkpoint-finalization-v1\n"), h32(vector.request.fingerprint_sha256))));
+  if (operationID !== vector.request.operation_id) throw new Error("operation ID newline or digest vector mismatch");
+  if (hex(checkpointReceiptMessage(vector.primary_receipt)) !== vector.primary_receipt.message_hex) throw new Error("primary receipt vector mismatch");
+  if (hex(checkpointHeadMessage(vector.primary_head)) !== vector.primary_head.message_hex) throw new Error("primary head vector mismatch");
+  if (hex(witnessAckMessage(vector.witness_ack)) !== vector.witness_ack.message_hex) throw new Error("witness acknowledgement vector mismatch");
+  if (hex(witnessHeadMessage(vector.witness_head)) !== vector.witness_head.message_hex) throw new Error("witness head vector mismatch");
+  if (await digest(vector.canonical_payload.value) !== vector.canonical_payload.sha256) throw new Error("canonical payload digest vector mismatch");
+});
+
   canonical, checkpointHeadMessage, checkpointReceiptMessage, checkpointRecordHash,
   concat, digest, i64, providerKeyID, sha, str, u32, u64,
   verifyFinalizationEvidence, verifyRouteAuthorization, witnessAckMessage, witnessHeadMessage,
@@ -155,7 +179,7 @@ async function positiveEvidenceFixture() {
       { primary_head: destinationHead, witness_heads: [await witnessHead("witness-a", witnessAID, witnessA, destination, 0, 0, new Uint8Array(32)), await witnessHead("witness-b", witnessBID, witnessB, destination, 0, 0, new Uint8Array(32))] },
     ],
   };
-  const operationID = hex(await sha(concat(new TextEncoder().encode("wedecent-checkpoint-finalization-v1\\n"), requestHash)));
+  const operationID = hex(await sha(concat(new TextEncoder().encode("wedecent-checkpoint-finalization-v1\n"), requestHash)));
   return {
     primaryRaw, witnessARaw, witnessBRaw,
     payload, requestHash, evidence, operationID,
