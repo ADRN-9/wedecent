@@ -54,7 +54,7 @@ func RejectExistingFileReplayState(path string) error {
 	if path == "." || !filepath.IsAbs(path) {
 		return ErrReplayUnavailable
 	}
-	for _, suffix := range []string{"", ".init", ".lock", ".anchor", ".pending", ".lock.bootstrap"} {
+	for _, suffix := range []string{"", ".init", ".lock", ".lock.anchor", ".lock.marker", ".anchor", ".pending", ".lock.bootstrap"} {
 		if _, err := os.Lstat(path + suffix); err == nil {
 			return fmt.Errorf("%w: existing local replay artifact %s requires explicit identity recovery", ErrReplayUnavailable, filepath.Base(path+suffix))
 		} else if !errors.Is(err, os.ErrNotExist) {
