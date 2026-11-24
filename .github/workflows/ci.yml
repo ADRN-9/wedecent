@@ -84,7 +84,10 @@ jobs:
         run: go test ./internal/session ./internal/portforward ./internal/transport
       - name: Stress persisted witness quorum equivocation
         run: |
-          go test ./internal/portforward -run '^(TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart|TestPersistedQuorumRecoveryDoesNotRequireWitnessAvailability|TestInvalidSignedConflictCannotPoisonPersistedQuorum|TestRepeatedEquivocationDetectionIsIdempotentAndTerminal|TestConcurrentFinalizationRunsCallbackAtMostOnce|TestEquivocationEvidencePersistenceInterruptionFailsClosed|TestEquivocationJournalCorruptionFailsClosed)        run: go test -race ./internal/session ./internal/portforward ./internal/transport
+          go test ./internal/portforward -run '^(TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart|TestPersistedQuorumRecoveryDoesNotRequireWitnessAvailability|TestInvalidSignedConflictCannotPoisonPersistedQuorum|TestRepeatedEquivocationDetectionIsIdempotentAndTerminal|TestConcurrentFinalizationRunsCallbackAtMostOnce|TestEquivocationEvidencePersistenceInterruptionFailsClosed|TestEquivocationJournalCorruptionFailsClosed)$' -count=10
+          go test -race ./internal/portforward -run '^(TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart|TestPersistedQuorumRecoveryDoesNotRequireWitnessAvailability|TestInvalidSignedConflictCannotPoisonPersistedQuorum|TestRepeatedEquivocationDetectionIsIdempotentAndTerminal|TestConcurrentFinalizationRunsCallbackAtMostOnce|TestEquivocationEvidencePersistenceInterruptionFailsClosed|TestEquivocationJournalCorruptionFailsClosed)$' -count=1
+      - name: Race-test port-forward session and transport packages
+        run: go test -race ./internal/session ./internal/portforward ./internal/transport
       - name: Test all Go packages
         run: go test ./...
       - name: Vet
