@@ -19,14 +19,14 @@ The provider commits one monotonically increasing generation per consuming devic
 
 ## Idempotency and linearization
 
-An exact request retry returns the same durable receipt, including after an ambiguous lost response. Reuse of a JTI with a different request fingerprint or authorization digest is a conflict. The provider must serialize Consume and Revoke against the same durable state:
+An exact request retry returns the same durable receipt, including after an ambiguous lost response, but the result is explicitly marked Recovered rather than Committed. Reuse of a JTI with a different request fingerprint or authorization digest is a conflict. A Recovered result may resolve only a locally recorded pending operation with the exact request fingerprint; if the caller cannot prove that pending operation, it must fail closed and must not start a new forwarding session. This prevents an idempotency response from becoming a second authorization. The provider must serialize Consume and Revoke against the same durable state:
 - If consumption linearizes first, that consumption is committed, but subsequent operations using the old revocation epoch are rejected.
 - If revocation linearizes first, consumption with the old epoch is rejected.
 - A new request must carry current endpoint membership and revocation epochs.
 - A timeout with unknown commit outcome is ambiguous; the caller retries the exact same signed request and verifies the returned receipt.
 - No local replay fallback, generation reset, or automatic reinitialization is permitted.
 
-The contract's Head returns the provider's signed current generation, chain head and revocation epoch. Recovery must compare this result to retained receipts and independently protected state. It must not infer a zero generation from a missing local cache.
+The contract returns a disposition with every receipt: Committed means this call created the durable record; Recovered means the exact record already existed. VerifyCheckpointResult checks the provider signature and this disposition. The contract's Head returns the provider's signed current generation, chain head and revocation epoch. Recovery must compare this result to retained receipts and independently protected state. It must not infer a zero generation from a missing local cache.
 
 ## Deterministic fake-provider harness
 

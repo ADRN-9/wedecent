@@ -81,11 +81,26 @@ type CheckpointHead struct {
 	Signature []byte
 }
 
+// CheckpointDisposition distinguishes a new commit from recovery of a prior commit.
+type CheckpointDisposition string
+
+const (
+	CheckpointCommitted CheckpointDisposition = "committed"
+	CheckpointRecovered CheckpointDisposition = "recovered"
+)
+
+// CheckpointResult never turns an idempotent retry into a second authorization.
+// Recovered results may resolve only a locally recorded pending operation; otherwise fail closed.
+type CheckpointResult struct {
+	CheckpointReceipt
+	Disposition CheckpointDisposition
+}
+
 // ReplayCheckpointProvider implementations must serialize Consume and Revoke
 // against the same durable state. Consume commits before returning. Ambiguous
 // outcomes are retried with the exact same request; local replay fallback is forbidden.
 type ReplayCheckpointProvider interface {
-	Consume(context.Context, CheckpointRequest) (CheckpointReceipt, error)
+	Consume(context.Context, CheckpointRequest) (CheckpointResult, error)
 	Revoke(context.Context, CheckpointEndpoint, uint64) error
 	Head(context.Context, CheckpointEndpoint) (CheckpointHead, error)
 }

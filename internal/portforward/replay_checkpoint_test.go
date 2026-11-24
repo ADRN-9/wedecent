@@ -36,34 +36,34 @@ func newDeterministicCheckpointProvider(t *testing.T) *deterministicCheckpointPr
 func memberKey(e CheckpointEndpoint) string { return e.DeviceID+"|"+e.AccountID+"|"+e.OrganizationID }
 func (p *deterministicCheckpointProvider) register(e CheckpointEndpoint) { p.members[memberKey(e)]=e }
 
-func (p *deterministicCheckpointProvider) Consume(ctx context.Context, request CheckpointRequest) (CheckpointReceipt,error) {
-	if err:=ctx.Err();err!=nil{return CheckpointReceipt{},err}
-	fingerprint,err:=CheckpointRequestFingerprint(request);if err!=nil{return CheckpointReceipt{},err}
+func (p *deterministicCheckpointProvider) Consume(ctx context.Context, request CheckpointRequest) (CheckpointResult,error) {
+	if err:=ctx.Err();err!=nil{return CheckpointResult{},err}
+	fingerprint,err:=CheckpointRequestFingerprint(request);if err!=nil{return CheckpointResult{},err}
 	p.mu.Lock();defer p.mu.Unlock()
-	if !p.available{return CheckpointReceipt{},ErrCheckpointUnavailable}
+	if !p.available{return CheckpointResult{},ErrCheckpointUnavailable}
 	initiator,iok:=p.members[memberKey(request.Initiator)]
 	destination,dok:=p.members[memberKey(request.Destination)]
-	if !iok||!dok||initiator.RevocationEpoch!=request.Initiator.RevocationEpoch||destination.RevocationEpoch!=request.Destination.RevocationEpoch{return CheckpointReceipt{},ErrCheckpointRevoked}
-	consumer,ok:=checkpointConsumer(request);if !ok{return CheckpointReceipt{},ErrCheckpointIntegrity}
-	if p.crashBefore{p.crashBefore=false;return CheckpointReceipt{},ErrCheckpointUnavailable}
+	if !iok||!dok||initiator.RevocationEpoch!=request.Initiator.RevocationEpoch||destination.RevocationEpoch!=request.Destination.RevocationEpoch{return CheckpointResult{},ErrCheckpointRevoked}
+	consumer,ok:=checkpointConsumer(request);if !ok{return CheckpointResult{},ErrCheckpointIntegrity}
+	if p.crashBefore{p.crashBefore=false;return CheckpointResult{},ErrCheckpointUnavailable}
 	key:=checkpointLedgerKey{consumer.DeviceID,consumer.AccountID,consumer.OrganizationID}
 	ledger:=p.ledgers[key];if ledger==nil{ledger=&checkpointLedger{used:map[string]checkpointStored{}};p.ledgers[key]=ledger}
 	if old,exists:=ledger.used[request.JTI];exists{
-		if old.requestHash!=fingerprint{return CheckpointReceipt{},ErrCheckpointConflict}
-		return cloneCheckpointReceipt(old.receipt),nil
+		if old.requestHash!=fingerprint{return CheckpointResult{},ErrCheckpointConflict}
+		return CheckpointResult{CheckpointReceipt:cloneCheckpointReceipt(old.receipt),Disposition:CheckpointRecovered},nil
 	}
 	receipt:=CheckpointReceipt{Version:checkpointVersion,DeviceID:consumer.DeviceID,AccountID:consumer.AccountID,
 		OrganizationID:consumer.OrganizationID,JTI:request.JTI,AuthorizationSHA256:request.AuthorizationSHA256,
 		RequestSHA256:fingerprint,Generation:ledger.generation+1,PreviousHash:ledger.head,ProviderKeyID:p.keyID}
 	receipt.RecordHash=checkpointRecordHash(receipt.PreviousHash,receipt.Generation,fingerprint)
-	receipt,err=SignCheckpointReceipt(p.private,receipt);if err!=nil{return CheckpointReceipt{},err}
-	if p.crashBefore{p.crashBefore=false;return CheckpointReceipt{},ErrCheckpointUnavailable}
+	receipt,err=SignCheckpointReceipt(p.private,receipt);if err!=nil{return CheckpointResult{},err}
+	if p.crashBefore{p.crashBefore=false;return CheckpointResult{},ErrCheckpointUnavailable}
 	ledger.generation=receipt.Generation;ledger.head=receipt.RecordHash
 	ledger.used[request.JTI]=checkpointStored{fingerprint,cloneCheckpointReceipt(receipt)}
 	p.primaryDB[request.JTI]=fmt.Sprint(receipt.Generation)
-	if p.crashAfter{p.crashAfter=false;return CheckpointReceipt{},ErrCheckpointAmbiguous}
+	if p.crashAfter{p.crashAfter=false;return CheckpointResult{},ErrCheckpointAmbiguous}
 	if p.corruptReceipt{receipt.Signature=append([]byte(nil),receipt.Signature...);receipt.Signature[0]^=0xff}
-	return receipt,nil
+	return CheckpointResult{CheckpointReceipt:receipt,Disposition:CheckpointCommitted},nil
 }
 func (p *deterministicCheckpointProvider) Revoke(ctx context.Context,e CheckpointEndpoint,next uint64)error{
 	if err:=ctx.Err();err!=nil{return err};p.mu.Lock();defer p.mu.Unlock()
@@ -105,12 +105,13 @@ func makeCheckpointFixture(t *testing.T,p *deterministicCheckpointProvider,accou
 
 func TestCheckpointConcurrentConsumptionAndExactRetry(t *testing.T){
 	p:=newDeterministicCheckpointProvider(t);req,_,_,a,_:=makeCheckpointFixture(t,p,"11111111-1111-4111-8111-111111111111","22222222-2222-4222-8222-222222222222")
-	const n=48;var wg sync.WaitGroup;receipts:=make(chan CheckpointReceipt,n);errs:=make(chan error,n)
+	const n=48;var wg sync.WaitGroup;receipts:=make(chan CheckpointResult,n);errs:=make(chan error,n)
 	for i:=0;i<n;i++{wg.Add(1);go func(){defer wg.Done();r,e:=p.Consume(context.Background(),req);receipts<-r;errs<-e}()}
 	wg.Wait();close(receipts);close(errs);for e:=range errs{if e!=nil{t.Fatal(e)}}
-	var first CheckpointReceipt;for r:=range receipts{if first.Generation==0{first=r}else if first.Generation!=r.Generation||first.RecordHash!=r.RecordHash{t.Fatal("idempotent retries returned different receipts")}}
+	var first CheckpointResult;committed:=0;for r:=range receipts{if r.Disposition==CheckpointCommitted{committed++};if first.Generation==0{first=r}else if first.Generation!=r.Generation||first.RecordHash!=r.RecordHash{t.Fatal("idempotent retries returned different receipts")}}
 	if first.Generation!=1{t.Fatalf("generation=%d",first.Generation)}
-	if err:=VerifyCheckpointReceipt(first,req,p.private.Public().(ed25519.PublicKey));err!=nil{t.Fatal(err)}
+	if committed!=1{t.Fatalf("new commits=%d, want exactly one",committed)}
+	if err:=VerifyCheckpointResult(first,req,p.private.Public().(ed25519.PublicKey));err!=nil{t.Fatal(err)}
 	head,err:=p.Head(context.Background(),a);if err!=nil{t.Fatal(err)}
 	if err:=VerifyCheckpointHead(head,a,p.private.Public().(ed25519.PublicKey));err!=nil{t.Fatal(err)}
 }
@@ -134,7 +135,8 @@ func TestCheckpointCrashBeforeAfterCommitAndLostResponseRetry(t *testing.T){
 		if !after&&!errors.Is(err,ErrCheckpointUnavailable){t.Fatalf("want precommit failure: %v",err)}
 		r,err:=p.Consume(context.Background(),req);if err!=nil{t.Fatal(err)}
 		if r.Generation!=1{t.Fatalf("generation=%d",r.Generation)}
-		if err:=VerifyCheckpointReceipt(r,req,p.private.Public().(ed25519.PublicKey));err!=nil{t.Fatal(err)}
+		wantDisposition:=CheckpointCommitted;if after{wantDisposition=CheckpointRecovered};if r.Disposition!=wantDisposition{t.Fatalf("disposition=%q, want %q",r.Disposition,wantDisposition)}
+		if err:=VerifyCheckpointResult(r,req,p.private.Public().(ed25519.PublicKey));err!=nil{t.Fatal(err)}
 	})}
 }
 
@@ -145,7 +147,7 @@ func TestCheckpointConflictingJTIAndForgedReceipt(t *testing.T){
 	conflict,err=SignCheckpointRequest(priv,conflict);if err!=nil{t.Fatal(err)}
 	if _,err=p.Consume(context.Background(),conflict);!errors.Is(err,ErrCheckpointConflict){t.Fatalf("conflict: %v",err)}
 	r.Signature[0]^=0xff
-	if err:=VerifyCheckpointReceipt(r,req,p.private.Public().(ed25519.PublicKey));!errors.Is(err,ErrCheckpointIntegrity){t.Fatalf("forged receipt: %v",err)}
+	if err:=VerifyCheckpointReceipt(r.CheckpointReceipt,req,p.private.Public().(ed25519.PublicKey));!errors.Is(err,ErrCheckpointIntegrity){t.Fatalf("forged receipt: %v",err)}
 }
 
 func TestCheckpointUnavailableAndMalformedRequestFailClosed(t *testing.T){
@@ -161,7 +163,8 @@ func TestCheckpointCompletePrimaryDatabaseRestoreDoesNotRestoreCheckpoint(t *tes
 	primarySnapshot:=map[string]string{};for k,v:=range p.primaryDB{primarySnapshot[k]=v}
 	// Simulate restoring every row in the primary database to an earlier snapshot.
 	p.primaryDB=map[string]string{"old-snapshot":"restored"}
-	if _,err:=p.Consume(context.Background(),req);err!=nil{t.Fatalf("checkpoint should return exact durable receipt after primary restore: %v",err)}
+	result,err:=p.Consume(context.Background(),req);if err!=nil{t.Fatalf("checkpoint should return exact durable receipt after primary restore: %v",err)}
+	if result.Disposition!=CheckpointRecovered{t.Fatalf("restored-primary retry disposition=%q; must never appear as a new authorization",result.Disposition)}
 	if _,ok:=primarySnapshot[req.JTI];!ok{t.Fatal("fixture did not snapshot primary transaction")}
 }
 
@@ -190,7 +193,7 @@ func TestCheckpointProviderCompromiseRequiresIndependentWitness(t *testing.T){
 	// Simulate provider compromise restoring its own ledger and retaining its signing key.
 	p.ledgers[key]=snapshot
 	replayed,err:=p.Consume(context.Background(),secondReq);if err!=nil{t.Fatal(err)}
-	if replayed.Generation!=second.Generation||VerifyCheckpointReceipt(replayed,secondReq,p.private.Public().(ed25519.PublicKey))!=nil{
+	if replayed.Generation!=second.Generation||replayed.Disposition!=CheckpointCommitted||VerifyCheckpointResult(replayed,secondReq,p.private.Public().(ed25519.PublicKey))!=nil{
 		t.Fatal("fixture should demonstrate that a compromised single provider can replay its own valid signed history")
 	}
 	if first.Generation!=1{t.Fatal("bad fixture")}

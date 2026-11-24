@@ -28,7 +28,8 @@ func TestCheckpointAuthorityRestartAndHeadReconciliation(t *testing.T) {
 	}
 	recovered, err := restarted.Consume(context.Background(), request)
 	if err != nil { t.Fatal(err) }
-	if CheckpointReceiptDigest(recovered) != CheckpointReceiptDigest(receipt) {
+	if recovered.Disposition != CheckpointRecovered { t.Fatalf("retry disposition=%q", recovered.Disposition) }
+	if CheckpointReceiptDigest(recovered.CheckpointReceipt) != CheckpointReceiptDigest(receipt.CheckpointReceipt) {
 		t.Fatal("restart did not recover the exact idempotent receipt")
 	}
 }
@@ -41,7 +42,7 @@ func TestCheckpointCorruptReceiptAndStaleRevocationFailClosed(t *testing.T) {
 	provider.corruptReceipt = true
 	corrupt, err := provider.Consume(context.Background(), request)
 	if err != nil { t.Fatal(err) }
-	if err := VerifyCheckpointReceipt(corrupt, request, provider.private.Public().(ed25519.PublicKey)); !errors.Is(err, ErrCheckpointIntegrity) {
+	if err := VerifyCheckpointReceipt(corrupt.CheckpointReceipt, request, provider.private.Public().(ed25519.PublicKey)); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("corrupt receipt accepted: %v", err)
 	}
 
