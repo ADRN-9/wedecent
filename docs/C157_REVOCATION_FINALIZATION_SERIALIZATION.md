@@ -32,7 +32,7 @@ The repository defines `CheckpointFinalizationAuditor` with the stable operation
 
 The generic `internal/audit.Log.Append` implementation is a durable append-only JSONL logger with file locking and fsync, but it does not accept a stable operation ID or enforce deduplication by operation ID plus outcome. It therefore cannot be treated as an idempotent implementation of `CheckpointFinalizationAuditor`.
 
-The inspected `cmd/wd-core/main.go` configures the current forwarding manager and legacy replay endpoint. It does not construct or inject a production `CheckpointFinalizationAuditor`, and no production implementation of that interface was found in the inspected project wiring. Production audit-sink integration is absent; the runtime must remain fail-closed until an independently durable, atomically deduplicating sink is supplied and verified.
+The inspected `internal/coreapi/coreprocess/process.go` constructs `CheckpointAuthorizationReplay` in `newLocalCoreForwardingVerifier`, wiring the witnessed provider, control-plane key, local device signer, membership resolver and route verifier. It does not set `FinalizationAuditor`. The inspected `cmd/wd-core/main.go` does not supply a production auditor either. The generic `internal/audit.Log` is used elsewhere for ordinary events, but no adapter implementing `CheckpointFinalizationAuditor` was found in the inspected runtime wiring. No production implementation of that interface was found in the inspected project. Production audit-sink integration is absent; the runtime must remain fail-closed until an independently durable, atomically deduplicating sink is supplied and verified.
 
 ## Security boundary and remaining dependencies
 
