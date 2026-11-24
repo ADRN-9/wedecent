@@ -36,3 +36,11 @@ No local shell, Docker, or PostgreSQL execution was available through the reposi
 ## Protected operations
 
 No force-push, merge, approval, deployment, or production operation was performed. PR #186 remains open and draft.
+
+## CI infrastructure recovery
+
+The first CI attempt containing the concurrency harness (run 45352068936) failed before pgTAP or the new harness ran: Docker could not bind the default Supabase database port 54322 because it was already occupied on the hosted runner. This was an infrastructure port collision, not a migration or test assertion failure.
+
+The CI workflow now probes an available host port and appends a temporary `[db]` port override to the checked-out local Supabase config before startup. The repository's committed `supabase/config.toml` is unchanged. The test harness reads the actual `DB_URL` reported by `supabase status -o env`, so it follows the selected port.
+
+The retry at CI run 45352285692 was still in progress at the time of this report. The database startup step had not yet completed; no concurrency test result is claimed.
