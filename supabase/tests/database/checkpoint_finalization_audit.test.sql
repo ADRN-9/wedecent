@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(21);
+select plan(23);
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
@@ -99,6 +99,17 @@ select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','failure/recovery operation starts cleanly');
 select is((pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','intermediate failure is recorded without terminalizing operation');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','successful retry can recover after intermediate failure');
+
+delete from public.organization_memberships
+ where organization_id='22000000-0000-4000-8000-000000000091'
+   and user_id='11000000-0000-4000-8000-000000000092';
+select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('e',64))$q$,'42501','audit participant membership is unavailable','destination membership revocation blocks audit');
+insert into public.organization_memberships(organization_id,user_id,role,created_by)
+values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
+
+update public.devices set revocation_epoch=2 where device_id='wd_bbbbbbbbbbbbbbbb';
+select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('f',64))$q$,'42501','destination device membership or revocation changed','current device revocation epoch mismatch blocks audit');
+update public.devices set revocation_epoch=1 where device_id='wd_bbbbbbbbbbbbbbbb';
 
 select * from finish();
 rollback;
