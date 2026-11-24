@@ -16,7 +16,7 @@ import (
 	"time"
 )
 
-const checkpointPendingVersion = 3
+const checkpointPendingVersion = 4
 const checkpointPendingMaxSize = 16 << 20
 const checkpointPendingMaxEntries = 65536
 
@@ -30,14 +30,16 @@ type CheckpointWitnessEquivocation struct {
 }
 
 type checkpointPendingEntry struct {
-	Fingerprint      string                          `json:"fingerprint"`
-	State            string                          `json:"state"`
-	CreatedAt        int64                           `json:"created_at_unix_ms"`
-	ReceiptHash      string                          `json:"receipt_hash,omitempty"`
-	Acknowledgements []CheckpointWitnessAck          `json:"acknowledgements,omitempty"`
-	Equivocations    []CheckpointWitnessEquivocation `json:"equivocations,omitempty"`
-	Request          CheckpointRequest               `json:"request"`
-	Receipt          *CheckpointReceipt              `json:"receipt,omitempty"`
+	Fingerprint          string                          `json:"fingerprint"`
+	State                string                          `json:"state"`
+	CreatedAt            int64                           `json:"created_at_unix_ms"`
+	ReceiptHash          string                          `json:"receipt_hash,omitempty"`
+	Acknowledgements     []CheckpointWitnessAck          `json:"acknowledgements,omitempty"`
+	Equivocations        []CheckpointWitnessEquivocation `json:"equivocations,omitempty"`
+	FinalizationID       string                          `json:"finalization_id,omitempty"`
+	FinalizationComplete bool                            `json:"finalization_complete,omitempty"`
+	Request              CheckpointRequest                `json:"request"`
+	Receipt              *CheckpointReceipt               `json:"receipt,omitempty"`
 }
 
 type checkpointPendingSnapshot struct {
@@ -64,6 +66,16 @@ type checkpointPendingCompactor interface {
 
 type checkpointPendingFinalizationLocker interface {
 	LockFinalization(context.Context, CheckpointRequest) (func() error, error)
+}
+
+type checkpointPendingDecisionWriter interface {
+	recordAcknowledgementLocked(context.Context, CheckpointRequest, CheckpointReceipt, CheckpointWitnessAck, CheckpointWitnessTrust) error
+	recordEquivocationLocked(context.Context, CheckpointRequest, CheckpointReceipt, CheckpointWitnessAck, CheckpointWitnessAck, CheckpointWitnessTrust) error
+}
+
+type checkpointPendingCompletionStore interface {
+	LoadFinalizationComplete(context.Context, CheckpointRequest, CheckpointReceipt, string) (bool, error)
+	MarkFinalizationComplete(context.Context, CheckpointRequest, CheckpointReceipt, string) error
 }
 
 type checkpointPendingTrustConfigurer interface {
@@ -273,7 +285,7 @@ func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequ
 	rh := CheckpointReceiptDigest(receipt)
 	if receipt.RequestSHA256 != fp || receipt.JTI != request.JTI ||
 		VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil ||
-		!checkpointAckMatchesPendingOperation(ack, request, receipt) || ack.Decision != "committed" {
+		!checkpointAckMatchesPendingOperation(ack, request, receipt) {
 		return ErrCheckpointIntegrity
 	}
 	return update(func(snapshot *checkpointPendingSnapshot) (bool, error) {
@@ -312,7 +324,7 @@ func recordCheckpointEquivocation(ctx context.Context, request CheckpointRequest
 		VerifyCheckpointWitnessAck(conflicting, trust.ID, trust.PublicKey) != nil ||
 		!checkpointAckMatchesPendingOperation(original, request, receipt) ||
 		!checkpointAckMatchesPendingOperation(conflicting, request, receipt) ||
-		original.Decision != "committed" || original.Decision == conflicting.Decision {
+		original.Decision == conflicting.Decision {
 		return ErrCheckpointIntegrity
 	}
 	return update(func(snapshot *checkpointPendingSnapshot) (bool, error) {
@@ -380,7 +392,7 @@ func validateStoredCheckpointAcknowledgements(snapshot checkpointPendingSnapshot
 		trust, ok := trusted[ack.WitnessID]
 		if !ok || seen[ack.WitnessID] ||
 			VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil ||
-			!checkpointAckMatchesPendingOperation(ack, request, receipt) || ack.Decision != "committed" {
+			!checkpointAckMatchesPendingOperation(ack, request, receipt) {
 			return nil, ErrCheckpointIntegrity
 		}
 		seen[ack.WitnessID] = true
@@ -412,7 +424,6 @@ func loadCheckpointEquivocations(snapshot checkpointPendingSnapshot, request Che
 			VerifyCheckpointWitnessAck(evidence.Conflicting, trust.ID, trust.PublicKey) != nil ||
 			!checkpointAckMatchesPendingOperation(evidence.Original, request, receipt) ||
 			!checkpointAckMatchesPendingOperation(evidence.Conflicting, request, receipt) ||
-			evidence.Original.Decision != "committed" ||
 			evidence.Original.Decision == evidence.Conflicting.Decision ||
 			evidence.ObservedAtUnixMs <= 0 {
 			return nil, ErrCheckpointIntegrity
@@ -827,7 +838,7 @@ func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now t
 		for _, ack := range entry.Acknowledgements {
 			publicKey, trusted := witnessKeys[ack.WitnessID]
 			if ack.WitnessID == "" || seen[ack.WitnessID] ||
-				!checkpointAckMatchesPendingOperation(ack, entry.Request, r) || ack.Decision != "committed" ||
+				!checkpointAckMatchesPendingOperation(ack, entry.Request, r) ||
 				ack.WitnessKeyID == "" || len(ack.Signature) != ed25519.SignatureSize ||
 				!trusted || VerifyCheckpointWitnessAck(ack, ack.WitnessID, publicKey) != nil {
 				return ErrCheckpointIntegrity
@@ -844,7 +855,6 @@ func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now t
 				VerifyCheckpointWitnessAck(evidence.Conflicting, evidence.WitnessID, publicKey) != nil ||
 				!checkpointAckMatchesPendingOperation(evidence.Original, entry.Request, r) ||
 				!checkpointAckMatchesPendingOperation(evidence.Conflicting, entry.Request, r) ||
-				evidence.Original.Decision != "committed" ||
 				evidence.Original.Decision == evidence.Conflicting.Decision {
 				return ErrCheckpointIntegrity
 			}
@@ -926,6 +936,8 @@ func checkpointPendingKey(request CheckpointRequest) string {
 type MemoryCheckpointPendingStore struct {
 	entries map[string]checkpointPendingEntry
 
+	transitionMu sync.Mutex
+	mu           sync.RWMutex
 	trustMu      sync.RWMutex
 	primaryTrust ed25519.PublicKey
 	witnessTrust map[string]ed25519.PublicKey
