@@ -297,6 +297,25 @@ func (s *MemoryCheckpointPendingStore) LoadAcknowledgements(ctx context.Context,
 	}, request, receipt, witnesses)
 }
 
+func (s *FileCheckpointPendingStore) LoadFinalization(ctx context.Context, deviceID, jti string, authorizationHash [sha256.Size]byte) (CheckpointRequest, CheckpointReceipt, bool, bool, error) {
+	if s == nil || ctx == nil || !deviceIDPattern.MatchString(deviceID) || !jtiPattern.MatchString(jti) || authorizationHash == ([sha256.Size]byte{}) {
+		return CheckpointRequest{}, CheckpointReceipt{}, false, false, ErrCheckpointIntegrity
+	}
+	var request CheckpointRequest
+	var receipt CheckpointReceipt
+	found, hasReceipt := false, false
+	_, err := s.update(ctx, func(snapshot *checkpointPendingSnapshot) (bool, error) {
+		for _, entry := range snapshot.Entries {
+			if entry.Request.ConsumingDeviceID != deviceID || entry.Request.JTI != jti || entry.Request.AuthorizationSHA256 != authorizationHash { continue }
+			if found { return false, ErrCheckpointIntegrity }
+			found = true
+			request = cloneCheckpointRequest(entry.Request)
+			if entry.Receipt != nil { receipt = cloneCheckpointReceipt(*entry.Receipt); hasReceipt = true }
+		}
+		return false, nil
+	})
+	return request, receipt, found, hasReceipt, err
+}
 func (s *FileCheckpointPendingStore) Compact(ctx context.Context, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) error {
 	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) {
 		return ErrReplayUnavailable
