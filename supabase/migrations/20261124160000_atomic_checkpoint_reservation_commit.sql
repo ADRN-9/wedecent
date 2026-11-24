@@ -29,6 +29,7 @@ create table public.checkpoint_operation_participants (
     account_id uuid not null references auth.users(id) on delete restrict,
     organization_id uuid not null references public.organizations(id) on delete restrict,
     revocation_epoch bigint not null check (revocation_epoch >= 0),
+    next_revocation_epoch bigint not null check (next_revocation_epoch >= revocation_epoch),
     expected_generation bigint not null check (expected_generation >= 0),
     expected_hash bytea not null check (pg_catalog.octet_length(expected_hash) = 32),
     next_generation bigint not null check (next_generation > expected_generation),
@@ -128,6 +129,7 @@ declare
     v_initial_replay_hash bytea;
     v_event_encoding bytea;
     v_next_hash bytea;
+    v_next_revocation_epoch bigint;
     v_operation public.checkpoint_operations%rowtype;
     v_device public.devices%rowtype;
     v_authority public.port_forward_replay_authority%rowtype;
@@ -402,10 +404,19 @@ begin
             );
             v_next_hash := extensions.digest(v_event_encoding, 'sha256');
 
+            v_next_revocation_epoch := (v_participant ->> 'revocation_epoch')::bigint;
+            if p_action = 'revoke' then
+                if v_next_revocation_epoch = 9223372036854775807 then
+                    raise exception 'checkpoint revocation epoch exhausted'
+                        using errcode = '22003';
+                end if;
+                v_next_revocation_epoch := v_next_revocation_epoch + 1;
+            end if;
+
             insert into public.checkpoint_operation_participants (
                 operation_id, device_id, account_id, organization_id,
-                revocation_epoch, expected_generation, expected_hash,
-                next_generation, next_hash
+                revocation_epoch, next_revocation_epoch,
+                expected_generation, expected_hash, next_generation, next_hash
             )
             values (
                 p_operation_id,
@@ -413,6 +424,7 @@ begin
                 (v_participant ->> 'account_id')::uuid,
                 p_organization_id,
                 (v_participant ->> 'revocation_epoch')::bigint,
+                v_next_revocation_epoch,
                 v_authority.checkpoint_head_generation,
                 v_authority.checkpoint_head_hash,
                 v_authority.checkpoint_head_generation + 1,
@@ -555,7 +567,6 @@ declare
     v_operation public.checkpoint_operations%rowtype;
     v_participant public.checkpoint_operation_participants%rowtype;
     v_actor_role public.organization_role;
-    v_actor_role public.organization_role;
     v_device public.devices%rowtype;
     v_authority public.port_forward_replay_authority%rowtype;
     v_event public.checkpoint_operation_events%rowtype;
@@ -565,6 +576,7 @@ declare
     v_ack_generation numeric;
     v_ack_count integer;
     v_count integer;
+    v_revoked_count integer;
     v_locked integer := 0;
 begin
     if p_operation_id is null or p_operation_id !~ '^[0-9a-f]{64}$'
@@ -834,6 +846,21 @@ begin
             using errcode = '40001';
     end if;
 
+    if v_operation.action = 'revoke' then
+        update public.devices as device_row
+           set revocation_epoch = participant_row.next_revocation_epoch
+          from public.checkpoint_operation_participants as participant_row
+         where participant_row.operation_id = p_operation_id
+           and device_row.device_id = participant_row.device_id
+           and device_row.revocation_epoch = participant_row.revocation_epoch;
+
+        get diagnostics v_revoked_count = row_count;
+        if v_revoked_count <> v_count then
+            raise exception 'checkpoint atomic revocation advancement was incomplete'
+                using errcode = '40001';
+        end if;
+    end if;
+
     select pg_catalog.jsonb_build_object(
         'status', 'committed',
         'operation_id', p_operation_id,
@@ -843,6 +870,7 @@ begin
             pg_catalog.jsonb_build_object(
                 'device_id', participant_row.device_id,
                 'generation', participant_row.next_generation,
+                'revocation_epoch', participant_row.next_revocation_epoch,
                 'head_hash', pg_catalog.encode(participant_row.next_hash, 'hex')
             )
             order by participant_row.device_id
