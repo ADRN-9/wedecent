@@ -163,6 +163,9 @@ func TestWitnessedClientRestartRecoversLostPrimaryCommit(t *testing.T) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "pending.json")
 	store, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
