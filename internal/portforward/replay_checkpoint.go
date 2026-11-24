@@ -49,6 +49,7 @@ type CheckpointRequest struct {
 	JTI                      string
 	AuthorizationSHA256      [sha256.Size]byte
 	RouteAuthorizationSHA256 [sha256.Size]byte
+	Router                   CheckpointEndpoint
 	DevicePublicKey          ed25519.PublicKey
 	DeviceSignature          []byte
 }
@@ -259,11 +260,28 @@ func checkpointRequestMessage(request CheckpointRequest) ([]byte, error) {
 		return nil, err
 	}
 	b.Write(request.AuthorizationSHA256[:])
-	if request.RouteAuthorizationSHA256 != ([sha256.Size]byte{}) {
+	routed := request.RouteAuthorizationSHA256 != ([sha256.Size]byte{})
+	if routed != (request.Router.DeviceID != "") {
+		return nil, ErrCheckpointIntegrity
+	}
+	if routed {
+		if !validCheckpointEndpoint(request.Router) ||
+			request.Router.DeviceID == request.Initiator.DeviceID ||
+			request.Router.DeviceID == request.Destination.DeviceID {
+			return nil, ErrCheckpointIntegrity
+		}
 		if err := putString("route-authorization-sha256-v1"); err != nil {
 			return nil, err
 		}
 		b.Write(request.RouteAuthorizationSHA256[:])
+		if err := putString("route-router-membership-v1"); err != nil {
+			return nil, err
+		}
+		if err := putEndpoint(request.Router); err != nil {
+			return nil, err
+		}
+	} else if request.Router != (CheckpointEndpoint{}) {
+		return nil, ErrCheckpointIntegrity
 	}
 	b.Write(request.DevicePublicKey)
 	return b.Bytes(), nil

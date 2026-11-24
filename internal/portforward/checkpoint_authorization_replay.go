@@ -144,23 +144,29 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 
 	initiator, initiatorErr := r.Memberships.ResolveCheckpointMembership(ctx, claims.InitiatingDevice)
 	destination, destinationErr := r.Memberships.ResolveCheckpointMembership(ctx, claims.DestinationDevice)
-	if errors.Is(initiatorErr, ErrCheckpointRevoked) || errors.Is(destinationErr, ErrCheckpointRevoked) {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationRevoked); err != nil {
-			return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr, err)
-		}
-		return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr)
+	var router CheckpointEndpoint
+	var routerErr error
+	if claims.Router != "" {
+		router, routerErr = r.Memberships.ResolveCheckpointMembership(ctx, claims.Router)
 	}
-	if initiatorErr != nil || destinationErr != nil {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationMembershipUnavailable); err != nil {
-			return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, err)
+	if errors.Is(initiatorErr, ErrCheckpointRevoked) || errors.Is(destinationErr, ErrCheckpointRevoked) || errors.Is(routerErr, ErrCheckpointRevoked) {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationRevoked); err != nil {
+			return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr, routerErr, err)
 		}
-		return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr)
+		return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr, routerErr)
+	}
+	if initiatorErr != nil || destinationErr != nil || routerErr != nil {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationMembershipUnavailable); err != nil {
+			return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, routerErr, err)
+		}
+		return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, routerErr)
 	}
 	if initiator != request.Initiator || destination != request.Destination ||
 		initiator.DeviceID != string(claims.InitiatingDevice) ||
 		destination.DeviceID != string(claims.DestinationDevice) ||
 		initiator.OrganizationID != destination.OrganizationID ||
-		!validCheckpointEndpoint(initiator) || !validCheckpointEndpoint(destination) {
+		!validCheckpointEndpoint(initiator) || !validCheckpointEndpoint(destination) ||
+		router != request.Router {
 		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationRevoked); err != nil {
 			return errors.Join(ErrCheckpointRevoked, err)
 		}

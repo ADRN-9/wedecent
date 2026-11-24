@@ -90,6 +90,7 @@ func BuildCheckpointRequest(
 		return CheckpointRequest{}, err
 	}
 	var routeAuthorizationHash [sha256.Size]byte
+	var routerMembership CheckpointEndpoint
 	if claims.Router != "" {
 		if routeVerifier == nil {
 			return CheckpointRequest{}, ErrRouteAuthorizationRequired
@@ -100,6 +101,13 @@ func BuildCheckpointRequest(
 		routeAuthorizationHash, err = checkpointRouteAuthorizationFingerprint(authorization.RouteAuthorization)
 		if err != nil {
 			return CheckpointRequest{}, err
+		}
+		routerMembership, err = memberships.ResolveCheckpointMembership(ctx, claims.Router)
+		if err != nil {
+			return CheckpointRequest{}, errors.Join(ErrCheckpointUnavailable, err)
+		}
+		if routerMembership.DeviceID != string(claims.Router) || !validCheckpointEndpoint(routerMembership) {
+			return CheckpointRequest{}, ErrCheckpointRevoked
 		}
 	}
 	if localDeviceID != claims.InitiatingDevice && localDeviceID != claims.DestinationDevice {
@@ -138,7 +146,7 @@ func BuildCheckpointRequest(
 	digestInput = append(digestInput, signature...)
 	request := CheckpointRequest{
 		Initiator: initiator, Destination: destination, ConsumingDeviceID: string(localDeviceID),
-		JTI: claims.JTI, AuthorizationSHA256: sha256.Sum256(digestInput), RouteAuthorizationSHA256: routeAuthorizationHash,
+		JTI: claims.JTI, AuthorizationSHA256: sha256.Sum256(digestInput), RouteAuthorizationSHA256: routeAuthorizationHash, Router: routerMembership,
 	}
 	return SignCheckpointRequest(deviceSigner, request)
 }
