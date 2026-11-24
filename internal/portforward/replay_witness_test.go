@@ -2630,7 +2630,9 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 		callbackCount++
 		if firstEvidence == nil {
 			copy, err := cloneCheckpointFinalizationEvidence(evidence)
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 			firstEvidence = &copy
 		} else if !reflect.DeepEqual(*firstEvidence, evidence) {
 			return errors.New("retry changed persisted finalization evidence")
