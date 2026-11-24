@@ -27,9 +27,12 @@ func TestUnixReplayLockDeletionAcrossProcessesFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	parentLockHeld := true
 	defer func() {
-		if err := unlock(); err != nil {
-			t.Errorf("release parent replay lock: %v", err)
+		if parentLockHeld {
+			if err := unlock(); err != nil {
+				t.Errorf("release parent replay lock: %v", err)
+			}
 		}
 	}()
 
@@ -55,8 +58,15 @@ func TestUnixReplayLockDeletionAcrossProcessesFailsClosed(t *testing.T) {
 	if err := secureReplayFile(path + ".lock.anchor"); err != nil {
 		t.Fatalf("persistent lock anchor was weakened: %v", err)
 	}
-	if _, _, err := lockReplayFile(path); err == nil {
-		t.Fatal("replay lock deletion was not rejected after initialization")
+	if err := unlock(); err != nil {
+		t.Fatalf("release parent replay lock: %v", err)
+	}
+	parentLockHeld = false
+	if relock, _, err := lockReplayFile(path); err == nil {
+		if unlockErr := relock(); unlockErr != nil {
+			t.Fatalf("release unexpected replacement lock: %v", unlockErr)
+		}
+		t.Fatal("replay lock inode replacement was not rejected after initialization")
 	}
 }
 
