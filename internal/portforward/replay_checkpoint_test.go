@@ -63,8 +63,14 @@ func (p *deterministicCheckpointProvider) Consume(ctx context.Context, request C
 	}
 	initiator, iok := p.members[memberKey(request.Initiator)]
 	destination, dok := p.members[memberKey(request.Destination)]
-	if !iok || !dok || initiator.RevocationEpoch != request.Initiator.RevocationEpoch || destination.RevocationEpoch != request.Destination.RevocationEpoch {
+	if !iok || !dok || initiator != request.Initiator || destination != request.Destination {
 		return CheckpointResult{}, ErrCheckpointRevoked
+	}
+	if request.RouteAuthorizationSHA256 != ([sha256.Size]byte{}) {
+		router, ok := p.members[memberKey(request.Router)]
+		if !ok || router != request.Router {
+			return CheckpointResult{}, ErrCheckpointRevoked
+		}
 	}
 	consumer, ok := checkpointConsumer(request)
 	if !ok {
