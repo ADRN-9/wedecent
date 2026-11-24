@@ -171,6 +171,73 @@ assertq 1 "select count(*) from public.port_forward_authorization_transactions w
 assertq 1 "select count(*) from public.port_forward_replay_entries where device_id='wd_aaaaaaaaaaaaaaaa' and jti='TTTTTTTTTTTTTTTTTTTTTT'"
 assertq "$((ROLLBACK_GENERATION + 1))" "select generation from public.port_forward_replay_authority where device_id='wd_aaaaaaaaaaaaaaaa'"
 
+# Audit finalization uses the same participant locks as authorization and revocation.
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+create function public.wd_c145_audit(p_operation_id text,p_jti text) returns jsonb
+language plpgsql security definer set search_path=''
+as $
+declare payload jsonb;
+begin
+ payload := jsonb_build_object(
+  'version',1,
+  'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-0000000000c1','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_aaaaaaaaaaaaaaaa')),
+  'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-0000000000c2','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_bbbbbbbbbbbbbbbb')),
+  'router',null,'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti',p_jti,
+  'authorization_sha256',(select encode(authorization_sha256,'hex') from public.port_forward_authorization_transactions where jti=p_jti),
+  'route_authorization_sha256',repeat('0',64),'route_authorization_id','','route_authorization_jti','','route_authorization_json','',
+  'device_public_key',(select public_key from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'),
+  'device_signature',repeat('A',86)||'=='
+ );
+ return public.record_checkpoint_finalization(
+  p_operation_id,'finalization_started',1,payload,
+  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
+  '{}'::jsonb,extensions.digest(convert_to('{}','UTF8'),'sha256'),
+  '11000000-0000-4000-8000-0000000000c1'
+ );
+end;
+$;
+SQL
+
+audit_race() {
+ local name="$1" order="$2" mutation="$3" post="$4" operation="$5" jti="$6"
+ local ca="wd-c145-$name-audit" ra="wd-c145-$name-mutation"
+ if [[ "$order" == "audit-first" ]]; then
+  start a "$ca"
+  send a "begin; select public.wd_c145_audit('$operation','$jti'); select 'audit-ready';"
+  wait_text a "audit-ready"
+  start r "$ra"
+  send r "begin; $mutation; select 'mutation-ready';"
+  wait_lock "$ra"
+  finish a || fail "$name audit commit failed"
+  finish r || fail "$name mutation commit failed"
+  assertq t "select exists(select 1 from public.checkpoint_finalization_audit where operation_id='$operation' and outcome='finalization_started')"
+ else
+  start r "$ra"
+  send r "begin; $mutation; select 'mutation-ready';"
+  wait_text r "mutation-ready"
+  start a "$ca"
+  send a "begin; select public.wd_c145_audit('$operation','$jti');"
+  wait_lock "$ca"
+  finish r || fail "$name mutation commit failed"
+  local fd="${FDS[a]}" pid="${PIDS[a]}"
+  exec {fd}>&-; unset 'FDS[a]' 'PIDS[a]'
+  if wait "$pid"; then cat "$WORK/a.log" >&2; fail "$name audit succeeded after revocation"; fi
+  grep -q 'ERROR:' "$WORK/a.log" || fail "$name audit did not fail with a database authorization error"
+  assertq f "select exists(select 1 from public.checkpoint_finalization_audit where operation_id='$operation' and outcome='finalization_started')"
+ fi
+ assertq true "$post"
+ printf 'verified audit %s (%s)\n' "$name" "$order"
+}
+
+audit_race device audit-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_bbbbbbbbbbbbbbbb'" "select (revoked_at is not null)::text from public.devices where device_id='wd_bbbbbbbbbbbbbbbb'" "$(printf '%064d' 1)" AAAAAAAAAAAAAAAAAAAAAA
+restore_device wd_bbbbbbbbbbbbbbbb
+audit_race device revoke-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_bbbbbbbbbbbbbbbb'" "select (revoked_at is not null)::text from public.devices where device_id='wd_bbbbbbbbbbbbbbbb'" "$(printf '%064d' 2)" AAAAAAAAAAAAAAAAAAAAAA
+restore_device wd_bbbbbbbbbbbbbbbb
+audit_race membership audit-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 3)" AAAAAAAAAAAAAAAAAAAAAA
+restore_membership
+audit_race membership revoke-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 4)" AAAAAAAAAAAAAAAAAAAAAA
+restore_membership
+
 # Route-grant JTIs are unique in their own table and intentionally differ from forwarding JTIs.
 route 33000000-0000-4000-8000-0000000000d1 NNNNNNNNNNNNNNNNNNNNNN
 start c wd-c145-dup-a
