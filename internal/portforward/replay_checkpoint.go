@@ -19,12 +19,12 @@ import (
 
 var (
 	ErrCheckpointUnavailable = errors.New("portforward: checkpoint authority unavailable")
-	ErrCheckpointReplay = errors.New("portforward: checkpoint JTI already consumed")
-	ErrCheckpointConflict = errors.New("portforward: checkpoint JTI reused with conflicting request")
-	ErrCheckpointRevoked = errors.New("portforward: checkpoint endpoint membership or revocation rejected")
-	ErrCheckpointIntegrity = errors.New("portforward: checkpoint receipt or chain integrity failure")
-	ErrCheckpointAmbiguous = errors.New("portforward: checkpoint commit outcome is ambiguous")
-	ErrCheckpointStale = errors.New("portforward: checkpoint generation or revocation epoch is stale")
+	ErrCheckpointReplay      = errors.New("portforward: checkpoint JTI already consumed")
+	ErrCheckpointConflict    = errors.New("portforward: checkpoint JTI reused with conflicting request")
+	ErrCheckpointRevoked     = errors.New("portforward: checkpoint endpoint membership or revocation rejected")
+	ErrCheckpointIntegrity   = errors.New("portforward: checkpoint receipt or chain integrity failure")
+	ErrCheckpointAmbiguous   = errors.New("portforward: checkpoint commit outcome is ambiguous")
+	ErrCheckpointStale       = errors.New("portforward: checkpoint generation or revocation epoch is stale")
 )
 
 const checkpointVersion uint32 = 1
@@ -34,51 +34,51 @@ const checkpointHeadDomain = "wedecent-replay-checkpoint-head-v1"
 
 // CheckpointEndpoint binds an Ed25519 device to immutable account and organization UUIDs.
 type CheckpointEndpoint struct {
-	DeviceID string
-	AccountID string
-	OrganizationID string
+	DeviceID        string
+	AccountID       string
+	OrganizationID  string
 	RevocationEpoch uint64
 }
 
 // CheckpointRequest is signed by the consuming endpoint. The peer is bound by
 // the separately verified forwarding capability; both memberships are checked by the provider.
 type CheckpointRequest struct {
-	Initiator CheckpointEndpoint
-	Destination CheckpointEndpoint
-	ConsumingDeviceID string
-	JTI string
+	Initiator           CheckpointEndpoint
+	Destination         CheckpointEndpoint
+	ConsumingDeviceID   string
+	JTI                 string
 	AuthorizationSHA256 [sha256.Size]byte
-	DevicePublicKey ed25519.PublicKey
-	DeviceSignature []byte
+	DevicePublicKey     ed25519.PublicKey
+	DeviceSignature     []byte
 }
 
 // CheckpointReceipt is an authenticated durable commit receipt.
 type CheckpointReceipt struct {
-	Version uint32
-	DeviceID string
-	AccountID string
-	OrganizationID string
-	JTI string
+	Version             uint32
+	DeviceID            string
+	AccountID           string
+	OrganizationID      string
+	JTI                 string
 	AuthorizationSHA256 [sha256.Size]byte
-	RequestSHA256 [sha256.Size]byte
-	Generation uint64
-	PreviousHash [sha256.Size]byte
-	RecordHash [sha256.Size]byte
-	ProviderKeyID string
-	Signature []byte
+	RequestSHA256       [sha256.Size]byte
+	Generation          uint64
+	PreviousHash        [sha256.Size]byte
+	RecordHash          [sha256.Size]byte
+	ProviderKeyID       string
+	Signature           []byte
 }
 
 // CheckpointHead is an authenticated recovery/reconciliation result.
 type CheckpointHead struct {
-	Version uint32
-	DeviceID string
-	AccountID string
-	OrganizationID string
-	Generation uint64
-	RecordHash [sha256.Size]byte
+	Version         uint32
+	DeviceID        string
+	AccountID       string
+	OrganizationID  string
+	Generation      uint64
+	RecordHash      [sha256.Size]byte
 	RevocationEpoch uint64
-	ProviderKeyID string
-	Signature []byte
+	ProviderKeyID   string
+	Signature       []byte
 }
 
 // CheckpointDisposition distinguishes a new commit from recovery of a prior commit.
@@ -107,12 +107,18 @@ type ReplayCheckpointProvider interface {
 
 // SignCheckpointRequest signs every endpoint, account, organization, epoch, JTI and digest field.
 func SignCheckpointRequest(signer crypto.Signer, request CheckpointRequest) (CheckpointRequest, error) {
-	if signer == nil { return CheckpointRequest{}, ErrCheckpointIntegrity }
+	if signer == nil {
+		return CheckpointRequest{}, ErrCheckpointIntegrity
+	}
 	publicKey, ok := signer.Public().(ed25519.PublicKey)
-	if !ok || len(publicKey) != ed25519.PublicKeySize { return CheckpointRequest{}, ErrCheckpointIntegrity }
+	if !ok || len(publicKey) != ed25519.PublicKeySize {
+		return CheckpointRequest{}, ErrCheckpointIntegrity
+	}
 	request.DevicePublicKey = append(ed25519.PublicKey(nil), publicKey...)
 	message, err := checkpointRequestMessage(request)
-	if err != nil { return CheckpointRequest{}, err }
+	if err != nil {
+		return CheckpointRequest{}, err
+	}
 	signature, err := signer.Sign(rand.Reader, message, crypto.Hash(0))
 	if err != nil || len(signature) != ed25519.SignatureSize || !ed25519.Verify(publicKey, message, signature) {
 		return CheckpointRequest{}, ErrCheckpointIntegrity
@@ -149,16 +155,23 @@ func VerifyCheckpointHead(head CheckpointHead, endpoint CheckpointEndpoint, prov
 		head.ProviderKeyID != checkpointProviderKeyID(providerKey) || len(head.Signature) != ed25519.SignatureSize {
 		return ErrCheckpointIntegrity
 	}
-	if head.Generation == 0 && head.RecordHash != ([sha256.Size]byte{}) { return ErrCheckpointIntegrity }
-	if !ed25519.Verify(providerKey, checkpointHeadMessage(head), head.Signature) { return ErrCheckpointIntegrity }
+	if head.Generation == 0 && head.RecordHash != ([sha256.Size]byte{}) {
+		return ErrCheckpointIntegrity
+	}
+	if !ed25519.Verify(providerKey, checkpointHeadMessage(head), head.Signature) {
+		return ErrCheckpointIntegrity
+	}
 	return nil
 }
 
 func checkpointConsumer(request CheckpointRequest) (CheckpointEndpoint, bool) {
 	switch request.ConsumingDeviceID {
-	case request.Initiator.DeviceID: return request.Initiator, true
-	case request.Destination.DeviceID: return request.Destination, true
-	default: return CheckpointEndpoint{}, false
+	case request.Initiator.DeviceID:
+		return request.Initiator, true
+	case request.Destination.DeviceID:
+		return request.Destination, true
+	default:
+		return CheckpointEndpoint{}, false
 	}
 }
 
@@ -175,22 +188,41 @@ func checkpointRequestMessage(request CheckpointRequest) ([]byte, error) {
 	}
 	var b bytes.Buffer
 	putString := func(value string) error {
-		if len(value) > int(^uint32(0)) { return ErrCheckpointIntegrity }
-		if err := binary.Write(&b, binary.BigEndian, uint32(len(value))); err != nil { return err }
-		_, err := b.WriteString(value); return err
+		if len(value) > int(^uint32(0)) {
+			return ErrCheckpointIntegrity
+		}
+		if err := binary.Write(&b, binary.BigEndian, uint32(len(value))); err != nil {
+			return err
+		}
+		_, err := b.WriteString(value)
+		return err
 	}
 	putEndpoint := func(endpoint CheckpointEndpoint) error {
 		for _, value := range []string{endpoint.DeviceID, endpoint.AccountID, endpoint.OrganizationID} {
-			if err := putString(value); err != nil { return err }
+			if err := putString(value); err != nil {
+				return err
+			}
 		}
 		return binary.Write(&b, binary.BigEndian, endpoint.RevocationEpoch)
 	}
-	if err := putString(checkpointRequestDomain); err != nil { return nil, err }
-	if err := binary.Write(&b, binary.BigEndian, checkpointVersion); err != nil { return nil, err }
-	if err := putEndpoint(request.Initiator); err != nil { return nil, err }
-	if err := putEndpoint(request.Destination); err != nil { return nil, err }
-	if err := putString(request.ConsumingDeviceID); err != nil { return nil, err }
-	if err := putString(request.JTI); err != nil { return nil, err }
+	if err := putString(checkpointRequestDomain); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&b, binary.BigEndian, checkpointVersion); err != nil {
+		return nil, err
+	}
+	if err := putEndpoint(request.Initiator); err != nil {
+		return nil, err
+	}
+	if err := putEndpoint(request.Destination); err != nil {
+		return nil, err
+	}
+	if err := putString(request.ConsumingDeviceID); err != nil {
+		return nil, err
+	}
+	if err := putString(request.JTI); err != nil {
+		return nil, err
+	}
 	b.Write(request.AuthorizationSHA256[:])
 	b.Write(request.DevicePublicKey)
 	return b.Bytes(), nil
@@ -211,11 +243,19 @@ func validCheckpointEndpoint(endpoint CheckpointEndpoint) bool {
 }
 
 func canonicalUUID(value string) bool {
-	if len(value) != 36 { return false }
+	if len(value) != 36 {
+		return false
+	}
 	for i, c := range value {
 		switch i {
-		case 8, 13, 18, 23: if c != '-' { return false }
-		default: if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') { return false }
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f') {
+				return false
+			}
 		}
 	}
 	return true
@@ -225,7 +265,9 @@ func checkpointRecordHash(previous [sha256.Size]byte, generation uint64, request
 	var counter [8]byte
 	binary.BigEndian.PutUint64(counter[:], generation)
 	input := make([]byte, 0, len(previous)+len(counter)+len(requestHash))
-	input = append(input, previous[:]...); input = append(input, counter[:]...); input = append(input, requestHash[:]...)
+	input = append(input, previous[:]...)
+	input = append(input, counter[:]...)
+	input = append(input, requestHash[:]...)
 	return sha256.Sum256(input)
 }
 
@@ -234,11 +276,14 @@ func checkpointReceiptMessage(receipt CheckpointReceipt) []byte {
 	io.WriteString(&b, checkpointReceiptDomain+"\n")
 	binary.Write(&b, binary.BigEndian, receipt.Version)
 	for _, value := range []string{receipt.DeviceID, receipt.AccountID, receipt.OrganizationID, receipt.JTI, receipt.ProviderKeyID} {
-		binary.Write(&b, binary.BigEndian, uint32(len(value))); io.WriteString(&b, value)
+		binary.Write(&b, binary.BigEndian, uint32(len(value)))
+		io.WriteString(&b, value)
 	}
 	binary.Write(&b, binary.BigEndian, receipt.Generation)
-	b.Write(receipt.AuthorizationSHA256[:]); b.Write(receipt.RequestSHA256[:])
-	b.Write(receipt.PreviousHash[:]); b.Write(receipt.RecordHash[:])
+	b.Write(receipt.AuthorizationSHA256[:])
+	b.Write(receipt.RequestSHA256[:])
+	b.Write(receipt.PreviousHash[:])
+	b.Write(receipt.RecordHash[:])
 	return b.Bytes()
 }
 
@@ -247,9 +292,11 @@ func checkpointHeadMessage(head CheckpointHead) []byte {
 	io.WriteString(&b, checkpointHeadDomain+"\n")
 	binary.Write(&b, binary.BigEndian, head.Version)
 	for _, value := range []string{head.DeviceID, head.AccountID, head.OrganizationID, head.ProviderKeyID} {
-		binary.Write(&b, binary.BigEndian, uint32(len(value))); io.WriteString(&b, value)
+		binary.Write(&b, binary.BigEndian, uint32(len(value)))
+		io.WriteString(&b, value)
 	}
-	binary.Write(&b, binary.BigEndian, head.Generation); binary.Write(&b, binary.BigEndian, head.RevocationEpoch)
+	binary.Write(&b, binary.BigEndian, head.Generation)
+	binary.Write(&b, binary.BigEndian, head.RevocationEpoch)
 	b.Write(head.RecordHash[:])
 	return b.Bytes()
 }
