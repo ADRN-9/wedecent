@@ -129,6 +129,13 @@ restore_route() { psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "update public.route_a
 restore_membership() { psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "insert into public.organization_memberships (organization_id,user_id,role,created_by) values ('22000000-0000-4000-8000-0000000000c1','11000000-0000-4000-8000-0000000000c1','member','11000000-0000-4000-8000-0000000000c1') on conflict do nothing" >/dev/null; }
 restore_access() { psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "insert into public.device_access (device_id,user_id,permission,granted_by) values ('wd_bbbbbbbbbbbbbbbb','11000000-0000-4000-8000-0000000000c1','port_forward.local','11000000-0000-4000-8000-0000000000c1') on conflict do nothing" >/dev/null; }
 
+prepare_audit_operation() {
+ local forwarding_id="$1" jti="$2" route_id="$3" route_jti="$4"
+ route "$route_id" "$route_jti"
+ psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c \
+  "select public.wd_c145_consume('$forwarding_id','$jti','$route_id','$route_jti','$ISSUED_AT','$EXPIRES_AT')" >/dev/null
+}
+
 race initiator consume-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_aaaaaaaaaaaaaaaa'" "select (revoked_at is not null)::text from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'" 33000000-0000-4000-8000-0000000000c1 AAAAAAAAAAAAAAAAAAAAAA 44000000-0000-4000-8000-0000000000c1 AAAAAAAAAAAAAAAAAAAAAA
 restore_device wd_aaaaaaaaaaaaaaaa
 race initiator revoke-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_aaaaaaaaaaaaaaaa'" "select (revoked_at is not null)::text from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'" 33000000-0000-4000-8000-0000000000c7 GGGGGGGGGGGGGGGGGGGGGG 44000000-0000-4000-8000-0000000000c7 GGGGGGGGGGGGGGGGGGGGGG
@@ -281,18 +288,24 @@ audit_race() {
  printf 'verified audit %s (%s)\n' "$name" "$order"
 }
 
-audit_race device audit-first "update public.devices set revoked_at=clock_timestamp(),revocation_epoch=revocation_epoch+1 where device_id='wd_bbbbbbbbbbbbbbbb'" "select (revoked_at is not null)::text from public.devices where device_id='wd_bbbbbbbbbbbbbbbb'" "$(printf '%064d' 1)" AAAAAAAAAAAAAAAAAAAAAA
+prepare_audit_operation 44000000-0000-4000-8000-0000000000d5 NNNNNNNNNNNNNNNNNNNNNN 33000000-0000-4000-8000-0000000000d5 VVVVVVVVVVVVVVVVVVVVVV
+audit_race device audit-first "update public.devices set revoked_at=clock_timestamp(),revocation_epoch=revocation_epoch+1 where device_id='wd_bbbbbbbbbbbbbbbb'" "select (revoked_at is not null)::text from public.devices where device_id='wd_bbbbbbbbbbbbbbbb'" "$(printf '%064d' 1)" NNNNNNNNNNNNNNNNNNNNNN
 restore_audit_device wd_bbbbbbbbbbbbbbbb
-audit_race device revoke-first "update public.devices set revoked_at=clock_timestamp(),revocation_epoch=revocation_epoch+1 where device_id='wd_bbbbbbbbbbbbbbbb'" "select (revoked_at is not null)::text from public.devices where device_id='wd_bbbbbbbbbbbbbbbb'" "$(printf '%064d' 2)" AAAAAAAAAAAAAAAAAAAAAA
+prepare_audit_operation 44000000-0000-4000-8000-0000000000d6 OOOOOOOOOOOOOOOOOOOOOO 33000000-0000-4000-8000-0000000000d6 WWWWWWWWWWWWWWWWWWWWWW
+audit_race device revoke-first "update public.devices set revoked_at=clock_timestamp(),revocation_epoch=revocation_epoch+1 where device_id='wd_bbbbbbbbbbbbbbbb'" "select (revoked_at is not null)::text from public.devices where device_id='wd_bbbbbbbbbbbbbbbb'" "$(printf '%064d' 2)" OOOOOOOOOOOOOOOOOOOOOO
 restore_audit_device wd_bbbbbbbbbbbbbbbb
-audit_race membership audit-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 3)" AAAAAAAAAAAAAAAAAAAAAA
+prepare_audit_operation 44000000-0000-4000-8000-0000000000d7 PPPPPPPPPPPPPPPPPPPPPP 33000000-0000-4000-8000-0000000000d7 XXXXXXXXXXXXXXXXXXXXXX
+audit_race membership audit-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 3)" PPPPPPPPPPPPPPPPPPPPPP
 restore_membership
-audit_race membership revoke-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 4)" AAAAAAAAAAAAAAAAAAAAAA
+prepare_audit_operation 44000000-0000-4000-8000-0000000000d8 QQQQQQQQQQQQQQQQQQQQQQ 33000000-0000-4000-8000-0000000000d8 YYYYYYYYYYYYYYYYYYYYYY
+audit_race membership revoke-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 4)" QQQQQQQQQQQQQQQQQQQQQQ
 restore_membership
-audit_race route-grant audit-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000c1'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 7)" AAAAAAAAAAAAAAAAAAAAAA
-restore_route 33000000-0000-4000-8000-0000000000c1
-audit_race route-grant revoke-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000c1'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 8)" AAAAAAAAAAAAAAAAAAAAAA
-restore_route 33000000-0000-4000-8000-0000000000c1
+prepare_audit_operation 44000000-0000-4000-8000-0000000000d9 RRRRRRRRRRRRRRRRRRRRRR 33000000-0000-4000-8000-0000000000d9 ZZZZZZZZZZZZZZZZZZZZZZ
+audit_race route-grant audit-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000d9'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000d9'" "$(printf '%064d' 7)" RRRRRRRRRRRRRRRRRRRRRR
+restore_route 33000000-0000-4000-8000-0000000000d9
+prepare_audit_operation 44000000-0000-4000-8000-0000000000da SSSSSSSSSSSSSSSSSSSSSS 33000000-0000-4000-8000-0000000000da AAAAAAAAAAAAAAAAAAAAAA
+audit_race route-grant revoke-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000da'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000da'" "$(printf '%064d' 8)" SSSSSSSSSSSSSSSSSSSSSS
+restore_route 33000000-0000-4000-8000-0000000000da
 
 # Independent sessions race identical audit submissions for one operation ID.
 AUDIT_DUPLICATE_ID="$(printf '%064d' 5)"
