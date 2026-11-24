@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"strings"
 	"time"
 
 	"wedecent.com/wedecent/internal/identity"
@@ -1070,6 +1071,46 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 	primary.mu.Lock(); used := len(primary.ledgers[key].used); primary.mu.Unlock()
 	if used != 1 { t.Fatalf("primary capability consumed %d times", used) }
 	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("witness %s was committed again during finalization", witness.id) } }
+}
+func TestFilePendingJournalByteAndEntryExhaustion(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	second := nextCheckpointRequest(t, request, signer, "CCCCCCCCCCCCCCCCCCCCCC")
+	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	oversizedPath := filepath.Join(dir, "oversized.json")
+	if err := os.WriteFile(oversizedPath, make([]byte, 129), 0o600); err != nil { t.Fatal(err) }; if err := setReplayFileOwner(oversizedPath); err != nil { t.Fatal(err) }
+	oversized, err := NewFileCheckpointPendingStore(oversizedPath); if err != nil { t.Fatal(err) }; oversized.maxSize = 128
+	if _, err := oversized.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("durable byte-size limit did not fail closed: %v", err) }
+	entryPath := filepath.Join(dir, "entries.json")
+	entries, err := NewFileCheckpointPendingStore(entryPath); if err != nil { t.Fatal(err) }; entries.maxEntries = 1
+	if _, err := entries.Begin(context.Background(), request); err != nil { t.Fatal(err) }
+	if _, err := entries.Begin(context.Background(), second); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("durable entry limit did not fail closed: %v", err) }
+	data, err := os.ReadFile(entryPath); if err != nil { t.Fatal(err) }
+	var snapshot checkpointPendingSnapshot; if err := json.Unmarshal(data, &snapshot); err != nil { t.Fatal(err) }
+	if len(snapshot.Entries) != 1 { t.Fatalf("entry exhaustion partially published %d entries", len(snapshot.Entries)) }
+}
+
+func TestFilePendingJournalRejectsNestedDuplicateKeysAndUnrelatedCorruption(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	second := nextCheckpointRequest(t, request, signer, "DDDDDDDDDDDDDDDDDDDDDD")
+	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path); if err != nil { t.Fatal(err) }
+	if _, err := store.Begin(context.Background(), request); err != nil { t.Fatal(err) }
+	data, err := os.ReadFile(path); if err != nil { t.Fatal(err) }
+	duplicate := strings.Replace(string(data), `"request":{`, `"request":{"JTI":"forged",`, 1)
+	if duplicate == string(data) { t.Fatal("could not locate nested request object") }
+	if err := os.WriteFile(path, []byte(duplicate), 0o600); err != nil { t.Fatal(err) }
+	if _, err := store.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("nested duplicate JSON key accepted: %v", err) }
+	path2 := filepath.Join(dir, "unrelated.json")
+	store2, err := NewFileCheckpointPendingStore(path2); if err != nil { t.Fatal(err) }
+	if _, err := store2.Begin(context.Background(), request); err != nil { t.Fatal(err) }; if _, err := store2.Begin(context.Background(), second); err != nil { t.Fatal(err) }
+	data, err = os.ReadFile(path2); if err != nil { t.Fatal(err) }
+	corrupt := string(data); index := strings.LastIndex(corrupt, `"state":"pending"`); if index < 0 { t.Fatal("second pending entry not found") }
+	corrupt = corrupt[:index] + strings.Replace(corrupt[index:], `"state":"pending"`, `"state":"ambiguous"`, 1)
+	if err := os.WriteFile(path2, []byte(corrupt), 0o600); err != nil { t.Fatal(err) }
+	if _, err := store2.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("corruption in unrelated entry was ignored: %v", err) }
 }
 func TestPendingJournalCompactionRequiresDurableAcknowledgements(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
