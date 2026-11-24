@@ -483,6 +483,8 @@ func (s *MemoryCheckpointPendingStore) LoadFinalization(ctx context.Context, dev
 	if s == nil || !deviceIDPattern.MatchString(deviceID) || !jtiPattern.MatchString(jti) || authorizationHash == ([sha256.Size]byte{}) {
 		return CheckpointRequest{}, CheckpointReceipt{}, false, false, ErrCheckpointIntegrity
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var request CheckpointRequest
 	var receipt CheckpointReceipt
 	found, hasReceipt := false, false
@@ -506,6 +508,8 @@ func (s *MemoryCheckpointPendingStore) LoadAcknowledgements(ctx context.Context,
 	if s == nil || ctx == nil {
 		return nil, ErrReplayUnavailable
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -548,6 +552,8 @@ func (s *MemoryCheckpointPendingStore) LoadEquivocations(ctx context.Context, re
 	if s == nil || ctx == nil {
 		return nil, ErrReplayUnavailable
 	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -673,6 +679,8 @@ func (s *MemoryCheckpointPendingStore) Compact(ctx context.Context, acknowledgem
 	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) {
 		return ErrReplayUnavailable
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -840,6 +848,18 @@ func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now t
 		if entry.CreatedAt <= 0 || entry.CreatedAt > now.Add(5*time.Minute).UnixMilli() {
 			return ErrCheckpointIntegrity
 		}
+		if entry.FinalizationComplete && entry.FinalizationID == "" {
+			return ErrCheckpointIntegrity
+		}
+		if entry.FinalizationID != "" {
+			if entry.Receipt == nil {
+				return ErrCheckpointIntegrity
+			}
+			expectedID, err := checkpointFinalizationID(entry.Request, *entry.Receipt)
+			if err != nil || entry.FinalizationID != expectedID {
+				return ErrCheckpointIntegrity
+			}
+		}
 		fp, err := hex.DecodeString(entry.Fingerprint)
 		if err != nil || len(fp) != sha256.Size || hex.EncodeToString(fp) != entry.Fingerprint {
 			return ErrCheckpointIntegrity
@@ -849,7 +869,7 @@ func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now t
 			return ErrCheckpointIntegrity
 		}
 		if entry.State == "pending" {
-			if entry.ReceiptHash != "" || entry.Receipt != nil || len(entry.Acknowledgements) != 0 || len(entry.Equivocations) != 0 {
+			if entry.ReceiptHash != "" || entry.Receipt != nil || len(entry.Acknowledgements) != 0 || len(entry.Equivocations) != 0 || entry.FinalizationID != "" || entry.FinalizationComplete {
 				return ErrCheckpointIntegrity
 			}
 			continue
@@ -993,6 +1013,8 @@ func (s *MemoryCheckpointPendingStore) Begin(ctx context.Context, request Checkp
 	if s == nil || ctx == nil {
 		return false, ErrReplayUnavailable
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
@@ -1027,6 +1049,8 @@ func (s *MemoryCheckpointPendingStore) Resolve(ctx context.Context, request Chec
 	if s == nil || ctx == nil {
 		return ErrReplayUnavailable
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := ctx.Err(); err != nil {
 		return err
 	}
