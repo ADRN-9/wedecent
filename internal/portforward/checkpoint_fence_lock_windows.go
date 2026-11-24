@@ -46,6 +46,10 @@ func openCheckpointFenceLog(path string) (*os.File, error) {
 		_ = file.Close()
 		return nil, errors.New("fencing journal must be a stable, non-reparse regular file")
 	}
+	if err := verifyReplayDACL(absolute); err != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("refuse fencing journal with unauthorized DACL: %w", err)
+	}
 	if err := setReplayFileOwner(absolute); err != nil {
 		_ = file.Close()
 		return nil, fmt.Errorf("set fencing journal owner: %w", err)
