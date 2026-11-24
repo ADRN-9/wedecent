@@ -242,7 +242,7 @@ Deno.test("terminal audit rejects an altered witness acknowledgement", async () 
 function urlBase64(bytes: Uint8Array) {
   let raw = "";
   for (const value of bytes) raw += String.fromCharCode(value);
-  return btoa(raw).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+  return btoa(raw).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
 Deno.test("routed terminal audit verifies the independent route authorization signature", async () => {
