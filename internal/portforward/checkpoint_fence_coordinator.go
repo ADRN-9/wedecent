@@ -212,7 +212,6 @@ func (c *CheckpointFenceCoordinator) verifyCommittedOperation(operation Checkpoi
 	return nil
 }
 
-
 func checkpointFenceTokenMatchesOperation(token CheckpointFenceToken, request CheckpointFenceRequest) bool {
 	return token.Scope == request.Scope && token.Action == request.Action &&
 		token.OperationID == request.OperationID && token.RequestSHA256 == request.RequestSHA256 &&
@@ -252,7 +251,6 @@ func cloneCheckpointFenceParticipantHeads(heads []CheckpointFenceParticipantHead
 	}
 	return out
 }
-
 
 func cloneCheckpointEndpoints(endpoints []CheckpointEndpoint) []CheckpointEndpoint {
 	return append([]CheckpointEndpoint(nil), endpoints...)
@@ -331,4 +329,3 @@ func checkpointFenceClientIDs(witnesses []CheckpointFenceWitnessClient) []string
 	}
 	return ids
 }
-
