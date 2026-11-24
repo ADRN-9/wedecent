@@ -65,21 +65,21 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	copy(authorization[:], decode(stringField(requestVector, "authorization_sha256")))
 	request := CheckpointRequest{
 		Initiator: CheckpointEndpoint{
-			DeviceID: stringField(initiatorVector, "device_id"),
-			AccountID: stringField(initiatorVector, "account_id"),
-			OrganizationID: stringField(initiatorVector, "organization_id"),
+			DeviceID:        stringField(initiatorVector, "device_id"),
+			AccountID:       stringField(initiatorVector, "account_id"),
+			OrganizationID:  stringField(initiatorVector, "organization_id"),
 			RevocationEpoch: uintField(initiatorVector, "revocation_epoch"),
 		},
 		Destination: CheckpointEndpoint{
-			DeviceID: stringField(destinationVector, "device_id"),
-			AccountID: stringField(destinationVector, "account_id"),
-			OrganizationID: stringField(destinationVector, "organization_id"),
+			DeviceID:        stringField(destinationVector, "device_id"),
+			AccountID:       stringField(destinationVector, "account_id"),
+			OrganizationID:  stringField(destinationVector, "organization_id"),
 			RevocationEpoch: uintField(destinationVector, "revocation_epoch"),
 		},
-		ConsumingDeviceID: consumingDeviceID,
-		JTI: stringField(requestVector, "jti"),
+		ConsumingDeviceID:   consumingDeviceID,
+		JTI:                 stringField(requestVector, "jti"),
 		AuthorizationSHA256: authorization,
-		DevicePublicKey: requestKey,
+		DevicePublicKey:     requestKey,
 	}
 	requestMessage, err := checkpointRequestMessage(request)
 	if err != nil {
@@ -99,13 +99,13 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 
 	receiptVector := object(vector["primary_receipt"])
 	receipt := CheckpointReceipt{
-		Version: uint32(uintField(receiptVector, "version")),
-		DeviceID: stringField(receiptVector, "device_id"),
-		AccountID: stringField(receiptVector, "account_id"),
+		Version:        uint32(uintField(receiptVector, "version")),
+		DeviceID:       stringField(receiptVector, "device_id"),
+		AccountID:      stringField(receiptVector, "account_id"),
 		OrganizationID: stringField(receiptVector, "organization_id"),
-		JTI: stringField(receiptVector, "jti"),
-		ProviderKeyID: stringField(receiptVector, "provider_key_id"),
-		Generation: uintField(receiptVector, "generation"),
+		JTI:            stringField(receiptVector, "jti"),
+		ProviderKeyID:  stringField(receiptVector, "provider_key_id"),
+		Generation:     uintField(receiptVector, "generation"),
 	}
 	copy(receipt.AuthorizationSHA256[:], decode(stringField(receiptVector, "authorization_sha256")))
 	copy(receipt.RequestSHA256[:], decode(stringField(receiptVector, "request_sha256")))
@@ -117,12 +117,12 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 
 	headVector := object(vector["primary_head"])
 	head := CheckpointHead{
-		Version: uint32(uintField(headVector, "version")),
-		DeviceID: stringField(headVector, "device_id"),
-		AccountID: stringField(headVector, "account_id"),
-		OrganizationID: stringField(headVector, "organization_id"),
-		ProviderKeyID: stringField(headVector, "provider_key_id"),
-		Generation: uintField(headVector, "generation"),
+		Version:         uint32(uintField(headVector, "version")),
+		DeviceID:        stringField(headVector, "device_id"),
+		AccountID:       stringField(headVector, "account_id"),
+		OrganizationID:  stringField(headVector, "organization_id"),
+		ProviderKeyID:   stringField(headVector, "provider_key_id"),
+		Generation:      uintField(headVector, "generation"),
 		RevocationEpoch: uintField(headVector, "revocation_epoch"),
 	}
 	copy(head.RecordHash[:], decode(stringField(headVector, "record_hash")))
@@ -135,12 +135,12 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	ack := CheckpointWitnessAck{
 		WitnessID: stringField(ackVector, "witness_id"),
 		Scope: CheckpointWitnessScope{
-			DeviceID: stringField(ackScope, "device_id"),
-			AccountID: stringField(ackScope, "account_id"),
+			DeviceID:       stringField(ackScope, "device_id"),
+			AccountID:      stringField(ackScope, "account_id"),
 			OrganizationID: stringField(ackScope, "organization_id"),
 		},
-		JTI: stringField(ackVector, "jti"),
-		Decision: stringField(ackVector, "decision"),
+		JTI:          stringField(ackVector, "jti"),
+		Decision:     stringField(ackVector, "decision"),
 		WitnessKeyID: stringField(ackVector, "witness_key_id"),
 	}
 	copy(ack.RequestSHA256[:], decode(stringField(ackVector, "request_sha256")))
@@ -154,14 +154,14 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	witnessHead := CheckpointWitnessHead{
 		WitnessID: stringField(witnessHeadVector, "witness_id"),
 		Scope: CheckpointWitnessScope{
-			DeviceID: stringField(witnessHeadScope, "device_id"),
-			AccountID: stringField(witnessHeadScope, "account_id"),
+			DeviceID:       stringField(witnessHeadScope, "device_id"),
+			AccountID:      stringField(witnessHeadScope, "account_id"),
 			OrganizationID: stringField(witnessHeadScope, "organization_id"),
 		},
-		Generation: uintField(witnessHeadVector, "generation"),
+		Generation:        uintField(witnessHeadVector, "generation"),
 		PrimaryGeneration: uintField(witnessHeadVector, "primary_generation"),
-		RevocationEpoch: uintField(witnessHeadVector, "revocation_epoch"),
-		WitnessKeyID: stringField(witnessHeadVector, "witness_key_id"),
+		RevocationEpoch:   uintField(witnessHeadVector, "revocation_epoch"),
+		WitnessKeyID:      stringField(witnessHeadVector, "witness_key_id"),
 	}
 	copy(witnessHead.RecordHash[:], decode(stringField(witnessHeadVector, "record_hash")))
 	copy(witnessHead.PrimaryHead[:], decode(stringField(witnessHeadVector, "primary_head")))
