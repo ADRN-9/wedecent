@@ -42,24 +42,24 @@ select jsonb_build_object(
 $$;
 
 create function pg_temp.record_audit(p_outcome text,payload jsonb) returns jsonb
-language sql as $
+language sql as $q$
 select public.record_checkpoint_finalization(
  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
  p_outcome,1,payload,
  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
  '11000000-0000-4000-8000-000000000091'
 )
-$;
+$q$;
 
 create function pg_temp.record_audit_as(p_outcome text,payload jsonb,p_actor uuid) returns jsonb
-language sql as $
+language sql as $q$
 select public.record_checkpoint_finalization(
  'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
  p_outcome,1,payload,
  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
  p_actor
 )
-$;
+$q$;
 
 select ok((select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='checkpoint_finalization_operations'),'operation ledger RLS enabled');
 select ok((select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='checkpoint_finalization_audit'),'audit event RLS enabled');
