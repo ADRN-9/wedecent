@@ -62,6 +62,10 @@ type checkpointPendingCompactor interface {
 	Compact(context.Context, []CheckpointWitnessAck, []CheckpointWitnessTrust, int) error
 }
 
+type checkpointPendingFinalizationLocker interface {
+	LockFinalization(context.Context, CheckpointRequest) (func() error, error)
+}
+
 type checkpointPendingTrustConfigurer interface {
 	SetCheckpointTrustAnchors(ed25519.PublicKey, []CheckpointWitnessTrust, int) error
 }
@@ -100,6 +104,31 @@ func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, er
 		return nil, fmt.Errorf("%w: inspect pending store: %v", ErrReplayUnavailable, err)
 	}
 	return &FileCheckpointPendingStore{Path: path}, nil
+}
+
+func (s *FileCheckpointPendingStore) LockFinalization(ctx context.Context, request CheckpointRequest) (func() error, error) {
+	if s == nil || ctx == nil || s.Path == "" {
+		return nil, ErrReplayUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil {
+		return nil, err
+	}
+	if err := secureReplayDirectory(filepath.Dir(s.Path)); err != nil {
+		return nil, fmt.Errorf("%w: finalization directory: %v", ErrReplayUnavailable, err)
+	}
+	lockPath := s.Path + ".finalize-" + hex.EncodeToString(fingerprint[:])
+	unlock, _, err := lockReplayFile(lockPath)
+	if err != nil {
+		return nil, fmt.Errorf("%w: lock finalization: %v", ErrReplayUnavailable, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, errors.Join(err, unlock())
+	}
+	return unlock, nil
 }
 
 func (s *FileCheckpointPendingStore) Begin(ctx context.Context, request CheckpointRequest) (bool, error) {
