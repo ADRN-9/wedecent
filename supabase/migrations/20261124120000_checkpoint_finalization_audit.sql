@@ -112,6 +112,8 @@ declare
     v_org_ids uuid[];
     v_device public.devices%rowtype;
     v_route_grant public.route_authorization_grants%rowtype;
+    v_missing_membership boolean := false;
+    v_actor_membership boolean := false;
     v_replayed boolean := false;
 begin
     if p_operation_id is null
@@ -237,21 +239,34 @@ begin
         )
      order by membership.organization_id, membership.user_id
      for share;
-    if not exists (
+    v_actor_membership := exists (
         select 1 from public.organization_memberships m
-         where m.user_id = (p_payload #>> '{initiator,account_id}')::uuid
-           and m.organization_id = (p_payload #>> '{initiator,organization_id}')::uuid
-    ) or not exists (
-        select 1 from public.organization_memberships m
-         where m.user_id = (p_payload #>> '{destination,account_id}')::uuid
-           and m.organization_id = (p_payload #>> '{destination,organization_id}')::uuid
-    ) or (
-        p_payload #>> '{router,device_id}' is not null and not exists (
+         where m.user_id = p_actor_id and m.organization_id = v_actor_organization
+    );
+    if not v_actor_membership then
+        raise exception 'audit actor membership is unavailable' using errcode = '42501';
+    end if;
+    v_missing_membership :=
+        not exists (
             select 1 from public.organization_memberships m
-             where m.user_id = (p_payload #>> '{router,account_id}')::uuid
-               and m.organization_id = (p_payload #>> '{router,organization_id}')::uuid
+             where m.user_id = (p_payload #>> '{initiator,account_id}')::uuid
+               and m.organization_id = (p_payload #>> '{initiator,organization_id}')::uuid
         )
-    ) then
+        or not exists (
+            select 1 from public.organization_memberships m
+             where m.user_id = (p_payload #>> '{destination,account_id}')::uuid
+               and m.organization_id = (p_payload #>> '{destination,organization_id}')::uuid
+        )
+        or (
+            p_payload #>> '{router,device_id}' is not null and not exists (
+                select 1 from public.organization_memberships m
+                 where m.user_id = (p_payload #>> '{router,account_id}')::uuid
+                   and m.organization_id = (p_payload #>> '{router,organization_id}')::uuid
+            )
+        );
+    if p_outcome = 'membership_unavailable' and not v_missing_membership then
+        raise exception 'membership is still available' using errcode = '23505';
+    elsif p_outcome <> 'membership_unavailable' and v_missing_membership then
         raise exception 'audit participant membership is unavailable' using errcode = '42501';
     end if;
 
@@ -359,6 +374,22 @@ begin
             end if;
         end if;
     end loop;
+
+    if not exists (
+        select 1 from public.device_access access
+         where access.user_id = v_transaction.initiator_account_id
+           and access.device_id = v_destination
+           and access.permission = v_transaction.permission
+    ) or (
+        v_transaction.router_device_id is not null and not exists (
+            select 1 from public.device_access access
+             where access.user_id = v_transaction.initiator_account_id
+               and access.device_id = v_transaction.router_device_id
+               and access.permission = 'mesh.forward'
+        )
+    ) then
+        raise exception 'audit device access has been revoked' using errcode = '42501';
+    end if;
 
     select transaction_row.*
       into v_transaction
