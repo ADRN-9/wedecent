@@ -501,3 +501,76 @@ func TestPendingJournalExhaustionFailsClosed(t *testing.T) {
 		t.Fatalf("journal exhaustion did not fail closed: %v", err)
 	}
 }
+
+// scopeMismatchWitness returns a correctly signed head for a different
+// device, account, or organization than the scope requested by the caller.
+type scopeMismatchWitness struct {
+	*deterministicCheckpointWitness
+	dimension string
+}
+
+func (w *scopeMismatchWitness) Head(ctx context.Context, requested CheckpointWitnessScope) (CheckpointWitnessHead, error) {
+	head, err := w.deterministicCheckpointWitness.Head(ctx, requested)
+	if err != nil {
+		return CheckpointWitnessHead{}, err
+	}
+	switch w.dimension {
+	case "device":
+		head.Scope.DeviceID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	case "account":
+		head.Scope.AccountID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	case "organization":
+		head.Scope.OrganizationID = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+	default:
+		return CheckpointWitnessHead{}, ErrCheckpointIntegrity
+	}
+	head.Signature = ed25519.Sign(w.private, checkpointWitnessHeadMessage(head))
+	return head, nil
+}
+
+func TestWitnessHeadRejectsSignedWrongScopeFromQuorum(t *testing.T) {
+	for _, dimension := range []string{"device", "account", "organization"} {
+		t.Run(dimension, func(t *testing.T) {
+			primary := newDeterministicCheckpointProvider(t)
+			client, witnesses := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+			_, _, _, initiator, _ := makeCheckpointFixture(t, primary,
+				"11111111-1111-4111-8111-111111111111",
+				"22222222-2222-4222-8222-222222222222")
+			for i := 0; i < 2; i++ {
+				client.Witnesses[i].Witness = &scopeMismatchWitness{
+					deterministicCheckpointWitness: witnesses[i],
+					dimension: dimension,
+				}
+			}
+			if _, err := client.Head(context.Background(), initiator); !errors.Is(err, ErrCheckpointQuorum) {
+				t.Fatalf("signed out-of-scope heads counted toward quorum: %v", err)
+			}
+		})
+	}
+}
+
+func TestWitnessPreflightRejectsSignedWrongScopeFromQuorum(t *testing.T) {
+	for _, dimension := range []string{"device", "account", "organization"} {
+		t.Run(dimension, func(t *testing.T) {
+			primary := newDeterministicCheckpointProvider(t)
+			client, witnesses := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+			request, _, _, _, _ := makeCheckpointFixture(t, primary,
+				"11111111-1111-4111-8111-111111111111",
+				"22222222-2222-4222-8222-222222222222")
+			for i := 0; i < 2; i++ {
+				client.Witnesses[i].Witness = &scopeMismatchWitness{
+					deterministicCheckpointWitness: witnesses[i],
+					dimension: dimension,
+				}
+			}
+			if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointQuorum) {
+				t.Fatalf("signed out-of-scope preflight heads counted toward quorum: %v", err)
+			}
+			for _, witness := range witnesses {
+				if len(witness.historyFor(witnessScope(request.Initiator))) != 0 {
+					t.Fatal("witness commit occurred without an in-scope preflight quorum")
+				}
+			}
+		})
+	}
+}
