@@ -116,13 +116,12 @@ func TestCheckpointFenceTokenRejectsAmbiguousWitnessSet(t *testing.T) {
 	}
 }
 
-
 type fenceOrderingHarness struct {
-	generation uint64
-	revocationEpoch uint64
+	generation         uint64
+	revocationEpoch    uint64
 	witnessGenerations map[string]uint64
-	base CheckpointFenceToken
-	primaryKey ed25519.PrivateKey
+	base               CheckpointFenceToken
+	primaryKey         ed25519.PrivateKey
 }
 
 func newFenceOrderingHarness(t *testing.T) *fenceOrderingHarness {
@@ -133,11 +132,11 @@ func newFenceOrderingHarness(t *testing.T) *fenceOrderingHarness {
 		witnessGenerations[id] = base.ExpectedFenceGeneration
 	}
 	return &fenceOrderingHarness{
-		generation: base.ExpectedFenceGeneration,
-		revocationEpoch: base.ExpectedRevocationEpoch,
+		generation:         base.ExpectedFenceGeneration,
+		revocationEpoch:    base.ExpectedRevocationEpoch,
 		witnessGenerations: witnessGenerations,
-		base: base,
-		primaryKey: key,
+		base:               base,
+		primaryKey:         key,
 	}
 }
 
