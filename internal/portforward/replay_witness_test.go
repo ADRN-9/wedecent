@@ -322,7 +322,7 @@ type checkpointFinalizationAuditFixture struct {
 	seen         map[string]map[string]bool
 }
 
-func (a *checkpointFinalizationAuditFixture) RecordCheckpointFinalization(_ context.Context, _ CheckpointRequest, operationID, outcome string) error {
+func (a *checkpointFinalizationAuditFixture) RecordCheckpointFinalization(_ context.Context, _ CheckpointRequest, operationID, outcome string, _ *CheckpointFinalizationEvidence) error {
 	if operationID == "" {
 		return ErrCheckpointIntegrity
 	}
@@ -2079,7 +2079,7 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 	client.Witnesses[2].Witness = unavailableWitness{CheckpointWitness: witnesses[2]}
 
 	released := false
-	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 		released = true
 		return nil
 	})
@@ -2140,7 +2140,7 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 		Quorum: client.Quorum, Pending: restarted,
 	}
 	released = false
-	if err := restartedClient.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+	if err := restartedClient.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 		released = true
 		return nil
 	}); !errors.Is(err, ErrCheckpointConflict) || released {
@@ -2154,7 +2154,7 @@ func TestPersistedQuorumRecoveryDoesNotRequireWitnessAvailability(t *testing.T) 
 	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 	witnesses[2].available = false
 	called := false
-	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 		called = true
 		return nil
 	}); err != nil || !called {
@@ -2173,7 +2173,7 @@ func TestInvalidSignedConflictCannotPoisonPersistedQuorum(t *testing.T) {
 	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: invalid}
 	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 	called := false
-	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 		called = true
 		return nil
 	}); err != nil || !called {
@@ -2196,7 +2196,7 @@ func TestRepeatedEquivocationDetectionIsIdempotentAndTerminal(t *testing.T) {
 	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 	for attempt := 0; attempt < 2; attempt++ {
 		called := false
-		err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+		err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 			called = true
 			return nil
 		})
@@ -2237,7 +2237,7 @@ func TestConcurrentFinalizationRunsCallbackAtMostOnce(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- provider.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+			errs <- provider.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 				mu.Lock()
 				callbacks++
 				mu.Unlock()
@@ -2289,7 +2289,7 @@ func TestEquivocationEvidencePersistenceInterruptionFailsClosed(t *testing.T) {
 		return writeReplayJSON(store.Path, value, replayStagingPattern(store.Path, "pendingops"), checkpointPendingMaxSize)
 	}
 	called := false
-	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 		called = true
 		return nil
 	})
@@ -2304,7 +2304,7 @@ func TestEquivocationEvidencePersistenceInterruptionFailsClosed(t *testing.T) {
 		t.Fatalf("interrupted evidence was partially persisted: count=%d err=%v", len(evidence), err)
 	}
 	called = false
-	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 		called = true
 		return nil
 	}); !errors.Is(err, ErrCheckpointConflict) || called {
@@ -2374,7 +2374,7 @@ func TestPersistedQuorumEquivocationRepeatedRecovery(t *testing.T) {
 			client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
 			client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 			called := false
-			err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+			err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 				called = true
 				return nil
 			})
@@ -2446,7 +2446,7 @@ func TestNegativeFirstTerminalDecisionsAreDurableAndEquivocationTerminal(t *test
 				}
 
 				callbackCalled := false
-				err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+				err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 					callbackCalled = true
 					return nil
 				})
@@ -2570,7 +2570,7 @@ func TestConcurrentEquivocationPublicationPrecedesFinalizationCallback(t *testin
 	callbackCalled := make(chan struct{}, 1)
 	finalizationDone := make(chan error, 1)
 	go func() {
-		finalizationDone <- client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+		finalizationDone <- client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 			callbackCalled <- struct{}{}
 			return nil
 		})
@@ -2685,7 +2685,7 @@ func TestNegativeTerminalDecisionNeverContributesToQuorum(t *testing.T) {
 	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
 	client.Witnesses[2].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[2], ack: negative}
 	called := false
-	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 		called = true
 		return nil
 	})
@@ -2708,7 +2708,7 @@ func TestFirstSeenNegativeDecisionPersistsBesideCommittedQuorum(t *testing.T) {
 	negative := signedDecision(t, witnesses[0], committed, "aborted")
 	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: negative}
 	callbackCalled := false
-	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
 		callbackCalled = true
 		return nil
 	}); err != nil {
@@ -2958,7 +2958,7 @@ type fileCheckpointAuditFixture struct {
 	calls int
 }
 
-func (a *fileCheckpointAuditFixture) RecordCheckpointFinalization(ctx context.Context, _ CheckpointRequest, operationID, outcome string) error {
+func (a *fileCheckpointAuditFixture) RecordCheckpointFinalization(ctx context.Context, _ CheckpointRequest, operationID, outcome string, _ *CheckpointFinalizationEvidence) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -3024,7 +3024,7 @@ func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart
 	}
 	invoke := func(provider *WitnessedReplayCheckpointProvider) (string, error) {
 		var operationID string
-		err := provider.FinalizeWithAudit(context.Background(), request, func(ctx context.Context, id string) error {
+		err := provider.FinalizeWithAudit(context.Background(), request, func(ctx context.Context, id string, _ CheckpointFinalizationEvidence) error {
 			operationID = id
 			return sink.RecordCheckpointFinalization(ctx, request, id, CheckpointFinalizationComplete)
 		})
