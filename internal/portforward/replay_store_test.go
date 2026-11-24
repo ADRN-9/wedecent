@@ -886,7 +886,7 @@ func TestRejectExistingFileReplayStateFailsClosed(t *testing.T) {
 	if err := RejectExistingFileReplayState(path); err != nil {
 		t.Fatalf("empty path rejected: %v", err)
 	}
-	for _, suffix := range []string{"", ".init", ".lock", ".anchor", ".pending", ".lock.bootstrap"} {
+	for _, suffix := range []string{"", ".init", ".lock", ".lock.anchor", ".lock.marker", ".anchor", ".pending", ".lock.bootstrap"} {
 		artifact := path + suffix
 		if err := os.WriteFile(artifact, []byte("existing replay state"), 0o600); err != nil {
 			t.Fatal(err)
