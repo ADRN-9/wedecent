@@ -12,131 +12,173 @@ import (
 
 func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	data, err := os.ReadFile("../../testdata/portforward/checkpoint_crypto_vectors.json")
-	if err != nil { t.Fatal(err) }
-	var vector struct {
-		Request struct {
-			Initiator struct { DeviceID string `json:"device_id"`; AccountID string `json:"account_id"`; OrganizationID string `json:"organization_id"`; RevocationEpoch uint64 `json:"revocation_epoch"` } `json:"initiator"`
-			Destination struct { DeviceID string `json:"device_id"`; AccountID string `json:"account_id"`; OrganizationID string `json:"organization_id"`; RevocationEpoch uint64 `json:"revocation_epoch"` } `json:"destination"`
-			ConsumingDeviceID string `json:"consuming_device_id"`
-			JTI string `json:"jti"`
-			AuthorizationSHA256 string `json:"authorization_sha256"`
-			DevicePublicKeyHex string `json:"device_public_key_hex"`
-			MessageHex string `json:"message_hex"`
-			FingerprintSHA256 string `json:"fingerprint_sha256"`
-			OperationID string `json:"operation_id"`
-		} `json:"request"`
-		Receipt struct {
-			Version uint32 `json:"version"`
-			DeviceID string `json:"device_id"`
-			AccountID string `json:"account_id"`
-			OrganizationID string `json:"organization_id"`
-			JTI string `json:"jti"`
-			ProviderKeyID string `json:"provider_key_id"`
-			Generation uint64 `json:"generation"`
-			AuthorizationSHA256 string `json:"authorization_sha256"`
-			RequestSHA256 string `json:"request_sha256"`
-			PreviousHash string `json:"previous_hash"`
-			RecordHash string `json:"record_hash"`
-			MessageHex string `json:"message_hex"`
-		} `json:"primary_receipt"`
-		Head struct {
-			Version uint32 `json:"version"`
-			DeviceID string `json:"device_id"`
-			AccountID string `json:"account_id"`
-			OrganizationID string `json:"organization_id"`
-			ProviderKeyID string `json:"provider_key_id"`
-			Generation uint64 `json:"generation"`
-			RevocationEpoch uint64 `json:"revocation_epoch"`
-			RecordHash string `json:"record_hash"`
-			MessageHex string `json:"message_hex"`
-		} `json:"primary_head"`
-		Ack struct {
-			WitnessID string `json:"witness_id"`
-			Scope struct { DeviceID string `json:"device_id"`; AccountID string `json:"account_id"`; OrganizationID string `json:"organization_id"` } `json:"scope"`
-			JTI string `json:"jti"`
-			RequestSHA256 string `json:"request_sha256"`
-			PrimaryReceiptSHA256 string `json:"primary_receipt_sha256"`
-			Decision string `json:"decision"`
-			WitnessKeyID string `json:"witness_key_id"`
-			MessageHex string `json:"message_hex"`
-		} `json:"witness_ack"`
-		WitnessHead struct {
-			WitnessID string `json:"witness_id"`
-			Scope struct { DeviceID string `json:"device_id"`; AccountID string `json:"account_id"`; OrganizationID string `json:"organization_id"` } `json:"scope"`
-			Generation uint64 `json:"generation"`
-			RecordHash string `json:"record_hash"`
-			PrimaryGeneration uint64 `json:"primary_generation"`
-			PrimaryHead string `json:"primary_head"`
-			RevocationEpoch uint64 `json:"revocation_epoch"`
-			WitnessKeyID string `json:"witness_key_id"`
-			MessageHex string `json:"message_hex"`
-		} `json:"witness_head"`
-		Canonical struct {
-			Value map[string]any `json:"value"`
-			CanonicalJSON string `json:"canonical_json"`
-			SHA256 string `json:"sha256"`
-		} `json:"canonical_payload"`
+	if err != nil {
+		t.Fatal(err)
 	}
-	if err := json.Unmarshal(data, &vector); err != nil { t.Fatal(err) }
+	var vector map[string]any
+	if err := json.Unmarshal(data, &vector); err != nil {
+		t.Fatal(err)
+	}
+	object := func(value any) map[string]any {
+		t.Helper()
+		result, ok := value.(map[string]any)
+		if !ok {
+			t.Fatalf("expected JSON object, got %T", value)
+		}
+		return result
+	}
+	stringField := func(value map[string]any, key string) string {
+		t.Helper()
+		result, ok := value[key].(string)
+		if !ok {
+			t.Fatalf("expected string field %q", key)
+		}
+		return result
+	}
+	uintField := func(value map[string]any, key string) uint64 {
+		t.Helper()
+		result, ok := value[key].(float64)
+		if !ok || result < 0 || result != float64(uint64(result)) {
+			t.Fatalf("expected uint field %q", key)
+		}
+		return uint64(result)
+	}
 	decode := func(value string) []byte {
 		t.Helper()
-		b, err := hex.DecodeString(value)
-		if err != nil { t.Fatal(err) }
-		return b
+		result, err := hex.DecodeString(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return result
 	}
-	requestKey := decode(vector.Request.DevicePublicKeyHex)
-	if identity.DeviceID(requestKey) != vector.Request.ConsumingDeviceID { t.Fatal("golden request device identity mismatch") }
-	auth := decode(vector.Request.AuthorizationSHA256)
+	hexBytes := func(value []byte) string { return hex.EncodeToString(value) }
+
+	requestVector := object(vector["request"])
+	initiatorVector := object(requestVector["initiator"])
+	destinationVector := object(requestVector["destination"])
+	requestKey := decode(stringField(requestVector, "device_public_key_hex"))
+	consumingDeviceID := stringField(requestVector, "consuming_device_id")
+	if identity.DeviceID(requestKey) != consumingDeviceID {
+		t.Fatal("golden request device identity mismatch")
+	}
 	var authorization [sha256.Size]byte
-	copy(authorization[:], auth)
+	copy(authorization[:], decode(stringField(requestVector, "authorization_sha256")))
 	request := CheckpointRequest{
-		Initiator: CheckpointEndpoint{DeviceID: vector.Request.Initiator.DeviceID, AccountID: vector.Request.Initiator.AccountID, OrganizationID: vector.Request.Initiator.OrganizationID, RevocationEpoch: vector.Request.Initiator.RevocationEpoch},
-		Destination: CheckpointEndpoint{DeviceID: vector.Request.Destination.DeviceID, AccountID: vector.Request.Destination.AccountID, OrganizationID: vector.Request.Destination.OrganizationID, RevocationEpoch: vector.Request.Destination.RevocationEpoch},
-		ConsumingDeviceID: vector.Request.ConsumingDeviceID, JTI: vector.Request.JTI,
-		AuthorizationSHA256: authorization, DevicePublicKey: requestKey,
+		Initiator: CheckpointEndpoint{
+			DeviceID: stringField(initiatorVector, "device_id"),
+			AccountID: stringField(initiatorVector, "account_id"),
+			OrganizationID: stringField(initiatorVector, "organization_id"),
+			RevocationEpoch: uintField(initiatorVector, "revocation_epoch"),
+		},
+		Destination: CheckpointEndpoint{
+			DeviceID: stringField(destinationVector, "device_id"),
+			AccountID: stringField(destinationVector, "account_id"),
+			OrganizationID: stringField(destinationVector, "organization_id"),
+			RevocationEpoch: uintField(destinationVector, "revocation_epoch"),
+		},
+		ConsumingDeviceID: consumingDeviceID,
+		JTI: stringField(requestVector, "jti"),
+		AuthorizationSHA256: authorization,
+		DevicePublicKey: requestKey,
 	}
-	message, err := checkpointRequestMessage(request)
-	if err != nil { t.Fatal(err) }
-	if hex.EncodeToString(message) != vector.Request.MessageHex { t.Fatal("checkpoint request encoding differs from shared vector") }
-	fingerprint := sha256.Sum256(message)
-	if hex.EncodeToString(fingerprint[:]) != vector.Request.FingerprintSHA256 { t.Fatal("checkpoint request fingerprint differs from shared vector") }
+	requestMessage, err := checkpointRequestMessage(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hexBytes(requestMessage) != stringField(requestVector, "message_hex") {
+		t.Fatal("checkpoint request encoding differs from shared vector")
+	}
+	requestHash := sha256.Sum256(requestMessage)
+	if hexBytes(requestHash[:]) != stringField(requestVector, "fingerprint_sha256") {
+		t.Fatal("checkpoint request fingerprint differs from shared vector")
+	}
 	operationID, err := checkpointOperationID(request)
-	if err != nil || operationID != vector.Request.OperationID { t.Fatalf("operation ID=%s err=%v", operationID, err) }
-
-	receipt := CheckpointReceipt{
-		Version: vector.Receipt.Version, DeviceID: vector.Receipt.DeviceID,
-		AccountID: vector.Receipt.AccountID, OrganizationID: vector.Receipt.OrganizationID,
-		JTI: vector.Receipt.JTI, ProviderKeyID: vector.Receipt.ProviderKeyID,
-		Generation: vector.Receipt.Generation,
+	if err != nil || operationID != stringField(requestVector, "operation_id") {
+		t.Fatalf("operation ID=%s err=%v", operationID, err)
 	}
-	copy(receipt.AuthorizationSHA256[:], decode(vector.Receipt.AuthorizationSHA256))
-	copy(receipt.RequestSHA256[:], decode(vector.Receipt.RequestSHA256))
-	copy(receipt.PreviousHash[:], decode(vector.Receipt.PreviousHash))
-	copy(receipt.RecordHash[:], decode(vector.Receipt.RecordHash))
-	if got := hex.EncodeToString(checkpointReceiptMessage(receipt)); got != vector.Receipt.MessageHex { t.Fatal("primary receipt encoding differs from shared vector") }
 
-	head := CheckpointHead{Version: vector.Head.Version, DeviceID: vector.Head.DeviceID, AccountID: vector.Head.AccountID,
-		OrganizationID: vector.Head.OrganizationID, ProviderKeyID: vector.Head.ProviderKeyID,
-		Generation: vector.Head.Generation, RevocationEpoch: vector.Head.RevocationEpoch}
-	copy(head.RecordHash[:], decode(vector.Head.RecordHash))
-	if got := hex.EncodeToString(checkpointHeadMessage(head)); got != vector.Head.MessageHex { t.Fatal("primary head encoding differs from shared vector") }
+	receiptVector := object(vector["primary_receipt"])
+	receipt := CheckpointReceipt{
+		Version: uint32(uintField(receiptVector, "version")),
+		DeviceID: stringField(receiptVector, "device_id"),
+		AccountID: stringField(receiptVector, "account_id"),
+		OrganizationID: stringField(receiptVector, "organization_id"),
+		JTI: stringField(receiptVector, "jti"),
+		ProviderKeyID: stringField(receiptVector, "provider_key_id"),
+		Generation: uintField(receiptVector, "generation"),
+	}
+	copy(receipt.AuthorizationSHA256[:], decode(stringField(receiptVector, "authorization_sha256")))
+	copy(receipt.RequestSHA256[:], decode(stringField(receiptVector, "request_sha256")))
+	copy(receipt.PreviousHash[:], decode(stringField(receiptVector, "previous_hash")))
+	copy(receipt.RecordHash[:], decode(stringField(receiptVector, "record_hash")))
+	if hexBytes(checkpointReceiptMessage(receipt)) != stringField(receiptVector, "message_hex") {
+		t.Fatal("primary receipt encoding differs from shared vector")
+	}
 
-	ack := CheckpointWitnessAck{WitnessID: vector.Ack.WitnessID, Scope: CheckpointWitnessScope{DeviceID: vector.Ack.Scope.DeviceID, AccountID: vector.Ack.Scope.AccountID, OrganizationID: vector.Ack.Scope.OrganizationID}, JTI: vector.Ack.JTI,
-		Decision: vector.Ack.Decision, WitnessKeyID: vector.Ack.WitnessKeyID}
-	copy(ack.RequestSHA256[:], decode(vector.Ack.RequestSHA256))
-	copy(ack.PrimaryReceiptSHA256[:], decode(vector.Ack.PrimaryReceiptSHA256))
-	if got := hex.EncodeToString(checkpointWitnessAckMessage(ack)); got != vector.Ack.MessageHex { t.Fatal("witness acknowledgement encoding differs from shared vector") }
+	headVector := object(vector["primary_head"])
+	head := CheckpointHead{
+		Version: uint32(uintField(headVector, "version")),
+		DeviceID: stringField(headVector, "device_id"),
+		AccountID: stringField(headVector, "account_id"),
+		OrganizationID: stringField(headVector, "organization_id"),
+		ProviderKeyID: stringField(headVector, "provider_key_id"),
+		Generation: uintField(headVector, "generation"),
+		RevocationEpoch: uintField(headVector, "revocation_epoch"),
+	}
+	copy(head.RecordHash[:], decode(stringField(headVector, "record_hash")))
+	if hexBytes(checkpointHeadMessage(head)) != stringField(headVector, "message_hex") {
+		t.Fatal("primary head encoding differs from shared vector")
+	}
 
-	witnessHead := CheckpointWitnessHead{WitnessID: vector.WitnessHead.WitnessID, Scope: CheckpointWitnessScope{DeviceID: vector.WitnessHead.Scope.DeviceID, AccountID: vector.WitnessHead.Scope.AccountID, OrganizationID: vector.WitnessHead.Scope.OrganizationID},
-		Generation: vector.WitnessHead.Generation, PrimaryGeneration: vector.WitnessHead.PrimaryGeneration,
-		RevocationEpoch: vector.WitnessHead.RevocationEpoch, WitnessKeyID: vector.WitnessHead.WitnessKeyID}
-	copy(witnessHead.RecordHash[:], decode(vector.WitnessHead.RecordHash))
-	copy(witnessHead.PrimaryHead[:], decode(vector.WitnessHead.PrimaryHead))
-	if got := hex.EncodeToString(checkpointWitnessHeadMessage(witnessHead)); got != vector.WitnessHead.MessageHex { t.Fatal("witness head encoding differs from shared vector") }
+	ackVector := object(vector["witness_ack"])
+	ackScope := object(ackVector["scope"])
+	ack := CheckpointWitnessAck{
+		WitnessID: stringField(ackVector, "witness_id"),
+		Scope: CheckpointWitnessScope{
+			DeviceID: stringField(ackScope, "device_id"),
+			AccountID: stringField(ackScope, "account_id"),
+			OrganizationID: stringField(ackScope, "organization_id"),
+		},
+		JTI: stringField(ackVector, "jti"),
+		Decision: stringField(ackVector, "decision"),
+		WitnessKeyID: stringField(ackVector, "witness_key_id"),
+	}
+	copy(ack.RequestSHA256[:], decode(stringField(ackVector, "request_sha256")))
+	copy(ack.PrimaryReceiptSHA256[:], decode(stringField(ackVector, "primary_receipt_sha256")))
+	if hexBytes(checkpointWitnessAckMessage(ack)) != stringField(ackVector, "message_hex") {
+		t.Fatal("witness acknowledgement encoding differs from shared vector")
+	}
 
-	canonical, err := json.Marshal(vector.Canonical.Value)
-	if err != nil { t.Fatal(err) }
-	if string(canonical) != vector.Canonical.CanonicalJSON { t.Fatalf("canonical JSON=%s", canonical) }
-	digest := sha256.Sum256(canonical)
-	if hex.EncodeToString(digest[:]) != vector.Canonical.SHA256 { t.Fatal("canonical payload digest differs from shared vector") }
+	witnessHeadVector := object(vector["witness_head"])
+	witnessHeadScope := object(witnessHeadVector["scope"])
+	witnessHead := CheckpointWitnessHead{
+		WitnessID: stringField(witnessHeadVector, "witness_id"),
+		Scope: CheckpointWitnessScope{
+			DeviceID: stringField(witnessHeadScope, "device_id"),
+			AccountID: stringField(witnessHeadScope, "account_id"),
+			OrganizationID: stringField(witnessHeadScope, "organization_id"),
+		},
+		Generation: uintField(witnessHeadVector, "generation"),
+		PrimaryGeneration: uintField(witnessHeadVector, "primary_generation"),
+		RevocationEpoch: uintField(witnessHeadVector, "revocation_epoch"),
+		WitnessKeyID: stringField(witnessHeadVector, "witness_key_id"),
+	}
+	copy(witnessHead.RecordHash[:], decode(stringField(witnessHeadVector, "record_hash")))
+	copy(witnessHead.PrimaryHead[:], decode(stringField(witnessHeadVector, "primary_head")))
+	if hexBytes(checkpointWitnessHeadMessage(witnessHead)) != stringField(witnessHeadVector, "message_hex") {
+		t.Fatal("witness head encoding differs from shared vector")
+	}
+
+	canonicalVector := object(vector["canonical_payload"])
+	canonical, err := json.Marshal(object(canonicalVector["value"]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(canonical) != stringField(canonicalVector, "canonical_json") {
+		t.Fatalf("canonical JSON=%s", canonical)
+	}
+	canonicalDigest := sha256.Sum256(canonical)
+	if hexBytes(canonicalDigest[:]) != stringField(canonicalVector, "sha256") {
+		t.Fatal("canonical payload digest differs from shared vector")
+	}
 }
