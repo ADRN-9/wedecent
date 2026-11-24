@@ -425,6 +425,7 @@ func (p *FileCheckpointFencePrimary) tokenForRequest(request CheckpointFenceRequ
 	}
 	token := CheckpointFenceToken{
 		Version: checkpointFenceVersion, Scope: request.Scope,
+		Participants: cloneCheckpointEndpoints(request.Participants),
 		ExpectedFenceGeneration: request.ExpectedFenceGeneration, Generation: request.ExpectedFenceGeneration + 1,
 		ExpectedRevocationEpoch: request.ExpectedRevocationEpoch, ResultingRevocationEpoch: request.ExpectedRevocationEpoch,
 		Action: request.Action, OperationID: request.OperationID,
@@ -725,6 +726,7 @@ func newCheckpointFenceWitnessScope() *checkpointFenceWitnessScopeState {
 }
 
 func cloneCheckpointFenceToken(token CheckpointFenceToken) CheckpointFenceToken {
+	token.Participants = cloneCheckpointEndpoints(token.Participants)
 	token.WitnessIDs = append([]string(nil), token.WitnessIDs...)
 	token.Signature = append([]byte(nil), token.Signature...)
 	return token
