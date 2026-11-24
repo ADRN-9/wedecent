@@ -69,7 +69,6 @@ func TestUnixReplayLockDeletionProcessHelper(t *testing.T) {
 	}
 }
 
-
 func TestUnixReplayOSLockWaitHonorsCancellation(t *testing.T) {
 	path := filepath.Join(newReplayTestDir(t), "replay.json")
 	unlock, _, err := lockReplayFileOSContext(context.Background(), path, path, nil)
@@ -109,7 +108,6 @@ func TestUnixReplayOSLockWaitHonorsCancellation(t *testing.T) {
 		t.Fatal("OS lock waiter did not honor cancellation")
 	}
 }
-
 
 func TestUnixReplayLockAnchorHasPrivateOwnership(t *testing.T) {
 	path := filepath.Join(newReplayTestDir(t), "replay.json")
