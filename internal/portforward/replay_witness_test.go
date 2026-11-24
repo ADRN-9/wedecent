@@ -3527,7 +3527,6 @@ func TestFinalizationEvidenceIsDurableImmutableAndTamperEvident(t *testing.T) {
 	}
 }
 
-
 type failingFenceWitness struct {
 	delegate     CheckpointFencingWitness
 	fail         bool
@@ -3587,8 +3586,8 @@ func restartTestFenceCoordinator(t *testing.T, old *CheckpointFenceCoordinator, 
 		clients[i] = CheckpointFenceWitnessClient{ID: client.ID, PublicKey: append(ed25519.PublicKey(nil), client.PublicKey...), Witness: witness}
 	}
 	return &CheckpointFenceCoordinator{
-		Primary: &testAtomicCheckpointPrimary{replay: replay, fence: primary},
-		PrimaryKey: append(ed25519.PublicKey(nil), old.PrimaryKey...),
+		Primary:           &testAtomicCheckpointPrimary{replay: replay, fence: primary},
+		PrimaryKey:        append(ed25519.PublicKey(nil), old.PrimaryKey...),
 		WitnessSetVersion: old.WitnessSetVersion, Witnesses: clients, Quorum: old.Quorum,
 	}
 }
@@ -3659,12 +3658,12 @@ func TestLifecycleFenceRejectsSubstitutedAndIncompleteParticipantHeads(t *testin
 	fenceRequest := CheckpointFenceRequest{
 		Scope: scope, Participants: participants, ExpectedFenceGeneration: head.Generation,
 		ExpectedRevocationEpoch: head.RevocationEpoch, Action: CheckpointFenceFinalize,
-		OperationID: "participant-head-negative-test-0001",
+		OperationID:   "participant-head-negative-test-0001",
 		RequestSHA256: requestHash, AuthorizationSHA256: requestHash,
 		PrimaryHeadGeneration: head.Generation + 1, PreviousFenceSHA256: head.FenceDigest,
 		WitnessSetVersion: client.Fencing.WitnessSetVersion,
-		WitnessIDs: checkpointFenceClientIDs(client.Fencing.Witnesses),
-		ExpiresAtUnixMS: time.Now().Add(time.Minute).UnixMilli(),
+		WitnessIDs:        checkpointFenceClientIDs(client.Fencing.Witnesses),
+		ExpiresAtUnixMS:   time.Now().Add(time.Minute).UnixMilli(),
 	}
 	fenceRequest.PrimaryHeadSHA256, err = checkpointFenceParticipantHeadDigest(heads)
 	if err != nil {
@@ -3714,7 +3713,6 @@ func TestLifecycleFenceRecoversPartialRevocationAfterRestartAndLostPrimaryRespon
 		t.Fatalf("revocation checkpoint head not committed: epoch=%d err=%v", head.RevocationEpoch, err)
 	}
 }
-
 
 func TestLifecycleFenceConcurrentFinalizeAndRevocationHasOneDurableOrder(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
