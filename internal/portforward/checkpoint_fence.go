@@ -46,14 +46,14 @@ type CheckpointFenceToken struct {
 
 // CheckpointFenceAcknowledgement attests that one witness advanced to this token.
 type CheckpointFenceAcknowledgement struct {
-	WitnessID    string
-	TokenSHA256  [sha256.Size]byte
-	Generation   uint64
-	Action       CheckpointFenceAction
-	OperationID  string
-	WitnessKeyID       string
-	CommittedAtUnixMS  int64
-	Signature          []byte
+	WitnessID         string
+	TokenSHA256       [sha256.Size]byte
+	Generation        uint64
+	Action            CheckpointFenceAction
+	OperationID       string
+	WitnessKeyID      string
+	CommittedAtUnixMS int64
+	Signature         []byte
 }
 
 // CheckpointFenceQuorum returns the strict majority for a fixed witness set.
