@@ -201,7 +201,7 @@ SQL
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 create function public.wd_c145_audit_finalized(p_operation_id text,p_jti text) returns jsonb
 language plpgsql security definer set search_path=''
-as $
+as $c166$
 declare
  payload jsonb;
  evidence jsonb := jsonb_build_object(
