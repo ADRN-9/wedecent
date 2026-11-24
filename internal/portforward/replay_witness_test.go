@@ -3826,3 +3826,32 @@ func TestLifecycleFenceConcurrentFinalizeAndRevocationHasOneDurableOrder(t *test
 		}
 	}
 }
+
+
+type tamperedRevocationProofProvider struct {
+	delegate CheckpointRevocationProofProvider
+}
+
+func (p tamperedRevocationProofProvider) CheckpointRevocationProof(ctx context.Context, endpoint CheckpointEndpoint, next uint64) ([]byte, error) {
+	proof, err := p.delegate.CheckpointRevocationProof(ctx, endpoint, next)
+	if err != nil {
+		return nil, err
+	}
+	proof[len(proof)-1] ^= 0x80
+	return proof, nil
+}
+
+func TestLifecycleFenceRejectsForgedRevocationAuthorization(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	client, _ := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	client.RevocationProofs = tamperedRevocationProofProvider{delegate: client.RevocationProofs}
+	if err := client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("forged revocation authorization accepted: %v", err)
+	}
+	reader := client.Fencing.Primary.(CheckpointFenceHeadReader)
+	head, err := reader.FenceHead(context.Background(), organizationCheckpointFenceScope(request.Initiator.OrganizationID))
+	if err != nil || head.Generation != 0 || head.PendingOperationID != "" {
+		t.Fatalf("forged authorization reserved a fence transition: %+v err=%v", head, err)
+	}
+}
