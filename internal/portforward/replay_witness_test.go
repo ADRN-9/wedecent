@@ -2714,4 +2714,3 @@ func TestFirstSeenNegativeDecisionPersistsBesideCommittedQuorum(t *testing.T) {
 		t.Fatalf("first-seen negative decision count=%d, want 1", negativeCount)
 	}
 }
-
