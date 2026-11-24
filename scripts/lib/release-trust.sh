@@ -283,9 +283,9 @@ wedecent_verify_release_metadata() {
   esac
   [[ -f "$core" && ! -L "$core" && -f "$agent" && ! -L "$agent" ]] ||
     wedecent_release_fail "wd-core and wd-agent must be regular non-symlink release binaries" || return 1
-  wedecent_verify_binary_trust "$core" "$hostname" "$pins" ||
+  wedecent_verify_binary_trust "$core" "$hostname" "$pins" "$audit_hostname" "$audit_pins" ||
     wedecent_release_fail "wd-core does not contain the approved replay-authority anchors" || return 1
-  wedecent_verify_binary_trust "$agent" "$hostname" "$pins" ||
+  wedecent_verify_binary_trust "$agent" "$hostname" "$pins" "$audit_hostname" "$audit_pins" ||
     wedecent_release_fail "wd-agent does not contain the approved replay-authority anchors" || return 1
 }
 
@@ -461,11 +461,11 @@ EOF_RELEASE
     case "$RELEASE_PLATFORM" in
       windows)
         wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-core.exe" "$TRUST_HOSTNAME" "$TRUST_PINS" "$TRUST_AUDIT_HOSTNAME" "$TRUST_AUDIT_PINS" || return 1
-        wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-agent.exe" "$TRUST_HOSTNAME" "$TRUST_PINS" || return 1
+        wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-agent.exe" "$TRUST_HOSTNAME" "$TRUST_PINS" "$TRUST_AUDIT_HOSTNAME" "$TRUST_AUDIT_PINS" || return 1
         ;;
       *)
-        wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-core" "$TRUST_HOSTNAME" "$TRUST_PINS" || return 1
-        wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-agent" "$TRUST_HOSTNAME" "$TRUST_PINS" || return 1
+        wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-core" "$TRUST_HOSTNAME" "$TRUST_PINS" "$TRUST_AUDIT_HOSTNAME" "$TRUST_AUDIT_PINS" || return 1
+        wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-agent" "$TRUST_HOSTNAME" "$TRUST_PINS" "$TRUST_AUDIT_HOSTNAME" "$TRUST_AUDIT_PINS" || return 1
         ;;
     esac
 
