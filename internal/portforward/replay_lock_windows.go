@@ -376,6 +376,10 @@ func lockReplayWindowsHandle(ctx context.Context, handle windows.Handle, overlap
 	}
 }
 
+func lockReplayFileOS(path string) (func() error, bool, error) {
+	return lockReplayFileOSContext(context.Background(), path, path, nil)
+}
+
 func lockReplayFileOSContext(ctx context.Context, path, statePath string, onWait func()) (unlock func() error, created bool, retErr error) {
 	_ = statePath
 	if ctx == nil {
