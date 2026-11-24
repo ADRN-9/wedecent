@@ -35,8 +35,8 @@ async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:st
   if([...(await sha(enc.encode(p.route_authorization_json)))].map(x=>x.toString(16).padStart(2,"0")).join("")!==String(p.route_authorization_sha256))throw Error("route authorization digest mismatch");
   const routeAuth=JSON.parse(p.route_authorization_json) as JsonObject;
   if(!isObject(routeAuth.claims)||!isObject(routeAuth.claims.route)||routeAuth.claims.jti!==p.route_authorization_jti||
-     routeAuth.claims.router!==(router as JsonObject).device_id||routeAuth.claims.route.id!==p.route_authorization_id||
-     routeAuth.claims.route.source!==(initiator as JsonObject).device_id||routeAuth.claims.route.destination!==(destination as JsonObject).device_id)throw Error("route authorization does not match stored route participants");
+     routeAuth.claims.router!==(router as JsonObject).device_id||routeAuth.claims.route.ID!==p.route_authorization_id||
+     routeAuth.claims.route.Source!==(initiator as JsonObject).device_id||routeAuth.claims.route.Destination!==(destination as JsonObject).device_id)throw Error("route authorization does not match stored route participants");
   str("route-authorization-sha256-v1");raw(route);str("route-router-membership-v1");ep(router)
  }else if(p.route_authorization_json!==""||p.route_authorization_id!==""||p.route_authorization_jti!=="")throw Error("unexpected route authorization fields")
  const publicKey=fromBase64(String(p.device_public_key));const signature=fromBase64Signature(String(p.device_signature));
@@ -57,7 +57,7 @@ function b64(s:unknown,size:number){if(typeof s!=="string")throw Error("invalid 
 export function b64url(b:Uint8Array){let s="";for(const x of b)s+=String.fromCharCode(x);return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
 export function u32(n:number){if(!Number.isSafeInteger(n)||n<0||n>0xffffffff)throw Error("invalid uint32");const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,false);return b}
 export function u64(n:unknown){if(typeof n!=="number"||!Number.isSafeInteger(n)||n<0)throw Error("invalid uint64");const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(n),false);return b}
-function i64(n:unknown){if(typeof n!=="number"||!Number.isSafeInteger(n))throw Error("invalid int64");const b=new Uint8Array(8);new DataView(b.buffer).setBigInt64(0,BigInt(n),false);return b}
+export function i64(n:unknown){if(typeof n!=="number"||!Number.isSafeInteger(n))throw Error("invalid int64");const b=new Uint8Array(8);new DataView(b.buffer).setBigInt64(0,BigInt(n),false);return b}
 const enc=new TextEncoder();
 export function str(s:unknown){if(typeof s!=="string")throw Error("invalid string");const b=enc.encode(s);return concat(u32(b.length),b)}
 export function concat(...parts:Uint8Array[]){const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let i=0;for(const p of parts){out.set(p,i);i+=p.length}return out}
