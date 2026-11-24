@@ -3681,7 +3681,7 @@ func restartTestFenceCoordinator(t *testing.T, old *CheckpointFenceCoordinator) 
 	for i, client := range old.Witnesses {
 		oldWitness, ok := client.Witness.(*FileCheckpointFenceWitness)
 		if !ok {
-			if wrapper, ok := client.Witness.(*failingFenceWitness); ok {
+			if wrapper, wrapped := client.Witness.(*failingFenceWitness); wrapped {
 				oldWitness, ok = wrapper.delegate.(*FileCheckpointFenceWitness)
 			}
 		}
