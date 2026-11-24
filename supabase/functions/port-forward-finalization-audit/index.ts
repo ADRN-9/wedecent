@@ -75,8 +75,8 @@ function primaryHeadRecord(h:JsonObject){return {device_id:h.device_id,account_i
 function trustedWitnessKeys(){
  const raw=Deno.env.get("WEDECENT_CHECKPOINT_WITNESS_KEYS");if(!raw)throw Error("independent witness trust anchors missing");
  const parsed=JSON.parse(raw) as unknown;if(!isObject(parsed))throw Error("invalid witness trust anchors");
- const keys=new Map<string,Uint8Array>();for(const [id,value] of Object.entries(parsed)){if(!/^[A-Za-z0-9._-]{1,128}$/.test(id))throw Error("invalid witness ID");keys.set(id,b64(value,32))}
- const quorum=Number(Deno.env.get("WEDECENT_CHECKPOINT_WITNESS_QUORUM"));if(!Number.isSafeInteger(quorum)||keys.size<2||quorum<=Math.floor(keys.size/2)||quorum>keys.size)throw Error("invalid witness quorum");
+ const keys=new Map<string,Uint8Array>(),seenKeys=new Set<string>();for(const [id,value] of Object.entries(parsed)){if(!/^[A-Za-z0-9._-]{1,128}$/.test(id))throw Error("invalid witness ID");const key=b64(value,32),fingerprint=b64url(key);if(seenKeys.has(fingerprint))throw Error("witness trust anchors must be unique");seenKeys.add(fingerprint);keys.set(id,key)}
+ const quorum=Number(Deno.env.get("WEDECENT_CHECKPOINT_WITNESS_QUORUM"));if(!Number.isSafeInteger(quorum)||keys.size<2||keys.size>16||quorum<=Math.floor(keys.size/2)||quorum>keys.size)throw Error("invalid witness quorum");
  return {keys,quorum};
 }
 export async function verifyFinalizationEvidence(p:JsonObject,operationID:string,requestHash:Uint8Array,evidence:unknown,evidenceSHA256:string){
