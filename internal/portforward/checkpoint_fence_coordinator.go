@@ -26,6 +26,9 @@ type CheckpointFenceCoordinator struct {
 // Execute is retained for isolated fence-store tests and non-checkpoint use.
 // Authorization lifecycle callers must use ExecuteWithCheckpointHeads.
 func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request CheckpointFenceRequest) (CheckpointFenceOperation, error) {
+	if c == nil || request.Scope.Kind == "organization" || len(request.Participants) != 0 {
+		return CheckpointFenceOperation{}, ErrCheckpointUnavailable
+	}
 	return c.execute(ctx, request, nil, func() (CheckpointFenceToken, error) {
 		return c.Primary.ReserveFence(ctx, request)
 	}, func(token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement) error {
@@ -41,6 +44,9 @@ func (c *CheckpointFenceCoordinator) ExecuteWithCheckpointHeads(
 	request CheckpointFenceRequest,
 	heads []CheckpointFenceParticipantHead,
 ) (CheckpointFenceOperation, error) {
+	if c == nil || ctx == nil || c.Primary == nil {
+		return CheckpointFenceOperation{}, ErrCheckpointUnavailable
+	}
 	atomicPrimary, ok := c.Primary.(CheckpointFenceAtomicPrimary)
 	if !ok || len(heads) == 0 {
 		return CheckpointFenceOperation{}, ErrCheckpointUnavailable
