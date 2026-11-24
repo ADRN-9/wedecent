@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"errors"
+	"sort"
 )
 
 type CheckpointFenceWitnessClient struct {
@@ -80,7 +81,7 @@ func (c *CheckpointFenceCoordinator) execute(
 		return CheckpointFenceOperation{}, err
 	}
 	if len(heads) > 0 {
-		if err := validateFenceParticipantHeads(heads, request.Scope); err != nil {
+		if err := validateFenceParticipantHeads(heads, request.Scope, request.Participants); err != nil {
 			return CheckpointFenceOperation{}, err
 		}
 	}
@@ -217,7 +218,8 @@ func checkpointFenceTokenMatchesOperation(token CheckpointFenceToken, request Ch
 		token.OperationID == request.OperationID && token.RequestSHA256 == request.RequestSHA256 &&
 		token.AuthorizationSHA256 == request.AuthorizationSHA256 &&
 		token.WitnessSetVersion == request.WitnessSetVersion &&
-		sameStringSet(token.WitnessIDs, request.WitnessIDs)
+		sameStringSet(token.WitnessIDs, request.WitnessIDs) &&
+		sameCheckpointEndpointSet(token.Participants, request.Participants)
 }
 
 func checkpointFenceTokenMatchesRequest(token CheckpointFenceToken, request CheckpointFenceRequest) bool {
@@ -248,7 +250,38 @@ func cloneCheckpointFenceParticipantHeads(heads []CheckpointFenceParticipantHead
 	return out
 }
 
-func validateFenceParticipantHeads(heads []CheckpointFenceParticipantHead, scope CheckpointWitnessScope) error {
+
+func cloneCheckpointEndpoints(endpoints []CheckpointEndpoint) []CheckpointEndpoint {
+	return append([]CheckpointEndpoint(nil), endpoints...)
+}
+
+func sameCheckpointEndpointSet(a, b []CheckpointEndpoint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left, right := cloneCheckpointEndpoints(a), cloneCheckpointEndpoints(b)
+	sort.Slice(left, func(i, j int) bool { return left[i].DeviceID < left[j].DeviceID })
+	sort.Slice(right, func(i, j int) bool { return right[i].DeviceID < right[j].DeviceID })
+	for i := range left {
+		if left[i] != right[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func fenceHeadEndpoints(heads []CheckpointFenceParticipantHead) []CheckpointEndpoint {
+	endpoints := make([]CheckpointEndpoint, len(heads))
+	for i, head := range heads {
+		endpoints[i] = head.Endpoint
+	}
+	return endpoints
+}
+
+func validateFenceParticipantHeads(heads []CheckpointFenceParticipantHead, scope CheckpointWitnessScope, participants []CheckpointEndpoint) error {
+	if len(heads) == 0 || !sameCheckpointEndpointSet(fenceHeadEndpoints(heads), participants) {
+		return ErrCheckpointIntegrity
+	}
 	seen := make(map[CheckpointWitnessScope]bool, len(heads))
 	for _, item := range heads {
 		if !validCheckpointEndpoint(item.Endpoint) ||
