@@ -3071,7 +3071,6 @@ func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart
 	}
 }
 
-
 func TestCheckpointTransitionLockCancellation(t *testing.T) {
 	for _, fileBacked := range []bool{false, true} {
 		name := "memory"
@@ -3164,7 +3163,6 @@ func TestCheckpointStandaloneDecisionWrappersPropagateUnlockErrors(t *testing.T)
 		}
 	})
 }
-
 
 func TestFileCheckpointStandaloneDecisionWrappersPropagateUnlockErrors(t *testing.T) {
 	newStore := func(t *testing.T) *FileCheckpointPendingStore {
