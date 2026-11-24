@@ -757,10 +757,8 @@ func (w *deterministicCheckpointWitness) Commit(ctx context.Context, request Che
 	}
 	// The witness lock is the local linearization point between Commit and
 	// Revoke. Every identity carried by the signed request must still be current.
-	for _, e := range checkpointRequestParticipants(request) {
-		if e.RevocationEpoch != w.revoked[witnessScope(e)] {
-			return CheckpointWitnessReceipt{}, ErrCheckpointRevoked
-		}
+	if err := w.validateRequestMembershipVector(request); err != nil {
+		return CheckpointWitnessReceipt{}, err
 	}
 	ledger := w.ledgers[scope]
 	if ledger == nil {
@@ -859,10 +857,8 @@ func (w *deterministicCheckpointWitness) Acknowledge(ctx context.Context, reques
 	}
 	// Acknowledgement is another authorization boundary: revocation of
 	// either endpoint or the signed router fences completion of this request.
-	for _, e := range checkpointRequestParticipants(request) {
-		if e.RevocationEpoch != w.revoked[witnessScope(e)] {
-			return CheckpointWitnessAck{}, ErrCheckpointRevoked
-		}
+	if err := w.validateRequestMembershipVector(request); err != nil {
+		return CheckpointWitnessAck{}, err
 	}
 	ledger := w.ledgers[scope]
 	if ledger == nil || ledger.used[request.JTI] != digest {
@@ -887,6 +883,20 @@ func (w *deterministicCheckpointWitness) Acknowledge(ctx context.Context, reques
 	return ack, nil
 }
 
+func (w *deterministicCheckpointWitness) validateRequestMembershipVector(request CheckpointRequest) error {
+	for _, endpoint := range checkpointRequestParticipants(request) {
+		scope := witnessScope(endpoint)
+		currentEpoch := w.revoked[scope]
+		if endpoint.RevocationEpoch != currentEpoch {
+			return ErrCheckpointRevoked
+		}
+		if ledger := w.ledgers[scope]; ledger != nil && ledger.revocationEpoch != currentEpoch {
+			return ErrCheckpointIntegrity
+		}
+	}
+	return nil
+}
+
 func (w *deterministicCheckpointWitness) Head(ctx context.Context, scope CheckpointWitnessScope) (CheckpointWitnessHead, error) {
 	if err := ctx.Err(); err != nil {
 		return CheckpointWitnessHead{}, err
@@ -900,12 +910,15 @@ func (w *deterministicCheckpointWitness) Head(ctx context.Context, scope Checkpo
 		return CheckpointWitnessHead{}, ErrCheckpointUnavailable
 	}
 	ledger := w.ledgers[scope]
+	currentEpoch := w.revoked[scope]
 	if ledger == nil {
-		ledger = &deterministicWitnessLedger{used: make(map[string][sha256.Size]byte)}
+		ledger = &deterministicWitnessLedger{used: make(map[string][sha256.Size]byte), revocationEpoch: currentEpoch}
 		w.ledgers[scope] = ledger
+	} else if ledger.revocationEpoch != currentEpoch {
+		return CheckpointWitnessHead{}, ErrCheckpointIntegrity
 	}
 	head := CheckpointWitnessHead{WitnessID: w.id, Scope: scope, Generation: ledger.generation, RecordHash: ledger.head,
-		PrimaryGeneration: ledger.primaryGeneration, PrimaryHead: ledger.primaryHead, RevocationEpoch: ledger.revocationEpoch,
+		PrimaryGeneration: ledger.primaryGeneration, PrimaryHead: ledger.primaryHead, RevocationEpoch: currentEpoch,
 		WitnessKeyID: checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
 	head.Signature = ed25519.Sign(w.private, checkpointWitnessHeadMessage(head))
 	return head, nil
