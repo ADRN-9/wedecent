@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"wedecent.com/wedecent/internal/account"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
 	"wedecent.com/wedecent/internal/portforward"
@@ -127,6 +129,18 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 	stateDir := t.TempDir()
 	created, err := identity.Ensure(stateDir, "core-witnessed-forwarding-test")
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := account.Save(account.SessionPath(stateDir), &account.Session{
+		Version:        account.SessionVersion,
+		SupabaseURL:    "https://audit-test.supabase.co",
+		PublishableKey: "sb_publishable_test",
+		UserID:         "11000000-0000-4000-8000-000000000091",
+		Email:          "audit-test@example.test",
+		AccessToken:    "test-access-token",
+		RefreshToken:   "test-refresh-token",
+		ExpiresAt:      time.Now().Add(time.Hour).Unix(),
+	}); err != nil {
 		t.Fatal(err)
 	}
 	controlPlaneKey, _, err := ed25519.GenerateKey(rand.Reader)
