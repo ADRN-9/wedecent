@@ -20,7 +20,7 @@ Existing authenticated acknowledgement and equivocation publication paths remain
 - Finalization acquires first: revocation cannot reach the primary Revoke operation until the finalization callback completes; revocation then succeeds.
 - Revocation acquires first: finalization cannot invoke its audit callback while revocation is blocked inside the primary operation; after revocation and witness quorum complete, finalization fails closed.
 
-The tests use explicit channel gates around primary operations. A short negative wait is used to assert that the competing operation has not crossed the lock boundary.
+The tests use explicit channel gates around primary operations and a lock-contention hook that fires only after the competing operation has actually encountered the held lock. C159 replaced the earlier timing-based negative wait with bounded context deadlines and explicit release cleanup.
 
 `TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart` injects failure specifically when the local completion marker is persisted after the audit callback. It restarts the file-backed pending store, retries finalization, verifies the same operation ID and outcome are supplied, and checks a file-backed test sink stores one deduplicated record.
 
@@ -42,7 +42,12 @@ Production activation still requires an independently administered primary/witne
 
 ## Verification status
 
-Source changes were committed to the existing PR branch. No local Go command runner was available in this execution, so Go tests, race tests and vet are not claimed as run here. Exact-HEAD GitHub Actions must be inspected after the latest commit before any verification claim is made.
+C159 subsequently verified the updated source on exact HEAD `9a3185af8047c6f235d55794f6760cc005252531`:
+
+- CI run [45387639798](https://github.com/ADRN-9/wedecent/actions/runs/45387639798): Linux, Windows and macOS Go checks passed, including Linux full race testing and vet.
+- Desktop run [45387639873](https://github.com/ADRN-9/wedecent/actions/runs/45387639873): Linux, Windows and macOS Tauri checks passed.
+
+See `docs/C159_REVOCATION_AUDIT_FENCING.md` for the complete lock hardening, regression, production audit and distributed-fencing assessment. These results establish repository validation only; production audit integration and independent distributed fencing remain external blockers.
 
 
 ### CI correction
