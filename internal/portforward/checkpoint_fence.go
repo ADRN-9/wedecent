@@ -51,8 +51,9 @@ type CheckpointFenceAcknowledgement struct {
 	Generation   uint64
 	Action       CheckpointFenceAction
 	OperationID  string
-	WitnessKeyID string
-	Signature    []byte
+	WitnessKeyID      string
+	CommittedAtUnixMS int64
+	Signature         []byte
 }
 
 // CheckpointFenceQuorum returns the strict majority for a fixed witness set.
