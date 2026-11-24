@@ -8,7 +8,9 @@ import {
   deviceIDFromPublicKey,
   encodeBase64URL,
   remoteReplayDeviceMessage,
+  verifyRouteAuthorizationBinding,
 } from './port-forward-replay.mjs'
+import { canonicalRouteAuthorizationMessage } from './route-authorization.mjs'
 
 if (!globalThis.crypto) globalThis.crypto = webcrypto
 
@@ -90,4 +92,80 @@ test('device replay proof is domain separated and binds the authorization digest
 
 test('device ID derivation matches the Go Ed25519 identity format', async () => {
   assert.equal(await deviceIDFromPublicKey(new Uint8Array(32)), 'wd_mzuhvlpymk6xo3ep')
+})
+
+
+test('routed replay requires a separately signed exact route authorization', async () => {
+  const keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])
+  const publicKey = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey))
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', publicKey))
+  const kid = 'ed25519-' + encodeBase64URL(digest)
+  const route = {
+    ID: '00000000-0000-4000-8000-000000000002',
+    Source: 'wd_aaaaaaaaaaaaaaaa',
+    Destination: 'wd_bbbbbbbbbbbbbbbb',
+    Hops: [
+      { From: 'wd_aaaaaaaaaaaaaaaa', To: 'wd_cccccccccccccccc', Transport: 'internet', Cost: 10 },
+      { From: 'wd_cccccccccccccccc', To: 'wd_bbbbbbbbbbbbbbbb', Transport: 'lan', Cost: 11 },
+    ],
+    ExpiresAt: new Date(fixture.claims.exp_unix_ms).toISOString(),
+  }
+  const claims = {
+    v: 1,
+    iss: 'wedecent-control-plane',
+    aud: 'wedecent-mesh-router',
+    permission: 'mesh.forward',
+    jti: 'QUJDREVGR0hJSktMTU5PUA',
+    router: 'wd_cccccccccccccccc',
+    route,
+    iat_unix_ms: fixture.claims.iat_unix_ms,
+    exp_unix_ms: fixture.claims.exp_unix_ms,
+  }
+  const message = canonicalRouteAuthorizationMessage({ kid, claims })
+  const signature = new Uint8Array(await crypto.subtle.sign('Ed25519', keyPair.privateKey, message))
+  const authorization = {
+    route_authorization: {
+      kid,
+      claims,
+      signature: encodeBase64URL(signature),
+    },
+  }
+  const capabilityClaims = {
+    ...fixture.claims,
+    router: 'wd_cccccccccccccccc',
+    route,
+  }
+  assert.deepEqual(
+    await verifyRouteAuthorizationBinding(authorization, capabilityClaims, publicKey),
+    {
+      id: route.ID,
+      jti: claims.jti,
+      sourceDeviceID: route.Source,
+      destinationDeviceID: route.Destination,
+    },
+  )
+  await assert.rejects(
+    verifyRouteAuthorizationBinding(
+      authorization,
+      { ...capabilityClaims, router: 'wd_dddddddddddddddd' },
+      publicKey,
+    ),
+  )
+  await assert.rejects(
+    verifyRouteAuthorizationBinding(
+      authorization,
+      { ...capabilityClaims, route: { ...route, Destination: 'wd_dddddddddddddddd' } },
+      publicKey,
+    ),
+  )
+})
+
+test('direct replay rejects an unexpected route authorization', async () => {
+  await assert.rejects(
+    verifyRouteAuthorizationBinding(
+      { route_authorization: { kid: 'unexpected' } },
+      fixture.claims,
+      new Uint8Array(),
+    ),
+  )
 })
