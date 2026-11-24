@@ -2747,26 +2747,24 @@ type transitionBlockingCheckpointPrimary struct {
 
 func (p *transitionBlockingCheckpointPrimary) Head(ctx context.Context, endpoint CheckpointEndpoint) (CheckpointHead, error) {
 	if p.headEntered != nil {
-		p.headOnce.Do(func() {
-			close(p.headEntered)
-			select {
-			case <-p.releaseHead:
-			case <-ctx.Done():
-			}
-		})
+		p.headOnce.Do(func() { close(p.headEntered) })
+		select {
+		case <-p.releaseHead:
+		case <-ctx.Done():
+			return CheckpointHead{}, ctx.Err()
+		}
 	}
 	return p.ReplayCheckpointProvider.Head(ctx, endpoint)
 }
 
 func (p *transitionBlockingCheckpointPrimary) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
 	if p.revokeEntered != nil {
-		p.revokeOnce.Do(func() {
-			close(p.revokeEntered)
-			select {
-			case <-p.releaseRevoke:
-			case <-ctx.Done():
-			}
-		})
+		p.revokeOnce.Do(func() { close(p.revokeEntered) })
+		select {
+		case <-p.releaseRevoke:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
 	}
 	return p.ReplayCheckpointProvider.Revoke(ctx, endpoint, next)
 }
@@ -2790,12 +2788,38 @@ func newTransitionTestStore(t *testing.T, fileBacked bool) CheckpointPendingStor
 	return store
 }
 
-func requireNoSignal(t *testing.T, signal <-chan struct{}) {
+func setTransitionWaitHook(store CheckpointPendingStore, wait chan<- struct{}) {
+	hook := func() {
+		select {
+		case wait <- struct{}{}:
+		default:
+		}
+	}
+	switch value := store.(type) {
+	case *MemoryCheckpointPendingStore:
+		value.transitionWait = hook
+	case *FileCheckpointPendingStore:
+		value.transitionWait = hook
+	}
+}
+
+func waitForTestSignal(t *testing.T, ctx context.Context, signal <-chan struct{}, name string) {
 	t.Helper()
 	select {
 	case <-signal:
-		t.Fatal("operation crossed the shared transition lock")
-	case <-time.After(30 * time.Millisecond):
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for %s: %v", name, ctx.Err())
+	}
+}
+
+func waitForTestResult(t *testing.T, ctx context.Context, result <-chan error, name string) error {
+	t.Helper()
+	select {
+	case err := <-result:
+		return err
+	case <-ctx.Done():
+		t.Fatalf("timed out waiting for %s: %v", name, ctx.Err())
+		return ctx.Err()
 	}
 }
 
@@ -2811,43 +2835,59 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 				orderName = "revoke-first"
 			}
 			t.Run(storeName+"/"+orderName, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+
 				primary := newDeterministicCheckpointProvider(t)
 				request, _, _, _, _ := makeCheckpointFixture(t, primary,
 					"11111111-1111-4111-8111-111111111111",
 					"22222222-2222-4222-8222-222222222222")
-				client, _ := newWitnessedFixture(t, primary, newTransitionTestStore(t, fileBacked))
-				if _, err := client.Consume(context.Background(), request); err != nil {
+				store := newTransitionTestStore(t, fileBacked)
+				client, _ := newWitnessedFixture(t, primary, store)
+				if _, err := client.Consume(ctx, request); err != nil {
 					t.Fatal(err)
 				}
 
+				contention := make(chan struct{}, 1)
+				setTransitionWaitHook(store, contention)
 				callback := make(chan string, 1)
 				callbackSignal := make(chan struct{}, 1)
 				finalizeDone := make(chan error, 1)
 				revokeDone := make(chan error, 1)
+				callbackFn := func(_ context.Context, operationID string) error {
+					callback <- operationID
+					callbackSignal <- struct{}{}
+					return nil
+				}
+
 				if revokeFirst {
 					blocking := &transitionBlockingCheckpointPrimary{
 						ReplayCheckpointProvider: primary,
 						revokeEntered:            make(chan struct{}),
 						releaseRevoke:            make(chan struct{}),
 					}
+					var releaseOnce sync.Once
+					release := func() { releaseOnce.Do(func() { close(blocking.releaseRevoke) }) }
+					t.Cleanup(release)
 					client.Primary = blocking
 					go func() {
-						revokeDone <- client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1)
+						revokeDone <- client.Revoke(ctx, request.Initiator, request.Initiator.RevocationEpoch+1)
 					}()
-					<-blocking.revokeEntered
+					waitForTestSignal(t, ctx, blocking.revokeEntered, "primary revocation entry")
 					go func() {
-						finalizeDone <- client.FinalizeWithAudit(context.Background(), request, func(_ context.Context, operationID string) error {
-							callback <- operationID
-							callbackSignal <- struct{}{}
-							return nil
-						})
+						finalizeDone <- client.FinalizeWithAudit(ctx, request, callbackFn)
 					}()
-					requireNoSignal(t, callbackSignal)
-					close(blocking.releaseRevoke)
-					if err := <-revokeDone; err != nil {
+					waitForTestSignal(t, ctx, contention, "finalization lock contention")
+					select {
+					case <-callbackSignal:
+						t.Fatal("audit callback ran while revocation held the transition lock")
+					default:
+					}
+					release()
+					if err := waitForTestResult(t, ctx, revokeDone, "revocation"); err != nil {
 						t.Fatalf("revoke-first failed: %v", err)
 					}
-					if err := <-finalizeDone; err == nil {
+					if err := waitForTestResult(t, ctx, finalizeDone, "finalization"); err == nil {
 						t.Fatal("finalization succeeded after revocation won the lock")
 					}
 					select {
@@ -2865,27 +2905,42 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 					revokeEntered:            make(chan struct{}),
 					releaseRevoke:            make(chan struct{}),
 				}
+				var releaseHeadOnce, releaseRevokeOnce sync.Once
+				releaseHead := func() { releaseHeadOnce.Do(func() { close(blocking.releaseHead) }) }
+				releaseRevoke := func() { releaseRevokeOnce.Do(func() { close(blocking.releaseRevoke) }) }
+				t.Cleanup(func() {
+					releaseHead()
+					releaseRevoke()
+				})
 				client.Primary = blocking
 				go func() {
-					finalizeDone <- client.FinalizeWithAudit(context.Background(), request, func(_ context.Context, operationID string) error {
-						callback <- operationID
-						return nil
-					})
+					finalizeDone <- client.FinalizeWithAudit(ctx, request, callbackFn)
 				}()
-				<-blocking.headEntered
+				waitForTestSignal(t, ctx, blocking.headEntered, "primary head entry")
 				go func() {
-					revokeDone <- client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1)
+					revokeDone <- client.Revoke(ctx, request.Initiator, request.Initiator.RevocationEpoch+1)
 				}()
-				requireNoSignal(t, blocking.revokeEntered)
-				close(blocking.releaseHead)
-				if err := <-finalizeDone; err != nil {
+				waitForTestSignal(t, ctx, contention, "revocation lock contention")
+				select {
+				case <-blocking.revokeEntered:
+					t.Fatal("primary revocation crossed the transition lock before finalization")
+				default:
+				}
+				releaseHead()
+				if err := waitForTestResult(t, ctx, finalizeDone, "finalization"); err != nil {
 					t.Fatalf("finalize-first failed: %v", err)
 				}
-				if id := <-callback; id == "" {
-					t.Fatal("finalization callback received empty operation ID")
+				select {
+				case id := <-callback:
+					if id == "" {
+						t.Fatal("finalization callback received empty operation ID")
+					}
+				default:
+					t.Fatal("finalization completed without audit callback")
 				}
-				close(blocking.releaseRevoke)
-				if err := <-revokeDone; err != nil {
+				waitForTestSignal(t, ctx, blocking.revokeEntered, "primary revocation after finalization")
+				releaseRevoke()
+				if err := waitForTestResult(t, ctx, revokeDone, "revocation"); err != nil {
 					t.Fatalf("revoke after finalization failed: %v", err)
 				}
 			})
