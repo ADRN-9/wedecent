@@ -1784,8 +1784,14 @@ func TestPersistedAcknowledgementsCannotBypassLaterMembershipRevocation(t *testi
 			if err := client.ValidateConfiguration(); err != nil {
 				t.Fatal(err)
 			}
+			if existing, err := pending.Begin(context.Background(), request); err != nil || existing {
+				t.Fatalf("pending begin existing=%t err=%v", existing, err)
+			}
 			result, err := primary.Consume(context.Background(), request)
 			if err != nil {
+				t.Fatal(err)
+			}
+			if err := pending.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil {
 				t.Fatal(err)
 			}
 			for _, trust := range client.Witnesses {
