@@ -1,4 +1,8 @@
-import { canonical, digest, verifyFinalizationEvidence } from "./index.ts";
+import {
+  canonical, checkpointHeadMessage, checkpointReceiptMessage, checkpointRecordHash,
+  concat, digest, i64, providerKeyID, sha, str, u32, u64,
+  verifyFinalizationEvidence, verifyRouteAuthorization, witnessAckMessage, witnessHeadMessage,
+} from "./index.ts";
 
 const evidence = {
   primary_receipt: { public_key: btoa("x".repeat(32)) },
@@ -41,22 +45,7 @@ Deno.test("terminal audit requires independently provisioned witness keys", asyn
 });
 
 
-import {
-  checkpointHeadMessage,
-  checkpointReceiptMessage,
-  i64,
-  str,
-  u32,
-  u64,
-  checkpointRecordHash,
-  concat,
-  providerKeyID,
-  sha,
-  verifyFinalizationEvidence,
-  verifyRouteAuthorization,
-  witnessAckMessage,
-  witnessHeadMessage,
-} from "./index.ts";
+
 
 function hex(bytes: Uint8Array) {
   return [...bytes].map((x) => x.toString(16).padStart(2, "0")).join("");
