@@ -425,7 +425,7 @@ func (p *FileCheckpointFencePrimary) tokenForRequest(request CheckpointFenceRequ
 	}
 	token := CheckpointFenceToken{
 		Version: checkpointFenceVersion, Scope: request.Scope,
-		Participants: cloneCheckpointEndpoints(request.Participants),
+		Participants:            cloneCheckpointEndpoints(request.Participants),
 		ExpectedFenceGeneration: request.ExpectedFenceGeneration, Generation: request.ExpectedFenceGeneration + 1,
 		ExpectedRevocationEpoch: request.ExpectedRevocationEpoch, ResultingRevocationEpoch: request.ExpectedRevocationEpoch,
 		Action: request.Action, OperationID: request.OperationID,
