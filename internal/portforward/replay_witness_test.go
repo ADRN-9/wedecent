@@ -21,6 +21,157 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 )
 
+type testAtomicCheckpointPrimary struct {
+	mu      sync.Mutex
+	replay  *deterministicCheckpointProvider
+	fence   *FileCheckpointFencePrimary
+}
+
+func (a *testAtomicCheckpointPrimary) Consume(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.replay.Consume(ctx, request)
+}
+
+func (a *testAtomicCheckpointPrimary) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.replay.Revoke(ctx, endpoint, next)
+}
+
+func (a *testAtomicCheckpointPrimary) Head(ctx context.Context, endpoint CheckpointEndpoint) (CheckpointHead, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.replay.Head(ctx, endpoint)
+}
+
+func (a *testAtomicCheckpointPrimary) Recover(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	recoverer, ok := interface{}(a.replay).(ReplayCheckpointRecoveryProvider)
+	if !ok {
+		return CheckpointResult{}, ErrCheckpointUnavailable
+	}
+	return recoverer.Recover(ctx, request)
+}
+
+func (a *testAtomicCheckpointPrimary) ReserveFence(ctx context.Context, request CheckpointFenceRequest) (CheckpointFenceToken, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fence.ReserveFence(ctx, request)
+}
+
+func (a *testAtomicCheckpointPrimary) CommitFence(ctx context.Context, token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fence.CommitFence(ctx, token, acks)
+}
+
+func (a *testAtomicCheckpointPrimary) LoadFence(ctx context.Context, scope CheckpointWitnessScope, operationID string) (CheckpointFenceOperation, bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fence.LoadFence(ctx, scope, operationID)
+}
+
+func (a *testAtomicCheckpointPrimary) FenceHead(ctx context.Context, scope CheckpointWitnessScope) (CheckpointFenceHead, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fence.FenceHead(ctx, scope)
+}
+
+func (a *testAtomicCheckpointPrimary) verifyHeadsLocked(ctx context.Context, expected []CheckpointFenceParticipantHead) error {
+	for _, item := range expected {
+		actual, err := a.replay.Head(ctx, item.Endpoint)
+		if err != nil {
+			return err
+		}
+		if VerifyCheckpointHead(actual, item.Endpoint, a.replay.private.Public().(ed25519.PublicKey)) != nil ||
+			actual.Generation != item.Head.Generation || actual.RecordHash != item.Head.RecordHash ||
+			actual.RevocationEpoch != item.Head.RevocationEpoch {
+			return ErrCheckpointStale
+		}
+	}
+	return nil
+}
+
+func (a *testAtomicCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx context.Context, request CheckpointFenceRequest, heads []CheckpointFenceParticipantHead) (CheckpointFenceToken, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.verifyHeadsLocked(ctx, heads); err != nil {
+		return CheckpointFenceToken{}, err
+	}
+	digest, err := checkpointFenceParticipantHeadDigest(heads)
+	if err != nil || digest != request.PrimaryHeadSHA256 {
+		return CheckpointFenceToken{}, ErrCheckpointIntegrity
+	}
+	return a.fence.ReserveFence(ctx, request)
+}
+
+func (a *testAtomicCheckpointPrimary) CommitFenceWithCheckpointHeads(ctx context.Context, token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement, heads []CheckpointFenceParticipantHead) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err := a.verifyHeadsLocked(ctx, heads); err != nil {
+		return err
+	}
+	digest, err := checkpointFenceParticipantHeadDigest(heads)
+	if err != nil || digest != token.PrimaryHeadSHA256 {
+		return ErrCheckpointIntegrity
+	}
+	if token.Action == CheckpointFenceRevoke {
+		if len(heads) != 1 || heads[0].Endpoint.RevocationEpoch == ^uint64(0) {
+			return ErrCheckpointIntegrity
+		}
+		if err := a.replay.Revoke(ctx, heads[0].Endpoint, heads[0].Endpoint.RevocationEpoch+1); err != nil {
+			return err
+		}
+	}
+	return a.fence.CommitFence(ctx, token, acks)
+}
+
+func newTestFenceCoordinator(t *testing.T, replay *deterministicCheckpointProvider) *CheckpointFenceCoordinator {
+	t.Helper()
+	primaryPublic, primaryPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ids := []string{"fence-a", "fence-b", "fence-c"}
+	trust := make([]CheckpointFenceWitnessTrust, len(ids))
+	privateKeys := make([]ed25519.PrivateKey, len(ids))
+	for i := range ids {
+		public, private, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		privateKeys[i] = private
+		trust[i] = CheckpointFenceWitnessTrust{ID: ids[i], PublicKey: public}
+	}
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "primary"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	primary, err := OpenFileCheckpointFencePrimary(filepath.Join(dir, "primary", "fence.wal"), primaryPrivate, "test-fence-set-v1", trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clients := make([]CheckpointFenceWitnessClient, len(ids))
+	for i, id := range ids {
+		path := filepath.Join(dir, id)
+		if err := os.MkdirAll(path, 0700); err != nil {
+			t.Fatal(err)
+		}
+		witness, err := OpenFileCheckpointFenceWitness(filepath.Join(path, "fence.wal"), id, privateKeys[i], primaryPublic, "test-fence-set-v1", ids)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients[i] = CheckpointFenceWitnessClient{ID: id, PublicKey: trust[i].PublicKey, Witness: witness}
+	}
+	atomicPrimary := &testAtomicCheckpointPrimary{replay: replay, fence: primary}
+	return &CheckpointFenceCoordinator{
+		Primary: atomicPrimary, PrimaryKey: primaryPublic, WitnessSetVersion: "test-fence-set-v1",
+		Witnesses: clients, Quorum: 2,
+	}
+}
+
 func newWitnessedFixture(t *testing.T, primary *deterministicCheckpointProvider, pending CheckpointPendingStore) (*WitnessedReplayCheckpointProvider, []*deterministicCheckpointWitness) {
 	t.Helper()
 	publicKey := primary.private.Public().(ed25519.PublicKey)
@@ -30,7 +181,14 @@ func newWitnessedFixture(t *testing.T, primary *deterministicCheckpointProvider,
 		witnesses[i] = newDeterministicCheckpointWitness([]string{"witness-a", "witness-b", "witness-c"}[i], publicKey)
 		trust[i] = CheckpointWitnessTrust{Witness: witnesses[i], ID: witnesses[i].id, PublicKey: witnesses[i].private.Public().(ed25519.PublicKey)}
 	}
-	return &WitnessedReplayCheckpointProvider{Primary: primary, PrimaryKey: publicKey, Witnesses: trust, Quorum: 2, Pending: pending}, witnesses
+	atomicPrimary := &testAtomicCheckpointPrimary{replay: primary}
+	fence := newTestFenceCoordinator(t, primary)
+	atomicPrimary = fence.Primary.(*testAtomicCheckpointPrimary)
+	provider := &WitnessedReplayCheckpointProvider{
+		Primary: atomicPrimary, PrimaryKey: publicKey, Witnesses: trust, Quorum: 2,
+		Pending: pending, Fencing: fence,
+	}
+	return provider, witnesses
 }
 
 func nextCheckpointRequest(t *testing.T, request CheckpointRequest, signer ed25519.PrivateKey, jti string) CheckpointRequest {
