@@ -113,13 +113,13 @@ type CheckpointFinalizationRevocationProof struct {
 }
 
 type WitnessedReplayCheckpointProvider struct {
-	Primary    ReplayCheckpointProvider
-	PrimaryKey ed25519.PublicKey
-	Witnesses  []CheckpointWitnessTrust
-	Quorum     int
-	Pending    CheckpointPendingStore
-	Fencing               *CheckpointFenceCoordinator
-	RevocationProofs     CheckpointRevocationProofProvider
+	Primary          ReplayCheckpointProvider
+	PrimaryKey       ed25519.PublicKey
+	Witnesses        []CheckpointWitnessTrust
+	Quorum           int
+	Pending          CheckpointPendingStore
+	Fencing          *CheckpointFenceCoordinator
+	RevocationProofs CheckpointRevocationProofProvider
 }
 
 func validIndependentFenceTrust(primaryKey ed25519.PublicKey, witnesses []CheckpointWitnessTrust, coordinator *CheckpointFenceCoordinator) bool {
@@ -1408,7 +1408,7 @@ func (p *WitnessedReplayCheckpointProvider) executeOrganizationFence(
 	}
 	request := CheckpointFenceRequest{
 		Scope: scope, Participants: cloneCheckpointEndpoints(participants),
-		AuthorizationProof: append([]byte(nil), authorizationProof...),
+		AuthorizationProof:      append([]byte(nil), authorizationProof...),
 		ExpectedFenceGeneration: fenceHead.Generation,
 		ExpectedRevocationEpoch: fenceHead.RevocationEpoch,
 		Action:                  action, OperationID: operationID,
