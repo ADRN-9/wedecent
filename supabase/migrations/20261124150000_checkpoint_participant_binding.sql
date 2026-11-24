@@ -29,7 +29,7 @@ returns boolean language sql immutable strict parallel safe security invoker set
 as $$ select wedecent_private.checkpoint_participant_vector_encoding(p_claimed)=wedecent_private.checkpoint_participant_vector_encoding(p_authoritative_locked_heads) $$;
 create or replace function wedecent_private.checkpoint_event_v2_encoding_from_participants(p_action text,p_scope_kind text,p_device_id text,p_account_id text,p_organization_id text,p_operation_id text,p_request_sha256 bytea,p_participants jsonb,p_previous_hash bytea,p_generation bigint,p_revocation_epoch bigint)
 returns bytea language plpgsql immutable strict parallel safe security invoker set search_path=''
-as $
+as $$
 declare
  v_participant_digest bytea;
 begin
@@ -49,7 +49,7 @@ begin
  return wedecent_private.checkpoint_event_v2_encoding(
    p_action,p_scope_kind,p_device_id,p_account_id,p_organization_id,p_operation_id,
    p_request_sha256,v_participant_digest,p_previous_hash,p_generation,p_revocation_epoch);
-end $;
+end $$;
 revoke all on function wedecent_private.checkpoint_participant_vector_encoding(jsonb) from public,anon,authenticated,service_role;
 revoke all on function wedecent_private.checkpoint_participant_vector_hash(jsonb) from public,anon,authenticated,service_role;
 revoke all on function wedecent_private.checkpoint_v1_transition_matches(jsonb,jsonb) from public,anon,authenticated,service_role;
