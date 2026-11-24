@@ -54,5 +54,11 @@ func NewPinnedCheckpointFenceHTTPClient(hostname string, spkiSHA256 [sha256.Size
 		MaxIdleConnsPerHost: 2,
 		IdleConnTimeout: 30 * time.Second,
 	}
-	return &http.Client{Transport: transport, Timeout: 15 * time.Second}, nil
+	return &http.Client{
+		Transport: transport,
+		Timeout: 15 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}, nil
 }
