@@ -1236,8 +1236,13 @@ func loadFinalizationComplete(snapshot checkpointPendingSnapshot, request Checkp
 	if err != nil || operationID != expectedID {
 		return false, ErrCheckpointIntegrity
 	}
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil {
+		return false, err
+	}
 	entry, ok := snapshot.Entries[checkpointPendingKey(request)]
-	if !ok || entry.Fingerprint == "" || entry.ReceiptHash != CheckpointReceiptDigest(receipt) {
+	if !ok || entry.Fingerprint != hex.EncodeToString(fingerprint[:]) ||
+		entry.ReceiptHash != CheckpointReceiptDigest(receipt) {
 		return false, ErrCheckpointHistorical
 	}
 	if entry.State == "equivocated" {
@@ -1258,8 +1263,13 @@ func markFinalizationComplete(snapshot *checkpointPendingSnapshot, request Check
 		return ErrCheckpointIntegrity
 	}
 	key := checkpointPendingKey(request)
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil {
+		return err
+	}
 	entry, ok := snapshot.Entries[key]
-	if !ok || entry.Fingerprint == "" || entry.ReceiptHash != CheckpointReceiptDigest(receipt) {
+	if !ok || entry.Fingerprint != hex.EncodeToString(fingerprint[:]) ||
+		entry.ReceiptHash != CheckpointReceiptDigest(receipt) {
 		return ErrCheckpointHistorical
 	}
 	if entry.State == "equivocated" {
