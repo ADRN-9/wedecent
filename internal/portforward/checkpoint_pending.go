@@ -1056,3 +1056,138 @@ func (s *MemoryCheckpointPendingStore) Resolve(ctx context.Context, request Chec
 	s.entries[key] = entry
 	return nil
 }
+
+
+func checkpointFinalizationID(request CheckpointRequest, receipt CheckpointReceipt) (string, error) {
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil || receipt.RequestSHA256 != fingerprint || receipt.JTI != request.JTI {
+		return "", ErrCheckpointIntegrity
+	}
+	h := sha256.New()
+	_, _ = io.WriteString(h, "wedecent-checkpoint-finalization-v1\n")
+	_, _ = h.Write(fingerprint[:])
+	digest := CheckpointReceiptDigest(receipt)
+	_, _ = h.Write([]byte(digest))
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func loadFinalizationComplete(snapshot checkpointPendingSnapshot, request CheckpointRequest, receipt CheckpointReceipt, operationID string) (bool, error) {
+	expectedID, err := checkpointFinalizationID(request, receipt)
+	if err != nil || operationID != expectedID {
+		return false, ErrCheckpointIntegrity
+	}
+	entry, ok := snapshot.Entries[checkpointPendingKey(request)]
+	if !ok || entry.Fingerprint == "" || entry.ReceiptHash != CheckpointReceiptDigest(receipt) {
+		return false, ErrCheckpointHistorical
+	}
+	if entry.State == "equivocated" {
+		return false, ErrCheckpointConflict
+	}
+	if entry.State != "resolved" {
+		return false, ErrCheckpointHistorical
+	}
+	if entry.FinalizationID != "" && entry.FinalizationID != operationID {
+		return false, ErrCheckpointConflict
+	}
+	return entry.FinalizationComplete, nil
+}
+
+func markFinalizationComplete(snapshot *checkpointPendingSnapshot, request CheckpointRequest, receipt CheckpointReceipt, operationID string) error {
+	expectedID, err := checkpointFinalizationID(request, receipt)
+	if err != nil || operationID != expectedID {
+		return ErrCheckpointIntegrity
+	}
+	key := checkpointPendingKey(request)
+	entry, ok := snapshot.Entries[key]
+	if !ok || entry.Fingerprint == "" || entry.ReceiptHash != CheckpointReceiptDigest(receipt) {
+		return ErrCheckpointHistorical
+	}
+	if entry.State == "equivocated" {
+		return ErrCheckpointConflict
+	}
+	if entry.State != "resolved" {
+		return ErrCheckpointHistorical
+	}
+	if entry.FinalizationID != "" && entry.FinalizationID != operationID {
+		return ErrCheckpointConflict
+	}
+	entry.FinalizationID = operationID
+	entry.FinalizationComplete = true
+	snapshot.Entries[key] = entry
+	return nil
+}
+
+func (s *FileCheckpointPendingStore) LoadFinalizationComplete(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string) (bool, error) {
+	if s == nil || ctx == nil {
+		return false, ErrReplayUnavailable
+	}
+	var snapshot checkpointPendingSnapshot
+	_, err := s.update(ctx, func(current *checkpointPendingSnapshot) (bool, error) {
+		snapshot = *current
+		return false, nil
+	})
+	if err != nil {
+		return false, err
+	}
+	return loadFinalizationComplete(snapshot, request, receipt, operationID)
+}
+
+func (s *FileCheckpointPendingStore) MarkFinalizationComplete(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string) error {
+	if s == nil || ctx == nil {
+		return ErrReplayUnavailable
+	}
+	_, err := s.update(ctx, func(snapshot *checkpointPendingSnapshot) (bool, error) {
+		return false, markFinalizationComplete(snapshot, request, receipt, operationID)
+	})
+	return err
+}
+
+func (s *MemoryCheckpointPendingStore) LoadFinalizationComplete(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string) (bool, error) {
+	if s == nil || ctx == nil {
+		return false, ErrReplayUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return loadFinalizationComplete(checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}, request, receipt, operationID)
+}
+
+func (s *MemoryCheckpointPendingStore) MarkFinalizationComplete(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string) error {
+	if s == nil || ctx == nil {
+		return ErrReplayUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	snapshot := checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}
+	if err := markFinalizationComplete(&snapshot, request, receipt, operationID); err != nil {
+		return err
+	}
+	s.entries = snapshot.Entries
+	return nil
+}
+
+func (s *MemoryCheckpointPendingStore) LockFinalization(ctx context.Context, request CheckpointRequest) (func() error, error) {
+	if s == nil || ctx == nil {
+		return nil, ErrReplayUnavailable
+	}
+	if _, err := CheckpointRequestFingerprint(request); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	s.transitionMu.Lock()
+	if err := ctx.Err(); err != nil {
+		s.transitionMu.Unlock()
+		return nil, err
+	}
+	return func() error {
+		s.transitionMu.Unlock()
+		return nil
+	}, nil
+}
