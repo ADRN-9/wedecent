@@ -121,7 +121,7 @@ function trustedWitnessKeys(){
  return {keys,quorum};
 }
 export async function verifyFinalizationEvidence(p:JsonObject,operationID:string,requestHash:Uint8Array,evidence:unknown,evidenceSHA256:string){
- if(!exact(evidence,["primary_receipt","witness_acknowledgements","revocation_proofs"]))throw Error("missing finalization evidence");
+ if(!isObject(evidence)||!exact(evidence,["primary_receipt","witness_acknowledgements","revocation_proofs"]))throw Error("missing finalization evidence");
  if(await digest(evidence)!==evidenceSHA256)throw Error("finalization evidence digest mismatch");
  const primaryRaw=Deno.env.get("WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY");if(!primaryRaw)throw Error("independent primary trust anchor missing");
  const primaryKey=b64(primaryRaw,32),primaryID=await providerKeyID(primaryKey);
