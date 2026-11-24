@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(30);
+select plan(32);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -285,6 +285,31 @@ select throws_ok(
     '42501',
     'destination device is not enrolled',
     'missing destination record fails closed'
+);
+select throws_ok(
+    $q$select public.consume_port_forward_authorization(
+        'wd_eeeeeeeeeeeeeeee', repeat('Z', 43),
+        '44000000-0000-4000-8000-000000000017', 'local',
+        'wd_eeeeeeeeeeeeeeee', 'wd_bbbbbbbbbbbbbbbb',
+        null, null, null, null, null, null, null, null, null,
+        repeat('Q', 22), pg_catalog.clock_timestamp(),
+        pg_catalog.clock_timestamp() + interval '60 seconds',
+        pg_catalog.decode(repeat('b', 64), 'hex')
+    )$q$,
+    '42501',
+    'initiating device is not enrolled',
+    'missing initiator record fails closed'
+);
+select throws_ok(
+    $q$select pg_temp.consume_pf(
+        'wd_aaaaaaaaaaaaaaaa',
+        '44000000-0000-4000-8000-000000000018',
+        repeat('R', 22), repeat('c', 64),
+        true, null, 'wd_eeeeeeeeeeeeeeee'
+    )$q$,
+    '42501',
+    'router device is not enrolled',
+    'missing router record fails closed'
 );
 
 savepoint interrupted_consume;
