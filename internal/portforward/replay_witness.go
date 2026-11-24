@@ -165,6 +165,13 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 }
 
 func (p *WitnessedReplayCheckpointProvider) Finalize(ctx context.Context, request CheckpointRequest) error {
+	return p.FinalizeWithAudit(ctx, request, nil)
+}
+
+// FinalizeWithAudit invokes onQuorumCommitted after historical witness quorum is
+// authenticated and before local journal compaction. The callback cannot grant
+// a session; it records the finalization outcome durably.
+func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Context, request CheckpointRequest, onQuorumCommitted func() error) error {
 	if err := p.ValidateConfiguration(); err != nil {
 		return err
 	}
@@ -219,6 +226,11 @@ func (p *WitnessedReplayCheckpointProvider) Finalize(ctx context.Context, reques
 	}
 	if len(acks) < p.Quorum {
 		return ErrCheckpointQuorum
+	}
+	if onQuorumCommitted != nil {
+		if err := onQuorumCommitted(); err != nil {
+			return err
+		}
 	}
 	compactor, ok := p.Pending.(checkpointPendingCompactor)
 	if !ok {

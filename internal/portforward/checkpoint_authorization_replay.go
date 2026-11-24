@@ -169,12 +169,20 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationStarted); err != nil {
 		return errors.Join(ErrCheckpointUnavailable, err)
 	}
-	if err := r.Provider.Finalize(ctx, request); err != nil {
+	finalizedAuditRecorded := false
+	err = r.Provider.FinalizeWithAudit(ctx, request, func() error {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationComplete); err != nil {
+			return err
+		}
+		finalizedAuditRecorded = true
+		return nil
+	})
+	if err != nil {
+		if finalizedAuditRecorded {
+			return err
+		}
 		auditErr := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationFailed)
 		return errors.Join(err, auditErr)
-	}
-	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationComplete); err != nil {
-		return errors.Join(ErrCheckpointUnavailable, err)
 	}
 	return nil
 }
