@@ -50,7 +50,7 @@ func (c *CheckpointFenceCoordinator) ExecuteWithCheckpointHeads(
 			return CheckpointFenceToken{}, err
 		}
 		if found {
-			if !checkpointFenceTokenMatchesRequest(existing.Token, request) {
+			if !checkpointFenceTokenMatchesOperation(existing.Token, request) {
 				return CheckpointFenceToken{}, ErrCheckpointConflict
 			}
 			return cloneCheckpointFenceToken(existing.Token), nil
@@ -209,6 +209,15 @@ func (c *CheckpointFenceCoordinator) verifyCommittedOperation(operation Checkpoi
 		return ErrCheckpointQuorum
 	}
 	return nil
+}
+
+
+func checkpointFenceTokenMatchesOperation(token CheckpointFenceToken, request CheckpointFenceRequest) bool {
+	return token.Scope == request.Scope && token.Action == request.Action &&
+		token.OperationID == request.OperationID && token.RequestSHA256 == request.RequestSHA256 &&
+		token.AuthorizationSHA256 == request.AuthorizationSHA256 &&
+		token.WitnessSetVersion == request.WitnessSetVersion &&
+		sameStringSet(token.WitnessIDs, request.WitnessIDs)
 }
 
 func checkpointFenceTokenMatchesRequest(token CheckpointFenceToken, request CheckpointFenceRequest) bool {
