@@ -248,7 +248,7 @@ func TestC187ParticipantOrderingAndHistoricalGoldenVectors(t *testing.T) {
 				DeviceID        string `json:"device_id"`
 				AccountID       string `json:"account_id"`
 				OrganizationID  string `json:"organization_id"`
-				RevocationEpoch   uint64 `json:"revocation_epoch"`
+				RevocationEpoch uint64 `json:"revocation_epoch"`
 				HeadGeneration  uint64 `json:"head_generation"`
 				HeadHash        string `json:"head_hash"`
 			} `json:"unordered"`
@@ -336,7 +336,6 @@ func TestC187ParticipantOrderingAndHistoricalGoldenVectors(t *testing.T) {
 	}
 }
 
-
 func TestC192EventAndParticipantEncodingDecodeToStructuredFields(t *testing.T) {
 	raw, err := os.ReadFile("../../testdata/portforward/checkpoint_event_v2_vector.json")
 	if err != nil {
@@ -353,8 +352,8 @@ func TestC192EventAndParticipantEncodingDecodeToStructuredFields(t *testing.T) {
 		ParticipantSHA256 string `json:"participant_sha256"`
 		PreviousHash      string `json:"previous_hash"`
 		Generation        uint64 `json:"generation"`
-		RevocationEpoch uint64 `json:"revocation_epoch"`
-		Participants []struct {
+		RevocationEpoch   uint64 `json:"revocation_epoch"`
+		Participants      []struct {
 			DeviceID        string `json:"device_id"`
 			AccountID       string `json:"account_id"`
 			OrganizationID  string `json:"organization_id"`
