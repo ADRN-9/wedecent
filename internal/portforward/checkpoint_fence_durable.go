@@ -402,6 +402,7 @@ func (p *FileCheckpointFencePrimary) verifyFenceAcknowledgements(token Checkpoin
 		if !trusted || seen[ack.WitnessID] || !containsString(token.WitnessIDs, ack.WitnessID) ||
 			ack.TokenSHA256 != digest || ack.Generation != token.Generation ||
 			ack.Action != token.Action || ack.OperationID != token.OperationID ||
+			ack.CommittedAtUnixMS > token.ExpiresAtUnixMS ||
 			VerifyCheckpointFenceAcknowledgement(ack, ack.WitnessID, key) != nil {
 			continue
 		}
