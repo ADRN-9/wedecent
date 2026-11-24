@@ -1,4 +1,4 @@
-import { digest, verifyFinalizationEvidence } from "./index.ts";
+import { canonical, digest, verifyFinalizationEvidence } from "./index.ts";
 
 const evidence = {
   primary_receipt: { public_key: btoa("x".repeat(32)) },
@@ -336,6 +336,28 @@ Deno.test("routed terminal audit verifies the independent route authorization si
     ] as const) {
       if (value === undefined) Deno.env.delete(key);
       else Deno.env.set(key, value);
+    }
+  }
+});
+
+
+Deno.test("TypeScript canonical JSON matches shared Go and SQL vectors", async () => {
+  const fixtureURL = new URL("../../tests/fixtures/checkpoint-audit-canonical-vectors.json", import.meta.url);
+  const fixture = JSON.parse(await Deno.readTextFile(fixtureURL));
+  for (const vector of fixture.vectors) {
+    if (canonical(vector.input) !== vector.canonical) {
+      throw new Error("canonical vector mismatch: " + vector.name);
+    }
+    if (await digest(vector.input) !== vector.sha256) {
+      throw new Error("canonical digest mismatch: " + vector.name);
+    }
+  }
+  for (const vector of fixture.invalid) {
+    try {
+      canonical(vector.input);
+      throw new Error("unsafe canonical number accepted: " + vector.name);
+    } catch (error) {
+      if (!(error instanceof Error) || error.message.startsWith("unsafe canonical number accepted:")) throw error;
     }
   }
 });
