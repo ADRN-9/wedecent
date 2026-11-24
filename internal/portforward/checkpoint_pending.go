@@ -154,7 +154,7 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 	if err := ctx.Err(); err != nil {
 		return false, err
 	}
-	existing, err := change(&snapshot)
+	existing, err = change(&snapshot)
 	if err != nil {
 		return false, err
 	}
