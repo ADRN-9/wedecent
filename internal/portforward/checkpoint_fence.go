@@ -21,8 +21,9 @@ const (
 	CheckpointFenceRevoke   CheckpointFenceAction = "revoke"
 )
 
-// CheckpointFenceToken is the primary-signed ordering decision shared by finalize
-// and revoke. Generation is the next durable fence generation, not a client counter.
+// CheckpointFenceToken is the primary-signed ordering reservation shared by
+// finalize and revoke. It is not authorization until its quorum commit is durable.
+// Generation is the next durable fence generation, not a client counter.
 type CheckpointFenceToken struct {
 	Version                  uint32
 	Scope                    CheckpointWitnessScope
