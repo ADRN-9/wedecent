@@ -139,7 +139,14 @@ func (a *testAtomicCheckpointPrimary) CommitFenceWithCheckpointHeads(ctx context
 			return err
 		}
 	}
-	return a.fence.CommitFence(ctx, token, acks)
+	if err := a.fence.CommitFence(ctx, token, acks); err != nil {
+		return err
+	}
+	if a.loseCommitResponse {
+		a.loseCommitResponse = false
+		return errors.New("simulated lost primary commit response")
+	}
+	return nil
 }
 
 func newTestFenceCoordinator(t *testing.T, replay *deterministicCheckpointProvider) *CheckpointFenceCoordinator {
