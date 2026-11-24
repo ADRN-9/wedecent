@@ -30,19 +30,19 @@ type CheckpointWitnessEquivocation struct {
 }
 
 type checkpointPendingEntry struct {
-	Fingerprint          string                          `json:"fingerprint"`
-	State                string                          `json:"state"`
-	CreatedAt            int64                           `json:"created_at_unix_ms"`
-	ReceiptHash          string                          `json:"receipt_hash,omitempty"`
-	Acknowledgements     []CheckpointWitnessAck          `json:"acknowledgements,omitempty"`
-	Equivocations        []CheckpointWitnessEquivocation `json:"equivocations,omitempty"`
-	FinalizationID               string                          `json:"finalization_id,omitempty"`
-	FinalizationComplete         bool                            `json:"finalization_complete,omitempty"`
-	FinalizationOperationID      string                          `json:"finalization_operation_id,omitempty"`
-	FinalizationEvidence         *CheckpointFinalizationEvidence `json:"finalization_evidence,omitempty"`
-	FinalizationEvidenceSHA256   string                          `json:"finalization_evidence_sha256,omitempty"`
-	Request              CheckpointRequest               `json:"request"`
-	Receipt              *CheckpointReceipt              `json:"receipt,omitempty"`
+	Fingerprint                string                          `json:"fingerprint"`
+	State                      string                          `json:"state"`
+	CreatedAt                  int64                           `json:"created_at_unix_ms"`
+	ReceiptHash                string                          `json:"receipt_hash,omitempty"`
+	Acknowledgements           []CheckpointWitnessAck          `json:"acknowledgements,omitempty"`
+	Equivocations              []CheckpointWitnessEquivocation `json:"equivocations,omitempty"`
+	FinalizationID             string                          `json:"finalization_id,omitempty"`
+	FinalizationComplete       bool                            `json:"finalization_complete,omitempty"`
+	FinalizationOperationID    string                          `json:"finalization_operation_id,omitempty"`
+	FinalizationEvidence       *CheckpointFinalizationEvidence `json:"finalization_evidence,omitempty"`
+	FinalizationEvidenceSHA256 string                          `json:"finalization_evidence_sha256,omitempty"`
+	Request                    CheckpointRequest               `json:"request"`
+	Receipt                    *CheckpointReceipt              `json:"receipt,omitempty"`
 }
 
 type checkpointPendingSnapshot struct {
