@@ -1830,7 +1830,6 @@ func TestPersistedAcknowledgementsCannotBypassLaterMembershipRevocation(t *testi
 	}
 }
 
-
 // TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence
 // checks signed conflicts from one configured witness across retries.
 func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *testing.T) {
@@ -1848,7 +1847,7 @@ func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *
 	if err := store.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil {
 		t.Fatal(err)
 	}
-	for _, trust := range client.Witnesses[:client.Quorum] {
+	for _, trust := range client.Witnesses {
 		if _, err := trust.Witness.Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
 			t.Fatal(err)
 		}
@@ -1928,7 +1927,6 @@ func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *
 		t.Fatalf("original authenticated quorum was not recoverable: %v", err)
 	}
 }
-
 
 type fixedCheckpointAckWitness struct {
 	CheckpointWitness
