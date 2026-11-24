@@ -133,8 +133,8 @@ prepare_audit_operation() {
  local forwarding_id="$1" jti="$2" route_id="$3" route_jti="$4"
  local issued_at expires_at
  route "$route_id" "$route_jti"
- issued_at="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() - interval '1 second")"
- expires_at="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() + interval '80 seconds")"
+ issued_at="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() - interval '1 second'")"
+ expires_at="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() + interval '80 seconds'")"
  psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c \
   "select public.wd_c145_consume('$forwarding_id','$jti','$route_id','$route_jti','$issued_at','$expires_at')" >/dev/null
 }
