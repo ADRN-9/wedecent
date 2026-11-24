@@ -23,21 +23,21 @@ const checkpointPendingMaxEntries = 65536
 var ErrCheckpointHistorical = errors.New("portforward: historical checkpoint receipt cannot initiate a new operation")
 
 type CheckpointWitnessEquivocation struct {
-	WitnessID       string                `json:"witness_id"`
-	Original        CheckpointWitnessAck  `json:"original"`
-	Conflicting     CheckpointWitnessAck  `json:"conflicting"`
+	WitnessID        string               `json:"witness_id"`
+	Original         CheckpointWitnessAck `json:"original"`
+	Conflicting      CheckpointWitnessAck `json:"conflicting"`
 	ObservedAtUnixMs int64                `json:"observed_at_unix_ms"`
 }
 
 type checkpointPendingEntry struct {
-	Fingerprint      string                           `json:"fingerprint"`
-	State            string                           `json:"state"`
-	CreatedAt        int64                            `json:"created_at_unix_ms"`
-	ReceiptHash      string                           `json:"receipt_hash,omitempty"`
-	Acknowledgements []CheckpointWitnessAck            `json:"acknowledgements,omitempty"`
-	Equivocations    []CheckpointWitnessEquivocation   `json:"equivocations,omitempty"`
-	Request          CheckpointRequest                 `json:"request"`
-	Receipt          *CheckpointReceipt                `json:"receipt,omitempty"`
+	Fingerprint      string                          `json:"fingerprint"`
+	State            string                          `json:"state"`
+	CreatedAt        int64                           `json:"created_at_unix_ms"`
+	ReceiptHash      string                          `json:"receipt_hash,omitempty"`
+	Acknowledgements []CheckpointWitnessAck          `json:"acknowledgements,omitempty"`
+	Equivocations    []CheckpointWitnessEquivocation `json:"equivocations,omitempty"`
+	Request          CheckpointRequest               `json:"request"`
+	Receipt          *CheckpointReceipt              `json:"receipt,omitempty"`
 }
 
 type checkpointPendingSnapshot struct {
