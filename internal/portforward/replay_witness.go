@@ -109,10 +109,21 @@ func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
 	return nil
 }
 
-func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
+func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request CheckpointRequest) (result CheckpointResult, resultErr error) {
 	if err := p.ValidateConfiguration(); err != nil {
 		return CheckpointResult{}, err
 	}
+	locker, ok := p.Pending.(checkpointPendingFinalizationLocker)
+	if !ok {
+		return CheckpointResult{}, ErrCheckpointUnavailable
+	}
+	unlock, err := locker.LockFinalization(ctx, request)
+	if err != nil {
+		return CheckpointResult{}, err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, unlock())
+	}()
 	existingPending, err := p.Pending.Begin(ctx, request)
 	if err != nil {
 		return CheckpointResult{}, err
@@ -169,10 +180,10 @@ func (p *WitnessedReplayCheckpointProvider) Finalize(ctx context.Context, reques
 	return p.FinalizeWithAudit(ctx, request, nil)
 }
 
-// FinalizeWithAudit invokes onQuorumCommitted after historical witness quorum is
-// authenticated and before local journal compaction. The callback cannot grant
-// a session; it records the finalization outcome durably.
-func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Context, request CheckpointRequest, onQuorumCommitted func() error) (resultErr error) {
+// FinalizeWithAudit invokes an idempotent audit sink with a stable operation ID.
+// The sink must deduplicate effects by that ID because a crash can occur after the
+// sink commits but before the local completion marker is persisted.
+func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Context, request CheckpointRequest, onQuorumCommitted func(context.Context, string) error) (resultErr error) {
 	if p == nil {
 		return ErrCheckpointUnavailable
 	}
@@ -238,7 +249,7 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if err != nil {
 		return errors.Join(ErrCheckpointQuorum, err)
 	}
-	if len(acks) < p.Quorum {
+	if committedCheckpointAckCount(acks) < p.Quorum {
 		return ErrCheckpointQuorum
 	}
 	// Recheck the complete signed membership vector immediately before the
@@ -247,9 +258,26 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if err := p.verifyRequestMembershipVector(ctx, saved); err != nil {
 		return err
 	}
-	if onQuorumCommitted != nil {
-		if err := onQuorumCommitted(); err != nil {
-			return err
+	completionStore, ok := p.Pending.(checkpointPendingCompletionStore)
+	if !ok {
+		return ErrCheckpointUnavailable
+	}
+	operationID, err := checkpointFinalizationID(saved, receipt)
+	if err != nil {
+		return err
+	}
+	completed, err := completionStore.LoadFinalizationComplete(ctx, saved, receipt, operationID)
+	if err != nil {
+		return err
+	}
+	if !completed {
+		if onQuorumCommitted != nil {
+			if err := onQuorumCommitted(ctx, operationID); err != nil {
+				return err
+			}
+		}
+		if err := completionStore.MarkFinalizationComplete(ctx, saved, receipt, operationID); err != nil {
+			return errors.Join(ErrCheckpointUnavailable, err)
 		}
 	}
 	compactor, ok := p.Pending.(checkpointPendingCompactor)
@@ -388,6 +416,16 @@ func (p *WitnessedReplayCheckpointProvider) verifyRequestMembershipVector(ctx co
 	return nil
 }
 
+func committedCheckpointAckCount(acks []CheckpointWitnessAck) int {
+	count := 0
+	for _, ack := range acks {
+		if ack.Decision == "committed" {
+			count++
+		}
+	}
+	return count
+}
+
 func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) ([]CheckpointWitnessAck, error) {
 	acks, err := store.LoadAcknowledgements(ctx, request, receipt, p.Witnesses)
 	if err != nil {
@@ -404,9 +442,9 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 		err   error
 	}
 	query := make([]CheckpointWitnessTrust, 0, len(p.Witnesses))
-	if len(acks) >= p.Quorum {
-		// Probe only witnesses whose authenticated votes make up the cached
-		// quorum. Uncounted/offline witnesses are not needed for recovery.
+	if committedCheckpointAckCount(acks) >= p.Quorum {
+		// Probe every witness with a persisted terminal decision, including
+		// negative votes, but do not require unrelated witnesses to be online.
 		for _, ack := range acks {
 			for _, trust := range p.Witnesses {
 				if trust.ID == ack.WitnessID {
@@ -416,8 +454,6 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 			}
 		}
 	} else {
-		// An incomplete journal still needs new votes; query all configured
-		// witnesses while checking every previously counted witness for conflict.
 		query = append(query, p.Witnesses...)
 	}
 
@@ -435,41 +471,32 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 		r := <-ch
 		if r.err != nil || VerifyCheckpointWitnessAck(r.ack, r.trust.ID, r.trust.PublicKey) != nil ||
 			!checkpointAckMatchesOperation(r.ack, request, receipt) {
-			// Unauthenticated, malformed, or differently bound responses are
-			// not equivocation evidence and must not poison the durable journal.
+			// Invalid signatures and wrong-operation responses never enter the journal.
 			continue
 		}
 		if previous, ok := seen[r.trust.ID]; ok {
 			if previous.Decision != r.ack.Decision {
-				if err := store.RecordEquivocation(ctx, request, receipt, previous, r.ack, r.trust); err != nil {
+				writer, ok := p.Pending.(checkpointPendingDecisionWriter)
+				if !ok {
+					return nil, ErrCheckpointUnavailable
+				}
+				if err := writer.recordEquivocationLocked(ctx, request, receipt, previous, r.ack, r.trust); err != nil {
 					return nil, errors.Join(ErrCheckpointUnavailable, err)
 				}
 				return nil, ErrCheckpointConflict
 			}
-			// Status is unsigned retry metadata. The signed terminal decision
-			// remains identical, even when the transport reports a retry.
 			continue
 		}
-		if r.ack.Decision != "committed" {
-			return nil, ErrCheckpointConflict
-		}
 		newAcks = append(newAcks, r)
+		seen[r.trust.ID] = r.ack
 	}
 
-	if len(acks) >= p.Quorum {
-		// Detect authenticated equivocation before requiring fresh membership quorum.
-		if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
-			return nil, err
-		}
-		// Return the original journaled evidence, never a live retry response.
-		return acks, nil
+	writer, ok := p.Pending.(checkpointPendingDecisionWriter)
+	if !ok {
+		return nil, ErrCheckpointUnavailable
 	}
-	if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
-		return nil, err
-	}
-
 	for _, r := range newAcks {
-		if err := store.RecordAcknowledgement(ctx, request, receipt, r.ack, r.trust); err != nil {
+		if err := writer.recordAcknowledgementLocked(ctx, request, receipt, r.ack, r.trust); err != nil {
 			return nil, err
 		}
 	}
@@ -477,8 +504,11 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 	if err != nil {
 		return nil, err
 	}
-	if len(acks) < p.Quorum {
+	if committedCheckpointAckCount(acks) < p.Quorum {
 		return nil, ErrCheckpointQuorum
+	}
+	if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
+		return nil, err
 	}
 	return acks, nil
 }
