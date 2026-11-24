@@ -203,7 +203,7 @@ begin
   '11000000-0000-4000-8000-0000000000c1'
  );
 end;
-$;
+$c164$;
 SQL
 
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
