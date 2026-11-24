@@ -119,8 +119,13 @@ func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
 	if p == nil || p.Primary == nil || p.Pending == nil || p.Fencing == nil ||
 		!validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) ||
 		p.Fencing.Primary == nil || p.Fencing.WitnessSetVersion == "" ||
-		!validFenceCoordinatorWitnesses(p.Fencing.Witnesses, p.Fencing.Quorum, p.Fencing.PrimaryKey) ||
-		!bytes.Equal(p.Fencing.PrimaryKey, p.PrimaryKey) {
+		!validFenceCoordinatorWitnesses(p.Fencing.Witnesses, p.Fencing.Quorum, p.Fencing.PrimaryKey) {
+		return ErrCheckpointUnavailable
+	}
+	if _, ok := p.Fencing.Primary.(CheckpointFenceAtomicPrimary); !ok {
+		return ErrCheckpointUnavailable
+	}
+	if _, ok := p.Fencing.Primary.(CheckpointFenceHeadReader); !ok {
 		return ErrCheckpointUnavailable
 	}
 	trustConfigurer, ok := p.Pending.(checkpointPendingTrustConfigurer)
