@@ -142,8 +142,13 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 
 	initiator, initiatorErr := r.Memberships.ResolveCheckpointMembership(ctx, claims.InitiatingDevice)
 	destination, destinationErr := r.Memberships.ResolveCheckpointMembership(ctx, claims.DestinationDevice)
-	if initiatorErr != nil || destinationErr != nil ||
-		initiator != request.Initiator || destination != request.Destination ||
+	if initiatorErr != nil || destinationErr != nil {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationMembershipUnavailable); err != nil {
+			return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, err)
+		}
+		return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr)
+	}
+	if initiator != request.Initiator || destination != request.Destination ||
 		initiator.DeviceID != string(claims.InitiatingDevice) ||
 		destination.DeviceID != string(claims.DestinationDevice) ||
 		initiator.OrganizationID != destination.OrganizationID ||
@@ -151,17 +156,14 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationRevoked); err != nil {
 			return errors.Join(ErrCheckpointRevoked, err)
 		}
-		if initiatorErr != nil || destinationErr != nil {
-			return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr)
-		}
 		return ErrCheckpointRevoked
 	}
 	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationStarted); err != nil {
 		return errors.Join(ErrCheckpointUnavailable, err)
 	}
 	if err := r.Provider.Finalize(ctx, request); err != nil {
-		_ = r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationFailed)
-		return err
+		auditErr := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationFailed)
+		return errors.Join(err, auditErr)
 	}
 	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationComplete); err != nil {
 		return errors.Join(ErrCheckpointUnavailable, err)

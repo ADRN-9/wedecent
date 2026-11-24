@@ -1156,11 +1156,26 @@ func TestExpiredFinalizationRejectsMembershipRevocationAfterWitnessCommit(t *tes
 	destination := CheckpointEndpoint{DeviceID:string(claims.DestinationDevice), AccountID:"22222222-2222-4222-8222-222222222222", OrganizationID:"33333333-3333-4333-8333-333333333333", RevocationEpoch:7}
 	memberships := checkpointMembershipFixture{string(claims.InitiatingDevice):initiator, string(claims.DestinationDevice):destination}
 	primary := newDeterministicCheckpointProvider(t); primary.register(initiator); primary.register(destination)
-	store := NewMemoryCheckpointPendingStore(); provider, witnesses := newWitnessedFixture(t, primary, store)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
+	if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json"))
+	if err != nil { t.Fatal(err) }
+	failResolve := true
+	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
+		if snapshot, ok := value.(checkpointPendingSnapshot); ok && failResolve {
+			for _, entry := range snapshot.Entries {
+				if entry.State == "resolved" { failResolve = false; return errors.New("injected local resolution failure") }
+			}
+		}
+		return writeReplayJSON(path, value, pattern, maxSize)
+	}
+	provider, witnesses := newWitnessedFixture(t, primary, store)
 	for _, witness := range witnesses { witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch; witness.revoked[witnessScope(destination)] = destination.RevocationEpoch; witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch:initiator.RevocationEpoch, used:map[string][32]byte{}} }
 	now := start; audit := &checkpointFinalizationAuditFixture{}
 	replay := &CheckpointAuthorizationReplay{Provider:provider, ControlPlaneKey:controlPublic, LocalDeviceID:claims.InitiatingDevice, DeviceSigner:initPrivate, Memberships:memberships, FinalizationAuditor:audit, Now:func() time.Time{return now}}
-	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); err != nil { t.Fatalf("initial authorization consumption: %v", err) }
+	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("injected unresolved journal result: %v", err) }
+	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("witness %s did not commit exactly once", witness.id) } }
 	updated := initiator; updated.RevocationEpoch++; memberships[string(claims.InitiatingDevice)] = updated
 	now = time.UnixMilli(claims.ExpiresAtUnixMS).Add(time.Second).UTC()
 	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrCheckpointRevoked) { t.Fatalf("revoked historical operation finalized: %v", err) }
