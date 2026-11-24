@@ -289,6 +289,8 @@ jobs:
         run: deno check supabase/functions/port-forward-replay/index.ts
       - name: Type-check authenticated checkpoint finalization audit Edge Function
         run: deno check supabase/functions/port-forward-finalization-audit/index.ts
+      - name: Test checkpoint finalization audit trust-anchor enforcement
+        run: deno test --check --allow-env supabase/functions/port-forward-finalization-audit/index_test.ts
 
   supabase-db:
     runs-on: ubuntu-latest
