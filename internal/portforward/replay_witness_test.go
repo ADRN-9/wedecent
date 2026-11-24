@@ -603,6 +603,9 @@ func TestFilePendingJournalPersistsVerifiedAcknowledgements(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, witnesses := newWitnessedFixture(t, primary, store)
+	if err := client.ValidateConfiguration(); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := witnesses[0].Commit(context.Background(), request, receiptResult.CheckpointReceipt); err != nil {
 		t.Fatal(err)
 	}
@@ -736,6 +739,9 @@ func TestPendingJournalPartialAcknowledgementPersistenceAndValidation(t *testing
 		t.Fatal(err)
 	}
 	client, witnesses := newWitnessedFixture(t, primary, store)
+	if err := client.ValidateConfiguration(); err != nil {
+		t.Fatal(err)
+	}
 	for i := 0; i < client.Quorum; i++ {
 		if _, err := witnesses[i].Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
 			t.Fatal(err)
@@ -832,6 +838,9 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 	}
 	restarted, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.SetCheckpointTrustAnchors(client.PrimaryKey, client.Witnesses, client.Quorum); err != nil {
 		t.Fatal(err)
 	}
 	consumer, ok := checkpointConsumer(request)
@@ -1510,6 +1519,9 @@ func TestPendingJournalCompactionRequiresDurableAcknowledgements(t *testing.T) {
 		t.Fatal(err)
 	}
 	client, witnesses := newWitnessedFixture(t, primary, store)
+	if err := client.ValidateConfiguration(); err != nil {
+		t.Fatal(err)
+	}
 	acks := make([]CheckpointWitnessAck, client.Quorum)
 	for i := range acks {
 		if _, err := witnesses[i].Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
