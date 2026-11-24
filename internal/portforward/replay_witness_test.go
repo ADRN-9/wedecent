@@ -2308,3 +2308,29 @@ func TestEquivocationJournalCorruptionFailsClosed(t *testing.T) {
 		t.Fatalf("corrupt equivocation journal was not rejected: %v", err)
 	}
 }
+
+func TestPersistedQuorumEquivocationRepeatedRecovery(t *testing.T) {
+	for attempt := 0; attempt < 10; attempt++ {
+		t.Run(fmt.Sprintf("attempt-%02d", attempt), func(t *testing.T) {
+			client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
+			conflict := signedDecision(t, witnesses[0], original[0], "revoked")
+			client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
+			client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
+			called := false
+			err := client.FinalizeWithAudit(context.Background(), request, func() error {
+				called = true
+				return nil
+			})
+			if !errors.Is(err, ErrCheckpointConflict) || called {
+				t.Fatalf("attempt %d did not fail closed: err=%v callback=%t", attempt, err, called)
+			}
+			evidence, err := client.Pending.(checkpointPendingAcknowledgements).LoadEquivocations(context.Background(), request, receipt, client.Witnesses)
+			if err != nil || len(evidence) != 1 ||
+				!sameCheckpointWitnessAck(evidence[0].Original, original[0]) ||
+				!sameCheckpointWitnessAck(evidence[0].Conflicting, conflict) {
+				t.Fatalf("attempt %d lost authenticated equivocation evidence: count=%d err=%v", attempt, len(evidence), err)
+			}
+		})
+	}
+}
+
