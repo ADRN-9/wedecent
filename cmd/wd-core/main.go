@@ -100,6 +100,15 @@ func run(args []string) error {
 		}
 		config.ForwardingReplayEndpoint = strings.TrimSpace(*forwardingReplayURL)
 		config.ForwardingReplayAPIKey = strings.TrimSpace(*forwardingReplayAPIKey)
+		config.ForwardingAuditTrust = portforward.CheckpointAuditTrust{
+			Hostname: buildinfo.CheckpointAuditHostname,
+			Port: 443,
+			SPKISHA256Pins: buildinfo.CheckpointAuditSPKISHA256,
+		}
+		if strings.TrimSpace(config.ForwardingAuditTrust.Hostname) == "" ||
+			strings.TrimSpace(config.ForwardingAuditTrust.SPKISHA256Pins) == "" {
+			return errors.New("Local Core forwarding requires checkpoint audit hostname and SPKI pins embedded in the release build")
+		}
 	} else if *forwardingLegacyMigration || strings.TrimSpace(*forwardingReplayURL) != "" || strings.TrimSpace(*forwardingReplayAPIKey) != "" {
 		return errors.New("port-forward replay configuration requires --port-forward-authorization-public-key")
 	}
