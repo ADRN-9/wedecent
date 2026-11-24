@@ -1,6 +1,7 @@
 package portforward
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -46,8 +47,16 @@ func NewPinnedCheckpointFenceHTTPClient(hostname string, spkiSHA256 [sha256.Size
 			return nil
 		},
 	}
+	dialer := &net.Dialer{Timeout: 5 * time.Second, KeepAlive: 30 * time.Second}
 	transport := &http.Transport{
 		TLSClientConfig: config,
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			host, port, err := net.SplitHostPort(address)
+			if err != nil || !strings.EqualFold(host, hostname) || port != "443" {
+				return nil, errors.Join(ErrCheckpointIntegrity, errors.New("checkpoint authority endpoint mismatch"))
+			}
+			return dialer.DialContext(ctx, network, address)
+		},
 		TLSHandshakeTimeout: 5 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,
 		MaxIdleConns: 4,
