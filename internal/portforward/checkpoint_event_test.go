@@ -3,8 +3,11 @@ package portforward
 import (
 	"bytes"
 	"encoding/hex"
+	"encoding/binary"
+	"io"
 	"encoding/json"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -330,5 +333,172 @@ func TestC187ParticipantOrderingAndHistoricalGoldenVectors(t *testing.T) {
 	}
 	if !bytes.Contains(sql, []byte(vector.Ordering.Digest)) {
 		t.Fatal("SQL participant ordering vector missing")
+	}
+}
+
+
+func TestC192EventAndParticipantEncodingDecodeToStructuredFields(t *testing.T) {
+	raw, err := os.ReadFile("../../testdata/portforward/checkpoint_event_v2_vector.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var vector struct {
+		Action        string `json:"action"`
+		ScopeKind     string `json:"scope_kind"`
+		DeviceID      string `json:"device_id"`
+		AccountID     string `json:"account_id"`
+		OrganizationID string `json:"organization_id"`
+		OperationID   string `json:"operation_id"`
+		RequestSHA256 string `json:"request_sha256"`
+		ParticipantSHA256 string `json:"participant_sha256"`
+		PreviousHash string `json:"previous_hash"`
+		Generation uint64 `json:"generation"`
+		RevocationEpoch uint64 `json:"revocation_epoch"`
+		Participants []struct {
+			DeviceID string `json:"device_id"`
+			AccountID string `json:"account_id"`
+			OrganizationID string `json:"organization_id"`
+			RevocationEpoch uint64 `json:"revocation_epoch"`
+			HeadGeneration uint64 `json:"head_generation"`
+			HeadHash string `json:"head_hash"`
+		} `json:"participants"`
+		Encoding string `json:"encoding_hex"`
+	}
+	if err := json.Unmarshal(raw, &vector); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := hex.DecodeString(vector.Encoding)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := bytes.NewReader(encoded)
+	domain := make([]byte, len(checkpointEventV2Domain)+1)
+	if _, err := io.ReadFull(r, domain); err != nil {
+		t.Fatal(err)
+	}
+	if string(domain) != checkpointEventV2Domain+" " {
+		t.Fatalf("unexpected event domain %q", domain)
+	}
+	fields := make([]string, 6)
+	for i := range fields {
+		fields[i], err = c192ReadLengthPrefixedString(r)
+		if err != nil {
+			t.Fatalf("decode event field %d: %v", i, err)
+		}
+	}
+	want := []string{vector.Action, vector.ScopeKind, vector.DeviceID, vector.AccountID, vector.OrganizationID, vector.OperationID}
+	if !reflect.DeepEqual(fields, want) {
+		t.Fatalf("event structured fields differ from encoded fields: got=%q want=%q", fields, want)
+	}
+	fixed := make([]byte, 32)
+	if _, err := io.ReadFull(r, fixed); err != nil || hex.EncodeToString(fixed) != vector.RequestSHA256 {
+		t.Fatalf("request digest differs from structured field: %v", err)
+	}
+	if _, err := io.ReadFull(r, fixed); err != nil || hex.EncodeToString(fixed) != vector.ParticipantSHA256 {
+		t.Fatalf("participant digest differs from structured field: %v", err)
+	}
+	if _, err := io.ReadFull(r, fixed); err != nil || hex.EncodeToString(fixed) != vector.PreviousHash {
+		t.Fatalf("previous hash differs from structured field: %v", err)
+	}
+	var generation, epoch uint64
+	if err := binary.Read(r, binary.BigEndian, &generation); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Read(r, binary.BigEndian, &epoch); err != nil {
+		t.Fatal(err)
+	}
+	if generation != vector.Generation || epoch != vector.RevocationEpoch || r.Len() != 0 {
+		t.Fatalf("event trailing fields mismatch: generation=%d epoch=%d remaining=%d", generation, epoch, r.Len())
+	}
+
+	if len(vector.Participants) != 1 {
+		t.Fatalf("unexpected participant count %d", len(vector.Participants))
+	}
+	p := vector.Participants[0]
+	participantEncoding, err := CheckpointParticipantVectorEncoding([]CheckpointParticipant{c187P()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pr := bytes.NewReader(participantEncoding)
+	participantDomain := make([]byte, len(checkpointParticipantVectorV1Domain)+1)
+	if _, err := io.ReadFull(pr, participantDomain); err != nil {
+		t.Fatal(err)
+	}
+	if string(participantDomain) != checkpointParticipantVectorV1Domain+" " {
+		t.Fatal("participant domain mismatch")
+	}
+	var count uint32
+	if err := binary.Read(pr, binary.BigEndian, &count); err != nil || count != 1 {
+		t.Fatalf("participant count mismatch: count=%d err=%v", count, err)
+	}
+	participantFields := make([]string, 3)
+	for i := range participantFields {
+		participantFields[i], err = c192ReadLengthPrefixedString(pr)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !reflect.DeepEqual(participantFields, []string{p.DeviceID, p.AccountID, p.OrganizationID}) {
+		t.Fatalf("participant structured fields differ from encoding: got=%q", participantFields)
+	}
+	var revocation, headGeneration uint64
+	if err := binary.Read(pr, binary.BigEndian, &revocation); err != nil {
+		t.Fatal(err)
+	}
+	if err := binary.Read(pr, binary.BigEndian, &headGeneration); err != nil {
+		t.Fatal(err)
+	}
+	headHash := make([]byte, 32)
+	if _, err := io.ReadFull(pr, headHash); err != nil {
+		t.Fatal(err)
+	}
+	if revocation != p.RevocationEpoch || headGeneration != p.HeadGeneration ||
+		hex.EncodeToString(headHash) != p.HeadHash || pr.Len() != 0 {
+		t.Fatal("participant structured head fields differ from canonical bytes")
+	}
+}
+
+func c192ReadLengthPrefixedString(r *bytes.Reader) (string, error) {
+	var length uint32
+	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
+		return "", err
+	}
+	if uint64(length) > uint64(r.Len()) {
+		return "", io.ErrUnexpectedEOF
+	}
+	value := make([]byte, int(length))
+	if _, err := io.ReadFull(r, value); err != nil {
+		return "", err
+	}
+	return string(value), nil
+}
+
+func TestC192LengthPrefixBoundaries(t *testing.T) {
+	tests := []struct {
+		name string
+		data []byte
+		want string
+		fail bool
+	}{
+		{name: "empty", data: []byte{0, 0, 0, 0}, want: ""},
+		{name: "one-byte", data: []byte{0, 0, 0, 1, 'x'}, want: "x"},
+		{name: "multibyte-utf8", data: []byte{0, 0, 0, 5, 'c', 'a', 'f', 0xc3, 0xa9}, want: "café"},
+		{name: "maximum-u32-length-without-payload", data: []byte{0xff, 0xff, 0xff, 0xff}, fail: true},
+		{name: "truncated-prefix", data: []byte{0, 0, 0}, fail: true},
+		{name: "truncated-payload", data: []byte{0, 0, 0, 2, 'x'}, fail: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := c192ReadLengthPrefixedString(bytes.NewReader(tt.data))
+			if tt.fail {
+				if err == nil {
+					t.Fatal("malformed length-prefixed input accepted")
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("decoded %q, %v; want %q", got, err, tt.want)
+			}
+		})
 	}
 }
