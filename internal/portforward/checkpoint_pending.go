@@ -38,8 +38,8 @@ type checkpointPendingEntry struct {
 	Equivocations        []CheckpointWitnessEquivocation `json:"equivocations,omitempty"`
 	FinalizationID       string                          `json:"finalization_id,omitempty"`
 	FinalizationComplete bool                            `json:"finalization_complete,omitempty"`
-	Request              CheckpointRequest                `json:"request"`
-	Receipt              *CheckpointReceipt               `json:"receipt,omitempty"`
+	Request              CheckpointRequest               `json:"request"`
+	Receipt              *CheckpointReceipt              `json:"receipt,omitempty"`
 }
 
 type checkpointPendingSnapshot struct {
@@ -1066,7 +1066,6 @@ func (s *MemoryCheckpointPendingStore) Resolve(ctx context.Context, request Chec
 	s.entries[key] = entry
 	return nil
 }
-
 
 func checkpointOperationID(request CheckpointRequest) (string, error) {
 	fingerprint, err := CheckpointRequestFingerprint(request)
