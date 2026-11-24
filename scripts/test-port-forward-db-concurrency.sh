@@ -37,17 +37,21 @@ as $$
  'wd_bbbbbbbbbbbbbbbb','lan','lan',1,1,'mesh.forward',
  pg_catalog.clock_timestamp()-interval '5 seconds',pg_catalog.clock_timestamp()+interval '90 seconds');
 $$;
-create function public.wd_c145_consume(p_id uuid,p_jti text,p_route uuid,p_route_jti text)
+create function public.wd_c145_consume(p_id uuid,p_jti text,p_route uuid,p_route_jti text,p_issued_at timestamptz,p_expires_at timestamptz)
 returns jsonb language sql security definer set search_path=''
 as $$
  select public.consume_port_forward_authorization(
  'wd_aaaaaaaaaaaaaaaa',(select public_key from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'),
  p_id,'local','wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb','wd_cccccccccccccccc',
  p_route,p_route_jti,'wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb','lan','lan',1,1,p_jti,
- pg_catalog.clock_timestamp()-interval '1 second',pg_catalog.clock_timestamp()+interval '60 seconds',
+ p_issued_at,p_expires_at,
  pg_catalog.decode(pg_catalog.repeat('a',64),'hex'));
 $$;
 SQL
+
+# One capability timestamp pair is reused verbatim for retries.
+ISSUED_AT="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() - interval '1 second'")"
+EXPIRES_AT="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() + interval '10 minutes'")"
 
 start() {
  local n="$1" app="$2"
@@ -92,7 +96,7 @@ race() {
  local ca="wd-c145-$name-c" ra="wd-c145-$name-r"
  route "$rid" "$rj"
  if [[ "$order" == "consume-first" ]]; then
-  start c "$ca"; send c "begin; select public.wd_c145_consume('$fid','$jti','$rid','$rj');"
+  start c "$ca"; send c "begin; select public.wd_c145_consume('$fid','$jti','$rid','$rj','$ISSUED_AT','$EXPIRES_AT');"
   wait_text c '"accepted": true'
   start r "$ra"; send r "begin; $mutation; select 'mutation-ready';"
   wait_lock "$ra"
@@ -102,7 +106,7 @@ race() {
  else
   start r "$ra"; send r "begin; $mutation; select 'mutation-ready';"
   wait_text r "mutation-ready"
-  start c "$ca"; send c "begin; select public.wd_c145_consume('$fid','$jti','$rid','$rj');"
+  start c "$ca"; send c "begin; select public.wd_c145_consume('$fid','$jti','$rid','$rj','$ISSUED_AT','$EXPIRES_AT');"
   wait_lock "$ca"
   finish r || fail "$name revocation commit failed"
   local fd="${FDS[c]}" pid="${PIDS[c]}"
@@ -145,10 +149,10 @@ race route-grant consume-first "update public.route_authorization_grants set rev
 # Route-grant JTIs are unique in their own table and intentionally differ from forwarding JTIs.
 route 33000000-0000-4000-8000-0000000000d1 NNNNNNNNNNNNNNNNNNNNNN
 start c wd-c145-dup-a
-send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN');"
+send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN','$ISSUED_AT','$EXPIRES_AT');"
 wait_text c '"accepted": true'
 start d wd-c145-dup-b
-send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN');"
+send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN','$ISSUED_AT','$EXPIRES_AT');"
 wait_lock wd-c145-dup-b
 finish c || fail 'first duplicate transaction failed'
 wait_text d '"replayed": true'
@@ -158,11 +162,11 @@ assertq 1 "select count(*) from public.port_forward_replay_entries where jti='QQ
 
 route 33000000-0000-4000-8000-0000000000d2 OOOOOOOOOOOOOOOOOOOOOO
 start c wd-c145-jti-a
-send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d2','RRRRRRRRRRRRRRRRRRRRRR','33000000-0000-4000-8000-0000000000d2','OOOOOOOOOOOOOOOOOOOOOO');"
+send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d2','RRRRRRRRRRRRRRRRRRRRRR','33000000-0000-4000-8000-0000000000d2','OOOOOOOOOOOOOOOOOOOOOO','$ISSUED_AT','$EXPIRES_AT');"
 wait_text c '"accepted": true'
 route 33000000-0000-4000-8000-0000000000d3 PPPPPPPPPPPPPPPPPPPPPP
 start d wd-c145-jti-b
-send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d3','RRRRRRRRRRRRRRRRRRRRRR','33000000-0000-4000-8000-0000000000d3','PPPPPPPPPPPPPPPPPPPPPP');"
+send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d3','RRRRRRRRRRRRRRRRRRRRRR','33000000-0000-4000-8000-0000000000d3','PPPPPPPPPPPPPPPPPPPPPP','$ISSUED_AT','$EXPIRES_AT');"
 wait_lock wd-c145-jti-b
 finish c || fail 'first JTI transaction failed'
 wait_text d '"jti-conflict"'
@@ -170,5 +174,5 @@ finish d || fail 'JTI conflict transaction did not finish'
 assertq 1 "select count(*) from public.port_forward_authorization_transactions where jti='RRRRRRRRRRRRRRRRRRRRRR'"
 assertq 0 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d3'"
 
-psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_consume(uuid,text,uuid,text); drop function public.wd_c145_route(uuid,text);'
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_consume(uuid,text,uuid,text,timestamptz,timestamptz); drop function public.wd_c145_route(uuid,text);'
 printf 'All deterministic multi-session authorization races passed.\n'
