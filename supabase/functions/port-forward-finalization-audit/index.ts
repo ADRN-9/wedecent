@@ -37,6 +37,7 @@ async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:st
   if(!isObject(routeAuth.claims)||!isObject(routeAuth.claims.route)||routeAuth.claims.jti!==p.route_authorization_jti||
      routeAuth.claims.router!==(router as JsonObject).device_id||routeAuth.claims.route.ID!==p.route_authorization_id||
      routeAuth.claims.route.Source!==(initiator as JsonObject).device_id||routeAuth.claims.route.Destination!==(destination as JsonObject).device_id)throw Error("route authorization does not match stored route participants");
+  await verifyRouteAuthorization(routeAuth,p);
   str("route-authorization-sha256-v1");raw(route);str("route-router-membership-v1");ep(router)
  }else if(p.route_authorization_json!==""||p.route_authorization_id!==""||p.route_authorization_jti!=="")throw Error("unexpected route authorization fields")
  const publicKey=fromBase64(String(p.device_public_key));const signature=fromBase64Signature(String(p.device_signature));
