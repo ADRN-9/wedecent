@@ -1,6 +1,7 @@
 package coreprocess
 
 import (
+	"bytes"
 	"context"
 	"crypto"
 	"crypto/ed25519"
@@ -81,6 +82,19 @@ func newLocalCoreForwardingVerifier(
 	}
 	if len(publicKey) != ed25519.PublicKeySize || signer == nil || provider == nil || memberships == nil {
 		return nil, errors.New("production forwarding requires a witnessed checkpoint provider and independently authenticated endpoint membership resolver")
+	}
+	devicePublicKey, ok := signer.Public().(ed25519.PublicKey)
+	if !ok || len(devicePublicKey) != ed25519.PublicKeySize ||
+		identity.DeviceID(devicePublicKey) != string(deviceID) ||
+		bytes.Equal(devicePublicKey, publicKey) ||
+		bytes.Equal(provider.PrimaryKey, publicKey) ||
+		bytes.Equal(provider.PrimaryKey, devicePublicKey) {
+		return nil, portforward.ErrCheckpointIntegrity
+	}
+	for _, witness := range provider.Witnesses {
+		if bytes.Equal(witness.PublicKey, publicKey) || bytes.Equal(witness.PublicKey, devicePublicKey) {
+			return nil, portforward.ErrCheckpointIntegrity
+		}
 	}
 	pendingPath, err := filepath.Abs(filepath.Join(stateDir, "portforward-checkpoint-pending.json"))
 	if err != nil {
