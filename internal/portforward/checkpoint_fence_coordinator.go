@@ -62,6 +62,7 @@ func (c *CheckpointFenceCoordinator) ExecuteWithCheckpointHeads(
 			}
 			return cloneCheckpointFenceToken(existing.Token), nil
 		}
+		request.AuthorizationProof = append([]byte(nil), request.AuthorizationProof...)
 		return atomicPrimary.ReserveFenceWithCheckpointHeads(ctx, request, cloneCheckpointFenceParticipantHeads(heads))
 	}
 	commit := func(token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement) error {
@@ -85,6 +86,14 @@ func (c *CheckpointFenceCoordinator) execute(
 	}
 	if err := ctx.Err(); err != nil {
 		return CheckpointFenceOperation{}, err
+	}
+	if request.Action == CheckpointFenceRevoke {
+		if len(request.AuthorizationProof) == 0 || len(request.AuthorizationProof) > 64<<10 ||
+			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 {
+			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+		}
+	} else if len(request.AuthorizationProof) != 0 {
+		return CheckpointFenceOperation{}, ErrCheckpointIntegrity
 	}
 	if len(heads) > 0 {
 		if err := validateFenceParticipantHeads(heads, request.Scope, request.Participants); err != nil {
