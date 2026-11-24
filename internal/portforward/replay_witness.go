@@ -162,6 +162,12 @@ func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
 	if _, ok := p.Fencing.Primary.(CheckpointFenceHeadReader); !ok {
 		return ErrCheckpointUnavailable
 	}
+	replayBinding, replayOK := p.Primary.(CheckpointAuthorityBinding)
+	fenceBinding, fenceOK := p.Fencing.Primary.(CheckpointAuthorityBinding)
+	if !replayOK || !fenceOK || replayBinding.CheckpointAuthorityKeyID() == "" ||
+		replayBinding.CheckpointAuthorityKeyID() != fenceBinding.CheckpointAuthorityKeyID() {
+		return ErrCheckpointUnavailable
+	}
 	trustConfigurer, ok := p.Pending.(checkpointPendingTrustConfigurer)
 	if !ok {
 		return ErrCheckpointUnavailable
