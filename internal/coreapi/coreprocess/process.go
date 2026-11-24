@@ -35,8 +35,11 @@ type Config struct {
 	RouteSource              coreconnect.RouteRequestSource
 	RouterService            v1.RouterService
 	Forwarding               *portforward.ManagerConfig
-	ForwardingReplayEndpoint string
-	ForwardingReplayAPIKey   string
+	ForwardingReplayEndpoint string // Deprecated: single-provider replay is rejected.
+	ForwardingReplayAPIKey   string // Deprecated: single-provider replay is rejected.
+	ForwardingCheckpointProvider *portforward.WitnessedReplayCheckpointProvider
+	ForwardingMembershipResolver portforward.CheckpointMembershipResolver
+	ForwardingRouteVerifier portforward.CheckpointRouteAuthorizationVerifier
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection
@@ -62,23 +65,47 @@ func (r *Runtime) Close() error {
 	return errors.Join(errs...)
 }
 
-func newLocalCoreForwardingVerifier(endpoint, apiKey string, deviceID mesh.DeviceID, signer crypto.Signer, publicKey ed25519.PublicKey) (*portforward.AuthorizationVerifier, error) {
-	if strings.TrimSpace(endpoint) == "" || strings.TrimSpace(apiKey) == "" {
-		return nil, errors.New("independent replay endpoint and public Data API key are required")
+func newLocalCoreForwardingVerifier(
+	stateDir string,
+	deviceID mesh.DeviceID,
+	signer crypto.Signer,
+	publicKey ed25519.PublicKey,
+	provider *portforward.WitnessedReplayCheckpointProvider,
+	memberships portforward.CheckpointMembershipResolver,
+	routeVerifier portforward.CheckpointRouteAuthorizationVerifier,
+	legacyEndpoint string,
+	legacyAPIKey string,
+) (*portforward.AuthorizationVerifier, error) {
+	if strings.TrimSpace(legacyEndpoint) != "" || strings.TrimSpace(legacyAPIKey) != "" {
+		return nil, errors.New("Local Core rejects the legacy single-provider replay path; configure an independently witnessed checkpoint provider")
 	}
-	if len(publicKey) != ed25519.PublicKeySize {
-		return nil, portforward.ErrAuthorizationInvalid
+	if len(publicKey) != ed25519.PublicKeySize || signer == nil || provider == nil || memberships == nil {
+		return nil, errors.New("production forwarding requires a witnessed checkpoint provider and independently authenticated endpoint membership resolver")
 	}
-	replay, err := portforward.NewProductionRemoteReplay(endpoint, apiKey, deviceID, signer)
+	pendingPath, err := filepath.Abs(filepath.Join(stateDir, "portforward-checkpoint-pending.json"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("core process: resolve witnessed pending journal: %w", err)
 	}
-	if replay == nil {
-		return nil, portforward.ErrReplayUnavailable
+	pending, err := portforward.NewFileCheckpointPendingStore(pendingPath)
+	if err != nil {
+		return nil, fmt.Errorf("core process: open witnessed pending journal: %w", err)
+	}
+	checkpointProvider := *provider
+	checkpointProvider.Pending = pending
+	if err := checkpointProvider.ValidateConfiguration(); err != nil {
+		return nil, fmt.Errorf("core process: invalid witnessed checkpoint provider: %w", err)
+	}
+	replay := &portforward.CheckpointAuthorizationReplay{
+		Provider: &checkpointProvider,
+		ControlPlaneKey: append(ed25519.PublicKey(nil), publicKey...),
+		LocalDeviceID: deviceID,
+		DeviceSigner: signer,
+		Memberships: memberships,
+		RouteVerifier: routeVerifier,
 	}
 	return &portforward.AuthorizationVerifier{
 		PublicKey: append(ed25519.PublicKey(nil), publicKey...),
-		Replay:    replay,
+		Replay: replay,
 	}, nil
 }
 
@@ -126,11 +153,15 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 			return nil, fmt.Errorf("core process: legacy file replay state requires offline preservation, capability revocation and endpoint identity recovery; see docs/PORT_FORWARDING_SECURITY.md: %w", replayErr)
 		}
 		forwardingVerifier, err = newLocalCoreForwardingVerifier(
-			cfg.ForwardingReplayEndpoint,
-			cfg.ForwardingReplayAPIKey,
+			stateDir,
 			mesh.DeviceID(id.ID),
 			id.PrivateKey,
 			cfg.Forwarding.AuthorizationPublicKey,
+			cfg.ForwardingCheckpointProvider,
+			cfg.ForwardingMembershipResolver,
+			cfg.ForwardingRouteVerifier,
+			cfg.ForwardingReplayEndpoint,
+			cfg.ForwardingReplayAPIKey,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("core process: configure independent source-side replay authority: %w", err)

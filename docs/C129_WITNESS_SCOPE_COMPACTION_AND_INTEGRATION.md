@@ -22,21 +22,23 @@ Unresolved entries are never removed. Invalid signatures, duplicate witness IDs,
 
 After compaction, a replay is still rejected by the primary replay authority and independently retained witness state. Local journal deletion is not treated as proof of replay completion.
 
-### Production authorization path: deliberately fail closed
+### Local Core authorization bridge and production fail-closed behavior
 
-The current Local Core production path composes `AuthorizationVerifier` with the legacy single-provider `RemoteReplay`. That API accepts a complete signed forwarding capability, but it does not implement the C128 `ReplayCheckpointProvider` protocol, witness quorum, signed witness heads, or witness acknowledgements. It cannot be represented as independently witnessed production replay.
+Added `CheckpointAuthorizationReplay`, which implements the complete-capability replay interface used by Local Core. It rejects bare-JTI calls and, for a verified signed `Authorization`, derives the checkpoint request through `BuildCheckpointRequest`. That builder verifies the control-plane signature, exact JTI and digest, local endpoint identity, both membership records and revocation epochs, and routed authorization when applicable. It then consumes through a `WitnessedReplayCheckpointProvider`; there is no un-witnessed provider type accepted by this bridge.
 
-Accordingly, `NewProductionRemoteReplay` now rejects the unwitnessed single-provider configuration. Local Core therefore refuses to start forwarding with that path rather than silently falling back to the single-provider authority, local replay files, or the test-only deterministic witness provider. `NewRemoteReplay` and `NewPinnedRemoteReplay` remain available for controlled test/migration use; neither is a production witness adapter.
+Local Core now accepts an explicitly supplied witnessed provider, independently authenticated membership resolver, and optional route verifier. It copies the provider and installs its own protected durable pending journal under the Local Core state directory. It rejects the deprecated single-provider endpoint/API-key configuration and does not fall back to local replay files.
+
+`NewProductionRemoteReplay` now rejects the legacy single-provider configuration. `NewRemoteReplay` and `NewPinnedRemoteReplay` remain available for controlled test/migration use; neither is a production witness adapter.
 
 ## Production integration still required
 
 This repository change does not claim that the checkpoint protocol is deployed. The following engineering and infrastructure work is still required before production forwarding can be enabled:
 
 1. Implement network adapters for the primary checkpoint service and each independent witness. Authenticate each endpoint with TLS 1.3, separately provisioned hostname and SPKI pins, and distinct Ed25519 signing keys.
-2. Extend Local Core configuration with an explicit production `ReplayCheckpointProvider`, independently authenticated witness trust set, and a `CheckpointPendingStore`. Reject missing or duplicate witness identities, duplicate signing keys, a witness key reused as the primary key, and a quorum that is not a strict majority.
-3. Implement the Local Core adapter from the exact control-plane-verified `Authorization` to `BuildCheckpointRequest`. The adapter must obtain both endpoint memberships and current revocation epochs from an independently authenticated membership resolver, verify routed authorization with the route authority, and derive JTI/digest/endpoints from that same capability.
+2. Implement production network adapters for the primary checkpoint service and each independent witness, then inject the `WitnessedReplayCheckpointProvider` and production membership resolver into Local Core startup. The in-process adapter and provider interface are wired; no network provider adapters are currently available.
+3. Supply a production membership resolver that independently authenticates both endpoint membership records and current revocation epochs, and a route-authority verifier for routed capabilities. Do not infer membership from the local account session alone.
 4. Make membership and revocation validation atomic with primary consumption, or bind the membership version/revocation epochs into the checkpoint transaction so concurrent revocation cannot race the consume.
-5. Ensure the source and destination Local Core instances use the same canonical request fingerprint and the correct endpoint identity. Do not infer membership from the local account session alone.
+5. Ensure the source and destination Local Core instances use the same canonical request fingerprint and the correct endpoint identity.
 6. Run real service integration tests for primary and witness restart, response loss, ambiguous commit, concurrent revocation, quorum partition, historical-head restore, and full provider database plus signing-key restore.
 7. Provision at least three separately administered witness instances, independent KMS/HSM keys, separate backup and administrative controls, independent audit retention, TLS hostnames and SPKI pins. Test the actual restoration and compromise boundaries with the operators who control those services.
 

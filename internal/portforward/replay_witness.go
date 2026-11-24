@@ -89,10 +89,17 @@ type WitnessedReplayCheckpointProvider struct {
 	Pending    CheckpointPendingStore
 }
 
+func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
+	if p == nil || p.Primary == nil || p.Pending == nil ||
+		!validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
+		return ErrCheckpointUnavailable
+	}
+	return nil
+}
+
 func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
-	if p == nil || p.Primary == nil || p.Pending == nil || len(p.PrimaryKey) != ed25519.PublicKeySize ||
-		p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
-		return CheckpointResult{}, ErrCheckpointUnavailable
+	if err := p.ValidateConfiguration(); err != nil {
+		return CheckpointResult{}, err
 	}
 	existingPending, err := p.Pending.Begin(ctx, request)
 	if err != nil {
@@ -132,8 +139,8 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 }
 
 func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
-	if p == nil || p.Primary == nil || p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
-		return ErrCheckpointUnavailable
+	if err := p.ValidateConfiguration(); err != nil {
+		return err
 	}
 	if !validCheckpointEndpoint(endpoint) || next <= endpoint.RevocationEpoch {
 		return ErrCheckpointStale
@@ -191,8 +198,8 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 }
 
 func (p *WitnessedReplayCheckpointProvider) Head(ctx context.Context, endpoint CheckpointEndpoint) (CheckpointHead, error) {
-	if p == nil || p.Primary == nil || p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
-		return CheckpointHead{}, ErrCheckpointUnavailable
+	if err := p.ValidateConfiguration(); err != nil {
+		return CheckpointHead{}, err
 	}
 	primary, err := p.Primary.Head(ctx, endpoint)
 	if err != nil {

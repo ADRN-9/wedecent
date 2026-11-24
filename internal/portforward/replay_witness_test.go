@@ -375,6 +375,70 @@ func TestBuildCheckpointRequestBindsVerifiedCapabilityAndBothMemberships(t *test
 	}
 }
 
+func TestCheckpointAuthorizationReplayUsesExactVerifiedCapability(t *testing.T) {
+	initPublic, initPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPublic, controlPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(now, DirectionLocal)
+	claims.InitiatingDevice = mesh.DeviceID(identity.DeviceID(initPublic))
+	claims.DestinationDevice = mesh.DeviceID(identity.DeviceID(destPublic))
+	claims.Route.Source = claims.InitiatingDevice
+	claims.Route.Destination = claims.DestinationDevice
+	claims.Route.Hops[0].From = claims.InitiatingDevice
+	claims.Route.Hops[0].To = claims.DestinationDevice
+	authorization, err := SignAuthorization(controlPrivate, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initiator := CheckpointEndpoint{DeviceID: string(claims.InitiatingDevice), AccountID: "11111111-1111-4111-8111-111111111111", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 4}
+	destination := CheckpointEndpoint{DeviceID: string(claims.DestinationDevice), AccountID: "22222222-2222-4222-8222-222222222222", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 7}
+	memberships := checkpointMembershipFixture{
+		string(claims.InitiatingDevice): initiator,
+		string(claims.DestinationDevice): destination,
+	}
+	primary := newDeterministicCheckpointProvider(t)
+	primary.register(initiator)
+	primary.register(destination)
+	provider, witnesses := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+	consumerScope := witnessScope(initiator)
+	for _, witness := range witnesses {
+		witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch
+		witness.revoked[witnessScope(destination)] = destination.RevocationEpoch
+		witness.ledgers[consumerScope] = &deterministicWitnessLedger{
+			revocationEpoch: initiator.RevocationEpoch,
+			used: make(map[string][32]byte),
+		}
+	}
+	replay := &CheckpointAuthorizationReplay{
+		Provider: provider, ControlPlaneKey: controlPublic, LocalDeviceID: claims.InitiatingDevice,
+		DeviceSigner: initPrivate, Memberships: memberships, Now: func() time.Time { return now },
+	}
+	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); err != nil {
+		t.Fatal(err)
+	}
+	if len(primary.ledgers) != 1 {
+		t.Fatal("verified capability did not reach the witnessed primary checkpoint")
+	}
+	if err := replay.ConsumePortForwardAuthorization(context.Background(), claims.JTI, time.UnixMilli(claims.ExpiresAtUnixMS)); !errors.Is(err, ErrCheckpointUnavailable) {
+		t.Fatalf("bare JTI bypassed capability-bound checkpoint request: %v", err)
+	}
+	tampered := authorization
+	tampered.Claims.DestinationPort++
+	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), tampered); !errors.Is(err, ErrAuthorizationSignature) {
+		t.Fatalf("tampered capability reached witnessed checkpoint: %v", err)
+	}
+}
+
 func TestPendingJournalCompactionRetainsUnresolvedAndRejectsReplayAfterRestart(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request1, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
