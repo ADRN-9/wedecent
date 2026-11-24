@@ -201,8 +201,8 @@ func TestLocalCoreRejectsCheckpointKeyReuseAcrossTrustDomains(t *testing.T) {
 				t.Fatal(err)
 			}
 			witnesses[i] = portforward.CheckpointWitnessTrust{
-				Witness: coreProcessCheckpointWitness{},
-				ID: []string{"witness-a", "witness-b", "witness-c"}[i],
+				Witness:   coreProcessCheckpointWitness{},
+				ID:        []string{"witness-a", "witness-b", "witness-c"}[i],
 				PublicKey: publicKey,
 			}
 		}
