@@ -1359,7 +1359,7 @@ func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context
 			Action: CheckpointFenceFinalize, OperationID: operationID,
 			RequestSHA256: fingerprint, AuthorizationSHA256: request.AuthorizationSHA256,
 			WitnessSetVersion: p.Fencing.WitnessSetVersion,
-			WitnessIDs: checkpointFenceClientIDs(p.Fencing.Witnesses),
+			WitnessIDs:        checkpointFenceClientIDs(p.Fencing.Witnesses),
 		}
 		if !checkpointFenceTokenMatchesOperation(existing.Token, expected) ||
 			verifyCheckpointFenceTokenSignature(existing.Token, p.Fencing.PrimaryKey) != nil {
