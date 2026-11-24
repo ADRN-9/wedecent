@@ -2866,7 +2866,7 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 				callbackSignal := make(chan struct{}, 1)
 				finalizeDone := make(chan error, 1)
 				revokeDone := make(chan error, 1)
-				callbackFn := func(_ context.Context, operationID string) error {
+				callbackFn := func(_ context.Context, operationID string, _ CheckpointFinalizationEvidence) error {
 					callback <- operationID
 					callbackSignal <- struct{}{}
 					return nil
