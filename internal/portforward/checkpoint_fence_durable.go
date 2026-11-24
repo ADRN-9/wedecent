@@ -795,3 +795,10 @@ func withCheckpointFenceLog(ctx context.Context, path string, fn func(*os.File) 
 	defer unlock()
 	return fn(file)
 }
+
+
+func sameCheckpointFenceToken(a, b CheckpointFenceToken) bool {
+	aDigest, aErr := CheckpointFenceTokenDigest(a)
+	bDigest, bErr := CheckpointFenceTokenDigest(b)
+	return aErr == nil && bErr == nil && aDigest == bDigest && bytes.Equal(a.Signature, b.Signature)
+}
