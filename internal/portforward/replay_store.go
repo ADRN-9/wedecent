@@ -231,7 +231,7 @@ func ensureReplayInitializationContext(ctx context.Context, path string, deviceI
 	if ctx == nil {
 		return ErrReplayUnavailable
 	}
-	return ensureReplayInitializationAttempt(ctx, path, deviceID, allowLegacyMigration, 0)
+	return ensureReplayInitializationAttemptContext(ctx, path, deviceID, allowLegacyMigration, 0)
 }
 
 func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allowLegacyMigration bool, attempt int) (result error) {
