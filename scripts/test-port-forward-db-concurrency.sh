@@ -19,6 +19,9 @@ values ('22000000-0000-4000-8000-0000000000c1','C145 concurrency','c145-concurre
 update public.organization_memberships set role='member'
  where organization_id='22000000-0000-4000-8000-0000000000c1'
  and user_id='11000000-0000-4000-8000-0000000000c1';
+insert into public.organization_memberships (organization_id,user_id,role,created_by)
+values ('22000000-0000-4000-8000-0000000000c1','11000000-0000-4000-8000-0000000000c2','member','11000000-0000-4000-8000-0000000000c1')
+on conflict do nothing;
 insert into public.devices (device_id,public_key,kind,name,owner_user_id,organization_id) values
  ('wd_aaaaaaaaaaaaaaaa',repeat('A',43),'client','initiator','11000000-0000-4000-8000-0000000000c1','22000000-0000-4000-8000-0000000000c1'),
  ('wd_bbbbbbbbbbbbbbbb',repeat('B',43),'agent','destination','11000000-0000-4000-8000-0000000000c2','22000000-0000-4000-8000-0000000000c1'),
@@ -183,9 +186,13 @@ begin
   'version',1,
   'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-0000000000c1','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_aaaaaaaaaaaaaaaa')),
   'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-0000000000c2','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_bbbbbbbbbbbbbbbb')),
-  'router',null,'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti',p_jti,
+  'router',jsonb_build_object('device_id','wd_cccccccccccccccc','account_id','11000000-0000-4000-8000-0000000000c2','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_cccccccccccccccc')),
+  'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti',p_jti,
   'authorization_sha256',(select encode(authorization_sha256,'hex') from public.port_forward_authorization_transactions where jti=p_jti),
-  'route_authorization_sha256',repeat('0',64),'route_authorization_id','','route_authorization_jti','','route_authorization_json','',
+  'route_authorization_sha256',repeat('c',64),
+  'route_authorization_id',(select route_authorization_id::text from public.port_forward_authorization_transactions where jti=p_jti),
+  'route_authorization_jti',(select route_authorization_jti from public.port_forward_authorization_transactions where jti=p_jti),
+  'route_authorization_json','{"route":"signed"}',
   'device_public_key',(select public_key from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'),
   'device_signature',p_signature
  );
