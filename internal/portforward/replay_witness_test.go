@@ -1864,15 +1864,18 @@ func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *
 	// same witness/operation compatible with the first durable acknowledgement.
 	conflictingStatus := first
 	conflictingStatus.Status = "already_acknowledged"
-	conflictingStatus.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(conflictingStatus))
+	if !bytes.Equal(conflictingStatus.Signature, first.Signature) ||
+		VerifyCheckpointWitnessAck(conflictingStatus, witnesses[0].id, client.Witnesses[0].PublicKey) != nil {
+		t.Fatal("retry metadata changed the signed terminal decision")
+	}
 	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, conflictingStatus, client.Witnesses[0]); err != nil {
 		t.Fatalf("idempotent successful acknowledgement retry rejected: %v", err)
 	}
 	invalidOutcome := first
-	invalidOutcome.Status = "revoked"
+	invalidOutcome.Decision = "revoked"
 	invalidOutcome.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(invalidOutcome))
 	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, invalidOutcome, client.Witnesses[0]); !errors.Is(err, ErrCheckpointIntegrity) {
-		t.Fatalf("signed non-success terminal outcome accepted: %v", err)
+		t.Fatalf("non-committed terminal decision accepted as quorum evidence: %v", err)
 	}
 
 	// Conflicting operation IDs, request fingerprints and participant vectors
@@ -1937,11 +1940,20 @@ func (w fixedCheckpointAckWitness) Acknowledge(context.Context, CheckpointReques
 	return w.ack, nil
 }
 
-func TestWitnessRetryEquivocationBlocksQuorumAndSessionRelease(t *testing.T) {
+
+
+type unavailableAckResponse struct {
+	CheckpointWitness
+}
+
+func (w unavailableAckResponse) Acknowledge(context.Context, CheckpointRequest, CheckpointReceipt) (CheckpointWitnessAck, error) {
+	return CheckpointWitnessAck{}, ErrCheckpointUnavailable
+}
+
+func preparePersistedWitnessQuorum(t *testing.T, store CheckpointPendingStore) (*WitnessedReplayCheckpointProvider, []*deterministicCheckpointWitness, CheckpointRequest, CheckpointReceipt, []CheckpointWitnessAck) {
+	t.Helper()
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
-	store := NewMemoryCheckpointPendingStore()
-	client, witnesses := newWitnessedFixture(t, primary, store)
 	if _, err := store.Begin(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
@@ -1952,42 +1964,294 @@ func TestWitnessRetryEquivocationBlocksQuorumAndSessionRelease(t *testing.T) {
 	if err := store.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil {
 		t.Fatal(err)
 	}
-	for _, witness := range witnesses {
-		if _, err := witness.Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	if err := client.ValidateConfiguration(); err != nil {
+		t.Fatal(err)
+	}
+	acks := make([]CheckpointWitnessAck, client.Quorum)
+	for i := range acks {
+		if _, err := witnesses[i].Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+			t.Fatal(err)
+		}
+		acks[i], err = witnesses[i].Acknowledge(context.Background(), request, result.CheckpointReceipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.(checkpointPendingAcknowledgements).RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[i], client.Witnesses[i]); err != nil {
 			t.Fatal(err)
 		}
 	}
-	first, err := witnesses[0].Acknowledge(context.Background(), request, result.CheckpointReceipt)
+	return client, witnesses, request, result.CheckpointReceipt, acks
+}
+
+func signedDecision(t *testing.T, witness *deterministicCheckpointWitness, original CheckpointWitnessAck, decision string) CheckpointWitnessAck {
+	t.Helper()
+	conflict := original
+	conflict.Decision = decision
+	conflict.Signature = ed25519.Sign(witness.private, checkpointWitnessAckMessage(conflict))
+	if err := VerifyCheckpointWitnessAck(conflict, witness.id, witness.private.Public().(ed25519.PublicKey)); err != nil {
+		t.Fatalf("test conflict is not a valid signed decision: %v", err)
+	}
+	return conflict
+}
+
+func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, first, client.Witnesses[0]); err != nil {
-		t.Fatal(err)
-	}
-
-	// The same witness signs a different request fingerprint on retry.
-	conflict := first
-	conflict.RequestSHA256[0] ^= 0x40
-	conflict.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(conflict))
+	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, store)
+	conflict := signedDecision(t, witnesses[0], original[0], "revoked")
 	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
-	witnesses[1].available = false // Keep the remaining honest witness below quorum.
+	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
+	client.Witnesses[2].Witness = unavailableAckResponse{CheckpointWitness: witnesses[2]}
 
 	released := false
 	err = client.FinalizeWithAudit(context.Background(), request, func() error {
 		released = true
 		return nil
 	})
-	if !errors.Is(err, ErrCheckpointConflict) {
-		t.Fatalf("conflicting signed retry did not fail closed: %v", err)
+	if !errors.Is(err, ErrCheckpointConflict) || released {
+		t.Fatalf("equivocation did not block finalization: err=%v released=%t", err, released)
 	}
-	if released {
-		t.Fatal("session release callback ran despite witness equivocation")
+	if _, err := store.LoadAcknowledgements(context.Background(), request, receipt, client.Witnesses); !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("equivocated operation did not become terminal: %v", err)
 	}
-	acks, err := store.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses)
+	evidence, err := store.LoadEquivocations(context.Background(), request, receipt, client.Witnesses)
+	if err != nil || len(evidence) != 1 {
+		t.Fatalf("durable equivocation evidence=%d err=%v", len(evidence), err)
+	}
+	if !sameCheckpointWitnessAck(evidence[0].Original, original[0]) ||
+		!sameCheckpointWitnessAck(evidence[0].Conflicting, conflict) {
+		t.Fatal("equivocation evidence does not preserve both signed decisions")
+	}
+
+	restarted, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(acks) != 1 || acks[0].WitnessID != witnesses[0].id {
-		t.Fatalf("equivocating response contributed quorum evidence: %d acknowledgements", len(acks))
+	if err := restarted.SetCheckpointTrustAnchors(client.PrimaryKey, client.Witnesses, client.Quorum); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := restarted.LoadEquivocations(context.Background(), request, receipt, client.Witnesses)
+	if err != nil || len(recovered) != 1 ||
+		!sameCheckpointWitnessAck(recovered[0].Original, original[0]) ||
+		!sameCheckpointWitnessAck(recovered[0].Conflicting, conflict) {
+		t.Fatalf("equivocation evidence did not survive restart: count=%d err=%v", len(recovered), err)
+	}
+	restartedClient := &WitnessedReplayCheckpointProvider{
+		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
+		Quorum: client.Quorum, Pending: restarted,
+	}
+	released = false
+	if err := restartedClient.FinalizeWithAudit(context.Background(), request, func() error {
+		released = true
+		return nil
+	}); !errors.Is(err, ErrCheckpointConflict) || released {
+		t.Fatalf("subsequent finalization was not terminally rejected: err=%v released=%t", err, released)
+	}
+}
+
+func TestPersistedQuorumRecoveryDoesNotRequireWitnessAvailability(t *testing.T) {
+	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
+	client.Witnesses[0].Witness = unavailableAckResponse{CheckpointWitness: witnesses[0]}
+	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
+	witnesses[2].available = false
+	called := false
+	if err := client.FinalizeWithAudit(context.Background(), request, func() error {
+		called = true
+		return nil
+	}); err != nil || !called {
+		t.Fatalf("cached quorum did not recover during witness outages: err=%v callback=%t", err, called)
+	}
+	if len(original) != client.Quorum || receipt.RequestSHA256 == ([sha256.Size]byte{}) {
+		t.Fatal("test did not prepare an authenticated persisted quorum")
+	}
+}
+
+func TestInvalidSignedConflictCannotPoisonPersistedQuorum(t *testing.T) {
+	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
+	invalid := signedDecision(t, witnesses[0], original[0], "revoked")
+	invalid.Signature = append([]byte(nil), invalid.Signature...)
+	invalid.Signature[0] ^= 0x80
+	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: invalid}
+	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
+	called := false
+	if err := client.FinalizeWithAudit(context.Background(), request, func() error {
+		called = true
+		return nil
+	}); err != nil || !called {
+		t.Fatalf("invalid conflict poisoned valid cached quorum: err=%v callback=%t", err, called)
+	}
+	if _, err := client.Pending.(checkpointPendingAcknowledgements).LoadEquivocations(context.Background(), request, receipt, client.Witnesses); err != nil {
+		t.Fatalf("invalid evidence was persisted: %v", err)
+	}
+}
+
+func TestRepeatedEquivocationDetectionIsIdempotentAndTerminal(t *testing.T) {
+	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
+	conflict := signedDecision(t, witnesses[0], original[0], "aborted")
+	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
+	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
+	for attempt := 0; attempt < 2; attempt++ {
+		called := false
+		err := client.FinalizeWithAudit(context.Background(), request, func() error {
+			called = true
+			return nil
+		})
+		if !errors.Is(err, ErrCheckpointConflict) || called {
+			t.Fatalf("attempt %d equivocation result err=%v callback=%t", attempt, err, called)
+		}
+	}
+	evidence, err := client.Pending.(checkpointPendingAcknowledgements).LoadEquivocations(context.Background(), request, receipt, client.Witnesses)
+	if err != nil || len(evidence) != 1 {
+		t.Fatalf("repeated conflict duplicated or lost evidence: count=%d err=%v", len(evidence), err)
+	}
+}
+
+func TestConcurrentFinalizationRunsCallbackAtMostOnce(t *testing.T) {
+	client, _, request, _, _ := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
+	var mu sync.Mutex
+	callbacks := 0
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- client.FinalizeWithAudit(context.Background(), request, func() error {
+				mu.Lock()
+				callbacks++
+				mu.Unlock()
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	successes := 0
+	for err := range errs {
+		if err == nil {
+			successes++
+		} else if !errors.Is(err, ErrCheckpointHistorical) {
+			t.Fatalf("unexpected concurrent finalization result: %v", err)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if successes != 1 || callbacks != 1 {
+		t.Fatalf("concurrent finalization successes=%d callbacks=%d", successes, callbacks)
+	}
+}
+
+func TestEquivocationEvidencePersistenceInterruptionFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, store)
+	conflict := signedDecision(t, witnesses[0], original[0], "revoked")
+	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
+	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
+	store.writeSnapshot = func(_ string, value any, _ string, _ int64) error {
+		if snapshot, ok := value.(checkpointPendingSnapshot); ok {
+			for _, entry := range snapshot.Entries {
+				if entry.State == "equivocated" {
+					return errors.New("injected equivocation publication interruption")
+				}
+			}
+		}
+		return writeReplayJSON(store.Path, value, replayStagingPattern(store.Path, "pendingops"), checkpointPendingMaxSize)
+	}
+	called := false
+	err = client.FinalizeWithAudit(context.Background(), request, func() error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, ErrCheckpointUnavailable) || called {
+		t.Fatalf("interrupted evidence persistence did not fail closed: err=%v callback=%t", err, called)
+	}
+	store.writeSnapshot = nil
+	if _, err := store.LoadAcknowledgements(context.Background(), request, receipt, client.Witnesses); err != nil {
+		t.Fatalf("failed evidence publication altered original quorum: %v", err)
+	}
+	if evidence, err := store.LoadEquivocations(context.Background(), request, receipt, client.Witnesses); err != nil || len(evidence) != 0 {
+		t.Fatalf("interrupted evidence was partially persisted: count=%d err=%v", len(evidence), err)
+	}
+	called = false
+	if err := client.FinalizeWithAudit(context.Background(), request, func() error {
+		called = true
+		return nil
+	}); !errors.Is(err, ErrCheckpointConflict) || called {
+		t.Fatalf("retry after restored journal writer did not persist terminal conflict: err=%v callback=%t", err, called)
+	}
+}
+
+func TestEquivocationJournalCorruptionFailsClosed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, store)
+	conflict := signedDecision(t, witnesses[0], original[0], "revoked")
+	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
+	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
+	if err := client.FinalizeWithAudit(context.Background(), request, nil); !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("expected persisted equivocation, got %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot checkpointPendingSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	for key, entry := range snapshot.Entries {
+		if entry.State != "equivocated" {
+			continue
+		}
+		entry.Equivocations[0].Conflicting.Signature[0] ^= 0x80
+		snapshot.Entries[key] = entry
+	}
+	corrupt, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.SetCheckpointTrustAnchors(client.PrimaryKey, client.Witnesses, client.Quorum); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.LoadEquivocations(context.Background(), request, receipt, client.Witnesses); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("corrupt equivocation journal was not rejected: %v", err)
 	}
 }
