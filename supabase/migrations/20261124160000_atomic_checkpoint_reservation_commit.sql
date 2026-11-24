@@ -10,7 +10,15 @@ alter table public.port_forward_replay_authority
     add constraint port_forward_checkpoint_generation_nonnegative
         check (checkpoint_head_generation >= 0),
     add constraint port_forward_checkpoint_hash_size
-        check (pg_catalog.octet_length(checkpoint_head_hash) = 32);
+        check (pg_catalog.octet_length(checkpoint_head_hash) = 32),
+    add constraint port_forward_checkpoint_head_consistency
+        check (
+            (checkpoint_head_generation = 0
+                and checkpoint_head_hash = pg_catalog.decode(pg_catalog.repeat('00', 32), 'hex'))
+            or
+            (checkpoint_head_generation > 0
+                and checkpoint_head_hash <> pg_catalog.decode(pg_catalog.repeat('00', 32), 'hex'))
+        );
 
 create table public.checkpoint_operations (
     operation_id text primary key check (operation_id ~ '^[0-9a-f]{64}$'),
@@ -63,6 +71,8 @@ create table public.checkpoint_active_reservations (
     fingerprint bytea not null check (pg_catalog.octet_length(fingerprint) = 32),
     expires_at timestamptz not null,
     reserved_at timestamptz not null default pg_catalog.clock_timestamp(),
+    constraint checkpoint_active_reservation_lifetime
+        check (expires_at > reserved_at and expires_at <= reserved_at + interval '120 seconds'),
     unique (operation_id, device_id)
 );
 
@@ -571,6 +581,10 @@ declare
     v_authority public.port_forward_replay_authority%rowtype;
     v_event public.checkpoint_operation_events%rowtype;
     v_authoritative jsonb := '[]'::jsonb;
+    v_stored_participants jsonb;
+    v_computed_event bytea;
+    v_computed_hash bytea;
+    v_expected_next_revocation_epoch bigint;
     v_result jsonb;
     v_token_sha256 text;
     v_ack_generation numeric;
@@ -808,27 +822,81 @@ begin
             using errcode = '55000';
     end if;
 
+    select pg_catalog.jsonb_agg(
+        pg_catalog.jsonb_build_object(
+            'device_id', participant_row.device_id,
+            'account_id', participant_row.account_id,
+            'organization_id', participant_row.organization_id,
+            'revocation_epoch', participant_row.revocation_epoch,
+            'head_generation', participant_row.expected_generation,
+            'head_hash', pg_catalog.encode(participant_row.expected_hash, 'hex')
+        )
+        order by participant_row.device_id
+    )
+      into v_stored_participants
+      from public.checkpoint_operation_participants as participant_row
+     where participant_row.operation_id = p_operation_id;
+
+    if wedecent_private.checkpoint_participant_vector_hash(v_stored_participants)
+       <> v_operation.participant_sha256 then
+        raise exception 'checkpoint participant snapshot digest mismatch'
+            using errcode = '55000';
+    end if;
+
     if not wedecent_private.checkpoint_v1_transition_matches(
-        (
-            select pg_catalog.jsonb_agg(
-                pg_catalog.jsonb_build_object(
-                    'device_id', participant_row.device_id,
-                    'account_id', participant_row.account_id,
-                    'organization_id', participant_row.organization_id,
-                    'revocation_epoch', participant_row.revocation_epoch,
-                    'head_generation', participant_row.expected_generation,
-                    'head_hash', pg_catalog.encode(participant_row.expected_hash, 'hex')
-                )
-                order by participant_row.device_id
-            )
-              from public.checkpoint_operation_participants as participant_row
-             where participant_row.operation_id = p_operation_id
-        ),
+        v_stored_participants,
         v_authoritative
     ) then
         raise exception 'checkpoint commit participant revalidation failed'
             using errcode = '40001';
     end if;
+
+    for v_participant in
+        select participant_row.*
+          from public.checkpoint_operation_participants as participant_row
+         where participant_row.operation_id = p_operation_id
+         order by participant_row.device_id
+    loop
+        if v_participant.expected_generation = 9223372036854775807 then
+            raise exception 'checkpoint participant generation exhausted'
+                using errcode = '22003';
+        end if;
+
+        v_expected_next_revocation_epoch := v_participant.revocation_epoch;
+        if v_operation.action = 'revoke' then
+            if v_expected_next_revocation_epoch = 9223372036854775807 then
+                raise exception 'checkpoint revocation epoch exhausted'
+                    using errcode = '22003';
+            end if;
+            v_expected_next_revocation_epoch := v_expected_next_revocation_epoch + 1;
+        end if;
+
+        if v_participant.next_generation <> v_participant.expected_generation + 1
+           or v_participant.next_revocation_epoch <> v_expected_next_revocation_epoch then
+            raise exception 'checkpoint participant target transition is malformed'
+                using errcode = '55000';
+        end if;
+
+        v_computed_event := wedecent_private.checkpoint_event_v2_encoding_from_participants(
+            v_operation.action,
+            'device',
+            v_participant.device_id,
+            v_participant.account_id::text,
+            v_participant.organization_id::text,
+            p_operation_id,
+            v_operation.request_sha256,
+            v_stored_participants,
+            v_participant.expected_hash,
+            v_participant.next_generation,
+            v_participant.revocation_epoch
+        );
+        v_computed_hash := extensions.digest(v_computed_event, 'sha256');
+
+        if v_participant.next_hash <> v_computed_hash then
+            raise exception 'checkpoint participant target hash is malformed'
+                using errcode = '55000';
+        end if;
+    end loop;
 
     update public.port_forward_replay_authority as authority_row
        set checkpoint_head_generation = participant_row.next_generation,
