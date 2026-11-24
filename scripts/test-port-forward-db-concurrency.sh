@@ -116,7 +116,7 @@ race() {
   grep -q 'ERROR:' "$WORK/c.log" || fail "$name consumer did not fail with SQL authorization error"
   assertq f "select exists(select 1 from public.port_forward_authorization_transactions where forwarding_id='$fid')"
  fi
- assertq true "$post"
+ assertq t "$post"
  printf 'verified %s (%s)\n' "$name" "$order"
 }
 
@@ -266,5 +266,5 @@ finish d || fail 'JTI conflict transaction did not finish'
 assertq 1 "select count(*) from public.port_forward_authorization_transactions where jti='RRRRRRRRRRRRRRRRRRRRRR'"
 assertq 0 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d3'"
 
-psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_consume(uuid,text,uuid,text,timestamptz,timestamptz); drop function public.wd_c145_route(uuid,text);'
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_audit(text,text); drop function public.wd_c145_consume(uuid,text,uuid,text,timestamptz,timestamptz); drop function public.wd_c145_route(uuid,text);'
 printf 'All deterministic multi-session authorization races passed.\n'
