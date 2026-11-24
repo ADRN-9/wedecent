@@ -305,8 +305,8 @@ func TestFileCheckpointPendingStoreSurvivesRestartAndRejectsHistoricalReceipt(t 
 	if _, err := restarted.Begin(context.Background(), conflict); !errors.Is(err, ErrCheckpointConflict) {
 		t.Fatalf("conflicting JTI accepted: %v", err)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("pending journal permissions: info=%v err=%v", info, err)
+	if err := secureReplayFile(path); err != nil {
+		t.Fatalf("pending journal is not protected by platform file permissions/ACL: %v", err)
 	}
 }
 
