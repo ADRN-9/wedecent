@@ -1626,7 +1626,7 @@ func routedCheckpointRequestForRevocationTest(t *testing.T, primary *determinist
 		"kid": "route-key-v1",
 		"claims": map[string]any{
 			"jti": request.RouteAuthorizationJTI, "router": router.DeviceID,
-			"route": map[string]any{"id": request.RouteAuthorizationID, "source": request.Initiator.DeviceID, "destination": request.Destination.DeviceID},
+			"route": map[string]any{"ID": request.RouteAuthorizationID, "Source": request.Initiator.DeviceID, "Destination": request.Destination.DeviceID},
 		},
 		"signature": strings.Repeat("A", 86) + "==",
 	})
