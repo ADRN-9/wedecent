@@ -1,7 +1,15 @@
 package portforward
 
 import (
+	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -95,5 +103,73 @@ func TestCheckpointAuditConstructorRequiresTrustAndMatchingSession(t *testing.T)
 	trust.Hostname = "attacker.example.com"
 	if _, err := NewSupabaseCheckpointFinalizationAuditor(account.Client{}, path, trust); err == nil {
 		t.Fatal("session-controlled Supabase origin overrode independent hostname")
+	}
+}
+
+
+func TestCheckpointAuditTLSRequiresTLS13HostnameAndMatchingSPKI(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{CommonName: "audit.example.com"},
+		DNSNames: []string{"audit.example.com"},
+		NotBefore: time.Now().Add(-time.Minute),
+		NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificate, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pin := sha256.Sum256(certificate.RawSubjectPublicKeyInfo)
+	config := checkpointAuditTLSConfig(CheckpointAuditTrust{Hostname: "audit.example.com", Port: 443}, [][sha256.Size]byte{pin})
+	if config.MinVersion != tls.VersionTLS13 || config.ServerName != "audit.example.com" {
+		t.Fatalf("TLS trust config weakened: min=%d server=%q", config.MinVersion, config.ServerName)
+	}
+	if err := config.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificate}}); err != nil {
+		t.Fatalf("matching SPKI rejected: %v", err)
+	}
+	wrong := pin
+	wrong[0] ^= 0xff
+	wrongConfig := checkpointAuditTLSConfig(CheckpointAuditTrust{Hostname: "audit.example.com", Port: 443}, [][sha256.Size]byte{wrong})
+	if err := wrongConfig.VerifyConnection(tls.ConnectionState{PeerCertificates: []*x509.Certificate{certificate}}); err == nil {
+		t.Fatal("wrong SPKI pin accepted")
+	}
+	if err := config.VerifyConnection(tls.ConnectionState{}); err == nil {
+		t.Fatal("missing peer certificate accepted")
+	}
+}
+
+func TestCheckpointAuditRedirectsAndCanceledRequestsFailClosed(t *testing.T) {
+	path := t.TempDir() + "/account-session.json"
+	session := &account.Session{
+		Version: account.SessionVersion, SupabaseURL: "https://audit.example.com",
+		PublishableKey: "sb_publishable_test", UserID: "11000000-0000-4000-8000-000000000091",
+		Email: "audit@example.test", AccessToken: "access", RefreshToken: "refresh",
+		ExpiresAt: time.Now().Add(time.Hour).Unix(),
+	}
+	if err := account.Save(path, session); err != nil {
+		t.Fatal(err)
+	}
+	trust := CheckpointAuditTrust{Hostname: "audit.example.com", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64)}
+	auditor, err := NewSupabaseCheckpointFinalizationAuditor(account.Client{}, path, trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := auditor.http.CheckRedirect(nil, nil); err != http.ErrUseLastResponse {
+		t.Fatalf("redirect policy = %v, want ErrUseLastResponse", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := auditor.RecordCheckpointFinalization(ctx, CheckpointRequest{}, "", CheckpointFinalizationStarted, nil); err != context.Canceled {
+		t.Fatalf("canceled audit request returned %v", err)
 	}
 }
