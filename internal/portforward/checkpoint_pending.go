@@ -122,11 +122,18 @@ func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, er
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w: inspect pending store: %v", ErrReplayUnavailable, err)
 	}
-	unlock, _, err := lockReplayFileContextForObserved(context.Background(), path+".finalize", path, nil)
+	unlockJournal, _, err := lockReplayFileContext(context.Background(), path)
+	if err != nil {
+		return nil, fmt.Errorf("%w: initialize pending journal lock: %v", ErrReplayUnavailable, err)
+	}
+	if err := unlockJournal(); err != nil {
+		return nil, fmt.Errorf("%w: initialize pending journal lock release: %v", ErrReplayUnavailable, err)
+	}
+	unlockTransition, _, err := lockReplayFileContextForObserved(context.Background(), path+".finalize", path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: initialize transition lock: %v", ErrReplayUnavailable, err)
 	}
-	if err := unlock(); err != nil {
+	if err := unlockTransition(); err != nil {
 		return nil, fmt.Errorf("%w: initialize transition lock release: %v", ErrReplayUnavailable, err)
 	}
 	return &FileCheckpointPendingStore{Path: path}, nil
