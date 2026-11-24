@@ -31,7 +31,7 @@ func CheckpointEventV2Encoding(event CheckpointEventV2)([]byte,error) {
  ps,err:=CanonicalCheckpointParticipants(event.Participants);if err!=nil{return nil,err}
  if event.Scope.Kind=="device" {
   found:=false
-  for _,p:=range ps {if p.DeviceID==event.Scope.DeviceID&&p.AccountID==event.Scope.AccountID&&p.OrganizationID==event.Scope.OrganizationID{found=true;break}}
+  for _,p:=range ps {if p.DeviceID==event.Scope.DeviceID&&p.AccountID==event.Scope.AccountID&&p.OrganizationID==event.Scope.OrganizationID&&p.RevocationEpoch==event.RevocationEpoch{found=true;break}}
   if !found{return nil,ErrCheckpointIntegrity}
  }
  for _,p:=range ps {if p.OrganizationID!=event.Scope.OrganizationID{return nil,ErrCheckpointIntegrity}}
