@@ -532,7 +532,6 @@ func TestFileCheckpointFencePrimaryRecoversPreExpiryQuorumAfterExpiry(t *testing
 	}
 }
 
-
 func TestCheckpointFenceCoordinatorRecoversQuorumWithExpiredNonVoter(t *testing.T) {
 	primary, witnesses, primaryKey, request, _ := durableFenceFixture(t)
 	token, err := primary.ReserveFence(context.Background(), request)
