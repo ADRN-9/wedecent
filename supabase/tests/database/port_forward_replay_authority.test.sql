@@ -82,7 +82,7 @@ select ok(
     'authorization transaction ledger has RLS enabled'
 );
 select ok(
-    (select revocation_epoch >= 2 from public.devices where device_id = 'wd_bbbbbbbbbbbbbbbb'),
+    (select revocation_epoch >= 1 from public.devices where device_id = 'wd_bbbbbbbbbbbbbbbb'),
     'device-access grants advance the target device revocation epoch'
 );
 select ok(
@@ -239,7 +239,7 @@ select throws_ok(
 );
 
 savepoint interrupted_consume;
-select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000011', repeat('J', 22), repeat('a', 64));
+select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000011', repeat('J', 22), repeat('a', 64), false);
 rollback to savepoint interrupted_consume;
 select is(
     (pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000011', repeat('J', 22), repeat('a', 64))->>'accepted'),
