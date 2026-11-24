@@ -1142,27 +1142,41 @@ func checkpointFinalizationID(request CheckpointRequest, receipt CheckpointRecei
 
 func checkpointFinalizationEvidenceDigest(evidence CheckpointFinalizationEvidence) (string, error) {
 	encoded, err := json.Marshal(evidence)
-	if err != nil { return "", err }
+	if err != nil {
+		return "", err
+	}
 	digest := sha256.Sum256(encoded)
 	return hex.EncodeToString(digest[:]), nil
 }
 
 func storeFinalizationEvidence(snapshot *checkpointPendingSnapshot, request CheckpointRequest, receipt CheckpointReceipt, operationID string, evidence CheckpointFinalizationEvidence) error {
 	expectedID, err := checkpointFinalizationID(request, receipt)
-	if err != nil || operationID != expectedID { return ErrCheckpointIntegrity }
+	if err != nil || operationID != expectedID {
+		return ErrCheckpointIntegrity
+	}
 	key := checkpointPendingKey(request)
 	entry, ok := snapshot.Entries[key]
 	if !ok || entry.Fingerprint == "" || entry.ReceiptHash != CheckpointReceiptDigest(receipt) ||
-		entry.State != "resolved" || entry.Receipt == nil { return ErrCheckpointHistorical }
-	if entry.FinalizationOperationID != "" && entry.FinalizationOperationID != operationID { return ErrCheckpointConflict }
+		entry.State != "resolved" || entry.Receipt == nil {
+		return ErrCheckpointHistorical
+	}
+	if entry.FinalizationOperationID != "" && entry.FinalizationOperationID != operationID {
+		return ErrCheckpointConflict
+	}
 	digest, err := checkpointFinalizationEvidenceDigest(evidence)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if entry.FinalizationEvidence != nil {
-		if entry.FinalizationEvidenceSHA256 != digest { return ErrCheckpointConflict }
+		if entry.FinalizationEvidenceSHA256 != digest {
+			return ErrCheckpointConflict
+		}
 		return nil
 	}
 	copyEvidence, err := cloneCheckpointFinalizationEvidence(evidence)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	entry.FinalizationOperationID = operationID
 	entry.FinalizationEvidence = &copyEvidence
 	entry.FinalizationEvidenceSHA256 = digest
@@ -1172,9 +1186,13 @@ func storeFinalizationEvidence(snapshot *checkpointPendingSnapshot, request Chec
 
 func loadFinalizationEvidence(snapshot checkpointPendingSnapshot, request CheckpointRequest, receipt CheckpointReceipt, operationID string) (CheckpointFinalizationEvidence, bool, error) {
 	expectedID, err := checkpointFinalizationID(request, receipt)
-	if err != nil || operationID != expectedID { return CheckpointFinalizationEvidence{}, false, ErrCheckpointIntegrity }
+	if err != nil || operationID != expectedID {
+		return CheckpointFinalizationEvidence{}, false, ErrCheckpointIntegrity
+	}
 	entry, ok := snapshot.Entries[checkpointPendingKey(request)]
-	if !ok || entry.ReceiptHash != CheckpointReceiptDigest(receipt) || entry.State != "resolved" { return CheckpointFinalizationEvidence{}, false, ErrCheckpointHistorical }
+	if !ok || entry.ReceiptHash != CheckpointReceiptDigest(receipt) || entry.State != "resolved" {
+		return CheckpointFinalizationEvidence{}, false, ErrCheckpointHistorical
+	}
 	if entry.FinalizationOperationID == "" && entry.FinalizationEvidence == nil && entry.FinalizationEvidenceSHA256 == "" {
 		return CheckpointFinalizationEvidence{}, false, nil
 	}
@@ -1182,17 +1200,25 @@ func loadFinalizationEvidence(snapshot checkpointPendingSnapshot, request Checkp
 		return CheckpointFinalizationEvidence{}, false, ErrCheckpointIntegrity
 	}
 	digest, err := checkpointFinalizationEvidenceDigest(*entry.FinalizationEvidence)
-	if err != nil || digest != entry.FinalizationEvidenceSHA256 { return CheckpointFinalizationEvidence{}, false, ErrCheckpointIntegrity }
+	if err != nil || digest != entry.FinalizationEvidenceSHA256 {
+		return CheckpointFinalizationEvidence{}, false, ErrCheckpointIntegrity
+	}
 	copyEvidence, err := cloneCheckpointFinalizationEvidence(*entry.FinalizationEvidence)
-	if err != nil { return CheckpointFinalizationEvidence{}, false, err }
+	if err != nil {
+		return CheckpointFinalizationEvidence{}, false, err
+	}
 	return copyEvidence, true, nil
 }
 
 func cloneCheckpointFinalizationEvidence(evidence CheckpointFinalizationEvidence) (CheckpointFinalizationEvidence, error) {
 	encoded, err := json.Marshal(evidence)
-	if err != nil { return CheckpointFinalizationEvidence{}, err }
+	if err != nil {
+		return CheckpointFinalizationEvidence{}, err
+	}
 	var cloned CheckpointFinalizationEvidence
-	if err := json.Unmarshal(encoded, &cloned); err != nil { return CheckpointFinalizationEvidence{}, err }
+	if err := json.Unmarshal(encoded, &cloned); err != nil {
+		return CheckpointFinalizationEvidence{}, err
+	}
 	return cloned, nil
 }
 
@@ -1269,7 +1295,9 @@ func checkpointEntryHasCommittedQuorum(entry checkpointPendingEntry, witnessKeys
 }
 
 func (s *FileCheckpointPendingStore) StoreFinalizationEvidence(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string, evidence CheckpointFinalizationEvidence) error {
-	if s == nil || ctx == nil { return ErrReplayUnavailable }
+	if s == nil || ctx == nil {
+		return ErrReplayUnavailable
+	}
 	_, err := s.update(ctx, func(snapshot *checkpointPendingSnapshot) (bool, error) {
 		return false, storeFinalizationEvidence(snapshot, request, receipt, operationID, evidence)
 	})
@@ -1277,10 +1305,17 @@ func (s *FileCheckpointPendingStore) StoreFinalizationEvidence(ctx context.Conte
 }
 
 func (s *FileCheckpointPendingStore) LoadFinalizationEvidence(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string) (CheckpointFinalizationEvidence, bool, error) {
-	if s == nil || ctx == nil { return CheckpointFinalizationEvidence{}, false, ErrReplayUnavailable }
+	if s == nil || ctx == nil {
+		return CheckpointFinalizationEvidence{}, false, ErrReplayUnavailable
+	}
 	var snapshot checkpointPendingSnapshot
-	_, err := s.update(ctx, func(current *checkpointPendingSnapshot) (bool, error) { snapshot = *current; return false, nil })
-	if err != nil { return CheckpointFinalizationEvidence{}, false, err }
+	_, err := s.update(ctx, func(current *checkpointPendingSnapshot) (bool, error) {
+		snapshot = *current
+		return false, nil
+	})
+	if err != nil {
+		return CheckpointFinalizationEvidence{}, false, err
+	}
 	return loadFinalizationEvidence(snapshot, request, receipt, operationID)
 }
 
@@ -1318,19 +1353,29 @@ func (s *FileCheckpointPendingStore) MarkFinalizationComplete(ctx context.Contex
 }
 
 func (s *MemoryCheckpointPendingStore) StoreFinalizationEvidence(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string, evidence CheckpointFinalizationEvidence) error {
-	if s == nil || ctx == nil { return ErrReplayUnavailable }
-	if err := ctx.Err(); err != nil { return err }
+	if s == nil || ctx == nil {
+		return ErrReplayUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	snapshot := checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}
-	if err := storeFinalizationEvidence(&snapshot, request, receipt, operationID, evidence); err != nil { return err }
+	if err := storeFinalizationEvidence(&snapshot, request, receipt, operationID, evidence); err != nil {
+		return err
+	}
 	s.entries = snapshot.Entries
 	return nil
 }
 
 func (s *MemoryCheckpointPendingStore) LoadFinalizationEvidence(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string) (CheckpointFinalizationEvidence, bool, error) {
-	if s == nil || ctx == nil { return CheckpointFinalizationEvidence{}, false, ErrReplayUnavailable }
-	if err := ctx.Err(); err != nil { return CheckpointFinalizationEvidence{}, false, err }
+	if s == nil || ctx == nil {
+		return CheckpointFinalizationEvidence{}, false, ErrReplayUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return CheckpointFinalizationEvidence{}, false, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return loadFinalizationEvidence(checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}, request, receipt, operationID)
