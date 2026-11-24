@@ -261,9 +261,11 @@ func ensureReplayInitializationAttemptContext(ctx context.Context, path string, 
 	}
 	marker, err := readReplayInitializationLocked(initPath, deviceID)
 	if err == nil {
-		if lockCreated {
-			return errors.New("replay lock was deleted after initialization")
-		}
+		// lockCreated reports that this process created the shared anchor inode.
+		// A concurrent process may have initialized the marker while this process
+		// waited for the same inode lock; that is not evidence of lock deletion.
+		// The platform lock implementation has already verified the anchor, lock
+		// alias and marker all refer to the same inode after acquiring the lock.
 		lockExists, lockErr := replayPathExists(path + ".lock")
 		if lockErr != nil {
 			return lockErr
