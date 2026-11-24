@@ -95,10 +95,17 @@ type CheckpointFenceHeadReader interface {
 	FenceHead(context.Context, CheckpointWitnessScope) (CheckpointFenceHead, error)
 }
 
-// CheckpointFenceAtomicPrimary must compare every supplied authoritative
-// checkpoint head and reserve/commit the fence in the same primary transaction.
-// For revoke commits it must also advance the targeted checkpoint revocation
-// head atomically with the quorum-backed fence commit.
+// CheckpointAuthorityBinding identifies the exact checkpoint authority shared
+// by replay operations and atomic fencing. The fence signing key remains separate.
+type CheckpointAuthorityBinding interface {
+	CheckpointAuthorityKeyID() string
+}
+
+// CheckpointFenceAtomicPrimary must validate signatures and compare the complete
+// participant-head vector against the authoritative checkpoint store. Reservation
+// and commit must share that store's transaction boundary. Commit must verify the
+// strict-majority acknowledgements and, for revoke, advance the targeted checkpoint
+// revocation head atomically with the quorum-backed fence commit.
 type CheckpointFenceAtomicPrimary interface {
 	ReserveFenceWithCheckpointHeads(context.Context, CheckpointFenceRequest, []CheckpointFenceParticipantHead) (CheckpointFenceToken, error)
 	CommitFenceWithCheckpointHeads(context.Context, CheckpointFenceToken, []CheckpointFenceAcknowledgement, []CheckpointFenceParticipantHead) error
