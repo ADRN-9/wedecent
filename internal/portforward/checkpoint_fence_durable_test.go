@@ -441,3 +441,58 @@ func TestFileCheckpointFencePrimaryRejectsStaleFenceAndPrimaryHeads(t *testing.T
 		t.Fatalf("primary-head rollback accepted: %v", err)
 	}
 }
+
+
+func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *testing.T) {
+	primary, witnesses, primaryKey, request, _ := durableFenceFixture(t)
+	clients := make([]CheckpointFenceWitnessClient, len(witnesses))
+	for i, witness := range witnesses {
+		clients[i] = CheckpointFenceWitnessClient{ID: request.WitnessIDs[i], PublicKey: witness.publicKey, Witness: witness}
+	}
+	coordinator := &CheckpointFenceCoordinator{
+		Primary: primary, PrimaryKey: primaryKey.Public().(ed25519.PublicKey),
+		WitnessSetVersion: request.WitnessSetVersion, Witnesses: clients, Quorum: 2,
+	}
+	finalize := request
+	finalize.Action = CheckpointFenceFinalize
+	finalize.OperationID = "concurrent-finalize"
+	revoke := request
+	revoke.Action = CheckpointFenceRevoke
+	revoke.OperationID = "concurrent-revoke"
+	start := make(chan struct{})
+	type outcome struct {
+		operation CheckpointFenceOperation
+		err error
+	}
+	results := make(chan outcome, 2)
+	for _, candidate := range []CheckpointFenceRequest{finalize, revoke} {
+		candidate := candidate
+		go func() {
+			<-start
+			operation, err := coordinator.Execute(context.Background(), candidate)
+			results <- outcome{operation: operation, err: err}
+		}()
+	}
+	close(start)
+	successes := 0
+	stale := 0
+	for i := 0; i < 2; i++ {
+		result := <-results
+		if result.err == nil {
+			if !result.operation.Committed || result.operation.Token.Generation != 1 {
+				t.Fatalf("winner was not durably committed at generation one: %+v", result.operation)
+			}
+			successes++
+			continue
+		}
+		if errors.Is(result.err, ErrCheckpointStale) {
+			stale++
+			continue
+		}
+		t.Fatalf("unexpected concurrent fencing outcome: %v", result.err)
+	}
+	if successes != 1 || stale != 1 {
+		t.Fatalf("expected one committed winner and one stale loser, success=%d stale=%d", successes, stale)
+	}
+}
+
