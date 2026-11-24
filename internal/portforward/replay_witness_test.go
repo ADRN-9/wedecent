@@ -11,9 +11,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
-	"strings"
 	"time"
 
 	"wedecent.com/wedecent/internal/identity"
@@ -1036,113 +1036,274 @@ func TestWitnessCommitCrashBeforeLocalResolutionRecoversIdempotently(t *testing.
 }
 
 func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *testing.T) {
-	initPublic, initPrivate, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
-	destPublic, _, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
-	controlPublic, controlPrivate, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
+	initPublic, initPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	destPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPublic, controlPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	start := time.Now().UTC().Truncate(time.Millisecond)
 	claims := testClaims(start, DirectionLocal)
 	claims.InitiatingDevice = mesh.DeviceID(identity.DeviceID(initPublic))
 	claims.DestinationDevice = mesh.DeviceID(identity.DeviceID(destPublic))
 	claims.Route.Source, claims.Route.Destination = claims.InitiatingDevice, claims.DestinationDevice
 	claims.Route.Hops[0].From, claims.Route.Hops[0].To = claims.InitiatingDevice, claims.DestinationDevice
-	claims.ExpiresAtUnixMS = start.Add(20*time.Second).UnixMilli()
+	claims.ExpiresAtUnixMS = start.Add(20 * time.Second).UnixMilli()
 	claims.Route.ExpiresAt = time.UnixMilli(claims.ExpiresAtUnixMS).UTC()
-	authorization, err := SignAuthorization(controlPrivate, claims); if err != nil { t.Fatal(err) }
+	authorization, err := SignAuthorization(controlPrivate, claims)
+	if err != nil {
+		t.Fatal(err)
+	}
 	initiator := CheckpointEndpoint{DeviceID: string(claims.InitiatingDevice), AccountID: "11111111-1111-4111-8111-111111111111", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 4}
 	destination := CheckpointEndpoint{DeviceID: string(claims.DestinationDevice), AccountID: "22222222-2222-4222-8222-222222222222", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 7}
 	memberships := checkpointMembershipFixture{string(claims.InitiatingDevice): initiator, string(claims.DestinationDevice): destination}
-	primary := newDeterministicCheckpointProvider(t); primary.register(initiator); primary.register(destination)
-	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
-	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json")); if err != nil { t.Fatal(err) }
+	primary := newDeterministicCheckpointProvider(t)
+	primary.register(initiator)
+	primary.register(destination)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	failResolve := true
 	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
 		if snapshot, ok := value.(checkpointPendingSnapshot); ok && failResolve {
-			for _, entry := range snapshot.Entries { if entry.State == "resolved" { failResolve = false; return errors.New("injected local resolution failure") } }
+			for _, entry := range snapshot.Entries {
+				if entry.State == "resolved" {
+					failResolve = false
+					return errors.New("injected local resolution failure")
+				}
+			}
 		}
 		return writeReplayJSON(path, value, pattern, maxSize)
 	}
 	provider, witnesses := newWitnessedFixture(t, primary, store)
-	for _, witness := range witnesses { witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch; witness.revoked[witnessScope(destination)] = destination.RevocationEpoch; witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch: initiator.RevocationEpoch, used: map[string][32]byte{}} }
+	for _, witness := range witnesses {
+		witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch
+		witness.revoked[witnessScope(destination)] = destination.RevocationEpoch
+		witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch: initiator.RevocationEpoch, used: map[string][32]byte{}}
+	}
 	now := start
 	replay := &CheckpointAuthorizationReplay{Provider: provider, ControlPlaneKey: controlPublic, LocalDeviceID: claims.InitiatingDevice, DeviceSigner: initPrivate, Memberships: memberships, Now: func() time.Time { return now }}
-	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("injected unresolved journal result: %v", err) }
-	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("witness %s did not commit exactly once", witness.id) } }
+	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("injected unresolved journal result: %v", err)
+	}
+	for _, witness := range witnesses {
+		if len(witness.historyFor(witnessScope(initiator))) != 1 {
+			t.Fatalf("witness %s did not commit exactly once", witness.id)
+		}
+	}
 	now = time.UnixMilli(claims.ExpiresAtUnixMS).Add(time.Second).UTC()
-	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); err != nil { t.Fatalf("expiry-independent finalization failed: %v", err) }
-	consumer, ok := checkpointConsumer(CheckpointRequest{Initiator: initiator, Destination: destination, ConsumingDeviceID: string(claims.InitiatingDevice)}); if !ok { t.Fatal("consumer scope unavailable") }
+	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); err != nil {
+		t.Fatalf("expiry-independent finalization failed: %v", err)
+	}
+	consumer, ok := checkpointConsumer(CheckpointRequest{Initiator: initiator, Destination: destination, ConsumingDeviceID: string(claims.InitiatingDevice)})
+	if !ok {
+		t.Fatal("consumer scope unavailable")
+	}
 	key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
-	primary.mu.Lock(); used := len(primary.ledgers[key].used); primary.mu.Unlock()
-	if used != 1 { t.Fatalf("primary capability consumed %d times", used) }
-	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("witness %s was committed again during finalization", witness.id) } }
+	primary.mu.Lock()
+	used := len(primary.ledgers[key].used)
+	primary.mu.Unlock()
+	if used != 1 {
+		t.Fatalf("primary capability consumed %d times", used)
+	}
+	for _, witness := range witnesses {
+		if len(witness.historyFor(witnessScope(initiator))) != 1 {
+			t.Fatalf("witness %s was committed again during finalization", witness.id)
+		}
+	}
 }
 func TestFinalizationRejectsPrimaryOnlyAmbiguousOperation(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	store := NewMemoryCheckpointPendingStore()
-	if _, err := store.Begin(context.Background(), request); err != nil { t.Fatal(err) }
-	if _, err := primary.Consume(context.Background(), request); err != nil { t.Fatal(err) }
+	if _, err := store.Begin(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := primary.Consume(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
 	provider, witnesses := newWitnessedFixture(t, primary, store)
-	if err := provider.Finalize(context.Background(), request); !errors.Is(err, ErrCheckpointQuorum) { t.Fatalf("primary-only operation was incorrectly finalized: %v", err) }
-	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(checkpointEndpointForConsumer(request)))) != 0 { t.Fatalf("finalization created a new witness commitment at %s", witness.id) } }
-	consumer, _ := checkpointConsumer(request); key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
-	primary.mu.Lock(); used := len(primary.ledgers[key].used); primary.mu.Unlock()
-	if used != 1 { t.Fatalf("primary consumption count=%d", used) }
+	if err := provider.Finalize(context.Background(), request); !errors.Is(err, ErrCheckpointQuorum) {
+		t.Fatalf("primary-only operation was incorrectly finalized: %v", err)
+	}
+	for _, witness := range witnesses {
+		if len(witness.historyFor(witnessScope(checkpointEndpointForConsumer(request)))) != 0 {
+			t.Fatalf("finalization created a new witness commitment at %s", witness.id)
+		}
+	}
+	consumer, _ := checkpointConsumer(request)
+	key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
+	primary.mu.Lock()
+	used := len(primary.ledgers[key].used)
+	primary.mu.Unlock()
+	if used != 1 {
+		t.Fatalf("primary consumption count=%d", used)
+	}
 }
 func TestPendingJournalInterruptedPublicationPreservesPreviousEvidence(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	first, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	second := nextCheckpointRequest(t, first, signer, "EEEEEEEEEEEEEEEEEEEEEE")
-	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "pending.json")
-	store, err := NewFileCheckpointPendingStore(path); if err != nil { t.Fatal(err) }
-	if _, err := store.Begin(context.Background(), first); err != nil { t.Fatal(err) }
-	before, err := os.ReadFile(path); if err != nil { t.Fatal(err) }
+	store, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	store.writeSnapshot = func(string, any, string, int64) error { return errors.New("injected publication interruption") }
-	if _, err := store.Begin(context.Background(), second); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("interrupted publication returned %v", err) }
-	after, err := os.ReadFile(path); if err != nil { t.Fatal(err) }
-	if !bytes.Equal(before, after) { t.Fatal("failed publication changed durable journal bytes") }
+	if _, err := store.Begin(context.Background(), second); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("interrupted publication returned %v", err)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("failed publication changed durable journal bytes")
+	}
 	store.writeSnapshot = nil
-	if existing, err := store.Begin(context.Background(), first); err != nil || !existing { t.Fatalf("previous pending evidence lost: existing=%t err=%v", existing, err) }
+	if existing, err := store.Begin(context.Background(), first); err != nil || !existing {
+		t.Fatalf("previous pending evidence lost: existing=%t err=%v", existing, err)
+	}
 }
 func TestFilePendingJournalByteAndEntryExhaustion(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	second := nextCheckpointRequest(t, request, signer, "CCCCCCCCCCCCCCCCCCCCCC")
-	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	oversizedPath := filepath.Join(dir, "oversized.json")
-	if err := os.WriteFile(oversizedPath, make([]byte, 129), 0o600); err != nil { t.Fatal(err) }; if err := setReplayFileOwner(oversizedPath); err != nil { t.Fatal(err) }
-	oversized, err := NewFileCheckpointPendingStore(oversizedPath); if err != nil { t.Fatal(err) }; oversized.maxSize = 128
-	if _, err := oversized.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("durable byte-size limit did not fail closed: %v", err) }
+	if err := os.WriteFile(oversizedPath, make([]byte, 129), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayFileOwner(oversizedPath); err != nil {
+		t.Fatal(err)
+	}
+	oversized, err := NewFileCheckpointPendingStore(oversizedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oversized.maxSize = 128
+	if _, err := oversized.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("durable byte-size limit did not fail closed: %v", err)
+	}
 	entryPath := filepath.Join(dir, "entries.json")
-	entries, err := NewFileCheckpointPendingStore(entryPath); if err != nil { t.Fatal(err) }; entries.maxEntries = 1
-	if _, err := entries.Begin(context.Background(), request); err != nil { t.Fatal(err) }
-	if _, err := entries.Begin(context.Background(), second); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("durable entry limit did not fail closed: %v", err) }
-	data, err := os.ReadFile(entryPath); if err != nil { t.Fatal(err) }
-	var snapshot checkpointPendingSnapshot; if err := json.Unmarshal(data, &snapshot); err != nil { t.Fatal(err) }
-	if len(snapshot.Entries) != 1 { t.Fatalf("entry exhaustion partially published %d entries", len(snapshot.Entries)) }
+	entries, err := NewFileCheckpointPendingStore(entryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries.maxEntries = 1
+	if _, err := entries.Begin(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entries.Begin(context.Background(), second); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("durable entry limit did not fail closed: %v", err)
+	}
+	data, err := os.ReadFile(entryPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot checkpointPendingSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Entries) != 1 {
+		t.Fatalf("entry exhaustion partially published %d entries", len(snapshot.Entries))
+	}
 }
 
 func TestFilePendingJournalRejectsNestedDuplicateKeysAndUnrelatedCorruption(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	second := nextCheckpointRequest(t, request, signer, "DDDDDDDDDDDDDDDDDDDDDD")
-	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "pending.json")
-	store, err := NewFileCheckpointPendingStore(path); if err != nil { t.Fatal(err) }
-	if _, err := store.Begin(context.Background(), request); err != nil { t.Fatal(err) }
-	data, err := os.ReadFile(path); if err != nil { t.Fatal(err) }
+	store, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	duplicate := strings.Replace(string(data), `"request":{`, `"request":{"JTI":"forged",`, 1)
-	if duplicate == string(data) { t.Fatal("could not locate nested request object") }
-	if err := os.WriteFile(path, []byte(duplicate), 0o600); err != nil { t.Fatal(err) }
-	if _, err := store.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("nested duplicate JSON key accepted: %v", err) }
+	if duplicate == string(data) {
+		t.Fatal("could not locate nested request object")
+	}
+	if err := os.WriteFile(path, []byte(duplicate), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("nested duplicate JSON key accepted: %v", err)
+	}
 	path2 := filepath.Join(dir, "unrelated.json")
-	store2, err := NewFileCheckpointPendingStore(path2); if err != nil { t.Fatal(err) }
-	if _, err := store2.Begin(context.Background(), request); err != nil { t.Fatal(err) }; if _, err := store2.Begin(context.Background(), second); err != nil { t.Fatal(err) }
-	data, err = os.ReadFile(path2); if err != nil { t.Fatal(err) }
-	corrupt := string(data); index := strings.LastIndex(corrupt, `"state":"pending"`); if index < 0 { t.Fatal("second pending entry not found") }
+	store2, err := NewFileCheckpointPendingStore(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store2.Begin(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store2.Begin(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	data, err = os.ReadFile(path2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrupt := string(data)
+	index := strings.LastIndex(corrupt, `"state":"pending"`)
+	if index < 0 {
+		t.Fatal("second pending entry not found")
+	}
 	corrupt = corrupt[:index] + strings.Replace(corrupt[index:], `"state":"pending"`, `"state":"ambiguous"`, 1)
-	if err := os.WriteFile(path2, []byte(corrupt), 0o600); err != nil { t.Fatal(err) }
-	if _, err := store2.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("corruption in unrelated entry was ignored: %v", err) }
+	if err := os.WriteFile(path2, []byte(corrupt), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store2.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("corruption in unrelated entry was ignored: %v", err)
+	}
 }
 func TestPendingJournalCompactionRequiresDurableAcknowledgements(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)

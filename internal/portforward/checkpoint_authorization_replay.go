@@ -3,11 +3,11 @@ package portforward
 import (
 	"bytes"
 	"context"
-	"errors"
 	"crypto"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"time"
 
 	"wedecent.com/wedecent/internal/identity"
@@ -29,9 +29,15 @@ type CheckpointAuthorizationReplay struct {
 // FinalizeExpiredPortForwardAuthorization completes an already-consumed capability without creating a new authorization.
 // The exact signed request must already exist in the durable pending journal.
 func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(ctx context.Context, authorization Authorization) error {
-	if r == nil || r.Provider == nil || r.DeviceSigner == nil || len(r.ControlPlaneKey) != ed25519.PublicKeySize { return ErrCheckpointUnavailable }
-	if ctx == nil { return ErrAuthorizationInvalid }
-	if err := ctx.Err(); err != nil { return err }
+	if r == nil || r.Provider == nil || r.DeviceSigner == nil || len(r.ControlPlaneKey) != ed25519.PublicKeySize {
+		return ErrCheckpointUnavailable
+	}
+	if ctx == nil {
+		return ErrAuthorizationInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	devicePublicKey, ok := r.DeviceSigner.Public().(ed25519.PublicKey)
 	if !ok || len(devicePublicKey) != ed25519.PublicKeySize || identity.DeviceID(devicePublicKey) != string(r.LocalDeviceID) ||
 		bytes.Equal(devicePublicKey, r.ControlPlaneKey) || bytes.Equal(r.Provider.PrimaryKey, r.ControlPlaneKey) ||
@@ -43,24 +49,46 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 			return ErrCheckpointIntegrity
 		}
 	}
-	if err := r.Provider.ValidateConfiguration(); err != nil { return err }
-	claims := cloneClaims(authorization.Claims)
-	if err := ValidateClaims(claims); err != nil { return ErrAuthorizationInvalid }
-	keyID, err := AuthorizationKeyID(r.ControlPlaneKey)
-	if err != nil || authorization.KeyID != keyID { return ErrAuthorizationSignature }
-	signature, err := base64.RawURLEncoding.Strict().DecodeString(authorization.Signature)
-	if err != nil || len(signature) != ed25519.SignatureSize || base64.RawURLEncoding.EncodeToString(signature) != authorization.Signature { return ErrAuthorizationSignature }
-	message, err := canonicalMessage(authorization.KeyID, claims)
-	if err != nil || !ed25519.Verify(r.ControlPlaneKey, message, signature) { return ErrAuthorizationSignature }
-	if err := ValidateRouteAuthorizationBinding(authorization); err != nil { return err }
-	if claims.Router != "" {
-		if r.RouteVerifier == nil { return ErrRouteAuthorizationRequired }
-		if err := r.RouteVerifier.VerifyCheckpointRouteAuthorization(ctx, authorization); err != nil { return errors.Join(ErrRouteAuthorizationMismatch, err) }
+	if err := r.Provider.ValidateConfiguration(); err != nil {
+		return err
 	}
-	if r.LocalDeviceID != claims.InitiatingDevice && r.LocalDeviceID != claims.DestinationDevice { return ErrAuthorizationMismatch }
+	claims := cloneClaims(authorization.Claims)
+	if err := ValidateClaims(claims); err != nil {
+		return ErrAuthorizationInvalid
+	}
+	keyID, err := AuthorizationKeyID(r.ControlPlaneKey)
+	if err != nil || authorization.KeyID != keyID {
+		return ErrAuthorizationSignature
+	}
+	signature, err := base64.RawURLEncoding.Strict().DecodeString(authorization.Signature)
+	if err != nil || len(signature) != ed25519.SignatureSize || base64.RawURLEncoding.EncodeToString(signature) != authorization.Signature {
+		return ErrAuthorizationSignature
+	}
+	message, err := canonicalMessage(authorization.KeyID, claims)
+	if err != nil || !ed25519.Verify(r.ControlPlaneKey, message, signature) {
+		return ErrAuthorizationSignature
+	}
+	if err := ValidateRouteAuthorizationBinding(authorization); err != nil {
+		return err
+	}
+	if claims.Router != "" {
+		if r.RouteVerifier == nil {
+			return ErrRouteAuthorizationRequired
+		}
+		if err := r.RouteVerifier.VerifyCheckpointRouteAuthorization(ctx, authorization); err != nil {
+			return errors.Join(ErrRouteAuthorizationMismatch, err)
+		}
+	}
+	if r.LocalDeviceID != claims.InitiatingDevice && r.LocalDeviceID != claims.DestinationDevice {
+		return ErrAuthorizationMismatch
+	}
 	now := time.Now().UTC()
-	if r.Now != nil { now = r.Now().UTC() }
-	if now.IsZero() || claims.IssuedAtUnixMS > now.UnixMilli() { return ErrAuthorizationNotYetValid }
+	if r.Now != nil {
+		now = r.Now().UTC()
+	}
+	if now.IsZero() || claims.IssuedAtUnixMS > now.UnixMilli() {
+		return ErrAuthorizationNotYetValid
+	}
 	digestInput := make([]byte, 0, len(message)+len(signature))
 	digestInput = append(digestInput, message...)
 	digestInput = append(digestInput, signature...)
@@ -68,12 +96,22 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 	store, ok := r.Provider.Pending.(interface {
 		LoadFinalization(context.Context, string, string, [sha256.Size]byte) (CheckpointRequest, CheckpointReceipt, bool, bool, error)
 	})
-	if !ok { return ErrCheckpointUnavailable }
+	if !ok {
+		return ErrCheckpointUnavailable
+	}
 	request, _, found, _, err := store.LoadFinalization(ctx, string(r.LocalDeviceID), claims.JTI, authorizationHash)
-	if err != nil { return err }
-	if !found { return ErrCheckpointHistorical }
-	if request.AuthorizationSHA256 != authorizationHash || request.JTI != claims.JTI || request.ConsumingDeviceID != string(r.LocalDeviceID) || request.Initiator.DeviceID != string(claims.InitiatingDevice) || request.Destination.DeviceID != string(claims.DestinationDevice) || !bytes.Equal(request.DevicePublicKey, devicePublicKey) { return ErrCheckpointIntegrity }
-	if _, err := CheckpointRequestFingerprint(request); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrCheckpointHistorical
+	}
+	if request.AuthorizationSHA256 != authorizationHash || request.JTI != claims.JTI || request.ConsumingDeviceID != string(r.LocalDeviceID) || request.Initiator.DeviceID != string(claims.InitiatingDevice) || request.Destination.DeviceID != string(claims.DestinationDevice) || !bytes.Equal(request.DevicePublicKey, devicePublicKey) {
+		return ErrCheckpointIntegrity
+	}
+	if _, err := CheckpointRequestFingerprint(request); err != nil {
+		return err
+	}
 	return r.Provider.Finalize(ctx, request)
 }
 func (r *CheckpointAuthorizationReplay) ConsumePortForwardAuthorization(context.Context, string, time.Time) error {

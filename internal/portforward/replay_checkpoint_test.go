@@ -113,20 +113,34 @@ func (p *deterministicCheckpointProvider) Consume(ctx context.Context, request C
 	return SignCheckpointResult(p.private, CheckpointResult{CheckpointReceipt: receipt, Disposition: CheckpointCommitted})
 }
 func (p *deterministicCheckpointProvider) Recover(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
-	if err := ctx.Err(); err != nil { return CheckpointResult{}, err }
+	if err := ctx.Err(); err != nil {
+		return CheckpointResult{}, err
+	}
 	fingerprint, err := CheckpointRequestFingerprint(request)
-	if err != nil { return CheckpointResult{}, err }
+	if err != nil {
+		return CheckpointResult{}, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if !p.available { return CheckpointResult{}, ErrCheckpointUnavailable }
+	if !p.available {
+		return CheckpointResult{}, ErrCheckpointUnavailable
+	}
 	consumer, ok := checkpointConsumer(request)
-	if !ok { return CheckpointResult{}, ErrCheckpointIntegrity }
+	if !ok {
+		return CheckpointResult{}, ErrCheckpointIntegrity
+	}
 	key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
 	ledger := p.ledgers[key]
-	if ledger == nil { return CheckpointResult{}, ErrCheckpointHistorical }
+	if ledger == nil {
+		return CheckpointResult{}, ErrCheckpointHistorical
+	}
 	stored, exists := ledger.used[request.JTI]
-	if !exists { return CheckpointResult{}, ErrCheckpointHistorical }
-	if stored.requestHash != fingerprint { return CheckpointResult{}, ErrCheckpointConflict }
+	if !exists {
+		return CheckpointResult{}, ErrCheckpointHistorical
+	}
+	if stored.requestHash != fingerprint {
+		return CheckpointResult{}, ErrCheckpointConflict
+	}
 	return SignCheckpointResult(p.private, CheckpointResult{CheckpointReceipt: cloneCheckpointReceipt(stored.receipt), Disposition: CheckpointRecovered})
 }
 func (p *deterministicCheckpointProvider) Revoke(ctx context.Context, e CheckpointEndpoint, next uint64) error {
