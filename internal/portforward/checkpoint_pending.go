@@ -233,12 +233,12 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 	return err
 }
 
-func (s *FileCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+func (s *FileCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) (resultErr error) {
 	unlock, err := s.LockFinalization(ctx, request)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
 	return s.recordAcknowledgementLocked(ctx, request, receipt, ack, trust)
 }
 
@@ -267,12 +267,12 @@ func (s *FileCheckpointPendingStore) LoadAcknowledgements(ctx context.Context, r
 	return validateStoredCheckpointAcknowledgements(snapshot, request, receipt, witnesses)
 }
 
-func (s *FileCheckpointPendingStore) RecordEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+func (s *FileCheckpointPendingStore) RecordEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) (resultErr error) {
 	unlock, err := s.LockFinalization(ctx, request)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
 	return s.recordEquivocationLocked(ctx, request, receipt, original, conflicting, trust)
 }
 
@@ -495,12 +495,12 @@ func loadCheckpointEquivocations(snapshot checkpointPendingSnapshot, request Che
 	return out, nil
 }
 
-func (s *MemoryCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+func (s *MemoryCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) (resultErr error) {
 	unlock, err := s.LockFinalization(ctx, request)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
 	return s.recordAcknowledgementLocked(ctx, request, receipt, ack, trust)
 }
 
@@ -564,12 +564,12 @@ func (s *MemoryCheckpointPendingStore) LoadAcknowledgements(ctx context.Context,
 	}, request, receipt, witnesses)
 }
 
-func (s *MemoryCheckpointPendingStore) RecordEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+func (s *MemoryCheckpointPendingStore) RecordEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) (resultErr error) {
 	unlock, err := s.LockFinalization(ctx, request)
 	if err != nil {
 		return err
 	}
-	defer unlock()
+	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
 	return s.recordEquivocationLocked(ctx, request, receipt, original, conflicting, trust)
 }
 
@@ -1021,8 +1021,9 @@ type MemoryCheckpointPendingStore struct {
 	trustMu      sync.RWMutex
 	primaryTrust ed25519.PublicKey
 	witnessTrust map[string]ed25519.PublicKey
-	trustQuorum  int
-	trustSet     bool
+	trustQuorum   int
+	trustSet      bool
+	transitionWait func()
 }
 
 func NewMemoryCheckpointPendingStore() *MemoryCheckpointPendingStore {
