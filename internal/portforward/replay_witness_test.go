@@ -1704,3 +1704,73 @@ func TestWitnessCommitAndRevocationRaceCannotAcknowledgeAfterRevocation(t *testi
 		t.Fatalf("authorization acknowledged after successful router revocation: %v", err)
 	}
 }
+
+
+func TestWitnessAcknowledgeAndRevocationRaceFencesLaterAcknowledgement(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, router := routedCheckpointRequestForRevocationTest(t, primary)
+	result, err := primary.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witness := newDeterministicCheckpointWitness("witness", primary.private.Public().(ed25519.PublicKey))
+	if _, err := witness.Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	ackResult := make(chan error, 1)
+	revokeResult := make(chan error, 1)
+	go func() {
+		<-start
+		_, err := witness.Acknowledge(context.Background(), request, result.CheckpointReceipt)
+		ackResult <- err
+	}()
+	go func() {
+		<-start
+		_, err := witness.Revoke(context.Background(), router, router.RevocationEpoch+1)
+		revokeResult <- err
+	}()
+	close(start)
+	ackErr := <-ackResult
+	if ackErr != nil && !errors.Is(ackErr, ErrCheckpointRevoked) {
+		t.Fatalf("unexpected concurrent acknowledgement result: %v", ackErr)
+	}
+	if err := <-revokeResult; err != nil {
+		t.Fatalf("router revocation failed: %v", err)
+	}
+	if _, err := witness.Acknowledge(context.Background(), request, result.CheckpointReceipt); !errors.Is(err, ErrCheckpointRevoked) {
+		t.Fatalf("acknowledgement remained eligible after successful revocation: %v", err)
+	}
+}
+
+func TestWitnessConsumeAndRevocationRaceCannotCommitAfterRevocation(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, router := routedCheckpointRequestForRevocationTest(t, primary)
+	witness := newDeterministicCheckpointWitness("witness", primary.private.Public().(ed25519.PublicKey))
+	start := make(chan struct{})
+	consumeResult := make(chan CheckpointResult, 1)
+	consumeErr := make(chan error, 1)
+	revokeResult := make(chan error, 1)
+	go func() {
+		<-start
+		result, err := primary.Consume(context.Background(), request)
+		consumeResult <- result
+		consumeErr <- err
+	}()
+	go func() {
+		<-start
+		_, err := witness.Revoke(context.Background(), router, router.RevocationEpoch+1)
+		revokeResult <- err
+	}()
+	close(start)
+	result := <-consumeResult
+	if err := <-consumeErr; err != nil {
+		t.Fatalf("primary consume failed unexpectedly: %v", err)
+	}
+	if err := <-revokeResult; err != nil {
+		t.Fatalf("router revocation failed: %v", err)
+	}
+	if _, err := witness.Commit(context.Background(), request, result.CheckpointReceipt); !errors.Is(err, ErrCheckpointRevoked) {
+		t.Fatalf("primary consumption escaped router revocation fence: %v", err)
+	}
+}
