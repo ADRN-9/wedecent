@@ -1236,6 +1236,13 @@ func markFinalizationComplete(snapshot *checkpointPendingSnapshot, request Check
 	if entry.FinalizationID != "" && entry.FinalizationID != operationID {
 		return ErrCheckpointConflict
 	}
+	if entry.FinalizationOperationID != operationID || entry.FinalizationEvidence == nil || entry.FinalizationEvidenceSHA256 == "" {
+		return ErrCheckpointIntegrity
+	}
+	evidenceDigest, err := checkpointFinalizationEvidenceDigest(*entry.FinalizationEvidence)
+	if err != nil || evidenceDigest != entry.FinalizationEvidenceSHA256 {
+		return ErrCheckpointIntegrity
+	}
 	entry.FinalizationID = operationID
 	entry.FinalizationComplete = true
 	snapshot.Entries[key] = entry
