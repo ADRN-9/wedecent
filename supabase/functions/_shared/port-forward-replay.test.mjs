@@ -98,8 +98,9 @@ test('device ID derivation matches the Go Ed25519 identity format', async () => 
 test('routed replay requires a separately signed exact route authorization', async () => {
   const keyPair = await crypto.subtle.generateKey({ name: 'Ed25519' }, true, ['sign', 'verify'])
   const publicKey = new Uint8Array(await crypto.subtle.exportKey('raw', keyPair.publicKey))
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', publicKey))
-  const kid = 'ed25519-' + encodeBase64URL(digest)
+  const thumbprintInput = JSON.stringify({ crv: 'Ed25519', kty: 'OKP', x: encodeBase64URL(publicKey) })
+  const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(thumbprintInput)))
+  const kid = encodeBase64URL(digest)
   const route = {
     ID: '00000000-0000-4000-8000-000000000002',
     Source: 'wd_aaaaaaaaaaaaaaaa',
