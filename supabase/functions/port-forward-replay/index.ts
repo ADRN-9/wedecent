@@ -215,6 +215,7 @@ Deno.serve(async (request) => {
   } catch (error) {
     console.error("port-forward-replay failed", error);
     const message = error instanceof Error ? error.message : "invalid request";
+    if (message.includes("not configured")) return json({ error: "replay authority configuration unavailable" }, 503);
     if (message.startsWith("invalid port-forward replay authorization:") || message.includes("authorization") || message.includes("device")) {
       return json({ error: "authorization or device proof rejected" }, 403);
     }
