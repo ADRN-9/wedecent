@@ -100,7 +100,8 @@ type FileCheckpointPendingStore struct {
 	witnessTrust map[string]ed25519.PublicKey
 	trustQuorum  int
 	trustSet       bool
-	transitionWait func()
+	transitionWait     func()
+	transitionUnlockErr error
 }
 
 func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, error) {
@@ -149,7 +150,9 @@ func (s *FileCheckpointPendingStore) LockTransition(ctx context.Context) (func()
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(err, unlock())
 	}
-	return unlock, nil
+	return func() error {
+		return errors.Join(unlock(), s.transitionUnlockErr)
+	}, nil
 }
 
 func (s *FileCheckpointPendingStore) LockFinalization(ctx context.Context, request CheckpointRequest) (func() error, error) {
@@ -1023,7 +1026,8 @@ type MemoryCheckpointPendingStore struct {
 	witnessTrust map[string]ed25519.PublicKey
 	trustQuorum   int
 	trustSet      bool
-	transitionWait func()
+	transitionWait     func()
+	transitionUnlockErr error
 }
 
 func NewMemoryCheckpointPendingStore() *MemoryCheckpointPendingStore {
@@ -1283,7 +1287,7 @@ func (s *MemoryCheckpointPendingStore) LockTransition(ctx context.Context) (func
 	}
 	return func() error {
 		s.transitionMu.Unlock()
-		return nil
+		return s.transitionUnlockErr
 	}, nil
 }
 
