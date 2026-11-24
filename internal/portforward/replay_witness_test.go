@@ -2152,7 +2152,7 @@ func TestPersistedQuorumRecoveryDoesNotRequireWitnessAvailability(t *testing.T) 
 }
 
 func TestInvalidSignedConflictCannotPoisonPersistedQuorum(t *testing.T) {
-	client, witnesses, request, _, original := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
+	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
 	invalid := signedDecision(t, witnesses[0], original[0], "revoked")
 	invalid.Signature = append([]byte(nil), invalid.Signature...)
 	invalid.Signature[0] ^= 0x80
@@ -2165,8 +2165,13 @@ func TestInvalidSignedConflictCannotPoisonPersistedQuorum(t *testing.T) {
 	}); err != nil || !called {
 		t.Fatalf("invalid conflict poisoned valid cached quorum: err=%v callback=%t", err, called)
 	}
-	if pending := client.Pending.(*MemoryCheckpointPendingStore); len(pending.entries) != 0 {
-		t.Fatal("invalid conflict evidence prevented successful quorum compaction")
+	evidence, err := client.Pending.(checkpointPendingAcknowledgements).LoadEquivocations(context.Background(), request, receipt, client.Witnesses)
+	if err != nil || len(evidence) != 0 {
+		t.Fatalf("invalid signed response poisoned equivocation journal: evidence=%+v err=%v", evidence, err)
+	}
+	persisted, err := client.Pending.(checkpointPendingAcknowledgements).LoadAcknowledgements(context.Background(), request, receipt, client.Witnesses)
+	if err != nil || committedCheckpointAckCount(persisted) < client.Quorum {
+		t.Fatalf("invalid response damaged original committed quorum: acks=%d err=%v", len(persisted), err)
 	}
 }
 
