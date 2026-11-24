@@ -96,7 +96,7 @@ func newLocalCoreForwardingVerifier(
 			return nil, portforward.ErrCheckpointIntegrity
 		}
 	}
-	pendingPath, err := filepath.Abs(filepath.Join(stateDir, "portforward-checkpoint-pending.json"))
+	pendingPath, err := filepath.Abs(filepath.Join(stateDir, "portforward-checkpoint", "pending.json"))
 	if err != nil {
 		return nil, fmt.Errorf("core process: resolve witnessed pending journal: %w", err)
 	}

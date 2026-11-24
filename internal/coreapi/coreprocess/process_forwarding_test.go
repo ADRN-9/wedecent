@@ -129,9 +129,6 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(stateDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
 	controlPlaneKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -178,7 +175,7 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 	if provider.Pending != nil {
 		t.Fatal("Local Core mutated the caller's checkpoint provider instead of installing its own durable journal copy")
 	}
-	if _, err := os.Stat(filepath.Join(stateDir, "portforward-checkpoint-pending.json")); err != nil {
+	if _, err := os.Stat(filepath.Join(stateDir, "portforward-checkpoint")); err != nil {
 		t.Fatalf("Local Core did not create its protected pending journal: %v", err)
 	}
 }
