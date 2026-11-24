@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -2619,11 +2620,21 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 
 	primary := client.Primary.(*deterministicCheckpointProvider)
 	var mu sync.Mutex
+	var firstEvidence *CheckpointFinalizationEvidence
+	callbackCount := 0
 	effects := make(map[string]bool)
 	effectCount := 0
-	sink := func(_ context.Context, operationID string, _ CheckpointFinalizationEvidence) error {
+	sink := func(_ context.Context, operationID string, evidence CheckpointFinalizationEvidence) error {
 		mu.Lock()
 		defer mu.Unlock()
+		callbackCount++
+		if firstEvidence == nil {
+			copy, err := cloneCheckpointFinalizationEvidence(evidence)
+			if err != nil { return err }
+			firstEvidence = &copy
+		} else if !reflect.DeepEqual(*firstEvidence, evidence) {
+			return errors.New("retry changed persisted finalization evidence")
+		}
 		if !effects[operationID] {
 			effects[operationID] = true
 			effectCount++
@@ -2638,8 +2649,17 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 		mu.Unlock()
 		t.Fatalf("first completion effects=%d, want 1", effectCount)
 	}
+	if firstEvidence == nil || callbackCount != 1 {
+		mu.Unlock()
+		t.Fatalf("first proof bundle was not submitted exactly once: evidence=%t callbacks=%d", firstEvidence != nil, callbackCount)
+	}
 	mu.Unlock()
 
+	// Change both primary and witness heads after the ambiguous audit result.
+	// A restart retry must replay the persisted proof, not rebuild from new heads.
+	if err := client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1); err != nil {
+		t.Fatalf("revoke after ambiguous audit result: %v", err)
+	}
 	restarted, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2658,6 +2678,9 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	defer mu.Unlock()
 	if effectCount != 1 {
 		t.Fatalf("externally visible completion effect repeated: %d", effectCount)
+	}
+	if callbackCount != 2 {
+		t.Fatalf("ambiguous audit retry callback count=%d, want 2", callbackCount)
 	}
 	operationID, err := checkpointFinalizationID(request, func() CheckpointReceipt {
 		consumer, _ := checkpointConsumer(request)
