@@ -94,7 +94,7 @@ func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request Checkp
 	}
 	if err := c.Primary.CommitFence(ctx, token, acks); err != nil {
 		operation, found, loadErr := c.Primary.LoadFence(ctx, token.Scope, token.OperationID)
-		if loadErr == nil && found && operation.Committed && sameFenceToken(operation.Token, token) {
+		if loadErr == nil && found && operation.Committed && sameCheckpointFenceToken(operation.Token, token) {
 			return operation, nil
 		}
 		return CheckpointFenceOperation{}, errors.Join(ErrCheckpointAmbiguous, err, loadErr)
@@ -103,7 +103,7 @@ func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request Checkp
 	if err != nil {
 		return CheckpointFenceOperation{}, errors.Join(ErrCheckpointAmbiguous, err)
 	}
-	if !found || !operation.Committed || !sameFenceToken(operation.Token, token) {
+	if !found || !operation.Committed || !sameCheckpointFenceToken(operation.Token, token) {
 		return CheckpointFenceOperation{}, ErrCheckpointAmbiguous
 	}
 	return operation, nil
