@@ -142,31 +142,31 @@ restore_access
 race route-grant revoke-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000c6'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000c6'" 33000000-0000-4000-8000-0000000000c6 FFFFFFFFFFFFFFFFFFFFFF 44000000-0000-4000-8000-0000000000c6 FFFFFFFFFFFFFFFFFFFFFF
 race route-grant consume-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000cc'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000cc'" 33000000-0000-4000-8000-0000000000cc MMMMMMMMMMMMMMMMMMMMMM 44000000-0000-4000-8000-0000000000cc MMMMMMMMMMMMMMMMMMMMMM
 
-route 33000000-0000-4000-8000-0000000000d1 HHHHHHHHHHHHHHHHHHHHHH
+route 33000000-0000-4000-8000-0000000000d1 NNNNNNNNNNNNNNNNNNNNNN
 start c wd-c145-dup-a
-send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','GGGGGGGGGGGGGGGGGGGGGG','33000000-0000-4000-8000-0000000000d1','HHHHHHHHHHHHHHHHHHHHHH');"
+send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN');"
 wait_text c '"accepted": true'
 start d wd-c145-dup-b
-send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','GGGGGGGGGGGGGGGGGGGGGG','33000000-0000-4000-8000-0000000000d1','HHHHHHHHHHHHHHHHHHHHHH');"
+send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN');"
 wait_lock wd-c145-dup-b
 finish c || fail 'first duplicate transaction failed'
 wait_text d '"replayed": true'
 finish d || fail 'same forwarding retry failed'
 assertq 1 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d1'"
-assertq 1 "select count(*) from public.port_forward_replay_entries where jti='GGGGGGGGGGGGGGGGGGGGGG'"
+assertq 1 "select count(*) from public.port_forward_replay_entries where jti='QQQQQQQQQQQQQQQQQQQQQQ'"
 
-route 33000000-0000-4000-8000-0000000000d2 IIIIIIIIIIIIIIIIIIIIII
+route 33000000-0000-4000-8000-0000000000d2 OOOOOOOOOOOOOOOOOOOOOO
 start c wd-c145-jti-a
-send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d2','JJJJJJJJJJJJJJJJJJJJJJ','33000000-0000-4000-8000-0000000000d2','IIIIIIIIIIIIIIIIIIIIII');"
+send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d2','RRRRRRRRRRRRRRRRRRRRRR','33000000-0000-4000-8000-0000000000d2','OOOOOOOOOOOOOOOOOOOOOO');"
 wait_text c '"accepted": true'
-route 33000000-0000-4000-8000-0000000000d3 KKKKKKKKKKKKKKKKKKKKKK
+route 33000000-0000-4000-8000-0000000000d3 PPPPPPPPPPPPPPPPPPPPPP
 start d wd-c145-jti-b
-send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d3','JJJJJJJJJJJJJJJJJJJJJJ','33000000-0000-4000-8000-0000000000d3','KKKKKKKKKKKKKKKKKKKKKK');"
+send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d3','RRRRRRRRRRRRRRRRRRRRRR','33000000-0000-4000-8000-0000000000d3','PPPPPPPPPPPPPPPPPPPPPP');"
 wait_lock wd-c145-jti-b
 finish c || fail 'first JTI transaction failed'
 wait_text d '"jti-conflict"'
 finish d || fail 'JTI conflict transaction did not finish'
-assertq 1 "select count(*) from public.port_forward_authorization_transactions where jti='JJJJJJJJJJJJJJJJJJJJJJ'"
+assertq 1 "select count(*) from public.port_forward_authorization_transactions where jti='RRRRRRRRRRRRRRRRRRRRRR'"
 assertq 0 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d3'"
 
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_consume(uuid,text,uuid,text); drop function public.wd_c145_route(uuid,text);'
