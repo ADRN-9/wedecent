@@ -1,9 +1,8 @@
 name: C126 temporary Go formatting
 
 on:
-  pull_request:
-    types: [synchronize]
-    branches: [main]
+  push:
+    branches: [feat/secure-port-forwarding-foundation]
 
 permissions:
   contents: write
