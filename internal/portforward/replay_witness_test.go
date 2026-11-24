@@ -1866,8 +1866,14 @@ func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *
 	conflictingStatus := first
 	conflictingStatus.Status = "already_acknowledged"
 	conflictingStatus.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(conflictingStatus))
-	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, conflictingStatus, client.Witnesses[0]); !errors.Is(err, ErrCheckpointConflict) {
-		t.Fatalf("conflicting signed terminal outcome accepted: %v", err)
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, conflictingStatus, client.Witnesses[0]); err != nil {
+		t.Fatalf("idempotent successful acknowledgement retry rejected: %v", err)
+	}
+	invalidOutcome := first
+	invalidOutcome.Status = "revoked"
+	invalidOutcome.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(invalidOutcome))
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, invalidOutcome, client.Witnesses[0]); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("signed non-success terminal outcome accepted: %v", err)
 	}
 
 	// Conflicting operation IDs, request fingerprints and participant vectors
@@ -1909,7 +1915,7 @@ func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(acks) != client.Quorum || acks[0].Status != first.Status {
+	if len(acks) != client.Quorum || (acks[0].Status != first.Status && acks[0].Status != conflictingStatus.Status) {
 		t.Fatalf("equivocation changed quorum evidence: count=%d first_status=%q", len(acks), acks[0].Status)
 	}
 	if _, err := client.acknowledgeWitnessQuorum(context.Background(), request, result.CheckpointReceipt, store); err != nil {
