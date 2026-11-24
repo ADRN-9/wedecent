@@ -72,6 +72,10 @@ func TestCheckpointAuditEvidenceSerializationRejectsUnsafeUint64(t *testing.T) {
 			DeviceID: "wd_aaaaaaaaaaaaaaaa",
 			Signature: make([]byte, 64),
 		},
+		RevocationProofs: []CheckpointFinalizationRevocationProof{
+			{PrimaryHead: CheckpointHead{Version: 1, Signature: make([]byte, 64)}},
+			{PrimaryHead: CheckpointHead{Version: 1, Signature: make([]byte, 64)}},
+		},
 	}
 	if payload, err := checkpointFinalizationEvidencePayload(evidence); err != nil || payload["primary_receipt"] == nil {
 		t.Fatalf("valid evidence serialization failed: payload=%v err=%v", payload, err)
