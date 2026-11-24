@@ -1,55 +1,66 @@
-# C157 — local revocation/finalization serialization and audit-sink assessment
+# Checkpoint revocation, finalization and audit architecture (updated C164)
 
-## Source changes
+This document supersedes the earlier C157 audit-sink assessment where it described production audit integration as absent. It retains the C157 local serialization findings and records the C162/C164 implementation and remaining production limitations.
 
-The pending-store contract now exposes `LockTransition(context.Context)`. Both store implementations provide it:
+## Local serialization established by C157
 
-- `FileCheckpointPendingStore` uses the existing journal-wide `.finalize` OS lock.
-- `MemoryCheckpointPendingStore` uses its existing transition mutex (test-only; not durable).
+The pending-store contract exposes `LockTransition(context.Context)`. The file-backed store uses the journal-wide OS lock; the memory implementation is test-only. Consume, finalization and revocation share this lock. Unlock errors are joined into operation results and missing lock support fails closed.
 
-`LockFinalization` validates the checkpoint request and delegates to the shared transition lock. This preserves the existing Consume and Finalize lock boundary while allowing Revoke to acquire the same lock without inventing a checkpoint request.
+The deterministic concurrency regression `TestRevokeAndFinalizeShareTransitionLock` covers both acquisition orders. `TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart` exercises retry after audit commit but before the local completion marker. These are local-process/file-backed tests, not proof of distributed primary/witness atomicity.
 
-`WitnessedReplayCheckpointProvider.Revoke` acquires the transition lock before reading the primary head and holds it through primary revocation, witness revocation, signature/scope validation and quorum verification. Unlock errors are joined into the operation result. Missing lock support fails closed.
+## C162 production audit integration
 
-Existing authenticated acknowledgement and equivocation publication paths remain serialized: the top-level Consume/Finalize operations already hold the transition lock while using their locked journal writers; public journal mutation methods acquire the same lock themselves.
+The current production path is wired in `internal/coreapi/coreprocess/process.go`:
 
-## Concurrency regressions
+- Local Core requires a witnessed checkpoint provider and independently authenticated membership resolver.
+- It opens a protected file-backed pending journal.
+- It requires an authenticated Supabase account session.
+- It injects `SupabaseCheckpointFinalizationAuditor`.
+- It has no local JSONL fallback for checkpoint finalization audit.
 
-`TestRevokeAndFinalizeShareTransitionLock` exercises both lock acquisition orders against both store implementations:
+The Go adapter is in `internal/portforward/checkpoint_audit_supabase.go`. It refreshes and verifies the account session, persists refreshed credentials, and sends authenticated requests over HTTPS. The C162 version validated TLS 1.3 and rejected redirects but did not independently pin the audit origin.
 
-- Finalization acquires first: revocation cannot reach the primary Revoke operation until the finalization callback completes; revocation then succeeds.
-- Revocation acquires first: finalization cannot invoke its audit callback while revocation is blocked inside the primary operation; after revocation and witness quorum complete, finalization fails closed.
+The Edge Function is `supabase/functions/port-forward-finalization-audit/index.ts`. It authenticates the bearer token with Supabase Auth and invokes the privileged transactional RPC. C162 verified the device signature over the checkpoint request but did not prove primary commitment or independent witness quorum before accepting a caller-selected terminal outcome.
 
-The tests use explicit channel gates around primary operations and a lock-contention hook that fires only after the competing operation has actually encountered the held lock. C159 replaced the earlier timing-based negative wait with bounded context deadlines and explicit release cleanup.
+## C164 security remediation
 
-`TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart` injects failure specifically when the local completion marker is persisted after the audit callback. It restarts the file-backed pending store, retries finalization, verifies the same operation ID and outcome are supplied, and checks a file-backed test sink stores one deduplicated record.
+Terminal audit completion now carries a structured proof bundle assembled by `WitnessedReplayCheckpointProvider.FinalizeWithAudit`:
 
-These fixtures demonstrate local client recovery behavior only. They are not evidence of a deployed external audit service.
+1. The primary signed checkpoint receipt, bound to the exact request fingerprint, JTI and authorization digest.
+2. Distinct independent witness acknowledgements, each signed by its configured witness key and bound to the primary receipt digest and request fingerprint.
+3. A primary signed head and matching independent witness heads for every participant in the signed membership vector, including the router when routed.
+4. The exact route authorization JSON, grant ID and JTI are carried with the route digest and checked against the signed checkpoint request.
 
-## Production audit-sink assessment
+The Edge Function verifies the proof using server-side, independently provisioned trust anchors. Caller-supplied keys are not trusted. Only `finalized` is currently accepted as a proof-bearing terminal outcome. The endpoint rejects `rejected_revocation`, `finalization_failed`, and `membership_unavailable` until a complete independently verifiable proof model is implemented for those states. Local Core no longer emits those unsupported terminal events on membership or finalization errors; this is an intentional audit-coverage limitation rather than a downgrade.
 
-The repository defines `CheckpointFinalizationAuditor` with the stable operation ID and outcome in its method signature. The inspected test implementation is `checkpointFinalizationAuditFixture` in `replay_witness_test.go`; it uses in-memory maps and is not a production adapter.
+The database RPC now persists canonical request and evidence digests, locks all participant organizations and memberships, device-access rows, route grant and device rows in the authorization issuance lock order, then locks and rechecks the stored authorization transaction. It compares stored identities, organizations and revocation epochs to both the signed payload and current enrolled device state. Routed operations are bound to the stored route grant ID/JTI and source/destination/router identities.
 
-The generic `internal/audit.Log.Append` implementation is a durable append-only JSONL logger with file locking and fsync, but it does not accept a stable operation ID or enforce deduplication by operation ID plus outcome. It therefore cannot be treated as an idempotent implementation of `CheckpointFinalizationAuditor`.
+The state machine requires a start event before completion, permits intermediate failure/unavailable events before completion, allows recovery to a later finalized state, makes exact retries idempotent, and rejects new events after terminal completion. Conflicting terminal outcomes remain mutually exclusive.
 
-The inspected `internal/coreapi/coreprocess/process.go` constructs `CheckpointAuthorizationReplay` in `newLocalCoreForwardingVerifier`, wiring the witnessed provider, control-plane key, local device signer, membership resolver and route verifier. It does not set `FinalizationAuditor`. The inspected `cmd/wd-core/main.go` does not supply a production auditor either. The generic `internal/audit.Log` is used elsewhere for ordinary events, but no adapter implementing `CheckpointFinalizationAuditor` was found in the inspected runtime wiring. No production implementation of that interface was found in the inspected project. Production audit-sink integration is absent; the runtime must remain fail-closed until an independently durable, atomically deduplicating sink is supplied and verified.
+The Go audit adapter now requires an explicit independent hostname, port and one-to-four SHA-256 SPKI pins. The account session URL must match that trust configuration exactly. TLS 1.3, system certificate verification, SPKI pin matching, redirect rejection, bounded timeout and context cancellation are enforced. Multiple pins permit controlled rotation; no trust anchor is inferred from the mutable account session.
 
-## Security boundary and remaining dependencies
+## Required production configuration (not provisioned by this remediation)
 
-The new lock establishes only local serialization among operations sharing the same pending-store lock path or memory-store instance. It does not establish distributed atomicity between independent primary and witness services, fence revocation in another process/region/service, or protect against an authority that ignores the client-side lock.
+The Edge Function must receive these independently administered secrets/configuration values:
 
-Production activation still requires an independently administered primary/witness fencing protocol with a shared revocation/finalization linearization point, plus a production audit sink that atomically deduplicates by stable operation ID and outcome. Those integrations and their credentials, signing keys, endpoint pins, operational retention and conformance evidence are not present in the inspected repository wiring.
+- `WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY`: canonical standard-base64 Ed25519 public key.
+- `WEDECENT_CHECKPOINT_WITNESS_KEYS`: JSON object mapping stable witness IDs to canonical standard-base64 Ed25519 public keys.
+- `WEDECENT_CHECKPOINT_WITNESS_QUORUM`: integer strict-majority quorum.
 
-## Verification status
+The Local Core constructor requires `Config.ForwardingAuditTrust` with the exact audit hostname, port and comma-separated SPKI SHA-256 pins. Production service/bootstrap wiring must supply these values from a protected provisioning channel. They must not be copied from `account-session.json`, the renderer, or ordinary user-controlled config.
 
-C159 subsequently verified the updated source on exact HEAD `9a3185af8047c6f235d55794f6760cc005252531`:
+No production trust anchors, endpoint pins, credentials, migrations, or Edge Function deployments were provisioned here.
 
-- CI run [45387639798](https://github.com/ADRN-9/wedecent/actions/runs/45387639798): Linux, Windows and macOS Go checks passed, including Linux full race testing and vet.
-- Desktop run [45387639873](https://github.com/ADRN-9/wedecent/actions/runs/45387639873): Linux, Windows and macOS Tauri checks passed.
+## Remaining limitations
 
-See `docs/C159_REVOCATION_AUDIT_FENCING.md` for the complete lock hardening, regression, production audit and distributed-fencing assessment. These results establish repository validation only; production audit integration and independent distributed fencing remain external blockers.
+- The current proof-bearing terminal outcome is only `finalized`. Revocation rejection and failure-state audit evidence need a separately designed signed proof transition.
+- The primary and witness authorities must implement and preserve the receipt/head/ack protocol represented by the Go interfaces. Repository code alone cannot prove that external authorities are independently administered or correctly deployed.
+- The SQL RPC relies on the server-side Edge Function as the cryptographic verification boundary. Service-role credentials remain privileged and must remain server-side.
+- The SQL/Edge proof bundle is not yet backed by a full positive end-to-end cross-language fixture with real generated primary and witness signatures.
+- Concurrent revocation/finalization requires real database transaction tests with independent sessions. The SQL row-lock ordering is implemented, but those concurrency tests are not yet evidence.
+- Audit retention, immutable backups, restore testing, production secret ownership and endpoint pin rotation operations remain infrastructure decisions.
+- The adapter pin trust configuration has been made mandatory in Local Core. Existing runtime/bootstrap callers must populate it before forwarding can initialize. A missing trust config intentionally fails closed.
 
+## Verification interpretation
 
-### CI correction
-
-The first CI run on exact SHA `644bf3bc6d1f4c4e516936c3d2e5b1593865d90e` found a compile-time unused local binding in the new audit-recovery test. The binding was removed in follow-up commit `74a848f560998808b942d1b8963cf14bcbca801b`. The failed run is defect-discovery evidence only; it is not counted as a pass. Exact-HEAD CI and all three Desktop platform checks for the corrected revision remain pending.
+Historical C157/C159 workflow IDs validate their respective historical commits only. They do not validate C164 changes. C164 acceptance requires exact-HEAD Linux/Windows/macOS CI, Desktop checks, Supabase pgTAP and Edge tests, plus transaction-level revocation races and positive/negative cryptographic proof tests. No production readiness claim is made by this document.
