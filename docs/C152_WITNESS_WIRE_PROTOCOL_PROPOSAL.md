@@ -92,9 +92,13 @@ A witness may not vote twice with different request digests, receipt digests, pa
 
 ### Acknowledge
 
-Acknowledgement is a durable terminal vote over the exact prepared operation, primary receipt digest, participant vector and final decision. Repeated requests return the same canonical terminal outcome. The service must not alternate semantic terminal outcomes such as committed and revoked for the same operation.
+Acknowledgement is a durable terminal vote over the exact prepared operation, primary receipt digest, participant vector and final decision. The canonical signed object carries an explicit `decision` value (initially `committed`, `revoked` or `aborted`). Repeated requests return the same canonical terminal outcome. The service must not alternate semantic terminal outcomes such as committed and revoked for the same operation.
 
-A response status such as `already_acknowledged` may be used only as transport/retry metadata, not as a different signed terminal outcome. The signed decision value remains identical across retries.
+A response status such as `already_acknowledged` may be used only as transport/retry metadata. It is not part of the signed terminal decision and must not change the signature. The signed `decision` value remains identical across retries. Clients compare decision and operation bindings, not retry status.
+
+The current provider-neutral Go representation follows this rule with an explicit `Decision` field and unsigned `Status` metadata. Its acknowledgement signature domain is versioned as `wedecent-independent-witness-ack-v2`; the decision is signed and status is excluded. This is an internal compatibility boundary, not a deployed CBOR wire adapter. A production adapter must map the same decision/status separation into the approved deterministic-CBOR schema and publish conformance vectors before deployment.
+
+A persisted acknowledgement and a later, correctly signed acknowledgement for the same witness, operation ID, request digest, receipt digest and participant scope but a different terminal decision are equivocation. The client must preserve the original vote, durably append both signed objects as evidence, make the operation terminally conflicted, and deny finalization. Invalid signatures, malformed decisions, or responses bound to a different operation are not equivocation evidence and must not poison the journal.
 
 ### Head
 
