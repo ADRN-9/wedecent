@@ -2731,3 +2731,158 @@ func TestFirstSeenNegativeDecisionPersistsBesideCommittedQuorum(t *testing.T) {
 		t.Fatalf("first-seen negative decision count=%d, want 1", negativeCount)
 	}
 }
+
+
+type transitionBlockingCheckpointPrimary struct {
+	ReplayCheckpointProvider
+	headEntered   chan struct{}
+	releaseHead   chan struct{}
+	revokeEntered chan struct{}
+	releaseRevoke chan struct{}
+	headOnce      sync.Once
+	revokeOnce    sync.Once
+}
+
+func (p *transitionBlockingCheckpointPrimary) Head(ctx context.Context, endpoint CheckpointEndpoint) (CheckpointHead, error) {
+	if p.headEntered != nil {
+		p.headOnce.Do(func() {
+			close(p.headEntered)
+			select {
+			case <-p.releaseHead:
+			case <-ctx.Done():
+			}
+		})
+	}
+	return p.ReplayCheckpointProvider.Head(ctx, endpoint)
+}
+
+func (p *transitionBlockingCheckpointPrimary) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
+	if p.revokeEntered != nil {
+		p.revokeOnce.Do(func() {
+			close(p.revokeEntered)
+			select {
+			case <-p.releaseRevoke:
+			case <-ctx.Done():
+			}
+		})
+	}
+	return p.ReplayCheckpointProvider.Revoke(ctx, endpoint, next)
+}
+
+func newTransitionTestStore(t *testing.T, fileBacked bool) CheckpointPendingStore {
+	t.Helper()
+	if !fileBacked {
+		return NewMemoryCheckpointPendingStore()
+	}
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func requireNoSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+		t.Fatal("operation crossed the shared transition lock")
+	case <-time.After(30 * time.Millisecond):
+	}
+}
+
+func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
+	for _, fileBacked := range []bool{false, true} {
+		storeName := "memory"
+		if fileBacked {
+			storeName = "file"
+		}
+		for _, revokeFirst := range []bool{false, true} {
+			orderName := "finalize-first"
+			if revokeFirst {
+				orderName = "revoke-first"
+			}
+			t.Run(storeName+"/"+orderName, func(t *testing.T) {
+				primary := newDeterministicCheckpointProvider(t)
+				request, _, _, _, _ := makeCheckpointFixture(t, primary,
+					"11111111-1111-4111-8111-111111111111",
+					"22222222-2222-4222-8222-222222222222")
+				client, _ := newWitnessedFixture(t, primary, newTransitionTestStore(t, fileBacked))
+				if _, err := client.Consume(context.Background(), request); err != nil {
+					t.Fatal(err)
+				}
+
+				callback := make(chan string, 1)
+				finalizeDone := make(chan error, 1)
+				revokeDone := make(chan error, 1)
+				if revokeFirst {
+					blocking := &transitionBlockingCheckpointPrimary{
+						ReplayCheckpointProvider: primary,
+						revokeEntered:            make(chan struct{}),
+						releaseRevoke:            make(chan struct{}),
+					}
+					client.Primary = blocking
+					go func() {
+						revokeDone <- client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1)
+					}()
+					<-blocking.revokeEntered
+					go func() {
+						finalizeDone <- client.FinalizeWithAudit(context.Background(), request, func(_ context.Context, operationID string) error {
+							callback <- operationID
+							return nil
+						})
+					}()
+					requireNoSignal(t, callback)
+					close(blocking.releaseRevoke)
+					if err := <-revokeDone; err != nil {
+						t.Fatalf("revoke-first failed: %v", err)
+					}
+					if err := <-finalizeDone; err == nil {
+						t.Fatal("finalization succeeded after revocation won the lock")
+					}
+					select {
+					case id := <-callback:
+						t.Fatalf("audit callback ran after revocation: %s", id)
+					default:
+					}
+					return
+				}
+
+				blocking := &transitionBlockingCheckpointPrimary{
+					ReplayCheckpointProvider: primary,
+					headEntered:              make(chan struct{}),
+					releaseHead:              make(chan struct{}),
+					revokeEntered:            make(chan struct{}),
+				}
+				client.Primary = blocking
+				go func() {
+					finalizeDone <- client.FinalizeWithAudit(context.Background(), request, func(_ context.Context, operationID string) error {
+						callback <- operationID
+						return nil
+					})
+				}()
+				<-blocking.headEntered
+				go func() {
+					revokeDone <- client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1)
+				}()
+				requireNoSignal(t, blocking.revokeEntered)
+				close(blocking.releaseHead)
+				if err := <-finalizeDone; err != nil {
+					t.Fatalf("finalize-first failed: %v", err)
+				}
+				if id := <-callback; id == "" {
+					t.Fatal("finalization callback received empty operation ID")
+				}
+				if err := <-revokeDone; err != nil {
+					t.Fatalf("revoke after finalization failed: %v", err)
+				}
+			})
+		}
+	}
+}
