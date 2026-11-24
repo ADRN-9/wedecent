@@ -148,6 +148,14 @@ func VerifyCheckpointReceipt(receipt CheckpointReceipt, request CheckpointReques
 	return nil
 }
 
+// VerifyCheckpointResult verifies the receipt and requires an explicit known disposition.
+func VerifyCheckpointResult(result CheckpointResult, request CheckpointRequest, providerKey ed25519.PublicKey) error {
+	if result.Disposition != CheckpointCommitted && result.Disposition != CheckpointRecovered {
+		return ErrCheckpointIntegrity
+	}
+	return VerifyCheckpointReceipt(result.CheckpointReceipt, request, providerKey)
+}
+
 func VerifyCheckpointHead(head CheckpointHead, endpoint CheckpointEndpoint, providerKey ed25519.PublicKey) error {
 	if len(providerKey) != ed25519.PublicKeySize || head.Version != checkpointVersion ||
 		head.DeviceID != endpoint.DeviceID || head.AccountID != endpoint.AccountID ||
