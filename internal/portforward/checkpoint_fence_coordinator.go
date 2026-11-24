@@ -330,14 +330,3 @@ func checkpointFenceClientIDs(witnesses []CheckpointFenceWitnessClient) []string
 	return ids
 }
 
-func verifyCheckpointFenceTokenSignature(token CheckpointFenceToken, primaryKey ed25519.PublicKey) error {
-	if len(primaryKey) != ed25519.PublicKeySize || token.PrimaryKeyID != checkpointProviderKeyID(primaryKey) ||
-		len(token.Signature) != ed25519.SignatureSize {
-		return ErrCheckpointIntegrity
-	}
-	message, err := checkpointFenceTokenMessage(token)
-	if err != nil || !ed25519.Verify(primaryKey, message, token.Signature) {
-		return ErrCheckpointIntegrity
-	}
-	return nil
-}
