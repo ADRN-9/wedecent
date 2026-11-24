@@ -41,6 +41,7 @@ type Config struct {
 	ForwardingCheckpointProvider *portforward.WitnessedReplayCheckpointProvider
 	ForwardingMembershipResolver portforward.CheckpointMembershipResolver
 	ForwardingRouteVerifier      portforward.CheckpointRouteAuthorizationVerifier
+	ForwardingAuditTrust         portforward.CheckpointAuditTrust
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection
@@ -74,6 +75,7 @@ func newLocalCoreForwardingVerifier(
 	provider *portforward.WitnessedReplayCheckpointProvider,
 	memberships portforward.CheckpointMembershipResolver,
 	routeVerifier portforward.CheckpointRouteAuthorizationVerifier,
+	auditTrust portforward.CheckpointAuditTrust,
 	legacyEndpoint string,
 	legacyAPIKey string,
 ) (*portforward.AuthorizationVerifier, error) {
@@ -109,7 +111,7 @@ func newLocalCoreForwardingVerifier(
 	if err := checkpointProvider.ValidateConfiguration(); err != nil {
 		return nil, fmt.Errorf("core process: invalid witnessed checkpoint provider: %w", err)
 	}
-	auditor, err := portforward.NewSupabaseCheckpointFinalizationAuditor(account.Client{}, account.SessionPath(stateDir))
+	auditor, err := portforward.NewSupabaseCheckpointFinalizationAuditor(account.Client{}, account.SessionPath(stateDir), auditTrust)
 	if err != nil {
 		return nil, fmt.Errorf("core process: configure authenticated durable checkpoint finalization audit: %w", err)
 	}
@@ -179,6 +181,7 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 			cfg.ForwardingCheckpointProvider,
 			cfg.ForwardingMembershipResolver,
 			cfg.ForwardingRouteVerifier,
+			cfg.ForwardingAuditTrust,
 			cfg.ForwardingReplayEndpoint,
 			cfg.ForwardingReplayAPIKey,
 		)
