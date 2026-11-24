@@ -44,11 +44,16 @@ Deno.test("terminal audit requires independently provisioned witness keys", asyn
 import {
   checkpointHeadMessage,
   checkpointReceiptMessage,
+  i64,
+  str,
+  u32,
+  u64,
   checkpointRecordHash,
   concat,
   providerKeyID,
   sha,
   verifyFinalizationEvidence,
+  verifyRouteAuthorization,
   witnessAckMessage,
   witnessHeadMessage,
 } from "./index.ts";
@@ -223,6 +228,108 @@ Deno.test("terminal audit rejects an altered witness acknowledgement", async () 
     }
   } finally {
     for (const [key, value] of [
+      ["WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY", old.primary],
+      ["WEDECENT_CHECKPOINT_WITNESS_KEYS", old.witnesses],
+      ["WEDECENT_CHECKPOINT_WITNESS_QUORUM", old.quorum],
+    ] as const) {
+      if (value === undefined) Deno.env.delete(key);
+      else Deno.env.set(key, value);
+    }
+  }
+});
+
+
+function urlBase64(bytes: Uint8Array) {
+  let raw = "";
+  for (const value of bytes) raw += String.fromCharCode(value);
+  return btoa(raw).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
+}
+
+Deno.test("routed terminal audit verifies the independent route authorization signature", async () => {
+  const routeKey = await signingKey();
+  const primary = await signingKey();
+  const witnessA = await signingKey();
+  const witnessB = await signingKey();
+  const raw = async (key: CryptoKey) => new Uint8Array(await crypto.subtle.exportKey("raw", key));
+  const old = {
+    routeID: Deno.env.get("WEDECENT_ROUTE_AUTH_KEY_ID"),
+    routeKey: Deno.env.get("WEDECENT_ROUTE_AUTH_PUBLIC_KEY"),
+    primary: Deno.env.get("WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY"),
+    witnesses: Deno.env.get("WEDECENT_CHECKPOINT_WITNESS_KEYS"),
+    quorum: Deno.env.get("WEDECENT_CHECKPOINT_WITNESS_QUORUM"),
+  };
+  try {
+    const primaryRaw = await raw(primary.publicKey);
+    const witnessARaw = await raw(witnessA.publicKey);
+    const witnessBRaw = await raw(witnessB.publicKey);
+    const routeRaw = await raw(routeKey.publicKey);
+    Deno.env.set("WEDECENT_ROUTE_AUTH_KEY_ID", "route-key-v1");
+    Deno.env.set("WEDECENT_ROUTE_AUTH_PUBLIC_KEY", standardBase64(routeRaw));
+    Deno.env.set("WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY", standardBase64(primaryRaw));
+    Deno.env.set("WEDECENT_CHECKPOINT_WITNESS_KEYS", JSON.stringify({
+      "witness-a": standardBase64(witnessARaw),
+      "witness-b": standardBase64(witnessBRaw),
+    }));
+    Deno.env.set("WEDECENT_CHECKPOINT_WITNESS_QUORUM", "2");
+    const initiator = "wd_aaaaaaaaaaaaaaaa";
+    const destination = "wd_bbbbbbbbbbbbbbbb";
+    const router = "wd_cccccccccccccccc";
+    const issued = Date.now() - 1000;
+    const expires = issued + 60000;
+    const jti = "AAAAAAAAAAAAAAAAAAAAAA";
+    const routeID = "55000000-0000-4000-8000-000000000091";
+    const claims = {
+      v: 1,
+      iss: "wedecent-control-plane",
+      aud: "wedecent-mesh-router",
+      permission: "mesh.forward",
+      jti,
+      router,
+      route: {
+        ID: routeID,
+        Source: initiator,
+        Destination: destination,
+        Hops: [
+          { From: initiator, To: router, Transport: "lan", Cost: 1 },
+          { From: router, To: destination, Transport: "lan", Cost: 1 },
+        ],
+        ExpiresAt: new Date(expires).toISOString(),
+      },
+      iat_unix_ms: issued,
+      exp_unix_ms: expires,
+    };
+    const auth: Record<string, unknown> = { kid: "route-key-v1", claims, signature: "" };
+    const fields = [
+      "route-key-v1", claims.iss, claims.aud, claims.permission, claims.jti,
+      claims.router, claims.route.ID, claims.route.Source, claims.route.Destination,
+    ];
+    const message = concat(
+      str("wedecent-mesh-forward-v1"),
+      u32(1),
+      ...fields.map((value) => str(value)),
+      i64(issued), i64(expires), i64(expires), u32(2),
+      str(initiator), str(router), str("lan"), u64(1),
+      str(router), str(destination), str("lan"), u64(1),
+    );
+    auth.signature = urlBase64(await sign(routeKey.privateKey, message));
+    const payload = {
+      initiator: { device_id: initiator },
+      destination: { device_id: destination },
+      router: { device_id: router },
+      route_authorization_id: routeID,
+      route_authorization_jti: jti,
+    };
+    await verifyRouteAuthorization(auth, payload);
+    try {
+      await verifyRouteAuthorization(auth, { ...payload, destination: { device_id: initiator } });
+      throw new Error("mismatched route participant accepted");
+    } catch (error) {
+      if (!(error instanceof Error) || error.message === "mismatched route participant accepted") throw error;
+    }
+  } finally {
+    for (const [key, value] of [
+      ["WEDECENT_ROUTE_AUTH_KEY_ID", old.routeID],
+      ["WEDECENT_ROUTE_AUTH_PUBLIC_KEY", old.routeKey],
       ["WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY", old.primary],
       ["WEDECENT_CHECKPOINT_WITNESS_KEYS", old.witnesses],
       ["WEDECENT_CHECKPOINT_WITNESS_QUORUM", old.quorum],
