@@ -58,7 +58,7 @@ type CheckpointFenceAcknowledgement struct {
 
 // CheckpointFenceQuorum returns the strict majority for a fixed witness set.
 func CheckpointFenceQuorum(witnessCount int) (int, error) {
-	if witnessCount < 3 {
+	if witnessCount < 3 || witnessCount > 31 {
 		return 0, ErrCheckpointQuorum
 	}
 	return witnessCount/2 + 1, nil
