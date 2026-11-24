@@ -1331,33 +1331,20 @@ func (p *WitnessedReplayCheckpointProvider) executeOrganizationFence(
 	if err != nil {
 		return CheckpointFenceOperation{}, err
 	}
-	if fenceHead.PendingOperationID != "" && fenceHead.PendingOperationID != operationID {
-		return CheckpointFenceOperation{}, ErrCheckpointAmbiguous
-	}
-	primaryHeadDigest, err := checkpointFenceParticipantHeadDigest(heads)
-	if err != nil {
-		return CheckpointFenceOperation{}, err
-	}
-	if fenceHead.Generation == ^uint64(0) {
-		return CheckpointFenceOperation{}, ErrCheckpointStale
-	}
 	request := CheckpointFenceRequest{
 		Scope: scope, ExpectedFenceGeneration: fenceHead.Generation,
 		ExpectedRevocationEpoch: fenceHead.RevocationEpoch,
 		Action: action, OperationID: operationID,
 		RequestSHA256: requestHash, AuthorizationSHA256: authorizationHash,
-		PrimaryHeadGeneration: fenceHead.Generation + 1,
-		PrimaryHeadSHA256: primaryHeadDigest, PreviousFenceSHA256: fenceHead.FenceDigest,
 		WitnessSetVersion: p.Fencing.WitnessSetVersion,
 		WitnessIDs: checkpointFenceClientIDs(p.Fencing.Witnesses),
-		ExpiresAtUnixMS: time.Now().Add(30 * time.Second).UnixMilli(),
 	}
 	existing, found, err := p.Fencing.Primary.LoadFence(ctx, scope, operationID)
 	if err != nil {
 		return CheckpointFenceOperation{}, err
 	}
 	if found {
-		if !checkpointFenceTokenMatchesRequest(existing.Token, request) {
+		if !checkpointFenceTokenMatchesOperation(existing.Token, request) {
 			return CheckpointFenceOperation{}, ErrCheckpointConflict
 		}
 		request.ExpectedFenceGeneration = existing.Token.ExpectedFenceGeneration
@@ -1366,6 +1353,21 @@ func (p *WitnessedReplayCheckpointProvider) executeOrganizationFence(
 		request.PrimaryHeadSHA256 = existing.Token.PrimaryHeadSHA256
 		request.PreviousFenceSHA256 = existing.Token.PreviousFenceSHA256
 		request.ExpiresAtUnixMS = existing.Token.ExpiresAtUnixMS
+	} else {
+		if fenceHead.PendingOperationID != "" {
+			return CheckpointFenceOperation{}, ErrCheckpointAmbiguous
+		}
+		if fenceHead.Generation == ^uint64(0) {
+			return CheckpointFenceOperation{}, ErrCheckpointStale
+		}
+		primaryHeadDigest, err := checkpointFenceParticipantHeadDigest(heads)
+		if err != nil {
+			return CheckpointFenceOperation{}, err
+		}
+		request.PrimaryHeadGeneration = fenceHead.Generation + 1
+		request.PrimaryHeadSHA256 = primaryHeadDigest
+		request.PreviousFenceSHA256 = fenceHead.FenceDigest
+		request.ExpiresAtUnixMS = time.Now().Add(30 * time.Second).UnixMilli()
 	}
 	return p.Fencing.ExecuteWithCheckpointHeads(ctx, request, heads)
 }
