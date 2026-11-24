@@ -620,6 +620,9 @@ func TestFilePendingJournalPersistsVerifiedAcknowledgements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := restarted.SetCheckpointTrustAnchors(client.PrimaryKey, client.Witnesses, client.Quorum); err != nil {
+		t.Fatal(err)
+	}
 	acks, err := restarted.LoadAcknowledgements(context.Background(), request, receiptResult.CheckpointReceipt, client.Witnesses)
 	if err != nil {
 		t.Fatal(err)
