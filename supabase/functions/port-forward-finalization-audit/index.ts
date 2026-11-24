@@ -57,6 +57,7 @@ function b64(s:unknown,size:number){if(typeof s!=="string")throw Error("invalid 
 function b64url(b:Uint8Array){let s="";for(const x of b)s+=String.fromCharCode(x);return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
 function u32(n:number){if(!Number.isSafeInteger(n)||n<0||n>0xffffffff)throw Error("invalid uint32");const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,false);return b}
 function u64(n:unknown){if(typeof n!=="number"||!Number.isSafeInteger(n)||n<0)throw Error("invalid uint64");const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(n),false);return b}
+function i64(n:unknown){if(typeof n!=="number"||!Number.isSafeInteger(n))throw Error("invalid int64");const b=new Uint8Array(8);new DataView(b.buffer).setBigInt64(0,BigInt(n),false);return b}
 const enc=new TextEncoder();
 function str(s:unknown){if(typeof s!=="string")throw Error("invalid string");const b=enc.encode(s);return concat(u32(b.length),b)}
 function concat(...parts:Uint8Array[]){const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let i=0;for(const p of parts){out.set(p,i);i+=p.length}return out}
@@ -70,6 +71,37 @@ function checkpointReceiptMessage(r:JsonObject){return concat(enc.encode("wedece
 function checkpointHeadMessage(h:JsonObject){return concat(enc.encode("wedecent-replay-checkpoint-head-v1\n"),u32(Number(h.version)),str(h.device_id),str(h.account_id),str(h.organization_id),str(h.provider_key_id),u64(h.generation),u64(h.revocation_epoch),h32(h.record_hash))}
 function witnessAckMessage(a:JsonObject){const s=a.scope as JsonObject;return concat(enc.encode("wedecent-independent-witness-ack-v2\n"),str(a.witness_id),str(s.device_id),str(s.account_id),str(s.organization_id),str(a.jti),h32(a.request_sha256),h32(a.primary_receipt_sha256),str(a.decision),str(a.witness_key_id))}
 function witnessHeadMessage(h:JsonObject){const s=h.scope as JsonObject;return concat(enc.encode("wedecent-independent-witness-head-v1\n"),str(h.witness_id),str(s.device_id),str(s.account_id),str(s.organization_id),u64(h.generation),h32(h.record_hash),u64(h.primary_generation),h32(h.primary_head),u64(h.revocation_epoch),str(h.witness_key_id))}
+async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
+ const keyID=Deno.env.get("WEDECENT_ROUTE_AUTH_KEY_ID"),rawKey=Deno.env.get("WEDECENT_ROUTE_AUTH_PUBLIC_KEY");
+ if(!keyID||!rawKey)throw Error("independent route authorization trust anchor missing");
+ if(auth.kid!==keyID||!isObject(auth.claims)||!isObject(auth.claims.route))throw Error("route authorization key or claims mismatch");
+ const c=auth.claims,r=c.route,hops=r.Hops;
+ if(c.v!==1||c.iss!=="wedecent-control-plane"||c.aud!=="wedecent-mesh-router"||c.permission!=="mesh.forward"||
+   typeof c.jti!=="string"||!/^[A-Za-z0-9_-]{22}$/.test(c.jti)||typeof c.router!=="string"||
+   !Array.isArray(hops)||hops.length!==2)throw Error("invalid route authorization claims");
+ const issued=Number(c.iat_unix_ms),expires=Number(c.exp_unix_ms),routeExpires=Date.parse(String(r.ExpiresAt));
+ if(!Number.isSafeInteger(issued)||!Number.isSafeInteger(expires)||issued<=0||expires<=issued||expires-issued>120000||
+   !Number.isSafeInteger(routeExpires)||routeExpires!==expires)throw Error("invalid route authorization lifetime");
+ if(r.Source!==(p.initiator as JsonObject).device_id||r.Destination!==(p.destination as JsonObject).device_id||
+   c.router!==(p.router as JsonObject).device_id||r.ID!==p.route_authorization_id||c.jti!==p.route_authorization_jti)throw Error("route authorization participant mismatch");
+ const first=hops[0] as JsonObject,second=hops[1] as JsonObject;
+ if(first.From!==r.Source||first.To!==c.router||second.From!==c.router||second.To!==r.Destination)throw Error("route authorization hop mismatch");
+ const key=b64(rawKey,32),signatureText=String(auth.signature??"");
+ if(!/^[A-Za-z0-9_-]{86}$/.test(signatureText))throw Error("invalid route authorization signature encoding");
+ const signatureRaw=atob(signatureText.replace(/-/g,"+").replace(/_/g,"/")+"==");
+ const signature=Uint8Array.from(signatureRaw,x=>x.charCodeAt(0));
+ if(signature.length!==64||b64url(signature)!==signatureText)throw Error("non-canonical route authorization signature");
+ const fields=[String(auth.kid),String(c.iss),String(c.aud),String(c.permission),String(c.jti),String(c.router),String(r.ID),String(r.Source),String(r.Destination)];
+ const parts=[str("wedecent-mesh-forward-v1"),u32(Number(c.v)),...fields.map(str),i64(issued),i64(expires),i64(routeExpires),u32(hops.length)];
+ for(const rawHop of hops){
+  const hop=rawHop as JsonObject;
+  if(typeof hop.From!=="string"||typeof hop.To!=="string"||typeof hop.Transport!=="string"||
+     typeof hop.Cost!=="number"||!Number.isSafeInteger(hop.Cost)||hop.Cost<0)throw Error("invalid route hop");
+  parts.push(str(hop.From),str(hop.To),str(hop.Transport),u64(hop.Cost));
+ }
+ await verifyEd25519(key,signature,concat(...parts));
+}
+
 function checkpointRecordHash(previous:Uint8Array,generation:unknown,requestHash:Uint8Array){return sha(concat(previous,u64(generation),requestHash))}
 function primaryHeadRecord(h:JsonObject){return {device_id:h.device_id,account_id:h.account_id,organization_id:h.organization_id}}
 function trustedWitnessKeys(){
