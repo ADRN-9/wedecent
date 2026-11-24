@@ -1007,3 +1007,57 @@ func TestWitnessCommitCrashBeforeLocalResolutionRecoversIdempotently(t *testing.
 		t.Fatalf("primary authorization consumption count=%d", used)
 	}
 }
+
+func TestPendingJournalCompactionRequiresDurableAcknowledgements(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	result, err := primary.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil {
+		t.Fatal(err)
+	}
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	acks := make([]CheckpointWitnessAck, client.Quorum)
+	for i := range acks {
+		if _, err := witnesses[i].Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+			t.Fatal(err)
+		}
+		acks[i], err = witnesses[i].Acknowledge(context.Background(), request, result.CheckpointReceipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Compact(context.Background(), acks, client.Witnesses, client.Quorum); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses); err != nil {
+		t.Fatalf("ephemeral acknowledgements compacted unresolved durable evidence: %v", err)
+	}
+	for i := range acks {
+		if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[i], client.Witnesses[i]); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Compact(context.Background(), acks, client.Witnesses, client.Quorum); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses); !errors.Is(err, ErrCheckpointHistorical) {
+		t.Fatalf("durably quorum-acknowledged journal entry was not compacted: %v", err)
+	}
+}

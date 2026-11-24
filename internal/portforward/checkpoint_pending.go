@@ -373,6 +373,9 @@ func bytesEqual(a, b []byte) bool {
 }
 
 func compactAcknowledgedPendingEntries(snapshot *checkpointPendingSnapshot, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) {
+	// The caller's slice is not durable evidence. Only acknowledgements already
+	// persisted in this exact journal entry can authorize its removal.
+	_ = acknowledgements
 	trusted := make(map[string]ed25519.PublicKey, len(witnesses))
 	for _, witness := range witnesses {
 		trusted[witness.ID] = witness.PublicKey
@@ -382,17 +385,17 @@ func compactAcknowledgedPendingEntries(snapshot *checkpointPendingSnapshot, ackn
 			continue
 		}
 		fingerprint, err := hex.DecodeString(entry.Fingerprint)
-		if err != nil || len(fingerprint) != 32 {
+		if err != nil || len(fingerprint) != sha256.Size {
 			continue
 		}
 		receiptHash, err := hex.DecodeString(entry.ReceiptHash)
-		if err != nil || len(receiptHash) != 32 {
+		if err != nil || len(receiptHash) != sha256.Size {
 			continue
 		}
 		seen := make(map[string]bool, quorum)
-		for _, ack := range acknowledgements {
+		for _, ack := range entry.Acknowledgements {
 			publicKey := trusted[ack.WitnessID]
-			if seen[ack.WitnessID] || (ack.Status != "acknowledged" && ack.Status != "already_acknowledged") ||
+			if seen[ack.WitnessID] ||
 				VerifyCheckpointWitnessAck(ack, ack.WitnessID, publicKey) != nil {
 				continue
 			}
