@@ -67,7 +67,9 @@ and current-head reads do not substitute for fence acknowledgments.
 - Strict-majority calculation requiring at least three witnesses.
 - Unit tests for canonical witness ordering, signature tampering through payload
   mutation, stale generation, expiry, epoch transition, duplicate witness IDs,
-  and quorum sizing.
+  quorum sizing, and both sequential orderings in a deterministic in-memory
+  authority model (revocation-first rejects stale finalization; finalization-first
+  remains valid at its ordering point).
 
 ## Explicit limitations
 
