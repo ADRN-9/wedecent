@@ -885,7 +885,7 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 	}
 }
 
-func TestPendingJournalConcurrentFinalizationIsIdempotent(t *testing.T) {
+func TestPendingJournalConcurrentFinalizationAcrossProviderInstancesIsIdempotent(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	dir := t.TempDir()
@@ -895,20 +895,29 @@ func TestPendingJournalConcurrentFinalizationIsIdempotent(t *testing.T) {
 	if err := setReplayTestDirectoryOwner(dir); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json"))
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, _ := newWitnessedFixture(t, primary, store)
+	secondStore, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	secondClient, _ := newWitnessedFixture(t, primary, secondStore)
+	secondClient.Witnesses = client.Witnesses
+	clients := []*WitnessedReplayCheckpointProvider{client, secondClient}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
-	for i := 0; i < 2; i++ {
+	for _, provider := range clients {
+		provider := provider
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			_, err := client.Consume(context.Background(), request)
+			_, err := provider.Consume(context.Background(), request)
 			errs <- err
 		}()
 	}
@@ -941,6 +950,12 @@ func TestPendingJournalConcurrentFinalizationIsIdempotent(t *testing.T) {
 	primary.mu.Unlock()
 	if consumed != 1 {
 		t.Fatalf("concurrent retry consumed primary capability %d times", consumed)
+	}
+	scope := witnessScope(checkpointEndpointForConsumer(request))
+	for _, witness := range witnesses {
+		if commitments := len(witness.historyFor(scope)); commitments != 1 {
+			t.Fatalf("independent providers committed witness %s %d times", witness.id, commitments)
+		}
 	}
 }
 
@@ -1234,15 +1249,22 @@ func TestExpiredFinalizationRejectsMembershipRevocationAfterWitnessCommit(t *tes
 			t.Fatalf("witness %s did not commit exactly once", witness.id)
 		}
 	}
-	updated := routerMembership
-	updated.RevocationEpoch++
-	memberships[string(claims.Router)] = updated
+	updatedRouter := routerMembership
+	updatedRouter.RevocationEpoch++
+	memberships[string(claims.Router)] = updatedRouter
 	now = time.UnixMilli(claims.ExpiresAtUnixMS).Add(time.Second).UTC()
 	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrCheckpointRevoked) {
-		t.Fatalf("revoked historical operation finalized: %v", err)
+		t.Fatalf("revoked router historical operation finalized: %v", err)
 	}
-	if len(audit.outcomes) != 1 || audit.outcomes[0] != CheckpointFinalizationRevoked {
-		t.Fatalf("revocation outcome not auditable: %v", audit.outcomes)
+	memberships[string(claims.Router)] = routerMembership
+	updatedInitiator := initiator
+	updatedInitiator.RevocationEpoch++
+	memberships[string(claims.InitiatingDevice)] = updatedInitiator
+	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrCheckpointRevoked) {
+		t.Fatalf("revoked endpoint historical operation finalized: %v", err)
+	}
+	if len(audit.outcomes) != 2 || audit.outcomes[0] != CheckpointFinalizationRevoked || audit.outcomes[1] != CheckpointFinalizationRevoked {
+		t.Fatalf("revocation outcomes not auditable: %v", audit.outcomes)
 	}
 	for _, witness := range witnesses {
 		if len(witness.historyFor(witnessScope(initiator))) != 1 {

@@ -9,17 +9,17 @@ C135 starts from C134 HEAD `9cd38b0c71538e6ff768262857d856ba686bf1e4`. It addres
 - `mesh.RouteAuthorizationVerifier.VerifyHistorical` validates the route capability's syntax, key ID, Ed25519 signature and exact router/route binding. It deliberately does not check the current expiry and does not consume the route JTI.
 - The ordinary `VerifyAndConsume` path is unchanged: it still rejects expired capabilities and consumes the JTI for new routed operations.
 - `MeshCheckpointRouteAuthorizationVerifier` exposes distinct normal-consumption and historical-verification methods. Finalization requires the historical interface and fails closed if it is absent.
-- `CheckpointRequest.RouteAuthorizationSHA256` binds the exact independent route capability JSON (including its signed JTI/signature) into the device-signed checkpoint request and primary receipt. The extension is encoded only when nonzero, preserving the previous request encoding for non-routed operations. Finalization recomputes and compares it, preventing substitution of another valid route capability for the same route.
+- `CheckpointRequest.RouteAuthorizationSHA256` binds the exact independent route capability JSON (including its signed JTI/signature) into the device-signed checkpoint request and primary receipt. `CheckpointRequest.Router` also binds the router's original account, organization and revocation epoch. These extensions are encoded only for routed requests, preserving the previous request encoding for non-routed operations. Finalization recomputes the route fingerprint and re-resolves the router, preventing route-capability substitution or router-revocation recovery.
 - Regression coverage runs a routed operation through checkpoint commitment, advances beyond both capability expiries, then finalizes the exact historical operation without another primary consumption or witness commitment. Mesh-level tests prove historical verification does not consume the route JTI and that expired capabilities still cannot initiate fresh operations.
 
 ### Current membership and revocation
 
 - Finalization now requires a current `CheckpointMembershipResolver` and a `CheckpointFinalizationAuditor`; missing dependencies fail closed.
-- Both endpoint memberships are resolved again immediately before historical finalization. Device IDs, account IDs, organization IDs and revocation epochs must exactly match the signed original checkpoint request.
+- Both endpoint memberships and, for routed operations, the router membership are resolved again immediately before historical finalization. Device IDs, account IDs, organization IDs and revocation epochs must exactly match the signed original checkpoint request.
 - Revocation epoch changes, missing/revoked membership and organization/device mismatches produce a rejected-revocation audit outcome and prevent finalization.
 - Membership-service failures are separately recorded as membership-unavailable and fail closed.
-- The audit contract records `finalization_started`, `finalized`, `rejected_revocation`, `membership_unavailable` and `finalization_failed`. An audit sink failure is not treated as success.
-- Regression coverage injects a durable local-resolution failure after witness commitment, advances time beyond expiry, changes an endpoint revocation epoch, and proves finalization rejects the historical operation without changing witness history.
+- The audit contract records `finalization_started`, `finalized`, `rejected_revocation`, `membership_unavailable` and `finalization_failed`. The `finalized` event is recorded after witness quorum is authenticated but before local journal compaction, so an audit failure cannot occur after the only durable pending evidence has already been removed. An audit sink failure is not treated as success.
+- Regression coverage injects a durable local-resolution failure after witness commitment, advances time beyond expiry, changes router and endpoint revocation epochs independently, and proves finalization rejects the historical operation without changing witness history.
 
 ## Production integration assessment
 
@@ -36,9 +36,11 @@ These are infrastructure and trust-anchor inputs, not values that can be inferre
 
 ## Durability and concurrency status
 
-C134's structural journal validation, byte/entry bounds, duplicate-key rejection, unrelated-entry corruption rejection, and whole-publication interruption preservation remain in place. C135 does not yet add process-termination injection at every atomic-publication stage (temporary-file creation, partial write, file sync, close, replacement, directory sync and lock release), nor a cross-process concurrent-finalization test across separate provider processes. The existing same-process idempotence/concurrency coverage is not a substitute for those tests.
+C134's structural journal validation, byte/entry bounds, duplicate-key rejection, unrelated-entry corruption rejection, and whole-publication interruption preservation remain in place. C135 configures immutable primary and witness public-key anchors on the durable file store. Every file-store read-modify-write now verifies every resolved primary receipt and every stored witness acknowledgement, including evidence in unrelated entries, against those anchors. Trust-anchor changes within a running store instance are rejected; after restart the original anchors must be re-supplied, and any mismatch invalidates persisted signatures. Acknowledgement-bearing journals fail closed if witness trust is not configured.
 
-Journal-wide cryptographic verification of every acknowledgement in every unrelated entry against immutable trust anchors also remains incomplete. Exact-operation acknowledgement loading and compaction verify signatures against configured witness trust; that does not prove all unrelated entries are cryptographically checked on every journal read-modify-write.
+C135 adds an independent-provider-instance concurrency regression using separate file-store instances sharing the same durable journal and authority fixtures. It does not yet add process-termination injection at every atomic-publication stage (temporary-file creation, partial write, file sync, close, replacement, directory sync and lock release), nor cross-process concurrent finalization against shared real authorities. Same-process independent instances are not a substitute for those tests.
+
+C134 routed pending journal entries predate the route-capability fingerprint and router-membership fields. They cannot be safely upgraded by reconstructing evidence from a caller-supplied route token; such entries fail closed during routed finalization and require explicit operator resolution. Non-routed pending entries retain their previous canonical request encoding.
 
 ## Acceptance boundary
 
