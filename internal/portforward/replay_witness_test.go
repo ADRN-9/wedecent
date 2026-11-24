@@ -2512,6 +2512,9 @@ func TestVersionTwoPendingJournalIsRejectedWithoutChangingOriginalBytes(t *testi
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := setReplayFileOwner(path); err != nil {
+		t.Fatal(err)
+	}
 	store, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
