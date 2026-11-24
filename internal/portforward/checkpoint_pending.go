@@ -22,10 +22,10 @@ const checkpointPendingMaxEntries = 65536
 var ErrCheckpointHistorical = errors.New("portforward: historical checkpoint receipt cannot initiate a new operation")
 
 type checkpointPendingEntry struct {
-	Fingerprint string `json:"fingerprint"`
-	State       string `json:"state"`
-	CreatedAt   int64  `json:"created_at_unix_ms"`
-	ReceiptHash string `json:"receipt_hash,omitempty"`
+	Fingerprint      string                 `json:"fingerprint"`
+	State            string                 `json:"state"`
+	CreatedAt        int64                  `json:"created_at_unix_ms"`
+	ReceiptHash      string                 `json:"receipt_hash,omitempty"`
 	Acknowledgements []CheckpointWitnessAck `json:"acknowledgements,omitempty"`
 }
 
@@ -143,8 +143,6 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 	})
 	return err
 }
-
-
 
 func (s *FileCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
 	if s == nil || ctx == nil {
