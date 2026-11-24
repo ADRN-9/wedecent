@@ -517,9 +517,11 @@ func applyCheckpointFencePrimaryEvent(index *checkpointFencePrimaryIndex, event 
 		if old.Committed {
 			return nil
 		}
-		if state.PendingOperationID != token.OperationID ||
-			p.verifyFenceAcknowledgements(token, event.Acknowledgements) != nil {
-			return ErrCheckpointQuorum
+		if state.PendingOperationID != token.OperationID {
+			return ErrCheckpointStale
+		}
+		if err := p.verifyFenceAcknowledgements(token, event.Acknowledgements); err != nil {
+			return err
 		}
 		old.Committed = true
 		old.Acknowledgements = cloneCheckpointFenceAcks(event.Acknowledgements)
