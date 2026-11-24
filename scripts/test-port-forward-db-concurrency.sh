@@ -238,6 +238,34 @@ restore_membership
 audit_race membership revoke-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "$(printf '%064d' 4)" AAAAAAAAAAAAAAAAAAAAAA
 restore_membership
 
+# Independent sessions race identical audit submissions for one operation ID.
+AUDIT_DUPLICATE_ID="$(printf '%064d' 5)"
+start a wd-c166-audit-identical-a
+send a "begin; select public.wd_c145_audit('$AUDIT_DUPLICATE_ID','AAAAAAAAAAAAAAAAAAAAAA'); select 'audit-first-ready';"
+wait_text a "audit-first-ready"
+start b wd-c166-audit-identical-b
+send b "begin; select public.wd_c145_audit('$AUDIT_DUPLICATE_ID','AAAAAAAAAAAAAAAAAAAAAA');"
+wait_lock wd-c166-audit-identical-b
+finish a || fail 'first identical audit transaction failed'
+wait_text b '"replayed": true'
+finish b || fail 'identical audit retry failed'
+assertq 1 "select count(*) from public.checkpoint_finalization_audit where operation_id='$AUDIT_DUPLICATE_ID' and outcome='finalization_started'"
+
+# A conflicting payload for the same operation ID must fail after the first transaction commits.
+AUDIT_CONFLICT_ID="$(printf '%064d' 6)"
+start a wd-c166-audit-conflict-a
+send a "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','AAAAAAAAAAAAAAAAAAAAAA'); select 'audit-conflict-first-ready';"
+wait_text a "audit-conflict-first-ready"
+start b wd-c166-audit-conflict-b
+send b "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','BBBBBBBBBBBBBBBBBBBBBB');"
+wait_lock wd-c166-audit-conflict-b
+finish a || fail 'first conflicting audit transaction failed'
+fd="${FDS[b]}" pid="${PIDS[b]}"
+exec {fd}>&-; unset 'FDS[b]' 'PIDS[b]'
+if wait "$pid"; then cat "$WORK/b.log" >&2; fail 'conflicting audit payload was accepted'; fi
+grep -q 'ERROR:' "$WORK/b.log" || fail 'conflicting audit submission did not fail'
+assertq 1 "select count(*) from public.checkpoint_finalization_audit where operation_id='$AUDIT_CONFLICT_ID' and outcome='finalization_started'"
+
 # Route-grant JTIs are unique in their own table and intentionally differ from forwarding JTIs.
 route 33000000-0000-4000-8000-0000000000d1 NNNNNNNNNNNNNNNNNNNNNN
 start c wd-c145-dup-a
