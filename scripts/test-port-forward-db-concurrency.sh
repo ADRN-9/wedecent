@@ -308,12 +308,13 @@ audit_race route-grant revoke-first "update public.route_authorization_grants se
 restore_route 33000000-0000-4000-8000-0000000000da
 
 # Independent sessions race identical audit submissions for one operation ID.
+prepare_audit_operation 44000000-0000-4000-8000-0000000000db BBBBBBBBBBBBBBBBBBBBBB 33000000-0000-4000-8000-0000000000db CCCCCCCCCCCCCCCCCCCCCC
 AUDIT_DUPLICATE_ID="$(printf '%064d' 5)"
 start a wd-c166-audit-identical-a
-send a "begin; select public.wd_c145_audit('$AUDIT_DUPLICATE_ID','AAAAAAAAAAAAAAAAAAAAAA'); select 'audit-first-ready';"
+send a "begin; select public.wd_c145_audit('$AUDIT_DUPLICATE_ID','BBBBBBBBBBBBBBBBBBBBBB'); select 'audit-first-ready';"
 wait_text a "audit-first-ready"
 start b wd-c166-audit-identical-b
-send b "begin; select public.wd_c145_audit('$AUDIT_DUPLICATE_ID','AAAAAAAAAAAAAAAAAAAAAA');"
+send b "begin; select public.wd_c145_audit('$AUDIT_DUPLICATE_ID','BBBBBBBBBBBBBBBBBBBBBB');"
 wait_lock wd-c166-audit-identical-b
 finish a || fail 'first identical audit transaction failed'
 wait_text b '"replayed": true'
@@ -321,12 +322,13 @@ finish b || fail 'identical audit retry failed'
 assertq 1 "select count(*) from public.checkpoint_finalization_audit where operation_id='$AUDIT_DUPLICATE_ID' and outcome='finalization_started'"
 
 # A conflicting payload for the same operation ID must fail after the first transaction commits.
+prepare_audit_operation 44000000-0000-4000-8000-0000000000dc CCCCCCCCCCCCCCCCCCCCCC 33000000-0000-4000-8000-0000000000dc DDDDDDDDDDDDDDDDDDDDDD
 AUDIT_CONFLICT_ID="$(printf '%064d' 6)"
 start a wd-c166-audit-conflict-a
-send a "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','AAAAAAAAAAAAAAAAAAAAAA'); select 'audit-conflict-first-ready';"
+send a "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','CCCCCCCCCCCCCCCCCCCCCC'); select 'audit-conflict-first-ready';"
 wait_text a "audit-conflict-first-ready"
 start b wd-c166-audit-conflict-b
-send b "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','AAAAAAAAAAAAAAAAAAAAAA','$(printf 'H%.0s' {1..86})==');"
+send b "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','CCCCCCCCCCCCCCCCCCCCCC','$(printf 'H%.0s' {1..86})==');"
 wait_lock wd-c166-audit-conflict-b
 finish a || fail 'first conflicting audit transaction failed'
 fd="${FDS[b]}" pid="${PIDS[b]}"
