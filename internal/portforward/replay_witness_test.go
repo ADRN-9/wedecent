@@ -1065,7 +1065,7 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 	for _, witness := range witnesses { witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch; witness.revoked[witnessScope(destination)] = destination.RevocationEpoch; witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch: initiator.RevocationEpoch, used: map[string][32]byte{}} }
 	now := start
 	replay := &CheckpointAuthorizationReplay{Provider: provider, ControlPlaneKey: controlPublic, LocalDeviceID: claims.InitiatingDevice, DeviceSigner: initPrivate, Memberships: memberships, Now: func() time.Time { return now }}
-	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrCheckpointUnavailable) { t.Fatalf("injected unresolved journal result: %v", err) }
+	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("injected unresolved journal result: %v", err) }
 	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("witness %s did not commit exactly once", witness.id) } }
 	now = time.UnixMilli(claims.ExpiresAtUnixMS).Add(time.Second).UTC()
 	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); err != nil { t.Fatalf("expiry-independent finalization failed: %v", err) }
