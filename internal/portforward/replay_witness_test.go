@@ -2350,7 +2350,7 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 	}
 	restartedClient := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: restarted, Fencing: client.Fencing, RevocationAuthorizer: client.RevocationAuthorizer,
+		Quorum: client.Quorum, Pending: restarted, Fencing: client.Fencing, RevocationProofs: client.RevocationProofs,
 	}
 	released = false
 	if err := restartedClient.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
@@ -2863,7 +2863,7 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	}
 	restartedClient := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: restarted, Fencing: client.Fencing,
+		Quorum: client.Quorum, Pending: restarted, Fencing: client.Fencing, RevocationProofs: client.RevocationProofs,
 	}
 	if err := restartedClient.ValidateConfiguration(); err != nil {
 		t.Fatal(err)
