@@ -13,9 +13,9 @@ import (
 )
 
 var (
-	ErrCheckpointQuorum = errors.New("portforward: independent checkpoint witness quorum unavailable")
+	ErrCheckpointQuorum              = errors.New("portforward: independent checkpoint witness quorum unavailable")
 	ErrCheckpointWitnessDisagreement = errors.New("portforward: independent checkpoint witnesses disagree")
-	ErrCheckpointWitnessRollback = errors.New("portforward: historical checkpoint head rejected by witness")
+	ErrCheckpointWitnessRollback     = errors.New("portforward: historical checkpoint head rejected by witness")
 )
 
 type CheckpointWitnessScope struct {
@@ -25,33 +25,33 @@ type CheckpointWitnessScope struct {
 }
 
 type CheckpointWitnessReceipt struct {
-	WitnessID             string
-	Scope                 CheckpointWitnessScope
-	Kind                  string
-	Generation            uint64
-	PreviousHash          [sha256.Size]byte
-	RecordHash            [sha256.Size]byte
-	PrimaryGeneration     uint64
-	PrimaryHead           [sha256.Size]byte
-	PrimaryReceiptSHA256  [sha256.Size]byte
-	RequestSHA256         [sha256.Size]byte
-	JTI                   string
-	AuthorizationSHA256   [sha256.Size]byte
-	RevocationEpoch       uint64
-	ProviderKeyID         string
-	WitnessKeyID          string
-	Signature             []byte
+	WitnessID            string
+	Scope                CheckpointWitnessScope
+	Kind                 string
+	Generation           uint64
+	PreviousHash         [sha256.Size]byte
+	RecordHash           [sha256.Size]byte
+	PrimaryGeneration    uint64
+	PrimaryHead          [sha256.Size]byte
+	PrimaryReceiptSHA256 [sha256.Size]byte
+	RequestSHA256        [sha256.Size]byte
+	JTI                  string
+	AuthorizationSHA256  [sha256.Size]byte
+	RevocationEpoch      uint64
+	ProviderKeyID        string
+	WitnessKeyID         string
+	Signature            []byte
 }
 
 type CheckpointWitnessAck struct {
-	WitnessID string
-	Scope CheckpointWitnessScope
-	JTI string
-	RequestSHA256 [sha256.Size]byte
+	WitnessID            string
+	Scope                CheckpointWitnessScope
+	JTI                  string
+	RequestSHA256        [sha256.Size]byte
 	PrimaryReceiptSHA256 [sha256.Size]byte
-	Status string
-	WitnessKeyID string
-	Signature []byte
+	Status               string
+	WitnessKeyID         string
+	Signature            []byte
 }
 
 type CheckpointWitnessHead struct {
@@ -74,19 +74,19 @@ type CheckpointWitness interface {
 }
 
 type CheckpointWitnessTrust struct {
-	Witness CheckpointWitness
-	ID      string
+	Witness   CheckpointWitness
+	ID        string
 	PublicKey ed25519.PublicKey
 }
 
 // WitnessedReplayCheckpointProvider requires independent witness quorum for every
 // consume and revocation. Pending must be durable and local; it is not authority.
 type WitnessedReplayCheckpointProvider struct {
-	Primary ReplayCheckpointProvider
+	Primary    ReplayCheckpointProvider
 	PrimaryKey ed25519.PublicKey
-	Witnesses []CheckpointWitnessTrust
-	Quorum int
-	Pending CheckpointPendingStore
+	Witnesses  []CheckpointWitnessTrust
+	Quorum     int
+	Pending    CheckpointPendingStore
 }
 
 func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
@@ -116,7 +116,9 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 		return CheckpointResult{}, err
 	}
 	acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt)
-	if err != nil { return CheckpointResult{}, err }
+	if err != nil {
+		return CheckpointResult{}, err
+	}
 	result.WitnessReceipts = receipts
 	result.WitnessAcknowledgements = acks
 	return result, nil
@@ -130,13 +132,25 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 		return ErrCheckpointStale
 	}
 	primaryHead, err := p.Primary.Head(ctx, endpoint)
-	if err != nil { return err }
-	if err := VerifyCheckpointHead(primaryHead, endpoint, p.PrimaryKey); err != nil { return err }
-	if next < primaryHead.RevocationEpoch { return ErrCheckpointStale }
-	if next > primaryHead.RevocationEpoch {
-		if err := p.Primary.Revoke(ctx, endpoint, next); err != nil { return err }
+	if err != nil {
+		return err
 	}
-	type response struct { trust CheckpointWitnessTrust; receipt CheckpointWitnessReceipt; err error }
+	if err := VerifyCheckpointHead(primaryHead, endpoint, p.PrimaryKey); err != nil {
+		return err
+	}
+	if next < primaryHead.RevocationEpoch {
+		return ErrCheckpointStale
+	}
+	if next > primaryHead.RevocationEpoch {
+		if err := p.Primary.Revoke(ctx, endpoint, next); err != nil {
+			return err
+		}
+	}
+	type response struct {
+		trust   CheckpointWitnessTrust
+		receipt CheckpointWitnessReceipt
+		err     error
+	}
 	ch := make(chan response, len(p.Witnesses))
 	for _, trust := range p.Witnesses {
 		trust := trust
@@ -180,7 +194,11 @@ func (p *WitnessedReplayCheckpointProvider) Head(ctx context.Context, endpoint C
 	if err := VerifyCheckpointHead(primary, endpoint, p.PrimaryKey); err != nil {
 		return CheckpointHead{}, err
 	}
-	type response struct { trust CheckpointWitnessTrust; head CheckpointWitnessHead; err error }
+	type response struct {
+		trust CheckpointWitnessTrust
+		head  CheckpointWitnessHead
+		err   error
+	}
 	ch := make(chan response, len(p.Witnesses))
 	for _, trust := range p.Witnesses {
 		trust := trust
@@ -217,11 +235,18 @@ func (p *WitnessedReplayCheckpointProvider) Head(ctx context.Context, endpoint C
 }
 
 func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt) ([]CheckpointWitnessAck, error) {
-	type response struct { trust CheckpointWitnessTrust; ack CheckpointWitnessAck; err error }
+	type response struct {
+		trust CheckpointWitnessTrust
+		ack   CheckpointWitnessAck
+		err   error
+	}
 	ch := make(chan response, len(p.Witnesses))
 	for _, trust := range p.Witnesses {
 		trust := trust
-		go func() { ack, err := trust.Witness.Acknowledge(ctx, request, receipt); ch <- response{trust:trust, ack:ack, err:err} }()
+		go func() {
+			ack, err := trust.Witness.Acknowledge(ctx, request, receipt)
+			ch <- response{trust: trust, ack: ack, err: err}
+		}()
 	}
 	acks := make([]CheckpointWitnessAck, 0, len(p.Witnesses))
 	for range p.Witnesses {
@@ -232,25 +257,40 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 			r.ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) {
 			continue
 		}
-		if r.ack.Status == "already_acknowledged" { return nil, ErrCheckpointHistorical }
-		if r.ack.Status != "acknowledged" { continue }
+		if r.ack.Status == "already_acknowledged" {
+			return nil, ErrCheckpointHistorical
+		}
+		if r.ack.Status != "acknowledged" {
+			continue
+		}
 		acks = append(acks, r.ack)
 	}
-	if len(acks) < p.Quorum { return nil, ErrCheckpointQuorum }
+	if len(acks) < p.Quorum {
+		return nil, ErrCheckpointQuorum
+	}
 	return acks, nil
 }
 
 func (p *WitnessedReplayCheckpointProvider) preflightWitnessHeads(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, existingPending bool, disposition CheckpointDisposition) error {
-	type response struct { trust CheckpointWitnessTrust; head CheckpointWitnessHead; err error }
+	type response struct {
+		trust CheckpointWitnessTrust
+		head  CheckpointWitnessHead
+		err   error
+	}
 	ch := make(chan response, len(p.Witnesses))
 	for _, trust := range p.Witnesses {
 		trust := trust
-		go func() { head, err := trust.Witness.Head(ctx, witnessScope(checkpointEndpointForConsumer(request))); ch <- response{trust:trust, head:head, err:err} }()
+		go func() {
+			head, err := trust.Witness.Head(ctx, witnessScope(checkpointEndpointForConsumer(request)))
+			ch <- response{trust: trust, head: head, err: err}
+		}()
 	}
 	valid, alreadyCommitted := 0, 0
 	for range p.Witnesses {
 		r := <-ch
-		if r.err != nil || VerifyCheckpointWitnessHead(r.head, r.trust.ID, r.trust.PublicKey) != nil { continue }
+		if r.err != nil || VerifyCheckpointWitnessHead(r.head, r.trust.ID, r.trust.PublicKey) != nil {
+			continue
+		}
 		valid++
 		switch {
 		case r.head.PrimaryGeneration == receipt.Generation && r.head.PrimaryHead == receipt.RecordHash && r.head.RevocationEpoch == checkpointEndpointForConsumer(request).RevocationEpoch:
@@ -260,7 +300,9 @@ func (p *WitnessedReplayCheckpointProvider) preflightWitnessHeads(ctx context.Co
 			return ErrCheckpointWitnessRollback
 		}
 	}
-	if valid < p.Quorum { return ErrCheckpointQuorum }
+	if valid < p.Quorum {
+		return ErrCheckpointQuorum
+	}
 	if alreadyCommitted > 0 && (!existingPending || disposition != CheckpointRecovered) {
 		return ErrCheckpointHistorical
 	}
@@ -268,8 +310,14 @@ func (p *WitnessedReplayCheckpointProvider) preflightWitnessHeads(ctx context.Co
 }
 
 func (p *WitnessedReplayCheckpointProvider) commitWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, existingPending bool, disposition CheckpointDisposition) ([]CheckpointWitnessReceipt, error) {
-	if err := p.preflightWitnessHeads(ctx, request, receipt, existingPending, disposition); err != nil { return nil, err }
-	type response struct { trust CheckpointWitnessTrust; receipt CheckpointWitnessReceipt; err error }
+	if err := p.preflightWitnessHeads(ctx, request, receipt, existingPending, disposition); err != nil {
+		return nil, err
+	}
+	type response struct {
+		trust   CheckpointWitnessTrust
+		receipt CheckpointWitnessReceipt
+		err     error
+	}
 	ch := make(chan response, len(p.Witnesses))
 	for _, trust := range p.Witnesses {
 		trust := trust
@@ -315,7 +363,9 @@ func validWitnessSet(witnesses []CheckpointWitnessTrust, quorum int) bool {
 		}
 		seen[witness.ID] = true
 		keyHash := sha256.Sum256(witness.PublicKey)
-		if keys[keyHash] { return false }
+		if keys[keyHash] {
+			return false
+		}
 		keys[keyHash] = true
 	}
 	return true
@@ -348,7 +398,7 @@ func VerifyCheckpointWitnessAck(ack CheckpointWitnessAck, witnessID string, publ
 	if witnessID == "" || ack.WitnessID != witnessID || len(publicKey) != ed25519.PublicKeySize ||
 		ack.WitnessKeyID != checkpointProviderKeyID(publicKey) ||
 		(ack.Status != "acknowledged" && ack.Status != "already_acknowledged") ||
-		!validCheckpointEndpoint(CheckpointEndpoint{DeviceID:ack.Scope.DeviceID, AccountID:ack.Scope.AccountID, OrganizationID:ack.Scope.OrganizationID}) ||
+		!validCheckpointEndpoint(CheckpointEndpoint{DeviceID: ack.Scope.DeviceID, AccountID: ack.Scope.AccountID, OrganizationID: ack.Scope.OrganizationID}) ||
 		len(ack.Signature) != ed25519.SignatureSize ||
 		!ed25519.Verify(publicKey, checkpointWitnessAckMessage(ack), ack.Signature) {
 		return ErrCheckpointIntegrity
@@ -453,24 +503,24 @@ func putWitnessString(b *bytes.Buffer, value string) {
 
 // deterministicCheckpointWitness is a test harness, never a production provider.
 type deterministicCheckpointWitness struct {
-	mu sync.Mutex
-	id string
-	private ed25519.PrivateKey
-	primaryKey ed25519.PublicKey
-	ledgers map[CheckpointWitnessScope]*deterministicWitnessLedger
-	revoked map[CheckpointWitnessScope]uint64
-	available bool
-	history map[CheckpointWitnessScope][]CheckpointWitnessReceipt
+	mu           sync.Mutex
+	id           string
+	private      ed25519.PrivateKey
+	primaryKey   ed25519.PublicKey
+	ledgers      map[CheckpointWitnessScope]*deterministicWitnessLedger
+	revoked      map[CheckpointWitnessScope]uint64
+	available    bool
+	history      map[CheckpointWitnessScope][]CheckpointWitnessReceipt
 	acknowledged map[string][sha256.Size]byte
 }
 
 type deterministicWitnessLedger struct {
-	generation uint64
-	head [sha256.Size]byte
+	generation        uint64
+	head              [sha256.Size]byte
 	primaryGeneration uint64
-	primaryHead [sha256.Size]byte
-	revocationEpoch uint64
-	used map[string][sha256.Size]byte
+	primaryHead       [sha256.Size]byte
+	revocationEpoch   uint64
+	used              map[string][sha256.Size]byte
 }
 
 func newDeterministicCheckpointWitness(id string, primaryKey ed25519.PublicKey) *deterministicCheckpointWitness {
@@ -480,37 +530,56 @@ func newDeterministicCheckpointWitness(id string, primaryKey ed25519.PublicKey) 
 }
 
 func (w *deterministicCheckpointWitness) Commit(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt) (CheckpointWitnessReceipt, error) {
-	if err := ctx.Err(); err != nil { return CheckpointWitnessReceipt{}, err }
-	if w == nil { return CheckpointWitnessReceipt{}, ErrCheckpointUnavailable }
-	if err := VerifyCheckpointReceipt(receipt, request, w.primaryKey); err != nil { return CheckpointWitnessReceipt{}, err }
+	if err := ctx.Err(); err != nil {
+		return CheckpointWitnessReceipt{}, err
+	}
+	if w == nil {
+		return CheckpointWitnessReceipt{}, ErrCheckpointUnavailable
+	}
+	if err := VerifyCheckpointReceipt(receipt, request, w.primaryKey); err != nil {
+		return CheckpointWitnessReceipt{}, err
+	}
 	endpoint := checkpointEndpointForConsumer(request)
 	scope := witnessScope(endpoint)
 	fingerprint, err := CheckpointRequestFingerprint(request)
-	if err != nil { return CheckpointWitnessReceipt{}, err }
+	if err != nil {
+		return CheckpointWitnessReceipt{}, err
+	}
 	primaryDigest := sha256.Sum256(checkpointReceiptMessage(receipt))
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.available { return CheckpointWitnessReceipt{}, ErrCheckpointUnavailable }
+	if !w.available {
+		return CheckpointWitnessReceipt{}, ErrCheckpointUnavailable
+	}
 	for _, e := range []CheckpointEndpoint{request.Initiator, request.Destination} {
-		if e.RevocationEpoch != w.revoked[witnessScope(e)] { return CheckpointWitnessReceipt{}, ErrCheckpointRevoked }
+		if e.RevocationEpoch != w.revoked[witnessScope(e)] {
+			return CheckpointWitnessReceipt{}, ErrCheckpointRevoked
+		}
 	}
 	ledger := w.ledgers[scope]
-	if ledger == nil { ledger = &deterministicWitnessLedger{used: make(map[string][sha256.Size]byte)}; w.ledgers[scope] = ledger }
+	if ledger == nil {
+		ledger = &deterministicWitnessLedger{used: make(map[string][sha256.Size]byte)}
+		w.ledgers[scope] = ledger
+	}
 	if old, ok := ledger.used[request.JTI]; ok {
-		if old != primaryDigest { return CheckpointWitnessReceipt{}, ErrCheckpointConflict }
+		if old != primaryDigest {
+			return CheckpointWitnessReceipt{}, ErrCheckpointConflict
+		}
 		for _, record := range w.historyFor(scope) {
-			if record.JTI == request.JTI { return record, nil }
+			if record.JTI == request.JTI {
+				return record, nil
+			}
 		}
 		return CheckpointWitnessReceipt{}, ErrCheckpointIntegrity
 	}
 	if receipt.Generation != ledger.primaryGeneration+1 || receipt.PreviousHash != ledger.primaryHead {
 		return CheckpointWitnessReceipt{}, ErrCheckpointWitnessRollback
 	}
-	result := CheckpointWitnessReceipt{WitnessID:w.id, Scope:scope, Kind:"consume", Generation:ledger.generation+1,
-		PreviousHash:ledger.head, PrimaryGeneration:receipt.Generation, PrimaryHead:receipt.RecordHash,
-		PrimaryReceiptSHA256:primaryDigest, RequestSHA256:fingerprint, JTI:request.JTI,
-		AuthorizationSHA256:request.AuthorizationSHA256, RevocationEpoch:endpoint.RevocationEpoch,
-		ProviderKeyID:receipt.ProviderKeyID, WitnessKeyID:checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
+	result := CheckpointWitnessReceipt{WitnessID: w.id, Scope: scope, Kind: "consume", Generation: ledger.generation + 1,
+		PreviousHash: ledger.head, PrimaryGeneration: receipt.Generation, PrimaryHead: receipt.RecordHash,
+		PrimaryReceiptSHA256: primaryDigest, RequestSHA256: fingerprint, JTI: request.JTI,
+		AuthorizationSHA256: request.AuthorizationSHA256, RevocationEpoch: endpoint.RevocationEpoch,
+		ProviderKeyID: receipt.ProviderKeyID, WitnessKeyID: checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
 	result.RecordHash = checkpointWitnessRecordHash(result)
 	result.Signature = ed25519.Sign(w.private, checkpointWitnessReceiptMessage(result))
 	ledger.generation, ledger.head = result.Generation, result.RecordHash
@@ -521,25 +590,38 @@ func (w *deterministicCheckpointWitness) Commit(ctx context.Context, request Che
 }
 
 func (w *deterministicCheckpointWitness) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) (CheckpointWitnessReceipt, error) {
-	if err := ctx.Err(); err != nil { return CheckpointWitnessReceipt{}, err }
-	if w == nil || !validCheckpointEndpoint(endpoint) || next == 0 { return CheckpointWitnessReceipt{}, ErrCheckpointIntegrity }
+	if err := ctx.Err(); err != nil {
+		return CheckpointWitnessReceipt{}, err
+	}
+	if w == nil || !validCheckpointEndpoint(endpoint) || next == 0 {
+		return CheckpointWitnessReceipt{}, ErrCheckpointIntegrity
+	}
 	scope := witnessScope(endpoint)
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.available { return CheckpointWitnessReceipt{}, ErrCheckpointUnavailable }
-	if next < w.revoked[scope] { return CheckpointWitnessReceipt{}, ErrCheckpointStale }
+	if !w.available {
+		return CheckpointWitnessReceipt{}, ErrCheckpointUnavailable
+	}
+	if next < w.revoked[scope] {
+		return CheckpointWitnessReceipt{}, ErrCheckpointStale
+	}
 	if next == w.revoked[scope] {
-		for i := len(w.historyFor(scope))-1; i >= 0; i-- {
+		for i := len(w.historyFor(scope)) - 1; i >= 0; i-- {
 			record := w.historyFor(scope)[i]
-			if record.Kind == "revoke" && record.RevocationEpoch == next { return record, nil }
+			if record.Kind == "revoke" && record.RevocationEpoch == next {
+				return record, nil
+			}
 		}
 		return CheckpointWitnessReceipt{}, ErrCheckpointStale
 	}
 	ledger := w.ledgers[scope]
-	if ledger == nil { ledger = &deterministicWitnessLedger{used: make(map[string][sha256.Size]byte)}; w.ledgers[scope] = ledger }
-	result := CheckpointWitnessReceipt{WitnessID:w.id, Scope:scope, Kind:"revoke", Generation:ledger.generation+1,
-		PreviousHash:ledger.head, PrimaryGeneration:ledger.primaryGeneration, PrimaryHead:ledger.primaryHead,
-		RevocationEpoch:next, WitnessKeyID:checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
+	if ledger == nil {
+		ledger = &deterministicWitnessLedger{used: make(map[string][sha256.Size]byte)}
+		w.ledgers[scope] = ledger
+	}
+	result := CheckpointWitnessReceipt{WitnessID: w.id, Scope: scope, Kind: "revoke", Generation: ledger.generation + 1,
+		PreviousHash: ledger.head, PrimaryGeneration: ledger.primaryGeneration, PrimaryHead: ledger.primaryHead,
+		RevocationEpoch: next, WitnessKeyID: checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
 	result.RecordHash = checkpointWitnessRecordHash(result)
 	result.Signature = ed25519.Sign(w.private, checkpointWitnessReceiptMessage(result))
 	ledger.generation, ledger.head, ledger.revocationEpoch = result.Generation, result.RecordHash, next
@@ -549,44 +631,69 @@ func (w *deterministicCheckpointWitness) Revoke(ctx context.Context, endpoint Ch
 }
 
 func (w *deterministicCheckpointWitness) Acknowledge(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt) (CheckpointWitnessAck, error) {
-	if err := ctx.Err(); err != nil { return CheckpointWitnessAck{}, err }
-	if w == nil { return CheckpointWitnessAck{}, ErrCheckpointUnavailable }
-	if err := VerifyCheckpointReceipt(receipt, request, w.primaryKey); err != nil { return CheckpointWitnessAck{}, err }
+	if err := ctx.Err(); err != nil {
+		return CheckpointWitnessAck{}, err
+	}
+	if w == nil {
+		return CheckpointWitnessAck{}, ErrCheckpointUnavailable
+	}
+	if err := VerifyCheckpointReceipt(receipt, request, w.primaryKey); err != nil {
+		return CheckpointWitnessAck{}, err
+	}
 	scope := witnessScope(checkpointEndpointForConsumer(request))
 	fingerprint, err := CheckpointRequestFingerprint(request)
-	if err != nil { return CheckpointWitnessAck{}, err }
+	if err != nil {
+		return CheckpointWitnessAck{}, err
+	}
 	digest := sha256.Sum256(checkpointReceiptMessage(receipt))
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.available { return CheckpointWitnessAck{}, ErrCheckpointUnavailable }
+	if !w.available {
+		return CheckpointWitnessAck{}, ErrCheckpointUnavailable
+	}
 	ledger := w.ledgers[scope]
-	if ledger == nil || ledger.used[request.JTI] != digest { return CheckpointWitnessAck{}, ErrCheckpointHistorical }
-	if w.acknowledged == nil { w.acknowledged = make(map[string][sha256.Size]byte) }
+	if ledger == nil || ledger.used[request.JTI] != digest {
+		return CheckpointWitnessAck{}, ErrCheckpointHistorical
+	}
+	if w.acknowledged == nil {
+		w.acknowledged = make(map[string][sha256.Size]byte)
+	}
 	key := scope.DeviceID + "|" + scope.AccountID + "|" + scope.OrganizationID + "|" + request.JTI
 	status := "acknowledged"
 	if old, ok := w.acknowledged[key]; ok {
-		if old != digest { return CheckpointWitnessAck{}, ErrCheckpointConflict }
+		if old != digest {
+			return CheckpointWitnessAck{}, ErrCheckpointConflict
+		}
 		status = "already_acknowledged"
 	} else {
 		w.acknowledged[key] = digest
 	}
-	ack := CheckpointWitnessAck{WitnessID:w.id, Scope:scope, JTI:request.JTI, RequestSHA256:fingerprint,
-		PrimaryReceiptSHA256:digest, Status:status, WitnessKeyID:checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
+	ack := CheckpointWitnessAck{WitnessID: w.id, Scope: scope, JTI: request.JTI, RequestSHA256: fingerprint,
+		PrimaryReceiptSHA256: digest, Status: status, WitnessKeyID: checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
 	ack.Signature = ed25519.Sign(w.private, checkpointWitnessAckMessage(ack))
 	return ack, nil
 }
 
 func (w *deterministicCheckpointWitness) Head(ctx context.Context, scope CheckpointWitnessScope) (CheckpointWitnessHead, error) {
-	if err := ctx.Err(); err != nil { return CheckpointWitnessHead{}, err }
-	if w == nil { return CheckpointWitnessHead{}, ErrCheckpointUnavailable }
+	if err := ctx.Err(); err != nil {
+		return CheckpointWitnessHead{}, err
+	}
+	if w == nil {
+		return CheckpointWitnessHead{}, ErrCheckpointUnavailable
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	if !w.available { return CheckpointWitnessHead{}, ErrCheckpointUnavailable }
+	if !w.available {
+		return CheckpointWitnessHead{}, ErrCheckpointUnavailable
+	}
 	ledger := w.ledgers[scope]
-	if ledger == nil { ledger = &deterministicWitnessLedger{used: make(map[string][sha256.Size]byte)}; w.ledgers[scope] = ledger }
-	head := CheckpointWitnessHead{WitnessID:w.id, Scope:scope, Generation:ledger.generation, RecordHash:ledger.head,
-		PrimaryGeneration:ledger.primaryGeneration, PrimaryHead:ledger.primaryHead, RevocationEpoch:ledger.revocationEpoch,
-		WitnessKeyID:checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
+	if ledger == nil {
+		ledger = &deterministicWitnessLedger{used: make(map[string][sha256.Size]byte)}
+		w.ledgers[scope] = ledger
+	}
+	head := CheckpointWitnessHead{WitnessID: w.id, Scope: scope, Generation: ledger.generation, RecordHash: ledger.head,
+		PrimaryGeneration: ledger.primaryGeneration, PrimaryHead: ledger.primaryHead, RevocationEpoch: ledger.revocationEpoch,
+		WitnessKeyID: checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
 	head.Signature = ed25519.Sign(w.private, checkpointWitnessHeadMessage(head))
 	return head, nil
 }
@@ -596,7 +703,8 @@ func (w *deterministicCheckpointWitness) historyFor(scope CheckpointWitnessScope
 }
 
 func (w *deterministicCheckpointWitness) remember(receipt CheckpointWitnessReceipt) {
-	if w.history == nil { w.history = make(map[CheckpointWitnessScope][]CheckpointWitnessReceipt) }
+	if w.history == nil {
+		w.history = make(map[CheckpointWitnessScope][]CheckpointWitnessReceipt)
+	}
 	w.history[receipt.Scope] = append(w.history[receipt.Scope], receipt)
 }
-

@@ -132,7 +132,11 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 	if err != nil {
 		return false, fmt.Errorf("%w: lock pending store: %v", ErrReplayUnavailable, err)
 	}
-	defer func() { if unlockErr := unlock(); unlockErr != nil { resultErr = errors.Join(resultErr, fmt.Errorf("%w: unlock pending store: %v", ErrReplayUnavailable, unlockErr)) } }()
+	defer func() {
+		if unlockErr := unlock(); unlockErr != nil {
+			resultErr = errors.Join(resultErr, fmt.Errorf("%w: unlock pending store: %v", ErrReplayUnavailable, unlockErr))
+		}
+	}()
 	snapshot := checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: map[string]checkpointPendingEntry{}}
 	data, err := readReplayJSON(s.Path, checkpointPendingMaxSize)
 	if err == nil {
@@ -196,8 +200,12 @@ func (s *MemoryCheckpointPendingStore) Begin(ctx context.Context, request Checkp
 		return false, err
 	}
 	key := checkpointPendingKey(request)
-	if key == "" { return false, ErrCheckpointIntegrity }
-	if s.entries == nil { s.entries = make(map[string]checkpointPendingEntry) }
+	if key == "" {
+		return false, ErrCheckpointIntegrity
+	}
+	if s.entries == nil {
+		s.entries = make(map[string]checkpointPendingEntry)
+	}
 	if old, ok := s.entries[key]; ok {
 		if old.Fingerprint != hex.EncodeToString(fp[:]) {
 			return false, ErrCheckpointConflict

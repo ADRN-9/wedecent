@@ -93,10 +93,10 @@ const (
 // Recovered results may resolve only a locally recorded pending operation; otherwise fail closed.
 type CheckpointResult struct {
 	CheckpointReceipt
-	Disposition CheckpointDisposition
-	Signature   []byte
-	WitnessReceipts []CheckpointWitnessReceipt `json:"witness_receipts,omitempty"`
-	WitnessAcknowledgements []CheckpointWitnessAck `json:"witness_acknowledgements,omitempty"`
+	Disposition             CheckpointDisposition
+	Signature               []byte
+	WitnessReceipts         []CheckpointWitnessReceipt `json:"witness_receipts,omitempty"`
+	WitnessAcknowledgements []CheckpointWitnessAck     `json:"witness_acknowledgements,omitempty"`
 }
 
 // ReplayCheckpointProvider implementations must serialize Consume and Revoke

@@ -61,8 +61,12 @@ func BuildCheckpointRequest(
 		return CheckpointRequest{}, err
 	}
 	if claims.Router != "" {
-		if routeVerifier == nil { return CheckpointRequest{}, ErrRouteAuthorizationRequired }
-		if err := routeVerifier.VerifyCheckpointRouteAuthorization(ctx, authorization); err != nil { return CheckpointRequest{}, errors.Join(ErrRouteAuthorizationMismatch, err) }
+		if routeVerifier == nil {
+			return CheckpointRequest{}, ErrRouteAuthorizationRequired
+		}
+		if err := routeVerifier.VerifyCheckpointRouteAuthorization(ctx, authorization); err != nil {
+			return CheckpointRequest{}, errors.Join(ErrRouteAuthorizationMismatch, err)
+		}
 	}
 	if localDeviceID != claims.InitiatingDevice && localDeviceID != claims.DestinationDevice {
 		return CheckpointRequest{}, ErrAuthorizationMismatch
