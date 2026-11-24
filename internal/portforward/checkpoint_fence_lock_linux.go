@@ -29,6 +29,17 @@ func openCheckpointFenceLog(path string) (*os.File, error) {
 		return nil, err
 	}
 	file := os.NewFile(uintptr(fd), absolute)
+	dirFD, err := syscall.Open(directory, syscall.O_RDONLY|syscall.O_DIRECTORY|syscall.O_CLOEXEC|syscall.O_NOFOLLOW, 0)
+	if err != nil {
+		file.Close()
+		return nil, err
+	}
+	syncErr := syscall.Fsync(dirFD)
+	closeErr := syscall.Close(dirFD)
+	if syncErr != nil || closeErr != nil {
+		file.Close()
+		return nil, errors.Join(syncErr, closeErr)
+	}
 	info, err = file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
 		file.Close()
