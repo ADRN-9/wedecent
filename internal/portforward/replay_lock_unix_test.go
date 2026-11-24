@@ -13,17 +13,12 @@ import (
 )
 
 func TestUnixReplayLockDeletionAcrossProcessesFailsClosed(t *testing.T) {
-	path := filepath.Join(newReplayTestDir(t), "replay.json")
-	replay, err := NewFileReplay(path, testInitiator)
+	path := filepath.Join(newReplayTestDir(t), "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	jti := "MDEyMzQ1Njc4OWFiY2RlZg"
-	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-
-	unlock, _, err := lockReplayFile(path)
+	unlock, err := store.LockTransition(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +26,7 @@ func TestUnixReplayLockDeletionAcrossProcessesFailsClosed(t *testing.T) {
 	defer func() {
 		if parentLockHeld {
 			if err := unlock(); err != nil {
-				t.Errorf("release parent replay lock: %v", err)
+				t.Errorf("release parent transition lock: %v", err)
 			}
 		}
 	}()
@@ -42,31 +37,35 @@ func TestUnixReplayLockDeletionAcrossProcessesFailsClosed(t *testing.T) {
 	cmd.Env = append(os.Environ(), "WEDECENT_REPLAY_LOCK_DELETE_HELPER_PATH="+path)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("separate-process lock deletion helper failed: %v\n%s", err, output)
+		t.Fatalf("separate-process transition lock deletion helper failed: %v\n%s", err, output)
 	}
-	anchorInfo, err := os.Lstat(path + ".lock.anchor")
+	lockPath := path + ".finalize.lock"
+	anchorPath := lockPath + ".anchor"
+	markerPath := lockPath + ".marker"
+	anchorInfo, err := os.Lstat(anchorPath)
 	if err != nil {
-		t.Fatalf("persistent lock anchor was removed: %v", err)
+		t.Fatalf("persistent transition lock anchor was removed: %v", err)
 	}
-	aliasInfo, err := os.Lstat(path + ".lock")
+	markerInfo, err := os.Lstat(markerPath)
+	if err != nil || !os.SameFile(anchorInfo, markerInfo) {
+		t.Fatalf("persistent transition lock marker changed: %v", err)
+	}
+	aliasInfo, err := os.Lstat(lockPath)
 	if err != nil {
-		t.Fatalf("helper did not replace visible lock alias: %v", err)
+		t.Fatalf("helper did not replace visible transition lock alias: %v", err)
 	}
 	if os.SameFile(anchorInfo, aliasInfo) {
-		t.Fatal("helper did not replace the visible lock alias with a distinct inode")
+		t.Fatal("helper did not replace the visible transition lock alias with a distinct inode")
 	}
-	if err := secureReplayFile(path + ".lock.anchor"); err != nil {
-		t.Fatalf("persistent lock anchor was weakened: %v", err)
+	if err := secureReplayFile(anchorPath); err != nil {
+		t.Fatalf("persistent transition lock anchor was weakened: %v", err)
 	}
 	if err := unlock(); err != nil {
-		t.Fatalf("release parent replay lock: %v", err)
+		t.Fatalf("release parent transition lock: %v", err)
 	}
 	parentLockHeld = false
-	if relock, _, err := lockReplayFile(path); err == nil {
-		if unlockErr := relock(); unlockErr != nil {
-			t.Fatalf("release unexpected replacement lock: %v", unlockErr)
-		}
-		t.Fatal("replay lock inode replacement was not rejected after initialization")
+	if _, err := store.LockTransition(context.Background()); err == nil {
+		t.Fatal("transition lock inode replacement was not rejected after initialization")
 	}
 }
 
@@ -75,13 +74,13 @@ func TestUnixReplayLockDeletionProcessHelper(t *testing.T) {
 	if path == "" {
 		return
 	}
-	lockPath := path + ".lock"
+	lockPath := path + ".finalize.lock"
 	if err := os.Remove(lockPath); err != nil {
-		t.Fatalf("delete visible lock alias: %v", err)
+		t.Fatalf("delete visible transition lock alias: %v", err)
 	}
 	replacement, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
-		t.Fatalf("create replacement lock inode: %v", err)
+		t.Fatalf("create replacement transition lock inode: %v", err)
 	}
 	if err := replacement.Chmod(0o600); err != nil {
 		_ = replacement.Close()
@@ -90,12 +89,15 @@ func TestUnixReplayLockDeletionProcessHelper(t *testing.T) {
 	if err := replacement.Close(); err != nil {
 		t.Fatal(err)
 	}
-	unlock, _, err := lockReplayFile(path)
+	store, err := NewFileCheckpointPendingStore(path)
 	if err == nil {
-		if unlockErr := unlock(); unlockErr != nil {
-			t.Fatalf("unlock unexpectedly acquired replacement inode: %v", unlockErr)
+		unlock, lockErr := store.LockTransition(context.Background())
+		if lockErr == nil {
+			if unlockErr := unlock(); unlockErr != nil {
+				t.Fatalf("unlock unexpectedly acquired replacement inode: %v", unlockErr)
+			}
+			t.Fatal("transition lock acquisition succeeded after alias replacement")
 		}
-		t.Fatal("lock acquisition succeeded after lock alias deletion")
 	}
 }
 
@@ -148,7 +150,7 @@ func TestUnixReplayLockAnchorHasPrivateOwnership(t *testing.T) {
 	if err := unlock(); err != nil {
 		t.Fatal(err)
 	}
-	for _, lockPath := range []string{path + ".lock", path + ".lock.anchor"} {
+	for _, lockPath := range []string{path + ".lock", path + ".lock.anchor", path + ".lock.marker"} {
 		if err := secureReplayFile(lockPath); err != nil {
 			t.Fatalf("lock metadata %s is not private: %v", filepath.Base(lockPath), err)
 		}
