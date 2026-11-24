@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(35);
+select plan(38);
 select is(wedecent_private.canonical_jsonb('{"n":-9007199254740991}'::jsonb),'{"n":-9007199254740991}','canonical JSON preserves minimum JavaScript safe integer');
 select is(wedecent_private.canonical_jsonb('{"n":9007199254740991}'::jsonb),'{"n":9007199254740991}','canonical JSON preserves maximum JavaScript safe integer');
 select is(wedecent_private.canonical_jsonb('{"z":[0,1,-1,9007199254740991],"a":{"b":true,"n":-9007199254740991,"s":"ok"}}'::jsonb),'{"a":{"b":true,"n":-9007199254740991,"s":"ok"},"z":[0,1,-1,9007199254740991]}','canonical JSON sorts nested keys and preserves array numeric boundaries');
@@ -159,14 +159,28 @@ select throws_ok($q$select public.record_checkpoint_finalization(
  extensions.digest(convert_to(wedecent_private.canonical_jsonb('{"primary_receipt":{"tampered":true},"witness_acknowledgements":[],"revocation_proofs":[]}'::jsonb),'UTF8'),'sha256'),
  '11000000-0000-4000-8000-000000000091'
 )$q$,'23505','outcome conflict','same terminal outcome with different proof evidence is rejected');
-select throws_ok($$select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
+delete from public.organization_memberships
+ where organization_id='22000000-0000-4000-8000-000000000091'
+   and user_id='11000000-0000-4000-8000-000000000092';
+select throws_ok($select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
+insert into public.organization_memberships(organization_id,user_id,role,created_by)
+values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome in('finalized','rejected_revocation')),1,'only one terminal outcome exists per operation');
 select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','completion requires a started operation','completion without a start event is rejected');
-select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','failure transition requires a started operation','failure transition without a start event is rejected');
+select throws_ok($q$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','failure transition requires a started operation','failure transition without a start event is rejected');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','failure/recovery operation starts cleanly');
 select is((pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','intermediate failure is recorded without terminalizing operation');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','successful retry can recover after intermediate failure');
+
+select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','membership recovery operation starts');
+delete from public.organization_memberships
+ where organization_id='22000000-0000-4000-8000-000000000091'
+   and user_id='11000000-0000-4000-8000-000000000092';
+select is((pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','missing participant membership is recorded as a nonterminal outcome');
+insert into public.organization_memberships(organization_id,user_id,role,created_by)
+values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
+select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','finalization recovers after participant membership restoration');
 
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_route_payload(),repeat('g',64))->>'replayed'),'false','routed operation binds stored route grant and router identities');
 update public.route_authorization_grants set revoked_at=clock_timestamp()
