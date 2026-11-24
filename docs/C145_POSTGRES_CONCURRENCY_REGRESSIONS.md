@@ -59,3 +59,16 @@ Corrective change in commit `4c09830db4eefe467b6b171472ec92b6934acb30` gives rou
 Run 45352598153 also had successful Windows agent, control-plane, relay-worker, Windows release, macOS agent, route-capability-client and route-E2E jobs. Linux was still running when inspected. The Supabase job failed only in the harness step after the 12 successful races; database startup and all pgTAP tests succeeded. Desktop run 45352598149 had Windows, macOS and Linux Tauri checks in progress at last inspection.
 
 The Supabase startup step initially encountered public registry `Data limit exceeded` responses but its configured retry/fallback recovered and startup completed. This did not fail the database job.
+
+## C146 retry and idempotency follow-up
+
+CI run 45353560190 tested commit `70116d6f77404d0055418c74c2cdec65d80b9193`.
+
+- All 72 pgTAP assertions passed.
+- All 12 revocation-ordering scenarios passed again, with committed-state assertions.
+- The concurrent exact-forwarding retry exposed a second fixture defect: the test helper generated fresh `issued_at` and `expires_at` timestamps on each invocation. The production function correctly treated the changed signed-capability tuple as an idempotency conflict rather than a replay.
+- The helper now captures one timestamp pair once and reuses those exact values for both concurrent retry calls and the JTI-reuse pair. This correction is commit `f18ecb42296f8d8f949dfd1bb2d053673bc4cd44`.
+
+The run against `70116d6f77404d0055418c74c2cdec65d80b9193` therefore did not pass the duplicate-forwarding/JTI tests; the observed result was `{"reason":"idempotency-conflict","accepted":false}`. This was caused by inconsistent retry fixture inputs, not a replay acceptance or authorization bypass.
+
+A new exact-HEAD CI run (45353560190) and Desktop run (45353559983) were started for `f18ecb42296f8d8f949dfd1bb2d053673bc4cd44`. At documentation time, the corrected Supabase concurrency step had not yet completed; Linux, Windows, macOS CI and all three Desktop platform checks were still running. No pass is claimed for the corrected duplicate/JTI tests until that exact-HEAD run completes.
