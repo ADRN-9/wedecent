@@ -365,6 +365,12 @@ func (s *MemoryCheckpointPendingStore) Compact(ctx context.Context, acknowledgem
 	return nil
 }
 
+func cloneCheckpointRequest(request CheckpointRequest) CheckpointRequest {
+	request.DevicePublicKey = append(ed25519.PublicKey(nil), request.DevicePublicKey...)
+	request.DeviceSignature = append([]byte(nil), request.DeviceSignature...)
+	return request
+}
+
 func bytesEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
