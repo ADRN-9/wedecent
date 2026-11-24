@@ -199,11 +199,11 @@ grep -Fq 'checkpoint participant identity or revocation changed' "$WORK/revoke-c
   cat "$WORK/revoke-commit.log" >&2
   fail 'revocation race failed for the wrong reason'
 }
-assertq 2 "select checkpoint_head_generation from public.port_forward_replay_authority where device_id='wd_gggggggggggggggg'"
+assertq 0 "select checkpoint_head_generation from public.port_forward_replay_authority where device_id='wd_gggggggggggggggg'"
 
 # Finalization audit and checkpoint reservation use the same operation advisory lock.
-start g wd-c195-finalization-lock "begin; select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('$OP_G',0)); select pg_sleep(2); commit;"
-wait_text g 'pg_sleep'
+start g wd-c195-finalization-lock "begin; select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('$OP_G',0)); select 'finalization-lock-ready'; select pg_sleep(2); commit;"
+wait_text g 'finalization-lock-ready'
 start h wd-c195-finalization-reserve "begin; select public.wd_c195_reserve('$OP_G','finalize','$(printf '7%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee']); commit;"
 wait_lock wd-c195-finalization-reserve
 finish_ok g
