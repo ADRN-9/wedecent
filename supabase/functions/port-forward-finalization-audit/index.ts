@@ -7,8 +7,8 @@ async function digest(v:unknown){const h=new Uint8Array(await crypto.subtle.dige
 function serviceKey(){const k=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");if(k)return k;const x=Deno.env.get("SUPABASE_SECRET_KEYS");if(x){const o=JSON.parse(x);if(o.default)return o.default}throw Error("service key missing")}
 function endpoint(v:unknown){if(!v||typeof v!=="object"||Array.isArray(v))return false;const x=v as Record<string,unknown>;return Object.keys(x).sort().join(",")==="account_id,device_id,organization_id,revocation_epoch"&&typeof x.device_id==="string"&&/^wd_[a-z2-7]{16}$/.test(x.device_id)&&typeof x.account_id==="string"&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x.account_id)&&typeof x.organization_id==="string"&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x.organization_id)&&Number.isSafeInteger(x.revocation_epoch)&&Number(x.revocation_epoch)>=0}
 function fromHex(s:string){if(!/^[0-9a-f]{64}$/.test(s))throw Error("invalid digest");return Uint8Array.from(s.match(/../g)!,x=>parseInt(x,16))}
-function fromBase64(s:string){if(!/^[A-Za-z0-9+/]{43}=$/.test(s))throw Error("invalid public key");const raw=atob(s);return Uint8Array.from(raw,x=>x.charCodeAt(0))}
-function fromBase64Signature(s:string){if(!/^[A-Za-z0-9+/]{86}==$/.test(s))throw Error("invalid signature");const raw=atob(s);return Uint8Array.from(raw,x=>x.charCodeAt(0))}
+function fromBase64(s:string){if(!/^[A-Za-z0-9+/]{43}=$/.test(s))throw Error("invalid public key");const raw=atob(s);if(btoa(raw)!==s)throw Error("non-canonical public key");return Uint8Array.from(raw,x=>x.charCodeAt(0))}
+function fromBase64Signature(s:string){if(!/^[A-Za-z0-9+/]{86}==$/.test(s))throw Error("invalid signature");const raw=atob(s);if(btoa(raw)!==s)throw Error("non-canonical signature");return Uint8Array.from(raw,x=>x.charCodeAt(0))}
 async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:string){
  const chunks:Uint8Array[]=[];const enc=new TextEncoder();
  const u32=(n:number)=>{const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,false);chunks.push(b)};
