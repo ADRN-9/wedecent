@@ -1,12 +1,12 @@
 begin;
 create or replace function wedecent_private.checkpoint_participant_vector_encoding(p_participants jsonb)
-returns bytea language plpgsql immutable strict parallel safe security invoker set search_path=''
+returns bytea language plpgsql immutable parallel safe security invoker set search_path=''
 as $$
 declare
  v_result bytea:=pg_catalog.convert_to('wedecent-checkpoint-participant-vector-v1','UTF8')||pg_catalog.decode('00','hex');
  v jsonb;d text;a text;o text;e bigint;g bigint;h bytea;n integer;
 begin
- if pg_catalog.jsonb_typeof(p_participants)<>'array' then raise exception 'participant vector must be array' using errcode='22023';end if;
+ if p_participants is null or pg_catalog.jsonb_typeof(p_participants)<>'array' then raise exception 'participant vector must be array' using errcode='22023';end if;
  n:=pg_catalog.jsonb_array_length(p_participants);if n<1 then raise exception 'empty participant vector' using errcode='22023';end if;
  if exists(select 1 from pg_catalog.jsonb_array_elements(p_participants) x(value) where pg_catalog.jsonb_typeof(x.value)<>'object' or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(case when pg_catalog.jsonb_typeof(x.value)='object' then x.value else '{}'::jsonb end))<>6 or not(x.value ?& array['device_id','account_id','organization_id','revocation_epoch','head_generation','head_hash'])) then raise exception 'malformed participant' using errcode='22023';end if;
  if exists(select 1 from pg_catalog.jsonb_array_elements(p_participants) x(value) group by (x.value->>'device_id') collate "C" having pg_catalog.count(*)>1) then raise exception 'duplicate participant' using errcode='22023';end if;
@@ -21,18 +21,25 @@ begin
 exception when numeric_value_out_of_range then raise exception 'participant counter overflow' using errcode='22003';
 end $$;
 create or replace function wedecent_private.checkpoint_participant_vector_hash(p_participants jsonb)
-returns bytea language sql immutable strict parallel safe security invoker set search_path=''
+returns bytea language sql immutable parallel safe security invoker set search_path=''
 as $$ select extensions.digest(wedecent_private.checkpoint_participant_vector_encoding(p_participants),'sha256') $$;
 -- Pure comparator only. The authoritative argument must come from rows locked by the calling transaction.
 create or replace function wedecent_private.checkpoint_v1_transition_matches(p_claimed jsonb,p_authoritative_locked_heads jsonb)
-returns boolean language sql immutable strict parallel safe security invoker set search_path=''
-as $$ select wedecent_private.checkpoint_participant_vector_encoding(p_claimed)=wedecent_private.checkpoint_participant_vector_encoding(p_authoritative_locked_heads) $$;
+returns boolean language plpgsql immutable parallel safe security invoker set search_path=''
+as $
+begin
+ if p_claimed is null or p_authoritative_locked_heads is null then
+  raise exception 'historical participant vectors are required' using errcode='22023';
+ end if;
+ return wedecent_private.checkpoint_participant_vector_encoding(p_claimed)=wedecent_private.checkpoint_participant_vector_encoding(p_authoritative_locked_heads);
+end $;
 create or replace function wedecent_private.checkpoint_event_v2_encoding_from_participants(p_action text,p_scope_kind text,p_device_id text,p_account_id text,p_organization_id text,p_operation_id text,p_request_sha256 bytea,p_participants jsonb,p_previous_hash bytea,p_generation bigint,p_revocation_epoch bigint)
-returns bytea language plpgsql immutable strict parallel safe security invoker set search_path=''
+returns bytea language plpgsql immutable parallel safe security invoker set search_path=''
 as $$
 declare
  v_participant_digest bytea;
 begin
+ if p_participants is null then raise exception 'participant vector is required' using errcode='22023'; end if;
  v_participant_digest:=wedecent_private.checkpoint_participant_vector_hash(p_participants);
  if exists(select 1 from pg_catalog.jsonb_array_elements(p_participants) x(value)
    where x.value->>'organization_id'<>p_organization_id) then
