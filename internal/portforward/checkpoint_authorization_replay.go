@@ -27,7 +27,7 @@ type CheckpointAuthorizationReplay struct {
 	Now                 func() time.Time
 }
 
-// CheckpointFinalizationAuditor durably records historical-finalization outcomes.
+// CheckpointFinalizationAuditor durably records outcomes and deduplicates retries by operation ID plus outcome.
 type CheckpointFinalizationAuditor interface {
 	RecordCheckpointFinalization(context.Context, CheckpointRequest, string) error
 }
