@@ -106,14 +106,14 @@ func newLocalCoreForwardingVerifier(
 	if err != nil {
 		return nil, fmt.Errorf("core process: open witnessed pending journal: %w", err)
 	}
+	auditor, err := portforward.NewSupabaseCheckpointFinalizationAuditor(account.Client{}, account.SessionPath(stateDir), auditTrust)
+	if err != nil {
+		return nil, fmt.Errorf("core process: configure authenticated durable checkpoint finalization audit: %w", err)
+	}
 	checkpointProvider := *provider
 	checkpointProvider.Pending = pending
 	if err := checkpointProvider.ValidateConfiguration(); err != nil {
 		return nil, fmt.Errorf("core process: invalid witnessed checkpoint provider: %w", err)
-	}
-	auditor, err := portforward.NewSupabaseCheckpointFinalizationAuditor(account.Client{}, account.SessionPath(stateDir), auditTrust)
-	if err != nil {
-		return nil, fmt.Errorf("core process: configure authenticated durable checkpoint finalization audit: %w", err)
 	}
 	replay := &portforward.CheckpointAuthorizationReplay{
 		Provider:            &checkpointProvider,
