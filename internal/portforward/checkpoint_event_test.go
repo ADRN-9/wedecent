@@ -18,36 +18,36 @@ func TestC187ParticipantOrderingAndHistoricalGoldenVectors(t *testing.T) {
  var v struct {
   Ordering struct {
    Unordered []struct {
-    DeviceID string \`json:"device_id"\`
-    AccountID string \`json:"account_id"\`
-    OrganizationID string \`json:"organization_id"\`
-    RevocationEpoch uint64 \`json:"revocation_epoch"\`
-    HeadGeneration uint64 \`json:"head_generation"\`
-    HeadHash string \`json:"head_hash"\`
-   } \`json:"unordered"\`
-   Encoding string \`json:"encoding_hex"\`
-   Digest string \`json:"digest_sha256"\`
-  } \`json:"participant_ordering"\`
+    DeviceID string `json:"device_id"`
+    AccountID string `json:"account_id"`
+    OrganizationID string `json:"organization_id"`
+    RevocationEpoch uint64 `json:"revocation_epoch"`
+    HeadGeneration uint64 `json:"head_generation"`
+    HeadHash string `json:"head_hash"`
+   } `json:"unordered"`
+   Encoding string `json:"encoding_hex"`
+   Digest string `json:"digest_sha256"`
+  } `json:"participant_ordering"`
   Historical struct {
    Participant struct {
-    DeviceID string \`json:"device_id"\`
-    AccountID string \`json:"account_id"\`
-    OrganizationID string \`json:"organization_id"\`
-    RevocationEpoch uint64 \`json:"revocation_epoch"\`
-    HeadGeneration uint64 \`json:"head_generation"\`
-    HeadHash string \`json:"head_hash"\`
-   } \`json:"participant"\`
+    DeviceID string `json:"device_id"`
+    AccountID string `json:"account_id"`
+    OrganizationID string `json:"organization_id"`
+    RevocationEpoch uint64 `json:"revocation_epoch"`
+    HeadGeneration uint64 `json:"head_generation"`
+    HeadHash string `json:"head_hash"`
+   } `json:"participant"`
    Head struct {
-    DeviceID string \`json:"device_id"\`
-    AccountID string \`json:"account_id"\`
-    OrganizationID string \`json:"organization_id"\`
-    RevocationEpoch uint64 \`json:"revocation_epoch"\`
-    Generation uint64 \`json:"generation"\`
-    StateHash string \`json:"state_hash"\`
-   } \`json:"authoritative_v1_head"\`
-   Digest string \`json:"participant_vector_digest"\`
-   NextGeneration uint64 \`json:"next_generation"\`
-  } \`json:"historical_v1_to_v2"\`
+    DeviceID string `json:"device_id"`
+    AccountID string `json:"account_id"`
+    OrganizationID string `json:"organization_id"`
+    RevocationEpoch uint64 `json:"revocation_epoch"`
+    Generation uint64 `json:"generation"`
+    StateHash string `json:"state_hash"`
+   } `json:"authoritative_v1_head"`
+   Digest string `json:"participant_vector_digest"`
+   NextGeneration uint64 `json:"next_generation"`
+  } `json:"historical_v1_to_v2"`
  }
  if err=json.Unmarshal(raw,&v);err!=nil { t.Fatal(err) }
  participants:=make([]CheckpointParticipant,0,len(v.Ordering.Unordered))
