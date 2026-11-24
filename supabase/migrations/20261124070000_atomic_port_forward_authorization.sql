@@ -791,7 +791,7 @@ comment on column public.devices.revocation_epoch is
 comment on table public.port_forward_authorization_transactions is
     'Immutable idempotency record binding one signed forwarding capability to authoritative account, organization, participant and revocation snapshots.';
 comment on function public.consume_port_forward_authorization(
-    text, uuid, text, text, text, text, uuid, text, text, text,
+    text, text, uuid, text, text, text, text, uuid, text, text, text,
     text, timestamptz, timestamptz, bytea
 ) is
     'Atomically validates initiator, destination, optional router, organization membership, distinct port-forward and mesh.forward permissions, route grant, revocation epochs, idempotency and per-device JTI replay. Linearization point is transaction commit.';
@@ -1310,11 +1310,11 @@ end;
 $$;
 
 revoke all on function public.consume_port_forward_authorization(
-    text, uuid, text, text, text, text, uuid, text, text, text,
+    text, text, uuid, text, text, text, text, uuid, text, text, text,
     text, timestamptz, timestamptz, bytea
 ) from public, anon, authenticated;
 grant execute on function public.consume_port_forward_authorization(
-    text, uuid, text, text, text, text, uuid, text, text, text,
+    text, text, uuid, text, text, text, text, uuid, text, text, text,
     text, timestamptz, timestamptz, bytea
 ) to service_role;
 
@@ -1323,7 +1323,7 @@ comment on column public.devices.revocation_epoch is
 comment on table public.port_forward_authorization_transactions is
     'Immutable idempotency record binding one signed forwarding capability to authoritative account, organization, participant and revocation snapshots.';
 comment on function public.consume_port_forward_authorization(
-    text, uuid, text, text, text, text, uuid, text, text, text,
+    text, text, uuid, text, text, text, text, uuid, text, text, text,
     text, timestamptz, timestamptz, bytea
 ) is
     'Atomically validates initiator, destination, optional router, organization membership, distinct port-forward and mesh.forward permissions, route grant, revocation epochs, idempotency and per-device JTI replay. Linearization point is transaction commit.';
@@ -1841,11 +1841,11 @@ end;
 $$;
 
 revoke all on function public.consume_port_forward_authorization(
-    text, uuid, text, text, text, text, uuid, text, text, text,
+    text, text, uuid, text, text, text, text, uuid, text, text, text,
     text, timestamptz, timestamptz, bytea
 ) from public, anon, authenticated;
 grant execute on function public.consume_port_forward_authorization(
-    text, uuid, text, text, text, text, uuid, text, text, text,
+    text, text, uuid, text, text, text, text, uuid, text, text, text,
     text, timestamptz, timestamptz, bytea
 ) to service_role;
 
@@ -1854,7 +1854,7 @@ comment on column public.devices.revocation_epoch is
 comment on table public.port_forward_authorization_transactions is
     'Immutable idempotency record binding one signed forwarding capability to authoritative account, organization, participant and revocation snapshots.';
 comment on function public.consume_port_forward_authorization(
-    text, uuid, text, text, text, text, uuid, text, text, text,
+    text, text, uuid, text, text, text, text, uuid, text, text, text,
     text, timestamptz, timestamptz, bytea
 ) is
     'Atomically validates initiator, destination, optional router, organization membership, distinct port-forward and mesh.forward permissions, route grant, revocation epochs, idempotency and per-device JTI replay. Linearization point is transaction commit.';
