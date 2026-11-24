@@ -22,14 +22,28 @@ type CheckpointAuthorizationReplay struct {
 	LocalDeviceID   mesh.DeviceID
 	DeviceSigner    crypto.Signer
 	Memberships     CheckpointMembershipResolver
-	RouteVerifier   CheckpointRouteAuthorizationVerifier
-	Now             func() time.Time
+	RouteVerifier       CheckpointRouteAuthorizationVerifier
+	FinalizationAuditor CheckpointFinalizationAuditor
+	Now                 func() time.Time
 }
+
+// CheckpointFinalizationAuditor durably records historical-finalization outcomes.
+type CheckpointFinalizationAuditor interface {
+	RecordCheckpointFinalization(context.Context, CheckpointRequest, string) error
+}
+
+const (
+	CheckpointFinalizationStarted = "finalization_started"
+	CheckpointFinalizationComplete = "finalized"
+	CheckpointFinalizationRevoked = "rejected_revocation"
+	CheckpointFinalizationMembershipUnavailable = "membership_unavailable"
+	CheckpointFinalizationFailed = "finalization_failed"
+)
 
 // FinalizeExpiredPortForwardAuthorization completes an already-consumed capability without creating a new authorization.
 // The exact signed request must already exist in the durable pending journal.
 func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(ctx context.Context, authorization Authorization) error {
-	if r == nil || r.Provider == nil || r.DeviceSigner == nil || len(r.ControlPlaneKey) != ed25519.PublicKeySize {
+	if r == nil || r.Provider == nil || r.DeviceSigner == nil || r.Memberships == nil || r.FinalizationAuditor == nil || len(r.ControlPlaneKey) != ed25519.PublicKeySize {
 		return ErrCheckpointUnavailable
 	}
 	if ctx == nil {
@@ -75,7 +89,11 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 		if r.RouteVerifier == nil {
 			return ErrRouteAuthorizationRequired
 		}
-		if err := r.RouteVerifier.VerifyCheckpointRouteAuthorization(ctx, authorization); err != nil {
+		historicalVerifier, ok := r.RouteVerifier.(CheckpointRouteFinalizationVerifier)
+		if !ok {
+			return ErrRouteAuthorizationRequired
+		}
+		if err := historicalVerifier.VerifyCheckpointRouteAuthorizationForFinalization(ctx, authorization); err != nil {
 			return errors.Join(ErrRouteAuthorizationMismatch, err)
 		}
 	}
@@ -112,7 +130,34 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 	if _, err := CheckpointRequestFingerprint(request); err != nil {
 		return err
 	}
-	return r.Provider.Finalize(ctx, request)
+
+	initiator, initiatorErr := r.Memberships.ResolveCheckpointMembership(ctx, claims.InitiatingDevice)
+	destination, destinationErr := r.Memberships.ResolveCheckpointMembership(ctx, claims.DestinationDevice)
+	if initiatorErr != nil || destinationErr != nil ||
+		initiator != request.Initiator || destination != request.Destination ||
+		initiator.DeviceID != string(claims.InitiatingDevice) ||
+		destination.DeviceID != string(claims.DestinationDevice) ||
+		initiator.OrganizationID != destination.OrganizationID ||
+		!validCheckpointEndpoint(initiator) || !validCheckpointEndpoint(destination) {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationRevoked); err != nil {
+			return errors.Join(ErrCheckpointRevoked, err)
+		}
+		if initiatorErr != nil || destinationErr != nil {
+			return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr)
+		}
+		return ErrCheckpointRevoked
+	}
+	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationStarted); err != nil {
+		return errors.Join(ErrCheckpointUnavailable, err)
+	}
+	if err := r.Provider.Finalize(ctx, request); err != nil {
+		_ = r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationFailed)
+		return err
+	}
+	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationComplete); err != nil {
+		return errors.Join(ErrCheckpointUnavailable, err)
+	}
+	return nil
 }
 func (r *CheckpointAuthorizationReplay) ConsumePortForwardAuthorization(context.Context, string, time.Time) error {
 	return ErrCheckpointUnavailable

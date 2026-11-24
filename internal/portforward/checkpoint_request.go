@@ -17,6 +17,26 @@ type CheckpointRouteAuthorizationVerifier interface {
 	VerifyCheckpointRouteAuthorization(context.Context, Authorization) error
 }
 
+// CheckpointRouteFinalizationVerifier authenticates the historical route binding
+// without checking current expiry or consuming the route JTI.
+type CheckpointRouteFinalizationVerifier interface {
+	VerifyCheckpointRouteAuthorizationForFinalization(context.Context, Authorization) error
+}
+
+// MeshCheckpointRouteAuthorizationVerifier adapts the dedicated route trust
+// domain for normal consumption and historical finalization.
+type MeshCheckpointRouteAuthorizationVerifier struct {
+	Verifier mesh.RouteAuthorizationVerifier
+}
+
+func (v MeshCheckpointRouteAuthorizationVerifier) VerifyCheckpointRouteAuthorization(ctx context.Context, authorization Authorization) error {
+	return v.Verifier.VerifyAndConsume(ctx, authorization.RouteAuthorization, authorization.Claims.Route, authorization.Claims.Router)
+}
+
+func (v MeshCheckpointRouteAuthorizationVerifier) VerifyCheckpointRouteAuthorizationForFinalization(ctx context.Context, authorization Authorization) error {
+	return v.Verifier.VerifyHistorical(ctx, authorization.RouteAuthorization, authorization.Claims.Route, authorization.Claims.Router)
+}
+
 type CheckpointMembershipResolver interface {
 	ResolveCheckpointMembership(context.Context, mesh.DeviceID) (CheckpointEndpoint, error)
 }

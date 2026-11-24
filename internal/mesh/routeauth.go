@@ -302,6 +302,47 @@ func (v RouteAuthorizationVerifier) VerifyAndConsume(
 	return nil
 }
 
+// VerifyHistorical validates the exact signed route capability for recovery of
+// a previously consumed operation. It deliberately performs no expiry check
+// and never consumes the route JTI; callers must first establish the matching
+// historical checkpoint operation and current endpoint membership.
+func (v RouteAuthorizationVerifier) VerifyHistorical(
+	ctx context.Context,
+	auth RouteAuthorization,
+	route Route,
+	router DeviceID,
+) error {
+	if ctx == nil {
+		return ErrRouteAuthorizationInvalid
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if len(v.PublicKey) != ed25519.PublicKeySize || strings.TrimSpace(v.KeyID) == "" {
+		return ErrRouteAuthorizationInvalid
+	}
+	auth = cloneRouteAuthorization(auth)
+	if err := validateRouteAuthorizationSyntax(auth); err != nil {
+		return err
+	}
+	if auth.KeyID != strings.TrimSpace(v.KeyID) {
+		return ErrRouteAuthorizationSignature
+	}
+	signature, err := base64.RawURLEncoding.Strict().DecodeString(auth.Signature)
+	if err != nil || len(signature) != ed25519.SignatureSize ||
+		base64.RawURLEncoding.EncodeToString(signature) != auth.Signature {
+		return ErrRouteAuthorizationSignature
+	}
+	message, err := routeAuthorizationMessage(auth)
+	if err != nil || !ed25519.Verify(v.PublicKey, message, signature) {
+		return ErrRouteAuthorizationSignature
+	}
+	if !authorizationMatchesRoute(auth.Claims, route, router) {
+		return ErrRouteAuthorizationMismatch
+	}
+	return nil
+}
+
 // RouteAuthorizationForwardAuthorizer adapts signed single-use route
 // capabilities to the ForwardAuthorizer seam.
 //

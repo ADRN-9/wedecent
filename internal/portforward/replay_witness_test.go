@@ -316,6 +316,13 @@ func TestFileCheckpointPendingStoreSurvivesRestartAndRejectsHistoricalReceipt(t 
 
 type checkpointMembershipFixture map[string]CheckpointEndpoint
 
+type checkpointFinalizationAuditFixture struct { outcomes []string }
+
+func (a *checkpointFinalizationAuditFixture) RecordCheckpointFinalization(_ context.Context, _ CheckpointRequest, outcome string) error {
+	a.outcomes = append(a.outcomes, outcome)
+	return nil
+}
+
 func (m checkpointMembershipFixture) ResolveCheckpointMembership(ctx context.Context, id mesh.DeviceID) (CheckpointEndpoint, error) {
 	if err := ctx.Err(); err != nil {
 		return CheckpointEndpoint{}, err
@@ -1095,7 +1102,8 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 		witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch: initiator.RevocationEpoch, used: map[string][32]byte{}}
 	}
 	now := start
-	replay := &CheckpointAuthorizationReplay{Provider: provider, ControlPlaneKey: controlPublic, LocalDeviceID: claims.InitiatingDevice, DeviceSigner: initPrivate, Memberships: memberships, Now: func() time.Time { return now }}
+	audit := &checkpointFinalizationAuditFixture{}
+	replay := &CheckpointAuthorizationReplay{Provider: provider, ControlPlaneKey: controlPublic, LocalDeviceID: claims.InitiatingDevice, DeviceSigner: initPrivate, Memberships: memberships, FinalizationAuditor: audit, Now: func() time.Time { return now }}
 	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrReplayUnavailable) {
 		t.Fatalf("injected unresolved journal result: %v", err)
 	}
@@ -1107,6 +1115,9 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 	now = time.UnixMilli(claims.ExpiresAtUnixMS).Add(time.Second).UTC()
 	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); err != nil {
 		t.Fatalf("expiry-independent finalization failed: %v", err)
+	}
+	if len(audit.outcomes) != 2 || audit.outcomes[0] != CheckpointFinalizationStarted || audit.outcomes[1] != CheckpointFinalizationComplete {
+		t.Fatalf("historical finalization audit outcomes=%v", audit.outcomes)
 	}
 	consumer, ok := checkpointConsumer(CheckpointRequest{Initiator: initiator, Destination: destination, ConsumingDeviceID: string(claims.InitiatingDevice)})
 	if !ok {
@@ -1124,6 +1135,32 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 			t.Fatalf("witness %s was committed again during finalization", witness.id)
 		}
 	}
+}
+func TestExpiredFinalizationRejectsMembershipRevocationAfterWitnessCommit(t *testing.T) {
+	initPublic, initPrivate, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
+	destPublic, _, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
+	controlPublic, controlPrivate, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
+	start := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(start, DirectionLocal)
+	claims.InitiatingDevice = mesh.DeviceID(identity.DeviceID(initPublic)); claims.DestinationDevice = mesh.DeviceID(identity.DeviceID(destPublic))
+	claims.Route.Source, claims.Route.Destination = claims.InitiatingDevice, claims.DestinationDevice
+	claims.Route.Hops[0].From, claims.Route.Hops[0].To = claims.InitiatingDevice, claims.DestinationDevice
+	claims.ExpiresAtUnixMS = start.Add(20*time.Second).UnixMilli(); claims.Route.ExpiresAt = time.UnixMilli(claims.ExpiresAtUnixMS).UTC()
+	authorization, err := SignAuthorization(controlPrivate, claims); if err != nil { t.Fatal(err) }
+	initiator := CheckpointEndpoint{DeviceID:string(claims.InitiatingDevice), AccountID:"11111111-1111-4111-8111-111111111111", OrganizationID:"33333333-3333-4333-8333-333333333333", RevocationEpoch:4}
+	destination := CheckpointEndpoint{DeviceID:string(claims.DestinationDevice), AccountID:"22222222-2222-4222-8222-222222222222", OrganizationID:"33333333-3333-4333-8333-333333333333", RevocationEpoch:7}
+	memberships := checkpointMembershipFixture{string(claims.InitiatingDevice):initiator, string(claims.DestinationDevice):destination}
+	primary := newDeterministicCheckpointProvider(t); primary.register(initiator); primary.register(destination)
+	store := NewMemoryCheckpointPendingStore(); provider, witnesses := newWitnessedFixture(t, primary, store)
+	for _, witness := range witnesses { witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch; witness.revoked[witnessScope(destination)] = destination.RevocationEpoch; witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch:initiator.RevocationEpoch, used:map[string][32]byte{}} }
+	now := start; audit := &checkpointFinalizationAuditFixture{}
+	replay := &CheckpointAuthorizationReplay{Provider:provider, ControlPlaneKey:controlPublic, LocalDeviceID:claims.InitiatingDevice, DeviceSigner:initPrivate, Memberships:memberships, FinalizationAuditor:audit, Now:func() time.Time{return now}}
+	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); err != nil { t.Fatalf("initial authorization consumption: %v", err) }
+	updated := initiator; updated.RevocationEpoch++; memberships[string(claims.InitiatingDevice)] = updated
+	now = time.UnixMilli(claims.ExpiresAtUnixMS).Add(time.Second).UTC()
+	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrCheckpointRevoked) { t.Fatalf("revoked historical operation finalized: %v", err) }
+	if len(audit.outcomes) != 1 || audit.outcomes[0] != CheckpointFinalizationRevoked { t.Fatalf("revocation outcome not auditable: %v", audit.outcomes) }
+	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("finalization changed witness history at %s", witness.id) } }
 }
 func TestFinalizationRejectsPrimaryOnlyAmbiguousOperation(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
