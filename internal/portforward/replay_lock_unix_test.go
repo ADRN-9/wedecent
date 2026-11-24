@@ -109,3 +109,20 @@ func TestUnixReplayOSLockWaitHonorsCancellation(t *testing.T) {
 		t.Fatal("OS lock waiter did not honor cancellation")
 	}
 }
+
+
+func TestUnixReplayLockAnchorHasPrivateOwnership(t *testing.T) {
+	path := filepath.Join(newReplayTestDir(t), "replay.json")
+	unlock, _, err := lockReplayFileOSContext(context.Background(), path, path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unlock(); err != nil {
+		t.Fatal(err)
+	}
+	for _, lockPath := range []string{path + ".lock", path + ".lock.anchor"} {
+		if err := secureReplayFile(lockPath); err != nil {
+			t.Fatalf("lock metadata %s is not private: %v", filepath.Base(lockPath), err)
+		}
+	}
+}
