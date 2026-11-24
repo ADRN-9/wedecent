@@ -54,7 +54,7 @@ insert into public.port_forward_authorization_transactions(
  'port_forward.local','local','wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb',null,
  '11000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092',null,
  '22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',null,
- 1,1,null,null,null,clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
+ 1,2,null,null,null,clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
 );
 
 insert into public.route_authorization_grants(
@@ -79,7 +79,7 @@ insert into public.port_forward_authorization_transactions(
  'port_forward.local','local','wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb','wd_cccccccccccccccc',
  '11000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092',
  '22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',
- 1,1,1,'55000000-0000-4000-8000-000000000091','BBBBBBBBBBBBBBBBBBBBBB',
+ 1,2,2,'55000000-0000-4000-8000-000000000091','BBBBBBBBBBBBBBBBBBBBBB',
  clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
 );
 
@@ -88,7 +88,7 @@ language sql as $$
 select jsonb_build_object(
  'version',1,
  'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-000000000091','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
- 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
+ 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',2),
  'router',null,'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti','AAAAAAAAAAAAAAAAAAAAAA',
  'authorization_sha256',repeat('a',64),'route_authorization_sha256',repeat('0',64),
  'route_authorization_id','','route_authorization_jti','','route_authorization_json','',
@@ -101,8 +101,8 @@ language sql as $q$
 select jsonb_build_object(
  'version',1,
  'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-000000000091','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
- 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
- 'router',jsonb_build_object('device_id','wd_cccccccccccccccc','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
+ 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',2),
+ 'router',jsonb_build_object('device_id','wd_cccccccccccccccc','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',2),
  'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti','BBBBBBBBBBBBBBBBBBBBBB',
  'authorization_sha256',repeat('b',64),'route_authorization_sha256',repeat('c',64),
  'route_authorization_id','55000000-0000-4000-8000-000000000091',
