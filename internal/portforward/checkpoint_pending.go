@@ -1068,17 +1068,23 @@ func (s *MemoryCheckpointPendingStore) Resolve(ctx context.Context, request Chec
 }
 
 
+func checkpointOperationID(request CheckpointRequest) (string, error) {
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	_, _ = io.WriteString(h, "wedecent-checkpoint-finalization-v1\n")
+	_, _ = h.Write(fingerprint[:])
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
 func checkpointFinalizationID(request CheckpointRequest, receipt CheckpointReceipt) (string, error) {
 	fingerprint, err := CheckpointRequestFingerprint(request)
 	if err != nil || receipt.RequestSHA256 != fingerprint || receipt.JTI != request.JTI {
 		return "", ErrCheckpointIntegrity
 	}
-	h := sha256.New()
-	_, _ = io.WriteString(h, "wedecent-checkpoint-finalization-v1\n")
-	_, _ = h.Write(fingerprint[:])
-	digest := CheckpointReceiptDigest(receipt)
-	_, _ = h.Write([]byte(digest))
-	return hex.EncodeToString(h.Sum(nil)), nil
+	return checkpointOperationID(request)
 }
 
 func loadFinalizationComplete(snapshot checkpointPendingSnapshot, request CheckpointRequest, receipt CheckpointReceipt, operationID string) (bool, error) {
