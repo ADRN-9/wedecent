@@ -1357,7 +1357,7 @@ func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context
 	if err != nil {
 		return CheckpointFenceOperation{}, err
 	}
-	return p.executeOrganizationFence(ctx, scope, CheckpointFenceFinalize, operationID, fingerprint, request.AuthorizationSHA256, checkpointRequestParticipants(request), heads)
+	return p.executeOrganizationFence(ctx, scope, CheckpointFenceFinalize, operationID, fingerprint, request.AuthorizationSHA256, nil, checkpointRequestParticipants(request), heads)
 }
 
 func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.Context, endpoint CheckpointEndpoint, next uint64, authorizationHash [sha256.Size]byte, authorizationProof []byte) error {
