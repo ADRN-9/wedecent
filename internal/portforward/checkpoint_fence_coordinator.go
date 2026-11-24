@@ -22,23 +22,83 @@ type CheckpointFenceCoordinator struct {
 	Quorum            int
 }
 
-// Execute reserves the exact operation before asking witnesses to persist it.
-// A quorum is committed by the primary only after each acknowledgement verifies.
-// A partial quorum leaves the reservation pending for exact retry/recovery.
+// Execute is retained for isolated fence-store tests and non-checkpoint use.
+// Authorization lifecycle callers must use ExecuteWithCheckpointHeads.
 func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request CheckpointFenceRequest) (CheckpointFenceOperation, error) {
+	return c.execute(ctx, request, nil, func() (CheckpointFenceToken, error) {
+		return c.Primary.ReserveFence(ctx, request)
+	}, func(token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement) error {
+		return c.Primary.CommitFence(ctx, token, acks)
+	})
+}
+
+// ExecuteWithCheckpointHeads requires a primary adapter that atomically compares
+// all authoritative checkpoint heads when reserving and committing the fence.
+// A file-only fence journal is deliberately insufficient for authorization.
+func (c *CheckpointFenceCoordinator) ExecuteWithCheckpointHeads(
+	ctx context.Context,
+	request CheckpointFenceRequest,
+	heads []CheckpointFenceParticipantHead,
+) (CheckpointFenceOperation, error) {
+	atomicPrimary, ok := c.Primary.(CheckpointFenceAtomicPrimary)
+	if !ok || len(heads) == 0 {
+		return CheckpointFenceOperation{}, ErrCheckpointUnavailable
+	}
+	reserve := func() (CheckpointFenceToken, error) {
+		existing, found, err := c.Primary.LoadFence(ctx, request.Scope, request.OperationID)
+		if err != nil {
+			return CheckpointFenceToken{}, err
+		}
+		if found {
+			if !checkpointFenceTokenMatchesRequest(existing.Token, request) {
+				return CheckpointFenceToken{}, ErrCheckpointConflict
+			}
+			return cloneCheckpointFenceToken(existing.Token), nil
+		}
+		return atomicPrimary.ReserveFenceWithCheckpointHeads(ctx, request, cloneCheckpointFenceParticipantHeads(heads))
+	}
+	commit := func(token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement) error {
+		return atomicPrimary.CommitFenceWithCheckpointHeads(ctx, token, acks, cloneCheckpointFenceParticipantHeads(heads))
+	}
+	return c.execute(ctx, request, heads, reserve, commit)
+}
+
+func (c *CheckpointFenceCoordinator) execute(
+	ctx context.Context,
+	request CheckpointFenceRequest,
+	heads []CheckpointFenceParticipantHead,
+	reserve func() (CheckpointFenceToken, error),
+	commit func(CheckpointFenceToken, []CheckpointFenceAcknowledgement) error,
+) (CheckpointFenceOperation, error) {
 	if c == nil || ctx == nil || c.Primary == nil || len(c.PrimaryKey) != ed25519.PublicKeySize ||
 		c.WitnessSetVersion == "" || !validFenceCoordinatorWitnesses(c.Witnesses, c.Quorum, c.PrimaryKey) ||
 		request.WitnessSetVersion != c.WitnessSetVersion ||
 		!sameStringSet(request.WitnessIDs, checkpointFenceClientIDs(c.Witnesses)) {
 		return CheckpointFenceOperation{}, ErrCheckpointUnavailable
 	}
-	token, err := c.Primary.ReserveFence(ctx, request)
+	if err := ctx.Err(); err != nil {
+		return CheckpointFenceOperation{}, err
+	}
+	if len(heads) > 0 {
+		if err := validateFenceParticipantHeads(heads, request.Scope); err != nil {
+			return CheckpointFenceOperation{}, err
+		}
+	}
+	token, err := reserve()
 	if err != nil {
 		return CheckpointFenceOperation{}, err
 	}
 	if err := verifyCheckpointFenceTokenSignature(token, c.PrimaryKey); err != nil ||
-		token.Scope != request.Scope || token.OperationID != request.OperationID {
+		!checkpointFenceTokenMatchesRequest(token, request) {
 		return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+	}
+	if existing, found, loadErr := c.Primary.LoadFence(ctx, token.Scope, token.OperationID); loadErr != nil {
+		return CheckpointFenceOperation{}, errors.Join(ErrCheckpointAmbiguous, loadErr)
+	} else if found && existing.Committed {
+		if err := c.verifyCommittedOperation(existing, token); err != nil {
+			return CheckpointFenceOperation{}, err
+		}
+		return existing, nil
 	}
 
 	byID := make(map[string]CheckpointFenceWitnessClient, len(c.Witnesses))
@@ -66,6 +126,9 @@ func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request Checkp
 			return CheckpointFenceOperation{}, errors.Join(ErrCheckpointQuorum, ctx.Err())
 		case response := <-responses:
 			trust, ok := byID[response.id]
+			if !ok {
+				return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+			}
 			if response.err != nil {
 				if errors.Is(response.err, ErrCheckpointFenceExpired) {
 					continue
@@ -78,11 +141,8 @@ func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request Checkp
 				}
 				continue
 			}
-			if !ok {
-				return CheckpointFenceOperation{}, ErrCheckpointIntegrity
-			}
 			if VerifyCheckpointFenceAcknowledgement(response.ack, response.id, trust.PublicKey) != nil {
-				continue
+				return CheckpointFenceOperation{}, ErrCheckpointIntegrity
 			}
 			digest, digestErr := CheckpointFenceTokenDigest(token)
 			if digestErr != nil {
@@ -101,10 +161,12 @@ func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request Checkp
 	if len(acks) < c.Quorum {
 		return CheckpointFenceOperation{}, ErrCheckpointQuorum
 	}
-	if err := c.Primary.CommitFence(ctx, token, acks); err != nil {
+	if err := commit(token, acks); err != nil {
 		operation, found, loadErr := c.Primary.LoadFence(ctx, token.Scope, token.OperationID)
-		if loadErr == nil && found && operation.Committed && sameCheckpointFenceToken(operation.Token, token) {
-			return operation, nil
+		if loadErr == nil && found && operation.Committed {
+			if verifyErr := c.verifyCommittedOperation(operation, token); verifyErr == nil {
+				return operation, nil
+			}
 		}
 		return CheckpointFenceOperation{}, errors.Join(ErrCheckpointAmbiguous, err, loadErr)
 	}
@@ -112,10 +174,85 @@ func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request Checkp
 	if err != nil {
 		return CheckpointFenceOperation{}, errors.Join(ErrCheckpointAmbiguous, err)
 	}
-	if !found || !operation.Committed || !sameCheckpointFenceToken(operation.Token, token) {
+	if !found || !operation.Committed {
 		return CheckpointFenceOperation{}, ErrCheckpointAmbiguous
 	}
+	if err := c.verifyCommittedOperation(operation, token); err != nil {
+		return CheckpointFenceOperation{}, err
+	}
 	return operation, nil
+}
+
+func (c *CheckpointFenceCoordinator) verifyCommittedOperation(operation CheckpointFenceOperation, token CheckpointFenceToken) error {
+	if !operation.Committed || !sameCheckpointFenceToken(operation.Token, token) {
+		return ErrCheckpointIntegrity
+	}
+	byID := make(map[string]ed25519.PublicKey, len(c.Witnesses))
+	for _, witness := range c.Witnesses {
+		byID[witness.ID] = witness.PublicKey
+	}
+	seen := make(map[string]bool, len(operation.Acknowledgements))
+	digest, err := CheckpointFenceTokenDigest(token)
+	if err != nil {
+		return err
+	}
+	for _, ack := range operation.Acknowledgements {
+		key, ok := byID[ack.WitnessID]
+		if !ok || seen[ack.WitnessID] || VerifyCheckpointFenceAcknowledgement(ack, ack.WitnessID, key) != nil ||
+			ack.TokenSHA256 != digest || ack.Generation != token.Generation || ack.Action != token.Action ||
+			ack.OperationID != token.OperationID || ack.CommittedAtUnixMS > token.ExpiresAtUnixMS {
+			return ErrCheckpointIntegrity
+		}
+		seen[ack.WitnessID] = true
+	}
+	if len(seen) < c.Quorum {
+		return ErrCheckpointQuorum
+	}
+	return nil
+}
+
+func checkpointFenceTokenMatchesRequest(token CheckpointFenceToken, request CheckpointFenceRequest) bool {
+	return token.Scope == request.Scope && token.Action == request.Action &&
+		token.OperationID == request.OperationID && token.RequestSHA256 == request.RequestSHA256 &&
+		token.AuthorizationSHA256 == request.AuthorizationSHA256 &&
+		token.ExpectedRevocationEpoch == request.ExpectedRevocationEpoch &&
+		token.ResultingRevocationEpoch == request.ExpectedRevocationEpoch+boolUint64(request.Action == CheckpointFenceRevoke) &&
+		token.WitnessSetVersion == request.WitnessSetVersion &&
+		sameStringSet(token.WitnessIDs, request.WitnessIDs) &&
+		(request.ExpectedFenceGeneration == 0 || token.ExpectedFenceGeneration == request.ExpectedFenceGeneration) &&
+		(request.PreviousFenceSHA256 == ([sha256.Size]byte{}) || token.PreviousFenceSHA256 == request.PreviousFenceSHA256)
+}
+
+func boolUint64(value bool) uint64 {
+	if value {
+		return 1
+	}
+	return 0
+}
+
+func cloneCheckpointFenceParticipantHeads(heads []CheckpointFenceParticipantHead) []CheckpointFenceParticipantHead {
+	out := make([]CheckpointFenceParticipantHead, len(heads))
+	for i, item := range heads {
+		item.Head.Signature = append([]byte(nil), item.Head.Signature...)
+		out[i] = item
+	}
+	return out
+}
+
+func validateFenceParticipantHeads(heads []CheckpointFenceParticipantHead, scope CheckpointWitnessScope) error {
+	seen := make(map[CheckpointWitnessScope]bool, len(heads))
+	for _, item := range heads {
+		if !validCheckpointEndpoint(item.Endpoint) ||
+			item.Endpoint.OrganizationID != scope.OrganizationID ||
+			item.Head.DeviceID != item.Endpoint.DeviceID ||
+			item.Head.AccountID != item.Endpoint.AccountID ||
+			item.Head.OrganizationID != item.Endpoint.OrganizationID ||
+			seen[witnessScope(item.Endpoint)] {
+			return ErrCheckpointIntegrity
+		}
+		seen[witnessScope(item.Endpoint)] = true
+	}
+	return nil
 }
 
 func validFenceCoordinatorWitnesses(witnesses []CheckpointFenceWitnessClient, quorum int, primaryKey ed25519.PublicKey) bool {
@@ -148,4 +285,16 @@ func checkpointFenceClientIDs(witnesses []CheckpointFenceWitnessClient) []string
 		ids[i] = witness.ID
 	}
 	return ids
+}
+
+func verifyCheckpointFenceTokenSignature(token CheckpointFenceToken, primaryKey ed25519.PublicKey) error {
+	if len(primaryKey) != ed25519.PublicKeySize || token.PrimaryKeyID != checkpointProviderKeyID(primaryKey) ||
+		len(token.Signature) != ed25519.SignatureSize {
+		return ErrCheckpointIntegrity
+	}
+	message, err := checkpointFenceTokenMessage(token)
+	if err != nil || !ed25519.Verify(primaryKey, message, token.Signature) {
+		return ErrCheckpointIntegrity
+	}
+	return nil
 }
