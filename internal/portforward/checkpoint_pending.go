@@ -1,7 +1,6 @@
 package portforward
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -217,8 +216,7 @@ func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequ
 			if old.Scope != ack.Scope || old.JTI != ack.JTI ||
 				old.RequestSHA256 != ack.RequestSHA256 ||
 				old.PrimaryReceiptSHA256 != ack.PrimaryReceiptSHA256 ||
-				old.WitnessKeyID != ack.WitnessKeyID ||
-				old.Status != ack.Status || !bytes.Equal(old.Signature, ack.Signature) {
+				old.WitnessKeyID != ack.WitnessKeyID {
 				return false, ErrCheckpointConflict
 			}
 			return false, nil
