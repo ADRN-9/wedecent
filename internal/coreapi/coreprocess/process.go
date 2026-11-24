@@ -28,19 +28,19 @@ import (
 var ErrServerRequired = errors.New("core process: IPC server is required")
 
 type Config struct {
-	ClientStateDir           string
-	SupabaseURL              string
-	PublishableKey           string
-	AccountClient            coreapi.AccountClient
-	ConnectionBackend        coreapi.ConnectionBackend
-	RouteSource              coreconnect.RouteRequestSource
-	RouterService            v1.RouterService
-	Forwarding               *portforward.ManagerConfig
-	ForwardingReplayEndpoint string // Deprecated: single-provider replay is rejected.
-	ForwardingReplayAPIKey   string // Deprecated: single-provider replay is rejected.
+	ClientStateDir               string
+	SupabaseURL                  string
+	PublishableKey               string
+	AccountClient                coreapi.AccountClient
+	ConnectionBackend            coreapi.ConnectionBackend
+	RouteSource                  coreconnect.RouteRequestSource
+	RouterService                v1.RouterService
+	Forwarding                   *portforward.ManagerConfig
+	ForwardingReplayEndpoint     string // Deprecated: single-provider replay is rejected.
+	ForwardingReplayAPIKey       string // Deprecated: single-provider replay is rejected.
 	ForwardingCheckpointProvider *portforward.WitnessedReplayCheckpointProvider
 	ForwardingMembershipResolver portforward.CheckpointMembershipResolver
-	ForwardingRouteVerifier portforward.CheckpointRouteAuthorizationVerifier
+	ForwardingRouteVerifier      portforward.CheckpointRouteAuthorizationVerifier
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection

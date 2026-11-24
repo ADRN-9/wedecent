@@ -144,16 +144,16 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 			t.Fatal(err)
 		}
 		witnesses[i] = portforward.CheckpointWitnessTrust{
-			Witness: coreProcessCheckpointWitness{},
-			ID:      []string{"witness-a", "witness-b", "witness-c"}[i],
+			Witness:   coreProcessCheckpointWitness{},
+			ID:        []string{"witness-a", "witness-b", "witness-c"}[i],
 			PublicKey: publicKey,
 		}
 	}
 	provider := &portforward.WitnessedReplayCheckpointProvider{
-		Primary: coreProcessCheckpointPrimary{},
+		Primary:    coreProcessCheckpointPrimary{},
 		PrimaryKey: primaryPublic,
-		Witnesses: witnesses,
-		Quorum: 2,
+		Witnesses:  witnesses,
+		Quorum:     2,
 	}
 	verifier, err := newLocalCoreForwardingVerifier(
 		stateDir,
