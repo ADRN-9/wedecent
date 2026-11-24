@@ -81,11 +81,15 @@ func lockReplayFileContext(ctx context.Context, path string) (func() error, bool
 }
 
 func lockReplayFileContextObserved(ctx context.Context, path string, onWait func()) (func() error, bool, error) {
+	return lockReplayFileContextForObserved(ctx, path, path, onWait)
+}
+
+func lockReplayFileContextForObserved(ctx context.Context, path, statePath string, onWait func()) (func() error, bool, error) {
 	unlockProcess, err := lockReplayProcessPathContext(ctx, path, onWait)
 	if err != nil {
 		return nil, false, err
 	}
-	unlockFile, created, err := lockReplayFileOSContext(ctx, path)
+	unlockFile, created, err := lockReplayFileOSContext(ctx, path, statePath, onWait)
 	if err != nil {
 		unlockProcess()
 		return nil, false, err
