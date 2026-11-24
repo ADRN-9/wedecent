@@ -2,8 +2,9 @@ import {createClient} from "npm:@supabase/supabase-js@2";
 import {deviceIDFromPublicKey} from "../_shared/port-forward-replay.mjs";
 const headers={"Access-Control-Allow-Origin":"https://app.wedecent.com","Access-Control-Allow-Headers":"authorization, apikey, content-type","Access-Control-Allow-Methods":"POST, OPTIONS"};
 function reply(b:unknown,s=200){return new Response(JSON.stringify(b),{status:s,headers:{...headers,"Content-Type":"application/json","Cache-Control":"no-store"}})}
+function bufferSource(bytes:Uint8Array):ArrayBuffer{const copy=new Uint8Array(bytes.byteLength);copy.set(bytes);return copy.buffer as ArrayBuffer}
 export function canonical(v:unknown):string{if(v===null||typeof v==="boolean"||typeof v==="string")return JSON.stringify(v);if(typeof v==="number"){if(!Number.isSafeInteger(v))throw Error("unsafe number");return JSON.stringify(v)}if(Array.isArray(v))return "["+v.map(canonical).join(",")+"]";if(typeof v==="object")return "{"+Object.keys(v as object).sort().map(k=>JSON.stringify(k)+":"+canonical((v as Record<string,unknown>)[k])).join(",")+"}";throw Error("invalid value")}
-export async function digest(v:unknown){const h=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(canonical(v))));return [...h].map(x=>x.toString(16).padStart(2,"0")).join("")}
+export async function digest(v:unknown){const h=new Uint8Array(await crypto.subtle.digest("SHA-256",bufferSource(new TextEncoder().encode(canonical(v)))));return [...h].map(x=>x.toString(16).padStart(2,"0")).join("")}
 function serviceKey(){const k=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");if(k)return k;const x=Deno.env.get("SUPABASE_SECRET_KEYS");if(x){const o=JSON.parse(x);if(o.default)return o.default}throw Error("service key missing")}
 async function readBoundedBody(req:Request):Promise<string|null>{
  const reader=req.body?.getReader();if(!reader)return "";
@@ -43,8 +44,8 @@ async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:st
  const publicKey=fromBase64(String(p.device_public_key));const signature=fromBase64Signature(String(p.device_signature));
  if(await deviceIDFromPublicKey(publicKey)!==p.consuming_device_id)throw Error("device identity mismatch");
  raw(publicKey);const size=chunks.reduce((n,x)=>n+x.length,0);const message=new Uint8Array(size);let offset=0;for(const part of chunks){message.set(part,offset);offset+=part.length}
- const key=await crypto.subtle.importKey("raw",publicKey,{name:"Ed25519"},false,["verify"]);
- if(!await crypto.subtle.verify({name:"Ed25519"},key,signature,message))throw Error("device checkpoint signature rejected");
+ const key=await crypto.subtle.importKey("raw",bufferSource(publicKey),{name:"Ed25519"},false,["verify"]);
+ if(!await crypto.subtle.verify({name:"Ed25519"},key,bufferSource(signature),bufferSource(message)))throw Error("device checkpoint signature rejected");
  const fp=new Uint8Array(await crypto.subtle.digest("SHA-256",message));const prefix=enc.encode("wedecent-checkpoint-finalization-v1\n");const opInput=new Uint8Array(prefix.length+fp.length);opInput.set(prefix);opInput.set(fp,prefix.length);
  const op=new Uint8Array(await crypto.subtle.digest("SHA-256",opInput));const expected=[...op].map(x=>x.toString(16).padStart(2,"0")).join("");
  if(expected!==operationID)throw Error("operation ID does not bind signed checkpoint request");
@@ -63,7 +64,7 @@ const enc=new TextEncoder();
 export function str(s:unknown){if(typeof s!=="string")throw Error("invalid string");const b=enc.encode(s);return concat(u32(b.length),b)}
 export function concat(...parts:Uint8Array[]){const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let i=0;for(const p of parts){out.set(p,i);i+=p.length}return out}
 export function h32(v:unknown){return fromHex(String(v))}
-export async function sha(b:Uint8Array){return new Uint8Array(await crypto.subtle.digest("SHA-256",b))}
+export async function sha(b:Uint8Array){return new Uint8Array(await crypto.subtle.digest("SHA-256",bufferSource(b)))}
 async function verifyEd25519(publicKey:Uint8Array,signature:Uint8Array,message:Uint8Array){const key=await crypto.subtle.importKey("raw",publicKey,{name:"Ed25519"},false,["verify"]);if(!await crypto.subtle.verify({name:"Ed25519"},key,signature,message))throw Error("signature rejected")}
 export async function providerKeyID(publicKey:Uint8Array){return "ed25519-"+b64url(await sha(publicKey))}
 function endpointScope(v:unknown){if(!endpoint(v))throw Error("invalid endpoint");const x=v as JsonObject;return {device_id:String(x.device_id),account_id:String(x.account_id),organization_id:String(x.organization_id),revocation_epoch:Number(x.revocation_epoch)}}
@@ -78,7 +79,7 @@ export async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
  if(auth.kid!==keyID||!exact(auth,["kid","claims","signature"])||!isObject(auth.claims)||
    !exact(auth.claims,["v","iss","aud","permission","jti","router","route","iat_unix_ms","exp_unix_ms"])||
    !isObject(auth.claims.route)||!exact(auth.claims.route,["ID","Source","Destination","Hops","ExpiresAt"]))throw Error("route authorization key or claims mismatch");
- const c=auth.claims,r=c.route,hops=r.Hops;
+ const c=auth.claims as JsonObject,r=c.route as JsonObject,hops=r.Hops;
  if(c.v!==1||c.iss!=="wedecent-control-plane"||c.aud!=="wedecent-mesh-router"||c.permission!=="mesh.forward"||
    typeof c.jti!=="string"||!/^[A-Za-z0-9_-]{22}$/.test(c.jti)||typeof c.router!=="string"||
    typeof r.ID!=="string"||r.ID.length===0||!Array.isArray(hops)||hops.length!==2)throw Error("invalid route authorization claims");
