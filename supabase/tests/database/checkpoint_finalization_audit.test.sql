@@ -4,7 +4,8 @@ select plan(16);
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
-('11000000-0000-4000-8000-000000000092','authenticated','authenticated','audit-destination@example.test'),\n('11000000-0000-4000-8000-000000000093','authenticated','authenticated','audit-outsider@example.test');
+('11000000-0000-4000-8000-000000000092','authenticated','authenticated','audit-destination@example.test'),
+('11000000-0000-4000-8000-000000000093','authenticated','authenticated','audit-outsider@example.test');
 
 insert into public.organizations(id,name,slug,created_by)
 values('22000000-0000-4000-8000-000000000091','Checkpoint Audit Test','checkpoint-audit-test','11000000-0000-4000-8000-000000000091');
