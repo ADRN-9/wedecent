@@ -14,6 +14,11 @@ insert into public.organization_memberships(organization_id,user_id,role,created
 values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091')
 on conflict do nothing;
 
+insert into public.devices(device_id,public_key,kind,name,owner_user_id,organization_id,revocation_epoch)
+values
+('wd_aaaaaaaaaaaaaaaa',repeat('A',43),'client','Audit initiator','11000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',1),
+('wd_bbbbbbbbbbbbbbbb',repeat('B',43),'agent','Audit destination','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000091',1);
+
 insert into public.port_forward_authorization_transactions(
  forwarding_id,jti,authorization_sha256,permission,direction,
  initiating_device_id,destination_device_id,router_device_id,
