@@ -96,8 +96,8 @@ func run(args []string) error {
 			Limits:                 portforward.DefaultManagerLimits(),
 		}
 		config.ForwardingAuditTrust = portforward.CheckpointAuditTrust{
-			Hostname: buildinfo.CheckpointAuditHostname,
-			Port: 443,
+			Hostname:       buildinfo.CheckpointAuditHostname,
+			Port:           443,
 			SPKISHA256Pins: buildinfo.CheckpointAuditSPKISHA256,
 		}
 		if strings.TrimSpace(config.ForwardingAuditTrust.Hostname) == "" ||
