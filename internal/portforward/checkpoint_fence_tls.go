@@ -35,7 +35,7 @@ func NewPinnedCheckpointFenceHTTPClient(hostname string, spkiSHA256 [sha256.Size
 		MinVersion: tls.VersionTLS13,
 		MaxVersion: tls.VersionTLS13,
 		ServerName: hostname,
-		RootCAs: roots,
+		RootCAs:    roots,
 		VerifyConnection: func(state tls.ConnectionState) error {
 			if len(state.PeerCertificates) == 0 {
 				return ErrCheckpointIntegrity
@@ -57,15 +57,15 @@ func NewPinnedCheckpointFenceHTTPClient(hostname string, spkiSHA256 [sha256.Size
 			}
 			return dialer.DialContext(ctx, network, address)
 		},
-		TLSHandshakeTimeout: 5 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 10 * time.Second,
-		MaxIdleConns: 4,
-		MaxIdleConnsPerHost: 2,
-		IdleConnTimeout: 30 * time.Second,
+		MaxIdleConns:          4,
+		MaxIdleConnsPerHost:   2,
+		IdleConnTimeout:       30 * time.Second,
 	}
 	return &http.Client{
 		Transport: transport,
-		Timeout: 15 * time.Second,
+		Timeout:   15 * time.Second,
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
