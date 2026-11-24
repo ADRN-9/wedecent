@@ -246,29 +246,97 @@ begin
      order by access.device_id, access.permission
      for share;
 
+    -- Read the immutable authorization transaction to discover its route grant;
+    -- acquire that grant and device locks before taking the transaction row lock.
     select transaction_row.*
       into v_transaction
       from public.port_forward_authorization_transactions as transaction_row
-     where transaction_row.jti = v_jti
-     for share;
+     where transaction_row.jti = v_jti;
 
     if not found
        or v_transaction.initiating_device_id <> v_initiator
        or v_transaction.destination_device_id <> v_destination
        or v_transaction.router_device_id is distinct from (p_payload #>> '{router,device_id}')
-       or (
-           v_transaction.router_device_id is not null
-           and (
-               v_transaction.router_account_id::text <> p_payload #>> '{router,account_id}'
-               or v_transaction.router_organization_id::text <> p_payload #>> '{router,organization_id}'
-           )
-       )
-       or pg_catalog.encode(v_transaction.authorization_sha256, 'hex') <> p_payload ->> 'authorization_sha256'
        or v_transaction.initiator_account_id::text <> p_payload #>> '{initiator,account_id}'
        or v_transaction.destination_account_id::text <> p_payload #>> '{destination,account_id}'
        or v_transaction.initiator_organization_id::text <> p_payload #>> '{initiator,organization_id}'
-       or v_transaction.destination_organization_id::text <> p_payload #>> '{destination,organization_id}' then
+       or v_transaction.destination_organization_id::text <> p_payload #>> '{destination,organization_id}'
+       or v_transaction.initiator_revocation_epoch <> (p_payload #>> '{initiator,revocation_epoch}')::bigint
+       or v_transaction.destination_revocation_epoch <> (p_payload #>> '{destination,revocation_epoch}')::bigint
+       or v_transaction.router_account_id is distinct from nullif(p_payload #>> '{router,account_id}', '')::uuid
+       or v_transaction.router_organization_id is distinct from nullif(p_payload #>> '{router,organization_id}', '')::uuid
+       or v_transaction.router_revocation_epoch is distinct from nullif(p_payload #>> '{router,revocation_epoch}', '')::bigint
+       or pg_catalog.encode(v_transaction.authorization_sha256, 'hex') <> p_payload ->> 'authorization_sha256' then
         raise exception 'unauthorized audit actor or operation scope' using errcode = '42501';
+    end if;
+
+    if v_transaction.router_device_id is null then
+        if v_transaction.route_authorization_id is not null
+           or v_transaction.route_authorization_jti is not null
+           or p_payload ->> 'route_authorization_sha256' <> repeat('0', 64)
+           or p_payload -> 'router' <> 'null'::jsonb then
+            raise exception 'unexpected route authorization binding' using errcode = '42501';
+        end if;
+    else
+        if p_payload ->> 'route_authorization_sha256' = repeat('0', 64)
+           or p_payload -> 'router' is null then
+            raise exception 'missing route authorization binding' using errcode = '42501';
+        end if;
+        select grant_row.*
+          into v_route_grant
+          from public.route_authorization_grants as grant_row
+         where grant_row.id = v_transaction.route_authorization_id
+           and grant_row.jti = v_transaction.route_authorization_jti
+         for share;
+        if not found
+           or v_route_grant.revoked_at is not null
+           or v_route_grant.user_id <> v_transaction.initiator_account_id
+           or v_route_grant.source_device_id <> v_initiator
+           or v_route_grant.destination_device_id <> v_destination
+           or v_route_grant.router_device_id <> v_transaction.router_device_id
+           or v_route_grant.permission <> 'mesh.forward' then
+            raise exception 'stored route authorization is unavailable or mismatched' using errcode = '42501';
+        end if;
+    end if;
+
+    for v_device in
+        select device_row.*
+          from public.devices as device_row
+         where device_row.device_id = any(v_device_ids)
+         order by device_row.device_id
+         for share
+    loop
+        if v_device.device_id = v_initiator then
+            if v_device.owner_user_id::text <> p_payload #>> '{initiator,account_id}'
+               or v_device.organization_id::text <> p_payload #>> '{initiator,organization_id}'
+               or v_device.revocation_epoch <> (p_payload #>> '{initiator,revocation_epoch}')::bigint
+               or v_device.revoked_at is not null then
+                raise exception 'initiator device membership or revocation changed' using errcode = '42501';
+            end if;
+        elsif v_device.device_id = v_destination then
+            if v_device.owner_user_id::text <> p_payload #>> '{destination,account_id}'
+               or v_device.organization_id::text <> p_payload #>> '{destination,organization_id}'
+               or v_device.revocation_epoch <> (p_payload #>> '{destination,revocation_epoch}')::bigint
+               or v_device.revoked_at is not null then
+                raise exception 'destination device membership or revocation changed' using errcode = '42501';
+            end if;
+        else
+            if v_device.owner_user_id::text <> p_payload #>> '{router,account_id}'
+               or v_device.organization_id::text <> p_payload #>> '{router,organization_id}'
+               or v_device.revocation_epoch <> (p_payload #>> '{router,revocation_epoch}')::bigint
+               or v_device.revoked_at is not null then
+                raise exception 'router device membership or revocation changed' using errcode = '42501';
+            end if;
+        end if;
+    end loop;
+
+    select transaction_row.*
+      into v_transaction
+      from public.port_forward_authorization_transactions as transaction_row
+     where transaction_row.jti = v_jti
+     for share;
+    if not found then
+        raise exception 'authorization transaction disappeared' using errcode = '40001';
     end if;
 
     insert into public.checkpoint_finalization_operations (
