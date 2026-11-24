@@ -3,11 +3,13 @@
 package portforward
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"golang.org/x/sys/windows"
 )
@@ -227,7 +229,7 @@ func openReplayBootstrapLockHandle(lockPath string) (*os.File, bool, error) {
 // lockReplayBootstrapFile serializes lock-file publication and all cleanup of
 // lock-bootstrap staging files. The handle denies delete sharing so its path
 // cannot be replaced while another process is using it.
-func lockReplayBootstrapFile(path string) (func() error, error) {
+func lockReplayBootstrapFile(ctx context.Context, path string, onWait func()) (func() error, error) {
 	bootstrapPath := path + ".lock.bootstrap"
 	file, _, err := openReplayBootstrapLockHandle(bootstrapPath)
 	if err != nil {
@@ -257,7 +259,7 @@ func lockReplayBootstrapFile(path string) (func() error, error) {
 		return nil, closeWithError(err)
 	}
 	var overlapped windows.Overlapped
-	if err := windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
+	if err := lockReplayWindowsHandle(ctx, windows.Handle(file.Fd()), &overlapped, onWait); err != nil {
 		return nil, closeWithError(fmt.Errorf("lock replay bootstrap: %w", err))
 	}
 	return func() error {
@@ -276,7 +278,7 @@ func openReplayLockHandle(lockPath string) (*os.File, error) {
 	handle, err := windows.CreateFile(
 		name,
 		windows.GENERIC_READ|windows.GENERIC_WRITE,
-		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE,
 		nil,
 		windows.OPEN_EXISTING,
 		windows.FILE_ATTRIBUTE_NORMAL,
@@ -344,12 +346,45 @@ func openReplayLockFile(lockPath string) (*os.File, bool, error) {
 	return file, true, nil
 }
 
-func lockReplayFileOS(path string) (unlock func() error, created bool, retErr error) {
+func lockReplayWindowsHandle(ctx context.Context, handle windows.Handle, overlapped *windows.Overlapped, onWait func()) error {
+	waitNotified := false
+	for {
+		err := windows.LockFileEx(handle, windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, overlapped)
+		if err == nil {
+			return nil
+		}
+		if !errors.Is(err, windows.ERROR_LOCK_VIOLATION) {
+			return err
+		}
+		if !waitNotified && onWait != nil {
+			onWait()
+			waitNotified = true
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func lockReplayFileOSContext(ctx context.Context, path, statePath string, onWait func()) (unlock func() error, created bool, retErr error) {
+	_ = statePath
+	if ctx == nil {
+		return nil, false, errors.New("replay lock context is nil")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
 		return nil, false, err
 	}
-	bootstrapUnlock, err := lockReplayBootstrapFile(path)
+	bootstrapUnlock, err := lockReplayBootstrapFile(ctx, path, onWait)
 	if err != nil {
 		return nil, false, err
 	}
@@ -391,7 +426,7 @@ func lockReplayFileOS(path string) (unlock func() error, created bool, retErr er
 		return nil, false, errors.Join(err, file.Close())
 	}
 	var overlapped windows.Overlapped
-	if err := windows.LockFileEx(windows.Handle(file.Fd()), windows.LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &overlapped); err != nil {
+	if err := lockReplayWindowsHandle(ctx, windows.Handle(file.Fd()), &overlapped, onWait); err != nil {
 		return nil, false, errors.Join(fmt.Errorf("lock replay store: %w", err), file.Close())
 	}
 	bootstrapHeld = false
