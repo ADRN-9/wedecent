@@ -307,7 +307,8 @@ func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequ
 		!checkpointAckMatchesPendingOperation(ack, request, receipt) {
 		return ErrCheckpointIntegrity
 	}
-	return update(func(snapshot *checkpointPendingSnapshot) (bool, error) {
+	equivocated := false
+	err = update(func(snapshot *checkpointPendingSnapshot) (bool, error) {
 		key := checkpointPendingKey(request)
 		entry, ok := snapshot.Entries[key]
 		if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) ||
@@ -322,7 +323,13 @@ func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequ
 				continue
 			}
 			if !sameCheckpointWitnessAckOutcome(old, ack) {
-				return false, ErrCheckpointConflict
+				entry.Equivocations = append(entry.Equivocations, CheckpointWitnessEquivocation{
+					WitnessID: trust.ID, Original: old, Conflicting: ack, ObservedAtUnixMs: time.Now().UTC().UnixMilli(),
+				})
+				entry.State = "equivocated"
+				snapshot.Entries[key] = entry
+				equivocated = true
+				return false, nil
 			}
 			return false, nil
 		}
@@ -330,6 +337,13 @@ func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequ
 		snapshot.Entries[key] = entry
 		return false, nil
 	})
+	if err != nil {
+		return err
+	}
+	if equivocated {
+		return ErrCheckpointConflict
+	}
+	return nil
 }
 
 func recordCheckpointEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust, update func(func(*checkpointPendingSnapshot) (bool, error)) error) error {
@@ -363,13 +377,9 @@ func recordCheckpointEquivocation(ctx context.Context, request CheckpointRequest
 			return false, ErrCheckpointIntegrity
 		}
 		for _, evidence := range entry.Equivocations {
-			if evidence.WitnessID != trust.ID {
-				continue
-			}
-			if sameCheckpointWitnessAck(evidence.Conflicting, conflicting) {
+			if evidence.WitnessID == trust.ID && sameCheckpointWitnessAck(evidence.Conflicting, conflicting) {
 				return false, nil
 			}
-			return false, ErrCheckpointConflict
 		}
 		if entry.State != "resolved" && entry.State != "equivocated" {
 			return false, ErrCheckpointHistorical
@@ -911,10 +921,11 @@ func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now t
 			}
 			seen[ack.WitnessID] = true
 		}
-		equivocated := map[string]bool{}
+		seenEquivocationEvidence := map[string]bool{}
 		for _, evidence := range entry.Equivocations {
 			publicKey, trusted := witnessKeys[evidence.WitnessID]
-			if !trusted || evidence.WitnessID == "" || equivocated[evidence.WitnessID] ||
+			evidenceKey := evidence.WitnessID + "|" + hex.EncodeToString(evidence.Conflicting.Signature)
+			if !trusted || evidence.WitnessID == "" || seenEquivocationEvidence[evidenceKey] ||
 				evidence.ObservedAtUnixMs <= 0 || evidence.ObservedAtUnixMs > now.Add(5*time.Minute).UnixMilli() ||
 				evidence.Original.WitnessID != evidence.WitnessID || evidence.Conflicting.WitnessID != evidence.WitnessID ||
 				VerifyCheckpointWitnessAck(evidence.Original, evidence.WitnessID, publicKey) != nil ||
@@ -934,7 +945,7 @@ func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now t
 			if !foundOriginal {
 				return ErrCheckpointIntegrity
 			}
-			equivocated[evidence.WitnessID] = true
+			seenEquivocationEvidence[evidenceKey] = true
 		}
 	}
 	return nil
