@@ -28,6 +28,11 @@ type CheckpointV1Head struct {
  StateHash [sha256.Size]byte
 }
 
+func (h CheckpointV1Head) NextGeneration() (uint64, error) {
+ if h.Generation >= (1<<63)-1 { return 0, ErrCheckpointStale }
+ return h.Generation + 1, nil
+}
+
 func CanonicalCheckpointParticipants(input []CheckpointParticipant) ([]CheckpointParticipant,error) {
  if len(input)==0 || uint64(len(input))>uint64(^uint32(0)) { return nil,ErrCheckpointIntegrity }
  out:=append([]CheckpointParticipant(nil),input...)
@@ -69,7 +74,8 @@ func ValidateCheckpointV1ToV2Transition(claimed []CheckpointParticipant, authori
   h:=heads[i]
   if h.DeviceID!=p.DeviceID||h.AccountID!=p.AccountID||h.OrganizationID!=p.OrganizationID||
    h.RevocationEpoch!=p.RevocationEpoch||h.Generation!=p.HeadGeneration||h.StateHash!=p.HeadHash||
-   h.Generation>=(1<<63)-1||(h.Generation==0&&h.StateHash!=([32]byte{}))||(h.Generation>0&&h.StateHash==([32]byte{})) {
+   _,nextErr:=h.NextGeneration();if nextErr!=nil{return [32]byte{},nextErr}
+  if (h.Generation==0&&h.StateHash!=([32]byte{}))||(h.Generation>0&&h.StateHash==([32]byte{})) {
    return [32]byte{},ErrCheckpointStale
   }
   if i>0&&heads[i-1].DeviceID==h.DeviceID{return [32]byte{},ErrCheckpointIntegrity}
