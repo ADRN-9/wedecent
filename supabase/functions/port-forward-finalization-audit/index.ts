@@ -30,7 +30,15 @@ async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:st
  const auth=fromHex(String(p.authorization_sha256));raw(auth);
  const route=fromHex(String(p.route_authorization_sha256));const routed=route.some(x=>x!==0);
  if(routed!==(router!==null))throw Error("route binding mismatch");
- if(routed){str("route-authorization-sha256-v1");raw(route);str("route-router-membership-v1");ep(router)}
+ if(routed){
+  if(typeof p.route_authorization_json!=="string"||typeof p.route_authorization_id!=="string"||typeof p.route_authorization_jti!=="string")throw Error("route grant identity missing");
+  if([...(await sha(enc.encode(p.route_authorization_json)))].map(x=>x.toString(16).padStart(2,"0")).join("")!==String(p.route_authorization_sha256))throw Error("route authorization digest mismatch");
+  const routeAuth=JSON.parse(p.route_authorization_json) as JsonObject;
+  if(!isObject(routeAuth.claims)||!isObject(routeAuth.claims.route)||routeAuth.claims.jti!==p.route_authorization_jti||
+     routeAuth.claims.router!==(router as JsonObject).device_id||routeAuth.claims.route.id!==p.route_authorization_id||
+     routeAuth.claims.route.source!==(initiator as JsonObject).device_id||routeAuth.claims.route.destination!==(destination as JsonObject).device_id)throw Error("route authorization does not match stored route participants");
+  str("route-authorization-sha256-v1");raw(route);str("route-router-membership-v1");ep(router)
+ }else if(p.route_authorization_json!==""||p.route_authorization_id!==""||p.route_authorization_jti!=="")throw Error("unexpected route authorization fields")
  const publicKey=fromBase64(String(p.device_public_key));const signature=fromBase64Signature(String(p.device_signature));
  if(await deviceIDFromPublicKey(publicKey)!==p.consuming_device_id)throw Error("device identity mismatch");
  raw(publicKey);const size=chunks.reduce((n,x)=>n+x.length,0);const message=new Uint8Array(size);let offset=0;for(const part of chunks){message.set(part,offset);offset+=part.length}
@@ -131,7 +139,7 @@ const {data:auth,error:authErr}=await admin.auth.getUser(token);if(authErr||!aut
 const b=JSON.parse(raw) as Record<string,unknown>;if(Object.keys(b).sort().join(",")!=="evidence,evidence_sha256,operation_id,outcome,payload,payload_sha256,payload_version")return reply({error:"invalid fields"},400);
 const id=String(b.operation_id??""),outcome=String(b.outcome??""),sum=String(b.payload_sha256??""),p=b.payload as Record<string,unknown>;
 if(!/^[0-9a-f]{64}$/.test(id)||!/^[0-9a-f]{64}$/.test(sum)||b.payload_version!==1||!["finalization_started","membership_unavailable","finalization_failed","finalized","rejected_revocation"].includes(outcome))return reply({error:"invalid request"},400);
-if(!p||typeof p!=="object"||Array.isArray(p)||Object.keys(p).sort().join(",")!=="authorization_sha256,consuming_device_id,destination,device_public_key,device_signature,initiator,jti,route_authorization_sha256,router,version"||p.version!==1||!endpoint(p.initiator)||!endpoint(p.destination)||!(p.router===null||endpoint(p.router))||!/^wd_[a-z2-7]{16}$/.test(String(p.consuming_device_id??""))||!([String((p.initiator as Record<string,unknown>).device_id),String((p.destination as Record<string,unknown>).device_id)].includes(String(p.consuming_device_id)))||!/^[A-Za-z0-9_-]{22}$/.test(String(p.jti??""))||!/^[0-9a-f]{64}$/.test(String(p.authorization_sha256??""))||!/^[0-9a-f]{64}$/.test(String(p.route_authorization_sha256??""))||!/^[A-Za-z0-9+/]{43}=$/.test(String(p.device_public_key??""))||!/^[A-Za-z0-9+/]{86}==$/.test(String(p.device_signature??"")))return reply({error:"invalid payload"},400);
+if(!p||typeof p!=="object"||Array.isArray(p)||Object.keys(p).sort().join(",")!=="authorization_sha256,consuming_device_id,destination,device_public_key,device_signature,initiator,jti,route_authorization_id,route_authorization_json,route_authorization_jti,route_authorization_sha256,router,version"||p.version!==1||!endpoint(p.initiator)||!endpoint(p.destination)||!(p.router===null||endpoint(p.router))||!/^wd_[a-z2-7]{16}$/.test(String(p.consuming_device_id??""))||!([String((p.initiator as Record<string,unknown>).device_id),String((p.destination as Record<string,unknown>).device_id)].includes(String(p.consuming_device_id)))||!/^[A-Za-z0-9_-]{22}$/.test(String(p.jti??""))||!/^[0-9a-f]{64}$/.test(String(p.authorization_sha256??""))||!/^[0-9a-f]{64}$/.test(String(p.route_authorization_sha256??""))||!/^[A-Za-z0-9+/]{43}=$/.test(String(p.device_public_key??""))||!/^[A-Za-z0-9+/]{86}==$/.test(String(p.device_signature??"")))return reply({error:"invalid payload"},400);
 if(await digest(p)!==sum)return reply({error:"digest mismatch"},400);
 const requestHash=await verifyCanonicalCheckpoint(p,id);
 const evidence=b.evidence,evidenceSum=String(b.evidence_sha256??"");
