@@ -67,7 +67,7 @@ select ok(not has_table_privilege('authenticated','public.checkpoint_finalizatio
 select ok(not has_table_privilege('service_role','public.checkpoint_finalization_audit','SELECT,INSERT,UPDATE,DELETE'),'service role cannot mutate audit tables directly');
 select ok(not has_function_privilege('authenticated','public.record_checkpoint_finalization(text,text,integer,jsonb,bytea,uuid)','EXECUTE'),'authenticated users cannot execute privileged audit RPC');
 select ok(has_function_privilege('service_role','public.record_checkpoint_finalization(text,text,integer,jsonb,bytea,uuid)','EXECUTE'),'service role can execute audit RPC');
-select throws_ok($select pg_temp.record_audit_as('finalization_started',pg_temp.audit_payload(),'11000000-0000-4000-8000-000000000093')$,'42501','unauthorized audit actor','non-participant without organization membership cannot write audit records');
+select throws_ok($q$select pg_temp.record_audit_as('finalization_started',pg_temp.audit_payload(),'11000000-0000-4000-8000-000000000093')$q$,'42501','unauthorized audit actor','non-participant without organization membership cannot write audit records');
 select is(wedecent_private.canonical_jsonb('{"z":2,"a":1}'::jsonb),'{"a":1,"z":2}','canonical JSON sorts object keys');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'false','first intermediate audit transition is committed');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'true','exact retry returns the original recorded result');
