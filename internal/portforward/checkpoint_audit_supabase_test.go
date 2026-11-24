@@ -69,7 +69,7 @@ func TestCheckpointAuditEvidenceSerializationRejectsUnsafeUint64(t *testing.T) {
 	evidence := &CheckpointFinalizationEvidence{
 		PrimaryReceipt: CheckpointReceipt{
 			Version: 1, Generation: 1,
-			DeviceID: "wd_aaaaaaaaaaaaaaaa",
+			DeviceID:  "wd_aaaaaaaaaaaaaaaa",
 			Signature: make([]byte, 64),
 		},
 		RevocationProofs: []CheckpointFinalizationRevocationProof{
@@ -80,7 +80,7 @@ func TestCheckpointAuditEvidenceSerializationRejectsUnsafeUint64(t *testing.T) {
 	if payload, err := checkpointFinalizationEvidencePayload(evidence); err != nil || payload["primary_receipt"] == nil {
 		t.Fatalf("valid evidence serialization failed: payload=%v err=%v", payload, err)
 	}
-	evidence.PrimaryReceipt.Generation = 1<<53
+	evidence.PrimaryReceipt.Generation = 1 << 53
 	if _, err := checkpointFinalizationEvidencePayload(evidence); err == nil {
 		t.Fatal("uint64 beyond JavaScript safe integer range was serialized")
 	}
@@ -110,7 +110,6 @@ func TestCheckpointAuditConstructorRequiresTrustAndMatchingSession(t *testing.T)
 	}
 }
 
-
 func TestCheckpointAuditTLSRequiresTLS13HostnameAndMatchingSPKI(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -118,12 +117,12 @@ func TestCheckpointAuditTLSRequiresTLS13HostnameAndMatchingSPKI(t *testing.T) {
 	}
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{CommonName: "audit.example.com"},
-		DNSNames: []string{"audit.example.com"},
-		NotBefore: time.Now().Add(-time.Minute),
-		NotAfter: time.Now().Add(time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature,
-		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		Subject:      pkix.Name{CommonName: "audit.example.com"},
+		DNSNames:     []string{"audit.example.com"},
+		NotBefore:    time.Now().Add(-time.Minute),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, publicKey, privateKey)
 	if err != nil {
@@ -177,7 +176,6 @@ func TestCheckpointAuditRedirectsAndCanceledRequestsFailClosed(t *testing.T) {
 		t.Fatalf("canceled audit request returned %v", err)
 	}
 }
-
 
 func TestCheckpointAuditConstructorRequiresAuthenticatedSession(t *testing.T) {
 	trust := CheckpointAuditTrust{Hostname: "audit.example.com", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64)}
