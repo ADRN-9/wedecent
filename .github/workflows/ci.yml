@@ -300,6 +300,22 @@ jobs:
           version: 2.117.0
       - name: Test registry fallback and throttle retry policy
         run: ./scripts/test-start-supabase-db-ci.sh
+      - name: Select an available isolated Supabase database port
+        run: |
+          python3 - <<'PY'
+          import socket
+          from pathlib import Path
+
+          config = Path("supabase/config.toml")
+          text = config.read_text()
+          if "[db]" in text:
+              raise SystemExit("CI port selection expects no committed [db] override")
+          with socket.socket() as probe:
+              probe.bind(("0.0.0.0", 0))
+              port = probe.getsockname()[1]
+          config.write_text(text.rstrip() + f"\\n\\n[db]\\nport = {port}\\n")
+          print(f"Selected disposable Supabase database port: {port}")
+          PY
       - name: Start disposable local Supabase database
         run: ./scripts/start-supabase-db-ci.sh
       - name: Run database pgTAP tests
