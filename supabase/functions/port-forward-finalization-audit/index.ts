@@ -54,23 +54,23 @@ type JsonObject=Record<string,unknown>;
 function isObject(v:unknown):v is JsonObject{return !!v&&typeof v==="object"&&!Array.isArray(v)}
 function exact(v:unknown,keys:string[]){return isObject(v)&&Object.keys(v).sort().join(",")===keys.slice().sort().join(",")}
 function b64(s:unknown,size:number){if(typeof s!=="string")throw Error("invalid base64");const raw=atob(s);if(raw.length!==size||btoa(raw)!==s)throw Error("invalid base64");return Uint8Array.from(raw,x=>x.charCodeAt(0))}
-function b64url(b:Uint8Array){let s="";for(const x of b)s+=String.fromCharCode(x);return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
-function u32(n:number){if(!Number.isSafeInteger(n)||n<0||n>0xffffffff)throw Error("invalid uint32");const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,false);return b}
-function u64(n:unknown){if(typeof n!=="number"||!Number.isSafeInteger(n)||n<0)throw Error("invalid uint64");const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(n),false);return b}
+export function b64url(b:Uint8Array){let s="";for(const x of b)s+=String.fromCharCode(x);return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"")}
+export function u32(n:number){if(!Number.isSafeInteger(n)||n<0||n>0xffffffff)throw Error("invalid uint32");const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,false);return b}
+export function u64(n:unknown){if(typeof n!=="number"||!Number.isSafeInteger(n)||n<0)throw Error("invalid uint64");const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(n),false);return b}
 function i64(n:unknown){if(typeof n!=="number"||!Number.isSafeInteger(n))throw Error("invalid int64");const b=new Uint8Array(8);new DataView(b.buffer).setBigInt64(0,BigInt(n),false);return b}
 const enc=new TextEncoder();
-function str(s:unknown){if(typeof s!=="string")throw Error("invalid string");const b=enc.encode(s);return concat(u32(b.length),b)}
-function concat(...parts:Uint8Array[]){const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let i=0;for(const p of parts){out.set(p,i);i+=p.length}return out}
-function h32(v:unknown){return fromHex(String(v))}
-async function sha(b:Uint8Array){return new Uint8Array(await crypto.subtle.digest("SHA-256",b))}
+export function str(s:unknown){if(typeof s!=="string")throw Error("invalid string");const b=enc.encode(s);return concat(u32(b.length),b)}
+export function concat(...parts:Uint8Array[]){const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let i=0;for(const p of parts){out.set(p,i);i+=p.length}return out}
+export function h32(v:unknown){return fromHex(String(v))}
+export async function sha(b:Uint8Array){return new Uint8Array(await crypto.subtle.digest("SHA-256",b))}
 async function verifyEd25519(publicKey:Uint8Array,signature:Uint8Array,message:Uint8Array){const key=await crypto.subtle.importKey("raw",publicKey,{name:"Ed25519"},false,["verify"]);if(!await crypto.subtle.verify({name:"Ed25519"},key,signature,message))throw Error("signature rejected")}
-async function providerKeyID(publicKey:Uint8Array){return "ed25519-"+b64url(await sha(publicKey))}
+export async function providerKeyID(publicKey:Uint8Array){return "ed25519-"+b64url(await sha(publicKey))}
 function endpointScope(v:unknown){if(!endpoint(v))throw Error("invalid endpoint");const x=v as JsonObject;return {device_id:String(x.device_id),account_id:String(x.account_id),organization_id:String(x.organization_id),revocation_epoch:Number(x.revocation_epoch)}}
 function sameScope(a:unknown,b:unknown){if(!isObject(a)||!isObject(b))return false;return a.device_id===b.device_id&&a.account_id===b.account_id&&a.organization_id===b.organization_id}
-function checkpointReceiptMessage(r:JsonObject){return concat(enc.encode("wedecent-replay-checkpoint-receipt-v1\n"),u32(Number(r.version)),str(r.device_id),str(r.account_id),str(r.organization_id),str(r.jti),str(r.provider_key_id),u64(r.generation),h32(r.authorization_sha256),h32(r.request_sha256),h32(r.previous_hash),h32(r.record_hash))}
-function checkpointHeadMessage(h:JsonObject){return concat(enc.encode("wedecent-replay-checkpoint-head-v1\n"),u32(Number(h.version)),str(h.device_id),str(h.account_id),str(h.organization_id),str(h.provider_key_id),u64(h.generation),u64(h.revocation_epoch),h32(h.record_hash))}
-function witnessAckMessage(a:JsonObject){const s=a.scope as JsonObject;return concat(enc.encode("wedecent-independent-witness-ack-v2\n"),str(a.witness_id),str(s.device_id),str(s.account_id),str(s.organization_id),str(a.jti),h32(a.request_sha256),h32(a.primary_receipt_sha256),str(a.decision),str(a.witness_key_id))}
-function witnessHeadMessage(h:JsonObject){const s=h.scope as JsonObject;return concat(enc.encode("wedecent-independent-witness-head-v1\n"),str(h.witness_id),str(s.device_id),str(s.account_id),str(s.organization_id),u64(h.generation),h32(h.record_hash),u64(h.primary_generation),h32(h.primary_head),u64(h.revocation_epoch),str(h.witness_key_id))}
+export function checkpointReceiptMessage(r:JsonObject){return concat(enc.encode("wedecent-replay-checkpoint-receipt-v1\n"),u32(Number(r.version)),str(r.device_id),str(r.account_id),str(r.organization_id),str(r.jti),str(r.provider_key_id),u64(r.generation),h32(r.authorization_sha256),h32(r.request_sha256),h32(r.previous_hash),h32(r.record_hash))}
+export function checkpointHeadMessage(h:JsonObject){return concat(enc.encode("wedecent-replay-checkpoint-head-v1\n"),u32(Number(h.version)),str(h.device_id),str(h.account_id),str(h.organization_id),str(h.provider_key_id),u64(h.generation),u64(h.revocation_epoch),h32(h.record_hash))}
+export function witnessAckMessage(a:JsonObject){const s=a.scope as JsonObject;return concat(enc.encode("wedecent-independent-witness-ack-v2\n"),str(a.witness_id),str(s.device_id),str(s.account_id),str(s.organization_id),str(a.jti),h32(a.request_sha256),h32(a.primary_receipt_sha256),str(a.decision),str(a.witness_key_id))}
+export function witnessHeadMessage(h:JsonObject){const s=h.scope as JsonObject;return concat(enc.encode("wedecent-independent-witness-head-v1\n"),str(h.witness_id),str(s.device_id),str(s.account_id),str(s.organization_id),u64(h.generation),h32(h.record_hash),u64(h.primary_generation),h32(h.primary_head),u64(h.revocation_epoch),str(h.witness_key_id))}
 async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
  const keyID=Deno.env.get("WEDECENT_ROUTE_AUTH_KEY_ID"),rawKey=Deno.env.get("WEDECENT_ROUTE_AUTH_PUBLIC_KEY");
  if(!keyID||!rawKey)throw Error("independent route authorization trust anchor missing");
@@ -106,7 +106,7 @@ async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
  await verifyEd25519(key,signature,concat(...parts));
 }
 
-function checkpointRecordHash(previous:Uint8Array,generation:unknown,requestHash:Uint8Array){return sha(concat(previous,u64(generation),requestHash))}
+export function checkpointRecordHash(previous:Uint8Array,generation:unknown,requestHash:Uint8Array){return sha(concat(previous,u64(generation),requestHash))}
 function primaryHeadRecord(h:JsonObject){return {device_id:h.device_id,account_id:h.account_id,organization_id:h.organization_id}}
 function trustedWitnessKeys(){
  const raw=Deno.env.get("WEDECENT_CHECKPOINT_WITNESS_KEYS");if(!raw)throw Error("independent witness trust anchors missing");
