@@ -57,6 +57,8 @@ type FileCheckpointPendingStore struct {
 
 	// writeSnapshot is a deterministic persistence fault-injection seam for package tests.
 	writeSnapshot func(string, any, string, int64) error
+	maxSize int64
+	maxEntries int
 }
 
 func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, error) {
@@ -360,10 +362,12 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 		if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 			return false, ErrReplayUnavailable
 		}
-		if snapshot.Version != checkpointPendingVersion || snapshot.Entries == nil || len(snapshot.Entries) > checkpointPendingMaxEntries {
+		if snapshot.Version != checkpointPendingVersion || snapshot.Entries == nil || len(snapshot.Entries) > maxEntries {
 			return false, ErrReplayUnavailable
 		}
-	if err := validateCheckpointPendingSnapshot(snapshot, time.Now().UTC()); err != nil { return false, fmt.Errorf("%w: invalid pending journal: %v", ErrReplayUnavailable, err) }
+		if err := validateCheckpointPendingSnapshot(snapshot, time.Now().UTC()); err != nil {
+			return false, fmt.Errorf("%w: invalid pending journal: %v", ErrReplayUnavailable, err)
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("%w: read pending store: %v", ErrReplayUnavailable, err)
 	}
