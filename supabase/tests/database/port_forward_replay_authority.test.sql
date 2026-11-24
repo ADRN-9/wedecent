@@ -147,19 +147,19 @@ select is(
     'same JTI cannot be rebound to another forwarding transaction'
 );
 select throws_ok(
-    $select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000014', repeat('M', 22), repeat('d', 64), false, null, null, null, true)$,
+    $q$select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000014', repeat('M', 22), repeat('d', 64), false, null, null, null, true)$q$,
     '22023',
     'direct route contains router authorization fields',
     'routed authorization with a missing router fails closed'
 );
 select throws_ok(
-    $select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000015', repeat('N', 22), repeat('e', 64), true, 'wd_dddddddddddddddd')$,
+    $q$select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000015', repeat('N', 22), repeat('e', 64), true, 'wd_dddddddddddddddd')$q$,
     '22023',
     'routed authorization binding is incomplete',
     'destination participant cannot differ from the signed route destination'
 );
 select throws_ok(
-    $select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000016', repeat('O', 22), repeat('f', 64), true, null, 'wd_dddddddddddddddd')$,
+    $q$select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000016', repeat('O', 22), repeat('f', 64), true, null, 'wd_dddddddddddddddd')$q$,
     '42501',
     'router authorization is missing, revoked or mismatched',
     'router participant must match the locked router grant snapshot'
