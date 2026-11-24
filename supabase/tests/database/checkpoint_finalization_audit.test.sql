@@ -34,24 +34,25 @@ insert into public.port_forward_authorization_transactions(
  1,1,null,null,null,clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
 );
 
-create function pg_temp.audit_payload(p_route_digest text default repeat('0',64)) returns jsonb
+create function pg_temp.audit_payload(p_signature text default repeat('A',86)||'==') returns jsonb
 language sql as $$
 select jsonb_build_object(
  'version',1,
  'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-000000000091','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
  'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
  'router',null,'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti','AAAAAAAAAAAAAAAAAAAAAA',
- 'authorization_sha256',repeat('a',64),'route_authorization_sha256',p_route_digest,
- 'device_public_key',repeat('A',43)||'=','device_signature',repeat('A',86)||'=='
+ 'authorization_sha256',repeat('a',64),'route_authorization_sha256',repeat('0',64),
+ 'route_authorization_id','','route_authorization_jti','','route_authorization_json',
+ 'device_public_key',repeat('A',43)||'=','device_signature',p_signature
 )
 $$;
 
 create function pg_temp.audit_evidence(p_outcome text) returns jsonb
-language sql immutable as $
+language sql immutable as $q$
 select case when p_outcome in ('finalized','rejected_revocation')
  then '{"primary_receipt":{},"witness_acknowledgements":[],"revocation_proofs":[]}'::jsonb
  else '{}'::jsonb end
-$;
+$q$;
 
 create function pg_temp.record_audit(p_outcome text,payload jsonb,p_operation_id text default repeat('a',64)) returns jsonb
 language sql as $q$
@@ -88,7 +89,7 @@ select is(wedecent_private.canonical_jsonb('{"z":2,"a":1}'::jsonb),'{"a":1,"z":2
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'false','first intermediate audit transition is committed');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'true','exact retry returns the original recorded result');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome='finalization_started'),1,'exact retry creates no duplicate logical event');
-select throws_ok($$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(repeat('1',64)))$$,'23505','operation payload conflict','conflicting payload for an existing operation is rejected');
+select throws_ok($$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(repeat('B',86)||'=='))$$,'23505','operation payload conflict','conflicting payload for an existing operation is rejected');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload())->>'replayed'),'false','terminal finalization transition is recorded');
 select throws_ok($$select pg_temp.record_audit('rejected_revocation',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
