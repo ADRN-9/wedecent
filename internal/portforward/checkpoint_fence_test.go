@@ -84,7 +84,6 @@ func TestCheckpointFenceTokenAuthenticatesCommonOrdering(t *testing.T) {
 
 func TestCheckpointFenceTokenRequiresMonotonicActionEpoch(t *testing.T) {
 	revoke, privateKey := validFenceToken(t, CheckpointFenceRevoke)
-	publicKey := privateKey.Public().(ed25519.PublicKey)
 	if revoke.ResultingRevocationEpoch != revoke.ExpectedRevocationEpoch+1 {
 		t.Fatal("revocation did not advance the epoch")
 	}
