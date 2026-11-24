@@ -531,3 +531,34 @@ func TestFileCheckpointFencePrimaryRecoversPreExpiryQuorumAfterExpiry(t *testing
 		t.Fatalf("pre-expiry quorum was not committed during recovery: found=%v err=%v", found, err)
 	}
 }
+
+
+func TestCheckpointFenceCoordinatorRecoversQuorumWithExpiredNonVoter(t *testing.T) {
+	primary, witnesses, primaryKey, request, _ := durableFenceFixture(t)
+	token, err := primary.ReserveFence(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, witness := range witnesses[:2] {
+		if _, err := witness.CommitFence(context.Background(), token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	primary.now = func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS + 1000) }
+	witnesses[2].now = func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS) }
+	clients := make([]CheckpointFenceWitnessClient, len(witnesses))
+	for i, witness := range witnesses {
+		clients[i] = CheckpointFenceWitnessClient{ID: request.WitnessIDs[i], PublicKey: witness.publicKey, Witness: witness}
+	}
+	coordinator := CheckpointFenceCoordinator{
+		Primary: primary, PrimaryKey: primaryKey.Public().(ed25519.PublicKey),
+		WitnessSetVersion: request.WitnessSetVersion, Witnesses: clients, Quorum: 2,
+	}
+	operation, err := coordinator.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatalf("two durable pre-expiry acknowledgements should recover quorum: %v", err)
+	}
+	if !operation.Committed || len(operation.Acknowledgements) != 2 {
+		t.Fatalf("unexpected recovered operation: %+v", operation)
+	}
+}
