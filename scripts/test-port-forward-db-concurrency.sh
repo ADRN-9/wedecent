@@ -147,6 +147,30 @@ restore_access
 race route-grant revoke-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000c6'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000c6'" 33000000-0000-4000-8000-0000000000c6 FFFFFFFFFFFFFFFFFFFFFF 44000000-0000-4000-8000-0000000000c6 FFFFFFFFFFFFFFFFFFFFFF
 race route-grant consume-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000cc'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000cc'" 33000000-0000-4000-8000-0000000000cc MMMMMMMMMMMMMMMMMMMMMM 44000000-0000-4000-8000-0000000000cc MMMMMMMMMMMMMMMMMMMMMM
 
+# A rolled-back authorization must leave no transaction or replay state, and an exact retry must then succeed.
+ROLLBACK_GENERATION="$(psql "$DB_URL" -X -Atqc "select coalesce((select generation from public.port_forward_replay_authority where device_id='wd_aaaaaaaaaaaaaaaa'),0)")"
+ROLLBACK_STATE_HASH="$(psql "$DB_URL" -X -Atqc "select coalesce((select pg_catalog.encode(state_hash,'hex') from public.port_forward_replay_authority where device_id='wd_aaaaaaaaaaaaaaaa'),'')")"
+route 33000000-0000-4000-8000-0000000000d4 SSSSSSSSSSSSSSSSSSSSSS
+start c wd-c145-rollback
+send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d4','TTTTTTTTTTTTTTTTTTTTTT','33000000-0000-4000-8000-0000000000d4','SSSSSSSSSSSSSSSSSSSSSS','$ISSUED_AT','$EXPIRES_AT');"
+wait_text c '"accepted": true'
+fd="${FDS[c]}" pid="${PIDS[c]}"
+printf 'rollback;\\n\\q\\n' >&"$fd"
+exec {fd}>&-
+unset 'FDS[c]' 'PIDS[c]'
+wait "$pid" || fail 'rollback session failed'
+assertq 0 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d4'"
+assertq 0 "select count(*) from public.port_forward_replay_entries where device_id='wd_aaaaaaaaaaaaaaaa' and jti='TTTTTTTTTTTTTTTTTTTTTT'"
+assertq "$ROLLBACK_GENERATION" "select coalesce((select generation from public.port_forward_replay_authority where device_id='wd_aaaaaaaaaaaaaaaa'),0)"
+assertq "$ROLLBACK_STATE_HASH" "select coalesce((select pg_catalog.encode(state_hash,'hex') from public.port_forward_replay_authority where device_id='wd_aaaaaaaaaaaaaaaa'),'')"
+start c wd-c145-rollback-retry
+send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d4','TTTTTTTTTTTTTTTTTTTTTT','33000000-0000-4000-8000-0000000000d4','SSSSSSSSSSSSSSSSSSSSSS','$ISSUED_AT','$EXPIRES_AT');"
+wait_text c '"accepted": true'
+finish c || fail 'exact retry after rollback failed'
+assertq 1 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d4'"
+assertq 1 "select count(*) from public.port_forward_replay_entries where device_id='wd_aaaaaaaaaaaaaaaa' and jti='TTTTTTTTTTTTTTTTTTTTTT'"
+assertq "$((ROLLBACK_GENERATION + 1))" "select generation from public.port_forward_replay_authority where device_id='wd_aaaaaaaaaaaaaaaa'"
+
 # Route-grant JTIs are unique in their own table and intentionally differ from forwarding JTIs.
 route 33000000-0000-4000-8000-0000000000d1 NNNNNNNNNNNNNNNNNNNNNN
 start c wd-c145-dup-a
