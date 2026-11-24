@@ -703,7 +703,7 @@ func TestPendingJournalPartialAcknowledgementPersistenceAndValidation(t *testing
 		if err != nil { t.Fatal(err) }
 	}
 	writes := 0
-	store.writeSnapshot = func(path string, snapshot checkpointPendingSnapshot, pattern string, maxSize int64) error {
+	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
 		writes++
 		if writes == 2 { return errors.New("injected acknowledgement persistence failure") }
 		return writeReplayJSON(path, snapshot, pattern, maxSize)
@@ -746,7 +746,9 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 	store, err := NewFileCheckpointPendingStore(path)
 	if err != nil { t.Fatal(err) }
 	failCompaction := true
-	store.writeSnapshot = func(path string, snapshot checkpointPendingSnapshot, pattern string, maxSize int64) error {
+	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
+		snapshot, ok := value.(checkpointPendingSnapshot)
+		if !ok { return errors.New("unexpected pending snapshot type") }
 		if len(snapshot.Entries) == 0 && failCompaction {
 			failCompaction = false
 			return errors.New("injected compaction interruption")
@@ -759,15 +761,24 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 	}
 	restarted, err := NewFileCheckpointPendingStore(path)
 	if err != nil { t.Fatal(err) }
-	acks, err := restarted.LoadAcknowledgements(context.Background(), request, CheckpointReceipt{}, client.Witnesses)
-	if err == nil { t.Fatal("empty receipt unexpectedly matched durable acknowledgement") }
-	_ = acks
+	consumer, ok := checkpointConsumer(request)
+	if !ok { t.Fatal("request has no checkpoint consumer") }
+	ledgerKey := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
+	primary.mu.Lock()
+	receipt := primary.ledgers[ledgerKey].used[request.JTI].receipt
+	primary.mu.Unlock()
+	acks, err := restarted.LoadAcknowledgements(context.Background(), request, receipt, client.Witnesses)
+	if err != nil || len(acks) < client.Quorum { t.Fatalf("quorum evidence lost across compaction interruption: acks=%d err=%v", len(acks), err) }
 	restartedClient, _ := newWitnessedFixture(t, primary, restarted)
 	restartedClient.Witnesses = client.Witnesses
 	if _, err := restartedClient.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("exact retry did not finalize recovered quorum evidence safely: %v", err)
 	}
-	if len(primary.ledgers) != 1 { t.Fatalf("primary authorization consumed %d times", len(primary.ledgers)) }
+	primary.mu.Lock()
+	ledger := primary.ledgers[ledgerKey]
+	consumed := len(ledger.used)
+	primary.mu.Unlock()
+	if consumed != 1 { t.Fatalf("primary authorization consumed %d times", consumed) }
 	data, err := os.ReadFile(path)
 	if err != nil { t.Fatal(err) }
 	var snapshot checkpointPendingSnapshot
@@ -806,7 +817,14 @@ func TestPendingJournalConcurrentFinalizationIsIdempotent(t *testing.T) {
 		t.Fatalf("concurrent finalization failed unexpectedly: %v", err)
 	}
 	if successes != 1 || historical != 1 { t.Fatalf("concurrent outcomes success=%d historical=%d", successes, historical) }
-	if len(primary.ledgers) != 1 { t.Fatalf("concurrent retry consumed primary capability more than once: ledgers=%d", len(primary.ledgers)) }
+	consumer, ok := checkpointConsumer(request)
+	if !ok { t.Fatal("request has no checkpoint consumer") }
+	ledgerKey := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
+	primary.mu.Lock()
+	ledger := primary.ledgers[ledgerKey]
+	consumed := len(ledger.used)
+	primary.mu.Unlock()
+	if consumed != 1 { t.Fatalf("concurrent retry consumed primary capability %d times", consumed) }
 }
 
 func TestPendingJournalCorruptionAndAmbiguousStateFailClosed(t *testing.T) {

@@ -54,7 +54,7 @@ type FileCheckpointPendingStore struct {
 	Now  func() time.Time
 
 	// writeSnapshot is a deterministic persistence fault-injection seam for package tests.
-	writeSnapshot func(string, checkpointPendingSnapshot, string, int64) error
+	writeSnapshot func(string, any, string, int64) error
 }
 
 func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, error) {
