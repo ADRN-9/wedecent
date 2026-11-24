@@ -344,7 +344,6 @@ func ensureReplayInitializationAttemptContext(ctx context.Context, path string, 
 	})
 }
 
-
 func waitReplayLockContext(ctx context.Context) error {
 	if ctx == nil {
 		return ErrReplayUnavailable
