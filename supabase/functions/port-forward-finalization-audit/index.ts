@@ -79,7 +79,7 @@ function trustedWitnessKeys(){
  const quorum=Number(Deno.env.get("WEDECENT_CHECKPOINT_WITNESS_QUORUM"));if(!Number.isSafeInteger(quorum)||keys.size<2||quorum<=Math.floor(keys.size/2)||quorum>keys.size)throw Error("invalid witness quorum");
  return {keys,quorum};
 }
-async function verifyFinalizationEvidence(p:JsonObject,operationID:string,requestHash:Uint8Array,evidence:unknown,evidenceSHA256:string){
+export async function verifyFinalizationEvidence(p:JsonObject,operationID:string,requestHash:Uint8Array,evidence:unknown,evidenceSHA256:string){
  if(!exact(evidence,["primary_receipt","witness_acknowledgements","revocation_proofs"]))throw Error("missing finalization evidence");
  if(await digest(evidence)!==evidenceSHA256)throw Error("finalization evidence digest mismatch");
  const primaryRaw=Deno.env.get("WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY");if(!primaryRaw)throw Error("independent primary trust anchor missing");
@@ -131,7 +131,7 @@ async function verifyFinalizationEvidence(p:JsonObject,operationID:string,reques
  if(operationID!==[...await sha(concat(enc.encode("wedecent-checkpoint-finalization-v1\n"),requestHash))].map(x=>x.toString(16).padStart(2,"0")).join(""))throw Error("finalization operation ID mismatch");
 }
 
-Deno.serve(async req=>{if(req.method==="OPTIONS")return new Response("ok",{headers});if(req.method!=="POST")return reply({error:"method not allowed"},405);try{
+if (import.meta.main) Deno.serve(async req=>{if(req.method==="OPTIONS")return new Response("ok",{headers});if(req.method!=="POST")return reply({error:"method not allowed"},405);try{
 const token=req.headers.get("authorization")?.match(/^Bearer\s+([^\s]+)$/i)?.[1];if(!token||token.length>8192)return reply({error:"authentication required"},401);
 const raw=await readBoundedBody(req);if(raw===null)return reply({error:"request too large"},413);
 const url=Deno.env.get("SUPABASE_URL");if(!url)throw Error("URL missing");const admin=createClient(url,serviceKey(),{auth:{persistSession:false,autoRefreshToken:false}});
