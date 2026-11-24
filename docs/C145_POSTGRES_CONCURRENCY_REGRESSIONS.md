@@ -80,3 +80,43 @@ CI run 45353560190 tested commit `f18ecb42296f8d8f949dfd1bb2d053673bc4cd44`. The
 The fixture now sets the expiry 90 seconds after the current time while retaining one captured issue/expiry pair for all retries. With the issue time captured one second before the test starts, the signed lifetime remains within the production 120-second bound and identical across idempotent retries. This correction is commit `8a6b82b312949142679b5a1f6563d02ca569e0c0`.
 
 Exact-HEAD CI run 45353868208 and Desktop run 45353868172 were started for this correction. Their final results are pending. Do not treat the duplicate-forwarding or JTI-reuse cases as verified until the concurrency job passes on this SHA.
+
+## C147 exact-HEAD concurrency verification
+
+### Baseline exact-HEAD run: `98239463f3f85947aaba7ff8c5933f559880bb05`
+
+CI run 45353967851 and Desktop run 45353967846 were recovered for the live PR head.
+
+- Supabase job 138309126904 completed successfully.
+- All four pgTAP files passed: 72 assertions.
+- The 12 revocation-ordering cases passed, covering consume-first and revoke-first for initiator, destination, router, organization membership, device permission and route grant.
+- Concurrent duplicate forwarding used identical capability fields and the same forwarding ID/JTI. The retry returned `replayed: true`; committed-state assertions found exactly one forwarding transaction and one replay entry.
+- Concurrent reuse of one JTI under a different forwarding ID was rejected with `jti-conflict`; committed-state assertions found exactly one transaction for that JTI and no transaction for the competing forwarding ID.
+- The harness completed with `All deterministic multi-session authorization races passed.`
+
+The baseline run's Windows agent, macOS agent, Windows release, relay worker, route-capability client, control plane, route E2E and Supabase jobs succeeded. Its Linux job was cancelled when the follow-up rollback regression commit superseded this SHA. Desktop Windows and macOS succeeded; Desktop Linux was still running when superseded.
+
+### Rollback regression: `932ffb9aad0f0464154fb8cbcd40a5556bd29da8`
+
+CI run 45355055535 passed all 72 pgTAP assertions and all 12 revocation races, but the newly added rollback test failed because its shell `printf` emitted literal backslash-n text rather than line delimiters. This was a harness command-framing defect. No production authorization check was weakened.
+
+### Corrected rollback regression: `7b6c16323d097ff24fa6429cf8df63058f0791dd`
+
+The rollback command now sends actual line delimiters and a PostgreSQL `\\q` meta-command. The harness reports failure logs if the rollback psql process exits nonzero.
+
+CI run 45355468789, Supabase job 138312159085, completed successfully:
+
+- All four pgTAP files passed: 72 assertions.
+- All 12 revocation-ordering scenarios passed.
+- Rollback-after-authorization passed: no forwarding transaction row, no replay entry, and unchanged replay-authority generation and state hash after rollback.
+- Exact retry after rollback succeeded with the same forwarding ID, JTI, route grant and capability timestamps; final state contained exactly one transaction and one replay entry, and replay generation advanced by exactly one.
+- The concurrent duplicate-forwarding and concurrent JTI-reuse checks also completed successfully as part of the same harness step.
+- The Supabase job concluded `success`.
+
+At documentation time, the same exact-HEAD CI run 45355468789 had these other results: control-plane, Windows release, macOS agent, route-capability client, relay worker, Windows agent, route E2E and Supabase all succeeded; Linux was still running its final race detector and transport smoke tests. Desktop run 45355468781 had all three Tauri jobs running (Linux, macOS and Windows). No final pass is claimed for those still-running jobs.
+
+### Remaining limits
+
+- The SQL transaction proves atomicity only within the Supabase/PostgreSQL primary. It does not prove atomic commitment with independently operated replay witnesses or establish independent witness quorum.
+- Production acceptance remains withheld pending independent witness infrastructure/security verification and production infrastructure/trust-anchor gates.
+- No real-hardware Bluetooth or USB validation is established by these CI runs.
