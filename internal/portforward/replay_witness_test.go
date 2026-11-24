@@ -3026,7 +3026,7 @@ func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart
 		var operationID string
 		err := provider.FinalizeWithAudit(context.Background(), request, func(ctx context.Context, id string, _ CheckpointFinalizationEvidence) error {
 			operationID = id
-			return sink.RecordCheckpointFinalization(ctx, request, id, CheckpointFinalizationComplete)
+			return sink.RecordCheckpointFinalization(ctx, request, id, CheckpointFinalizationComplete, nil)
 		})
 		return operationID, err
 	}
