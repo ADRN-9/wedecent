@@ -69,14 +69,6 @@ func replayOwnedByCurrentUser(info os.FileInfo) bool {
 	return ok && stat.Uid == uint32(unix.Geteuid())
 }
 
-func syncReplayDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	return errors.Join(dir.Sync(), dir.Close())
-}
-
 func replayPathExistsForLock(path string) (bool, error) {
 	_, err := os.Lstat(path)
 	if err == nil {
