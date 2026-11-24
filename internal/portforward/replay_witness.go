@@ -443,6 +443,7 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 	if len(acks) < p.Quorum {
 		return nil, ErrCheckpointQuorum
 	}
+	return acks, nil
 }
 
 func (p *WitnessedReplayCheckpointProvider) preflightWitnessHeads(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, existingPending bool, disposition CheckpointDisposition) error {
