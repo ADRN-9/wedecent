@@ -956,7 +956,7 @@ func (s *MemoryCheckpointPendingStore) Begin(ctx context.Context, request Checkp
 		s.entries = make(map[string]checkpointPendingEntry)
 	}
 	if old, ok := s.entries[key]; ok {
-		if old.Fingerprint != hex.EncodeToString(fp[:]) {
+		if old.Fingerprint != hex.EncodeToString(fp[:]) || old.State == "equivocated" {
 			return false, ErrCheckpointConflict
 		}
 		if old.State == "pending" || old.State == "resolved" {
