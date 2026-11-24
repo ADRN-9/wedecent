@@ -195,7 +195,11 @@ func TestWitnessedClientRestartRecoversLostPrimaryCommit(t *testing.T) {
 func TestRestoredPendingJournalCannotReplayAcknowledgedReceipt(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
-	path := filepath.Join(t.TempDir(), "pending.json")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pending.json")
 	store, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -248,7 +252,11 @@ func TestWitnessHistoryDisagreementAndHistoricalHeadFailClosed(t *testing.T) {
 func TestFileCheckpointPendingStoreSurvivesRestartAndRejectsHistoricalReceipt(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
-	path := filepath.Join(t.TempDir(), "pending.json")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pending.json")
 	store, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
