@@ -2037,6 +2037,9 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 	if _, err := store.LoadAcknowledgements(context.Background(), request, receipt, client.Witnesses); !errors.Is(err, ErrCheckpointConflict) {
 		t.Fatalf("equivocated operation did not become terminal: %v", err)
 	}
+	if _, err := store.Begin(context.Background(), request); !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("terminal operation accepted a new begin: %v", err)
+	}
 	evidence, err := store.LoadEquivocations(context.Background(), request, receipt, client.Witnesses)
 	if err != nil || len(evidence) != 1 {
 		t.Fatalf("durable equivocation evidence=%d err=%v", len(evidence), err)
