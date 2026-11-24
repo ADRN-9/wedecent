@@ -65,7 +65,7 @@ export function str(s:unknown){if(typeof s!=="string")throw Error("invalid strin
 export function concat(...parts:Uint8Array[]){const out=new Uint8Array(parts.reduce((n,p)=>n+p.length,0));let i=0;for(const p of parts){out.set(p,i);i+=p.length}return out}
 export function h32(v:unknown){return fromHex(String(v))}
 export async function sha(b:Uint8Array){return new Uint8Array(await crypto.subtle.digest("SHA-256",bufferSource(b)))}
-async function verifyEd25519(publicKey:Uint8Array,signature:Uint8Array,message:Uint8Array){const key=await crypto.subtle.importKey("raw",publicKey,{name:"Ed25519"},false,["verify"]);if(!await crypto.subtle.verify({name:"Ed25519"},key,signature,message))throw Error("signature rejected")}
+async function verifyEd25519(publicKey:Uint8Array,signature:Uint8Array,message:Uint8Array){const key=await crypto.subtle.importKey("raw",bufferSource(publicKey),{name:"Ed25519"},false,["verify"]);if(!await crypto.subtle.verify({name:"Ed25519"},key,bufferSource(signature),bufferSource(message)))throw Error("signature rejected")}
 export async function providerKeyID(publicKey:Uint8Array){return "ed25519-"+b64url(await sha(publicKey))}
 function endpointScope(v:unknown){if(!endpoint(v))throw Error("invalid endpoint");const x=v as JsonObject;return {device_id:String(x.device_id),account_id:String(x.account_id),organization_id:String(x.organization_id),revocation_epoch:Number(x.revocation_epoch)}}
 function sameScope(a:unknown,b:unknown){if(!isObject(a)||!isObject(b))return false;return a.device_id===b.device_id&&a.account_id===b.account_id&&a.organization_id===b.organization_id}
