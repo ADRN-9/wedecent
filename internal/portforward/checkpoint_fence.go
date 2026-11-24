@@ -11,7 +11,7 @@ import (
 
 const (
 	checkpointFenceVersion uint32 = 1
-	checkpointFenceDomain        = "wedecent-checkpoint-fence-token-v1"
+	checkpointFenceDomain         = "wedecent-checkpoint-fence-token-v1"
 )
 
 type CheckpointFenceAction string
