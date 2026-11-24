@@ -166,7 +166,7 @@ select throws_ok($q$select public.record_checkpoint_finalization(
  extensions.digest(convert_to(wedecent_private.canonical_jsonb('{"primary_receipt":{"tampered":true},"witness_acknowledgements":[],"revocation_proofs":[]}'::jsonb),'UTF8'),'sha256'),
  '11000000-0000-4000-8000-000000000091'
 )$q$,'23505','outcome conflict','same terminal outcome with different proof evidence is rejected');
-select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$q$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
+select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload())$q$,'23505','contradictory terminal outcome','a new intermediate transition is rejected after terminal completion');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome='finalized'),1,'only one terminal outcome exists per operation');
 select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','completion requires a started operation','completion without a started operation is rejected');
@@ -176,10 +176,10 @@ select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),r
 select is((pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','intermediate failure is recorded without terminalizing operation');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','successful retry can recover after intermediate failure');
 
-select is((pg_temp.record_audit('finalization_started',pg_temp.audit_route_payload(),repeat('g',64))->>'replayed'),'false','routed operation binds stored route grant and router identities');
+select is((pg_temp.record_audit('finalization_started',pg_temp.audit_route_payload(),repeat('7',64))->>'replayed'),'false','routed operation binds stored route grant and router identities');
 update public.route_authorization_grants set revoked_at=clock_timestamp()
  where id='55000000-0000-4000-8000-000000000091';
-select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_route_payload(),repeat('g',64))$q$,'42501','stored route authorization is unavailable or mismatched','revoked route grant blocks finalization');
+select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_route_payload(),repeat('7',64))$q$,'42501','stored route authorization is unavailable or mismatched','revoked route grant blocks finalization');
 update public.route_authorization_grants set revoked_at=null
  where id='55000000-0000-4000-8000-000000000091';
 
