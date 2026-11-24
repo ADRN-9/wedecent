@@ -3380,8 +3380,17 @@ func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted, _ := newWitnessedFixture(t, primary, restartedStore)
-	restarted.Witnesses = client.Witnesses
+	restartedFence := restartTestFenceCoordinator(t, client.Fencing)
+	restartedPrimary, ok := restartedFence.Primary.(*testAtomicCheckpointPrimary)
+	if !ok {
+		t.Fatal("restarted checkpoint fence primary is unavailable")
+	}
+	restarted := &WitnessedReplayCheckpointProvider{
+		Primary: restartedPrimary, PrimaryKey: client.PrimaryKey,
+		Witnesses: client.Witnesses, Quorum: client.Quorum,
+		Pending: restartedStore, Fencing: restartedFence,
+		RevocationProofs: client.RevocationProofs,
+	}
 	secondID, err := invoke(restarted)
 	if err != nil {
 		t.Fatalf("finalization retry after restart failed: %v", err)
