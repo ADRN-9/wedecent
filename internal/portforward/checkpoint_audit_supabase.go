@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
@@ -110,6 +111,7 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 	request CheckpointRequest,
 	operationID string,
 	outcome string,
+	evidence *CheckpointFinalizationEvidence,
 ) error {
 	if a == nil || ctx == nil || a.http == nil {
 		return ErrCheckpointUnavailable
@@ -139,6 +141,18 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 		return err
 	}
 	payloadDigest := sha256.Sum256(canonical)
+	evidencePayload, err := checkpointFinalizationEvidencePayload(evidence)
+	if err != nil {
+		return err
+	}
+	evidenceCanonical, err := json.Marshal(evidencePayload)
+	if err != nil {
+		return err
+	}
+	evidenceDigest := sha256.Sum256(evidenceCanonical)
+	if outcome != CheckpointFinalizationStarted && evidence == nil {
+		return errors.New("terminal checkpoint audit requires primary and witness evidence")
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -172,6 +186,8 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 		"payload_version": 1,
 		"payload":         payload,
 		"payload_sha256":  hex.EncodeToString(payloadDigest[:]),
+		"evidence": evidencePayload,
+		"evidence_sha256": hex.EncodeToString(evidenceDigest[:]),
 	})
 	if err != nil {
 		return err
@@ -208,6 +224,65 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 		return errors.New("checkpoint audit timestamp invalid")
 	}
 	return ctx.Err()
+}
+
+func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvidence) (map[string]any, error) {
+	if evidence == nil {
+		return map[string]any{}, nil
+	}
+	safe := func(v uint64) bool { return v <= 1<<53-1 }
+	receipt := evidence.PrimaryReceipt
+	if !safe(receipt.Generation) {
+		return nil, ErrCheckpointIntegrity
+	}
+	receiptPayload := map[string]any{
+		"version": receipt.Version, "device_id": receipt.DeviceID, "account_id": receipt.AccountID,
+		"organization_id": receipt.OrganizationID, "jti": receipt.JTI,
+		"authorization_sha256": hex.EncodeToString(receipt.AuthorizationSHA256[:]),
+		"request_sha256": hex.EncodeToString(receipt.RequestSHA256[:]), "generation": receipt.Generation,
+		"previous_hash": hex.EncodeToString(receipt.PreviousHash[:]), "record_hash": hex.EncodeToString(receipt.RecordHash[:]),
+		"provider_key_id": receipt.ProviderKeyID, "signature": base64.StdEncoding.EncodeToString(receipt.Signature),
+	}
+	acks := make([]any, 0, len(evidence.WitnessAcknowledgements))
+	for _, ack := range evidence.WitnessAcknowledgements {
+		acks = append(acks, map[string]any{
+			"witness_id": ack.WitnessID, "scope": map[string]any{
+				"device_id": ack.Scope.DeviceID, "account_id": ack.Scope.AccountID, "organization_id": ack.Scope.OrganizationID,
+			}, "jti": ack.JTI, "request_sha256": hex.EncodeToString(ack.RequestSHA256[:]),
+			"primary_receipt_sha256": hex.EncodeToString(ack.PrimaryReceiptSHA256[:]),
+			"decision": ack.Decision, "status": ack.Status, "witness_key_id": ack.WitnessKeyID,
+			"signature": base64.StdEncoding.EncodeToString(ack.Signature),
+		})
+	}
+	proofs := make([]any, 0, len(evidence.RevocationProofs))
+	for _, proof := range evidence.RevocationProofs {
+		head := proof.PrimaryHead
+		if !safe(head.Generation) || !safe(head.RevocationEpoch) {
+			return nil, ErrCheckpointIntegrity
+		}
+		primaryHead := map[string]any{
+			"version": head.Version, "device_id": head.DeviceID, "account_id": head.AccountID,
+			"organization_id": head.OrganizationID, "generation": head.Generation,
+			"record_hash": hex.EncodeToString(head.RecordHash[:]), "revocation_epoch": head.RevocationEpoch,
+			"provider_key_id": head.ProviderKeyID, "signature": base64.StdEncoding.EncodeToString(head.Signature),
+		}
+		witnessHeads := make([]any, 0, len(proof.WitnessHeads))
+		for _, witnessHead := range proof.WitnessHeads {
+			if !safe(witnessHead.Generation) || !safe(witnessHead.PrimaryGeneration) || !safe(witnessHead.RevocationEpoch) {
+				return nil, ErrCheckpointIntegrity
+			}
+			witnessHeads = append(witnessHeads, map[string]any{
+				"witness_id": witnessHead.WitnessID, "scope": map[string]any{
+					"device_id": witnessHead.Scope.DeviceID, "account_id": witnessHead.Scope.AccountID, "organization_id": witnessHead.Scope.OrganizationID,
+				}, "generation": witnessHead.Generation, "record_hash": hex.EncodeToString(witnessHead.RecordHash[:]),
+				"primary_generation": witnessHead.PrimaryGeneration, "primary_head": hex.EncodeToString(witnessHead.PrimaryHead[:]),
+				"revocation_epoch": witnessHead.RevocationEpoch, "witness_key_id": witnessHead.WitnessKeyID,
+				"signature": base64.StdEncoding.EncodeToString(witnessHead.Signature),
+			})
+		}
+		proofs = append(proofs, map[string]any{"primary_head": primaryHead, "witness_heads": witnessHeads})
+	}
+	return map[string]any{"primary_receipt": receiptPayload, "witness_acknowledgements": acks, "revocation_proofs": proofs}, nil
 }
 
 func validFinalizationOutcome(value string) bool {
