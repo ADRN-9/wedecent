@@ -36,11 +36,11 @@ type checkpointPendingEntry struct {
 	ReceiptHash          string                          `json:"receipt_hash,omitempty"`
 	Acknowledgements     []CheckpointWitnessAck          `json:"acknowledgements,omitempty"`
 	Equivocations        []CheckpointWitnessEquivocation `json:"equivocations,omitempty"`
-	FinalizationID       string                          `json:"finalization_id,omitempty"`
-	FinalizationComplete bool                            `json:"finalization_complete,omitempty"`
-	FinalizationOperationID string                       `json:"finalization_operation_id,omitempty"`
-	FinalizationEvidence *CheckpointFinalizationEvidence `json:"finalization_evidence,omitempty"`
-	FinalizationEvidenceSHA256 string                    `json:"finalization_evidence_sha256,omitempty"`
+	FinalizationID               string                          `json:"finalization_id,omitempty"`
+	FinalizationComplete         bool                            `json:"finalization_complete,omitempty"`
+	FinalizationOperationID      string                          `json:"finalization_operation_id,omitempty"`
+	FinalizationEvidence         *CheckpointFinalizationEvidence `json:"finalization_evidence,omitempty"`
+	FinalizationEvidenceSHA256   string                          `json:"finalization_evidence_sha256,omitempty"`
 	Request              CheckpointRequest               `json:"request"`
 	Receipt              *CheckpointReceipt              `json:"receipt,omitempty"`
 }
