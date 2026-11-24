@@ -131,6 +131,9 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 		file, err = os.OpenFile(markerPath, os.O_RDWR, 0o600)
 		if err == nil {
 			err = os.Link(markerPath, anchorPath)
+			if errors.Is(err, os.ErrExist) {
+				err = nil
+			}
 		}
 	case lockExists:
 		// Adopt a pre-anchor lock inode once, preserving the existing inode.
