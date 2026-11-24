@@ -415,17 +415,19 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 	newAcks := make([]response, 0, len(p.Witnesses))
 	for range p.Witnesses {
 		r := <-ch
-		if r.err != nil || VerifyCheckpointWitnessAck(r.ack, r.trust.ID, r.trust.PublicKey) != nil ||
-			r.ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) ||
-			r.ack.JTI != request.JTI || r.ack.RequestSHA256 != receipt.RequestSHA256 ||
-			r.ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) ||
-			(r.ack.Status != "acknowledged" && r.ack.Status != "already_acknowledged") {
+		if r.err != nil || VerifyCheckpointWitnessAck(r.ack, r.trust.ID, r.trust.PublicKey) != nil {
 			continue
 		}
 		if previous, ok := seen[r.trust.ID]; ok {
 			if !sameCheckpointWitnessAckOutcome(previous, r.ack) {
 				return nil, ErrCheckpointConflict
 			}
+			continue
+		}
+		if r.ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) ||
+			r.ack.JTI != request.JTI || r.ack.RequestSHA256 != receipt.RequestSHA256 ||
+			r.ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) ||
+			(r.ack.Status != "acknowledged" && r.ack.Status != "already_acknowledged") {
 			continue
 		}
 		newAcks = append(newAcks, r)
