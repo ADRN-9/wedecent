@@ -1154,9 +1154,13 @@ func storeFinalizationEvidence(snapshot *checkpointPendingSnapshot, request Chec
 	if err != nil || operationID != expectedID {
 		return ErrCheckpointIntegrity
 	}
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil {
+		return err
+	}
 	key := checkpointPendingKey(request)
 	entry, ok := snapshot.Entries[key]
-	if !ok || entry.Fingerprint == "" || entry.ReceiptHash != CheckpointReceiptDigest(receipt) ||
+	if !ok || entry.Fingerprint != hex.EncodeToString(fingerprint[:]) || entry.ReceiptHash != CheckpointReceiptDigest(receipt) ||
 		entry.State != "resolved" || entry.Receipt == nil {
 		return ErrCheckpointHistorical
 	}
@@ -1189,8 +1193,13 @@ func loadFinalizationEvidence(snapshot checkpointPendingSnapshot, request Checkp
 	if err != nil || operationID != expectedID {
 		return CheckpointFinalizationEvidence{}, false, ErrCheckpointIntegrity
 	}
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil {
+		return CheckpointFinalizationEvidence{}, false, err
+	}
 	entry, ok := snapshot.Entries[checkpointPendingKey(request)]
-	if !ok || entry.ReceiptHash != CheckpointReceiptDigest(receipt) || entry.State != "resolved" {
+	if !ok || entry.Fingerprint != hex.EncodeToString(fingerprint[:]) ||
+		entry.ReceiptHash != CheckpointReceiptDigest(receipt) || entry.State != "resolved" {
 		return CheckpointFinalizationEvidence{}, false, ErrCheckpointHistorical
 	}
 	if entry.FinalizationOperationID == "" && entry.FinalizationEvidence == nil && entry.FinalizationEvidenceSHA256 == "" {
