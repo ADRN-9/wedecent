@@ -12,8 +12,11 @@ values
 insert into public.organizations (id, name, slug, created_by)
 values ('22000000-0000-4000-8000-000000000001', 'Port Forward Test', 'port-forward-test', '11000000-0000-4000-8000-000000000001');
 
-insert into public.organization_memberships (organization_id, user_id, role, created_by)
-values ('22000000-0000-4000-8000-000000000001', '11000000-0000-4000-8000-000000000001', 'member', '11000000-0000-4000-8000-000000000001');
+-- Organization creation atomically bootstraps the initial owner membership.
+update public.organization_memberships
+   set role = 'member'
+ where organization_id = '22000000-0000-4000-8000-000000000001'
+   and user_id = '11000000-0000-4000-8000-000000000001';
 
 insert into public.devices (device_id, public_key, kind, name, owner_user_id, organization_id)
 values
