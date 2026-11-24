@@ -44,3 +44,18 @@ The first CI attempt containing the concurrency harness (run 45352068936) failed
 The CI workflow now probes an available host port and appends a temporary `[db]` port override to the checked-out local Supabase config before startup. The repository's committed `supabase/config.toml` is unchanged. The test harness reads the actual `DB_URL` reported by `supabase status -o env`, so it follows the selected port.
 
 The retry at CI run 45352285692 was still in progress at the time of this report. The database startup step had not yet completed; no concurrency test result is claimed.
+
+## C146 exact-HEAD execution evidence
+
+CI run 45352598153 was executed against `396584e0478d19585cf8d301194f291665f08f27`.
+
+- All 72 existing pgTAP assertions passed (4 files).
+- All 12 revocation-ordering cases completed successfully: consume-first and revoke-first for initiator, destination, router, organization membership, destination access permission, and route-grant revocation.
+- Each race observed the competing session in a PostgreSQL lock wait before allowing the lock holder to commit, then asserted the committed authorization-transaction state and revocation postcondition.
+- The first harness attempt failed after those 12 cases while setting up the duplicate/JTI scenarios: test fixture route-grant JTIs collided with previously inserted unique route-grant JTIs. This was test-data namespace collision, not an authorization race failure.
+
+Corrective change in commit `4c09830db4eefe467b6b171472ec92b6934acb30` gives route-grant JTIs and forwarding transaction JTIs disjoint unique values for the duplicate and reuse cases. The exact-HEAD rerun is pending; no claim is made yet that duplicate retry and JTI-reuse tests passed.
+
+Run 45352598153 also had successful Windows agent, control-plane, relay-worker, Windows release, macOS agent, route-capability-client and route-E2E jobs. Linux was still running when inspected. The Supabase job failed only in the harness step after the 12 successful races; database startup and all pgTAP tests succeeded. Desktop run 45352598149 had Windows, macOS and Linux Tauri checks in progress at last inspection.
+
+The Supabase startup step initially encountered public registry `Data limit exceeded` responses but its configured retry/fallback recovered and startup completed. This did not fail the database job.
