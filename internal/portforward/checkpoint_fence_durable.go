@@ -212,6 +212,9 @@ func (p *FileCheckpointFencePrimary) ReserveFence(ctx context.Context, request C
 		if err != nil {
 			return err
 		}
+		if token.ExpiresAtUnixMS <= p.now().UnixMilli() {
+			return ErrCheckpointStale
+		}
 		if err := appendCheckpointFenceEvent(file, checkpointFenceDiskEvent{Kind: "reserve", Token: token}); err != nil {
 			return err
 		}
@@ -323,6 +326,7 @@ func (w *FileCheckpointFenceWitness) CommitFence(ctx context.Context, token Chec
 			WitnessID: w.id, TokenSHA256: digest, Generation: token.Generation,
 			Action: token.Action, OperationID: token.OperationID,
 			WitnessKeyID: checkpointProviderKeyID(w.publicKey),
+			CommittedAtUnixMS: w.now().UnixMilli(),
 		}
 		ack.Signature = ed25519.Sign(w.privateKey, checkpointFenceAcknowledgementMessage(ack))
 		event := checkpointFenceDiskEvent{Kind: "commit", Token: token, Acknowledgements: []CheckpointFenceAcknowledgement{ack}}
@@ -568,7 +572,8 @@ func VerifyCheckpointFenceAcknowledgement(ack CheckpointFenceAcknowledgement, wi
 		ack.WitnessKeyID != checkpointProviderKeyID(publicKey) ||
 		ack.Generation == 0 || ack.OperationID == "" ||
 		(ack.Action != CheckpointFenceFinalize && ack.Action != CheckpointFenceRevoke) ||
-		ack.TokenSHA256 == ([sha256.Size]byte{}) || len(ack.Signature) != ed25519.SignatureSize ||
+		ack.TokenSHA256 == ([sha256.Size]byte{}) || ack.CommittedAtUnixMS <= 0 ||
+		len(ack.Signature) != ed25519.SignatureSize ||
 		!ed25519.Verify(publicKey, checkpointFenceAcknowledgementMessage(ack), ack.Signature) {
 		return ErrCheckpointIntegrity
 	}
@@ -585,7 +590,8 @@ func checkpointFenceAcknowledgementMessage(ack CheckpointFenceAcknowledgement) [
 		Action CheckpointFenceAction
 		OperationID string
 		WitnessKeyID string
-	}{ack.Generation, ack.Action, ack.OperationID, ack.WitnessKeyID})
+		CommittedAtUnixMS int64
+	}{ack.Generation, ack.Action, ack.OperationID, ack.WitnessKeyID, ack.CommittedAtUnixMS})
 	return b.Bytes()
 }
 
