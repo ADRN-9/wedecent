@@ -224,9 +224,13 @@ begin
   'version',1,
   'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-0000000000c1','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_aaaaaaaaaaaaaaaa')),
   'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-0000000000c2','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_bbbbbbbbbbbbbbbb')),
-  'router',null,'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti',p_jti,
+  'router',jsonb_build_object('device_id','wd_cccccccccccccccc','account_id','11000000-0000-4000-8000-0000000000c2','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_cccccccccccccccc')),
+  'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti',p_jti,
   'authorization_sha256',(select encode(authorization_sha256,'hex') from public.port_forward_authorization_transactions where jti=p_jti),
-  'route_authorization_sha256',repeat('0',64),'route_authorization_id','','route_authorization_jti','','route_authorization_json','',
+  'route_authorization_sha256',repeat('c',64),
+  'route_authorization_id',(select route_authorization_id::text from public.port_forward_authorization_transactions where jti=p_jti),
+  'route_authorization_jti',(select route_authorization_jti from public.port_forward_authorization_transactions where jti=p_jti),
+  'route_authorization_json','{"route":"signed"}',
   'device_public_key',(select public_key from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'),
   'device_signature',repeat('A',86)||'=='
  );
