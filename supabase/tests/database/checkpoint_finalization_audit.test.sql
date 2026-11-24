@@ -1,6 +1,10 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(27);
+select plan(31);
+select is(wedecent_private.canonical_jsonb('{"n":-9007199254740991}'::jsonb),'{"n":-9007199254740991}','canonical JSON preserves minimum JavaScript safe integer');
+select is(wedecent_private.canonical_jsonb('{"n":9007199254740991}'::jsonb),'{"n":9007199254740991}','canonical JSON preserves maximum JavaScript safe integer');
+select is(wedecent_private.canonical_jsonb('{"z":[0,1,-1,9007199254740991],"a":{"b":true,"n":-9007199254740991,"s":"ok"}}'::jsonb),'{"a":{"b":true,"n":-9007199254740991,"s":"ok"},"z":[0,1,-1,9007199254740991]}','canonical JSON sorts nested keys and preserves array numeric boundaries');
+select is(wedecent_private.canonical_jsonb(E'{"~key":[null,false,{"a/b":"x\\ny"}],"a":2}'::jsonb),E'{"a":2,"~key":[null,false,{"a/b":"x\\ny"}]}','canonical JSON preserves escaped strings and array ordering');
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
