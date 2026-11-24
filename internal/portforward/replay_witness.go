@@ -526,6 +526,17 @@ func checkpointEndpointForConsumer(request CheckpointRequest) CheckpointEndpoint
 	return endpoint
 }
 
+// checkpointRequestParticipants returns the complete signed membership vector.
+// CheckpointRequestFingerprint validates the route/router pairing before callers
+// use this list, so an omitted or ambiguous router cannot silently downgrade trust.
+func checkpointRequestParticipants(request CheckpointRequest) []CheckpointEndpoint {
+	participants := []CheckpointEndpoint{request.Initiator, request.Destination}
+	if request.RouteAuthorizationSHA256 != ([sha256.Size]byte{}) {
+		participants = append(participants, request.Router)
+	}
+	return participants
+}
+
 func VerifyCheckpointWitnessReceipt(receipt CheckpointWitnessReceipt, witnessID string, publicKey ed25519.PublicKey) error {
 	if witnessID == "" || receipt.WitnessID != witnessID || len(publicKey) != ed25519.PublicKeySize ||
 		receipt.WitnessKeyID != checkpointProviderKeyID(publicKey) || receipt.Generation == 0 ||
@@ -712,7 +723,9 @@ func (w *deterministicCheckpointWitness) Commit(ctx context.Context, request Che
 	if !w.available {
 		return CheckpointWitnessReceipt{}, ErrCheckpointUnavailable
 	}
-	for _, e := range []CheckpointEndpoint{request.Initiator, request.Destination} {
+	// The witness lock is the local linearization point between Commit and
+	// Revoke. Every identity carried by the signed request must still be current.
+	for _, e := range checkpointRequestParticipants(request) {
 		if e.RevocationEpoch != w.revoked[witnessScope(e)] {
 			return CheckpointWitnessReceipt{}, ErrCheckpointRevoked
 		}
@@ -811,6 +824,13 @@ func (w *deterministicCheckpointWitness) Acknowledge(ctx context.Context, reques
 	defer w.mu.Unlock()
 	if !w.available {
 		return CheckpointWitnessAck{}, ErrCheckpointUnavailable
+	}
+	// Acknowledgement is another authorization boundary: revocation of
+	// either endpoint or the signed router fences completion of this request.
+	for _, e := range checkpointRequestParticipants(request) {
+		if e.RevocationEpoch != w.revoked[witnessScope(e)] {
+			return CheckpointWitnessAck{}, ErrCheckpointRevoked
+		}
 	}
 	ledger := w.ledgers[scope]
 	if ledger == nil || ledger.used[request.JTI] != digest {
