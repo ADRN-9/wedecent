@@ -67,6 +67,10 @@ func run(args []string) error {
 	if fs.NArg() != 0 {
 		return errors.New("usage: wd-core [--state directory] [--supabase-url URL] [--publishable-key key] [--router-agent-id id --router-agent-fingerprint SHA256:hex] [--port-forward-authorization-public-key path]")
 	}
+	if strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_URL")) != "" ||
+		strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_API_KEY")) != "" {
+		return errors.New("legacy single-provider replay environment variables are unsupported; configure the witnessed checkpoint provider")
+	}
 
 	agentID := strings.TrimSpace(*routerAgentID)
 	agentFingerprint := strings.TrimSpace(*routerAgentFingerprint)
