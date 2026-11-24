@@ -218,6 +218,15 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 }
 
 func (s *FileCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+	unlock, err := s.LockFinalization(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.recordAcknowledgementLocked(ctx, request, receipt, ack, trust)
+}
+
+func (s *FileCheckpointPendingStore) recordAcknowledgementLocked(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
 	if s == nil || ctx == nil {
 		return ErrReplayUnavailable
 	}
@@ -243,6 +252,15 @@ func (s *FileCheckpointPendingStore) LoadAcknowledgements(ctx context.Context, r
 }
 
 func (s *FileCheckpointPendingStore) RecordEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+	unlock, err := s.LockFinalization(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.recordEquivocationLocked(ctx, request, receipt, original, conflicting, trust)
+}
+
+func (s *FileCheckpointPendingStore) recordEquivocationLocked(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
 	if s == nil || ctx == nil {
 		return ErrReplayUnavailable
 	}
@@ -433,9 +451,20 @@ func loadCheckpointEquivocations(snapshot checkpointPendingSnapshot, request Che
 }
 
 func (s *MemoryCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+	unlock, err := s.LockFinalization(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.recordAcknowledgementLocked(ctx, request, receipt, ack, trust)
+}
+
+func (s *MemoryCheckpointPendingStore) recordAcknowledgementLocked(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
 	if s == nil || ctx == nil {
 		return ErrReplayUnavailable
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return recordCheckpointAcknowledgement(ctx, request, receipt, ack, trust, func(change func(*checkpointPendingSnapshot) (bool, error)) error {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -487,9 +516,20 @@ func (s *MemoryCheckpointPendingStore) LoadAcknowledgements(ctx context.Context,
 }
 
 func (s *MemoryCheckpointPendingStore) RecordEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+	unlock, err := s.LockFinalization(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	return s.recordEquivocationLocked(ctx, request, receipt, original, conflicting, trust)
+}
+
+func (s *MemoryCheckpointPendingStore) recordEquivocationLocked(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
 	if s == nil || ctx == nil {
 		return ErrReplayUnavailable
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return recordCheckpointEquivocation(ctx, request, receipt, original, conflicting, trust, func(change func(*checkpointPendingSnapshot) (bool, error)) error {
 		if err := ctx.Err(); err != nil {
 			return err
