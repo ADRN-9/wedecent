@@ -113,6 +113,7 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 
 	var file *os.File
 	created := false
+	linked := false
 	switch {
 	case anchorExists:
 		file, err = os.OpenFile(anchorPath, os.O_RDWR, 0o600)
@@ -131,7 +132,9 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 		file, err = os.OpenFile(markerPath, os.O_RDWR, 0o600)
 		if err == nil {
 			err = os.Link(markerPath, anchorPath)
-			if errors.Is(err, os.ErrExist) {
+			if err == nil {
+				linked = true
+			} else if errors.Is(err, os.ErrExist) {
 				err = nil
 			}
 		}
@@ -141,7 +144,9 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 		if err == nil {
 			if err = secureReplayFile(lockPath); err == nil {
 				err = os.Link(lockPath, anchorPath)
-				if errors.Is(err, os.ErrExist) {
+				if err == nil {
+					linked = true
+				} else if errors.Is(err, os.ErrExist) {
 					err = nil
 				}
 			}
@@ -194,8 +199,12 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 		if initialized && !created {
 			return nil, false, errors.Join(errors.New("replay lock path was deleted after initialization"), file.Close())
 		}
-		if err := os.Link(anchorPath, lockPath); err != nil && !errors.Is(err, os.ErrExist) {
-			return nil, false, errors.Join(err, file.Close())
+		if err := os.Link(anchorPath, lockPath); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return nil, false, errors.Join(err, file.Close())
+			}
+		} else {
+			linked = true
 		}
 		lockInfo, err := os.Lstat(lockPath)
 		if err != nil || lockInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, lockInfo) {
@@ -212,15 +221,19 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 			return nil, false, errors.Join(errors.New("persistent replay lock marker changed"), file.Close())
 		}
 	} else {
-		if err := os.Link(anchorPath, markerPath); err != nil && !errors.Is(err, os.ErrExist) {
-			return nil, false, errors.Join(err, file.Close())
+		if err := os.Link(anchorPath, markerPath); err != nil {
+			if !errors.Is(err, os.ErrExist) {
+				return nil, false, errors.Join(err, file.Close())
+			}
+		} else {
+			linked = true
 		}
 		markerInfo, err := os.Lstat(markerPath)
 		if err != nil || markerInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, markerInfo) {
 			return nil, false, errors.Join(errors.New("persistent replay lock marker changed during initialization"), file.Close())
 		}
 	}
-	if created || !markerExists || !lockExists {
+	if created || linked {
 		if err := syncReplayDirectory(filepath.Dir(anchorPath)); err != nil {
 			return nil, false, errors.Join(err, file.Close())
 		}
