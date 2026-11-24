@@ -16,13 +16,13 @@ func TestCheckpointAuditSharedCanonicalVectors(t *testing.T) {
 	}
 	var fixture struct {
 		Vectors []struct {
-			Name string          `json:"name"`
-			Input json.RawMessage `json:"input"`
-			Canonical string     `json:"canonical"`
-			SHA256 string        `json:"sha256"`
+			Name      string          `json:"name"`
+			Input     json.RawMessage `json:"input"`
+			Canonical string          `json:"canonical"`
+			SHA256    string          `json:"sha256"`
 		} `json:"vectors"`
 		Invalid []struct {
-			Name string          `json:"name"`
+			Name  string          `json:"name"`
 			Input json.RawMessage `json:"input"`
 		} `json:"invalid"`
 	}
