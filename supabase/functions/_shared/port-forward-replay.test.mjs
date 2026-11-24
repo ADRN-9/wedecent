@@ -142,6 +142,10 @@ test('routed replay requires a separately signed exact route authorization', asy
       jti: claims.jti,
       sourceDeviceID: route.Source,
       destinationDeviceID: route.Destination,
+      firstTransport: route.Hops[0].Transport,
+      secondTransport: route.Hops[1].Transport,
+      firstCost: route.Hops[0].Cost,
+      secondCost: route.Hops[1].Cost,
     },
   )
   await assert.rejects(
