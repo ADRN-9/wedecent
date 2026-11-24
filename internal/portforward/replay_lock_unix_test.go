@@ -41,11 +41,19 @@ func TestUnixReplayLockDeletionAcrossProcessesFailsClosed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("separate-process lock deletion helper failed: %v\n%s", err, output)
 	}
-	if _, err := os.Lstat(path + ".lock"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("helper did not delete visible lock alias: %v", err)
+	anchorInfo, err := os.Lstat(path + ".lock.anchor")
+	if err != nil {
+		t.Fatalf("persistent lock anchor was removed: %v", err)
+	}
+	aliasInfo, err := os.Lstat(path + ".lock")
+	if err != nil {
+		t.Fatalf("helper did not replace visible lock alias: %v", err)
+	}
+	if os.SameFile(anchorInfo, aliasInfo) {
+		t.Fatal("helper did not replace the visible lock alias with a distinct inode")
 	}
 	if err := secureReplayFile(path + ".lock.anchor"); err != nil {
-		t.Fatalf("persistent lock anchor was removed or weakened: %v", err)
+		t.Fatalf("persistent lock anchor was weakened: %v", err)
 	}
 	if _, _, err := lockReplayFile(path); err == nil {
 		t.Fatal("replay lock deletion was not rejected after initialization")
@@ -57,8 +65,20 @@ func TestUnixReplayLockDeletionProcessHelper(t *testing.T) {
 	if path == "" {
 		return
 	}
-	if err := os.Remove(path + ".lock"); err != nil {
+	lockPath := path + ".lock"
+	if err := os.Remove(lockPath); err != nil {
 		t.Fatalf("delete visible lock alias: %v", err)
+	}
+	replacement, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("create replacement lock inode: %v", err)
+	}
+	if err := replacement.Chmod(0o600); err != nil {
+		_ = replacement.Close()
+		t.Fatal(err)
+	}
+	if err := replacement.Close(); err != nil {
+		t.Fatal(err)
 	}
 	unlock, _, err := lockReplayFile(path)
 	if err == nil {
