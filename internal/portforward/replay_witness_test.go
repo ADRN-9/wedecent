@@ -48,8 +48,8 @@ func testRevocationProofMessage(endpoint CheckpointEndpoint, next uint64) []byte
 }
 
 type testAtomicCheckpointPrimary struct {
-	mu                 sync.Mutex
-	replay             *deterministicCheckpointProvider
+	mu                   sync.Mutex
+	replay               *deterministicCheckpointProvider
 	fence                *FileCheckpointFencePrimary
 	revocationPublicKey  ed25519.PublicKey
 	revocationPrivateKey ed25519.PrivateKey
