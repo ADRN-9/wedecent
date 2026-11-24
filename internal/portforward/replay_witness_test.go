@@ -2886,3 +2886,127 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 		}
 	}
 }
+
+
+type fileCheckpointAuditRecord struct {
+	OperationID string `json:"operation_id"`
+	Outcome     string `json:"outcome"`
+}
+
+type fileCheckpointAuditFixture struct {
+	path  string
+	calls int
+}
+
+func (a *fileCheckpointAuditFixture) RecordCheckpointFinalization(ctx context.Context, _ CheckpointRequest, operationID, outcome string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if operationID == "" || outcome == "" {
+		return ErrCheckpointIntegrity
+	}
+	a.calls++
+	var records []fileCheckpointAuditRecord
+	data, err := os.ReadFile(a.path)
+	if err == nil {
+		if err := json.Unmarshal(data, &records); err != nil {
+			return err
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, record := range records {
+		if record.OperationID == operationID && record.Outcome == outcome {
+			return nil
+		}
+	}
+	records = append(records, fileCheckpointAuditRecord{OperationID: operationID, Outcome: outcome})
+	return writeReplayJSON(a.path, records, replayStagingPattern(a.path, "audit"), 1<<20)
+}
+
+func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary,
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	storePath := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	if _, err := client.Consume(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	sink := &fileCheckpointAuditFixture{path: filepath.Join(dir, "audit.json")}
+	failCompletionMarker := true
+	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
+		snapshot, ok := value.(checkpointPendingSnapshot)
+		if !ok {
+			return errors.New("unexpected pending snapshot type")
+		}
+		if failCompletionMarker {
+			for _, entry := range snapshot.Entries {
+				if entry.FinalizationComplete {
+					failCompletionMarker = false
+					return errors.New("injected completion-marker persistence failure")
+				}
+			}
+		}
+		return writeReplayJSON(path, value, pattern, maxSize)
+	}
+	invoke := func(provider *WitnessedReplayCheckpointProvider) (string, error) {
+		var operationID string
+		err := provider.FinalizeWithAudit(context.Background(), request, func(ctx context.Context, id string) error {
+			operationID = id
+			return sink.RecordCheckpointFinalization(ctx, request, id, CheckpointFinalizationComplete)
+		})
+		return operationID, err
+	}
+	firstID, err := invoke(client)
+	if err == nil || firstID == "" || sink.calls != 1 {
+		t.Fatalf("first finalization did not hit injected marker failure: id=%q calls=%d err=%v", firstID, sink.calls, err)
+	}
+
+	restartedStore, err := NewFileCheckpointPendingStore(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted, _ := newWitnessedFixture(t, primary, restartedStore)
+	restarted.Witnesses = client.Witnesses
+	secondID, err := invoke(restarted)
+	if err != nil {
+		t.Fatalf("finalization retry after restart failed: %v", err)
+	}
+	if secondID != firstID || sink.calls != 2 {
+		t.Fatalf("retry changed operation identity or skipped retry: first=%q second=%q calls=%d", firstID, secondID, sink.calls)
+	}
+	data, err := os.ReadFile(sink.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var records []fileCheckpointAuditRecord
+	if err := json.Unmarshal(data, &records); err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].OperationID != firstID || records[0].Outcome != CheckpointFinalizationComplete {
+		t.Fatalf("durable audit sink did not deduplicate the retry: %+v", records)
+	}
+	completed, err := restartedStore.LoadFinalizationComplete(context.Background(), request, func() CheckpointReceipt {
+		_, receipt, found, hasReceipt, loadErr := restartedStore.LoadFinalization(context.Background(), request.ConsumingDeviceID, request.JTI, request.AuthorizationSHA256)
+		if loadErr != nil || !found || !hasReceipt {
+			t.Fatalf("load finalized receipt: found=%t receipt=%t err=%v", found, hasReceipt, loadErr)
+		}
+		return receipt
+	}(), firstID)
+	if err != nil || !completed {
+		t.Fatalf("completion marker not persisted on retry: completed=%t err=%v", completed, err)
+	}
+}
