@@ -66,16 +66,24 @@ func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request Checkp
 			return CheckpointFenceOperation{}, errors.Join(ErrCheckpointQuorum, ctx.Err())
 		case response := <-responses:
 			trust, ok := byID[response.id]
-			if response.err != nil || !ok || seen[response.id] ||
-				VerifyCheckpointFenceAcknowledgement(response.ack, response.id, trust.PublicKey) != nil {
+			if response.err != nil {
+				continue
+			}
+			if !ok {
+				return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+			}
+			if VerifyCheckpointFenceAcknowledgement(response.ack, response.id, trust.PublicKey) != nil {
 				continue
 			}
 			digest, digestErr := CheckpointFenceTokenDigest(token)
-			if digestErr != nil || response.ack.TokenSHA256 != digest ||
+			if digestErr != nil {
+				return CheckpointFenceOperation{}, digestErr
+			}
+			if seen[response.id] || response.ack.TokenSHA256 != digest ||
 				response.ack.Generation != token.Generation || response.ack.Action != token.Action ||
 				response.ack.OperationID != token.OperationID ||
 				response.ack.CommittedAtUnixMS > token.ExpiresAtUnixMS {
-				continue
+				return CheckpointFenceOperation{}, ErrCheckpointWitnessDisagreement
 			}
 			seen[response.id] = true
 			acks = append(acks, cloneCheckpointFenceAck(response.ack))
