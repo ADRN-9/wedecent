@@ -173,7 +173,9 @@ begin
         select 1
           from pg_catalog.jsonb_array_elements(v_participants) as item(value)
          where item.value ->> 'organization_id' <> p_organization_id::text
-            or pg_catalog.jsonb_object_length(item.value) <> 6
+            or case when pg_catalog.jsonb_typeof(item.value) = 'object' then
+                (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(item.value)) <> 6
+               else true end
             or not (item.value ?& array[
                 'device_id', 'account_id', 'organization_id',
                 'revocation_epoch', 'head_generation', 'head_hash'
@@ -635,7 +637,9 @@ begin
         select 1
           from pg_catalog.jsonb_array_elements(p_witness_acknowledgements) as item(value)
          where pg_catalog.jsonb_typeof(item.value) <> 'object'
-            or pg_catalog.jsonb_object_length(item.value) <> 8
+            or case when pg_catalog.jsonb_typeof(item.value) = 'object' then
+                (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(item.value)) <> 8
+               else true end
             or not (item.value ?& array[
                 'witness_id', 'token_sha256', 'generation', 'action',
                 'operation_id', 'witness_key_id', 'committed_at_unix_ms', 'signature'
