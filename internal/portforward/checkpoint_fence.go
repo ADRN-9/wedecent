@@ -70,7 +70,7 @@ func CheckpointFenceQuorum(witnessCount int) (int, error) {
 type CheckpointFencingPrimary interface {
 	ReserveFence(context.Context, CheckpointFenceRequest) (CheckpointFenceToken, error)
 	CommitFence(context.Context, CheckpointFenceToken, []CheckpointFenceAcknowledgement) error
-	LoadFence(context.Context, CheckpointWitnessScope, string) (CheckpointFenceToken, bool, error)
+	LoadFence(context.Context, CheckpointWitnessScope, string) (CheckpointFenceOperation, bool, error)
 }
 
 // CheckpointFencingWitness advances an independently stored monotonic generation.
