@@ -84,7 +84,7 @@ func (p *deterministicCheckpointProvider) Consume(ctx context.Context, request C
 		if old.requestHash != fingerprint {
 			return CheckpointResult{}, ErrCheckpointConflict
 		}
-		return CheckpointResult{CheckpointReceipt: cloneCheckpointReceipt(old.receipt), Disposition: CheckpointRecovered}, nil
+		return SignCheckpointResult(p.private, CheckpointResult{CheckpointReceipt: cloneCheckpointReceipt(old.receipt), Disposition: CheckpointRecovered})
 	}
 	receipt := CheckpointReceipt{Version: checkpointVersion, DeviceID: consumer.DeviceID, AccountID: consumer.AccountID,
 		OrganizationID: consumer.OrganizationID, JTI: request.JTI, AuthorizationSHA256: request.AuthorizationSHA256,
@@ -110,7 +110,7 @@ func (p *deterministicCheckpointProvider) Consume(ctx context.Context, request C
 		receipt.Signature = append([]byte(nil), receipt.Signature...)
 		receipt.Signature[0] ^= 0xff
 	}
-	return CheckpointResult{CheckpointReceipt: receipt, Disposition: CheckpointCommitted}, nil
+	return SignCheckpointResult(p.private, CheckpointResult{CheckpointReceipt: receipt, Disposition: CheckpointCommitted})
 }
 func (p *deterministicCheckpointProvider) Revoke(ctx context.Context, e CheckpointEndpoint, next uint64) error {
 	if err := ctx.Err(); err != nil {
@@ -310,7 +310,16 @@ func TestCheckpointConflictingJTIAndForgedReceipt(t *testing.T) {
 	if _, err = p.Consume(context.Background(), conflict); !errors.Is(err, ErrCheckpointConflict) {
 		t.Fatalf("conflict: %v", err)
 	}
+	tamperedDisposition := r
+	tamperedDisposition.Disposition = CheckpointRecovered
+	if err := VerifyCheckpointResult(tamperedDisposition, req, p.private.Public().(ed25519.PublicKey)); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("unsigned disposition change accepted: %v", err)
+	}
 	r.Signature[0] ^= 0xff
+	if err := VerifyCheckpointResult(r, req, p.private.Public().(ed25519.PublicKey)); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("forged result signature: %v", err)
+	}
+	r.CheckpointReceipt.Signature[0] ^= 0xff
 	if err := VerifyCheckpointReceipt(r.CheckpointReceipt, req, p.private.Public().(ed25519.PublicKey)); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("forged receipt: %v", err)
 	}
@@ -348,6 +357,9 @@ func TestCheckpointCompletePrimaryDatabaseRestoreDoesNotRestoreCheckpoint(t *tes
 	}
 	if result.Disposition != CheckpointRecovered {
 		t.Fatalf("restored-primary retry disposition=%q; must never appear as a new authorization", result.Disposition)
+	}
+	if err := VerifyCheckpointResult(result, req, p.private.Public().(ed25519.PublicKey)); err != nil {
+		t.Fatal(err)
 	}
 	if _, ok := primarySnapshot[req.JTI]; !ok {
 		t.Fatal("fixture did not snapshot primary transaction")

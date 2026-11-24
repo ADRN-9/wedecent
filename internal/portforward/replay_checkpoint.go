@@ -94,6 +94,7 @@ const (
 type CheckpointResult struct {
 	CheckpointReceipt
 	Disposition CheckpointDisposition
+	Signature []byte
 }
 
 // ReplayCheckpointProvider implementations must serialize Consume and Revoke
@@ -153,7 +154,25 @@ func VerifyCheckpointResult(result CheckpointResult, request CheckpointRequest, 
 	if result.Disposition != CheckpointCommitted && result.Disposition != CheckpointRecovered {
 		return ErrCheckpointIntegrity
 	}
-	return VerifyCheckpointReceipt(result.CheckpointReceipt, request, providerKey)
+	if err := VerifyCheckpointReceipt(result.CheckpointReceipt, request, providerKey); err != nil {
+		return err
+	}
+	if len(result.Signature) != ed25519.SignatureSize ||
+		!ed25519.Verify(providerKey, checkpointResultMessage(result), result.Signature) {
+		return ErrCheckpointIntegrity
+	}
+	return nil
+}
+
+// SignCheckpointResult authenticates the response disposition without mutating the durable receipt.
+func SignCheckpointResult(signer ed25519.PrivateKey, result CheckpointResult) (CheckpointResult, error) {
+	if len(signer) != ed25519.PrivateKeySize ||
+		result.ProviderKeyID != checkpointProviderKeyID(signer.Public().(ed25519.PublicKey)) ||
+		(result.Disposition != CheckpointCommitted && result.Disposition != CheckpointRecovered) {
+		return CheckpointResult{}, ErrCheckpointIntegrity
+	}
+	result.Signature = ed25519.Sign(signer, checkpointResultMessage(result))
+	return result, nil
 }
 
 func VerifyCheckpointHead(head CheckpointHead, endpoint CheckpointEndpoint, providerKey ed25519.PublicKey) error {
@@ -292,6 +311,18 @@ func checkpointReceiptMessage(receipt CheckpointReceipt) []byte {
 	b.Write(receipt.RequestSHA256[:])
 	b.Write(receipt.PreviousHash[:])
 	b.Write(receipt.RecordHash[:])
+	return b.Bytes()
+}
+
+func checkpointResultMessage(result CheckpointResult) []byte {
+	var b bytes.Buffer
+	io.WriteString(&b, "wedecent-replay-checkpoint-result-v1\n")
+	binary.Write(&b, binary.BigEndian, uint32(len(result.ProviderKeyID)))
+	io.WriteString(&b, result.ProviderKeyID)
+	binary.Write(&b, binary.BigEndian, uint32(len(result.Disposition)))
+	io.WriteString(&b, string(result.Disposition))
+	receiptDigest := sha256.Sum256(checkpointReceiptMessage(result.CheckpointReceipt))
+	b.Write(receiptDigest[:])
 	return b.Bytes()
 }
 

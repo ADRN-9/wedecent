@@ -39,6 +39,9 @@ func TestCheckpointAuthorityRestartAndHeadReconciliation(t *testing.T) {
 	if recovered.Disposition != CheckpointRecovered {
 		t.Fatalf("retry disposition=%q", recovered.Disposition)
 	}
+	if err := VerifyCheckpointResult(recovered, request, restarted.private.Public().(ed25519.PublicKey)); err != nil {
+		t.Fatal(err)
+	}
 	if CheckpointReceiptDigest(recovered.CheckpointReceipt) != CheckpointReceiptDigest(receipt.CheckpointReceipt) {
 		t.Fatal("restart did not recover the exact idempotent receipt")
 	}
