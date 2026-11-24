@@ -173,3 +173,11 @@ func TestCheckpointAuditRedirectsAndCanceledRequestsFailClosed(t *testing.T) {
 		t.Fatalf("canceled audit request returned %v", err)
 	}
 }
+
+
+func TestCheckpointAuditConstructorRequiresAuthenticatedSession(t *testing.T) {
+	trust := CheckpointAuditTrust{Hostname: "audit.example.com", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64)}
+	if _, err := NewSupabaseCheckpointFinalizationAuditor(account.Client{}, t.TempDir()+"/missing-session.json", trust); err == nil {
+		t.Fatal("missing authenticated account session accepted")
+	}
+}
