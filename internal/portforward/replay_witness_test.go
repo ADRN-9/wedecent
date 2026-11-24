@@ -2677,3 +2677,41 @@ func TestNegativeTerminalDecisionNeverContributesToQuorum(t *testing.T) {
 		t.Fatalf("negative vote journal state=%+v err=%v", persisted, err)
 	}
 }
+
+func TestFirstSeenNegativeDecisionPersistsBesideCommittedQuorum(t *testing.T) {
+	store := NewMemoryCheckpointPendingStore()
+	client, witnesses, request, receipt := prepareResolvedWitnessOperation(t, store)
+	committed, err := witnesses[0].Acknowledge(context.Background(), request, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	negative := signedDecision(t, witnesses[0], committed, "aborted")
+	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: negative}
+	callbackCalled := false
+	if err := client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+		callbackCalled = true
+		return nil
+	}); err != nil {
+		t.Fatalf("two committed votes did not satisfy quorum: %v", err)
+	}
+	if !callbackCalled {
+		t.Fatal("committed quorum did not execute completion callback")
+	}
+	persisted, err := store.LoadAcknowledgements(context.Background(), request, receipt, client.Witnesses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted) != 3 || committedCheckpointAckCount(persisted) != client.Quorum {
+		t.Fatalf("persisted terminal decisions=%+v", persisted)
+	}
+	negativeCount := 0
+	for _, ack := range persisted {
+		if ack.Decision == "aborted" {
+			negativeCount++
+		}
+	}
+	if negativeCount != 1 {
+		t.Fatalf("first-seen negative decision count=%d, want 1", negativeCount)
+	}
+}
+
