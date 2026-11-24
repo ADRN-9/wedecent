@@ -384,9 +384,6 @@ func (p *WitnessedReplayCheckpointProvider) verifyRequestMembershipVector(ctx co
 }
 
 func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) ([]CheckpointWitnessAck, error) {
-	if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
-		return nil, err
-	}
 	acks, err := store.LoadAcknowledgements(ctx, request, receipt, p.Witnesses)
 	if err != nil {
 		return nil, err
@@ -455,11 +452,15 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 	}
 
 	if len(acks) >= p.Quorum {
+		// Detect authenticated equivocation before requiring fresh membership quorum.
 		if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
 			return nil, err
 		}
 		// Return the original journaled evidence, never a live retry response.
 		return acks, nil
+	}
+	if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
+		return nil, err
 	}
 
 	for _, r := range newAcks {
