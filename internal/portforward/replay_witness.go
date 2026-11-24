@@ -294,13 +294,24 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	}
 	return nil
 }
-func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
+func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) (resultErr error) {
 	if err := p.ValidateConfiguration(); err != nil {
 		return err
 	}
 	if !validCheckpointEndpoint(endpoint) || next <= endpoint.RevocationEpoch {
 		return ErrCheckpointStale
 	}
+	locker, ok := p.Pending.(checkpointPendingTransitionLocker)
+	if !ok {
+		return ErrCheckpointUnavailable
+	}
+	unlock, err := locker.LockTransition(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, unlock())
+	}()
 	primaryHead, err := p.Primary.Head(ctx, endpoint)
 	if err != nil {
 		return err
