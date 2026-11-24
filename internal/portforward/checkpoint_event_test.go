@@ -10,3 +10,61 @@ func TestC187SharedVectorAndSQLConsistency(t *testing.T){raw,e:=os.ReadFile("../
 func TestC187UTF8AndMalformedDigest(t *testing.T){var b bytes.Buffer;if e:=writeCheckpointV2String(&b,"café");e!=nil{t.Fatal(e)};if !bytes.Equal(b.Bytes(),[]byte{0,0,0,5,'c','a','f',0xc3,0xa9}){t.Fatalf("wrong UTF8 length %x",b.Bytes())};if _,e:=decodeCheckpointSHA256(strings.Repeat("ab",31));e==nil{t.Fatal("short digest accepted")};if _,e:=decodeCheckpointSHA256(strings.Repeat("zz",32));e==nil{t.Fatal("bad hex accepted")}}
 func mustParticipantDigest(t *testing.T,p CheckpointParticipant)[32]byte{t.Helper();d,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{p});if e!=nil{t.Fatal(e)};return d}
 func TestC187EventScopeAndOverflow(t *testing.T){e:=c187E();e.Participants=nil;if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("missing participants accepted")};e=c187E();e.Participants[0].AccountID="33333333-3333-4333-8333-333333333333";if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("scope substitution accepted")};e=c187E();e.Participants[0].RevocationEpoch++;if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("scoped epoch mismatch accepted")};e=c187E();e.Generation=1<<63;if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("generation overflow accepted")};e=c187E();e.RevocationEpoch=1<<63;if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("epoch overflow accepted")}}
+
+
+func TestC187ParticipantOrderingAndHistoricalGoldenVectors(t *testing.T) {
+ raw,err:=os.ReadFile("../../testdata/portforward/checkpoint_participant_v1_vectors.json")
+ if err!=nil { t.Fatal(err) }
+ var v struct {
+  Ordering struct {
+   Unordered []struct {
+    DeviceID string \`json:"device_id"\`
+    AccountID string \`json:"account_id"\`
+    OrganizationID string \`json:"organization_id"\`
+    RevocationEpoch uint64 \`json:"revocation_epoch"\`
+    HeadGeneration uint64 \`json:"head_generation"\`
+    HeadHash string \`json:"head_hash"\`
+   } \`json:"unordered"\`
+   Encoding string \`json:"encoding_hex"\`
+   Digest string \`json:"digest_sha256"\`
+  } \`json:"participant_ordering"\`
+  Historical struct {
+   Participant struct {
+    DeviceID string \`json:"device_id"\`
+    AccountID string \`json:"account_id"\`
+    OrganizationID string \`json:"organization_id"\`
+    RevocationEpoch uint64 \`json:"revocation_epoch"\`
+    HeadGeneration uint64 \`json:"head_generation"\`
+    HeadHash string \`json:"head_hash"\`
+   } \`json:"participant"\`
+   Head struct {
+    DeviceID string \`json:"device_id"\`
+    AccountID string \`json:"account_id"\`
+    OrganizationID string \`json:"organization_id"\`
+    RevocationEpoch uint64 \`json:"revocation_epoch"\`
+    Generation uint64 \`json:"generation"\`
+    StateHash string \`json:"state_hash"\`
+   } \`json:"authoritative_v1_head"\`
+   Digest string \`json:"participant_vector_digest"\`
+   NextGeneration uint64 \`json:"next_generation"\`
+  } \`json:"historical_v1_to_v2"\`
+ }
+ if err=json.Unmarshal(raw,&v);err!=nil { t.Fatal(err) }
+ participants:=make([]CheckpointParticipant,0,len(v.Ordering.Unordered))
+ for _,p:=range v.Ordering.Unordered {
+  head,err:=decodeCheckpointSHA256(p.HeadHash);if err!=nil{t.Fatal(err)}
+  participants=append(participants,CheckpointParticipant{DeviceID:p.DeviceID,AccountID:p.AccountID,OrganizationID:p.OrganizationID,RevocationEpoch:p.RevocationEpoch,HeadGeneration:p.HeadGeneration,HeadHash:head})
+ }
+ encoded,err:=CheckpointParticipantVectorEncoding(participants);if err!=nil{t.Fatal(err)}
+ if hex.EncodeToString(encoded)!=v.Ordering.Encoding{t.Fatal("participant ordering encoding vector mismatch")}
+ digest,err:=CheckpointParticipantVectorDigest(participants);if err!=nil||hex.EncodeToString(digest[:])!=v.Ordering.Digest{t.Fatal("participant ordering digest vector mismatch")}
+ p:=v.Historical.Participant;headHash,err:=decodeCheckpointSHA256(p.HeadHash);if err!=nil{t.Fatal(err)}
+ participant:=CheckpointParticipant{DeviceID:p.DeviceID,AccountID:p.AccountID,OrganizationID:p.OrganizationID,RevocationEpoch:p.RevocationEpoch,HeadGeneration:p.HeadGeneration,HeadHash:headHash}
+ h:=v.Historical.Head;stateHash,err:=decodeCheckpointSHA256(h.StateHash);if err!=nil{t.Fatal(err)}
+ actual:=CheckpointV1Head{DeviceID:h.DeviceID,AccountID:h.AccountID,OrganizationID:h.OrganizationID,RevocationEpoch:h.RevocationEpoch,Generation:h.Generation,StateHash:stateHash}
+ transitionDigest,err:=ValidateCheckpointV1ToV2Transition([]CheckpointParticipant{participant},[]CheckpointV1Head{actual})
+ if err!=nil||hex.EncodeToString(transitionDigest[:])!=v.Historical.Digest{t.Fatal("historical transition vector mismatch")}
+ next,err:=actual.NextGeneration();if err!=nil||next!=v.Historical.NextGeneration{t.Fatal("historical generation was reset or skipped")}
+ sql,err:=os.ReadFile("../../supabase/tests/database/checkpoint_participant_binding.test.sql");if err!=nil{t.Fatal(err)}
+ if !bytes.Contains(sql,[]byte(v.Ordering.Digest)){t.Fatal("SQL participant ordering vector missing")}
+}
