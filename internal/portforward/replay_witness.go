@@ -277,11 +277,9 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if !completed {
-		if onQuorumCommitted != nil {
-			if err := onQuorumCommitted(ctx, operationID); err != nil {
-				return err
-			}
+	if !completed && onQuorumCommitted != nil {
+		if err := onQuorumCommitted(ctx, operationID); err != nil {
+			return err
 		}
 		if err := completionStore.MarkFinalizationComplete(ctx, saved, receipt, operationID); err != nil {
 			return errors.Join(ErrCheckpointUnavailable, err)
