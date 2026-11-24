@@ -1620,7 +1620,19 @@ func routedCheckpointRequestForRevocationTest(t *testing.T, primary *determinist
 		OrganizationID: request.Initiator.OrganizationID,
 	}
 	request.Router = router
-	request.RouteAuthorizationSHA256 = sha256.Sum256([]byte("exact signed route authorization"))
+	request.RouteAuthorizationID = "44444444-4444-4444-8444-444444444444"
+	request.RouteAuthorizationJTI = "AAAAAAAAAAAAAAAAAAAAAA"
+	routeAuthorization, err := json.Marshal(map[string]any{
+		"kid": "route-key-v1",
+		"claims": map[string]any{
+			"jti": request.RouteAuthorizationJTI, "router": router.DeviceID,
+			"route": map[string]any{"id": request.RouteAuthorizationID, "source": request.Initiator.DeviceID, "destination": request.Destination.DeviceID},
+		},
+		"signature": strings.Repeat("A", 86) + "==",
+	})
+	if err != nil { t.Fatal(err) }
+	request.RouteAuthorizationJSON = string(routeAuthorization)
+	request.RouteAuthorizationSHA256 = sha256.Sum256(routeAuthorization)
 	request, err = SignCheckpointRequest(signer, request)
 	if err != nil {
 		t.Fatal(err)
