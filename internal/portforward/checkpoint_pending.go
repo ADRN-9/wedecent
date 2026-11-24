@@ -64,6 +64,10 @@ type checkpointPendingCompactor interface {
 	Compact(context.Context, []CheckpointWitnessAck, []CheckpointWitnessTrust, int) error
 }
 
+type checkpointPendingTransitionLocker interface {
+	LockTransition(context.Context) (func() error, error)
+}
+
 type checkpointPendingFinalizationLocker interface {
 	LockFinalization(context.Context, CheckpointRequest) (func() error, error)
 }
@@ -119,29 +123,32 @@ func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, er
 	return &FileCheckpointPendingStore{Path: path}, nil
 }
 
-func (s *FileCheckpointPendingStore) LockFinalization(ctx context.Context, request CheckpointRequest) (func() error, error) {
+func (s *FileCheckpointPendingStore) LockTransition(ctx context.Context) (func() error, error) {
 	if s == nil || ctx == nil || s.Path == "" {
 		return nil, ErrReplayUnavailable
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	if _, err := CheckpointRequestFingerprint(request); err != nil {
-		return nil, err
-	}
 	if err := secureReplayDirectory(filepath.Dir(s.Path)); err != nil {
-		return nil, fmt.Errorf("%w: finalization directory: %v", ErrReplayUnavailable, err)
+		return nil, fmt.Errorf("%w: transition directory: %v", ErrReplayUnavailable, err)
 	}
-	// One persistent lock per journal bounds lock-file growth across operations.
-	lockPath := s.Path + ".finalize"
-	unlock, _, err := lockReplayFile(lockPath)
+	// This journal-wide lock serializes consume, finalization and revocation.
+	unlock, _, err := lockReplayFile(s.Path + ".finalize")
 	if err != nil {
-		return nil, fmt.Errorf("%w: lock finalization: %v", ErrReplayUnavailable, err)
+		return nil, fmt.Errorf("%w: lock transition: %v", ErrReplayUnavailable, err)
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(err, unlock())
 	}
 	return unlock, nil
+}
+
+func (s *FileCheckpointPendingStore) LockFinalization(ctx context.Context, request CheckpointRequest) (func() error, error) {
+	if _, err := CheckpointRequestFingerprint(request); err != nil {
+		return nil, err
+	}
+	return s.LockTransition(ctx)
 }
 
 func (s *FileCheckpointPendingStore) Begin(ctx context.Context, request CheckpointRequest) (bool, error) {
@@ -1240,12 +1247,9 @@ func (s *MemoryCheckpointPendingStore) MarkFinalizationComplete(ctx context.Cont
 	return nil
 }
 
-func (s *MemoryCheckpointPendingStore) LockFinalization(ctx context.Context, request CheckpointRequest) (func() error, error) {
+func (s *MemoryCheckpointPendingStore) LockTransition(ctx context.Context) (func() error, error) {
 	if s == nil || ctx == nil {
 		return nil, ErrReplayUnavailable
-	}
-	if _, err := CheckpointRequestFingerprint(request); err != nil {
-		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -1259,4 +1263,11 @@ func (s *MemoryCheckpointPendingStore) LockFinalization(ctx context.Context, req
 		s.transitionMu.Unlock()
 		return nil
 	}, nil
+}
+
+func (s *MemoryCheckpointPendingStore) LockFinalization(ctx context.Context, request CheckpointRequest) (func() error, error) {
+	if _, err := CheckpointRequestFingerprint(request); err != nil {
+		return nil, err
+	}
+	return s.LockTransition(ctx)
 }
