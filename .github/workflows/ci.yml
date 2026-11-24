@@ -304,3 +304,11 @@ jobs:
         run: ./scripts/start-supabase-db-ci.sh
       - name: Run database pgTAP tests
         run: env -u SUPABASE_INTERNAL_IMAGE_REGISTRY supabase test db
+      - name: Install PostgreSQL client for independent-session tests
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+      - name: Test port-forward authorization transaction races
+        run: bash ./scripts/test-port-forward-db-concurrency.sh
