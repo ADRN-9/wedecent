@@ -89,7 +89,18 @@ type CheckpointWitnessTrust struct {
 // CheckpointFinalizationAuditSink must deduplicate its externally visible effect
 // by operationID. The same ID is retried if a process crashes before the local
 // completion marker is durable.
-type CheckpointFinalizationAuditSink func(context.Context, string) error
+type CheckpointFinalizationAuditSink func(context.Context, string, CheckpointFinalizationEvidence) error
+
+type CheckpointFinalizationEvidence struct {
+	PrimaryReceipt          CheckpointReceipt
+	WitnessAcknowledgements []CheckpointWitnessAck
+	RevocationProofs        []CheckpointFinalizationRevocationProof
+}
+
+type CheckpointFinalizationRevocationProof struct {
+	PrimaryHead  CheckpointHead
+	WitnessHeads []CheckpointWitnessHead
+}
 
 type WitnessedReplayCheckpointProvider struct {
 	Primary    ReplayCheckpointProvider
@@ -265,6 +276,10 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if err := p.verifyRequestMembershipVector(ctx, saved); err != nil {
 		return err
 	}
+	evidence, err := p.finalizationEvidence(ctx, saved, receipt, acks)
+	if err != nil {
+		return err
+	}
 	completionStore, ok := p.Pending.(checkpointPendingCompletionStore)
 	if !ok {
 		return ErrCheckpointUnavailable
@@ -278,7 +293,7 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 		return err
 	}
 	if !completed && onQuorumCommitted != nil {
-		if err := onQuorumCommitted(ctx, operationID); err != nil {
+		if err := onQuorumCommitted(ctx, operationID, evidence); err != nil {
 			return err
 		}
 		if err := completionStore.MarkFinalizationComplete(ctx, saved, receipt, operationID); err != nil {
@@ -294,6 +309,72 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	}
 	return nil
 }
+func (p *WitnessedReplayCheckpointProvider) finalizationEvidence(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, acknowledgements []CheckpointWitnessAck) (CheckpointFinalizationEvidence, error) {
+	if p == nil || ctx == nil || VerifyCheckpointReceipt(receipt, request, p.PrimaryKey) != nil {
+		return CheckpointFinalizationEvidence{}, ErrCheckpointIntegrity
+	}
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil {
+		return CheckpointFinalizationEvidence{}, err
+	}
+	seen := make(map[string]bool, len(acknowledgements))
+	validAcks := make([]CheckpointWitnessAck, 0, len(acknowledgements))
+	for _, ack := range acknowledgements {
+		var trust *CheckpointWitnessTrust
+		for i := range p.Witnesses {
+			if p.Witnesses[i].ID == ack.WitnessID {
+				trust = &p.Witnesses[i]
+				break
+			}
+		}
+		if trust == nil || seen[ack.WitnessID] || ack.Decision != "committed" ||
+			VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil ||
+			!checkpointAckMatchesOperation(ack, request, receipt) ||
+			ack.RequestSHA256 != fingerprint {
+			continue
+		}
+		seen[ack.WitnessID] = true
+		validAcks = append(validAcks, ack)
+	}
+	if len(validAcks) < p.Quorum {
+		return CheckpointFinalizationEvidence{}, ErrCheckpointQuorum
+	}
+
+	evidence := CheckpointFinalizationEvidence{
+		PrimaryReceipt:          cloneCheckpointReceiptValue(receipt),
+		WitnessAcknowledgements: validAcks,
+		RevocationProofs:        make([]CheckpointFinalizationRevocationProof, 0, len(checkpointRequestParticipants(request))),
+	}
+	for _, endpoint := range checkpointRequestParticipants(request) {
+		primary, err := p.Primary.Head(ctx, endpoint)
+		if err != nil {
+			return CheckpointFinalizationEvidence{}, err
+		}
+		if err := VerifyCheckpointHead(primary, endpoint, p.PrimaryKey); err != nil ||
+			primary.RevocationEpoch != endpoint.RevocationEpoch {
+			return CheckpointFinalizationEvidence{}, errors.Join(ErrCheckpointRevoked, err)
+		}
+		proof := CheckpointFinalizationRevocationProof{PrimaryHead: primary}
+		headIDs := make(map[string]bool, len(p.Witnesses))
+		for _, trust := range p.Witnesses {
+			head, err := trust.Witness.Head(ctx, witnessScope(endpoint))
+			if err != nil || VerifyCheckpointWitnessHead(head, trust.ID, trust.PublicKey) != nil ||
+				head.Scope != witnessScope(endpoint) || headIDs[head.WitnessID] ||
+				head.PrimaryGeneration != primary.Generation || head.PrimaryHead != primary.RecordHash ||
+				head.RevocationEpoch != primary.RevocationEpoch {
+				continue
+			}
+			headIDs[head.WitnessID] = true
+			proof.WitnessHeads = append(proof.WitnessHeads, head)
+		}
+		if len(proof.WitnessHeads) < p.Quorum {
+			return CheckpointFinalizationEvidence{}, ErrCheckpointQuorum
+		}
+		evidence.RevocationProofs = append(evidence.RevocationProofs, proof)
+	}
+	return evidence, nil
+}
+
 func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) (resultErr error) {
 	if err := p.ValidateConfiguration(); err != nil {
 		return err
