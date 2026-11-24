@@ -2130,16 +2130,33 @@ func TestRepeatedEquivocationDetectionIsIdempotentAndTerminal(t *testing.T) {
 }
 
 func TestConcurrentFinalizationRunsCallbackAtMostOnce(t *testing.T) {
-	client, _, request, _, _ := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, _, request, _, _ := preparePersistedWitnessQuorum(t, store)
+	other := &WitnessedReplayCheckpointProvider{
+		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
+		Quorum: client.Quorum, Pending: store,
+	}
 	var mu sync.Mutex
 	callbacks := 0
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
+	providers := []*WitnessedReplayCheckpointProvider{client, other}
 	for i := 0; i < 2; i++ {
+		provider := providers[i]
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			errs <- client.FinalizeWithAudit(context.Background(), request, func() error {
+			errs <- provider.FinalizeWithAudit(context.Background(), request, func() error {
 				mu.Lock()
 				callbacks++
 				mu.Unlock()
