@@ -259,23 +259,6 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if err := VerifyCheckpointReceipt(receipt, saved, p.PrimaryKey); err != nil {
 		return err
 	}
-	ackStore, ok := p.Pending.(checkpointPendingAcknowledgements)
-	if !ok {
-		return ErrCheckpointUnavailable
-	}
-	acks, err := p.acknowledgeWitnessQuorumLocked(ctx, saved, receipt, ackStore)
-	if err != nil {
-		return errors.Join(ErrCheckpointQuorum, err)
-	}
-	if committedCheckpointAckCount(acks) < p.Quorum {
-		return ErrCheckpointQuorum
-	}
-	// Recheck the complete signed membership vector immediately before the
-	// audit/finalization boundary. Production adapters still need a shared
-	// durable ordering protocol with Revoke to eliminate the cross-service race.
-	if err := p.verifyRequestMembershipVector(ctx, saved); err != nil {
-		return err
-	}
 	completionStore, ok := p.Pending.(checkpointPendingCompletionStore)
 	if !ok {
 		return ErrCheckpointUnavailable
@@ -288,16 +271,66 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if err != nil {
 		return err
 	}
-	if !completed && onQuorumCommitted != nil {
-		evidence, err := p.finalizationEvidence(ctx, saved, receipt, acks)
+
+	var evidenceStore checkpointPendingEvidenceStore
+	var persistedEvidence CheckpointFinalizationEvidence
+	var hasPersistedEvidence bool
+	if onQuorumCommitted != nil {
+		evidenceStore, ok = p.Pending.(checkpointPendingEvidenceStore)
+		if !ok {
+			return ErrCheckpointUnavailable
+		}
+		persistedEvidence, hasPersistedEvidence, err = evidenceStore.LoadFinalizationEvidence(ctx, saved, receipt, operationID)
 		if err != nil {
 			return err
 		}
-		if err := onQuorumCommitted(ctx, operationID, evidence); err != nil {
+		// Once proof bytes have been durably frozen, retries must submit those
+		// exact bytes. Re-reading mutable provider heads here would change the
+		// evidence after an ambiguous external commit.
+		if hasPersistedEvidence && !completed {
+			if err := onQuorumCommitted(ctx, operationID, persistedEvidence); err != nil {
+				return err
+			}
+			if err := completionStore.MarkFinalizationComplete(ctx, saved, receipt, operationID); err != nil {
+				return errors.Join(ErrCheckpointUnavailable, err)
+			}
+			completed = true
+		}
+	}
+
+	if !hasPersistedEvidence || onQuorumCommitted == nil {
+		ackStore, ok := p.Pending.(checkpointPendingAcknowledgements)
+		if !ok {
+			return ErrCheckpointUnavailable
+		}
+		acks, err := p.acknowledgeWitnessQuorumLocked(ctx, saved, receipt, ackStore)
+		if err != nil {
+			return errors.Join(ErrCheckpointQuorum, err)
+		}
+		if committedCheckpointAckCount(acks) < p.Quorum {
+			return ErrCheckpointQuorum
+		}
+		if err := p.verifyRequestMembershipVector(ctx, saved); err != nil {
 			return err
 		}
-		if err := completionStore.MarkFinalizationComplete(ctx, saved, receipt, operationID); err != nil {
-			return errors.Join(ErrCheckpointUnavailable, err)
+		if onQuorumCommitted != nil && !completed {
+			evidence, err := p.finalizationEvidence(ctx, saved, receipt, acks)
+			if err != nil {
+				return err
+			}
+			if err := evidenceStore.StoreFinalizationEvidence(ctx, saved, receipt, operationID, evidence); err != nil {
+				return errors.Join(ErrCheckpointUnavailable, err)
+			}
+			persistedEvidence, hasPersistedEvidence, err = evidenceStore.LoadFinalizationEvidence(ctx, saved, receipt, operationID)
+			if err != nil || !hasPersistedEvidence {
+				return errors.Join(ErrCheckpointIntegrity, err)
+			}
+			if err := onQuorumCommitted(ctx, operationID, persistedEvidence); err != nil {
+				return err
+			}
+			if err := completionStore.MarkFinalizationComplete(ctx, saved, receipt, operationID); err != nil {
+				return errors.Join(ErrCheckpointUnavailable, err)
+			}
 		}
 	}
 	compactor, ok := p.Pending.(checkpointPendingCompactor)
