@@ -373,7 +373,11 @@ func validateCheckpointAuditJSONNumbers(value any) error {
 			}
 		}
 	case map[string]any:
-		for _, item := range typed { if err := validateCheckpointAuditJSONNumbers(item); err != nil { return err } }
+		for _, item := range typed {
+			if err := validateCheckpointAuditJSONNumbers(item); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
