@@ -315,7 +315,7 @@ func checkpointAuditCanonicalJSON(value any) ([]byte, error) {
 	encoder := json.NewEncoder(&canonical)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(decoded); err != nil { return nil, err }
-	return bytes.TrimSuffix(canonical.Bytes(), []byte{ '\\n' }), nil
+	return bytes.TrimSuffix(canonical.Bytes(), []byte{ '\n' }), nil
 }
 
 func validateCheckpointAuditJSONNumbers(value any) error {
