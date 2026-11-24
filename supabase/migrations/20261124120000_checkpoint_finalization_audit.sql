@@ -15,7 +15,7 @@ begin
             select '{' || coalesce(pg_catalog.string_agg(
                 pg_catalog.to_json(entry.key)::text || ':' ||
                 wedecent_private.canonical_jsonb(entry.value),
-                ',' order by entry.key
+                ',' order by entry.key collate "C"
             ), '') || '}'
               into result
               from pg_catalog.jsonb_each(p) as entry;
@@ -28,6 +28,13 @@ begin
               into result
               from pg_catalog.jsonb_array_elements(p) with ordinality as entry(value, ordinality);
             return result;
+        when 'number' then
+            if p::numeric <> pg_catalog.trunc(p::numeric)
+               or p::numeric > 9007199254740991::numeric
+               or p::numeric < -9007199254740991::numeric then
+                raise exception 'unsafe canonical JSON number' using errcode = '22023';
+            end if;
+            return pg_catalog.trunc(p::numeric)::text;
         else
             return p::text;
     end case;
