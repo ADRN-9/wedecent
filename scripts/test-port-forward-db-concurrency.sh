@@ -257,7 +257,7 @@ start a wd-c166-audit-conflict-a
 send a "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','AAAAAAAAAAAAAAAAAAAAAA'); select 'audit-conflict-first-ready';"
 wait_text a "audit-conflict-first-ready"
 start b wd-c166-audit-conflict-b
-send b "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','BBBBBBBBBBBBBBBBBBBBBB');"
+send b "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','HHHHHHHHHHHHHHHHHHHHHH');"
 wait_lock wd-c166-audit-conflict-b
 finish a || fail 'first conflicting audit transaction failed'
 fd="${FDS[b]}" pid="${PIDS[b]}"
