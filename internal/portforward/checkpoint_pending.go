@@ -87,6 +87,7 @@ type FileCheckpointPendingStore struct {
 	Now  func() time.Time
 
 	writeSnapshot func(string, any, string, int64) error
+	compactHook   func(context.Context) error
 	maxSize       int64
 	maxEntries    int
 
@@ -591,6 +592,11 @@ func (s *FileCheckpointPendingStore) LoadFinalization(ctx context.Context, devic
 func (s *FileCheckpointPendingStore) Compact(ctx context.Context, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) error {
 	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) {
 		return ErrReplayUnavailable
+	}
+	if s.compactHook != nil {
+		if err := s.compactHook(ctx); err != nil {
+			return err
+		}
 	}
 	_, err := s.update(ctx, func(snapshot *checkpointPendingSnapshot) (bool, error) {
 		compactAcknowledgedPendingEntries(snapshot, acknowledgements, witnesses, quorum)
