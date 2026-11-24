@@ -218,6 +218,18 @@ func TestFileCheckpointFenceWitnessRejectsSameGenerationEquivocation(t *testing.
 	if _, err := witnesses[0].CommitFence(ctx, equivocation); !errors.Is(err, ErrCheckpointConflict) {
 		t.Fatalf("same-generation equivocation accepted: %v", err)
 	}
+	reusedID := cloneCheckpointFenceToken(token)
+	reusedID.ExpectedFenceGeneration = 1
+	reusedID.Generation = 2
+	reusedID.PreviousFenceSHA256, _ = CheckpointFenceTokenDigest(token)
+	reusedID.Signature = nil
+	reusedID, err = SignCheckpointFenceToken(reusedID, primaryKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := witnesses[0].CommitFence(ctx, reusedID); !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("witness accepted operation ID reuse at a later generation: %v", err)
+	}
 }
 
 func TestFileCheckpointFenceRejectsExpiredTokenAndTruncatedTailRecovers(t *testing.T) {
