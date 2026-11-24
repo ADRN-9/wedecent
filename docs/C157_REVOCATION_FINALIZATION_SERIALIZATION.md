@@ -46,6 +46,7 @@ The Edge Function must receive these independently administered secrets/configur
 - `WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY`: canonical standard-base64 Ed25519 public key.
 - `WEDECENT_CHECKPOINT_WITNESS_KEYS`: JSON object mapping stable witness IDs to canonical standard-base64 Ed25519 public keys.
 - `WEDECENT_CHECKPOINT_WITNESS_QUORUM`: integer strict-majority quorum.
+- `WEDECENT_ROUTE_AUTH_KEY_ID` and `WEDECENT_ROUTE_AUTH_PUBLIC_KEY`: independent route-authorization signing key identity and Ed25519 public key, required for routed audit operations.
 
 The Local Core constructor requires `Config.ForwardingAuditTrust` with the exact audit hostname, port and comma-separated SPKI SHA-256 pins. Production service/bootstrap wiring must supply these values from a protected provisioning channel. They must not be copied from `account-session.json`, the renderer, or ordinary user-controlled config.
 
