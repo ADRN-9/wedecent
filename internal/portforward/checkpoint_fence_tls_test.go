@@ -1,6 +1,7 @@
 package portforward
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
@@ -22,6 +23,12 @@ func TestPinnedCheckpointFenceHTTPClientRequiresTLS13AndExactSPKI(t *testing.T) 
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatal("expected pinned HTTP transport")
+	}
+	if _, err := transport.DialContext(context.Background(), "tcp", "other.example:443"); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("authority transport dialed a different hostname: %v", err)
+	}
+	if _, err := transport.DialContext(context.Background(), "tcp", "witness-1.example.test:80"); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("authority transport dialed a non-TLS port: %v", err)
 	}
 	config := transport.TLSClientConfig
 	if config.MinVersion != tls.VersionTLS13 || config.MaxVersion != tls.VersionTLS13 ||
