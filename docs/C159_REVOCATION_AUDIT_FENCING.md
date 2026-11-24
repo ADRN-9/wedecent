@@ -6,7 +6,7 @@
 - Branch: `feat/secure-port-forwarding-foundation`
 - PR: #186 (must remain open and draft)
 - C159 starting HEAD: `8b74fe55d7db329f6e0c6e58238ea452d9e6027e`
-- Current revision when this note was authored: `383f8f36969ff398d031fc80d056bdc149954b11`
+- C159 executable-source revision verified by CI: `9a3185af8047c6f235d55794f6760cc005252531`
 
 No merge, signing, deployment or production publication was performed.
 
@@ -14,10 +14,11 @@ No merge, signing, deployment or production publication was performed.
 
 ### Unix lock inode protection
 
-Unix replay locking now uses a persistent `.lock.anchor` inode as the actual flock target. The existing `.lock` path is a hard-link alias retained for compatibility and diagnostics.
+Unix replay locking now uses a persistent `.lock.anchor` inode as the actual flock target. The existing `.lock` path is a hard-link alias retained for compatibility and diagnostics; `.lock.marker` is a second persistent hard-link identity marker.
 
 - First initialization creates the anchor with exclusive creation, forces mode 0600, validates owner/mode/type, fsyncs the file, and syncs the containing directory.
-- The visible `.lock` alias is created as a hard link to the anchor and checked with `os.SameFile`.
+- The visible `.lock` alias and `.lock.marker` are created as hard links to the anchor and checked with `os.SameFile`.
+- `NewFileCheckpointPendingStore` initializes both the pending-journal lock and the separate transition lock before accepting the store; legacy pre-anchor lock files are adopted in place.
 - Lock acquisition always opens and flocks the anchor, not the alias.
 - A missing or replaced alias after initialization fails closed.
 - If both anchor and alias disappear after state/initialization metadata exists, recreation is rejected.
