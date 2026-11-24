@@ -3,7 +3,7 @@ import {deviceIDFromPublicKey} from "../_shared/port-forward-replay.mjs";
 const headers={"Access-Control-Allow-Origin":"https://app.wedecent.com","Access-Control-Allow-Headers":"authorization, apikey, content-type","Access-Control-Allow-Methods":"POST, OPTIONS"};
 function reply(b:unknown,s=200){return new Response(JSON.stringify(b),{status:s,headers:{...headers,"Content-Type":"application/json","Cache-Control":"no-store"}})}
 function canonical(v:unknown):string{if(v===null||typeof v==="boolean"||typeof v==="string")return JSON.stringify(v);if(typeof v==="number"){if(!Number.isSafeInteger(v))throw Error("unsafe number");return JSON.stringify(v)}if(Array.isArray(v))return "["+v.map(canonical).join(",")+"]";if(typeof v==="object")return "{"+Object.keys(v as object).sort().map(k=>JSON.stringify(k)+":"+canonical((v as Record<string,unknown>)[k])).join(",")+"}";throw Error("invalid value")}
-async function digest(v:unknown){const h=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(canonical(v))));return [...h].map(x=>x.toString(16).padStart(2,"0")).join("")}
+export async function digest(v:unknown){const h=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(canonical(v))));return [...h].map(x=>x.toString(16).padStart(2,"0")).join("")}
 function serviceKey(){const k=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");if(k)return k;const x=Deno.env.get("SUPABASE_SECRET_KEYS");if(x){const o=JSON.parse(x);if(o.default)return o.default}throw Error("service key missing")}
 async function readBoundedBody(req:Request):Promise<string|null>{
  const reader=req.body?.getReader();if(!reader)return "";
