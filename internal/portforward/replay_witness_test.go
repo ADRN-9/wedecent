@@ -678,4 +678,3 @@ func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
 		t.Fatalf("primary authorization ledger changed during finalization recovery: %d", len(primary.ledgers))
 	}
 }
-
