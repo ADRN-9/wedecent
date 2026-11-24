@@ -100,6 +100,8 @@ The current provider-neutral Go representation follows this rule with an explici
 
 A persisted acknowledgement and a later, correctly signed acknowledgement for the same witness, operation ID, request digest, receipt digest and participant scope but a different terminal decision are equivocation. The client must preserve the original vote, durably append both signed objects as evidence, make the operation terminally conflicted, and deny finalization. Invalid signatures, malformed decisions, or responses bound to a different operation are not equivocation evidence and must not poison the journal.
 
+The local pending-journal schema is versioned independently from the proposed remote CBOR protocol. The Decision/signature-domain change advances the local journal to version 3. Version-2 journals containing status-signed acknowledgements are rejected rather than silently reinterpreted as version-2 terminal decisions. A production rollout must provide a reviewed migration/recovery path for existing in-flight version-2 journals; this repository change does not fabricate replacement witness signatures or discard old evidence.
+
 ### Head
 
 Returns a signed witness generation, record hash, previous hash, primary generation/head, participant revocation epoch, witness key ID and scope. A witness head must be monotonic and must not be restored from backup without reconciliation against independent witnesses and an external monotonic anchor.
