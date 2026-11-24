@@ -3657,7 +3657,7 @@ func (w *failingFenceWitness) LoadFence(ctx context.Context, scope CheckpointWit
 	return w.delegate.LoadFence(ctx, scope, generation)
 }
 
-func restartTestFenceCoordinator(t *testing.T, old *CheckpointFenceCoordinator, replay *deterministicCheckpointProvider) *CheckpointFenceCoordinator {
+func restartTestFenceCoordinator(t *testing.T, old *CheckpointFenceCoordinator) *CheckpointFenceCoordinator {
 	t.Helper()
 	oldPrimary, ok := old.Primary.(*testAtomicCheckpointPrimary)
 	if !ok {
@@ -3692,8 +3692,8 @@ func restartTestFenceCoordinator(t *testing.T, old *CheckpointFenceCoordinator, 
 	}
 	return &CheckpointFenceCoordinator{
 		Primary: &testAtomicCheckpointPrimary{
-			replay: replay, fence: primary,
-			revocationPublicKey: append(ed25519.PublicKey(nil), oldPrimary.revocationPublicKey...),
+			replay: oldPrimary.replay, fence: primary,
+			revocationPublicKey:  append(ed25519.PublicKey(nil), oldPrimary.revocationPublicKey...),
 			revocationPrivateKey: append(ed25519.PrivateKey(nil), oldPrimary.revocationPrivateKey...),
 		},
 		PrimaryKey:        append(ed25519.PublicKey(nil), old.PrimaryKey...),
@@ -3815,7 +3815,7 @@ func TestLifecycleFenceRecoversPartialRevocationAfterRestartAndLostPrimaryRespon
 	if err := client.Revoke(context.Background(), endpoint, next); !errors.Is(err, ErrCheckpointQuorum) {
 		t.Fatalf("partial witness quorum did not fail closed: %v", err)
 	}
-	restartedFence := restartTestFenceCoordinator(t, client.Fencing, primary)
+	restartedFence := restartTestFenceCoordinator(t, client.Fencing)
 	client.Fencing = restartedFence
 	client.Primary = restartedFence.Primary.(*testAtomicCheckpointPrimary)
 	atomicPrimary := client.Primary.(*testAtomicCheckpointPrimary)
