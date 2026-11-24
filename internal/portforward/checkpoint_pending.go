@@ -64,11 +64,11 @@ type FileCheckpointPendingStore struct {
 	maxSize       int64
 	maxEntries    int
 
-	trustMu       sync.RWMutex
-	primaryTrust  ed25519.PublicKey
-	witnessTrust  map[string]ed25519.PublicKey
-	trustQuorum   int
-	trustSet      bool
+	trustMu      sync.RWMutex
+	primaryTrust ed25519.PublicKey
+	witnessTrust map[string]ed25519.PublicKey
+	trustQuorum  int
+	trustSet     bool
 }
 
 func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, error) {
