@@ -198,25 +198,63 @@ end;
 $;
 SQL
 
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+create function public.wd_c145_audit_finalized(p_operation_id text,p_jti text) returns jsonb
+language plpgsql security definer set search_path=''
+as $
+declare
+ payload jsonb;
+ evidence jsonb := jsonb_build_object(
+  'primary_receipt','{}'::jsonb,
+  'witness_acknowledgements','[]'::jsonb,
+  'revocation_proofs','[]'::jsonb
+ );
+begin
+ payload := jsonb_build_object(
+  'version',1,
+  'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-0000000000c1','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_aaaaaaaaaaaaaaaa')),
+  'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-0000000000c2','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_bbbbbbbbbbbbbbbb')),
+  'router',null,'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti',p_jti,
+  'authorization_sha256',(select encode(authorization_sha256,'hex') from public.port_forward_authorization_transactions where jti=p_jti),
+  'route_authorization_sha256',repeat('0',64),'route_authorization_id','','route_authorization_jti','','route_authorization_json','',
+  'device_public_key',(select public_key from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'),
+  'device_signature',repeat('A',86)||'=='
+ );
+ perform public.record_checkpoint_finalization(
+  p_operation_id,'finalization_started',1,payload,
+  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
+  '{}'::jsonb,extensions.digest(convert_to('{}','UTF8'),'sha256'),
+  '11000000-0000-4000-8000-0000000000c1'
+ );
+ return public.record_checkpoint_finalization(
+  p_operation_id,'finalized',1,payload,
+  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
+  evidence,extensions.digest(convert_to(wedecent_private.canonical_jsonb(evidence),'UTF8'),'sha256'),
+  '11000000-0000-4000-8000-0000000000c1'
+ );
+end;
+$;
+SQL
+
 audit_race() {
  local name="$1" order="$2" mutation="$3" post="$4" operation="$5" jti="$6"
  local ca="wd-c145-$name-audit" ra="wd-c145-$name-mutation"
  if [[ "$order" == "audit-first" ]]; then
   start a "$ca"
-  send a "begin; select public.wd_c145_audit('$operation','$jti'); select 'audit-ready';"
+  send a "begin; select public.wd_c145_audit_finalized('$operation','$jti'); select 'audit-ready';"
   wait_text a "audit-ready"
   start r "$ra"
   send r "begin; $mutation; select 'mutation-ready';"
   wait_lock "$ra"
   finish a || fail "$name audit commit failed"
   finish r || fail "$name mutation commit failed"
-  assertq t "select exists(select 1 from public.checkpoint_finalization_audit where operation_id='$operation' and outcome='finalization_started')"
+  assertq t "select exists(select 1 from public.checkpoint_finalization_audit where operation_id='$operation' and outcome='finalized')"
  else
   start r "$ra"
   send r "begin; $mutation; select 'mutation-ready';"
   wait_text r "mutation-ready"
   start a "$ca"
-  send a "begin; select public.wd_c145_audit('$operation','$jti');"
+  send a "begin; select public.wd_c145_audit_finalized('$operation','$jti');"
   wait_lock "$ca"
   finish r || fail "$name mutation commit failed"
   local fd="${FDS[a]}" pid="${PIDS[a]}"
@@ -294,5 +332,5 @@ finish d || fail 'JTI conflict transaction did not finish'
 assertq 1 "select count(*) from public.port_forward_authorization_transactions where jti='RRRRRRRRRRRRRRRRRRRRRR'"
 assertq 0 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d3'"
 
-psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_audit(text,text); drop function public.wd_c145_consume(uuid,text,uuid,text,timestamptz,timestamptz); drop function public.wd_c145_route(uuid,text);'
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_audit_finalized(text,text); drop function public.wd_c145_audit(text,text); drop function public.wd_c145_consume(uuid,text,uuid,text,timestamptz,timestamptz); drop function public.wd_c145_route(uuid,text);'
 printf 'All deterministic multi-session authorization races passed.\n'
