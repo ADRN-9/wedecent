@@ -26,13 +26,13 @@ import (
 const checkpointAuditRequestMax = 64 << 10
 
 type CheckpointAuditTrust struct {
-	Hostname string
-	Port uint16
+	Hostname       string
+	Port           uint16
 	SPKISHA256Pins string
 }
 
 type SupabaseCheckpointFinalizationAuditor struct {
-	trust CheckpointAuditTrust
+	trust       CheckpointAuditTrust
 	mu          sync.Mutex
 	client      account.Client
 	sessionPath string
@@ -356,7 +356,9 @@ func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvide
 	}
 	acks := make([]any, 0, len(evidence.WitnessAcknowledgements))
 	for _, ack := range evidence.WitnessAcknowledgements {
-		if len(ack.Signature) != 64 { return nil, ErrCheckpointIntegrity }
+		if len(ack.Signature) != 64 {
+			return nil, ErrCheckpointIntegrity
+		}
 		acks = append(acks, map[string]any{
 			"witness_id": ack.WitnessID, "scope": map[string]any{
 				"device_id": ack.Scope.DeviceID, "account_id": ack.Scope.AccountID, "organization_id": ack.Scope.OrganizationID,
@@ -368,9 +370,13 @@ func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvide
 	}
 	proofs := make([]any, 0, len(evidence.RevocationProofs))
 	for _, proof := range evidence.RevocationProofs {
-		if len(proof.WitnessHeads) > 16 { return nil, ErrCheckpointIntegrity }
+		if len(proof.WitnessHeads) > 16 {
+			return nil, ErrCheckpointIntegrity
+		}
 		head := proof.PrimaryHead
-		if len(head.Signature) != 64 { return nil, ErrCheckpointIntegrity }
+		if len(head.Signature) != 64 {
+			return nil, ErrCheckpointIntegrity
+		}
 		if !safe(head.Generation) || !safe(head.RevocationEpoch) {
 			return nil, ErrCheckpointIntegrity
 		}
