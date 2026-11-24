@@ -2114,7 +2114,7 @@ func TestPersistedQuorumRecoveryDoesNotRequireWitnessAvailability(t *testing.T) 
 }
 
 func TestInvalidSignedConflictCannotPoisonPersistedQuorum(t *testing.T) {
-	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
+	client, witnesses, request, _, original := preparePersistedWitnessQuorum(t, NewMemoryCheckpointPendingStore())
 	invalid := signedDecision(t, witnesses[0], original[0], "revoked")
 	invalid.Signature = append([]byte(nil), invalid.Signature...)
 	invalid.Signature[0] ^= 0x80
@@ -2333,4 +2333,3 @@ func TestPersistedQuorumEquivocationRepeatedRecovery(t *testing.T) {
 		})
 	}
 }
-
