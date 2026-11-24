@@ -3070,3 +3070,95 @@ func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart
 		t.Fatalf("completion marker not persisted on retry: completed=%t err=%v", completed, err)
 	}
 }
+
+
+func TestCheckpointTransitionLockCancellation(t *testing.T) {
+	for _, fileBacked := range []bool{false, true} {
+		name := "memory"
+		if fileBacked {
+			name = "file"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := newTransitionTestStore(t, fileBacked)
+			unlock, err := store.(checkpointPendingTransitionLocker).LockTransition(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() {
+				if err := unlock(); err != nil {
+					t.Errorf("release transition lock: %v", err)
+				}
+			}()
+			contention := make(chan struct{}, 1)
+			setTransitionWaitHook(store, contention)
+			ctx, cancel := context.WithCancel(context.Background())
+			done := make(chan error, 1)
+			go func() {
+				_, err := store.(checkpointPendingTransitionLocker).LockTransition(ctx)
+				done <- err
+			}()
+			waitForTestSignal(t, context.Background(), contention, "transition lock contention")
+			cancel()
+			select {
+			case err := <-done:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("cancelled transition lock error = %v", err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("cancelled transition lock did not return")
+			}
+		})
+	}
+}
+
+func TestCheckpointStandaloneDecisionWrappersPropagateUnlockErrors(t *testing.T) {
+	t.Run("acknowledgement", func(t *testing.T) {
+		store := NewMemoryCheckpointPendingStore()
+		_, witnesses, request, receipt := prepareResolvedWitnessOperation(t, store)
+		ack, err := witnesses[0].Acknowledge(context.Background(), request, receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlockErr := errors.New("injected transition unlock failure")
+		store.transitionUnlockErr = unlockErr
+		err = store.RecordAcknowledgement(context.Background(), request, receipt, ack, CheckpointWitnessTrust{
+			ID: witnesses[0].id, PublicKey: witnesses[0].private.Public().(ed25519.PublicKey), Witness: witnesses[0],
+		})
+		if !errors.Is(err, unlockErr) {
+			t.Fatalf("acknowledgement wrapper dropped unlock error: %v", err)
+		}
+	})
+
+	t.Run("equivocation", func(t *testing.T) {
+		store := NewMemoryCheckpointPendingStore()
+		_, witnesses, request, receipt := prepareResolvedWitnessOperation(t, store)
+		original, err := witnesses[0].Acknowledge(context.Background(), request, receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trust := CheckpointWitnessTrust{
+			ID: witnesses[0].id, PublicKey: witnesses[0].private.Public().(ed25519.PublicKey), Witness: witnesses[0],
+		}
+		if err := store.RecordAcknowledgement(context.Background(), request, receipt, original, trust); err != nil {
+			t.Fatal(err)
+		}
+		conflicting := signedDecision(t, witnesses[0], original, "revoked")
+		unlockErr := errors.New("injected transition unlock failure")
+		store.transitionUnlockErr = unlockErr
+		err = store.RecordEquivocation(context.Background(), request, receipt, original, conflicting, trust)
+		if !errors.Is(err, unlockErr) {
+			t.Fatalf("equivocation wrapper dropped unlock error: %v", err)
+		}
+	})
+
+	t.Run("witness-quorum", func(t *testing.T) {
+		store := NewMemoryCheckpointPendingStore()
+		client, _, request, receipt := prepareResolvedWitnessOperation(t, store)
+		unlockErr := errors.New("injected transition unlock failure")
+		store.transitionUnlockErr = unlockErr
+		_, err := client.acknowledgeWitnessQuorum(context.Background(), request, receipt, store)
+		if !errors.Is(err, unlockErr) {
+			t.Fatalf("witness acknowledgement wrapper dropped unlock error: %v", err)
+		}
+	})
+}
