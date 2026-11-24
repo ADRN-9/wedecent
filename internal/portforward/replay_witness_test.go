@@ -1950,6 +1950,18 @@ func (w unavailableAckResponse) Acknowledge(context.Context, CheckpointRequest, 
 	return CheckpointWitnessAck{}, ErrCheckpointUnavailable
 }
 
+type unavailableWitness struct {
+	CheckpointWitness
+}
+
+func (w unavailableWitness) Acknowledge(context.Context, CheckpointRequest, CheckpointReceipt) (CheckpointWitnessAck, error) {
+	return CheckpointWitnessAck{}, ErrCheckpointUnavailable
+}
+
+func (w unavailableWitness) Head(context.Context, CheckpointWitnessScope) (CheckpointWitnessHead, error) {
+	return CheckpointWitnessHead{}, ErrCheckpointUnavailable
+}
+
 func preparePersistedWitnessQuorum(t *testing.T, store CheckpointPendingStore) (*WitnessedReplayCheckpointProvider, []*deterministicCheckpointWitness, CheckpointRequest, CheckpointReceipt, []CheckpointWitnessAck) {
 	t.Helper()
 	primary := newDeterministicCheckpointProvider(t)
@@ -2011,8 +2023,8 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 	client, witnesses, request, receipt, original := preparePersistedWitnessQuorum(t, store)
 	conflict := signedDecision(t, witnesses[0], original[0], "revoked")
 	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
-	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
-	client.Witnesses[2].Witness = unavailableAckResponse{CheckpointWitness: witnesses[2]}
+	client.Witnesses[1].Witness = unavailableWitness{CheckpointWitness: witnesses[1]}
+	client.Witnesses[2].Witness = unavailableWitness{CheckpointWitness: witnesses[2]}
 
 	released := false
 	err = client.FinalizeWithAudit(context.Background(), request, func() error {
