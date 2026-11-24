@@ -13,6 +13,9 @@ fail() {
 HOSTNAME='replay.example.test'
 PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
 APPROVAL="$(wedecent_replay_authority_approval_digest "$HOSTNAME" "$PINS")"
+AUDIT_HOSTNAME='audit.example.test'
+AUDIT_PINS='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'
+AUDIT_APPROVAL="$(wedecent_checkpoint_audit_approval_digest "$AUDIT_HOSTNAME" "$AUDIT_PINS")"
 SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
 TREE_SHA="$(git -C "$ROOT" rev-parse --verify "${SOURCE_SHA}^{tree}")"
 export GITHUB_ACTIONS=true
@@ -31,6 +34,9 @@ mkdir -p -- "$FIXTURE"
 export WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$HOSTNAME"
 export WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$PINS"
 export WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$APPROVAL"
+export WEDECENT_CHECKPOINT_AUDIT_HOSTNAME="$AUDIT_HOSTNAME"
+export WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256="$AUDIT_PINS"
+export WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256="$AUDIT_APPROVAL"
 export WEDECENT_EXPECTED_SOURCE_SHA="$SOURCE_SHA"
 
 cat > "$FIXTURE/VERSION.txt" <<EOF_VERSION
@@ -45,12 +51,16 @@ build_mode=production
 replay_authority_hostname=$HOSTNAME
 replay_authority_spki_sha256=$PINS
 replay_authority_approval_sha256=$APPROVAL
+checkpoint_audit_hostname=$AUDIT_HOSTNAME
+checkpoint_audit_spki_sha256=$AUDIT_PINS
+checkpoint_audit_approval_sha256=$AUDIT_APPROVAL
 EOF_VERSION
 for name in wd-core.exe wd-agent.exe; do
-  printf 'binary fixture %s\n%s\n%s\n' "$name" "$HOSTNAME" "$PINS" > "$FIXTURE/$name"
+  printf 'binary fixture %s\n%s\n%s\n%s\n%s\n' "$name" "$HOSTNAME" "$PINS" "$AUDIT_HOSTNAME" "$AUDIT_PINS" > "$FIXTURE/$name"
 done
 
-wedecent_require_approved_replay_trust || fail 'approved test trust configuration was rejected'
+wedecent_require_approved_replay_trust || fail 'approved test replay trust configuration was rejected'
+wedecent_require_approved_checkpoint_audit_trust || fail 'approved test checkpoint audit trust configuration was rejected'
 wedecent_verify_release_metadata "$FIXTURE" || fail 'valid production release fixture was rejected'
 
 if (WEDECENT_EXPECTED_SOURCE_SHA='cccccccccccccccccccccccccccccccccccccccc'; wedecent_verify_release_metadata "$FIXTURE"); then
@@ -73,6 +83,22 @@ sed "s|^replay_authority_spki_sha256=$PINS$|replay_authority_spki_sha256=ccccccc
   "$WORK/VERSION.good" > "$FIXTURE/VERSION.txt"
 if wedecent_verify_release_metadata "$FIXTURE"; then
   fail 'mismatched release SPKI pins were accepted'
+fi
+mv "$WORK/VERSION.good" "$FIXTURE/VERSION.txt"
+
+cp "$FIXTURE/VERSION.txt" "$WORK/VERSION.good"
+sed "s|^checkpoint_audit_hostname=$AUDIT_HOSTNAME$|checkpoint_audit_hostname=other.example.test|" \
+  "$WORK/VERSION.good" > "$FIXTURE/VERSION.txt"
+if wedecent_verify_release_metadata "$FIXTURE"; then
+  fail 'mismatched checkpoint audit hostname was accepted'
+fi
+mv "$WORK/VERSION.good" "$FIXTURE/VERSION.txt"
+
+cp "$FIXTURE/VERSION.txt" "$WORK/VERSION.good"
+sed "s|^checkpoint_audit_spki_sha256=$AUDIT_PINS$|checkpoint_audit_spki_sha256=dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd|" \
+  "$WORK/VERSION.good" > "$FIXTURE/VERSION.txt"
+if wedecent_verify_release_metadata "$FIXTURE"; then
+  fail 'mismatched checkpoint audit SPKI pins were accepted'
 fi
 mv "$WORK/VERSION.good" "$FIXTURE/VERSION.txt"
 
@@ -103,6 +129,22 @@ if (
 fi
 if (WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'; wedecent_require_approved_replay_trust); then
   fail 'unapproved trust configuration digest was accepted'
+fi
+
+if (unset WEDECENT_CHECKPOINT_AUDIT_HOSTNAME; wedecent_require_approved_checkpoint_audit_trust); then
+  fail 'missing checkpoint audit hostname was accepted'
+fi
+if (unset WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256; wedecent_require_approved_checkpoint_audit_trust); then
+  fail 'missing checkpoint audit SPKI pins were accepted'
+fi
+if (WEDECENT_CHECKPOINT_AUDIT_HOSTNAME='Audit.Example.test'; wedecent_require_approved_checkpoint_audit_trust); then
+  fail 'non-canonical checkpoint audit hostname was accepted'
+fi
+if (WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256='ABCDEF'; wedecent_require_approved_checkpoint_audit_trust); then
+  fail 'malformed checkpoint audit SPKI pins were accepted'
+fi
+if (WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256='cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc'; wedecent_require_approved_checkpoint_audit_trust); then
+  fail 'unapproved checkpoint audit trust digest was accepted'
 fi
 
 sed 's/^build_mode=production$/build_mode=diagnostic/' "$FIXTURE/VERSION.txt" > "$WORK/diagnostic.txt"
