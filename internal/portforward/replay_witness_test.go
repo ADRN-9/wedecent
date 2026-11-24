@@ -2012,7 +2012,6 @@ func preparePersistedWitnessQuorum(t *testing.T, store CheckpointPendingStore) (
 	return client, witnesses, request, result.CheckpointReceipt, acks
 }
 
-
 func prepareResolvedWitnessOperation(t *testing.T, store CheckpointPendingStore) (*WitnessedReplayCheckpointProvider, []*deterministicCheckpointWitness, CheckpointRequest, CheckpointReceipt) {
 	t.Helper()
 	primary := newDeterministicCheckpointProvider(t)
@@ -2395,7 +2394,6 @@ func TestPersistedQuorumEquivocationRepeatedRecovery(t *testing.T) {
 	}
 }
 
-
 func TestNegativeFirstTerminalDecisionsAreDurableAndEquivocationTerminal(t *testing.T) {
 	for _, backend := range []string{"memory", "file"} {
 		for _, decision := range []string{"revoked", "aborted"} {
@@ -2654,7 +2652,6 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	}
 	_ = witnesses
 }
-
 
 func TestNegativeTerminalDecisionNeverContributesToQuorum(t *testing.T) {
 	store := NewMemoryCheckpointPendingStore()
