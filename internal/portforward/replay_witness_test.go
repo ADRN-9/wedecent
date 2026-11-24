@@ -900,7 +900,7 @@ func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
 	}
 	restarted := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: restartedStore, Fencing: client.Fencing,
+		Quorum: client.Quorum, Pending: restartedStore, Fencing: client.Fencing, RevocationAuthorizer: client.RevocationAuthorizer,
 	}
 	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("top-level exact-request recovery returned a new session: %v", err)
@@ -2346,7 +2346,7 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 	}
 	restartedClient := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: restarted, Fencing: client.Fencing,
+		Quorum: client.Quorum, Pending: restarted, Fencing: client.Fencing, RevocationAuthorizer: client.RevocationAuthorizer,
 	}
 	released = false
 	if err := restartedClient.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
@@ -2434,7 +2434,7 @@ func TestConcurrentFinalizationRunsCallbackAtMostOnce(t *testing.T) {
 	client, _, request, _, _ := preparePersistedWitnessQuorum(t, store)
 	other := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: store, Fencing: client.Fencing,
+		Quorum: client.Quorum, Pending: store, Fencing: client.Fencing, RevocationAuthorizer: client.RevocationAuthorizer,
 	}
 	var mu sync.Mutex
 	callbacks := 0
