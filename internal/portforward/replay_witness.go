@@ -352,7 +352,28 @@ func (p *WitnessedReplayCheckpointProvider) Head(ctx context.Context, endpoint C
 	return primary, nil
 }
 
+func (p *WitnessedReplayCheckpointProvider) verifyRequestMembershipVector(ctx context.Context, request CheckpointRequest) error {
+	if _, err := CheckpointRequestFingerprint(request); err != nil {
+		return err
+	}
+	for _, endpoint := range checkpointRequestParticipants(request) {
+		head, err := p.Head(ctx, endpoint)
+		if err != nil {
+			return err
+		}
+		if head.RevocationEpoch != endpoint.RevocationEpoch {
+			return ErrCheckpointRevoked
+		}
+	}
+	return nil
+}
+
 func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) ([]CheckpointWitnessAck, error) {
+	// Persisted acknowledgements are not a substitute for current membership:
+	// revocation may have advanced after the original acknowledgement.
+	if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
+		return nil, err
+	}
 	acks, err := store.LoadAcknowledgements(ctx, request, receipt, p.Witnesses)
 	if err != nil {
 		return nil, err
