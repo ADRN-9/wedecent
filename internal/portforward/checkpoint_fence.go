@@ -141,6 +141,10 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 		token.Generation != token.ExpectedFenceGeneration+1 ||
 		token.WitnessSetVersion == "" || len(token.WitnessSetVersion) > 128 ||
 		len(token.WitnessIDs) < 3 || token.ExpiresAtUnixMS <= 0 ||
+		(token.PrimaryHeadGeneration == 0 && token.PrimaryHeadSHA256 != ([sha256.Size]byte{})) ||
+		(token.PrimaryHeadGeneration > 0 && token.PrimaryHeadSHA256 == ([sha256.Size]byte{})) ||
+		(token.ExpectedFenceGeneration == 0 && token.PreviousFenceSHA256 != ([sha256.Size]byte{})) ||
+		(token.ExpectedFenceGeneration > 0 && token.PreviousFenceSHA256 == ([sha256.Size]byte{})) ||
 		token.PrimaryKeyID == "" || len(token.PrimaryKeyID) > 128 {
 		return nil, ErrCheckpointIntegrity
 	}
