@@ -140,7 +140,7 @@ async function positiveEvidenceFixture() {
     value.signature = standardBase64(await sign(primary.privateKey, checkpointHeadMessage(value)));
     return value;
   };
-  const witnessHead = async (id: string, keyID: string, key: CryptoKey, scope: typeof initiator, generation: number, primaryGeneration: number, primaryRecord: Uint8Array) => {
+  const witnessHead = async (id: string, keyID: string, key: CryptoKeyPair, scope: typeof initiator, generation: number, primaryGeneration: number, primaryRecord: Uint8Array) => {
     const value: Record<string, unknown> = {
       witness_id: id,
       scope: { device_id: scope.device_id, account_id: scope.account_id, organization_id: scope.organization_id },
