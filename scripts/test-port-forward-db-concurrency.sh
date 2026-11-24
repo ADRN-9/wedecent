@@ -173,6 +173,7 @@ assertq "$((ROLLBACK_GENERATION + 1))" "select generation from public.port_forwa
 
 # Audit finalization uses the same participant locks as authorization and revocation.
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
+drop function if exists public.wd_c145_audit(text,text,text);
 create function public.wd_c145_audit(p_operation_id text,p_jti text,p_signature text default repeat('A',86)||'==') returns jsonb
 language plpgsql security definer set search_path=''
 as $c164$
