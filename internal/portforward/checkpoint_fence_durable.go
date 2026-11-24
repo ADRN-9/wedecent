@@ -292,7 +292,7 @@ func (w *FileCheckpointFenceWitness) CommitFence(ctx context.Context, token Chec
 	}
 	var result CheckpointFenceAcknowledgement
 	err := w.withIndex(ctx, func(file *os.File, index *checkpointFenceWitnessIndex) error {
-		if err := VerifyCheckpointFenceToken(token, w.primaryKey, w.now().UnixMilli()); err != nil {
+		if err := verifyCheckpointFenceTokenSignature(token, w.primaryKey); err != nil {
 			return err
 		}
 		if token.WitnessSetVersion != w.witnessSetVersion || !sameStringSet(token.WitnessIDs, w.witnessIDs) {
@@ -313,6 +313,9 @@ func (w *FileCheckpointFenceWitness) CommitFence(ctx context.Context, token Chec
 			}
 			result = cloneCheckpointFenceAck(old.Ack)
 			return nil
+		}
+		if token.ExpiresAtUnixMS <= w.now().UnixMilli() {
+			return ErrCheckpointStale
 		}
 		if token.ExpectedFenceGeneration != state.Generation ||
 			token.Generation != state.Generation+1 ||
