@@ -3529,15 +3529,24 @@ func TestFinalizationEvidenceIsDurableImmutableAndTamperEvident(t *testing.T) {
 
 
 type failingFenceWitness struct {
-	delegate CheckpointFencingWitness
-	fail     bool
+	delegate     CheckpointFencingWitness
+	fail         bool
+	loseResponse bool
 }
 
 func (w *failingFenceWitness) CommitFence(ctx context.Context, token CheckpointFenceToken) (CheckpointFenceAcknowledgement, error) {
 	if w.fail {
-		return CheckpointFenceAcknowledgement{}, errors.New("simulated witness response loss")
+		return CheckpointFenceAcknowledgement{}, errors.New("simulated witness unavailable")
 	}
-	return w.delegate.CommitFence(ctx, token)
+	ack, err := w.delegate.CommitFence(ctx, token)
+	if err != nil {
+		return CheckpointFenceAcknowledgement{}, err
+	}
+	if w.loseResponse {
+		w.loseResponse = false
+		return CheckpointFenceAcknowledgement{}, errors.New("simulated lost witness acknowledgement response")
+	}
+	return ack, nil
 }
 
 func (w *failingFenceWitness) LoadFence(ctx context.Context, scope CheckpointWitnessScope, generation uint64) (CheckpointFenceAcknowledgement, bool, error) {
@@ -3685,7 +3694,7 @@ func TestLifecycleFenceRecoversPartialRevocationAfterRestartAndLostPrimaryRespon
 	for i := range client.Fencing.Witnesses {
 		delegates[i] = client.Fencing.Witnesses[i].Witness
 		if i < 2 {
-			client.Fencing.Witnesses[i].Witness = &failingFenceWitness{delegate: delegates[i], fail: true}
+			client.Fencing.Witnesses[i].Witness = &failingFenceWitness{delegate: delegates[i], loseResponse: true}
 		}
 	}
 	next := endpoint.RevocationEpoch + 1
