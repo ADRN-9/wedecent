@@ -302,6 +302,7 @@ fd="${FDS[b]}" pid="${PIDS[b]}"
 exec {fd}>&-; unset 'FDS[b]' 'PIDS[b]'
 if wait "$pid"; then cat "$WORK/b.log" >&2; fail 'conflicting audit payload was accepted'; fi
 grep -q 'ERROR:' "$WORK/b.log" || fail 'conflicting audit submission did not fail'
+grep -q 'operation payload conflict' "$WORK/b.log" || fail 'conflicting audit failed for the wrong reason'
 assertq 1 "select count(*) from public.checkpoint_finalization_audit where operation_id='$AUDIT_CONFLICT_ID' and outcome='finalization_started'"
 
 # Route-grant JTIs are unique in their own table and intentionally differ from forwarding JTIs.
