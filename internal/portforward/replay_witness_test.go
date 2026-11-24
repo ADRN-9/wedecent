@@ -680,7 +680,7 @@ func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
 	primary.mu.Lock()
 	receipt := primary.ledgers[key].used[request.JTI].receipt
 	primary.mu.Unlock()
-	ackStore := restartedStore.(checkpointPendingAcknowledgements)
+	var ackStore checkpointPendingAcknowledgements = restartedStore
 	recoveredAcks, err := restarted.acknowledgeWitnessQuorum(context.Background(), request, receipt, ackStore)
 	if err != nil || len(recoveredAcks) < restarted.Quorum {
 		t.Fatalf("lost response did not recover acknowledgement quorum: acks=%d err=%v", len(recoveredAcks), err)
