@@ -3164,3 +3164,54 @@ func TestCheckpointStandaloneDecisionWrappersPropagateUnlockErrors(t *testing.T)
 		}
 	})
 }
+
+
+func TestFileCheckpointStandaloneDecisionWrappersPropagateUnlockErrors(t *testing.T) {
+	newStore := func(t *testing.T) *FileCheckpointPendingStore {
+		t.Helper()
+		store, ok := newTransitionTestStore(t, true).(*FileCheckpointPendingStore)
+		if !ok {
+			t.Fatal("file-backed transition store has unexpected type")
+		}
+		return store
+	}
+
+	t.Run("acknowledgement", func(t *testing.T) {
+		store := newStore(t)
+		_, witnesses, request, receipt := prepareResolvedWitnessOperation(t, store)
+		ack, err := witnesses[0].Acknowledge(context.Background(), request, receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		unlockErr := errors.New("injected transition unlock failure")
+		store.transitionUnlockErr = unlockErr
+		err = store.RecordAcknowledgement(context.Background(), request, receipt, ack, CheckpointWitnessTrust{
+			ID: witnesses[0].id, PublicKey: witnesses[0].private.Public().(ed25519.PublicKey), Witness: witnesses[0],
+		})
+		if !errors.Is(err, unlockErr) {
+			t.Fatalf("file acknowledgement wrapper dropped unlock error: %v", err)
+		}
+	})
+
+	t.Run("equivocation", func(t *testing.T) {
+		store := newStore(t)
+		_, witnesses, request, receipt := prepareResolvedWitnessOperation(t, store)
+		original, err := witnesses[0].Acknowledge(context.Background(), request, receipt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		trust := CheckpointWitnessTrust{
+			ID: witnesses[0].id, PublicKey: witnesses[0].private.Public().(ed25519.PublicKey), Witness: witnesses[0],
+		}
+		if err := store.RecordAcknowledgement(context.Background(), request, receipt, original, trust); err != nil {
+			t.Fatal(err)
+		}
+		conflicting := signedDecision(t, witnesses[0], original, "revoked")
+		unlockErr := errors.New("injected transition unlock failure")
+		store.transitionUnlockErr = unlockErr
+		err = store.RecordEquivocation(context.Background(), request, receipt, original, conflicting, trust)
+		if !errors.Is(err, unlockErr) {
+			t.Fatalf("file equivocation wrapper dropped unlock error: %v", err)
+		}
+	})
+}
