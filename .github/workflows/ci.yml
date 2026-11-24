@@ -287,6 +287,8 @@ jobs:
         run: deno check supabase/functions/route-authorization/index.ts
       - name: Type-check independent replay authority Edge Function
         run: deno check supabase/functions/port-forward-replay/index.ts
+      - name: Type-check authenticated checkpoint finalization audit Edge Function
+        run: deno check supabase/functions/port-forward-finalization-audit/index.ts
 
   supabase-db:
     runs-on: ubuntu-latest
