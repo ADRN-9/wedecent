@@ -33,7 +33,17 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 	if ctx == nil { return ErrAuthorizationInvalid }
 	if err := ctx.Err(); err != nil { return err }
 	devicePublicKey, ok := r.DeviceSigner.Public().(ed25519.PublicKey)
-	if !ok || len(devicePublicKey) != ed25519.PublicKeySize || identity.DeviceID(devicePublicKey) != string(r.LocalDeviceID) { return ErrCheckpointIntegrity }
+	if !ok || len(devicePublicKey) != ed25519.PublicKeySize || identity.DeviceID(devicePublicKey) != string(r.LocalDeviceID) ||
+		bytes.Equal(devicePublicKey, r.ControlPlaneKey) || bytes.Equal(r.Provider.PrimaryKey, r.ControlPlaneKey) ||
+		bytes.Equal(r.Provider.PrimaryKey, devicePublicKey) {
+		return ErrCheckpointIntegrity
+	}
+	for _, witness := range r.Provider.Witnesses {
+		if bytes.Equal(witness.PublicKey, r.ControlPlaneKey) || bytes.Equal(witness.PublicKey, devicePublicKey) {
+			return ErrCheckpointIntegrity
+		}
+	}
+	if err := r.Provider.ValidateConfiguration(); err != nil { return err }
 	claims := cloneClaims(authorization.Claims)
 	if err := ValidateClaims(claims); err != nil { return ErrAuthorizationInvalid }
 	keyID, err := AuthorizationKeyID(r.ControlPlaneKey)
