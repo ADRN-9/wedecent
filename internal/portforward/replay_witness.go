@@ -115,11 +115,46 @@ type WitnessedReplayCheckpointProvider struct {
 	Fencing    *CheckpointFenceCoordinator
 }
 
+
+func validIndependentFenceTrust(primaryKey ed25519.PublicKey, witnesses []CheckpointWitnessTrust, coordinator *CheckpointFenceCoordinator) bool {
+	if coordinator == nil || len(primaryKey) != ed25519.PublicKeySize ||
+		len(coordinator.PrimaryKey) != ed25519.PublicKeySize {
+		return false
+	}
+	seen := make(map[[sha256.Size]byte]bool, len(witnesses)+len(coordinator.Witnesses)+2)
+	add := func(key ed25519.PublicKey) bool {
+		if len(key) != ed25519.PublicKeySize {
+			return false
+		}
+		digest := sha256.Sum256(key)
+		if seen[digest] {
+			return false
+		}
+		seen[digest] = true
+		return true
+	}
+	if !add(primaryKey) || !add(coordinator.PrimaryKey) {
+		return false
+	}
+	for _, witness := range witnesses {
+		if !add(witness.PublicKey) {
+			return false
+		}
+	}
+	for _, witness := range coordinator.Witnesses {
+		if !add(witness.PublicKey) {
+			return false
+		}
+	}
+	return true
+}
+
 func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
 	if p == nil || p.Primary == nil || p.Pending == nil || p.Fencing == nil ||
 		!validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) ||
 		p.Fencing.Primary == nil || p.Fencing.WitnessSetVersion == "" ||
-		!validFenceCoordinatorWitnesses(p.Fencing.Witnesses, p.Fencing.Quorum, p.Fencing.PrimaryKey) {
+		!validFenceCoordinatorWitnesses(p.Fencing.Witnesses, p.Fencing.Quorum, p.Fencing.PrimaryKey) ||
+		!validIndependentFenceTrust(p.PrimaryKey, p.Witnesses, p.Fencing) {
 		return ErrCheckpointUnavailable
 	}
 	if _, ok := p.Fencing.Primary.(CheckpointFenceAtomicPrimary); !ok {
