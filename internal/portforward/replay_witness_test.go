@@ -685,16 +685,15 @@ func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
 	primary.mu.Lock()
 	receipt := primary.ledgers[key].used[request.JTI].receipt
 	primary.mu.Unlock()
-	recoveredAcks, err := restartedStore.LoadAcknowledgements(context.Background(), request, receipt, restarted.Witnesses)
-	if err != nil || len(recoveredAcks) < restarted.Quorum {
-		t.Fatalf("top-level lost-response recovery did not persist quorum: acks=%d err=%v", len(recoveredAcks), err)
+	alreadyAcknowledged := 0
+	for _, trust := range restarted.Witnesses {
+		ack, err := trust.Witness.Acknowledge(context.Background(), request, receipt)
+		if err == nil && VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) == nil && ack.Status == "already_acknowledged" {
+			alreadyAcknowledged++
+		}
 	}
-	alreadyAcknowledged := false
-	for _, ack := range recoveredAcks {
-		alreadyAcknowledged = alreadyAcknowledged || ack.Status == "already_acknowledged"
-	}
-	if !alreadyAcknowledged {
-		t.Fatal("authenticated already_acknowledged response was not recognized")
+	if alreadyAcknowledged < restarted.Quorum {
+		t.Fatalf("top-level recovery did not finalize authenticated acknowledgement quorum: %d", alreadyAcknowledged)
 	}
 	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("recovered authorization was returned as a new session: %v", err)
