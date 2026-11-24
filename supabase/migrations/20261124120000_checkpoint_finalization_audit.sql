@@ -121,6 +121,12 @@ begin
        or p_payload_version <> 1
        or p_payload is null
        or pg_catalog.jsonb_typeof(p_payload) <> 'object'
+       or pg_catalog.jsonb_object_length(p_payload) <> 13
+       or not (p_payload ?& array[
+           'version','initiator','destination','router','consuming_device_id','jti',
+           'authorization_sha256','route_authorization_sha256','route_authorization_id',
+           'route_authorization_jti','route_authorization_json','device_public_key','device_signature'
+       ])
        or p_actor_id is null
        or p_payload_sha256 is null
        or pg_catalog.octet_length(p_payload_sha256) <> 32
@@ -145,8 +151,13 @@ begin
         raise exception 'audit evidence digest mismatch' using errcode = '22023';
     end if;
 
+    if p_outcome <> 'finalized' and p_evidence <> '{}'::jsonb then
+        raise exception 'intermediate audit transition must not contain terminal evidence' using errcode = '22023';
+    end if;
     if p_outcome = 'finalized' and (
-        p_evidence = '{}'::jsonb
+        pg_catalog.jsonb_object_length(p_evidence) <> 3
+        or not (p_evidence ?& array['primary_receipt','witness_acknowledgements','revocation_proofs'])
+        or p_evidence = '{}'::jsonb
         or not (p_evidence ? 'primary_receipt')
         or not (p_evidence ? 'witness_acknowledgements')
         or not (p_evidence ? 'revocation_proofs')
