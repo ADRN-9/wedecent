@@ -187,7 +187,7 @@ func TestFileCheckpointFenceRejectsConflictingOperationAndForgedAck(t *testing.T
 		acks = append(acks, ack)
 	}
 	acks[0].Signature[0] ^= 0xff
-	if err := primary.CommitFence(ctx, token, acks); !errors.Is(err, ErrCheckpointQuorum) {
+	if err := primary.CommitFence(ctx, token, acks); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("forged witness acknowledgement accepted: %v", err)
 	}
 	if err := primary.CommitFence(ctx, token, []CheckpointFenceAcknowledgement{acks[1]}); !errors.Is(err, ErrCheckpointQuorum) {
