@@ -27,6 +27,7 @@ const (
 type CheckpointFenceToken struct {
 	Version                  uint32
 	Scope                    CheckpointWitnessScope
+	Participants             []CheckpointEndpoint
 	ExpectedFenceGeneration  uint64
 	Generation               uint64
 	ExpectedRevocationEpoch  uint64
@@ -111,6 +112,7 @@ type CheckpointFencingWitness interface {
 
 type CheckpointFenceRequest struct {
 	Scope                   CheckpointWitnessScope
+	Participants            []CheckpointEndpoint
 	ExpectedFenceGeneration uint64
 	ExpectedRevocationEpoch uint64
 	Action                  CheckpointFenceAction
@@ -224,6 +226,30 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 	} {
 		if err := putString(value); err != nil {
 			return nil, err
+		}
+	}
+	if len(token.Participants) > 0 {
+		participants := append([]CheckpointEndpoint(nil), token.Participants...)
+		sort.Slice(participants, func(i, j int) bool { return participants[i].DeviceID < participants[j].DeviceID })
+		if err := putString("checkpoint-fence-participant-set-v1"); err != nil {
+			return nil, err
+		}
+		if err := binary.Write(&b, binary.BigEndian, uint64(len(participants))); err != nil {
+			return nil, err
+		}
+		for i, participant := range participants {
+			if !validCheckpointEndpoint(participant) || participant.OrganizationID != token.Scope.OrganizationID ||
+				(i > 0 && participants[i-1].DeviceID == participant.DeviceID) {
+				return nil, ErrCheckpointIntegrity
+			}
+			for _, value := range []string{participant.DeviceID, participant.AccountID, participant.OrganizationID} {
+				if err := putString(value); err != nil {
+					return nil, err
+				}
+			}
+			if err := binary.Write(&b, binary.BigEndian, participant.RevocationEpoch); err != nil {
+				return nil, err
+			}
 		}
 	}
 	for _, value := range []uint64{
