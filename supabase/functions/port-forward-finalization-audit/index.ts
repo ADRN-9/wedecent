@@ -28,7 +28,7 @@ async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:st
  raw(publicKey);const size=chunks.reduce((n,x)=>n+x.length,0);const message=new Uint8Array(size);let offset=0;for(const part of chunks){message.set(part,offset);offset+=part.length}
  const key=await crypto.subtle.importKey("raw",publicKey,{name:"Ed25519"},false,["verify"]);
  if(!await crypto.subtle.verify({name:"Ed25519"},key,signature,message))throw Error("device checkpoint signature rejected");
- const fp=new Uint8Array(await crypto.subtle.digest("SHA-256",message));const prefix=enc.encode("wedecent-checkpoint-finalization-v1\\n");const opInput=new Uint8Array(prefix.length+fp.length);opInput.set(prefix);opInput.set(fp,prefix.length);
+ const fp=new Uint8Array(await crypto.subtle.digest("SHA-256",message));const prefix=enc.encode("wedecent-checkpoint-finalization-v1\n");const opInput=new Uint8Array(prefix.length+fp.length);opInput.set(prefix);opInput.set(fp,prefix.length);
  const op=new Uint8Array(await crypto.subtle.digest("SHA-256",opInput));const expected=[...op].map(x=>x.toString(16).padStart(2,"0")).join("");
  if(expected!==operationID)throw Error("operation ID does not bind signed checkpoint request");
 }
@@ -41,7 +41,8 @@ const b=JSON.parse(raw) as Record<string,unknown>;if(Object.keys(b).sort().join(
 const id=String(b.operation_id??""),outcome=String(b.outcome??""),sum=String(b.payload_sha256??""),p=b.payload as Record<string,unknown>;
 if(!/^[0-9a-f]{64}$/.test(id)||!/^[0-9a-f]{64}$/.test(sum)||b.payload_version!==1||!["finalization_started","membership_unavailable","finalization_failed","finalized","rejected_revocation"].includes(outcome))return reply({error:"invalid request"},400);
 if(!p||typeof p!=="object"||Array.isArray(p)||Object.keys(p).sort().join(",")!=="authorization_sha256,consuming_device_id,destination,device_public_key,device_signature,initiator,jti,route_authorization_sha256,router,version"||p.version!==1||!endpoint(p.initiator)||!endpoint(p.destination)||!(p.router===null||endpoint(p.router))||!/^wd_[a-z2-7]{16}$/.test(String(p.consuming_device_id??""))||!/^[A-Za-z0-9_-]{22}$/.test(String(p.jti??""))||!/^[0-9a-f]{64}$/.test(String(p.authorization_sha256??""))||!/^[0-9a-f]{64}$/.test(String(p.route_authorization_sha256??""))||!/^[A-Za-z0-9+/]{43}=$/.test(String(p.device_public_key??""))||!/^[A-Za-z0-9+/]{86}==$/.test(String(p.device_signature??"")))return reply({error:"invalid payload"},400);
-if(await digest(p)!==sum)return reply({error:"digest mismatch"},400);\nawait verifyCanonicalCheckpoint(p,id);
+if(await digest(p)!==sum)return reply({error:"digest mismatch"},400);
+await verifyCanonicalCheckpoint(p,id);
 const {data,error}=await admin.rpc("record_checkpoint_finalization",{p_operation_id:id,p_outcome:outcome,p_payload_version:1,p_payload:p,p_payload_sha256:"\\x"+sum,p_actor_id:auth.user.id});
 if(error){console.warn("checkpoint audit rejected",{code:error.code});const status=error.code==="42501"?403:error.code==="22023"?400:error.code==="23505"?409:503;return reply({error:status===503?"audit unavailable":"audit rejected"},status)}
 const result=Array.isArray(data)?data[0]:data;if(!result||result.operation_id!==id||result.outcome!==outcome||typeof result.record_id!=="string"||typeof result.created_at!=="string"||typeof result.replayed!=="boolean")throw Error("invalid RPC result");return reply(result);
