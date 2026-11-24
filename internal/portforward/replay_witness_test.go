@@ -1898,7 +1898,13 @@ func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.RecordAcknowledgement(context.Background(), conflictingVector, result.CheckpointReceipt, first, client.Witnesses[0]); !errors.Is(err, ErrCheckpointIntegrity) {
+	conflictingVectorAck := first
+	conflictingVectorAck.RequestSHA256, err = CheckpointRequestFingerprint(conflictingVector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflictingVectorAck.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(conflictingVectorAck))
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, conflictingVectorAck, client.Witnesses[0]); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("acknowledgement for conflicting participant vector accepted: %v", err)
 	}
 
@@ -1920,5 +1926,70 @@ func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *
 	}
 	if _, err := client.acknowledgeWitnessQuorum(context.Background(), request, result.CheckpointReceipt, store); err != nil {
 		t.Fatalf("original authenticated quorum was not recoverable: %v", err)
+	}
+}
+
+
+type fixedCheckpointAckWitness struct {
+	CheckpointWitness
+	ack CheckpointWitnessAck
+}
+
+func (w fixedCheckpointAckWitness) Acknowledge(context.Context, CheckpointRequest, CheckpointReceipt) (CheckpointWitnessAck, error) {
+	return w.ack, nil
+}
+
+func TestWitnessRetryEquivocationBlocksQuorumAndSessionRelease(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	store := NewMemoryCheckpointPendingStore()
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	if _, err := store.Begin(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	result, err := primary.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil {
+		t.Fatal(err)
+	}
+	for _, witness := range witnesses {
+		if _, err := witness.Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := witnesses[0].Acknowledge(context.Background(), request, result.CheckpointReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, first, client.Witnesses[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	// The same witness signs a different request fingerprint on retry.
+	conflict := first
+	conflict.RequestSHA256[0] ^= 0x40
+	conflict.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(conflict))
+	client.Witnesses[0].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[0], ack: conflict}
+	witnesses[1].available = false // Keep the remaining honest witness below quorum.
+
+	released := false
+	err = client.FinalizeWithAudit(context.Background(), request, func() error {
+		released = true
+		return nil
+	})
+	if !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("conflicting signed retry did not fail closed: %v", err)
+	}
+	if released {
+		t.Fatal("session release callback ran despite witness equivocation")
+	}
+	acks, err := store.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acks) != 1 || acks[0].WitnessID != witnesses[0].id {
+		t.Fatalf("equivocating response contributed quorum evidence: %d acknowledgements", len(acks))
 	}
 }
