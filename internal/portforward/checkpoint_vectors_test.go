@@ -87,7 +87,7 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 		JTI:                 stringField(requestVector, "jti"),
 		AuthorizationSHA256: authorization,
 		DevicePublicKey:     requestKey,
-		DeviceSignature:    decode(stringField(requestVector, "device_signature_hex")),
+		DeviceSignature:     decode(stringField(requestVector, "device_signature_hex")),
 	}
 	requestMessage, err := checkpointRequestMessage(request)
 	if err != nil {
