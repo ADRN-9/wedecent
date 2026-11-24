@@ -86,8 +86,13 @@ function standardBase64(bytes: Uint8Array) {
 async function signingKey() {
   return await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]) as CryptoKeyPair;
 }
+function bufferSource(bytes: Uint8Array): ArrayBuffer {
+  const copy = new Uint8Array(bytes.byteLength);
+  copy.set(bytes);
+  return copy.buffer as ArrayBuffer;
+}
 async function sign(key: CryptoKey, message: Uint8Array) {
-  return new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, message));
+  return new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, key, bufferSource(message)));
 }
 async function positiveEvidenceFixture() {
   const primary = await signingKey();
