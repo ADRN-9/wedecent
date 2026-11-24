@@ -162,7 +162,7 @@ select throws_ok($q$select public.record_checkpoint_finalization(
 delete from public.organization_memberships
  where organization_id='22000000-0000-4000-8000-000000000091'
    and user_id='11000000-0000-4000-8000-000000000092';
-select throws_ok($select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
+select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$q$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
 insert into public.organization_memberships(organization_id,user_id,role,created_by)
 values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
