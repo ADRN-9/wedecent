@@ -250,10 +250,15 @@ export async function verifyRouteAuthorizationBinding(
   if (!routeClaims || typeof routeClaims !== 'object' || Array.isArray(routeClaims)) {
     fail('router authorization claims are missing')
   }
+  const thumbprintInput = JSON.stringify({
+    crv: 'Ed25519',
+    kty: 'OKP',
+    x: encodeBase64URL(publicKeyBytes),
+  })
   const keyDigest = new Uint8Array(
-    await crypto.subtle.digest('SHA-256', publicKeyBytes),
+    await crypto.subtle.digest('SHA-256', new TextEncoder().encode(thumbprintInput)),
   )
-  const expectedKid = 'ed25519-' + encodeBase64URL(keyDigest)
+  const expectedKid = encodeBase64URL(keyDigest)
   if (nested.kid !== expectedKid) fail('router authorization key identifier mismatch')
 
   const message = canonicalRouteAuthorizationMessage(nested)
