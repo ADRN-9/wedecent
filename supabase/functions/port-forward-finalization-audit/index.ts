@@ -71,7 +71,7 @@ export function checkpointReceiptMessage(r:JsonObject){return concat(enc.encode(
 export function checkpointHeadMessage(h:JsonObject){return concat(enc.encode("wedecent-replay-checkpoint-head-v1\n"),u32(Number(h.version)),str(h.device_id),str(h.account_id),str(h.organization_id),str(h.provider_key_id),u64(h.generation),u64(h.revocation_epoch),h32(h.record_hash))}
 export function witnessAckMessage(a:JsonObject){const s=a.scope as JsonObject;return concat(enc.encode("wedecent-independent-witness-ack-v2\n"),str(a.witness_id),str(s.device_id),str(s.account_id),str(s.organization_id),str(a.jti),h32(a.request_sha256),h32(a.primary_receipt_sha256),str(a.decision),str(a.witness_key_id))}
 export function witnessHeadMessage(h:JsonObject){const s=h.scope as JsonObject;return concat(enc.encode("wedecent-independent-witness-head-v1\n"),str(h.witness_id),str(s.device_id),str(s.account_id),str(s.organization_id),u64(h.generation),h32(h.record_hash),u64(h.primary_generation),h32(h.primary_head),u64(h.revocation_epoch),str(h.witness_key_id))}
-async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
+export async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
  const keyID=Deno.env.get("WEDECENT_ROUTE_AUTH_KEY_ID"),rawKey=Deno.env.get("WEDECENT_ROUTE_AUTH_PUBLIC_KEY");
  if(!keyID||!rawKey)throw Error("independent route authorization trust anchor missing");
  if(auth.kid!==keyID||!exact(auth,["kid","claims","signature"])||!isObject(auth.claims)||
@@ -91,6 +91,10 @@ async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
  const first=hops[0] as JsonObject,second=hops[1] as JsonObject;
  if(first.From!==r.Source||first.To!==c.router||second.From!==c.router||second.To!==r.Destination)throw Error("route authorization hop mismatch");
  const key=b64(rawKey,32),signatureText=String(auth.signature??"");
+ const primaryRaw=Deno.env.get("WEDECENT_CHECKPOINT_PRIMARY_PUBLIC_KEY");
+ if(primaryRaw&&b64url(key)===b64url(b64(primaryRaw,32)))throw Error("route and primary trust anchors must be independent");
+ const witnesses=trustedWitnessKeys();
+ for(const witnessKey of witnesses.keys.values())if(b64url(key)===b64url(witnessKey))throw Error("route and witness trust anchors must be independent");
  if(!/^[A-Za-z0-9_-]{86}$/.test(signatureText))throw Error("invalid route authorization signature encoding");
  const signatureRaw=atob(signatureText.replace(/-/g,"+").replace(/_/g,"/")+"==");
  const signature=Uint8Array.from(signatureRaw,x=>x.charCodeAt(0));
@@ -107,7 +111,6 @@ async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
 }
 
 export function checkpointRecordHash(previous:Uint8Array,generation:unknown,requestHash:Uint8Array){return sha(concat(previous,u64(generation),requestHash))}
-function primaryHeadRecord(h:JsonObject){return {device_id:h.device_id,account_id:h.account_id,organization_id:h.organization_id}}
 function trustedWitnessKeys(){
  const raw=Deno.env.get("WEDECENT_CHECKPOINT_WITNESS_KEYS");if(!raw)throw Error("independent witness trust anchors missing");
  const parsed=JSON.parse(raw) as unknown;if(!isObject(parsed))throw Error("invalid witness trust anchors");
