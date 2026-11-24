@@ -25,6 +25,7 @@ type checkpointPendingEntry struct {
 	State       string `json:"state"`
 	CreatedAt   int64  `json:"created_at_unix_ms"`
 	ReceiptHash string `json:"receipt_hash,omitempty"`
+	Acknowledgements []CheckpointWitnessAck `json:"acknowledgements,omitempty"`
 }
 
 type checkpointPendingSnapshot struct {
@@ -36,6 +37,11 @@ type checkpointPendingSnapshot struct {
 type CheckpointPendingStore interface {
 	Begin(context.Context, CheckpointRequest) (existingPending bool, err error)
 	Resolve(context.Context, CheckpointRequest, CheckpointReceipt) error
+}
+
+type checkpointPendingAcknowledgements interface {
+	RecordAcknowledgement(context.Context, CheckpointRequest, CheckpointReceipt, CheckpointWitnessAck, CheckpointWitnessTrust) error
+	LoadAcknowledgements(context.Context, CheckpointRequest, CheckpointReceipt, []CheckpointWitnessTrust) ([]CheckpointWitnessAck, error)
 }
 
 type checkpointPendingCompactor interface {
@@ -85,10 +91,10 @@ func (s *FileCheckpointPendingStore) Begin(ctx context.Context, request Checkpoi
 			if old.Fingerprint != hex.EncodeToString(fingerprint[:]) {
 				return false, ErrCheckpointConflict
 			}
-			if old.State != "pending" {
-				return false, ErrCheckpointReplay
+			if old.State == "pending" || old.State == "resolved" {
+				return true, nil
 			}
-			return true, nil
+			return false, ErrReplayUnavailable
 		}
 		now := time.Now().UTC()
 		if s.Now != nil {
@@ -137,6 +143,58 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 	return err
 }
 
+
+func (s *FileCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+	return recordCheckpointAcknowledgement(ctx, request, receipt, ack, trust, func(change func(*checkpointPendingSnapshot) (bool, error)) error { _, err := s.update(ctx, change); return err })
+}
+func (s *FileCheckpointPendingStore) LoadAcknowledgements(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, witnesses []CheckpointWitnessTrust) ([]CheckpointWitnessAck, error) {
+	var snapshot checkpointPendingSnapshot
+	_, err := s.update(ctx, func(current *checkpointPendingSnapshot) (bool, error) { snapshot = *current; return false, nil })
+	if err != nil { return nil, err }
+	return validateStoredCheckpointAcknowledgements(snapshot, request, receipt, witnesses)
+}
+func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust, update func(func(*checkpointPendingSnapshot) (bool, error)) error) error {
+	fp, err := CheckpointRequestFingerprint(request); if err != nil { return err }
+	rh := CheckpointReceiptDigest(receipt)
+	if receipt.RequestSHA256 != fp || receipt.JTI != request.JTI || VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil || ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) || ack.JTI != request.JTI || ack.RequestSHA256 != fp || ack.PrimaryReceiptSHA256 != rh { return ErrCheckpointIntegrity }
+	return update(func(snapshot *checkpointPendingSnapshot) (bool, error) {
+		key := checkpointPendingKey(request); entry, ok := snapshot.Entries[key]
+		if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) || entry.State != "resolved" || entry.ReceiptHash != hex.EncodeToString(rh[:]) { return false, ErrCheckpointHistorical }
+		for _, old := range entry.Acknowledgements {
+			if old.WitnessID == ack.WitnessID {
+				if old.Scope != ack.Scope || old.JTI != ack.JTI || old.RequestSHA256 != ack.RequestSHA256 || old.PrimaryReceiptSHA256 != ack.PrimaryReceiptSHA256 || old.WitnessKeyID != ack.WitnessKeyID { return false, ErrCheckpointConflict }
+				return false, nil
+			}
+		}
+		entry.Acknowledgements = append(entry.Acknowledgements, ack); snapshot.Entries[key] = entry; return false, nil
+	})
+}
+func validateStoredCheckpointAcknowledgements(snapshot checkpointPendingSnapshot, request CheckpointRequest, receipt CheckpointReceipt, witnesses []CheckpointWitnessTrust) ([]CheckpointWitnessAck, error) {
+	fp, err := CheckpointRequestFingerprint(request); if err != nil { return nil, err }
+	rh := CheckpointReceiptDigest(receipt)
+	if receipt.RequestSHA256 != fp || receipt.JTI != request.JTI { return nil, ErrCheckpointIntegrity }
+	key := checkpointPendingKey(request); entry, ok := snapshot.Entries[key]
+	if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) || entry.State != "resolved" || entry.ReceiptHash != hex.EncodeToString(rh[:]) { return nil, ErrCheckpointHistorical }
+	trusted := make(map[string]CheckpointWitnessTrust, len(witnesses)); for _, trust := range witnesses { trusted[trust.ID] = trust }
+	seen := make(map[string]bool, len(entry.Acknowledgements)); acks := make([]CheckpointWitnessAck, 0, len(entry.Acknowledgements))
+	for _, ack := range entry.Acknowledgements {
+		trust, ok := trusted[ack.WitnessID]
+		if !ok || seen[ack.WitnessID] || VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil || ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) || ack.JTI != request.JTI || ack.RequestSHA256 != fp || ack.PrimaryReceiptSHA256 != rh { return nil, ErrCheckpointIntegrity }
+		seen[ack.WitnessID] = true; acks = append(acks, ack)
+	}
+	return acks, nil
+}
+func (s *MemoryCheckpointPendingStore) RecordAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
+	if s == nil || ctx == nil { return ErrReplayUnavailable }
+	return recordCheckpointAcknowledgement(ctx, request, receipt, ack, trust, func(change func(*checkpointPendingSnapshot) (bool, error)) error {
+		if err := ctx.Err(); err != nil { return err }; if s.entries == nil { s.entries = make(map[string]checkpointPendingEntry) }
+		snapshot := checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}; _, err := change(&snapshot); s.entries = snapshot.Entries; return err
+	})
+}
+func (s *MemoryCheckpointPendingStore) LoadAcknowledgements(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, witnesses []CheckpointWitnessTrust) ([]CheckpointWitnessAck, error) {
+	if s == nil || ctx == nil { return nil, ErrReplayUnavailable }; if err := ctx.Err(); err != nil { return nil, err }
+	return validateStoredCheckpointAcknowledgements(checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}, request, receipt, witnesses)
+}
 func (s *FileCheckpointPendingStore) Compact(ctx context.Context, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) error {
 	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) {
 		return ErrReplayUnavailable
@@ -248,7 +306,7 @@ func compactAcknowledgedPendingEntries(snapshot *checkpointPendingSnapshot, ackn
 		seen := make(map[string]bool, quorum)
 		for _, ack := range acknowledgements {
 			publicKey := trusted[ack.WitnessID]
-			if seen[ack.WitnessID] || ack.Status != "acknowledged" ||
+			if seen[ack.WitnessID] || (ack.Status != "acknowledged" && ack.Status != "already_acknowledged") ||
 				VerifyCheckpointWitnessAck(ack, ack.WitnessID, publicKey) != nil {
 				continue
 			}
@@ -304,10 +362,10 @@ func (s *MemoryCheckpointPendingStore) Begin(ctx context.Context, request Checkp
 		if old.Fingerprint != hex.EncodeToString(fp[:]) {
 			return false, ErrCheckpointConflict
 		}
-		if old.State != "pending" {
-			return false, ErrCheckpointReplay
+		if old.State == "pending" || old.State == "resolved" {
+			return true, nil
 		}
-		return true, nil
+		return false, ErrReplayUnavailable
 	}
 	if len(s.entries) >= checkpointPendingMaxEntries {
 		return false, ErrReplayUnavailable

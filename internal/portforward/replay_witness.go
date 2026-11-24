@@ -122,7 +122,9 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	if err := p.Pending.Resolve(ctx, request, result.CheckpointReceipt); err != nil {
 		return CheckpointResult{}, err
 	}
-	acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt)
+	ackStore, ok := p.Pending.(checkpointPendingAcknowledgements)
+	if !ok { return CheckpointResult{}, ErrCheckpointUnavailable }
+	acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt, ackStore)
 	if err != nil {
 		return CheckpointResult{}, err
 	}
@@ -249,41 +251,19 @@ func (p *WitnessedReplayCheckpointProvider) Head(ctx context.Context, endpoint C
 	return primary, nil
 }
 
-func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt) ([]CheckpointWitnessAck, error) {
-	type response struct {
-		trust CheckpointWitnessTrust
-		ack   CheckpointWitnessAck
-		err   error
-	}
-	ch := make(chan response, len(p.Witnesses))
-	for _, trust := range p.Witnesses {
-		trust := trust
-		go func() {
-			ack, err := trust.Witness.Acknowledge(ctx, request, receipt)
-			ch <- response{trust: trust, ack: ack, err: err}
-		}()
-	}
-	acks := make([]CheckpointWitnessAck, 0, len(p.Witnesses))
-	for range p.Witnesses {
+func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) ([]CheckpointWitnessAck, error) {
+	acks, err := store.LoadAcknowledgements(ctx, request, receipt, p.Witnesses); if err != nil { return nil, err }
+	seen := make(map[string]bool, len(acks)); for _, ack := range acks { seen[ack.WitnessID] = true }
+	type response struct { trust CheckpointWitnessTrust; ack CheckpointWitnessAck; err error }
+	pending := len(p.Witnesses)-len(seen); ch := make(chan response, pending)
+	for _, trust := range p.Witnesses { if seen[trust.ID] { continue }; trust := trust; go func() { ack, err := trust.Witness.Acknowledge(ctx, request, receipt); ch <- response{trust:trust, ack:ack, err:err} }() }
+	for i:=0; i<pending; i++ {
 		r := <-ch
-		if r.err != nil || VerifyCheckpointWitnessAck(r.ack, r.trust.ID, r.trust.PublicKey) != nil ||
-			r.ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) ||
-			r.ack.JTI != request.JTI || r.ack.RequestSHA256 != receipt.RequestSHA256 ||
-			r.ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) {
-			continue
-		}
-		if r.ack.Status == "already_acknowledged" {
-			return nil, ErrCheckpointHistorical
-		}
-		if r.ack.Status != "acknowledged" {
-			continue
-		}
-		acks = append(acks, r.ack)
+		if r.err != nil || VerifyCheckpointWitnessAck(r.ack,r.trust.ID,r.trust.PublicKey)!=nil || r.ack.Scope!=witnessScope(checkpointEndpointForConsumer(request)) || r.ack.JTI!=request.JTI || r.ack.RequestSHA256!=receipt.RequestSHA256 || r.ack.PrimaryReceiptSHA256!=sha256.Sum256(checkpointReceiptMessage(receipt)) { continue }
+		if r.ack.Status!="acknowledged" && r.ack.Status!="already_acknowledged" { continue }
+		if err:=store.RecordAcknowledgement(ctx,request,receipt,r.ack,r.trust); err!=nil { return nil,err }; acks=append(acks,r.ack)
 	}
-	if len(acks) < p.Quorum {
-		return nil, ErrCheckpointQuorum
-	}
-	return acks, nil
+	if len(acks)<p.Quorum { return nil,ErrCheckpointQuorum }; return acks,nil
 }
 
 func (p *WitnessedReplayCheckpointProvider) preflightWitnessHeads(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, existingPending bool, disposition CheckpointDisposition) error {

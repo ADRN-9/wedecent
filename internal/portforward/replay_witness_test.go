@@ -302,8 +302,8 @@ func TestFileCheckpointPendingStoreSurvivesRestartAndRejectsHistoricalReceipt(t 
 	if err := restarted.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := restarted.Begin(context.Background(), request); !errors.Is(err, ErrCheckpointReplay) {
-		t.Fatalf("resolved historical operation accepted: %v", err)
+	if existing, err := restarted.Begin(context.Background(), request); err != nil || !existing {
+		t.Fatalf("resolved exact request not resumable: existing=%t err=%v", existing, err)
 	}
 	conflict := request
 	conflict.AuthorizationSHA256 = sha256.Sum256([]byte("different capability"))
@@ -573,4 +573,22 @@ func TestWitnessPreflightRejectsSignedWrongScopeFromQuorum(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestFilePendingJournalPersistsVerifiedAcknowledgements(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	path := filepath.Join(dir, "pending.json"); store, err := NewFileCheckpointPendingStore(path); if err != nil { t.Fatal(err) }
+	if existing, err := store.Begin(context.Background(), request); err != nil || existing { t.Fatalf("begin existing=%t err=%v", existing, err) }
+	receiptResult, err := primary.Consume(context.Background(), request); if err != nil { t.Fatal(err) }
+	if err := store.Resolve(context.Background(), request, receiptResult.CheckpointReceipt); err != nil { t.Fatal(err) }
+	client, witnesses := newWitnessedFixture(t, primary, store); ack, err := witnesses[0].Acknowledge(context.Background(), request, receiptResult.CheckpointReceipt); if err != nil { t.Fatal(err) }
+	if err := store.RecordAcknowledgement(context.Background(), request, receiptResult.CheckpointReceipt, ack, client.Witnesses[0]); err != nil { t.Fatal(err) }
+	restarted, err := NewFileCheckpointPendingStore(path); if err != nil { t.Fatal(err) }
+	acks, err := restarted.LoadAcknowledgements(context.Background(), request, receiptResult.CheckpointReceipt, client.Witnesses); if err != nil { t.Fatal(err) }
+	if len(acks)!=1 || acks[0].WitnessID!=ack.WitnessID { t.Fatalf("persisted acknowledgements=%d",len(acks)) }
+	if existing, err := restarted.Begin(context.Background(), request); err != nil || !existing { t.Fatalf("resolved exact retry existing=%t err=%v",existing,err) }
+	forged:=ack; forged.Signature=append([]byte(nil),ack.Signature...); forged.Signature[0]^=0xff
+	if err:=restarted.RecordAcknowledgement(context.Background(),request,receiptResult.CheckpointReceipt,forged,client.Witnesses[1]); !errors.Is(err,ErrCheckpointIntegrity) { t.Fatalf("incorrectly signed acknowledgement accepted: %v",err) }
 }
