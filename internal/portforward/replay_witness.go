@@ -128,7 +128,7 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	if err != nil {
 		return CheckpointResult{}, err
 	}
-	result, err := p.Primary.Consume(ctx, request)
+	result, err = p.Primary.Consume(ctx, request)
 	if err != nil {
 		return CheckpointResult{}, err
 	}
