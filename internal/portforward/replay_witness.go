@@ -7,9 +7,12 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"io"
+	"sort"
 	"sync"
+	"time"
 )
 
 var (
@@ -109,11 +112,15 @@ type WitnessedReplayCheckpointProvider struct {
 	Witnesses  []CheckpointWitnessTrust
 	Quorum     int
 	Pending    CheckpointPendingStore
+	Fencing    *CheckpointFenceCoordinator
 }
 
 func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
-	if p == nil || p.Primary == nil || p.Pending == nil ||
-		!validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
+	if p == nil || p.Primary == nil || p.Pending == nil || p.Fencing == nil ||
+		!validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) ||
+		p.Fencing.Primary == nil || p.Fencing.WitnessSetVersion == "" ||
+		!validFenceCoordinatorWitnesses(p.Fencing.Witnesses, p.Fencing.Quorum, p.Fencing.PrimaryKey) ||
+		!bytes.Equal(p.Fencing.PrimaryKey, p.PrimaryKey) {
 		return ErrCheckpointUnavailable
 	}
 	trustConfigurer, ok := p.Pending.(checkpointPendingTrustConfigurer)
@@ -178,12 +185,20 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	if err != nil {
 		return CheckpointResult{}, err
 	}
+	if !fenceCommitted {
+		if _, err := p.executeFinalizationFence(ctx, saved, receipt); err != nil {
+			return err
+		}
+	}
 	compactor, ok := p.Pending.(checkpointPendingCompactor)
 	if !ok {
 		return CheckpointResult{}, ErrCheckpointUnavailable
 	}
 	if err := compactor.Compact(ctx, acks, p.Witnesses, p.Quorum); err != nil {
 		return CheckpointResult{}, errors.Join(ErrCheckpointUnavailable, err)
+	}
+	if _, err := p.executeFinalizationFence(ctx, request, result.CheckpointReceipt); err != nil {
+		return CheckpointResult{}, err
 	}
 	result.WitnessReceipts = receipts
 	result.WitnessAcknowledgements = acks
@@ -277,6 +292,7 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	var persistedEvidence CheckpointFinalizationEvidence
 	var hasPersistedEvidence bool
 	var acks []CheckpointWitnessAck
+	fenceCommitted := false
 	if onQuorumCommitted != nil {
 		evidenceStore, ok = p.Pending.(checkpointPendingEvidenceStore)
 		if !ok {
@@ -293,6 +309,10 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 		// exact bytes. Re-reading mutable provider heads here would change the
 		// evidence after an ambiguous external commit.
 		if hasPersistedEvidence && !completed {
+			if _, err := p.executeFinalizationFence(ctx, saved, receipt); err != nil {
+				return err
+			}
+			fenceCommitted = true
 			if err := onQuorumCommitted(ctx, operationID, persistedEvidence); err != nil {
 				return err
 			}
@@ -318,6 +338,10 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 		if err := p.verifyRequestMembershipVector(ctx, saved); err != nil {
 			return err
 		}
+		if _, err := p.executeFinalizationFence(ctx, saved, receipt); err != nil {
+			return err
+		}
+		fenceCommitted = true
 		if onQuorumCommitted != nil && !completed {
 			evidence, err := p.finalizationEvidence(ctx, saved, receipt, acks)
 			if err != nil {
@@ -417,7 +441,7 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 	if err := p.ValidateConfiguration(); err != nil {
 		return err
 	}
-	if !validCheckpointEndpoint(endpoint) || next <= endpoint.RevocationEpoch {
+	if !validCheckpointEndpoint(endpoint) || endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
 		return ErrCheckpointStale
 	}
 	locker, ok := p.Pending.(checkpointPendingTransitionLocker)
@@ -431,20 +455,8 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 	defer func() {
 		resultErr = errors.Join(resultErr, unlock())
 	}()
-	primaryHead, err := p.Primary.Head(ctx, endpoint)
-	if err != nil {
+	if err := p.executeRevocationFence(ctx, endpoint, next); err != nil {
 		return err
-	}
-	if err := VerifyCheckpointHead(primaryHead, endpoint, p.PrimaryKey); err != nil {
-		return err
-	}
-	if next < primaryHead.RevocationEpoch {
-		return ErrCheckpointStale
-	}
-	if next > primaryHead.RevocationEpoch {
-		if err := p.Primary.Revoke(ctx, endpoint, next); err != nil {
-			return err
-		}
 	}
 	type response struct {
 		trust   CheckpointWitnessTrust
@@ -1197,4 +1209,163 @@ func (w *deterministicCheckpointWitness) remember(receipt CheckpointWitnessRecei
 		w.history = make(map[CheckpointWitnessScope][]CheckpointWitnessReceipt)
 	}
 	w.history[receipt.Scope] = append(w.history[receipt.Scope], receipt)
+}
+
+
+func organizationCheckpointFenceScope(organizationID string) CheckpointWitnessScope {
+	return CheckpointWitnessScope{Kind: "organization", OrganizationID: organizationID}
+}
+
+func checkpointFenceOperationID(action CheckpointFenceAction, operationID, deviceID string) string {
+	digest := sha256.Sum256([]byte("wedecent-checkpoint-fence-operation-v1\n" + string(action) + "\n" + operationID + "\n" + deviceID))
+	return hex.EncodeToString(digest[:])
+}
+
+func checkpointRevocationFingerprint(endpoint CheckpointEndpoint, next uint64) [sha256.Size]byte {
+	var b bytes.Buffer
+	io.WriteString(&b, "wedecent-checkpoint-revocation-request-v1\n")
+	for _, value := range []string{endpoint.DeviceID, endpoint.AccountID, endpoint.OrganizationID} {
+		binary.Write(&b, binary.BigEndian, uint32(len(value)))
+		io.WriteString(&b, value)
+	}
+	binary.Write(&b, binary.BigEndian, endpoint.RevocationEpoch)
+	binary.Write(&b, binary.BigEndian, next)
+	return sha256.Sum256(b.Bytes())
+}
+
+func checkpointFenceParticipantHeadDigest(heads []CheckpointFenceParticipantHead) ([sha256.Size]byte, error) {
+	ordered := cloneCheckpointFenceParticipantHeads(heads)
+	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Endpoint.DeviceID < ordered[j].Endpoint.DeviceID })
+	var b bytes.Buffer
+	io.WriteString(&b, "wedecent-checkpoint-fence-participant-heads-v1\n")
+	for i, item := range ordered {
+		if i > 0 && ordered[i-1].Endpoint.DeviceID == item.Endpoint.DeviceID {
+			return [sha256.Size]byte{}, ErrCheckpointIntegrity
+		}
+		for _, value := range []string{item.Endpoint.DeviceID, item.Endpoint.AccountID, item.Endpoint.OrganizationID} {
+			if len(value) > int(^uint32(0)) {
+				return [sha256.Size]byte{}, ErrCheckpointIntegrity
+			}
+			binary.Write(&b, binary.BigEndian, uint32(len(value)))
+			io.WriteString(&b, value)
+		}
+		b.Write(checkpointHeadMessage(item.Head))
+		binary.Write(&b, binary.BigEndian, uint32(len(item.Head.Signature)))
+		b.Write(item.Head.Signature)
+	}
+	return sha256.Sum256(b.Bytes()), nil
+}
+
+func (p *WitnessedReplayCheckpointProvider) checkpointParticipantHeads(ctx context.Context, participants []CheckpointEndpoint) ([]CheckpointFenceParticipantHead, error) {
+	heads := make([]CheckpointFenceParticipantHead, 0, len(participants))
+	for _, endpoint := range participants {
+		head, err := p.Primary.Head(ctx, endpoint)
+		if err != nil {
+			return nil, errors.Join(ErrCheckpointUnavailable, err)
+		}
+		if err := VerifyCheckpointHead(head, endpoint, p.PrimaryKey); err != nil {
+			return nil, err
+		}
+		if head.RevocationEpoch != endpoint.RevocationEpoch {
+			return nil, ErrCheckpointRevoked
+		}
+		heads = append(heads, CheckpointFenceParticipantHead{Endpoint: endpoint, Head: head})
+	}
+	return heads, nil
+}
+
+func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt) (CheckpointFenceOperation, error) {
+	if p == nil || p.Fencing == nil {
+		return CheckpointFenceOperation{}, ErrCheckpointUnavailable
+	}
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil || receipt.RequestSHA256 != fingerprint || VerifyCheckpointReceipt(receipt, request, p.PrimaryKey) != nil {
+		return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+	}
+	operationID, err := checkpointFinalizationID(request, receipt)
+	if err != nil {
+		return CheckpointFenceOperation{}, err
+	}
+	operationID = checkpointFenceOperationID(CheckpointFenceFinalize, operationID, request.Initiator.OrganizationID)
+	scope := organizationCheckpointFenceScope(request.Initiator.OrganizationID)
+	heads, err := p.checkpointParticipantHeads(ctx, checkpointRequestParticipants(request))
+	if err != nil {
+		return CheckpointFenceOperation{}, err
+	}
+	return p.executeOrganizationFence(ctx, scope, CheckpointFenceFinalize, operationID, fingerprint, request.AuthorizationSHA256, heads)
+}
+
+func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
+	if p == nil || p.Fencing == nil || !validCheckpointEndpoint(endpoint) ||
+		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
+		return ErrCheckpointStale
+	}
+	heads, err := p.checkpointParticipantHeads(ctx, []CheckpointEndpoint{endpoint})
+	if err != nil {
+		return err
+	}
+	fingerprint := checkpointRevocationFingerprint(endpoint, next)
+	operationID := checkpointFenceOperationID(CheckpointFenceRevoke,
+		hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
+	_, err = p.executeOrganizationFence(ctx, organizationCheckpointFenceScope(endpoint.OrganizationID),
+		CheckpointFenceRevoke, operationID, fingerprint, fingerprint, heads)
+	return err
+}
+
+func (p *WitnessedReplayCheckpointProvider) executeOrganizationFence(
+	ctx context.Context,
+	scope CheckpointWitnessScope,
+	action CheckpointFenceAction,
+	operationID string,
+	requestHash, authorizationHash [sha256.Size]byte,
+	heads []CheckpointFenceParticipantHead,
+) (CheckpointFenceOperation, error) {
+	if p == nil || p.Fencing == nil || ctx == nil || len(heads) == 0 {
+		return CheckpointFenceOperation{}, ErrCheckpointUnavailable
+	}
+	reader, ok := p.Fencing.Primary.(CheckpointFenceHeadReader)
+	if !ok {
+		return CheckpointFenceOperation{}, ErrCheckpointUnavailable
+	}
+	fenceHead, err := reader.FenceHead(ctx, scope)
+	if err != nil {
+		return CheckpointFenceOperation{}, err
+	}
+	if fenceHead.PendingOperationID != "" && fenceHead.PendingOperationID != operationID {
+		return CheckpointFenceOperation{}, ErrCheckpointAmbiguous
+	}
+	primaryHeadDigest, err := checkpointFenceParticipantHeadDigest(heads)
+	if err != nil {
+		return CheckpointFenceOperation{}, err
+	}
+	if fenceHead.Generation == ^uint64(0) {
+		return CheckpointFenceOperation{}, ErrCheckpointStale
+	}
+	request := CheckpointFenceRequest{
+		Scope: scope, ExpectedFenceGeneration: fenceHead.Generation,
+		ExpectedRevocationEpoch: fenceHead.RevocationEpoch,
+		Action: action, OperationID: operationID,
+		RequestSHA256: requestHash, AuthorizationSHA256: authorizationHash,
+		PrimaryHeadGeneration: fenceHead.Generation + 1,
+		PrimaryHeadSHA256: primaryHeadDigest, PreviousFenceSHA256: fenceHead.FenceDigest,
+		WitnessSetVersion: p.Fencing.WitnessSetVersion,
+		WitnessIDs: checkpointFenceClientIDs(p.Fencing.Witnesses),
+		ExpiresAtUnixMS: time.Now().Add(30 * time.Second).UnixMilli(),
+	}
+	existing, found, err := p.Fencing.Primary.LoadFence(ctx, scope, operationID)
+	if err != nil {
+		return CheckpointFenceOperation{}, err
+	}
+	if found {
+		if !checkpointFenceTokenMatchesRequest(existing.Token, request) {
+			return CheckpointFenceOperation{}, ErrCheckpointConflict
+		}
+		request.ExpectedFenceGeneration = existing.Token.ExpectedFenceGeneration
+		request.ExpectedRevocationEpoch = existing.Token.ExpectedRevocationEpoch
+		request.PrimaryHeadGeneration = existing.Token.PrimaryHeadGeneration
+		request.PrimaryHeadSHA256 = existing.Token.PrimaryHeadSHA256
+		request.PreviousFenceSHA256 = existing.Token.PreviousFenceSHA256
+		request.ExpiresAtUnixMS = existing.Token.ExpiresAtUnixMS
+	}
+	return p.Fencing.ExecuteWithCheckpointHeads(ctx, request, heads)
 }
