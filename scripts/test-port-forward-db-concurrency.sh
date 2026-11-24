@@ -131,12 +131,13 @@ restore_access() { psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "insert into public.d
 
 prepare_audit_operation() {
  local forwarding_id="$1" jti="$2" route_id="$3" route_jti="$4"
- local issued_at expires_at
+ local issued_at expires_at result
  route "$route_id" "$route_jti"
  issued_at="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() - interval '1 second'")"
  expires_at="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() + interval '80 seconds'")"
- psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c \
-  "select public.wd_c145_consume('$forwarding_id','$jti','$route_id','$route_jti','$issued_at','$expires_at')" >/dev/null
+ result="$(psql "$DB_URL" -X -Atqc \
+  "select public.wd_c145_consume('$forwarding_id','$jti','$route_id','$route_jti','$issued_at','$expires_at')")"
+ [[ "$result" == *'"accepted": true'* ]] || fail "audit authorization fixture was not accepted: $result"
 }
 
 race initiator consume-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_aaaaaaaaaaaaaaaa'" "select (revoked_at is not null)::text from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'" 33000000-0000-4000-8000-0000000000c1 AAAAAAAAAAAAAAAAAAAAAA 44000000-0000-4000-8000-0000000000c1 AAAAAAAAAAAAAAAAAAAAAA
