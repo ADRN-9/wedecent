@@ -91,7 +91,7 @@ select jsonb_build_object(
  'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
  'router',null,'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti','AAAAAAAAAAAAAAAAAAAAAA',
  'authorization_sha256',repeat('a',64),'route_authorization_sha256',repeat('0',64),
- 'route_authorization_id','','route_authorization_jti','','route_authorization_json',
+ 'route_authorization_id','','route_authorization_jti','','route_authorization_json','',
  'device_public_key',repeat('A',43)||'=','device_signature',p_signature
 )
 $$;
