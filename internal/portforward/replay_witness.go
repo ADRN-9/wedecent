@@ -474,6 +474,12 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 	}
 
 	newAcks := make([]response, 0, len(query))
+	type conflict struct {
+		trust      CheckpointWitnessTrust
+		original   CheckpointWitnessAck
+		conflicting CheckpointWitnessAck
+	}
+	conflicts := make([]conflict, 0)
 	for range query {
 		r := <-ch
 		if r.err != nil || VerifyCheckpointWitnessAck(r.ack, r.trust.ID, r.trust.PublicKey) != nil ||
@@ -483,14 +489,7 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 		}
 		if previous, ok := seen[r.trust.ID]; ok {
 			if previous.Decision != r.ack.Decision {
-				writer, ok := p.Pending.(checkpointPendingDecisionWriter)
-				if !ok {
-					return nil, ErrCheckpointUnavailable
-				}
-				if err := writer.recordEquivocationLocked(ctx, request, receipt, previous, r.ack, r.trust); err != nil {
-					return nil, errors.Join(ErrCheckpointUnavailable, err)
-				}
-				return nil, ErrCheckpointConflict
+				conflicts = append(conflicts, conflict{trust: r.trust, original: previous, conflicting: r.ack})
 			}
 			continue
 		}
@@ -502,10 +501,21 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 	if !ok {
 		return nil, ErrCheckpointUnavailable
 	}
+	// Persist every first-seen authenticated decision before publishing the
+	// terminal conflict state. Otherwise a fast conflict response could discard
+	// valid first-seen decisions returned by other witnesses in the same batch.
 	for _, r := range newAcks {
 		if err := writer.recordAcknowledgementLocked(ctx, request, receipt, r.ack, r.trust); err != nil {
 			return nil, err
 		}
+	}
+	for _, c := range conflicts {
+		if err := writer.recordEquivocationLocked(ctx, request, receipt, c.original, c.conflicting, c.trust); err != nil {
+			return nil, errors.Join(ErrCheckpointUnavailable, err)
+		}
+	}
+	if len(conflicts) != 0 {
+		return nil, ErrCheckpointConflict
 	}
 	acks, err = store.LoadAcknowledgements(ctx, request, receipt, p.Witnesses)
 	if err != nil {
