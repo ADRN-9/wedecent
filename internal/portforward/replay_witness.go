@@ -443,7 +443,7 @@ func sameWitnessRecord(a, b CheckpointWitnessReceipt) bool {
 		a.PrimaryGeneration == b.PrimaryGeneration && a.PrimaryHead == b.PrimaryHead &&
 		a.PrimaryReceiptSHA256 == b.PrimaryReceiptSHA256 && a.RequestSHA256 == b.RequestSHA256 &&
 		a.JTI == b.JTI && a.AuthorizationSHA256 == b.AuthorizationSHA256 &&
-		a.RevocationEpoch == b.RevocationEpoch
+		a.RevocationEpoch == b.RevocationEpoch && a.ProviderKeyID == b.ProviderKeyID
 }
 
 func sameWitnessHead(a, b CheckpointWitnessHead) bool {
@@ -453,8 +453,23 @@ func sameWitnessHead(a, b CheckpointWitnessHead) bool {
 }
 
 func checkpointWitnessRecordHash(receipt CheckpointWitnessReceipt) [sha256.Size]byte {
-	receipt.RecordHash = [sha256.Size]byte{}
-	return sha256.Sum256(checkpointWitnessReceiptMessage(receipt))
+	var b bytes.Buffer
+	io.WriteString(&b, "wedecent-independent-witness-commitment-v1\n")
+	putWitnessString(&b, receipt.Scope.DeviceID)
+	putWitnessString(&b, receipt.Scope.AccountID)
+	putWitnessString(&b, receipt.Scope.OrganizationID)
+	putWitnessString(&b, receipt.Kind)
+	binary.Write(&b, binary.BigEndian, receipt.Generation)
+	b.Write(receipt.PreviousHash[:])
+	binary.Write(&b, binary.BigEndian, receipt.PrimaryGeneration)
+	b.Write(receipt.PrimaryHead[:])
+	b.Write(receipt.PrimaryReceiptSHA256[:])
+	b.Write(receipt.RequestSHA256[:])
+	putWitnessString(&b, receipt.JTI)
+	b.Write(receipt.AuthorizationSHA256[:])
+	binary.Write(&b, binary.BigEndian, receipt.RevocationEpoch)
+	putWitnessString(&b, receipt.ProviderKeyID)
+	return sha256.Sum256(b.Bytes())
 }
 
 func checkpointWitnessReceiptMessage(receipt CheckpointWitnessReceipt) []byte {
