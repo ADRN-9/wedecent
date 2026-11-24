@@ -309,9 +309,12 @@ begin
         if not found
            or v_route_grant.revoked_at is not null
            or v_route_grant.user_id <> v_transaction.initiator_account_id
+           or v_route_grant.organization_id <> v_transaction.initiator_organization_id
            or v_route_grant.source_device_id <> v_initiator
            or v_route_grant.destination_device_id <> v_destination
            or v_route_grant.router_device_id <> v_transaction.router_device_id
+           or v_route_grant.issued_at > v_transaction.issued_at
+           or v_route_grant.expires_at < v_transaction.expires_at
            or v_route_grant.permission <> 'mesh.forward' then
             raise exception 'stored route authorization is unavailable or mismatched' using errcode = '42501';
         end if;
