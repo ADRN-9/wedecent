@@ -166,28 +166,15 @@ select throws_ok($q$select public.record_checkpoint_finalization(
  extensions.digest(convert_to(wedecent_private.canonical_jsonb('{"primary_receipt":{"tampered":true},"witness_acknowledgements":[],"revocation_proofs":[]}'::jsonb),'UTF8'),'sha256'),
  '11000000-0000-4000-8000-000000000091'
 )$q$,'23505','outcome conflict','same terminal outcome with different proof evidence is rejected');
-delete from public.organization_memberships
- where organization_id='22000000-0000-4000-8000-000000000092'
-    and user_id='11000000-0000-4000-8000-000000000092';
 select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$q$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
-insert into public.organization_memberships(organization_id,user_id,role,created_by)
-values('22000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome='finalized'),1,'only one terminal outcome exists per operation');
-select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','completion requires a started operation','completion without a start event is rejected');
-select throws_ok($q$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','failure transition requires a started operation','failure transition without a start event is rejected');
+select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','completion requires a started operation','completion without a started operation is rejected');
+select throws_ok($q$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','failure transition requires a started operation','failure transition without a started operation is rejected');
+
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','failure/recovery operation starts cleanly');
 select is((pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','intermediate failure is recorded without terminalizing operation');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','successful retry can recover after intermediate failure');
-
-select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','membership recovery operation starts');
-delete from public.organization_memberships
- where organization_id='22000000-0000-4000-8000-000000000092'
-    and user_id='11000000-0000-4000-8000-000000000092';
-select is((pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','missing participant membership is recorded as a nonterminal outcome');
-insert into public.organization_memberships(organization_id,user_id,role,created_by)
-values('22000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
-select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','finalization recovers after participant membership restoration');
 
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_route_payload(),repeat('g',64))->>'replayed'),'false','routed operation binds stored route grant and router identities');
 update public.route_authorization_grants set revoked_at=clock_timestamp()
@@ -196,16 +183,24 @@ select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_route_
 update public.route_authorization_grants set revoked_at=null
  where id='55000000-0000-4000-8000-000000000091';
 
+select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','membership recovery operation starts');
 delete from public.organization_memberships
  where organization_id='22000000-0000-4000-8000-000000000092'
-    and user_id='11000000-0000-4000-8000-000000000092';
-select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('e',64))$q$,'42501','audit participant membership is unavailable','destination membership revocation blocks audit');
+   and user_id='11000000-0000-4000-8000-000000000092';
+select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload(),repeat('9',64))$q$,'42501','destination device membership or revocation changed','membership revocation advances participant fencing epochs and invalidates the pending authorization');
+insert into public.organization_memberships(organization_id,user_id,role,created_by)
+values('22000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
+select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('9',64))$q$,'42501','destination device membership or revocation changed','restored membership does not revive an authorization with stale participant epochs');
+
+delete from public.organization_memberships
+ where organization_id='22000000-0000-4000-8000-000000000092'
+   and user_id='11000000-0000-4000-8000-000000000092';
+select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('e',64))$q$,'42501','audit participant membership is unavailable','missing destination membership blocks audit');
 insert into public.organization_memberships(organization_id,user_id,role,created_by)
 values('22000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
 
-update public.devices set revocation_epoch=2 where device_id='wd_bbbbbbbbbbbbbbbb';
-select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('f',64))$q$,'42501','destination device membership or revocation changed','current device revocation epoch mismatch blocks audit');
-update public.devices set revocation_epoch=1 where device_id='wd_bbbbbbbbbbbbbbbb';
+update public.devices set revocation_epoch=revocation_epoch+1 where device_id='wd_bbbbbbbbbbbbbbbb';
+select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('f',64))$q$,'42501','destination device membership or revocation changed','a further destination epoch advance continues to fence the stale authorization');
 
 select * from finish();
 rollback;
