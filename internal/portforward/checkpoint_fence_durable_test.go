@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"errors"
+	"bytes"
 	"os"
 	"path/filepath"
 	"sync"
@@ -88,6 +89,11 @@ func TestFileCheckpointFencePrimaryWitnessQuorumAndRestart(t *testing.T) {
 	}
 	if err := primary.CommitFence(ctx, token, acks); err != nil {
 		t.Fatal(err)
+	}
+	witnesses[0].SetClockForTesting(func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS) })
+	recoveredAck, err := witnesses[0].CommitFence(ctx, token)
+	if err != nil || !bytes.Equal(recoveredAck.Signature, acks[0].Signature) {
+		t.Fatalf("exact witness acknowledgement not recoverable after expiry: %v", err)
 	}
 	operation, found, err := primary.LoadFence(ctx, request.Scope, request.OperationID)
 	if err != nil || !found || !operation.Committed || operation.Token.Generation != 1 {
@@ -185,6 +191,15 @@ func TestFileCheckpointFenceRejectsConflictingOperationAndForgedAck(t *testing.T
 	}
 	if err := primary.CommitFence(ctx, token, []CheckpointFenceAcknowledgement{acks[1]}); !errors.Is(err, ErrCheckpointQuorum) {
 		t.Fatalf("single witness committed a three-member set: %v", err)
+	}
+	conflicting, err := witnesses[0].CommitFence(ctx, token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflicting.TokenSHA256[0] ^= 0xff
+	conflicting.Signature = ed25519.Sign(witnesses[0].privateKey, checkpointFenceAcknowledgementMessage(conflicting))
+	if err := primary.CommitFence(ctx, token, []CheckpointFenceAcknowledgement{conflicting, acks[1]}); !errors.Is(err, ErrCheckpointWitnessDisagreement) {
+		t.Fatalf("signed witness disagreement did not fail closed: %v", err)
 	}
 	_ = primaryKey
 }
