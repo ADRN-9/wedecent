@@ -52,6 +52,9 @@ type checkpointPendingCompactor interface {
 type FileCheckpointPendingStore struct {
 	Path string
 	Now  func() time.Time
+
+	// writeSnapshot is a deterministic persistence fault-injection seam for package tests.
+	writeSnapshot func(string, checkpointPendingSnapshot, string, int64) error
 }
 
 func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, error) {
@@ -329,7 +332,11 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 	if len(snapshot.Entries) > checkpointPendingMaxEntries {
 		return false, ErrReplayUnavailable
 	}
-	if err := writeReplayJSON(s.Path, snapshot, replayStagingPattern(s.Path, "pendingops"), checkpointPendingMaxSize); err != nil {
+	write := writeReplayJSON
+	if s.writeSnapshot != nil {
+		write = s.writeSnapshot
+	}
+	if err := write(s.Path, snapshot, replayStagingPattern(s.Path, "pendingops"), checkpointPendingMaxSize); err != nil {
 		return false, fmt.Errorf("%w: persist pending operation: %v", ErrReplayUnavailable, err)
 	}
 	if err := ctx.Err(); err != nil {
