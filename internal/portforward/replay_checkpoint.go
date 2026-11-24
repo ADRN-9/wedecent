@@ -108,6 +108,14 @@ type CheckpointResult struct {
 // ReplayCheckpointProvider implementations must serialize Consume and Revoke
 // against the same durable state. Consume commits before returning. Ambiguous
 // outcomes are retried with the exact same request; local replay fallback is forbidden.
+//
+// IMPORTANT: this interface does not itself establish distributed fencing.
+// A provider backed by a remote primary and independent witnesses must implement
+// a quorum-intersecting, durable monotonic fence protocol before it can satisfy
+// production revocation/finalization ordering. Client-side locks and Head reads
+// are not substitutes: they cannot order a concurrent remote revoke against a
+// finalization after a process crash or network partition. See
+// docs/C166_DISTRIBUTED_REVOCATION_FENCING.md.
 type ReplayCheckpointProvider interface {
 	Consume(context.Context, CheckpointRequest) (CheckpointResult, error)
 	Revoke(context.Context, CheckpointEndpoint, uint64) error
