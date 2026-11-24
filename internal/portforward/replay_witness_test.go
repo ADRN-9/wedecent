@@ -380,18 +380,32 @@ func TestPendingJournalCompactionRetainsUnresolvedAndRejectsReplayAfterRestart(t
 	request1, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	request2 := nextCheckpointRequest(t, request1, signer, "DDDDDDDDDDDDDDDDDDDDDD")
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
-	if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "pending.json")
 	store, err := NewFileCheckpointPendingStore(path)
-	if err != nil { t.Fatal(err) }
-	if _, err := store.Begin(context.Background(), request2); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(context.Background(), request2); err != nil {
+		t.Fatal(err)
+	}
 	client, _ := newWitnessedFixture(t, primary, store)
-	if _, err := client.Consume(context.Background(), request1); err != nil { t.Fatal(err) }
+	if _, err := client.Consume(context.Background(), request1); err != nil {
+		t.Fatal(err)
+	}
 	data, err := os.ReadFile(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var snapshot checkpointPendingSnapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil { t.Fatal(err) }
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
 	if len(snapshot.Entries) != 1 {
 		t.Fatalf("compaction entries=%d, want unresolved operation retained", len(snapshot.Entries))
 	}
@@ -399,7 +413,9 @@ func TestPendingJournalCompactionRetainsUnresolvedAndRejectsReplayAfterRestart(t
 		t.Fatal("unresolved pending operation was discarded during compaction")
 	}
 	restarted, err := NewFileCheckpointPendingStore(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	restartedClient, _ := newWitnessedFixture(t, primary, restarted)
 	restartedClient.Witnesses = client.Witnesses
 	if _, err := restartedClient.Consume(context.Background(), request1); !errors.Is(err, ErrCheckpointReplay) {
@@ -421,4 +437,3 @@ func TestPendingJournalExhaustionFailsClosed(t *testing.T) {
 		t.Fatalf("journal exhaustion did not fail closed: %v", err)
 	}
 }
-

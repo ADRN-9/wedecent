@@ -121,10 +121,14 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 		}
 		receiptHash := CheckpointReceiptDigest(receipt)
 		if entry.State == "resolved" {
-			if entry.ReceiptHash == receiptHash { return false, nil }
+			if entry.ReceiptHash == receiptHash {
+				return false, nil
+			}
 			return false, ErrCheckpointConflict
 		}
-		if entry.State != "pending" { return false, ErrCheckpointHistorical }
+		if entry.State != "pending" {
+			return false, ErrCheckpointHistorical
+		}
 		entry.State = "resolved"
 		entry.ReceiptHash = receiptHash
 		snapshot.Entries[key] = entry
@@ -134,7 +138,9 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 }
 
 func (s *FileCheckpointPendingStore) Compact(ctx context.Context, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) error {
-	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) { return ErrReplayUnavailable }
+	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) {
+		return ErrReplayUnavailable
+	}
 	_, err := s.update(ctx, func(snapshot *checkpointPendingSnapshot) (bool, error) {
 		compactAcknowledgedPendingEntries(snapshot, acknowledgements, witnesses, quorum)
 		return false, nil
@@ -180,8 +186,12 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 		return false, err
 	}
 	existing, err = change(&snapshot)
-	if err != nil { return false, err }
-	if len(snapshot.Entries) > checkpointPendingMaxEntries { return false, ErrReplayUnavailable }
+	if err != nil {
+		return false, err
+	}
+	if len(snapshot.Entries) > checkpointPendingMaxEntries {
+		return false, ErrReplayUnavailable
+	}
 	if err := writeReplayJSON(s.Path, snapshot, replayStagingPattern(s.Path, "pendingops"), checkpointPendingMaxSize); err != nil {
 		return false, fmt.Errorf("%w: persist pending operation: %v", ErrReplayUnavailable, err)
 	}
@@ -192,9 +202,15 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 }
 
 func (s *MemoryCheckpointPendingStore) Compact(ctx context.Context, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) error {
-	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) { return ErrReplayUnavailable }
-	if err := ctx.Err(); err != nil { return err }
-	if s.entries == nil { return nil }
+	if s == nil || ctx == nil || !validWitnessSet(witnesses, quorum) {
+		return ErrReplayUnavailable
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if s.entries == nil {
+		return nil
+	}
 	snapshot := checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}
 	compactAcknowledgedPendingEntries(&snapshot, acknowledgements, witnesses, quorum)
 	s.entries = snapshot.Entries
@@ -202,32 +218,50 @@ func (s *MemoryCheckpointPendingStore) Compact(ctx context.Context, acknowledgem
 }
 
 func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) { return false }
+	if len(a) != len(b) {
+		return false
+	}
 	var diff byte
-	for i := range a { diff |= a[i] ^ b[i] }
+	for i := range a {
+		diff |= a[i] ^ b[i]
+	}
 	return diff == 0
 }
 
 func compactAcknowledgedPendingEntries(snapshot *checkpointPendingSnapshot, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) {
 	trusted := make(map[string]ed25519.PublicKey, len(witnesses))
-	for _, witness := range witnesses { trusted[witness.ID] = witness.PublicKey }
+	for _, witness := range witnesses {
+		trusted[witness.ID] = witness.PublicKey
+	}
 	for key, entry := range snapshot.Entries {
-		if entry.State != "resolved" || entry.Fingerprint == "" || entry.ReceiptHash == "" { continue }
+		if entry.State != "resolved" || entry.Fingerprint == "" || entry.ReceiptHash == "" {
+			continue
+		}
 		fingerprint, err := hex.DecodeString(entry.Fingerprint)
-		if err != nil || len(fingerprint) != 32 { continue }
+		if err != nil || len(fingerprint) != 32 {
+			continue
+		}
 		receiptHash, err := hex.DecodeString(entry.ReceiptHash)
-		if err != nil || len(receiptHash) != 32 { continue }
+		if err != nil || len(receiptHash) != 32 {
+			continue
+		}
 		seen := make(map[string]bool, quorum)
 		for _, ack := range acknowledgements {
 			publicKey := trusted[ack.WitnessID]
 			if seen[ack.WitnessID] || ack.Status != "acknowledged" ||
-				VerifyCheckpointWitnessAck(ack, ack.WitnessID, publicKey) != nil { continue }
+				VerifyCheckpointWitnessAck(ack, ack.WitnessID, publicKey) != nil {
+				continue
+			}
 			expectedKey := ack.Scope.DeviceID + "|" + ack.Scope.AccountID + "|" + ack.Scope.OrganizationID + "|" + ack.JTI
 			if expectedKey != key || !bytesEqual(ack.RequestSHA256[:], fingerprint) ||
-				!bytesEqual(ack.PrimaryReceiptSHA256[:], receiptHash) { continue }
+				!bytesEqual(ack.PrimaryReceiptSHA256[:], receiptHash) {
+				continue
+			}
 			seen[ack.WitnessID] = true
 		}
-		if len(seen) >= quorum { delete(snapshot.Entries, key) }
+		if len(seen) >= quorum {
+			delete(snapshot.Entries, key)
+		}
 	}
 }
 
@@ -275,7 +309,9 @@ func (s *MemoryCheckpointPendingStore) Begin(ctx context.Context, request Checkp
 		}
 		return true, nil
 	}
-	if len(s.entries) >= checkpointPendingMaxEntries { return false, ErrReplayUnavailable }
+	if len(s.entries) >= checkpointPendingMaxEntries {
+		return false, ErrReplayUnavailable
+	}
 	s.entries[key] = checkpointPendingEntry{Fingerprint: hex.EncodeToString(fp[:]), State: "pending"}
 	return false, nil
 }
@@ -293,13 +329,19 @@ func (s *MemoryCheckpointPendingStore) Resolve(ctx context.Context, request Chec
 	}
 	key := checkpointPendingKey(request)
 	entry, ok := s.entries[key]
-	if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) { return ErrCheckpointHistorical }
+	if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) {
+		return ErrCheckpointHistorical
+	}
 	receiptHash := CheckpointReceiptDigest(receipt)
 	if entry.State == "resolved" {
-		if entry.ReceiptHash == receiptHash { return nil }
+		if entry.ReceiptHash == receiptHash {
+			return nil
+		}
 		return ErrCheckpointConflict
 	}
-	if entry.State != "pending" { return ErrCheckpointHistorical }
+	if entry.State != "pending" {
+		return ErrCheckpointHistorical
+	}
 	entry.State = "resolved"
 	entry.ReceiptHash = receiptHash
 	s.entries[key] = entry

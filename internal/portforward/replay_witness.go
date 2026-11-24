@@ -115,7 +115,7 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	if err := p.Pending.Resolve(ctx, request, result.CheckpointReceipt); err != nil {
 		return CheckpointResult{}, err
 	}
-acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt)
+	acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt)
 	if err != nil {
 		return CheckpointResult{}, err
 	}

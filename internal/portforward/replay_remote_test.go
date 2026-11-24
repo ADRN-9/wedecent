@@ -109,7 +109,9 @@ func verifyRemoteReplayTestRequest(t *testing.T, request remoteReplayTestRequest
 
 func TestProductionRemoteReplayRejectsUnwitnessedSingleProvider(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	_, err = NewProductionRemoteReplay(
 		"https://replay.example.test"+remoteReplayFunctionPath,
 		"public-anon-key",
