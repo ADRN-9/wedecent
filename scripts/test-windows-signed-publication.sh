@@ -12,6 +12,9 @@ source "$ROOT/scripts/testlib/release-tag-fixture.sh"
 TEST_REPLAY_HOSTNAME='replay.example.test'
 TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
 TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
+TEST_AUDIT_HOSTNAME='checkpoint-audit.example.test'
+TEST_AUDIT_PINS='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+TEST_AUDIT_APPROVAL="$(wedecent_checkpoint_audit_approval_digest "$TEST_AUDIT_HOSTNAME" "$TEST_AUDIT_PINS")"
 TEST_SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
 TEST_TREE_SHA="$(git -C "$ROOT" rev-parse --verify "${TEST_SOURCE_SHA}^{tree}")"
 export GITHUB_ACTIONS=true
@@ -23,6 +26,9 @@ export WEDECENT_PRODUCTION_RELEASE_APPROVED=true
 export WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$TEST_REPLAY_HOSTNAME"
 export WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$TEST_REPLAY_PINS"
 export WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$TEST_REPLAY_APPROVAL"
+export WEDECENT_CHECKPOINT_AUDIT_HOSTNAME="$TEST_AUDIT_HOSTNAME"
+export WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256="$TEST_AUDIT_PINS"
+export WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256="$TEST_AUDIT_APPROVAL"
 export WEDECENT_EXPECTED_SOURCE_SHA="$TEST_SOURCE_SHA"
 PUBLISH="$ROOT/scripts/publish-windows-downloads.sh"
 DIST_ROOT="$ROOT/dist"
@@ -43,7 +49,7 @@ scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
 RELEASE_ARCHIVE='wedecent-v0.3.0-rc.9-windows-amd64.zip'
 INSTALLER_ARCHIVE='wedecent-v0.3.0-rc.9-windows-installer.zip'
 for name in "${binaries[@]}"; do
-  printf 'signed fixture: %s\n%s\n%s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS" > "$RELEASE/$name"
+  printf 'signed fixture: %s\n%s\n%s\n%s\n%s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS" "$TEST_AUDIT_HOSTNAME" "$TEST_AUDIT_PINS" > "$RELEASE/$name"
 done
 cat > "$RELEASE/VERSION.txt" <<EOF_VERSION
 version=0.3.0-rc.9
@@ -57,6 +63,9 @@ build_mode=production
 replay_authority_hostname=$TEST_REPLAY_HOSTNAME
 replay_authority_spki_sha256=$TEST_REPLAY_PINS
 replay_authority_approval_sha256=$TEST_REPLAY_APPROVAL
+checkpoint_audit_hostname=$TEST_AUDIT_HOSTNAME
+checkpoint_audit_spki_sha256=$TEST_AUDIT_PINS
+checkpoint_audit_approval_sha256=$TEST_AUDIT_APPROVAL
 EOF_VERSION
 (
   cd "$RELEASE"
