@@ -256,7 +256,7 @@ func TestFileCheckpointFenceRejectsExpiredTokenAndTruncatedTailRecovers(t *testi
 		t.Fatal(err)
 	}
 	witnesses[0].now = func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS) }
-	if _, err := witnesses[0].CommitFence(ctx, token); !errors.Is(err, ErrCheckpointStale) {
+	if _, err := witnesses[0].CommitFence(ctx, token); !errors.Is(err, ErrCheckpointFenceExpired) {
 		t.Fatalf("expired token accepted: %v", err)
 	}
 	journal := filepath.Join(dir, "primary", "fences.wal")
