@@ -32,7 +32,7 @@ type finalizationAuditResponse struct {
 	OperationID string `json:"operation_id"`
 	Outcome     string `json:"outcome"`
 	CreatedAt   string `json:"created_at"`
-	Replayed    bool   `json:"replayed"`
+	Replayed    *bool  `json:"replayed"`
 }
 
 func NewSupabaseCheckpointFinalizationAuditor(client account.Client, path string) (*SupabaseCheckpointFinalizationAuditor, error) {
@@ -194,10 +194,14 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 		return fmt.Errorf("checkpoint audit rejected with HTTP %d", resp.StatusCode)
 	}
 	var result finalizationAuditResponse
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 16<<10)).Decode(&result); err != nil {
+	decoder := json.NewDecoder(io.LimitReader(resp.Body, 16<<10))
+	if err := decoder.Decode(&result); err != nil {
 		return fmt.Errorf("decode audit response: %w", err)
 	}
-	if result.OperationID != operationID || result.Outcome != outcome || !canonicalUUID(result.RecordID) {
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("checkpoint audit response contains trailing data")
+	}
+	if result.OperationID != operationID || result.Outcome != outcome || result.Replayed == nil || !canonicalUUID(result.RecordID) {
 		return errors.New("checkpoint audit response mismatch")
 	}
 	if _, err := time.Parse(time.RFC3339Nano, result.CreatedAt); err != nil {
