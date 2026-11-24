@@ -121,7 +121,7 @@ begin
        or p_payload is null
        or pg_catalog.jsonb_typeof(p_payload) <> 'object'
        or p_payload ->> 'version' <> '1'
-       or pg_catalog.jsonb_object_length(p_payload) <> 13
+       or (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(p_payload)) <> 13
        or not (p_payload ?& array[
            'version','initiator','destination','router','consuming_device_id','jti',
            'authorization_sha256','route_authorization_sha256','route_authorization_id',
@@ -155,7 +155,7 @@ begin
         raise exception 'intermediate audit transition must not contain terminal evidence' using errcode = '22023';
     end if;
     if p_outcome = 'finalized' and (
-        pg_catalog.jsonb_object_length(p_evidence) <> 3
+        (select pg_catalog.count(*) from pg_catalog.jsonb_object_keys(p_evidence)) <> 3
         or not (p_evidence ?& array['primary_receipt','witness_acknowledgements','revocation_proofs'])
         or p_evidence = '{}'::jsonb
         or not (p_evidence ? 'primary_receipt')
