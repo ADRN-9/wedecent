@@ -37,6 +37,16 @@ func nextCheckpointRequest(t *testing.T, request CheckpointRequest, signer ed255
 	return request
 }
 
+func TestWitnessConfigurationRejectsPrimarySigningKeyReuse(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	client, _ := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+	client.Witnesses[0].PublicKey = append(ed25519.PublicKey(nil), primary.private.Public().(ed25519.PublicKey)...)
+	if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointUnavailable) {
+		t.Fatalf("primary key reused as independent witness: %v", err)
+	}
+}
+
 func TestIndependentWitnessQuorumAndPendingReceipt(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	pending := NewMemoryCheckpointPendingStore()

@@ -91,7 +91,7 @@ type WitnessedReplayCheckpointProvider struct {
 
 func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
 	if p == nil || p.Primary == nil || p.Pending == nil || len(p.PrimaryKey) != ed25519.PublicKeySize ||
-		p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessSet(p.Witnesses, p.Quorum) {
+		p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
 		return CheckpointResult{}, ErrCheckpointUnavailable
 	}
 	existingPending, err := p.Pending.Begin(ctx, request)
@@ -125,7 +125,7 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 }
 
 func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
-	if p == nil || p.Primary == nil || p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessSet(p.Witnesses, p.Quorum) {
+	if p == nil || p.Primary == nil || p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
 		return ErrCheckpointUnavailable
 	}
 	if !validCheckpointEndpoint(endpoint) || next <= endpoint.RevocationEpoch {
@@ -184,7 +184,7 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 }
 
 func (p *WitnessedReplayCheckpointProvider) Head(ctx context.Context, endpoint CheckpointEndpoint) (CheckpointHead, error) {
-	if p == nil || p.Primary == nil || p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessSet(p.Witnesses, p.Quorum) {
+	if p == nil || p.Primary == nil || p.Quorum < 1 || p.Quorum > len(p.Witnesses) || !validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
 		return CheckpointHead{}, ErrCheckpointUnavailable
 	}
 	primary, err := p.Primary.Head(ctx, endpoint)
@@ -349,6 +349,18 @@ func (p *WitnessedReplayCheckpointProvider) commitWitnessQuorum(ctx context.Cont
 		return nil, ErrCheckpointQuorum
 	}
 	return receipts, nil
+}
+
+func validWitnessConfiguration(witnesses []CheckpointWitnessTrust, quorum int, primaryKey ed25519.PublicKey) bool {
+	if len(primaryKey) != ed25519.PublicKeySize || !validWitnessSet(witnesses, quorum) {
+		return false
+	}
+	for _, witness := range witnesses {
+		if bytes.Equal(witness.PublicKey, primaryKey) {
+			return false
+		}
+	}
+	return true
 }
 
 func validWitnessSet(witnesses []CheckpointWitnessTrust, quorum int) bool {
