@@ -21,22 +21,38 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 )
 
-type testCheckpointRevocationProofProvider struct{}
+type testCheckpointRevocationProofProvider struct {
+	privateKey ed25519.PrivateKey
+}
 
-func (testCheckpointRevocationProofProvider) CheckpointRevocationProof(ctx context.Context, endpoint CheckpointEndpoint, next uint64) ([]byte, error) {
+func (p testCheckpointRevocationProofProvider) CheckpointRevocationProof(ctx context.Context, endpoint CheckpointEndpoint, next uint64) ([]byte, error) {
 	if ctx == nil || ctx.Err() != nil || !validCheckpointEndpoint(endpoint) ||
-		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
+		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 ||
+		len(p.privateKey) != ed25519.PrivateKeySize {
 		return nil, ErrCheckpointIntegrity
 	}
-	request := checkpointRevocationFingerprint(endpoint, next)
-	return append([]byte("test-revocation-proof-v1\n"), request[:]...), nil
+	return ed25519.Sign(p.privateKey, testRevocationProofMessage(endpoint, next)), nil
+}
+
+func testRevocationProofMessage(endpoint CheckpointEndpoint, next uint64) []byte {
+	var b bytes.Buffer
+	b.WriteString("wedecent-test-revocation-authorization-v1\n")
+	for _, value := range []string{endpoint.DeviceID, endpoint.AccountID, endpoint.OrganizationID} {
+		binary.Write(&b, binary.BigEndian, uint32(len(value)))
+		b.WriteString(value)
+	}
+	binary.Write(&b, binary.BigEndian, endpoint.RevocationEpoch)
+	binary.Write(&b, binary.BigEndian, next)
+	return b.Bytes()
 }
 
 type testAtomicCheckpointPrimary struct {
 	mu                 sync.Mutex
 	replay             *deterministicCheckpointProvider
-	fence              *FileCheckpointFencePrimary
-	loseCommitResponse bool
+	fence                *FileCheckpointFencePrimary
+	revocationPublicKey  ed25519.PublicKey
+	revocationPrivateKey ed25519.PrivateKey
+	loseCommitResponse   bool
 }
 
 func (a *testAtomicCheckpointPrimary) CheckpointAuthorityKeyID() string {
@@ -123,9 +139,13 @@ func (a *testAtomicCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx contex
 	if !sameCheckpointEndpointSet(fenceHeadEndpoints(heads), request.Participants) {
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
-	if request.Action == CheckpointFenceRevoke &&
-		(len(request.AuthorizationProof) == 0 || sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256) {
-		return CheckpointFenceToken{}, ErrCheckpointIntegrity
+	if request.Action == CheckpointFenceRevoke {
+		if len(request.Participants) != 1 || len(request.AuthorizationProof) != ed25519.SignatureSize ||
+			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 ||
+			!ed25519.Verify(a.revocationPublicKey, testRevocationProofMessage(
+				request.Participants[0], request.Participants[0].RevocationEpoch+1), request.AuthorizationProof) {
+			return CheckpointFenceToken{}, ErrCheckpointIntegrity
+		}
 	}
 	if err := a.verifyHeadsLocked(ctx, heads); err != nil {
 		return CheckpointFenceToken{}, err
@@ -174,6 +194,10 @@ func newTestFenceCoordinator(t *testing.T, replay *deterministicCheckpointProvid
 	if err != nil {
 		t.Fatal(err)
 	}
+	revocationPublic, revocationPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	ids := []string{"fence-a", "fence-b", "fence-c"}
 	trust := make([]CheckpointFenceWitnessTrust, len(ids))
 	privateKeys := make([]ed25519.PrivateKey, len(ids))
@@ -205,7 +229,10 @@ func newTestFenceCoordinator(t *testing.T, replay *deterministicCheckpointProvid
 		}
 		clients[i] = CheckpointFenceWitnessClient{ID: id, PublicKey: trust[i].PublicKey, Witness: witness}
 	}
-	atomicPrimary := &testAtomicCheckpointPrimary{replay: replay, fence: primary}
+	atomicPrimary := &testAtomicCheckpointPrimary{
+		replay: replay, fence: primary,
+		revocationPublicKey: revocationPublic, revocationPrivateKey: revocationPrivate,
+	}
 	return &CheckpointFenceCoordinator{
 		Primary: atomicPrimary, PrimaryKey: primaryPublic, WitnessSetVersion: "test-fence-set-v1",
 		Witnesses: clients, Quorum: 2,
@@ -225,7 +252,8 @@ func newWitnessedFixture(t *testing.T, primary *deterministicCheckpointProvider,
 	atomicPrimary := fence.Primary.(*testAtomicCheckpointPrimary)
 	provider := &WitnessedReplayCheckpointProvider{
 		Primary: atomicPrimary, PrimaryKey: publicKey, Witnesses: trust, Quorum: 2,
-		Pending: pending, Fencing: fence, RevocationProofs: testCheckpointRevocationProofProvider{},
+		Pending: pending, Fencing: fence,
+		RevocationProofs: testCheckpointRevocationProofProvider{privateKey: append(ed25519.PrivateKey(nil), atomicPrimary.revocationPrivateKey...)},
 	}
 	return provider, witnesses
 }
@@ -3605,7 +3633,11 @@ func restartTestFenceCoordinator(t *testing.T, old *CheckpointFenceCoordinator, 
 		clients[i] = CheckpointFenceWitnessClient{ID: client.ID, PublicKey: append(ed25519.PublicKey(nil), client.PublicKey...), Witness: witness}
 	}
 	return &CheckpointFenceCoordinator{
-		Primary:           &testAtomicCheckpointPrimary{replay: replay, fence: primary},
+		Primary: &testAtomicCheckpointPrimary{
+			replay: replay, fence: primary,
+			revocationPublicKey: append(ed25519.PublicKey(nil), oldPrimary.revocationPublicKey...),
+			revocationPrivateKey: append(ed25519.PrivateKey(nil), oldPrimary.revocationPrivateKey...),
+		},
 		PrimaryKey:        append(ed25519.PublicKey(nil), old.PrimaryKey...),
 		WitnessSetVersion: old.WitnessSetVersion, Witnesses: clients, Quorum: old.Quorum,
 	}
