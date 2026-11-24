@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(31);
+select plan(33);
 select is(wedecent_private.canonical_jsonb('{"n":-9007199254740991}'::jsonb),'{"n":-9007199254740991}','canonical JSON preserves minimum JavaScript safe integer');
 select is(wedecent_private.canonical_jsonb('{"n":9007199254740991}'::jsonb),'{"n":9007199254740991}','canonical JSON preserves maximum JavaScript safe integer');
 select is(wedecent_private.canonical_jsonb('{"z":[0,1,-1,9007199254740991],"a":{"b":true,"n":-9007199254740991,"s":"ok"}}'::jsonb),'{"a":{"b":true,"n":-9007199254740991,"s":"ok"},"z":[0,1,-1,9007199254740991]}','canonical JSON sorts nested keys and preserves array numeric boundaries');
