@@ -74,11 +74,15 @@ function witnessHeadMessage(h:JsonObject){const s=h.scope as JsonObject;return c
 async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
  const keyID=Deno.env.get("WEDECENT_ROUTE_AUTH_KEY_ID"),rawKey=Deno.env.get("WEDECENT_ROUTE_AUTH_PUBLIC_KEY");
  if(!keyID||!rawKey)throw Error("independent route authorization trust anchor missing");
- if(auth.kid!==keyID||!isObject(auth.claims)||!isObject(auth.claims.route))throw Error("route authorization key or claims mismatch");
+ if(auth.kid!==keyID||!exact(auth,["kid","claims","signature"])||!isObject(auth.claims)||
+   !exact(auth.claims,["v","iss","aud","permission","jti","router","route","iat_unix_ms","exp_unix_ms"])||
+   !isObject(auth.claims.route)||!exact(auth.claims.route,["ID","Source","Destination","Hops","ExpiresAt"]))throw Error("route authorization key or claims mismatch");
  const c=auth.claims,r=c.route,hops=r.Hops;
  if(c.v!==1||c.iss!=="wedecent-control-plane"||c.aud!=="wedecent-mesh-router"||c.permission!=="mesh.forward"||
    typeof c.jti!=="string"||!/^[A-Za-z0-9_-]{22}$/.test(c.jti)||typeof c.router!=="string"||
-   !Array.isArray(hops)||hops.length!==2)throw Error("invalid route authorization claims");
+   typeof r.ID!=="string"||r.ID.length===0||!Array.isArray(hops)||hops.length!==2)throw Error("invalid route authorization claims");
+ const jtiRaw=atob(c.jti.replace(/-/g,"+").replace(/_/g,"/")+"==");
+ if(jtiRaw.length!==16||b64url(Uint8Array.from(jtiRaw,x=>x.charCodeAt(0)))!==c.jti)throw Error("invalid route authorization JTI");
  const issued=Number(c.iat_unix_ms),expires=Number(c.exp_unix_ms),routeExpires=Date.parse(String(r.ExpiresAt));
  if(!Number.isSafeInteger(issued)||!Number.isSafeInteger(expires)||issued<=0||expires<=issued||expires-issued>120000||
    !Number.isSafeInteger(routeExpires)||routeExpires!==expires)throw Error("invalid route authorization lifetime");
@@ -95,7 +99,7 @@ async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
  const parts=[str("wedecent-mesh-forward-v1"),u32(Number(c.v)),...fields.map(str),i64(issued),i64(expires),i64(routeExpires),u32(hops.length)];
  for(const rawHop of hops){
   const hop=rawHop as JsonObject;
-  if(typeof hop.From!=="string"||typeof hop.To!=="string"||typeof hop.Transport!=="string"||
+  if(!exact(hop,["From","To","Transport","Cost"])||typeof hop.From!=="string"||typeof hop.To!=="string"||typeof hop.Transport!=="string"||hop.Transport.length===0||
      typeof hop.Cost!=="number"||!Number.isSafeInteger(hop.Cost)||hop.Cost<0)throw Error("invalid route hop");
   parts.push(str(hop.From),str(hop.To),str(hop.Transport),u64(hop.Cost));
  }
