@@ -176,7 +176,7 @@ func (p *WitnessedReplayCheckpointProvider) Finalize(ctx context.Context, reques
 		result, err := recoverer.Recover(ctx, saved)
 		if err != nil { return errors.Join(ErrCheckpointAmbiguous, err) }
 		if result.Disposition != CheckpointRecovered || VerifyCheckpointResult(result, saved, p.PrimaryKey) != nil { return ErrCheckpointIntegrity }
-		receipt = cloneCheckpointReceipt(result.CheckpointReceipt)
+		receipt = cloneCheckpointReceiptValue(result.CheckpointReceipt)
 		if err := p.Pending.Resolve(ctx, saved, receipt); err != nil { return errors.Join(ErrCheckpointUnavailable, err) }
 	}
 	if err := VerifyCheckpointReceipt(receipt, saved, p.PrimaryKey); err != nil { return err }

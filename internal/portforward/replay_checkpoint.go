@@ -131,6 +131,11 @@ func SignCheckpointRequest(signer crypto.Signer, request CheckpointRequest) (Che
 }
 
 // VerifyCheckpointReceipt validates provider authenticity and exact-request binding.
+func cloneCheckpointReceiptValue(receipt CheckpointReceipt) CheckpointReceipt {
+	receipt.Signature = append([]byte(nil), receipt.Signature...)
+	return receipt
+}
+
 func VerifyCheckpointReceipt(receipt CheckpointReceipt, request CheckpointRequest, providerKey ed25519.PublicKey) error {
 	endpoint, ok := checkpointConsumer(request)
 	if !ok || len(providerKey) != ed25519.PublicKeySize || receipt.Version != checkpointVersion ||

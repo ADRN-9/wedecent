@@ -145,7 +145,7 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 		}
 		entry.State = "resolved"
 		entry.ReceiptHash = receiptHash
-		copyReceipt := cloneCheckpointReceipt(receipt)
+		copyReceipt := cloneCheckpointReceiptValue(receipt)
 		entry.Receipt = &copyReceipt
 		snapshot.Entries[key] = entry
 		return false, nil
@@ -282,7 +282,7 @@ func (s *MemoryCheckpointPendingStore) LoadFinalization(ctx context.Context, dev
 		if found { return CheckpointRequest{}, CheckpointReceipt{}, false, false, ErrCheckpointIntegrity }
 		found = true
 		request = cloneCheckpointRequest(entry.Request)
-		if entry.Receipt != nil { receipt = cloneCheckpointReceipt(*entry.Receipt); hasReceipt = true }
+		if entry.Receipt != nil { receipt = cloneCheckpointReceiptValue(*entry.Receipt); hasReceipt = true }
 	}
 	return request, receipt, found, hasReceipt, nil
 }
@@ -312,7 +312,7 @@ func (s *FileCheckpointPendingStore) LoadFinalization(ctx context.Context, devic
 			if found { return false, ErrCheckpointIntegrity }
 			found = true
 			request = cloneCheckpointRequest(entry.Request)
-			if entry.Receipt != nil { receipt = cloneCheckpointReceipt(*entry.Receipt); hasReceipt = true }
+			if entry.Receipt != nil { receipt = cloneCheckpointReceiptValue(*entry.Receipt); hasReceipt = true }
 		}
 		return false, nil
 	})
@@ -594,7 +594,7 @@ func (s *MemoryCheckpointPendingStore) Resolve(ctx context.Context, request Chec
 	}
 	entry.State = "resolved"
 	entry.ReceiptHash = receiptHash
-	copyReceipt := cloneCheckpointReceipt(receipt)
+	copyReceipt := cloneCheckpointReceiptValue(receipt)
 	entry.Receipt = &copyReceipt
 	s.entries[key] = entry
 	return nil
