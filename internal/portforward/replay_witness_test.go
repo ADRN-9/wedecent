@@ -2621,7 +2621,7 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	var mu sync.Mutex
 	effects := make(map[string]bool)
 	effectCount := 0
-	sink := func(_ context.Context, operationID string) error {
+	sink := func(_ context.Context, operationID string, _ CheckpointFinalizationEvidence) error {
 		mu.Lock()
 		defer mu.Unlock()
 		if !effects[operationID] {
