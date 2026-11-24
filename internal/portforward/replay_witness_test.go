@@ -672,6 +672,26 @@ func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
 		Primary: primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
 		Quorum: client.Quorum, Pending: restartedStore,
 	}
+	consumer, ok := checkpointConsumer(request)
+	if !ok {
+		t.Fatal("request has no checkpoint consumer")
+	}
+	key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
+	primary.mu.Lock()
+	receipt := primary.ledgers[key].used[request.JTI].receipt
+	primary.mu.Unlock()
+	ackStore := restartedStore.(checkpointPendingAcknowledgements)
+	recoveredAcks, err := restarted.acknowledgeWitnessQuorum(context.Background(), request, receipt, ackStore)
+	if err != nil || len(recoveredAcks) < restarted.Quorum {
+		t.Fatalf("lost response did not recover acknowledgement quorum: acks=%d err=%v", len(recoveredAcks), err)
+	}
+	alreadyAcknowledged := false
+	for _, ack := range recoveredAcks {
+		alreadyAcknowledged = alreadyAcknowledged || ack.Status == "already_acknowledged"
+	}
+	if !alreadyAcknowledged {
+		t.Fatal("authenticated already_acknowledged response was not recognized")
+	}
 	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("recovered authorization was returned as a new session: %v", err)
 	}
