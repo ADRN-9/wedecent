@@ -48,7 +48,7 @@ The Edge Function must receive these independently administered secrets/configur
 - `WEDECENT_CHECKPOINT_WITNESS_QUORUM`: integer strict-majority quorum.
 - `WEDECENT_ROUTE_AUTH_KEY_ID` and `WEDECENT_ROUTE_AUTH_PUBLIC_KEY`: independent route-authorization signing key identity and Ed25519 public key, required for routed audit operations.
 
-The Local Core constructor requires `Config.ForwardingAuditTrust` with the exact audit hostname, port and comma-separated SPKI SHA-256 pins. Production service/bootstrap wiring must supply these values from a protected provisioning channel. They must not be copied from `account-session.json`, the renderer, or ordinary user-controlled config.
+The Local Core constructor requires `Config.ForwardingAuditTrust` with the exact audit hostname, port and comma-separated SPKI SHA-256 pins. The production release workflow now requires `WEDECENT_CHECKPOINT_AUDIT_HOSTNAME`, `WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256`, and `WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256`; the approved values are embedded in `buildinfo`, checked by release metadata and binary inspection, and surfaced by `wd-core release-trust`. The approval digest is domain-separated with `wedecent-checkpoint-audit-approval-v1`. These values must come from a protected provisioning channel. They must not be copied from `account-session.json`, the renderer, or ordinary user-controlled config.
 
 No production trust anchors, endpoint pins, credentials, migrations, or Edge Function deployments were provisioned here.
 
