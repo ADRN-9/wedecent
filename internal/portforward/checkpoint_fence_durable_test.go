@@ -40,14 +40,14 @@ func durableFenceFixture(t *testing.T) (*FileCheckpointFencePrimary, []*FileChec
 		t.Fatal(err)
 	}
 	now := time.UnixMilli(1000)
-	primary.SetClockForTesting(func() time.Time { return now })
+	primary.now = func() time.Time { return now })
 	witnesses := make([]*FileCheckpointFenceWitness, len(ids))
 	for i, id := range ids {
 		witnesses[i], err = OpenFileCheckpointFenceWitness(filepath.Join(dir, id, "fences.wal"), id, witnessKeys[i], primaryKey.Public().(ed25519.PublicKey), "witness-set-v1", ids)
 		if err != nil {
 			t.Fatal(err)
 		}
-		witnesses[i].SetClockForTesting(func() time.Time { return now })
+		witnesses[i].now = func() time.Time { return now })
 	}
 	_, deviceKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -90,7 +90,7 @@ func TestFileCheckpointFencePrimaryWitnessQuorumAndRestart(t *testing.T) {
 	if err := primary.CommitFence(ctx, token, acks); err != nil {
 		t.Fatal(err)
 	}
-	witnesses[0].SetClockForTesting(func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS) })
+	witnesses[0].now = func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS) })
 	recoveredAck, err := witnesses[0].CommitFence(ctx, token)
 	if err != nil || !bytes.Equal(recoveredAck.Signature, acks[0].Signature) {
 		t.Fatalf("exact witness acknowledgement not recoverable after expiry: %v", err)
@@ -109,7 +109,7 @@ func TestFileCheckpointFencePrimaryWitnessQuorumAndRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reopenedPrimary.SetClockForTesting(func() time.Time { return time.UnixMilli(1000) })
+	reopenedPrimary.now = func() time.Time { return time.UnixMilli(1000) })
 	retried, err := reopenedPrimary.ReserveFence(ctx, request)
 	if err != nil || !sameFenceToken(retried, token) {
 		t.Fatalf("restart retry changed the signed token: err=%v", err)
@@ -151,7 +151,7 @@ func TestFileCheckpointFencePartialQuorumResumesExactReservation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted.SetClockForTesting(func() time.Time { return time.UnixMilli(1000) })
+	restarted.now = func() time.Time { return time.UnixMilli(1000) })
 	retry, err := restarted.ReserveFence(ctx, request)
 	if err != nil || !sameFenceToken(retry, token) {
 		t.Fatalf("pending reservation did not survive restart exactly: %v", err)
@@ -254,7 +254,7 @@ func TestFileCheckpointFenceRejectsExpiredTokenAndTruncatedTailRecovers(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	witnesses[0].SetClockForTesting(func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS) })
+	witnesses[0].now = func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS) })
 	if _, err := witnesses[0].CommitFence(ctx, token); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("expired token accepted: %v", err)
 	}
@@ -277,7 +277,7 @@ func TestFileCheckpointFenceRejectsExpiredTokenAndTruncatedTailRecovers(t *testi
 	if err != nil {
 		t.Fatalf("truncated tail should be discarded during recovery: %v", err)
 	}
-	reopened.SetClockForTesting(func() time.Time { return time.UnixMilli(1000) })
+	reopened.now = func() time.Time { return time.UnixMilli(1000) })
 	retry, err := reopened.ReserveFence(ctx, request)
 	if err != nil || !sameFenceToken(retry, token) {
 		t.Fatalf("durable reservation lost after truncated tail recovery: %v", err)
