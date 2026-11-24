@@ -64,8 +64,15 @@ type checkpointFenceWitnessOperation struct {
 	Ack         CheckpointFenceAcknowledgement
 }
 
+type checkpointFenceWitnessOperationRef struct {
+	Scope       CheckpointWitnessScope
+	Generation  uint64
+	TokenDigest [sha256.Size]byte
+}
+
 type checkpointFenceWitnessIndex struct {
-	Scopes map[CheckpointWitnessScope]*checkpointFenceWitnessScopeState
+	Scopes       map[CheckpointWitnessScope]*checkpointFenceWitnessScopeState
+	OperationIDs map[string]checkpointFenceWitnessOperationRef
 }
 
 type FileCheckpointFencePrimary struct {
@@ -314,6 +321,10 @@ func (w *FileCheckpointFenceWitness) CommitFence(ctx context.Context, token Chec
 			result = cloneCheckpointFenceAck(old.Ack)
 			return nil
 		}
+		if old, ok := index.OperationIDs[token.OperationID]; ok &&
+			(old.Scope != token.Scope || old.Generation != token.Generation || old.TokenDigest != digest) {
+			return ErrCheckpointConflict
+		}
 		if token.ExpiresAtUnixMS <= w.now().UnixMilli() {
 			return ErrCheckpointStale
 		}
@@ -545,6 +556,10 @@ func applyCheckpointFenceWitnessEvent(index *checkpointFenceWitnessIndex, event 
 		}
 		return nil
 	}
+	if old, exists := index.OperationIDs[token.OperationID]; exists &&
+		(old.Scope != token.Scope || old.Generation != token.Generation || old.TokenDigest != digest) {
+		return ErrCheckpointConflict
+	}
 	if token.ExpectedFenceGeneration != state.Generation || token.Generation != state.Generation+1 ||
 		token.ExpectedRevocationEpoch != state.RevocationEpoch ||
 		token.PreviousFenceSHA256 != state.FenceHead ||
@@ -552,6 +567,7 @@ func applyCheckpointFenceWitnessEvent(index *checkpointFenceWitnessIndex, event 
 		return ErrCheckpointStale
 	}
 	state.Operations[token.Generation] = checkpointFenceWitnessOperation{TokenDigest: digest, Ack: cloneCheckpointFenceAck(ack)}
+	index.OperationIDs[token.OperationID] = checkpointFenceWitnessOperationRef{Scope: token.Scope, Generation: token.Generation, TokenDigest: digest}
 	state.Generation = token.Generation
 	state.RevocationEpoch = token.ResultingRevocationEpoch
 	state.FenceHead = digest
@@ -658,7 +674,10 @@ func newCheckpointFencePrimaryScope() *checkpointFencePrimaryScopeState {
 }
 
 func newCheckpointFenceWitnessIndex() *checkpointFenceWitnessIndex {
-	return &checkpointFenceWitnessIndex{Scopes: make(map[CheckpointWitnessScope]*checkpointFenceWitnessScopeState)}
+	return &checkpointFenceWitnessIndex{
+		Scopes: make(map[CheckpointWitnessScope]*checkpointFenceWitnessScopeState),
+		OperationIDs: make(map[string]checkpointFenceWitnessOperationRef),
+	}
 }
 
 func newCheckpointFenceWitnessScope() *checkpointFenceWitnessScopeState {
