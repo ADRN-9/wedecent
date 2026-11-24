@@ -46,7 +46,9 @@ type CheckpointMembershipResolver interface {
 // membership epochs from one independently verified signed forwarding capability.
 func checkpointRouteAuthorizationFingerprint(authorization mesh.RouteAuthorization) ([sha256.Size]byte, error) {
 	encoded, err := json.Marshal(authorization)
-	if err != nil { return [sha256.Size]byte{}, ErrRouteAuthorizationMismatch }
+	if err != nil {
+		return [sha256.Size]byte{}, ErrRouteAuthorizationMismatch
+	}
 	return sha256.Sum256(encoded), nil
 }
 
@@ -96,7 +98,9 @@ func BuildCheckpointRequest(
 			return CheckpointRequest{}, errors.Join(ErrRouteAuthorizationMismatch, err)
 		}
 		routeAuthorizationHash, err = checkpointRouteAuthorizationFingerprint(authorization.RouteAuthorization)
-		if err != nil { return CheckpointRequest{}, err }
+		if err != nil {
+			return CheckpointRequest{}, err
+		}
 	}
 	if localDeviceID != claims.InitiatingDevice && localDeviceID != claims.DestinationDevice {
 		return CheckpointRequest{}, ErrAuthorizationMismatch

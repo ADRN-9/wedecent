@@ -737,18 +737,35 @@ func TestRouteAuthorizationSigningOwnsRouteCopy(t *testing.T) {
 }
 
 func TestRouteAuthorizationHistoricalVerificationAllowsExpiryWithoutReplayConsumption(t *testing.T) {
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	now := time.UnixMilli(1_800_000_900_000).UTC()
-	route := routeAuthorizationTestRoute(now.Add(30*time.Second))
-	auth, err := SignRouteAuthorization(privateKey, "route-key-1", NewRouteAuthorizationClaims(route, "wd_b", routeAuthorizationTestJTI(12), now)); if err != nil { t.Fatal(err) }
-	replay := NewMemoryRouteAuthorizationReplay(); replay.now = func() time.Time { return now }
-	verifier := RouteAuthorizationVerifier{KeyID:"route-key-1", PublicKey:publicKey, Replay:replay, Now:func() time.Time{return now}}
-	if err := verifier.VerifyHistorical(context.Background(), auth, route, "wd_b"); err != nil { t.Fatalf("historical route verification: %v", err) }
-	if len(replay.used) != 0 { t.Fatal("historical verification consumed the route JTI") }
+	route := routeAuthorizationTestRoute(now.Add(30 * time.Second))
+	auth, err := SignRouteAuthorization(privateKey, "route-key-1", NewRouteAuthorizationClaims(route, "wd_b", routeAuthorizationTestJTI(12), now))
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := NewMemoryRouteAuthorizationReplay()
+	replay.now = func() time.Time { return now }
+	verifier := RouteAuthorizationVerifier{KeyID: "route-key-1", PublicKey: publicKey, Replay: replay, Now: func() time.Time { return now }}
+	if err := verifier.VerifyHistorical(context.Background(), auth, route, "wd_b"); err != nil {
+		t.Fatalf("historical route verification: %v", err)
+	}
+	if len(replay.used) != 0 {
+		t.Fatal("historical verification consumed the route JTI")
+	}
 	now = time.UnixMilli(auth.Claims.ExpiresUnixMS).Add(time.Second).UTC()
-	if err := verifier.VerifyHistorical(context.Background(), auth, route, "wd_b"); err != nil { t.Fatalf("expired historical route verification: %v", err) }
-	if err := verifier.VerifyAndConsume(context.Background(), auth, route, "wd_b"); !errors.Is(err, ErrRouteAuthorizationExpired) { t.Fatalf("expired route capability initiated fresh operation: %v", err) }
-	if len(replay.used) != 0 { t.Fatal("expired fresh operation consumed the route JTI") }
+	if err := verifier.VerifyHistorical(context.Background(), auth, route, "wd_b"); err != nil {
+		t.Fatalf("expired historical route verification: %v", err)
+	}
+	if err := verifier.VerifyAndConsume(context.Background(), auth, route, "wd_b"); !errors.Is(err, ErrRouteAuthorizationExpired) {
+		t.Fatalf("expired route capability initiated fresh operation: %v", err)
+	}
+	if len(replay.used) != 0 {
+		t.Fatal("expired fresh operation consumed the route JTI")
+	}
 }
 func TestRouteAuthorizationRequiresReplayProtection(t *testing.T) {
 	t.Parallel()

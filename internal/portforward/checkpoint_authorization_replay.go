@@ -17,11 +17,11 @@ import (
 // CheckpointAuthorizationReplay binds Local Core's verified capability to the
 // witnessed checkpoint transaction. Bare-JTI replay calls are never accepted.
 type CheckpointAuthorizationReplay struct {
-	Provider        *WitnessedReplayCheckpointProvider
-	ControlPlaneKey ed25519.PublicKey
-	LocalDeviceID   mesh.DeviceID
-	DeviceSigner    crypto.Signer
-	Memberships     CheckpointMembershipResolver
+	Provider            *WitnessedReplayCheckpointProvider
+	ControlPlaneKey     ed25519.PublicKey
+	LocalDeviceID       mesh.DeviceID
+	DeviceSigner        crypto.Signer
+	Memberships         CheckpointMembershipResolver
 	RouteVerifier       CheckpointRouteAuthorizationVerifier
 	FinalizationAuditor CheckpointFinalizationAuditor
 	Now                 func() time.Time
@@ -33,11 +33,11 @@ type CheckpointFinalizationAuditor interface {
 }
 
 const (
-	CheckpointFinalizationStarted = "finalization_started"
-	CheckpointFinalizationComplete = "finalized"
-	CheckpointFinalizationRevoked = "rejected_revocation"
+	CheckpointFinalizationStarted               = "finalization_started"
+	CheckpointFinalizationComplete              = "finalized"
+	CheckpointFinalizationRevoked               = "rejected_revocation"
 	CheckpointFinalizationMembershipUnavailable = "membership_unavailable"
-	CheckpointFinalizationFailed = "finalization_failed"
+	CheckpointFinalizationFailed                = "finalization_failed"
 )
 
 // FinalizeExpiredPortForwardAuthorization completes an already-consumed capability without creating a new authorization.
@@ -127,7 +127,9 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 	var routeAuthorizationHash [sha256.Size]byte
 	if claims.Router != "" {
 		routeAuthorizationHash, err = checkpointRouteAuthorizationFingerprint(authorization.RouteAuthorization)
-		if err != nil { return err }
+		if err != nil {
+			return err
+		}
 	}
 	if request.AuthorizationSHA256 != authorizationHash || request.RouteAuthorizationSHA256 != routeAuthorizationHash ||
 		request.JTI != claims.JTI || request.ConsumingDeviceID != string(r.LocalDeviceID) ||

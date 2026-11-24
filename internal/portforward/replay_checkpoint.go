@@ -43,14 +43,14 @@ type CheckpointEndpoint struct {
 // CheckpointRequest is signed by the consuming endpoint. The peer is bound by
 // the separately verified forwarding capability; both memberships are checked by the provider.
 type CheckpointRequest struct {
-	Initiator           CheckpointEndpoint
-	Destination         CheckpointEndpoint
-	ConsumingDeviceID   string
-	JTI                 string
-	AuthorizationSHA256 [sha256.Size]byte
+	Initiator                CheckpointEndpoint
+	Destination              CheckpointEndpoint
+	ConsumingDeviceID        string
+	JTI                      string
+	AuthorizationSHA256      [sha256.Size]byte
 	RouteAuthorizationSHA256 [sha256.Size]byte
-	DevicePublicKey     ed25519.PublicKey
-	DeviceSignature     []byte
+	DevicePublicKey          ed25519.PublicKey
+	DeviceSignature          []byte
 }
 
 // CheckpointReceipt is an authenticated durable commit receipt.
@@ -260,7 +260,9 @@ func checkpointRequestMessage(request CheckpointRequest) ([]byte, error) {
 	}
 	b.Write(request.AuthorizationSHA256[:])
 	if request.RouteAuthorizationSHA256 != ([sha256.Size]byte{}) {
-		if err := putString("route-authorization-sha256-v1"); err != nil { return nil, err }
+		if err := putString("route-authorization-sha256-v1"); err != nil {
+			return nil, err
+		}
 		b.Write(request.RouteAuthorizationSHA256[:])
 	}
 	b.Write(request.DevicePublicKey)
