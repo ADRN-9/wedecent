@@ -425,7 +425,7 @@ func (p *FileCheckpointFencePrimary) verifyFenceAcknowledgements(token Checkpoin
 			return ErrCheckpointIntegrity
 		}
 		if VerifyCheckpointFenceAcknowledgement(ack, ack.WitnessID, key) != nil {
-			continue
+			return ErrCheckpointIntegrity
 		}
 		if seen[ack.WitnessID] || ack.TokenSHA256 != digest ||
 			ack.Generation != token.Generation || ack.Action != token.Action ||
