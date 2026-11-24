@@ -123,6 +123,10 @@ func (a *testAtomicCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx contex
 	if !sameCheckpointEndpointSet(fenceHeadEndpoints(heads), request.Participants) {
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
+	if request.Action == CheckpointFenceRevoke &&
+		(len(request.AuthorizationProof) == 0 || sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256) {
+		return CheckpointFenceToken{}, ErrCheckpointIntegrity
+	}
 	if err := a.verifyHeadsLocked(ctx, heads); err != nil {
 		return CheckpointFenceToken{}, err
 	}
