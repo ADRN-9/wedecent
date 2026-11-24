@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(25);
+select plan(27);
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
@@ -17,7 +17,8 @@ on conflict do nothing;
 insert into public.devices(device_id,public_key,kind,name,owner_user_id,organization_id,revocation_epoch)
 values
 ('wd_aaaaaaaaaaaaaaaa',repeat('A',43),'client','Audit initiator','11000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',1),
-('wd_bbbbbbbbbbbbbbbb',repeat('B',43),'agent','Audit destination','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000091',1);
+('wd_bbbbbbbbbbbbbbbb',repeat('B',43),'agent','Audit destination','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000091',1),
+('wd_cccccccccccccccc',repeat('C',43),'agent','Audit router','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000091',1);
 
 insert into public.port_forward_authorization_transactions(
  forwarding_id,jti,authorization_sha256,permission,direction,
@@ -34,6 +35,32 @@ insert into public.port_forward_authorization_transactions(
  1,1,null,null,null,clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
 );
 
+insert into public.route_authorization_grants(
+ id,jti,user_id,organization_id,source_device_id,router_device_id,destination_device_id,
+ first_transport,second_transport,first_cost,second_cost,permission,issued_at,expires_at
+) values (
+ '55000000-0000-4000-8000-000000000091','BBBBBBBBBBBBBBBBBBBBBB',
+ '11000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',
+ 'wd_aaaaaaaaaaaaaaaa','wd_cccccccccccccccc','wd_bbbbbbbbbbbbbbbb',
+ 'lan','lan',1,1,'mesh.forward',clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '90 seconds'
+);
+
+insert into public.port_forward_authorization_transactions(
+ forwarding_id,jti,authorization_sha256,permission,direction,
+ initiating_device_id,destination_device_id,router_device_id,
+ initiator_account_id,destination_account_id,router_account_id,
+ initiator_organization_id,destination_organization_id,router_organization_id,
+ initiator_revocation_epoch,destination_revocation_epoch,router_revocation_epoch,
+ route_authorization_id,route_authorization_jti,issued_at,expires_at
+) values(
+ '44000000-0000-4000-8000-000000000092','BBBBBBBBBBBBBBBBBBBBBB',decode(repeat('b',64),'hex'),
+ 'port_forward.local','local','wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb','wd_cccccccccccccccc',
+ '11000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092',
+ '22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',
+ 1,1,1,'55000000-0000-4000-8000-000000000091','BBBBBBBBBBBBBBBBBBBBBB',
+ clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
+);
+
 create function pg_temp.audit_payload(p_signature text default repeat('A',86)||'==') returns jsonb
 language sql as $$
 select jsonb_build_object(
@@ -46,6 +73,22 @@ select jsonb_build_object(
  'device_public_key',repeat('A',43)||'=','device_signature',p_signature
 )
 $$;
+
+create function pg_temp.audit_route_payload() returns jsonb
+language sql as $q$
+select jsonb_build_object(
+ 'version',1,
+ 'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-000000000091','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
+ 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
+ 'router',jsonb_build_object('device_id','wd_cccccccccccccccc','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
+ 'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti','BBBBBBBBBBBBBBBBBBBBBB',
+ 'authorization_sha256',repeat('b',64),'route_authorization_sha256',repeat('c',64),
+ 'route_authorization_id','55000000-0000-4000-8000-000000000091',
+ 'route_authorization_jti','BBBBBBBBBBBBBBBBBBBBBB',
+ 'route_authorization_json','{"route":"signed"}',
+ 'device_public_key',repeat('A',43)||'=','device_signature',repeat('A',86)||'=='
+)
+$q$;
 
 create function pg_temp.audit_evidence(p_outcome text) returns jsonb
 language sql immutable as $q$
@@ -107,6 +150,13 @@ select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','failure/recovery operation starts cleanly');
 select is((pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','intermediate failure is recorded without terminalizing operation');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','successful retry can recover after intermediate failure');
+
+select is((pg_temp.record_audit('finalization_started',pg_temp.audit_route_payload(),repeat('g',64))->>'replayed'),'false','routed operation binds stored route grant and router identities');
+update public.route_authorization_grants set revoked_at=clock_timestamp()
+ where id='55000000-0000-4000-8000-000000000091';
+select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_route_payload(),repeat('g',64))$q$,'42501','stored route authorization is unavailable or mismatched','revoked route grant blocks finalization');
+update public.route_authorization_grants set revoked_at=null
+ where id='55000000-0000-4000-8000-000000000091';
 
 delete from public.organization_memberships
  where organization_id='22000000-0000-4000-8000-000000000091'
