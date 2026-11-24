@@ -44,8 +44,6 @@ create table public.checkpoint_finalization_operations (
     payload jsonb not null,
     payload_sha256 bytea not null check (pg_catalog.octet_length(payload_sha256) = 32),
     actor_id uuid not null references auth.users(id) on delete restrict,
-    evidence jsonb not null,
-    evidence_sha256 bytea not null check (pg_catalog.octet_length(evidence_sha256) = 32),
     created_at timestamptz not null default pg_catalog.clock_timestamp()
 );
 
@@ -364,9 +362,9 @@ begin
     end if;
 
     insert into public.checkpoint_finalization_operations (
-        operation_id, payload_version, payload, payload_sha256, actor_id, evidence, evidence_sha256
+        operation_id, payload_version, payload, payload_sha256, actor_id
     )
-    values (p_operation_id, p_payload_version, p_payload, p_payload_sha256, p_actor_id, p_evidence, p_evidence_sha256)
+    values (p_operation_id, p_payload_version, p_payload, p_payload_sha256, p_actor_id)
     on conflict (operation_id) do nothing;
 
     select operation_row.*
@@ -378,9 +376,7 @@ begin
     if v_operation.payload_version <> p_payload_version
        or v_operation.payload_sha256 <> p_payload_sha256
        or v_operation.payload <> p_payload
-       or v_operation.actor_id <> p_actor_id
-       or v_operation.evidence <> p_evidence
-       or v_operation.evidence_sha256 <> p_evidence_sha256 then
+       or v_operation.actor_id <> p_actor_id then
         raise exception 'operation payload conflict' using errcode = '23505';
     end if;
 
