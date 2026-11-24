@@ -55,7 +55,7 @@ insert into public.port_forward_authorization_transactions(
  '44000000-0000-4000-8000-000000000091','AAAAAAAAAAAAAAAAAAAAAA',decode(repeat('a',64),'hex'),
  'port_forward.local','local','wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb',null,
  '11000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092',null,
- direct transaction destination org
+ '22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000092',null,
  1,2,null,null,null,clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
 );
 
@@ -80,7 +80,7 @@ insert into public.port_forward_authorization_transactions(
  '44000000-0000-4000-8000-000000000092','BBBBBBBBBBBBBBBBBBBBBB',decode(repeat('b',64),'hex'),
  'port_forward.local','local','wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb','wd_cccccccccccccccc',
  '11000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092',
- routed transaction participant orgs
+ '22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000092',
  1,2,2,'55000000-0000-4000-8000-000000000091','BBBBBBBBBBBBBBBBBBBBBB',
  clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
 );
