@@ -1584,3 +1584,123 @@ func TestPendingJournalCompactionRequiresDurableAcknowledgements(t *testing.T) {
 		t.Fatalf("durably quorum-acknowledged journal entry was not compacted: %v", err)
 	}
 }
+
+
+func routedCheckpointRequestForRevocationTest(t *testing.T, primary *deterministicCheckpointProvider) (CheckpointRequest, ed25519.PrivateKey, CheckpointEndpoint) {
+	t.Helper()
+	request, signer, _, _, _ := makeCheckpointFixture(t, primary,
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222")
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	router := CheckpointEndpoint{
+		DeviceID: identity.DeviceID(publicKey),
+		AccountID: "33333333-3333-4333-8333-333333333333",
+		OrganizationID: request.Initiator.OrganizationID,
+	}
+	request.Router = router
+	request.RouteAuthorizationSHA256 = sha256.Sum256([]byte("exact signed route authorization"))
+	request, err = SignCheckpointRequest(signer, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return request, signer, router
+}
+
+func TestWitnessCommitRejectsRevokedInitiatorDestinationAndRouter(t *testing.T) {
+	for _, participant := range []string{"initiator", "destination", "router"} {
+		t.Run(participant, func(t *testing.T) {
+			primary := newDeterministicCheckpointProvider(t)
+			request, _, router := routedCheckpointRequestForRevocationTest(t, primary)
+			result, err := primary.Consume(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			witness := newDeterministicCheckpointWitness("witness", primary.private.Public().(ed25519.PublicKey))
+			var revoked CheckpointEndpoint
+			switch participant {
+			case "initiator":
+				revoked = request.Initiator
+			case "destination":
+				revoked = request.Destination
+			default:
+				revoked = router
+			}
+			if _, err := witness.Revoke(context.Background(), revoked, revoked.RevocationEpoch+1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := witness.Commit(context.Background(), request, result.CheckpointReceipt); !errors.Is(err, ErrCheckpointRevoked) {
+				t.Fatalf("witness committed after %s revocation: %v", participant, err)
+			}
+		})
+	}
+}
+
+func TestWitnessAcknowledgeRejectsRevokedInitiatorDestinationAndRouter(t *testing.T) {
+	for _, participant := range []string{"initiator", "destination", "router"} {
+		t.Run(participant, func(t *testing.T) {
+			primary := newDeterministicCheckpointProvider(t)
+			request, _, router := routedCheckpointRequestForRevocationTest(t, primary)
+			result, err := primary.Consume(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			witness := newDeterministicCheckpointWitness("witness", primary.private.Public().(ed25519.PublicKey))
+			if _, err := witness.Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+				t.Fatal(err)
+			}
+			var revoked CheckpointEndpoint
+			switch participant {
+			case "initiator":
+				revoked = request.Initiator
+			case "destination":
+				revoked = request.Destination
+			default:
+				revoked = router
+			}
+			if _, err := witness.Revoke(context.Background(), revoked, revoked.RevocationEpoch+1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := witness.Acknowledge(context.Background(), request, result.CheckpointReceipt); !errors.Is(err, ErrCheckpointRevoked) {
+				t.Fatalf("witness acknowledged after %s revocation: %v", participant, err)
+			}
+		})
+	}
+}
+
+func TestWitnessCommitAndRevocationRaceCannotAcknowledgeAfterRevocation(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, router := routedCheckpointRequestForRevocationTest(t, primary)
+	result, err := primary.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witness := newDeterministicCheckpointWitness("witness", primary.private.Public().(ed25519.PublicKey))
+	start := make(chan struct{})
+	commitResult := make(chan error, 1)
+	revokeResult := make(chan error, 1)
+	go func() {
+		<-start
+		_, err := witness.Commit(context.Background(), request, result.CheckpointReceipt)
+		commitResult <- err
+	}()
+	go func() {
+		<-start
+		_, err := witness.Revoke(context.Background(), router, router.RevocationEpoch+1)
+		revokeResult <- err
+	}()
+	close(start)
+	commitErr := <-commitResult
+	revokeErr := <-revokeResult
+	if revokeErr != nil {
+		t.Fatalf("router revocation failed: %v", revokeErr)
+	}
+	if commitErr != nil && !errors.Is(commitErr, ErrCheckpointRevoked) {
+		t.Fatalf("unexpected concurrent commit result: %v", commitErr)
+	}
+	if _, err := witness.Acknowledge(context.Background(), request, result.CheckpointReceipt); !errors.Is(err, ErrCheckpointRevoked) {
+		t.Fatalf("authorization acknowledged after successful router revocation: %v", err)
+	}
+}
