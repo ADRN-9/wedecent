@@ -2847,7 +2847,11 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	wrapped := &compactFailOncePendingStore{FileCheckpointPendingStore: base, fail: true}
 	client, witnesses, request, _, _ := preparePersistedWitnessQuorum(t, wrapped)
 
-	primary := client.Primary.(*deterministicCheckpointProvider)
+	atomicPrimary, ok := client.Primary.(*testAtomicCheckpointPrimary)
+	if !ok || atomicPrimary.replay == nil {
+		t.Fatal("checkpoint primary test adapter is unavailable")
+	}
+	primary := atomicPrimary.replay
 	var mu sync.Mutex
 	var firstEvidence *CheckpointFinalizationEvidence
 	callbackCount := 0
