@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -49,6 +50,9 @@ type CheckpointRequest struct {
 	JTI                      string
 	AuthorizationSHA256      [sha256.Size]byte
 	RouteAuthorizationSHA256 [sha256.Size]byte
+	RouteAuthorizationID     string
+	RouteAuthorizationJTI    string
+	RouteAuthorizationJSON   string
 	Router                   CheckpointEndpoint
 	DevicePublicKey          ed25519.PublicKey
 	DeviceSignature          []byte
@@ -265,6 +269,28 @@ func checkpointRequestMessage(request CheckpointRequest) ([]byte, error) {
 		return nil, ErrCheckpointIntegrity
 	}
 	if routed {
+		var routeBinding struct {
+			Claims struct {
+				JTI string `json:"jti"`
+				Router string `json:"router"`
+				Route struct {
+					ID string `json:"id"`
+					Source string `json:"source"`
+					Destination string `json:"destination"`
+				} `json:"route"`
+			} `json:"claims"`
+		}
+		if request.RouteAuthorizationJSON == "" ||
+			sha256.Sum256([]byte(request.RouteAuthorizationJSON)) != request.RouteAuthorizationSHA256 ||
+			json.Unmarshal([]byte(request.RouteAuthorizationJSON), &routeBinding) != nil ||
+			request.RouteAuthorizationID == "" || request.RouteAuthorizationJTI == "" ||
+			routeBinding.Claims.Route.ID != request.RouteAuthorizationID ||
+			routeBinding.Claims.JTI != request.RouteAuthorizationJTI ||
+			routeBinding.Claims.Router != request.Router.DeviceID ||
+			routeBinding.Claims.Route.Source != request.Initiator.DeviceID ||
+			routeBinding.Claims.Route.Destination != request.Destination.DeviceID {
+			return nil, ErrCheckpointIntegrity
+		}
 		if !validCheckpointEndpoint(request.Router) ||
 			request.Router.DeviceID == request.Initiator.DeviceID ||
 			request.Router.DeviceID == request.Destination.DeviceID {
@@ -280,7 +306,8 @@ func checkpointRequestMessage(request CheckpointRequest) ([]byte, error) {
 		if err := putEndpoint(request.Router); err != nil {
 			return nil, err
 		}
-	} else if request.Router != (CheckpointEndpoint{}) {
+	} else if request.Router != (CheckpointEndpoint{}) || request.RouteAuthorizationID != "" ||
+		request.RouteAuthorizationJTI != "" || request.RouteAuthorizationJSON != "" {
 		return nil, ErrCheckpointIntegrity
 	}
 	b.Write(request.DevicePublicKey)
