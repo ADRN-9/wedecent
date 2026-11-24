@@ -1031,6 +1031,46 @@ func TestWitnessCommitCrashBeforeLocalResolutionRecoversIdempotently(t *testing.
 	}
 }
 
+func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *testing.T) {
+	initPublic, initPrivate, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
+	destPublic, _, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
+	controlPublic, controlPrivate, err := ed25519.GenerateKey(rand.Reader); if err != nil { t.Fatal(err) }
+	start := time.Now().UTC().Truncate(time.Millisecond)
+	claims := testClaims(start, DirectionLocal)
+	claims.InitiatingDevice = mesh.DeviceID(identity.DeviceID(initPublic))
+	claims.DestinationDevice = mesh.DeviceID(identity.DeviceID(destPublic))
+	claims.Route.Source, claims.Route.Destination = claims.InitiatingDevice, claims.DestinationDevice
+	claims.Route.Hops[0].From, claims.Route.Hops[0].To = claims.InitiatingDevice, claims.DestinationDevice
+	claims.ExpiresAtUnixMS = start.Add(20*time.Second).UnixMilli()
+	claims.Route.ExpiresAt = time.UnixMilli(claims.ExpiresAtUnixMS).UTC()
+	authorization, err := SignAuthorization(controlPrivate, claims); if err != nil { t.Fatal(err) }
+	initiator := CheckpointEndpoint{DeviceID: string(claims.InitiatingDevice), AccountID: "11111111-1111-4111-8111-111111111111", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 4}
+	destination := CheckpointEndpoint{DeviceID: string(claims.DestinationDevice), AccountID: "22222222-2222-4222-8222-222222222222", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 7}
+	memberships := checkpointMembershipFixture{string(claims.InitiatingDevice): initiator, string(claims.DestinationDevice): destination}
+	primary := newDeterministicCheckpointProvider(t); primary.register(initiator); primary.register(destination)
+	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json")); if err != nil { t.Fatal(err) }
+	failResolve := true
+	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
+		if snapshot, ok := value.(checkpointPendingSnapshot); ok && failResolve {
+			for _, entry := range snapshot.Entries { if entry.State == "resolved" { failResolve = false; return errors.New("injected local resolution failure") } }
+		}
+		return writeReplayJSON(path, value, pattern, maxSize)
+	}
+	provider, witnesses := newWitnessedFixture(t, primary, store)
+	for _, witness := range witnesses { witness.revoked[witnessScope(initiator)] = initiator.RevocationEpoch; witness.revoked[witnessScope(destination)] = destination.RevocationEpoch; witness.ledgers[witnessScope(initiator)] = &deterministicWitnessLedger{revocationEpoch: initiator.RevocationEpoch, used: map[string][32]byte{}} }
+	now := start
+	replay := &CheckpointAuthorizationReplay{Provider: provider, ControlPlaneKey: controlPublic, LocalDeviceID: claims.InitiatingDevice, DeviceSigner: initPrivate, Memberships: memberships, Now: func() time.Time { return now }}
+	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrCheckpointUnavailable) { t.Fatalf("injected unresolved journal result: %v", err) }
+	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("witness %s did not commit exactly once", witness.id) } }
+	now = time.UnixMilli(claims.ExpiresAtUnixMS).Add(time.Second).UTC()
+	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); err != nil { t.Fatalf("expiry-independent finalization failed: %v", err) }
+	consumer, ok := checkpointConsumer(CheckpointRequest{Initiator: initiator, Destination: destination, ConsumingDeviceID: string(claims.InitiatingDevice)}); if !ok { t.Fatal("consumer scope unavailable") }
+	key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
+	primary.mu.Lock(); used := len(primary.ledgers[key].used); primary.mu.Unlock()
+	if used != 1 { t.Fatalf("primary capability consumed %d times", used) }
+	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("witness %s was committed again during finalization", witness.id) } }
+}
 func TestPendingJournalCompactionRequiresDurableAcknowledgements(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
