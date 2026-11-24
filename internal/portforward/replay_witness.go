@@ -489,8 +489,8 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorumLocked(ctx c
 
 	newAcks := make([]response, 0, len(query))
 	type conflict struct {
-		trust      CheckpointWitnessTrust
-		original   CheckpointWitnessAck
+		trust       CheckpointWitnessTrust
+		original    CheckpointWitnessAck
 		conflicting CheckpointWitnessAck
 	}
 	conflicts := make([]conflict, 0)
