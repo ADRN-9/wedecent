@@ -2,10 +2,10 @@ package portforward
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/binary"
-	"errors"
 	"sort"
 )
 
@@ -24,73 +24,77 @@ const (
 // CheckpointFenceToken is the primary-signed ordering decision shared by finalize
 // and revoke. Generation is the next durable fence generation, not a client counter.
 type CheckpointFenceToken struct {
-	Version                    uint32
-	Scope                      CheckpointWitnessScope
-	ExpectedFenceGeneration    uint64
-	Generation                 uint64
-	ExpectedRevocationEpoch    uint64
-	ResultingRevocationEpoch   uint64
-	Action                     CheckpointFenceAction
-	OperationID                string
-	RequestSHA256              [sha256.Size]byte
-	AuthorizationSHA256        [sha256.Size]byte
-	PrimaryHeadGeneration      uint64
-	PrimaryHeadSHA256           [sha256.Size]byte
-	PreviousFenceSHA256        [sha256.Size]byte
-	WitnessSetVersion           string
-	WitnessIDs                  []string
-	ExpiresAtUnixMS             int64
-	PrimaryKeyID                string
-	Signature                   []byte
+	Version                  uint32
+	Scope                    CheckpointWitnessScope
+	ExpectedFenceGeneration  uint64
+	Generation               uint64
+	ExpectedRevocationEpoch  uint64
+	ResultingRevocationEpoch uint64
+	Action                   CheckpointFenceAction
+	OperationID              string
+	RequestSHA256            [sha256.Size]byte
+	AuthorizationSHA256      [sha256.Size]byte
+	PrimaryHeadGeneration    uint64
+	PrimaryHeadSHA256        [sha256.Size]byte
+	PreviousFenceSHA256      [sha256.Size]byte
+	WitnessSetVersion        string
+	WitnessIDs               []string
+	ExpiresAtUnixMS          int64
+	PrimaryKeyID             string
+	Signature                []byte
 }
 
-// CheckpointFenceAcknowledgement durably attests that one witness advanced to
-// the exact primary token. Acknowledgements from other generations cannot mix.
+// CheckpointFenceAcknowledgement attests that one witness advanced to this token.
 type CheckpointFenceAcknowledgement struct {
-	WitnessID         string
-	TokenSHA256       [sha256.Size]byte
-	Generation        uint64
-	Action            CheckpointFenceAction
-	OperationID       string
-	WitnessKeyID      string
-	Signature         []byte
+	WitnessID    string
+	TokenSHA256  [sha256.Size]byte
+	Generation   uint64
+	Action       CheckpointFenceAction
+	OperationID  string
+	WitnessKeyID string
+	Signature    []byte
 }
 
-// CheckpointFencingPrimary is implemented by the independently operated primary.
-// ReserveFence must atomically compare ExpectedFenceGeneration and persist the
-// operation ID before returning. Exact retries return the identical signed token;
-// conflicting retries fail with ErrCheckpointConflict.
+// CheckpointFenceQuorum returns the strict majority for a fixed witness set.
+func CheckpointFenceQuorum(witnessCount int) (int, error) {
+	if witnessCount < 3 {
+		return 0, ErrCheckpointQuorum
+	}
+	return witnessCount/2 + 1, nil
+}
+
+// CheckpointFencingPrimary is the durable ordering authority. ReserveFence must
+// compare the expected generation and persist the operation ID atomically.
+// Exact retries return the identical token; conflicting retries fail closed.
 type CheckpointFencingPrimary interface {
 	ReserveFence(context.Context, CheckpointFenceRequest) (CheckpointFenceToken, error)
 	CommitFence(context.Context, CheckpointFenceToken, []CheckpointFenceAcknowledgement) error
 	LoadFence(context.Context, CheckpointWitnessScope, string) (CheckpointFenceToken, bool, error)
 }
 
-// CheckpointFencingWitness advances an independent durable generation. CommitFence
-// rejects stale generations and same-generation tokens with different digests.
+// CheckpointFencingWitness advances an independently stored monotonic generation.
 type CheckpointFencingWitness interface {
 	CommitFence(context.Context, CheckpointFenceToken) (CheckpointFenceAcknowledgement, error)
-	LoadFence(context.Context, CheckpointWitnessScope) (CheckpointFenceAcknowledgement, bool, error)
+	LoadFence(context.Context, CheckpointWitnessScope, uint64) (CheckpointFenceAcknowledgement, bool, error)
 }
 
 type CheckpointFenceRequest struct {
-	Scope                    CheckpointWitnessScope
-	ExpectedFenceGeneration  uint64
-	ExpectedRevocationEpoch  uint64
-	Action                   CheckpointFenceAction
-	OperationID              string
-	RequestSHA256            [sha256.Size]byte
-	AuthorizationSHA256      [sha256.Size]byte
-	PrimaryHeadGeneration    uint64
-	PrimaryHeadSHA256         [sha256.Size]byte
-	PreviousFenceSHA256      [sha256.Size]byte
-	WitnessSetVersion        string
-	WitnessIDs               []string
-	ExpiresAtUnixMS          int64
+	Scope                   CheckpointWitnessScope
+	ExpectedFenceGeneration uint64
+	ExpectedRevocationEpoch uint64
+	Action                  CheckpointFenceAction
+	OperationID             string
+	RequestSHA256           [sha256.Size]byte
+	AuthorizationSHA256     [sha256.Size]byte
+	PrimaryHeadGeneration   uint64
+	PrimaryHeadSHA256       [sha256.Size]byte
+	PreviousFenceSHA256     [sha256.Size]byte
+	WitnessSetVersion       string
+	WitnessIDs              []string
+	ExpiresAtUnixMS         int64
 }
 
-// CheckpointFenceTokenDigest hashes the canonical signed token payload. The
-// signature is excluded so every witness commits to the same operation digest.
+// CheckpointFenceTokenDigest hashes the canonical token payload, excluding signature.
 func CheckpointFenceTokenDigest(token CheckpointFenceToken) ([sha256.Size]byte, error) {
 	message, err := checkpointFenceTokenMessage(token)
 	if err != nil {
@@ -99,8 +103,8 @@ func CheckpointFenceTokenDigest(token CheckpointFenceToken) ([sha256.Size]byte, 
 	return sha256.Sum256(message), nil
 }
 
-// VerifyCheckpointFenceToken enforces the generation/epoch transition and the
-// fixed strict-majority witness set before accepting a primary signature.
+// VerifyCheckpointFenceToken validates transition semantics, fixed quorum membership,
+// expiry, key identity and the primary signature.
 func VerifyCheckpointFenceToken(token CheckpointFenceToken, primaryKey ed25519.PublicKey, nowUnixMS int64) error {
 	message, err := checkpointFenceTokenMessage(token)
 	if err != nil || len(primaryKey) != ed25519.PublicKeySize ||
@@ -139,6 +143,9 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 		len(token.WitnessIDs) < 3 || token.ExpiresAtUnixMS <= 0 ||
 		token.PrimaryKeyID == "" || len(token.PrimaryKeyID) > 128 {
 		return nil, ErrCheckpointIntegrity
+	}
+	if _, err := CheckpointFenceQuorum(len(token.WitnessIDs)); err != nil {
+		return nil, err
 	}
 	if token.Action == CheckpointFenceFinalize &&
 		token.ResultingRevocationEpoch != token.ExpectedRevocationEpoch {
@@ -202,5 +209,3 @@ func validCheckpointFenceScope(scope CheckpointWitnessScope) bool {
 	return deviceIDPattern.MatchString(scope.DeviceID) &&
 		canonicalUUID(scope.AccountID) && canonicalUUID(scope.OrganizationID)
 }
-
-var _ = errors.Is
