@@ -115,9 +115,16 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	if err := p.Pending.Resolve(ctx, request, result.CheckpointReceipt); err != nil {
 		return CheckpointResult{}, err
 	}
-	acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt)
+acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt)
 	if err != nil {
 		return CheckpointResult{}, err
+	}
+	compactor, ok := p.Pending.(checkpointPendingCompactor)
+	if !ok {
+		return CheckpointResult{}, ErrCheckpointUnavailable
+	}
+	if err := compactor.Compact(ctx, acks, p.Witnesses, p.Quorum); err != nil {
+		return CheckpointResult{}, errors.Join(ErrCheckpointUnavailable, err)
 	}
 	result.WitnessReceipts = receipts
 	result.WitnessAcknowledgements = acks
@@ -211,7 +218,8 @@ func (p *WitnessedReplayCheckpointProvider) Head(ctx context.Context, endpoint C
 	valid := 0
 	for range p.Witnesses {
 		r := <-ch
-		if r.err != nil || VerifyCheckpointWitnessHead(r.head, r.trust.ID, r.trust.PublicKey) != nil {
+		if r.err != nil || VerifyCheckpointWitnessHead(r.head, r.trust.ID, r.trust.PublicKey) != nil ||
+			r.head.Scope != witnessScope(endpoint) {
 			continue
 		}
 		if canonical == nil {
@@ -286,9 +294,11 @@ func (p *WitnessedReplayCheckpointProvider) preflightWitnessHeads(ctx context.Co
 		}()
 	}
 	valid, alreadyCommitted := 0, 0
+	expectedScope := witnessScope(checkpointEndpointForConsumer(request))
 	for range p.Witnesses {
 		r := <-ch
-		if r.err != nil || VerifyCheckpointWitnessHead(r.head, r.trust.ID, r.trust.PublicKey) != nil {
+		if r.err != nil || VerifyCheckpointWitnessHead(r.head, r.trust.ID, r.trust.PublicKey) != nil ||
+			r.head.Scope != expectedScope {
 			continue
 		}
 		valid++

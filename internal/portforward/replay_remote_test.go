@@ -25,7 +25,6 @@ import (
 	"testing"
 	"time"
 
-	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
 )
@@ -108,22 +107,17 @@ func verifyRemoteReplayTestRequest(t *testing.T, request remoteReplayTestRequest
 	}
 }
 
-func TestProductionRemoteReplayRequiresEmbeddedTrustAnchors(t *testing.T) {
-	if strings.TrimSpace(buildinfo.ReplayAuthorityHostname) != "" && strings.TrimSpace(buildinfo.ReplayAuthoritySPKISHA256) != "" {
-		t.Skip("release build supplies embedded replay authority trust anchors")
-	}
+func TestProductionRemoteReplayRejectsUnwitnessedSingleProvider(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatal(err)
-	}
+	if err != nil { t.Fatal(err) }
 	_, err = NewProductionRemoteReplay(
 		"https://replay.example.test"+remoteReplayFunctionPath,
 		"public-anon-key",
 		mesh.DeviceID(identity.DeviceID(publicKey)),
 		privateKey,
 	)
-	if !errors.Is(err, ErrReplayUnavailable) {
-		t.Fatalf("missing embedded replay trust anchors error = %v", err)
+	if !errors.Is(err, ErrReplayUnavailable) || !strings.Contains(err.Error(), "single-provider replay is not an allowed fallback") {
+		t.Fatalf("unwitnessed production replay was not rejected: %v", err)
 	}
 }
 

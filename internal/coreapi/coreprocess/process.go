@@ -26,8 +26,6 @@ import (
 
 var ErrServerRequired = errors.New("core process: IPC server is required")
 
-var newLocalCoreRemoteReplay = portforward.NewProductionRemoteReplay
-
 type Config struct {
 	ClientStateDir           string
 	SupabaseURL              string
@@ -71,7 +69,7 @@ func newLocalCoreForwardingVerifier(endpoint, apiKey string, deviceID mesh.Devic
 	if len(publicKey) != ed25519.PublicKeySize {
 		return nil, portforward.ErrAuthorizationInvalid
 	}
-	replay, err := newLocalCoreRemoteReplay(endpoint, apiKey, deviceID, signer)
+	replay, err := portforward.NewProductionRemoteReplay(endpoint, apiKey, deviceID, signer)
 	if err != nil {
 		return nil, err
 	}

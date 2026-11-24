@@ -22,7 +22,6 @@ import (
 	"strings"
 	"time"
 
-	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/mesh"
 )
@@ -65,16 +64,17 @@ func NewRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer cry
 	return newRemoteReplay(endpoint, apiKey, "", 0, nil, deviceID, signer)
 }
 
-// NewProductionRemoteReplay uses hostname and SPKI pins embedded in the binary.
-// The endpoint URL may select no authority other than that independently trusted
-// host on port 443 and the fixed replay function path.
+// NewProductionRemoteReplay rejects the legacy single-provider protocol. Production
+// Local Core must use an independently administered witness quorum; there is no fallback.
 func NewProductionRemoteReplay(endpoint, apiKey string, deviceID mesh.DeviceID, signer crypto.Signer) (*RemoteReplay, error) {
-	hostname := strings.TrimSpace(buildinfo.ReplayAuthorityHostname)
-	pins := strings.TrimSpace(buildinfo.ReplayAuthoritySPKISHA256)
-	if hostname == "" || pins == "" {
-		return nil, fmt.Errorf("%w: replay authority hostname and SPKI pins are not embedded in this build", ErrReplayUnavailable)
-	}
-	return NewPinnedRemoteReplay(endpoint, apiKey, hostname, 443, pins, deviceID, signer)
+	// A single primary replay authority cannot provide independent witness quorum.
+	// Keep the pinned single-provider client available for controlled tests and
+	// migration, but never expose it as a production authorization boundary.
+	_ = endpoint
+	_ = apiKey
+	_ = deviceID
+	_ = signer
+	return nil, fmt.Errorf("%w: production forwarding requires the independently administered witnessed replay adapter; single-provider replay is not an allowed fallback", ErrReplayUnavailable)
 }
 
 // NewPinnedRemoteReplay binds the endpoint to an independently trusted hostname,

@@ -5,7 +5,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -171,9 +173,6 @@ func TestWitnessedClientRestartRecoversLostPrimaryCommit(t *testing.T) {
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	dir := t.TempDir()
 	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := setReplayTestDirectoryOwner(dir); err != nil {
 		t.Fatal(err)
 	}
 	if err := setReplayTestDirectoryOwner(dir); err != nil {
@@ -375,3 +374,51 @@ func TestBuildCheckpointRequestBindsVerifiedCapabilityAndBothMemberships(t *test
 		t.Fatalf("tampered capability accepted: %v", err)
 	}
 }
+
+func TestPendingJournalCompactionRetainsUnresolvedAndRejectsReplayAfterRestart(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request1, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	request2 := nextCheckpointRequest(t, request1, signer, "DDDDDDDDDDDDDDDDDDDDDD")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
+	if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
+	if err != nil { t.Fatal(err) }
+	if _, err := store.Begin(context.Background(), request2); err != nil { t.Fatal(err) }
+	client, _ := newWitnessedFixture(t, primary, store)
+	if _, err := client.Consume(context.Background(), request1); err != nil { t.Fatal(err) }
+	data, err := os.ReadFile(path)
+	if err != nil { t.Fatal(err) }
+	var snapshot checkpointPendingSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil { t.Fatal(err) }
+	if len(snapshot.Entries) != 1 {
+		t.Fatalf("compaction entries=%d, want unresolved operation retained", len(snapshot.Entries))
+	}
+	if entry, ok := snapshot.Entries[checkpointPendingKey(request2)]; !ok || entry.State != "pending" {
+		t.Fatal("unresolved pending operation was discarded during compaction")
+	}
+	restarted, err := NewFileCheckpointPendingStore(path)
+	if err != nil { t.Fatal(err) }
+	restartedClient, _ := newWitnessedFixture(t, primary, restarted)
+	restartedClient.Witnesses = client.Witnesses
+	if _, err := restartedClient.Consume(context.Background(), request1); !errors.Is(err, ErrCheckpointReplay) {
+		t.Fatalf("acknowledged operation replay after compaction: %v", err)
+	}
+	if _, err := restarted.Begin(context.Background(), request2); err != nil {
+		t.Fatalf("unresolved operation not recoverable after restart: %v", err)
+	}
+}
+
+func TestPendingJournalExhaustionFailsClosed(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	store := NewMemoryCheckpointPendingStore()
+	for i := 0; i < checkpointPendingMaxEntries; i++ {
+		store.entries[fmt.Sprintf("filler-%d", i)] = checkpointPendingEntry{Fingerprint: "00", State: "pending"}
+	}
+	if _, err := store.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("journal exhaustion did not fail closed: %v", err)
+	}
+}
+
