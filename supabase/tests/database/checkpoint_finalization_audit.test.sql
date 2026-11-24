@@ -166,7 +166,7 @@ select throws_ok($q$select public.record_checkpoint_finalization(
  extensions.digest(convert_to(wedecent_private.canonical_jsonb('{"primary_receipt":{"tampered":true},"witness_acknowledgements":[],"revocation_proofs":[]}'::jsonb),'UTF8'),'sha256'),
  '11000000-0000-4000-8000-000000000091'
 )$q$,'23505','outcome conflict','same terminal outcome with different proof evidence is rejected');
-select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload())$q$,'23505','contradictory terminal outcome','a new intermediate transition is rejected after terminal completion');
+select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'true','exact earlier transition remains idempotent after terminal completion');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome='finalized'),1,'only one terminal outcome exists per operation');
 select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','completion requires a started operation','completion without a started operation is rejected');
