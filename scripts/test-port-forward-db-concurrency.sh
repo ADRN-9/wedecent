@@ -155,10 +155,10 @@ start c wd-c145-rollback
 send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d4','TTTTTTTTTTTTTTTTTTTTTT','33000000-0000-4000-8000-0000000000d4','SSSSSSSSSSSSSSSSSSSSSS','$ISSUED_AT','$EXPIRES_AT');"
 wait_text c '"accepted": true'
 fd="${FDS[c]}" pid="${PIDS[c]}"
-printf 'rollback;\\n\\q\\n' >&"$fd"
+printf 'rollback;\n\\q\n' >&"$fd"
 exec {fd}>&-
 unset 'FDS[c]' 'PIDS[c]'
-wait "$pid" || fail 'rollback session failed'
+if ! wait "$pid"; then cat "$WORK/c.log" >&2; fail 'rollback session failed'; fi
 assertq 0 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d4'"
 assertq 0 "select count(*) from public.port_forward_replay_entries where device_id='wd_aaaaaaaaaaaaaaaa' and jti='TTTTTTTTTTTTTTTTTTTTTT'"
 assertq "$ROLLBACK_GENERATION" "select coalesce((select generation from public.port_forward_replay_authority where device_id='wd_aaaaaaaaaaaaaaaa'),0)"
