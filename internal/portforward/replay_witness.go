@@ -162,7 +162,7 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	if err := p.Pending.Resolve(ctx, request, result.CheckpointReceipt); err != nil {
 		return CheckpointResult{}, err
 	}
-	acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt, ackStore)
+	acks, err := p.acknowledgeWitnessQuorumLocked(ctx, request, result.CheckpointReceipt, ackStore)
 	if err != nil {
 		return CheckpointResult{}, err
 	}
@@ -252,7 +252,7 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if !ok {
 		return ErrCheckpointUnavailable
 	}
-	acks, err := p.acknowledgeWitnessQuorum(ctx, saved, receipt, ackStore)
+	acks, err := p.acknowledgeWitnessQuorumLocked(ctx, saved, receipt, ackStore)
 	if err != nil {
 		return errors.Join(ErrCheckpointQuorum, err)
 	}
@@ -432,6 +432,22 @@ func committedCheckpointAckCount(acks []CheckpointWitnessAck) int {
 }
 
 func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) ([]CheckpointWitnessAck, error) {
+	if p == nil {
+		return nil, ErrCheckpointUnavailable
+	}
+	locker, ok := p.Pending.(checkpointPendingFinalizationLocker)
+	if !ok {
+		return nil, ErrCheckpointUnavailable
+	}
+	unlock, err := locker.LockFinalization(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+	return p.acknowledgeWitnessQuorumLocked(ctx, request, receipt, store)
+}
+
+func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorumLocked(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) ([]CheckpointWitnessAck, error) {
 	acks, err := store.LoadAcknowledgements(ctx, request, receipt, p.Witnesses)
 	if err != nil {
 		return nil, err
