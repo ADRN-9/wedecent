@@ -2657,11 +2657,6 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	}
 	mu.Unlock()
 
-	// Change both primary and witness heads after the ambiguous audit result.
-	// A restart retry must replay the persisted proof, not rebuild from new heads.
-	if err := client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1); err != nil {
-		t.Fatalf("revoke after ambiguous audit result: %v", err)
-	}
 	restarted, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
 		t.Fatal(err)
@@ -2681,8 +2676,8 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	if effectCount != 1 {
 		t.Fatalf("externally visible completion effect repeated: %d", effectCount)
 	}
-	if callbackCount != 2 {
-		t.Fatalf("ambiguous audit retry callback count=%d, want 2", callbackCount)
+	if callbackCount != 1 {
+		t.Fatalf("completed audit callback repeated after compaction retry: callbacks=%d", callbackCount)
 	}
 	operationID, err := checkpointFinalizationID(request, func() CheckpointReceipt {
 		consumer, _ := checkpointConsumer(request)
@@ -3059,17 +3054,35 @@ func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart
 		}
 		return writeReplayJSON(path, value, pattern, maxSize)
 	}
+	var firstEvidence *CheckpointFinalizationEvidence
+	callbackCount := 0
 	invoke := func(provider *WitnessedReplayCheckpointProvider) (string, error) {
 		var operationID string
-		err := provider.FinalizeWithAudit(context.Background(), request, func(ctx context.Context, id string, _ CheckpointFinalizationEvidence) error {
+		err := provider.FinalizeWithAudit(context.Background(), request, func(ctx context.Context, id string, evidence CheckpointFinalizationEvidence) error {
 			operationID = id
+			callbackCount++
+			if firstEvidence == nil {
+				copy, err := cloneCheckpointFinalizationEvidence(evidence)
+				if err != nil {
+					return err
+				}
+				firstEvidence = &copy
+			} else if !reflect.DeepEqual(*firstEvidence, evidence) {
+				return errors.New("retry changed persisted finalization evidence")
+			}
 			return sink.RecordCheckpointFinalization(ctx, request, id, CheckpointFinalizationComplete, nil)
 		})
 		return operationID, err
 	}
 	firstID, err := invoke(client)
-	if err == nil || firstID == "" || sink.calls != 1 {
-		t.Fatalf("first finalization did not hit injected marker failure: id=%q calls=%d err=%v", firstID, sink.calls, err)
+	if err == nil || firstID == "" || sink.calls != 1 || callbackCount != 1 || firstEvidence == nil {
+		t.Fatalf("first finalization did not hit injected marker failure: id=%q calls=%d callbacks=%d evidence=%t err=%v", firstID, sink.calls, callbackCount, firstEvidence != nil, err)
+	}
+	// The first sink call may have committed even though the client observed an
+	// error while persisting its completion marker. Advance provider heads before
+	// retry; the persisted evidence must remain byte-for-byte identical.
+	if err := client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1); err != nil {
+		t.Fatalf("revoke after ambiguous audit result: %v", err)
 	}
 
 	restartedStore, err := NewFileCheckpointPendingStore(storePath)
@@ -3082,8 +3095,8 @@ func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart
 	if err != nil {
 		t.Fatalf("finalization retry after restart failed: %v", err)
 	}
-	if secondID != firstID || sink.calls != 2 {
-		t.Fatalf("retry changed operation identity or skipped retry: first=%q second=%q calls=%d", firstID, secondID, sink.calls)
+	if secondID != firstID || sink.calls != 2 || callbackCount != 2 {
+		t.Fatalf("retry changed operation identity or skipped exact evidence retry: first=%q second=%q calls=%d callbacks=%d", firstID, secondID, sink.calls, callbackCount)
 	}
 	data, err := os.ReadFile(sink.path)
 	if err != nil {
