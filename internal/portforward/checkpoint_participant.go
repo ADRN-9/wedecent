@@ -73,8 +73,10 @@ func ValidateCheckpointV1ToV2Transition(claimed []CheckpointParticipant, authori
  for i,p:=range ps {
   h:=heads[i]
   if h.DeviceID!=p.DeviceID||h.AccountID!=p.AccountID||h.OrganizationID!=p.OrganizationID||
-   h.RevocationEpoch!=p.RevocationEpoch||h.Generation!=p.HeadGeneration||h.StateHash!=p.HeadHash||
-   _,nextErr:=h.NextGeneration();if nextErr!=nil{return [32]byte{},nextErr}
+   h.RevocationEpoch!=p.RevocationEpoch||h.Generation!=p.HeadGeneration||h.StateHash!=p.HeadHash {
+   return [32]byte{},ErrCheckpointStale
+  }
+  if _,err:=h.NextGeneration();err!=nil{return [32]byte{},err}
   if (h.Generation==0&&h.StateHash!=([32]byte{}))||(h.Generation>0&&h.StateHash==([32]byte{})) {
    return [32]byte{},ErrCheckpointStale
   }
