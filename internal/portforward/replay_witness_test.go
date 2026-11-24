@@ -1072,6 +1072,19 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 	if used != 1 { t.Fatalf("primary capability consumed %d times", used) }
 	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(initiator))) != 1 { t.Fatalf("witness %s was committed again during finalization", witness.id) } }
 }
+func TestFinalizationRejectsPrimaryOnlyAmbiguousOperation(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	store := NewMemoryCheckpointPendingStore()
+	if _, err := store.Begin(context.Background(), request); err != nil { t.Fatal(err) }
+	if _, err := primary.Consume(context.Background(), request); err != nil { t.Fatal(err) }
+	provider, witnesses := newWitnessedFixture(t, primary, store)
+	if err := provider.Finalize(context.Background(), request); !errors.Is(err, ErrCheckpointQuorum) { t.Fatalf("primary-only operation was incorrectly finalized: %v", err) }
+	for _, witness := range witnesses { if len(witness.historyFor(witnessScope(checkpointEndpointForConsumer(request)))) != 0 { t.Fatalf("finalization created a new witness commitment at %s", witness.id) } }
+	consumer, _ := checkpointConsumer(request); key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
+	primary.mu.Lock(); used := len(primary.ledgers[key].used); primary.mu.Unlock()
+	if used != 1 { t.Fatalf("primary consumption count=%d", used) }
+}
 func TestFilePendingJournalByteAndEntryExhaustion(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
