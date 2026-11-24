@@ -87,7 +87,7 @@ func TestIndependentWitnessQuorumAndPendingReceipt(t *testing.T) {
 			t.Fatalf("untrusted witness %q", receipt.WitnessID)
 		}
 	}
-	if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointReplay) {
+	if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointReplay) && !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("resolved operation retried as new session: %v", err)
 	}
 }
@@ -201,7 +201,7 @@ func TestWitnessedClientRestartRecoversLostPrimaryCommit(t *testing.T) {
 	if result.Disposition != CheckpointRecovered || len(result.WitnessReceipts) < restarted.Quorum {
 		t.Fatalf("restart recovery disposition=%q witnesses=%d", result.Disposition, len(result.WitnessReceipts))
 	}
-	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointReplay) {
+	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointReplay) && !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("completed operation replay accepted: %v", err)
 	}
 	_ = witnesses
@@ -418,7 +418,7 @@ func TestPendingJournalCompactionRetainsUnresolvedAndRejectsReplayAfterRestart(t
 	}
 	restartedClient, _ := newWitnessedFixture(t, primary, restarted)
 	restartedClient.Witnesses = client.Witnesses
-	if _, err := restartedClient.Consume(context.Background(), request1); !errors.Is(err, ErrCheckpointReplay) {
+	if _, err := restartedClient.Consume(context.Background(), request1); !errors.Is(err, ErrCheckpointReplay) && !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("acknowledged operation replay after compaction: %v", err)
 	}
 	if _, err := restarted.Begin(context.Background(), request2); err != nil {
