@@ -229,7 +229,7 @@ func openReplayBootstrapLockHandle(lockPath string) (*os.File, bool, error) {
 // lockReplayBootstrapFile serializes lock-file publication and all cleanup of
 // lock-bootstrap staging files. The handle denies delete sharing so its path
 // cannot be replaced while another process is using it.
-func lockReplayBootstrapFile(ctx context.Context, path string, onWait func()) (func() error, error) {
+func lockReplayBootstrapFileContext(ctx context.Context, path string, onWait func()) (func() error, error) {
 	bootstrapPath := path + ".lock.bootstrap"
 	file, _, err := openReplayBootstrapLockHandle(bootstrapPath)
 	if err != nil {
@@ -268,6 +268,10 @@ func lockReplayBootstrapFile(ctx context.Context, path string, onWait func()) (f
 			file.Close(),
 		)
 	}, nil
+}
+
+func lockReplayBootstrapFile(path string) (func() error, error) {
+	return lockReplayBootstrapFileContext(context.Background(), path, nil)
 }
 
 func openReplayLockHandle(lockPath string) (*os.File, error) {
@@ -384,7 +388,7 @@ func lockReplayFileOSContext(ctx context.Context, path, statePath string, onWait
 	if err := secureReplayDirectory(dir); err != nil {
 		return nil, false, err
 	}
-	bootstrapUnlock, err := lockReplayBootstrapFile(ctx, path, onWait)
+	bootstrapUnlock, err := lockReplayBootstrapFileContext(ctx, path, onWait)
 	if err != nil {
 		return nil, false, err
 	}
