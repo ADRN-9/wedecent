@@ -412,12 +412,16 @@ func (p *FileCheckpointFencePrimary) verifyFenceAcknowledgements(token Checkpoin
 	valid := 0
 	for _, ack := range acknowledgements {
 		key, trusted := p.witnesses[ack.WitnessID]
-		if !trusted || seen[ack.WitnessID] || !containsString(token.WitnessIDs, ack.WitnessID) ||
-			ack.TokenSHA256 != digest || ack.Generation != token.Generation ||
-			ack.Action != token.Action || ack.OperationID != token.OperationID ||
-			ack.CommittedAtUnixMS > token.ExpiresAtUnixMS ||
-			VerifyCheckpointFenceAcknowledgement(ack, ack.WitnessID, key) != nil {
+		if !trusted || !containsString(token.WitnessIDs, ack.WitnessID) {
+			return ErrCheckpointIntegrity
+		}
+		if VerifyCheckpointFenceAcknowledgement(ack, ack.WitnessID, key) != nil {
 			continue
+		}
+		if seen[ack.WitnessID] || ack.TokenSHA256 != digest ||
+			ack.Generation != token.Generation || ack.Action != token.Action ||
+			ack.OperationID != token.OperationID || ack.CommittedAtUnixMS > token.ExpiresAtUnixMS {
+			return ErrCheckpointWitnessDisagreement
 		}
 		seen[ack.WitnessID] = true
 		valid++
