@@ -160,10 +160,6 @@ func (h *fenceOrderingHarness) apply(action CheckpointFenceAction, operationID s
 	if err != nil {
 		return CheckpointFenceToken{}, err
 	}
-	digest, err := CheckpointFenceTokenDigest(signed)
-	if err != nil {
-		return CheckpointFenceToken{}, err
-	}
 	quorum, err := CheckpointFenceQuorum(len(signed.WitnessIDs))
 	if err != nil {
 		return CheckpointFenceToken{}, err
@@ -178,7 +174,6 @@ func (h *fenceOrderingHarness) apply(action CheckpointFenceAction, operationID s
 	if acknowledged < quorum || h.generation != expectedGeneration {
 		return CheckpointFenceToken{}, ErrCheckpointQuorum
 	}
-	_ = digest
 	h.generation = signed.Generation
 	h.revocationEpoch = signed.ResultingRevocationEpoch
 	return signed, nil
