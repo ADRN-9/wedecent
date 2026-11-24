@@ -173,9 +173,9 @@ assertq "$((ROLLBACK_GENERATION + 1))" "select generation from public.port_forwa
 
 # Audit finalization uses the same participant locks as authorization and revocation.
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
-create function public.wd_c145_audit(p_operation_id text,p_jti text) returns jsonb
+create function public.wd_c145_audit(p_operation_id text,p_jti text,p_signature text default repeat('A',86)||'==') returns jsonb
 language plpgsql security definer set search_path=''
-as $
+as $c164$
 declare payload jsonb;
 begin
  payload := jsonb_build_object(
@@ -186,7 +186,7 @@ begin
   'authorization_sha256',(select encode(authorization_sha256,'hex') from public.port_forward_authorization_transactions where jti=p_jti),
   'route_authorization_sha256',repeat('0',64),'route_authorization_id','','route_authorization_jti','','route_authorization_json','',
   'device_public_key',(select public_key from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'),
-  'device_signature',repeat('A',86)||'=='
+  'device_signature',p_signature
  );
  return public.record_checkpoint_finalization(
   p_operation_id,'finalization_started',1,payload,
@@ -233,7 +233,7 @@ begin
   '11000000-0000-4000-8000-0000000000c1'
  );
 end;
-$;
+$c164$;
 SQL
 
 audit_race() {
@@ -295,7 +295,7 @@ start a wd-c166-audit-conflict-a
 send a "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','AAAAAAAAAAAAAAAAAAAAAA'); select 'audit-conflict-first-ready';"
 wait_text a "audit-conflict-first-ready"
 start b wd-c166-audit-conflict-b
-send b "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','HHHHHHHHHHHHHHHHHHHHHH');"
+send b "begin; select public.wd_c145_audit('$AUDIT_CONFLICT_ID','AAAAAAAAAAAAAAAAAAAAAA','$(printf 'H%.0s' {1..86})==');"
 wait_lock wd-c166-audit-conflict-b
 finish a || fail 'first conflicting audit transaction failed'
 fd="${FDS[b]}" pid="${PIDS[b]}"
@@ -332,5 +332,5 @@ finish d || fail 'JTI conflict transaction did not finish'
 assertq 1 "select count(*) from public.port_forward_authorization_transactions where jti='RRRRRRRRRRRRRRRRRRRRRR'"
 assertq 0 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d3'"
 
-psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_audit_finalized(text,text); drop function public.wd_c145_audit(text,text); drop function public.wd_c145_consume(uuid,text,uuid,text,timestamptz,timestamptz); drop function public.wd_c145_route(uuid,text);'
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_audit_finalized(text,text); drop function public.wd_c145_audit(text,text,text); drop function public.wd_c145_consume(uuid,text,uuid,text,timestamptz,timestamptz); drop function public.wd_c145_route(uuid,text);'
 printf 'All deterministic multi-session authorization races passed.\n'
