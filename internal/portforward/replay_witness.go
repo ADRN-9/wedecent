@@ -276,10 +276,6 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if err := p.verifyRequestMembershipVector(ctx, saved); err != nil {
 		return err
 	}
-	evidence, err := p.finalizationEvidence(ctx, saved, receipt, acks)
-	if err != nil {
-		return err
-	}
 	completionStore, ok := p.Pending.(checkpointPendingCompletionStore)
 	if !ok {
 		return ErrCheckpointUnavailable
@@ -293,6 +289,10 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 		return err
 	}
 	if !completed && onQuorumCommitted != nil {
+		evidence, err := p.finalizationEvidence(ctx, saved, receipt, acks)
+		if err != nil {
+			return err
+		}
 		if err := onQuorumCommitted(ctx, operationID, evidence); err != nil {
 			return err
 		}
