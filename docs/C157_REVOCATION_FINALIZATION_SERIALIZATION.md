@@ -43,3 +43,8 @@ Production activation still requires an independently administered primary/witne
 ## Verification status
 
 Source changes were committed to the existing PR branch. No local Go command runner was available in this execution, so Go tests, race tests and vet are not claimed as run here. Exact-HEAD GitHub Actions must be inspected after the latest commit before any verification claim is made.
+
+
+### CI correction
+
+The first CI run on exact SHA `644bf3bc6d1f4c4e516936c3d2e5b1593865d90e` found a compile-time unused local binding in the new audit-recovery test. The binding was removed in follow-up commit `74a848f560998808b942d1b8963cf14bcbca801b`. The failed run is defect-discovery evidence only; it is not counted as a pass. Exact-HEAD CI and all three Desktop platform checks for the corrected revision remain pending.
