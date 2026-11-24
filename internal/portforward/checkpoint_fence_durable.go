@@ -283,6 +283,36 @@ func (p *FileCheckpointFencePrimary) CommitFence(ctx context.Context, token Chec
 	})
 }
 
+func (p *FileCheckpointFencePrimary) FenceHead(ctx context.Context, scope CheckpointWitnessScope) (CheckpointFenceHead, error) {
+	if p == nil || ctx == nil || !validCheckpointFenceScope(scope) {
+		return CheckpointFenceHead{}, ErrCheckpointUnavailable
+	}
+	var result CheckpointFenceHead
+	err := p.withIndex(ctx, func(_ *os.File, index *checkpointFencePrimaryIndex) error {
+		state := index.Scopes[scope]
+		if state == nil {
+			return nil
+		}
+		result = CheckpointFenceHead{
+			Generation: state.Generation, RevocationEpoch: state.RevocationEpoch,
+			FenceDigest: state.FenceHead, PrimaryHeadGeneration: state.PrimaryHeadGeneration,
+			PrimaryHeadSHA256: state.PrimaryHeadSHA256, PendingOperationID: state.PendingOperationID,
+		}
+		for _, operation := range state.Operations {
+			if operation.Committed && operation.Token.Generation == state.Generation {
+				result.LastOperationID = operation.Token.OperationID
+				result.LastAction = operation.Token.Action
+				break
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return CheckpointFenceHead{}, err
+	}
+	return result, nil
+}
+
 func (p *FileCheckpointFencePrimary) LoadFence(ctx context.Context, scope CheckpointWitnessScope, operationID string) (CheckpointFenceOperation, bool, error) {
 	if p == nil || ctx == nil {
 		return CheckpointFenceOperation{}, false, ErrCheckpointUnavailable
