@@ -275,6 +275,7 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	var evidenceStore checkpointPendingEvidenceStore
 	var persistedEvidence CheckpointFinalizationEvidence
 	var hasPersistedEvidence bool
+	var acks []CheckpointWitnessAck
 	if onQuorumCommitted != nil {
 		evidenceStore, ok = p.Pending.(checkpointPendingEvidenceStore)
 		if !ok {
@@ -283,6 +284,9 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 		persistedEvidence, hasPersistedEvidence, err = evidenceStore.LoadFinalizationEvidence(ctx, saved, receipt, operationID)
 		if err != nil {
 			return err
+		}
+		if hasPersistedEvidence {
+			acks = append([]CheckpointWitnessAck(nil), persistedEvidence.WitnessAcknowledgements...)
 		}
 		// Once proof bytes have been durably frozen, retries must submit those
 		// exact bytes. Re-reading mutable provider heads here would change the
@@ -303,7 +307,7 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 		if !ok {
 			return ErrCheckpointUnavailable
 		}
-		acks, err := p.acknowledgeWitnessQuorumLocked(ctx, saved, receipt, ackStore)
+		acks, err = p.acknowledgeWitnessQuorumLocked(ctx, saved, receipt, ackStore)
 		if err != nil {
 			return errors.Join(ErrCheckpointQuorum, err)
 		}
