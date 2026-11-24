@@ -268,6 +268,22 @@ func (s *MemoryCheckpointPendingStore) RecordAcknowledgement(ctx context.Context
 	})
 }
 
+func (s *MemoryCheckpointPendingStore) LoadFinalization(ctx context.Context, deviceID, jti string, authorizationHash [sha256.Size]byte) (CheckpointRequest, CheckpointReceipt, bool, bool, error) {
+	if s == nil || !deviceIDPattern.MatchString(deviceID) || !jtiPattern.MatchString(jti) || authorizationHash == ([sha256.Size]byte{}) {
+		return CheckpointRequest{}, CheckpointReceipt{}, false, false, ErrCheckpointIntegrity
+	}
+	var request CheckpointRequest
+	var receipt CheckpointReceipt
+	found, hasReceipt := false, false
+	for _, entry := range s.entries {
+		if entry.Request.ConsumingDeviceID != deviceID || entry.Request.JTI != jti || entry.Request.AuthorizationSHA256 != authorizationHash { continue }
+		if found { return CheckpointRequest{}, CheckpointReceipt{}, false, false, ErrCheckpointIntegrity }
+		found = true
+		request = cloneCheckpointRequest(entry.Request)
+		if entry.Receipt != nil { receipt = cloneCheckpointReceipt(*entry.Receipt); hasReceipt = true }
+	}
+	return request, receipt, found, hasReceipt, nil
+}
 func (s *MemoryCheckpointPendingStore) LoadAcknowledgements(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, witnesses []CheckpointWitnessTrust) ([]CheckpointWitnessAck, error) {
 	if s == nil || ctx == nil {
 		return nil, ErrReplayUnavailable
