@@ -30,5 +30,7 @@ jobs:
             git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
             git add internal/portforward/replay_checkpoint.go internal/portforward/replay_checkpoint_test.go internal/portforward/replay_checkpoint_recovery_test.go
             git commit -m 'style: format C126 replay checkpoint files'
+            git fetch origin "$BRANCH"
+            git rebase "origin/$BRANCH"
             git push origin "HEAD:$BRANCH"
           fi
