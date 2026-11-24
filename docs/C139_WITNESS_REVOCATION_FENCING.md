@@ -13,6 +13,8 @@ The deterministic witness implementation now treats its mutex-protected membersh
 - Witness `Commit` checks the signed initiator and destination epochs and also the signed router epoch whenever the request carries the routed authorization fingerprint.
 - Witness `Acknowledge` repeats the same complete participant-vector check. A receipt committed before revocation cannot receive a new acknowledgement after any endpoint or router is revoked.
 - The participant vector is derived from the device-signed `CheckpointRequest`; the existing request fingerprint validates the route-fingerprint/router-presence pairing and signs the router's device, account, organization and revocation epoch. No transport or route metadata is substituted for identity.
+- Witness heads report the monotonic revocation epoch even when no replay ledger exists yet; an existing ledger whose epoch disagrees with the witness revocation map fails closed.
+- Before persisted acknowledgements are reused, the provider rechecks signed initiator, destination and router epochs against primary and witness heads. It repeats this check immediately before the finalization audit callback. This narrows stale-ack reuse but is explicitly not a distributed atomic finalize/revoke transaction.
 - Stale epoch values fail with `ErrCheckpointRevoked`; missing or malformed route/router bindings fail through the existing checkpoint request integrity validation.
 
 New deterministic regression coverage includes:
@@ -23,6 +25,8 @@ New deterministic regression coverage includes:
 - Concurrent commit/revoke, with acknowledgement fenced after successful revocation.
 - Concurrent acknowledgement/revoke, with any later acknowledgement fenced.
 - Concurrent primary consume/revoke, proving a primary receipt cannot subsequently be committed by a witness after router revocation.
+- Persisted acknowledgement reuse rejected after subsequent initiator, destination or router revocation.
+- Deterministic primary fixture now requires the signed router membership to exist and match exactly for routed consumption.
 
 ## Distributed-ordering boundary
 
@@ -46,7 +50,16 @@ C139 therefore does not invent table names, permission semantics, or migration d
 - No production membership/revocation resolver or trusted membership schema contract was available to safely implement the expanded SQL transaction.
 - No real primary/witness distributed prepare/finalize protocol was implemented.
 - No production credentials, service endpoints, TLS SPKI pins, KMS/HSM trust anchors, or independent witness infrastructure were provisioned.
-- No local Go toolchain/repository checkout was available in this execution environment; the new Go tests have not been run locally.
-- Exact-HEAD CI and Desktop workflows must complete successfully for the final C139 revision before claiming validation.
+- No local Go toolchain/repository checkout was available in this execution environment; validation was performed through GitHub Actions rather than a claimed local test run.
+
+## Exact-HEAD verification
+
+Code/test HEAD: `75301b8ea45a726ec64b86f47a919f187463c04b`.
+
+- CI workflow [45334093686](https://github.com/ADRN-9/wedecent/actions/runs/45334093686) completed successfully at that exact code/test SHA. Linux formatting, replay stress/crash recovery, port-forward tests, port-forward race tests, all Go packages, vet, Unix packaging, protocol compatibility, fuzzing, full race suite, direct transport and relay smoke tests passed. Windows native tests/build, Windows release, macOS native tests/build, Supabase database, control-plane, relay worker, route capability client and routed E2E passed.
+- Desktop workflow [45334093589](https://github.com/ADRN-9/wedecent/actions/runs/45334093589) was still running at the time of this document update: macOS Tauri passed; Linux prerequisite installation and Windows Tauri compilation were still in progress. No complete Desktop pass is claimed.
+- An earlier CI attempt exposed formatting differences and routed fixture omissions; both were corrected before the successful exact-SHA run above.
+
+The branch was confirmed identical to code/test HEAD `75301b8...` before this documentation-only update. PR #186 remains open and draft.
 
 PR #186 must remain open and draft. This document records repository changes and blockers, not production readiness.
