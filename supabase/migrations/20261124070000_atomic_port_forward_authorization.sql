@@ -244,6 +244,7 @@ declare
     v_initiator public.devices%rowtype;
     v_destination public.devices%rowtype;
     v_router public.devices%rowtype;
+    v_locked_device public.devices%rowtype;
     v_route_grant public.route_authorization_grants%rowtype;
     v_transaction public.port_forward_authorization_transactions%rowtype;
     v_membership_role public.organization_role;
@@ -311,7 +312,15 @@ begin
            or p_route_authorization_jti is null
            or p_route_authorization_jti !~ '^[A-Za-z0-9_-]{22}$'
            or p_route_source_device_id is null
-           or p_route_destination_device_id is null then
+           or p_route_destination_device_id is null
+           or (p_direction = 'local' and (
+               p_route_source_device_id <> p_initiating_device_id
+               or p_route_destination_device_id <> p_destination_device_id
+           ))
+           or (p_direction = 'remote' and (
+               p_route_source_device_id <> p_destination_device_id
+               or p_route_destination_device_id <> p_initiating_device_id
+           )) then
             raise exception 'routed authorization binding is incomplete'
                 using errcode = '22023';
         end if;
@@ -425,7 +434,7 @@ begin
           from unnest(v_device_ids) as d
          order by d
     loop
-        select d.* into v_router
+        select d.* into v_locked_device
           from public.devices as d
          where d.device_id = v_target_device_id
          for share;
@@ -436,13 +445,13 @@ begin
         end if;
 
         if v_target_device_id = p_initiating_device_id then
-            if row(v_router.owner_user_id, v_router.organization_id, v_router.revocation_epoch, v_router.revoked_at, v_router.public_key, v_router.kind)
+            if row(v_locked_device.owner_user_id, v_locked_device.organization_id, v_locked_device.revocation_epoch, v_locked_device.revoked_at, v_locked_device.public_key, v_locked_device.kind)
                is distinct from
                row(v_pre_initiator.owner_user_id, v_pre_initiator.organization_id, v_pre_initiator.revocation_epoch, v_pre_initiator.revoked_at, v_pre_initiator.public_key, v_pre_initiator.kind) then
                 raise exception 'initiating device authorization snapshot changed'
                     using errcode = '40001';
             end if;
-            v_initiator := v_router;
+            v_initiator := v_locked_device;
         elsif v_target_device_id = p_destination_device_id then
             if row(v_router.owner_user_id, v_router.organization_id, v_router.revocation_epoch, v_router.revoked_at, v_router.public_key, v_router.kind)
                is distinct from
@@ -450,7 +459,7 @@ begin
                 raise exception 'destination device authorization snapshot changed'
                     using errcode = '40001';
             end if;
-            v_destination := v_router;
+            v_destination := v_locked_device;
         else
             if row(v_router.owner_user_id, v_router.organization_id, v_router.revocation_epoch, v_router.revoked_at, v_router.public_key, v_router.kind)
                is distinct from
@@ -458,7 +467,7 @@ begin
                 raise exception 'router device authorization snapshot changed'
                     using errcode = '40001';
             end if;
-            v_router := v_router;
+            v_router := v_locked_device;
         end if;
     end loop;
 
