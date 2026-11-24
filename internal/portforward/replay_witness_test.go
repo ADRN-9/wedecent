@@ -2459,6 +2459,23 @@ func TestNegativeFirstTerminalDecisionsAreDurableAndEquivocationTerminal(t *test
 					evidence[0].Conflicting.Decision != "committed" {
 					t.Fatalf("negative-first equivocation evidence missing: evidence=%+v err=%v", evidence, err)
 				}
+				var entry checkpointPendingEntry
+				if backend == "memory" {
+					entry = store.(*MemoryCheckpointPendingStore).entries[checkpointPendingKey(request)]
+				} else {
+					raw, readErr := os.ReadFile(path)
+					if readErr != nil {
+						t.Fatal(readErr)
+					}
+					var snapshot checkpointPendingSnapshot
+					if err := json.Unmarshal(raw, &snapshot); err != nil {
+						t.Fatal(err)
+					}
+					entry = snapshot.Entries[checkpointPendingKey(request)]
+				}
+				if len(entry.Acknowledgements) != 3 || committedCheckpointAckCount(entry.Acknowledgements) != 2 {
+					t.Fatalf("first-seen decisions from other witnesses were lost: %+v", entry.Acknowledgements)
+				}
 			})
 		}
 	}
