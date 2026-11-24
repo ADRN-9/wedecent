@@ -706,7 +706,7 @@ func TestPendingJournalPartialAcknowledgementPersistenceAndValidation(t *testing
 	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
 		writes++
 		if writes == 2 { return errors.New("injected acknowledgement persistence failure") }
-		return writeReplayJSON(path, snapshot, pattern, maxSize)
+		return writeReplayJSON(path, value, pattern, maxSize)
 	}
 	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[0], client.Witnesses[0]); err != nil { t.Fatal(err) }
 	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[1], client.Witnesses[1]); !errors.Is(err, ErrReplayUnavailable) {
@@ -855,4 +855,58 @@ func TestPendingJournalCorruptionAndAmbiguousStateFailClosed(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestWitnessCommitCrashBeforeLocalResolutionRecoversIdempotently(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
+	if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
+	if err != nil { t.Fatal(err) }
+	failResolve := true
+	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
+		snapshot, ok := value.(checkpointPendingSnapshot)
+		if !ok { return errors.New("unexpected pending snapshot type") }
+		if failResolve {
+			for _, entry := range snapshot.Entries {
+				if entry.State == "resolved" {
+					failResolve = false
+					return errors.New("injected crash after witness commitment")
+				}
+			}
+		}
+		return writeReplayJSON(path, value, pattern, maxSize)
+	}
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("local resolution crash did not fail closed: %v", err)
+	}
+	scope := witnessScope(checkpointEndpointForConsumer(request))
+	for _, witness := range witnesses {
+		if got := len(witness.historyFor(scope)); got != 1 {
+			t.Fatalf("witness %s commitment count before retry=%d", witness.id, got)
+		}
+	}
+	restartedStore, err := NewFileCheckpointPendingStore(path)
+	if err != nil { t.Fatal(err) }
+	restarted, _ := newWitnessedFixture(t, primary, restartedStore)
+	restarted.Witnesses = client.Witnesses
+	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
+		t.Fatalf("recovered operation was returned as a new session: %v", err)
+	}
+	for _, witness := range witnesses {
+		if got := len(witness.historyFor(scope)); got != 1 {
+			t.Fatalf("witness %s was recommitted after restart: %d", witness.id, got)
+		}
+	}
+	consumer, ok := checkpointConsumer(request)
+	if !ok { t.Fatal("request has no checkpoint consumer") }
+	key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
+	primary.mu.Lock()
+	used := len(primary.ledgers[key].used)
+	primary.mu.Unlock()
+	if used != 1 { t.Fatalf("primary authorization consumption count=%d", used) }
 }
