@@ -115,3 +115,106 @@ func TestCheckpointFenceTokenRejectsAmbiguousWitnessSet(t *testing.T) {
 		t.Fatalf("five-witness strict majority = %d, %v", quorum, err)
 	}
 }
+
+
+type fenceOrderingHarness struct {
+	generation uint64
+	revocationEpoch uint64
+	witnessGenerations map[string]uint64
+	base CheckpointFenceToken
+	primaryKey ed25519.PrivateKey
+}
+
+func newFenceOrderingHarness(t *testing.T) *fenceOrderingHarness {
+	t.Helper()
+	base, key := validFenceToken(t, CheckpointFenceFinalize)
+	witnessGenerations := make(map[string]uint64, len(base.WitnessIDs))
+	for _, id := range base.WitnessIDs {
+		witnessGenerations[id] = base.ExpectedFenceGeneration
+	}
+	return &fenceOrderingHarness{
+		generation: base.ExpectedFenceGeneration,
+		revocationEpoch: base.ExpectedRevocationEpoch,
+		witnessGenerations: witnessGenerations,
+		base: base,
+		primaryKey: key,
+	}
+}
+
+// apply models the durable compare-and-append rule; it is not a network service.
+func (h *fenceOrderingHarness) apply(action CheckpointFenceAction, operationID string, expectedGeneration, expectedEpoch uint64) (CheckpointFenceToken, error) {
+	if expectedGeneration != h.generation || expectedEpoch != h.revocationEpoch {
+		return CheckpointFenceToken{}, ErrCheckpointStale
+	}
+	token := h.base
+	token.ExpectedFenceGeneration = expectedGeneration
+	token.Generation = expectedGeneration + 1
+	token.ExpectedRevocationEpoch = expectedEpoch
+	token.ResultingRevocationEpoch = expectedEpoch
+	token.Action = action
+	token.OperationID = operationID
+	if action == CheckpointFenceRevoke {
+		token.ResultingRevocationEpoch++
+	}
+	signed, err := SignCheckpointFenceToken(token, h.primaryKey)
+	if err != nil {
+		return CheckpointFenceToken{}, err
+	}
+	digest, err := CheckpointFenceTokenDigest(signed)
+	if err != nil {
+		return CheckpointFenceToken{}, err
+	}
+	quorum, err := CheckpointFenceQuorum(len(signed.WitnessIDs))
+	if err != nil {
+		return CheckpointFenceToken{}, err
+	}
+	acknowledged := 0
+	for _, id := range signed.WitnessIDs {
+		if h.witnessGenerations[id] == expectedGeneration {
+			h.witnessGenerations[id] = signed.Generation
+			acknowledged++
+		}
+	}
+	if acknowledged < quorum || h.generation != expectedGeneration {
+		return CheckpointFenceToken{}, ErrCheckpointQuorum
+	}
+	_ = digest
+	h.generation = signed.Generation
+	h.revocationEpoch = signed.ResultingRevocationEpoch
+	return signed, nil
+}
+
+func TestCheckpointFenceOrderingRevocationFirstRejectsFinalization(t *testing.T) {
+	h := newFenceOrderingHarness(t)
+	revoked, err := h.apply(CheckpointFenceRevoke, "revoke-first", h.generation, h.revocationEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked.Generation != 5 || revoked.ResultingRevocationEpoch != 8 {
+		t.Fatalf("unexpected revocation fence: generation=%d epoch=%d", revoked.Generation, revoked.ResultingRevocationEpoch)
+	}
+	if _, err := h.apply(CheckpointFenceFinalize, "stale-finalize", 4, 7); !errors.Is(err, ErrCheckpointStale) {
+		t.Fatalf("finalization based on pre-revocation generation was not rejected: %v", err)
+	}
+}
+
+func TestCheckpointFenceOrderingFinalizationFirstRemainsValidAtOrderPoint(t *testing.T) {
+	h := newFenceOrderingHarness(t)
+	finalized, err := h.apply(CheckpointFenceFinalize, "finalize-first", h.generation, h.revocationEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyCheckpointFenceToken(finalized, h.primaryKey.Public().(ed25519.PublicKey), 1000); err != nil {
+		t.Fatalf("finalization token invalid at its ordering point: %v", err)
+	}
+	revoked, err := h.apply(CheckpointFenceRevoke, "revoke-after-finalize", finalized.Generation, finalized.ResultingRevocationEpoch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if revoked.Generation != finalized.Generation+1 || revoked.ResultingRevocationEpoch != finalized.ResultingRevocationEpoch+1 {
+		t.Fatalf("revocation did not follow finalization in the common order: finalize=%+v revoke=%+v", finalized, revoked)
+	}
+	if err := VerifyCheckpointFenceToken(finalized, h.primaryKey.Public().(ed25519.PublicKey), 1000); err != nil {
+		t.Fatalf("later revocation retroactively invalidated committed finalization token: %v", err)
+	}
+}
