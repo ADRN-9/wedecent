@@ -3,9 +3,9 @@ package portforward
 import (
 	"context"
 	"crypto/ed25519"
-	"errors"
+	"bytes"
 	"crypto/sha256"
-	"time"
+	"errors"
 )
 
 type CheckpointFenceWitnessClient struct {
@@ -20,7 +20,6 @@ type CheckpointFenceCoordinator struct {
 	WitnessSetVersion string
 	Witnesses         []CheckpointFenceWitnessClient
 	Quorum            int
-	Now               func() time.Time
 }
 
 // Execute reserves the exact operation before asking witnesses to persist it.
@@ -113,7 +112,7 @@ func validFenceCoordinatorWitnesses(witnesses []CheckpointFenceWitnessClient, qu
 		if witness.ID == "" || witness.Witness == nil || len(witness.PublicKey) != ed25519.PublicKeySize || ids[witness.ID] {
 			return false
 		}
-		if string(witness.PublicKey) == string(primaryKey) {
+		if bytes.Equal(witness.PublicKey, primaryKey) {
 			return false
 		}
 		ids[witness.ID] = true
