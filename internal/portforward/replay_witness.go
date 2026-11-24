@@ -98,6 +98,13 @@ func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
 		!validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) {
 		return ErrCheckpointUnavailable
 	}
+	trustConfigurer, ok := p.Pending.(checkpointPendingTrustConfigurer)
+	if !ok {
+		return ErrCheckpointUnavailable
+	}
+	if err := trustConfigurer.SetCheckpointTrustAnchors(p.PrimaryKey, p.Witnesses, p.Quorum); err != nil {
+		return errors.Join(ErrCheckpointIntegrity, err)
+	}
 	return nil
 }
 

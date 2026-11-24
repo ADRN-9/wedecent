@@ -1295,6 +1295,83 @@ func TestPendingJournalInterruptedPublicationPreservesPreviousEvidence(t *testin
 		t.Fatalf("previous pending evidence lost: existing=%t err=%v", existing, err)
 	}
 }
+func TestFilePendingJournalRejectsForgedAcknowledgementInUnrelatedEntry(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, signer, _, _, _ := makeCheckpointFixture(
+		t,
+		primary,
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222",
+	)
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider, _ := newWitnessedFixture(t, primary, store)
+	if err := provider.ValidateConfiguration(); err != nil {
+		t.Fatal(err)
+	}
+	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
+		if snapshot, ok := value.(checkpointPendingSnapshot); ok && len(snapshot.Entries) == 0 {
+			return errors.New("injected compaction publication failure")
+		}
+		return writeReplayJSON(path, value, pattern, maxSize)
+	}
+	if _, err := provider.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointUnavailable) {
+		t.Fatalf("expected retained acknowledgement evidence after interrupted compaction: %v", err)
+	}
+	store.writeSnapshot = nil
+	second := nextCheckpointRequest(t, request, signer, "FFFFFFFFFFFFFFFFFFFFFF")
+	if _, err := store.Begin(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot checkpointPendingSnapshot
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for key, entry := range snapshot.Entries {
+		if entry.Request.JTI != request.JTI {
+			continue
+		}
+		if len(entry.Acknowledgements) == 0 {
+			t.Fatal("expected persisted witness acknowledgement")
+		}
+		entry.Acknowledgements[0].Signature = append([]byte(nil), entry.Acknowledgements[0].Signature...)
+		entry.Acknowledgements[0].Signature[0] ^= 0xff
+		snapshot.Entries[key] = entry
+		found = true
+	}
+	if !found {
+		t.Fatal("original resolved operation missing from pending journal")
+	}
+	forged, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, forged, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayFileOwner(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(context.Background(), second); !errors.Is(err, ErrReplayUnavailable) {
+		t.Fatalf("forged acknowledgement in unrelated entry was accepted: %v", err)
+	}
+}
+
 func TestFilePendingJournalByteAndEntryExhaustion(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")

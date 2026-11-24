@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -51,14 +52,23 @@ type checkpointPendingCompactor interface {
 	Compact(context.Context, []CheckpointWitnessAck, []CheckpointWitnessTrust, int) error
 }
 
+type checkpointPendingTrustConfigurer interface {
+	SetCheckpointTrustAnchors(ed25519.PublicKey, []CheckpointWitnessTrust, int) error
+}
+
 type FileCheckpointPendingStore struct {
 	Path string
 	Now  func() time.Time
 
-	// writeSnapshot is a deterministic persistence fault-injection seam for package tests.
 	writeSnapshot func(string, any, string, int64) error
 	maxSize       int64
 	maxEntries    int
+
+	trustMu       sync.RWMutex
+	primaryTrust  ed25519.PublicKey
+	witnessTrust  map[string]ed25519.PublicKey
+	trustQuorum   int
+	trustSet      bool
 }
 
 func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, error) {
@@ -385,7 +395,8 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 		if snapshot.Version != checkpointPendingVersion || snapshot.Entries == nil || len(snapshot.Entries) > maxEntries {
 			return false, ErrReplayUnavailable
 		}
-		if err := validateCheckpointPendingSnapshot(snapshot, time.Now().UTC()); err != nil {
+		primaryKey, witnessKeys := s.checkpointTrustAnchors()
+		if err := validateCheckpointPendingSnapshot(snapshot, time.Now().UTC(), primaryKey, witnessKeys); err != nil {
 			return false, fmt.Errorf("%w: invalid pending journal: %v", ErrReplayUnavailable, err)
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -401,7 +412,8 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 	if len(snapshot.Entries) > maxEntries {
 		return false, ErrReplayUnavailable
 	}
-	if err := validateCheckpointPendingSnapshot(snapshot, time.Now().UTC()); err != nil {
+	primaryKey, witnessKeys := s.checkpointTrustAnchors()
+	if err := validateCheckpointPendingSnapshot(snapshot, time.Now().UTC(), primaryKey, witnessKeys); err != nil {
 		return false, fmt.Errorf("%w: invalid pending mutation: %v", ErrReplayUnavailable, err)
 	}
 	write := writeReplayJSON
@@ -437,6 +449,91 @@ func cloneCheckpointRequest(request CheckpointRequest) CheckpointRequest {
 	request.DevicePublicKey = append(ed25519.PublicKey(nil), request.DevicePublicKey...)
 	request.DeviceSignature = append([]byte(nil), request.DeviceSignature...)
 	return request
+}
+
+func cloneCheckpointTrustAnchors(primary ed25519.PublicKey, witnesses []CheckpointWitnessTrust, quorum int) (ed25519.PublicKey, map[string]ed25519.PublicKey, error) {
+	if !validWitnessConfiguration(witnesses, quorum, primary) {
+		return nil, nil, ErrCheckpointIntegrity
+	}
+	keys := make(map[string]ed25519.PublicKey, len(witnesses))
+	for _, witness := range witnesses {
+		keys[witness.ID] = append(ed25519.PublicKey(nil), witness.PublicKey...)
+	}
+	return append(ed25519.PublicKey(nil), primary...), keys, nil
+}
+
+func sameCheckpointTrustAnchors(primary ed25519.PublicKey, witnesses map[string]ed25519.PublicKey, quorum int, nextPrimary ed25519.PublicKey, nextWitnesses map[string]ed25519.PublicKey, nextQuorum int) bool {
+	if quorum != nextQuorum || !bytesEqual(primary, nextPrimary) || len(witnesses) != len(nextWitnesses) {
+		return false
+	}
+	for id, key := range witnesses {
+		if !bytesEqual(key, nextWitnesses[id]) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *FileCheckpointPendingStore) SetCheckpointTrustAnchors(primary ed25519.PublicKey, witnesses []CheckpointWitnessTrust, quorum int) error {
+	if s == nil {
+		return ErrCheckpointIntegrity
+	}
+	nextPrimary, nextWitnesses, err := cloneCheckpointTrustAnchors(primary, witnesses, quorum)
+	if err != nil {
+		return err
+	}
+	s.trustMu.Lock()
+	defer s.trustMu.Unlock()
+	if s.trustSet {
+		if !sameCheckpointTrustAnchors(s.primaryTrust, s.witnessTrust, s.trustQuorum, nextPrimary, nextWitnesses, quorum) {
+			return ErrCheckpointIntegrity
+		}
+		return nil
+	}
+	s.primaryTrust, s.witnessTrust, s.trustQuorum, s.trustSet = nextPrimary, nextWitnesses, quorum, true
+	return nil
+}
+
+func (s *FileCheckpointPendingStore) checkpointTrustAnchors() (ed25519.PublicKey, map[string]ed25519.PublicKey) {
+	s.trustMu.RLock()
+	defer s.trustMu.RUnlock()
+	primary := append(ed25519.PublicKey(nil), s.primaryTrust...)
+	witnesses := make(map[string]ed25519.PublicKey, len(s.witnessTrust))
+	for id, key := range s.witnessTrust {
+		witnesses[id] = append(ed25519.PublicKey(nil), key...)
+	}
+	return primary, witnesses
+}
+
+func (s *MemoryCheckpointPendingStore) SetCheckpointTrustAnchors(primary ed25519.PublicKey, witnesses []CheckpointWitnessTrust, quorum int) error {
+	if s == nil {
+		return ErrCheckpointIntegrity
+	}
+	nextPrimary, nextWitnesses, err := cloneCheckpointTrustAnchors(primary, witnesses, quorum)
+	if err != nil {
+		return err
+	}
+	s.trustMu.Lock()
+	defer s.trustMu.Unlock()
+	if s.trustSet {
+		if !sameCheckpointTrustAnchors(s.primaryTrust, s.witnessTrust, s.trustQuorum, nextPrimary, nextWitnesses, quorum) {
+			return ErrCheckpointIntegrity
+		}
+		return nil
+	}
+	s.primaryTrust, s.witnessTrust, s.trustQuorum, s.trustSet = nextPrimary, nextWitnesses, quorum, true
+	return nil
+}
+
+func (s *MemoryCheckpointPendingStore) checkpointTrustAnchors() (ed25519.PublicKey, map[string]ed25519.PublicKey) {
+	s.trustMu.RLock()
+	defer s.trustMu.RUnlock()
+	primary := append(ed25519.PublicKey(nil), s.primaryTrust...)
+	witnesses := make(map[string]ed25519.PublicKey, len(s.witnessTrust))
+	for id, key := range s.witnessTrust {
+		witnesses[id] = append(ed25519.PublicKey(nil), key...)
+	}
+	return primary, witnesses
 }
 
 func rejectDuplicateJSONKeys(data []byte) error {
@@ -495,7 +592,7 @@ func rejectDuplicateJSONKeys(data []byte) error {
 	}
 	return nil
 }
-func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now time.Time) error {
+func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now time.Time, primaryKey ed25519.PublicKey, witnessKeys map[string]ed25519.PublicKey) error {
 	if snapshot.Version != checkpointPendingVersion || snapshot.Entries == nil || now.IsZero() {
 		return ErrCheckpointIntegrity
 	}
@@ -529,9 +626,19 @@ func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now t
 		if !ok || r.Version != checkpointVersion || r.DeviceID != consumer.DeviceID || r.AccountID != consumer.AccountID || r.OrganizationID != consumer.OrganizationID || r.JTI != entry.Request.JTI || r.AuthorizationSHA256 != entry.Request.AuthorizationSHA256 || r.RequestSHA256 != requestFP || r.Generation == 0 || r.RecordHash != checkpointRecordHash(r.PreviousHash, r.Generation, requestFP) || r.ProviderKeyID == "" || len(r.Signature) != ed25519.SignatureSize {
 			return ErrCheckpointIntegrity
 		}
+		if len(primaryKey) == ed25519.PublicKeySize && VerifyCheckpointReceipt(r, entry.Request, primaryKey) != nil {
+			return ErrCheckpointIntegrity
+		}
+		if len(entry.Acknowledgements) > 0 && len(witnessKeys) == 0 {
+			return ErrCheckpointIntegrity
+		}
 		seen := map[string]bool{}
 		for _, ack := range entry.Acknowledgements {
+			publicKey, trusted := witnessKeys[ack.WitnessID]
 			if ack.WitnessID == "" || seen[ack.WitnessID] || ack.Scope != witnessScope(checkpointEndpointForConsumer(entry.Request)) || ack.JTI != entry.Request.JTI || ack.RequestSHA256 != requestFP || ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(r)) || (ack.Status != "acknowledged" && ack.Status != "already_acknowledged") || ack.WitnessKeyID == "" || len(ack.Signature) != ed25519.SignatureSize {
+				return ErrCheckpointIntegrity
+			}
+			if !trusted || VerifyCheckpointWitnessAck(ack, ack.WitnessID, publicKey) != nil {
 				return ErrCheckpointIntegrity
 			}
 			seen[ack.WitnessID] = true
@@ -601,6 +708,12 @@ func checkpointPendingKey(request CheckpointRequest) string {
 // MemoryCheckpointPendingStore is test-only and provides no crash durability.
 type MemoryCheckpointPendingStore struct {
 	entries map[string]checkpointPendingEntry
+
+	trustMu      sync.RWMutex
+	primaryTrust ed25519.PublicKey
+	witnessTrust map[string]ed25519.PublicKey
+	trustQuorum  int
+	trustSet     bool
 }
 
 func NewMemoryCheckpointPendingStore() *MemoryCheckpointPendingStore {
