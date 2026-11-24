@@ -16,6 +16,13 @@ func setReplayFileOwner(string) error {
 	return nil
 }
 
+func prepareReplayDirectory(path string) error {
+	if err := os.Mkdir(path, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
+		return err
+	}
+	return secureReplayDirectory(path)
+}
+
 func secureReplayDirectory(path string) error {
 	if err := os.MkdirAll(path, 0o700); err != nil {
 		return err

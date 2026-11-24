@@ -52,7 +52,7 @@ func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, er
 	if path == "." || !filepath.IsAbs(path) {
 		return nil, ErrReplayUnavailable
 	}
-	if err := secureReplayDirectory(filepath.Dir(path)); err != nil {
+	if err := prepareReplayDirectory(filepath.Dir(path)); err != nil {
 		return nil, fmt.Errorf("%w: pending directory: %v", ErrReplayUnavailable, err)
 	}
 	if info, err := os.Lstat(path); err == nil {
