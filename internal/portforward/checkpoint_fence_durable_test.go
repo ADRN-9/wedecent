@@ -306,3 +306,80 @@ func sameFenceToken(a, b CheckpointFenceToken) bool {
 	}
 	return true
 }
+
+
+func commitDurableFence(t *testing.T, primary *FileCheckpointFencePrimary, witnesses []*FileCheckpointFenceWitness, request CheckpointFenceRequest) CheckpointFenceToken {
+	t.Helper()
+	token, err := primary.ReserveFence(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acks := make([]CheckpointFenceAcknowledgement, 0, 2)
+	for _, witness := range witnesses[:2] {
+		ack, err := witness.CommitFence(context.Background(), token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acks = append(acks, ack)
+	}
+	if err := primary.CommitFence(context.Background(), token, acks); err != nil {
+		t.Fatal(err)
+	}
+	return token
+}
+
+func TestDurableFenceOrderingRevocationFirstRejectsStaleFinalization(t *testing.T) {
+	primary, witnesses, _, request, _ := durableFenceFixture(t)
+	request.Action = CheckpointFenceRevoke
+	request.OperationID = "durable-revoke-first"
+	revoked := commitDurableFence(t, primary, witnesses, request)
+	if revoked.Generation != 1 || revoked.ResultingRevocationEpoch != 1 {
+		t.Fatalf("unexpected committed revoke: %+v", revoked)
+	}
+	staleFinalize := request
+	staleFinalize.Action = CheckpointFenceFinalize
+	staleFinalize.OperationID = "durable-stale-finalize"
+	if _, err := primary.ReserveFence(context.Background(), staleFinalize); !errors.Is(err, ErrCheckpointStale) {
+		t.Fatalf("stale finalization reserved after durable revoke: %v", err)
+	}
+}
+
+func TestDurableFenceOrderingFinalizationFirstSurvivesLaterRevocation(t *testing.T) {
+	primary, witnesses, _, request, _ := durableFenceFixture(t)
+	request.Action = CheckpointFenceFinalize
+	request.OperationID = "durable-finalize-first"
+	finalized := commitDurableFence(t, primary, witnesses, request)
+	revoke := request
+	revoke.Action = CheckpointFenceRevoke
+	revoke.OperationID = "durable-revoke-after-finalize"
+	revoke.ExpectedFenceGeneration = finalized.Generation
+	revoke.ExpectedRevocationEpoch = finalized.ResultingRevocationEpoch
+	revoke.PreviousFenceSHA256, _ = CheckpointFenceTokenDigest(finalized)
+	revoked := commitDurableFence(t, primary, witnesses, revoke)
+	if revoked.Generation != finalized.Generation+1 || revoked.ResultingRevocationEpoch != finalized.ResultingRevocationEpoch+1 {
+		t.Fatalf("revocation did not follow committed finalization: finalize=%+v revoke=%+v", finalized, revoked)
+	}
+	operation, found, err := primary.LoadFence(context.Background(), request.Scope, finalized.OperationID)
+	if err != nil || !found || !operation.Committed || !sameFenceToken(operation.Token, finalized) {
+		t.Fatalf("later revoke erased earlier finalization ordering: found=%v err=%v", found, err)
+	}
+}
+
+func TestCheckpointFenceCoordinatorExecutesStrictMajority(t *testing.T) {
+	primary, witnesses, primaryKey, request, _ := durableFenceFixture(t)
+	clients := make([]CheckpointFenceWitnessClient, len(witnesses))
+	for i, witness := range witnesses {
+		clients[i] = CheckpointFenceWitnessClient{ID: request.WitnessIDs[i], PublicKey: witness.publicKey, Witness: witness}
+	}
+	coordinator := CheckpointFenceCoordinator{
+		Primary: primary, PrimaryKey: primaryKey.Public().(ed25519.PublicKey),
+		WitnessSetVersion: request.WitnessSetVersion, Witnesses: clients, Quorum: 2,
+	}
+	operation, err := coordinator.Execute(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !operation.Committed || operation.Token.OperationID != request.OperationID || len(operation.Acknowledgements) < 2 {
+		t.Fatalf("coordinator returned without a committed strict majority: %+v", operation)
+	}
+}
