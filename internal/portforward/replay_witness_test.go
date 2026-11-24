@@ -2636,3 +2636,31 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	_ = witnesses
 }
 
+
+func TestNegativeTerminalDecisionNeverContributesToQuorum(t *testing.T) {
+	store := NewMemoryCheckpointPendingStore()
+	client, witnesses, request, receipt := prepareResolvedWitnessOperation(t, store)
+	committed, err := witnesses[2].Acknowledge(context.Background(), request, receipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	negative := signedDecision(t, witnesses[2], committed, "revoked")
+	if err := store.RecordAcknowledgement(context.Background(), request, receipt, negative, client.Witnesses[2]); err != nil {
+		t.Fatal(err)
+	}
+	client.Witnesses[0].Witness = unavailableAckResponse{CheckpointWitness: witnesses[0]}
+	client.Witnesses[1].Witness = unavailableAckResponse{CheckpointWitness: witnesses[1]}
+	client.Witnesses[2].Witness = fixedCheckpointAckWitness{CheckpointWitness: witnesses[2], ack: negative}
+	called := false
+	err = client.FinalizeWithAudit(context.Background(), request, func(context.Context, string) error {
+		called = true
+		return nil
+	})
+	if !errors.Is(err, ErrCheckpointQuorum) || called {
+		t.Fatalf("negative vote contributed to quorum: err=%v callback=%t", err, called)
+	}
+	persisted, err := store.LoadAcknowledgements(context.Background(), request, receipt, client.Witnesses)
+	if err != nil || len(persisted) != 1 || committedCheckpointAckCount(persisted) != 0 {
+		t.Fatalf("negative vote journal state=%+v err=%v", persisted, err)
+	}
+}
