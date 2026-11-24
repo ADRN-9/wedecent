@@ -379,13 +379,13 @@ begin
         select 1 from public.device_access access
          where access.user_id = v_transaction.initiator_account_id
            and access.device_id = v_destination
-           and access.permission = v_transaction.permission
+           and access.permission::text = v_transaction.permission::text
     ) or (
         v_transaction.router_device_id is not null and not exists (
             select 1 from public.device_access access
              where access.user_id = v_transaction.initiator_account_id
                and access.device_id = v_transaction.router_device_id
-               and access.permission = 'mesh.forward'
+               and access.permission::text = 'mesh.forward'
         )
     ) then
         raise exception 'audit device access has been revoked' using errcode = '42501';
