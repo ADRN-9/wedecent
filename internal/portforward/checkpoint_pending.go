@@ -945,43 +945,12 @@ func bytesEqual(a, b []byte) bool {
 }
 
 func compactAcknowledgedPendingEntries(snapshot *checkpointPendingSnapshot, acknowledgements []CheckpointWitnessAck, witnesses []CheckpointWitnessTrust, quorum int) {
-	// The caller's slice is not durable evidence. Only acknowledgements already
-	// persisted in this exact journal entry can authorize its removal.
-	_ = acknowledgements
-	trusted := make(map[string]ed25519.PublicKey, len(witnesses))
-	for _, witness := range witnesses {
-		trusted[witness.ID] = witness.PublicKey
-	}
-	for key, entry := range snapshot.Entries {
-		if entry.State != "resolved" || entry.Fingerprint == "" || entry.ReceiptHash == "" {
-			continue
-		}
-		fingerprint, err := hex.DecodeString(entry.Fingerprint)
-		if err != nil || len(fingerprint) != sha256.Size {
-			continue
-		}
-		receiptHash, err := hex.DecodeString(entry.ReceiptHash)
-		if err != nil || len(receiptHash) != sha256.Size {
-			continue
-		}
-		seen := make(map[string]bool, quorum)
-		for _, ack := range entry.Acknowledgements {
-			publicKey := trusted[ack.WitnessID]
-			if seen[ack.WitnessID] ||
-				VerifyCheckpointWitnessAck(ack, ack.WitnessID, publicKey) != nil {
-				continue
-			}
-			expectedKey := ack.Scope.DeviceID + "|" + ack.Scope.AccountID + "|" + ack.Scope.OrganizationID + "|" + ack.JTI
-			if expectedKey != key || !bytesEqual(ack.RequestSHA256[:], fingerprint) ||
-				!bytesEqual(ack.PrimaryReceiptSHA256[:], receiptHash) {
-				continue
-			}
-			seen[ack.WitnessID] = true
-		}
-		if len(seen) >= quorum {
-			delete(snapshot.Entries, key)
-		}
-	}
+	// Terminal decisions and equivocation evidence are permanent security
+	// tombstones. Removing a quorum entry would erase the original signed vote
+	// and make a later contradictory response indistinguishable from first use.
+	// Keep the full receipt and signed decisions; bounded journal capacity fails
+	// closed until an explicit evidence-retention policy exists.
+	_, _, _, _ = snapshot, acknowledgements, witnesses, quorum
 }
 
 func checkpointPendingKey(request CheckpointRequest) string {
