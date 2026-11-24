@@ -442,7 +442,7 @@ func committedCheckpointAckCount(acks []CheckpointWitnessAck) int {
 	return count
 }
 
-func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) ([]CheckpointWitnessAck, error) {
+func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) (result []CheckpointWitnessAck, resultErr error) {
 	if p == nil {
 		return nil, ErrCheckpointUnavailable
 	}
@@ -454,7 +454,7 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 	if err != nil {
 		return nil, err
 	}
-	defer unlock()
+	defer func() { resultErr = errors.Join(resultErr, unlock()) }()
 	return p.acknowledgeWitnessQuorumLocked(ctx, request, receipt, store)
 }
 
