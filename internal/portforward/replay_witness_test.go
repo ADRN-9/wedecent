@@ -2232,13 +2232,13 @@ func TestConcurrentFinalizationRunsCallbackAtMostOnce(t *testing.T) {
 	for err := range errs {
 		if err == nil {
 			successes++
-		} else if !errors.Is(err, ErrCheckpointHistorical) {
-			t.Fatalf("unexpected concurrent finalization result: %v", err)
+		} else {
+			t.Fatalf("idempotent concurrent finalization failed: %v", err)
 		}
 	}
 	mu.Lock()
 	defer mu.Unlock()
-	if successes != 1 || callbacks != 1 {
+	if successes != 2 || callbacks != 1 {
 		t.Fatalf("concurrent finalization successes=%d callbacks=%d", successes, callbacks)
 	}
 }
