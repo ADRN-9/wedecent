@@ -864,8 +864,8 @@ func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted := &WitnessedReplayCheckpointProvider{
-		Primary: primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: restartedStore,
+		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
+		Quorum: client.Quorum, Pending: restartedStore, Fencing: client.Fencing,
 	}
 	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("top-level exact-request recovery returned a new session: %v", err)
@@ -1084,6 +1084,7 @@ func TestPendingJournalConcurrentFinalizationAcrossProviderInstancesIsIdempotent
 	client, witnesses := newWitnessedFixture(t, primary, store)
 	secondClient, _ := newWitnessedFixture(t, primary, secondStore)
 	secondClient.Witnesses = client.Witnesses
+	secondClient.Fencing = client.Fencing
 	clients := []*WitnessedReplayCheckpointProvider{client, secondClient}
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -2310,7 +2311,7 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 	}
 	restartedClient := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: restarted,
+		Quorum: client.Quorum, Pending: restarted, Fencing: client.Fencing, Fencing: client.Fencing,
 	}
 	released = false
 	if err := restartedClient.FinalizeWithAudit(context.Background(), request, func(context.Context, string, CheckpointFinalizationEvidence) error {
@@ -2398,7 +2399,7 @@ func TestConcurrentFinalizationRunsCallbackAtMostOnce(t *testing.T) {
 	client, _, request, _, _ := preparePersistedWitnessQuorum(t, store)
 	other := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: store,
+		Quorum: client.Quorum, Pending: store, Fencing: client.Fencing,
 	}
 	var mu sync.Mutex
 	callbacks := 0
