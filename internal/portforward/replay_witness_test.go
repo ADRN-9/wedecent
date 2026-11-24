@@ -1609,6 +1609,7 @@ func routedCheckpointRequestForRevocationTest(t *testing.T, primary *determinist
 	if err != nil {
 		t.Fatal(err)
 	}
+	primary.register(router)
 	return request, signer, router
 }
 
