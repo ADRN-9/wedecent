@@ -1,6 +1,7 @@
 package portforward
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -198,7 +199,8 @@ func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequ
 		VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil ||
 		ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) ||
 		ack.JTI != request.JTI || ack.RequestSHA256 != fp ||
-		ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) {
+		ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) ||
+		(ack.Status != "acknowledged" && ack.Status != "already_acknowledged") {
 		return ErrCheckpointIntegrity
 	}
 	return update(func(snapshot *checkpointPendingSnapshot) (bool, error) {
@@ -215,7 +217,8 @@ func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequ
 			if old.Scope != ack.Scope || old.JTI != ack.JTI ||
 				old.RequestSHA256 != ack.RequestSHA256 ||
 				old.PrimaryReceiptSHA256 != ack.PrimaryReceiptSHA256 ||
-				old.WitnessKeyID != ack.WitnessKeyID {
+				old.WitnessKeyID != ack.WitnessKeyID ||
+				old.Status != ack.Status || !bytes.Equal(old.Signature, ack.Signature) {
 				return false, ErrCheckpointConflict
 			}
 			return false, nil
@@ -253,7 +256,8 @@ func validateStoredCheckpointAcknowledgements(snapshot checkpointPendingSnapshot
 			VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil ||
 			ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) ||
 			ack.JTI != request.JTI || ack.RequestSHA256 != fp ||
-			ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) {
+			ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) ||
+			(ack.Status != "acknowledged" && ack.Status != "already_acknowledged") {
 			return nil, ErrCheckpointIntegrity
 		}
 		seen[ack.WitnessID] = true
