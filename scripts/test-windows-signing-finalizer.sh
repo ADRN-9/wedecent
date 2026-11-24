@@ -194,6 +194,7 @@ fi
 [[ ! -e "$SIGN_LOG" ]] || fail 'nested output validation invoked the signer'
 rm -rf -- "$DIST_ROOT/nested"
 
+FAILURE_LOG="$WORK/intentional-signer-failure.log"
 if UNSIGNED_RELEASE_DIR="$RELEASE" \
    UNSIGNED_PACKAGE_DIR="$PACKAGE" \
    OUT_DIR="$FAILED_OUT" \
@@ -201,11 +202,15 @@ if UNSIGNED_RELEASE_DIR="$RELEASE" \
    WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
    WEDECENT_FAKE_SIGN_LOG="$SIGN_LOG" \
    WEDECENT_FAKE_SIGN_FAIL_AT=3 \
-   "$FINALIZER" >/dev/null 2>&1; then
+   "$FINALIZER" >/dev/null 2>"$FAILURE_LOG"; then
   fail 'intentional signer failure unexpectedly succeeded'
 fi
 [[ ! -e "$FAILED_OUT" ]] || fail 'failed signer published partial output'
 [[ "$(snapshot_sources)" == "$BEFORE" ]] || fail 'failed signer mutated unsigned source artifacts'
+if [[ ! -f "$SIGN_LOG" ]]; then
+  cat "$FAILURE_LOG" >&2
+  fail 'intentional signer failure did not invoke the signer'
+fi
 [[ "$(wc -l < "$SIGN_LOG" | tr -d '[:space:]')" == '3' ]] || fail 'intentional signer failure did not occur at invocation 3'
 rm -f -- "$SIGN_LOG"
 
