@@ -325,7 +325,8 @@ func (w *FileCheckpointFenceWitness) CommitFence(ctx context.Context, token Chec
 			(old.Scope != token.Scope || old.Generation != token.Generation || old.TokenDigest != digest) {
 			return ErrCheckpointConflict
 		}
-		if token.ExpiresAtUnixMS <= w.now().UnixMilli() {
+		committedAt := w.now().UnixMilli()
+		if token.ExpiresAtUnixMS <= committedAt {
 			return ErrCheckpointStale
 		}
 		if token.ExpectedFenceGeneration != state.Generation ||
@@ -339,7 +340,7 @@ func (w *FileCheckpointFenceWitness) CommitFence(ctx context.Context, token Chec
 			WitnessID: w.id, TokenSHA256: digest, Generation: token.Generation,
 			Action: token.Action, OperationID: token.OperationID,
 			WitnessKeyID: checkpointProviderKeyID(w.publicKey),
-			CommittedAtUnixMS: w.now().UnixMilli(),
+			CommittedAtUnixMS: committedAt,
 		}
 		ack.Signature = ed25519.Sign(w.privateKey, checkpointFenceAcknowledgementMessage(ack))
 		event := checkpointFenceDiskEvent{Kind: "commit", Token: token, Acknowledgements: []CheckpointFenceAcknowledgement{ack}}
@@ -551,7 +552,8 @@ func applyCheckpointFenceWitnessEvent(index *checkpointFenceWitnessIndex, event 
 	ack := event.Acknowledgements[0]
 	if ack.WitnessID != w.id || ack.TokenSHA256 != digest || ack.Generation != token.Generation ||
 		ack.Action != token.Action || ack.OperationID != token.OperationID ||
-		VerifyCheckpointFenceAcknowledgement(ack, w.id, w.publicKey) != nil {
+		VerifyCheckpointFenceAcknowledgement(ack, w.id, w.publicKey) != nil ||
+		ack.CommittedAtUnixMS > token.ExpiresAtUnixMS {
 		return ErrCheckpointIntegrity
 	}
 	if old, exists := state.Operations[token.Generation]; exists {
