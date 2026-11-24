@@ -1353,7 +1353,24 @@ func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context
 	if err != nil {
 		return CheckpointFenceOperation{}, err
 	}
-	heads, err := p.checkpointParticipantHeadsWithRecovery(ctx, checkpointRequestParticipants(request), found && existing.Committed)
+	if found && existing.Committed {
+		expected := CheckpointFenceRequest{
+			Scope: scope, Participants: cloneCheckpointEndpoints(checkpointRequestParticipants(request)),
+			Action: CheckpointFenceFinalize, OperationID: operationID,
+			RequestSHA256: fingerprint, AuthorizationSHA256: request.AuthorizationSHA256,
+			WitnessSetVersion: p.Fencing.WitnessSetVersion,
+			WitnessIDs: checkpointFenceClientIDs(p.Fencing.Witnesses),
+		}
+		if !checkpointFenceTokenMatchesOperation(existing.Token, expected) ||
+			verifyCheckpointFenceTokenSignature(existing.Token, p.Fencing.PrimaryKey) != nil {
+			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+		}
+		if err := p.Fencing.verifyCommittedOperation(existing, existing.Token); err != nil {
+			return CheckpointFenceOperation{}, err
+		}
+		return existing, nil
+	}
+	heads, err := p.checkpointParticipantHeadsWithRecovery(ctx, checkpointRequestParticipants(request), false)
 	if err != nil {
 		return CheckpointFenceOperation{}, err
 	}
