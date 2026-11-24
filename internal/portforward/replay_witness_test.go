@@ -1585,7 +1585,6 @@ func TestPendingJournalCompactionRequiresDurableAcknowledgements(t *testing.T) {
 	}
 }
 
-
 func routedCheckpointRequestForRevocationTest(t *testing.T, primary *deterministicCheckpointProvider) (CheckpointRequest, ed25519.PrivateKey, CheckpointEndpoint) {
 	t.Helper()
 	request, signer, _, _, _ := makeCheckpointFixture(t, primary,
@@ -1596,8 +1595,8 @@ func routedCheckpointRequestForRevocationTest(t *testing.T, primary *determinist
 		t.Fatal(err)
 	}
 	router := CheckpointEndpoint{
-		DeviceID: identity.DeviceID(publicKey),
-		AccountID: "33333333-3333-4333-8333-333333333333",
+		DeviceID:       identity.DeviceID(publicKey),
+		AccountID:      "33333333-3333-4333-8333-333333333333",
 		OrganizationID: request.Initiator.OrganizationID,
 	}
 	request.Router = router
@@ -1704,7 +1703,6 @@ func TestWitnessCommitAndRevocationRaceCannotAcknowledgeAfterRevocation(t *testi
 		t.Fatalf("authorization acknowledged after successful router revocation: %v", err)
 	}
 }
-
 
 func TestWitnessAcknowledgeAndRevocationRaceFencesLaterAcknowledgement(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
