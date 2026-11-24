@@ -101,11 +101,11 @@ type CheckpointAuthorityBinding interface {
 	CheckpointAuthorityKeyID() string
 }
 
-// CheckpointFenceAtomicPrimary must validate signatures and compare the complete
-// participant-head vector against the authoritative checkpoint store. Reservation
-// and commit must share that store's transaction boundary. Commit must verify the
-// strict-majority acknowledgements and, for revoke, advance the targeted checkpoint
-// revocation head atomically with the quorum-backed fence commit.
+// CheckpointFenceAtomicPrimary must independently validate revocation proof,
+// compare the complete signed participant-head vector against the authoritative
+// checkpoint store, and reserve in the same transaction. Commit must revalidate
+// heads, verify strict-majority acknowledgements, and atomically advance the target
+// revocation head with the quorum-backed fence commit.
 type CheckpointFenceAtomicPrimary interface {
 	ReserveFenceWithCheckpointHeads(context.Context, CheckpointFenceRequest, []CheckpointFenceParticipantHead) (CheckpointFenceToken, error)
 	CommitFenceWithCheckpointHeads(context.Context, CheckpointFenceToken, []CheckpointFenceAcknowledgement, []CheckpointFenceParticipantHead) error
@@ -120,6 +120,7 @@ type CheckpointFencingWitness interface {
 type CheckpointFenceRequest struct {
 	Scope                   CheckpointWitnessScope
 	Participants            []CheckpointEndpoint
+	AuthorizationProof      []byte
 	ExpectedFenceGeneration uint64
 	ExpectedRevocationEpoch uint64
 	Action                  CheckpointFenceAction
