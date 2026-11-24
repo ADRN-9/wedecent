@@ -766,6 +766,7 @@ func TestPendingJournalPartialAcknowledgementPersistenceAndValidation(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := restarted.SetCheckpointTrustAnchors(client.PrimaryKey, client.Witnesses, client.Quorum); err != nil { t.Fatal(err) }
 	persisted, err := restarted.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses)
 	if err != nil {
 		t.Fatal(err)
