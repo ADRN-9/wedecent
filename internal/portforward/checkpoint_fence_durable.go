@@ -795,6 +795,9 @@ func withCheckpointFenceLog(ctx context.Context, path string, fn func(*os.File) 
 		return errors.Join(ErrCheckpointFenceStore, err)
 	}
 	defer unlock()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return fn(file)
 }
 
