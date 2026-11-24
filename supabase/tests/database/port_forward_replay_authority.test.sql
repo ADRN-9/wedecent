@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(25);
+select plan(26);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -137,6 +137,11 @@ select is(
     (pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000002', repeat('A', 22), repeat('1', 64))->>'reason'),
     'jti-conflict',
     'same JTI cannot be rebound to another forwarding transaction'
+);
+select is(
+    (pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000013', repeat('L', 22), repeat('c', 64))->>'reason'),
+    'route-authorization-reused',
+    'one signed route grant cannot authorize multiple forwarding transactions'
 );
 
 update public.organization_memberships
