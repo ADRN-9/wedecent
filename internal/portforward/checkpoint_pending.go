@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-const checkpointPendingVersion = 1
+const checkpointPendingVersion = 2
 const checkpointPendingMaxSize = 16 << 20
 const checkpointPendingMaxEntries = 65536
 
@@ -27,6 +27,8 @@ type checkpointPendingEntry struct {
 	CreatedAt        int64                  `json:"created_at_unix_ms"`
 	ReceiptHash      string                 `json:"receipt_hash,omitempty"`
 	Acknowledgements []CheckpointWitnessAck `json:"acknowledgements,omitempty"`
+	Request CheckpointRequest `json:"request"`
+	Receipt *CheckpointReceipt `json:"receipt,omitempty"`
 }
 
 type checkpointPendingSnapshot struct {
@@ -107,7 +109,7 @@ func (s *FileCheckpointPendingStore) Begin(ctx context.Context, request Checkpoi
 		if now.IsZero() {
 			return false, ErrReplayUnavailable
 		}
-		snapshot.Entries[key] = checkpointPendingEntry{Fingerprint: hex.EncodeToString(fingerprint[:]), State: "pending", CreatedAt: now.UnixMilli()}
+		snapshot.Entries[key] = checkpointPendingEntry{Fingerprint: hex.EncodeToString(fingerprint[:]), State: "pending", CreatedAt: now.UnixMilli(), Request: cloneCheckpointRequest(request)}
 		return false, nil
 	})
 }
@@ -141,6 +143,8 @@ func (s *FileCheckpointPendingStore) Resolve(ctx context.Context, request Checkp
 		}
 		entry.State = "resolved"
 		entry.ReceiptHash = receiptHash
+		copyReceipt := cloneCheckpointReceipt(receipt)
+		entry.Receipt = &copyReceipt
 		snapshot.Entries[key] = entry
 		return false, nil
 	})
@@ -459,7 +463,7 @@ func (s *MemoryCheckpointPendingStore) Begin(ctx context.Context, request Checkp
 	if len(s.entries) >= checkpointPendingMaxEntries {
 		return false, ErrReplayUnavailable
 	}
-	s.entries[key] = checkpointPendingEntry{Fingerprint: hex.EncodeToString(fp[:]), State: "pending"}
+	s.entries[key] = checkpointPendingEntry{Fingerprint: hex.EncodeToString(fp[:]), State: "pending", CreatedAt: time.Now().UTC().UnixMilli(), Request: cloneCheckpointRequest(request)}
 	return false, nil
 }
 
@@ -491,6 +495,8 @@ func (s *MemoryCheckpointPendingStore) Resolve(ctx context.Context, request Chec
 	}
 	entry.State = "resolved"
 	entry.ReceiptHash = receiptHash
+	copyReceipt := cloneCheckpointReceipt(receipt)
+	entry.Receipt = &copyReceipt
 	s.entries[key] = entry
 	return nil
 }
