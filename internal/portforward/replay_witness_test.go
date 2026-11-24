@@ -22,9 +22,10 @@ import (
 )
 
 type testAtomicCheckpointPrimary struct {
-	mu      sync.Mutex
-	replay  *deterministicCheckpointProvider
-	fence   *FileCheckpointFencePrimary
+	mu                 sync.Mutex
+	replay             *deterministicCheckpointProvider
+	fence              *FileCheckpointFencePrimary
+	loseCommitResponse bool
 }
 
 func (a *testAtomicCheckpointPrimary) Consume(ctx context.Context, request CheckpointRequest) (CheckpointResult, error) {
@@ -64,7 +65,14 @@ func (a *testAtomicCheckpointPrimary) ReserveFence(ctx context.Context, request 
 func (a *testAtomicCheckpointPrimary) CommitFence(ctx context.Context, token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	return a.fence.CommitFence(ctx, token, acks)
+	if err := a.fence.CommitFence(ctx, token, acks); err != nil {
+		return err
+	}
+	if a.loseCommitResponse {
+		a.loseCommitResponse = false
+		return errors.New("simulated lost primary commit response")
+	}
+	return nil
 }
 
 func (a *testAtomicCheckpointPrimary) LoadFence(ctx context.Context, scope CheckpointWitnessScope, operationID string) (CheckpointFenceOperation, bool, error) {
@@ -3509,5 +3517,184 @@ func TestFinalizationEvidenceIsDurableImmutableAndTamperEvident(t *testing.T) {
 	}
 	if _, found, err := forgedStore.LoadFinalizationEvidence(context.Background(), request, receipt, operationID); err == nil || found {
 		t.Fatalf("tampered durable evidence accepted: found=%t err=%v", found, err)
+	}
+}
+
+
+type failingFenceWitness struct {
+	delegate CheckpointFencingWitness
+	fail     bool
+}
+
+func (w *failingFenceWitness) CommitFence(ctx context.Context, token CheckpointFenceToken) (CheckpointFenceAcknowledgement, error) {
+	if w.fail {
+		return CheckpointFenceAcknowledgement{}, errors.New("simulated witness response loss")
+	}
+	return w.delegate.CommitFence(ctx, token)
+}
+
+func (w *failingFenceWitness) LoadFence(ctx context.Context, scope CheckpointWitnessScope, generation uint64) (CheckpointFenceAcknowledgement, bool, error) {
+	return w.delegate.LoadFence(ctx, scope, generation)
+}
+
+func restartTestFenceCoordinator(t *testing.T, old *CheckpointFenceCoordinator, replay *deterministicCheckpointProvider) *CheckpointFenceCoordinator {
+	t.Helper()
+	oldPrimary, ok := old.Primary.(*testAtomicCheckpointPrimary)
+	if !ok {
+		t.Fatal("unexpected test fence primary")
+	}
+	oldStore := oldPrimary.fence
+	trust := make([]CheckpointFenceWitnessTrust, 0, len(oldStore.witnessIDs))
+	for _, id := range oldStore.witnessIDs {
+		trust = append(trust, CheckpointFenceWitnessTrust{ID: id, PublicKey: oldStore.witnesses[id]})
+	}
+	primary, err := OpenFileCheckpointFencePrimary(oldStore.path, oldStore.privateKey, oldStore.witnessSetVersion, trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clients := make([]CheckpointFenceWitnessClient, len(old.Witnesses))
+	for i, client := range old.Witnesses {
+		oldWitness, ok := client.Witness.(*FileCheckpointFenceWitness)
+		if !ok {
+			if wrapper, ok := client.Witness.(*failingFenceWitness); ok {
+				oldWitness, ok = wrapper.delegate.(*FileCheckpointFenceWitness)
+			}
+		}
+		if !ok {
+			t.Fatalf("unexpected test witness %T", client.Witness)
+		}
+		witness, err := OpenFileCheckpointFenceWitness(oldWitness.path, oldWitness.id,
+			oldWitness.privateKey, oldWitness.primaryKey, oldWitness.witnessSetVersion, oldWitness.witnessIDs)
+		if err != nil {
+			t.Fatal(err)
+		}
+		clients[i] = CheckpointFenceWitnessClient{ID: client.ID, PublicKey: append(ed25519.PublicKey(nil), client.PublicKey...), Witness: witness}
+	}
+	return &CheckpointFenceCoordinator{
+		Primary: &testAtomicCheckpointPrimary{replay: replay, fence: primary},
+		PrimaryKey: append(ed25519.PublicKey(nil), old.PrimaryKey...),
+		WitnessSetVersion: old.WitnessSetVersion, Witnesses: clients, Quorum: old.Quorum,
+	}
+}
+
+func TestLifecycleFenceFinalizeWinsThenRevocationAdvancesOrganizationOrder(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	client, _ := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	result, err := client.Primary.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	finalized, err := client.executeFinalizationFence(context.Background(), request, result.CheckpointReceipt)
+	if err != nil || !finalized.Committed {
+		t.Fatalf("finalization fence did not commit: committed=%v err=%v", finalized.Committed, err)
+	}
+	if err := client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1); err != nil {
+		t.Fatalf("revocation after committed finalization did not advance order: %v", err)
+	}
+	recovered, err := client.executeFinalizationFence(context.Background(), request, result.CheckpointReceipt)
+	if err != nil || !recovered.Committed || !sameCheckpointFenceToken(recovered.Token, finalized.Token) {
+		t.Fatalf("exact finalization recovery failed after later revocation: %v", err)
+	}
+	reader := client.Fencing.Primary.(CheckpointFenceHeadReader)
+	head, err := reader.FenceHead(context.Background(), organizationCheckpointFenceScope(request.Initiator.OrganizationID))
+	if err != nil || head.Generation != 2 || head.LastAction != CheckpointFenceRevoke {
+		t.Fatalf("unexpected final fence order: %+v err=%v", head, err)
+	}
+}
+
+func TestLifecycleFenceRevocationWinsAndBlocksStaleFinalization(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	client, _ := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	result, err := client.Primary.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.executeFinalizationFence(context.Background(), request, result.CheckpointReceipt); !errors.Is(err, ErrCheckpointRevoked) {
+		t.Fatalf("stale participant head finalized after revocation: %v", err)
+	}
+	reader := client.Fencing.Primary.(CheckpointFenceHeadReader)
+	head, err := reader.FenceHead(context.Background(), organizationCheckpointFenceScope(request.Initiator.OrganizationID))
+	if err != nil || head.Generation != 1 || head.LastAction != CheckpointFenceRevoke {
+		t.Fatalf("revocation was not the winning ordered operation: %+v err=%v", head, err)
+	}
+}
+
+func TestLifecycleFenceRejectsSubstitutedAndIncompleteParticipantHeads(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	client, _ := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	participants := checkpointRequestParticipants(request)
+	heads, err := client.checkpointParticipantHeads(context.Background(), participants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := organizationCheckpointFenceScope(request.Initiator.OrganizationID)
+	reader := client.Fencing.Primary.(CheckpointFenceHeadReader)
+	head, err := reader.FenceHead(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requestHash := sha256.Sum256([]byte("participant-head-negative-test"))
+	fenceRequest := CheckpointFenceRequest{
+		Scope: scope, Participants: participants, ExpectedFenceGeneration: head.Generation,
+		ExpectedRevocationEpoch: head.RevocationEpoch, Action: CheckpointFenceFinalize,
+		OperationID: "participant-head-negative-test-0001",
+		RequestSHA256: requestHash, AuthorizationSHA256: requestHash,
+		PrimaryHeadGeneration: head.Generation + 1, PreviousFenceSHA256: head.FenceDigest,
+		WitnessSetVersion: client.Fencing.WitnessSetVersion,
+		WitnessIDs: checkpointFenceClientIDs(client.Fencing.Witnesses),
+		ExpiresAtUnixMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	fenceRequest.PrimaryHeadSHA256, err = checkpointFenceParticipantHeadDigest(heads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	substituted := cloneCheckpointFenceParticipantHeads(heads)
+	substituted[0].Head.RecordHash[0] ^= 0xff
+	if _, err := client.Fencing.ExecuteWithCheckpointHeads(context.Background(), fenceRequest, substituted); !errors.Is(err, ErrCheckpointStale) {
+		t.Fatalf("substituted authoritative checkpoint head accepted: %v", err)
+	}
+	if _, err := client.Fencing.ExecuteWithCheckpointHeads(context.Background(), fenceRequest, heads[:1]); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("incomplete participant vector accepted: %v", err)
+	}
+}
+
+func TestLifecycleFenceRecoversPartialRevocationAfterRestartAndLostPrimaryResponse(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	client, _ := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+	endpoint := CheckpointEndpoint{
+		DeviceID: "wd_test", AccountID: "11111111-1111-4111-8111-111111111111",
+		OrganizationID: "22222222-2222-4222-8222-222222222222",
+	}
+	// Use the actual endpoint identity from the fixture to retain a valid signed checkpoint head.
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, endpoint.AccountID, endpoint.OrganizationID)
+	endpoint = request.Initiator
+	delegates := make([]CheckpointFencingWitness, len(client.Fencing.Witnesses))
+	for i := range client.Fencing.Witnesses {
+		delegates[i] = client.Fencing.Witnesses[i].Witness
+		if i < 2 {
+			client.Fencing.Witnesses[i].Witness = &failingFenceWitness{delegate: delegates[i], fail: true}
+		}
+	}
+	next := endpoint.RevocationEpoch + 1
+	if err := client.Revoke(context.Background(), endpoint, next); !errors.Is(err, ErrCheckpointQuorum) {
+		t.Fatalf("partial witness quorum did not fail closed: %v", err)
+	}
+	restartedFence := restartTestFenceCoordinator(t, client.Fencing, primary)
+	client.Fencing = restartedFence
+	client.Primary = restartedFence.Primary.(*testAtomicCheckpointPrimary)
+	atomicPrimary := client.Primary.(*testAtomicCheckpointPrimary)
+	atomicPrimary.loseCommitResponse = true
+	if err := client.Revoke(context.Background(), endpoint, next); err != nil {
+		t.Fatalf("restart did not recover exact pending revocation after lost primary response: %v", err)
+	}
+	head, err := client.Primary.Head(context.Background(), endpoint)
+	if err != nil || head.RevocationEpoch != next {
+		t.Fatalf("revocation checkpoint head not committed: epoch=%d err=%v", head.RevocationEpoch, err)
 	}
 }
