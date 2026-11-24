@@ -412,3 +412,32 @@ func TestCheckpointFenceCoordinatorExecutesStrictMajority(t *testing.T) {
 		t.Fatalf("coordinator returned without a committed strict majority: %+v", operation)
 	}
 }
+
+
+func TestFileCheckpointFencePrimaryRejectsStaleFenceAndPrimaryHeads(t *testing.T) {
+	primary, witnesses, _, request, _ := durableFenceFixture(t)
+	first := commitDurableFence(t, primary, witnesses, request)
+	staleFence := request
+	staleFence.OperationID = "stale-previous-fence"
+	staleFence.ExpectedFenceGeneration = first.Generation
+	staleFence.PreviousFenceSHA256 = [sha256.Size]byte{}
+	if _, err := primary.ReserveFence(context.Background(), staleFence); !errors.Is(err, ErrCheckpointStale) {
+		t.Fatalf("stale previous-fence digest accepted: %v", err)
+	}
+	secondRequest := request
+	secondRequest.OperationID = "next-primary-head"
+	secondRequest.ExpectedFenceGeneration = first.Generation
+	secondRequest.PreviousFenceSHA256, _ = CheckpointFenceTokenDigest(first)
+	secondRequest.PrimaryHeadGeneration = 1
+	secondRequest.PrimaryHeadSHA256 = sha256.Sum256([]byte("primary-head-generation-one"))
+	second := commitDurableFence(t, primary, witnesses, secondRequest)
+	rollback := secondRequest
+	rollback.OperationID = "primary-head-rollback"
+	rollback.ExpectedFenceGeneration = second.Generation
+	rollback.PreviousFenceSHA256, _ = CheckpointFenceTokenDigest(second)
+	rollback.PrimaryHeadGeneration = 0
+	rollback.PrimaryHeadSHA256 = [sha256.Size]byte{}
+	if _, err := primary.ReserveFence(context.Background(), rollback); !errors.Is(err, ErrCheckpointStale) {
+		t.Fatalf("primary-head rollback accepted: %v", err)
+	}
+}
