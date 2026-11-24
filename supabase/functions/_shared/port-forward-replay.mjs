@@ -1,3 +1,5 @@
+import { canonicalRouteAuthorizationMessage } from './route-authorization.mjs'
+
 const encoder = new TextEncoder()
 const deviceIDPattern = /^wd_[a-z2-7]{16}$/
 const jtiPattern = /^[A-Za-z0-9_-]{22}$/
@@ -220,4 +222,86 @@ export function remoteReplayDeviceMessage(deviceID, jti, expiresAtUnixMS, author
     `expires_at_unix_ms=${expiresAtUnixMS}\n` +
     `authorization_sha256=${authorizationSHA256}\n`,
   )
+}
+
+
+export async function verifyRouteAuthorizationBinding(
+  authorization,
+  capabilityClaims,
+  publicKeyBytes,
+) {
+  const nested = authorization?.route_authorization
+  const router = capabilityClaims?.router ?? ''
+  if (!router) {
+    if (nested != null) fail('direct route must not include router authorization')
+    return null
+  }
+  if (
+    !(publicKeyBytes instanceof Uint8Array) ||
+    publicKeyBytes.length !== 32 ||
+    !nested ||
+    typeof nested !== 'object' ||
+    Array.isArray(nested)
+  ) fail('router authorization is missing')
+
+  const routeClaims = nested.claims
+  if (!routeClaims || typeof routeClaims !== 'object' || Array.isArray(routeClaims)) {
+    fail('router authorization claims are missing')
+  }
+  const keyDigest = new Uint8Array(
+    await crypto.subtle.digest('SHA-256', publicKeyBytes),
+  )
+  const expectedKid = 'ed25519-' + encodeBase64URL(keyDigest)
+  if (nested.kid !== expectedKid) fail('router authorization key identifier mismatch')
+
+  const message = canonicalRouteAuthorizationMessage(nested)
+  const signature = decodeBase64URLStrict(nested.signature, 64)
+  const key = await crypto.subtle.importKey(
+    'raw',
+    asArrayBuffer(publicKeyBytes),
+    { name: 'Ed25519' },
+    false,
+    ['verify'],
+  )
+  if (!await crypto.subtle.verify(
+    { name: 'Ed25519' },
+    key,
+    asArrayBuffer(signature),
+    asArrayBuffer(message),
+  )) fail('router authorization signature rejected')
+
+  const route = routeClaims.route
+  const capabilityRoute = capabilityClaims.route
+  if (
+    routeClaims.router !== router ||
+    routeClaims.jti == null ||
+    !/^[A-Za-z0-9_-]{22}$/.test(routeClaims.jti) ||
+    routeClaims.exp_unix_ms !== capabilityClaims.exp_unix_ms ||
+    route?.ID !== capabilityRoute?.ID ||
+    route?.Source !== capabilityRoute?.Source ||
+    route?.Destination !== capabilityRoute?.Destination ||
+    route?.ExpiresAt !== capabilityRoute?.ExpiresAt ||
+    !Array.isArray(route?.Hops) ||
+    !Array.isArray(capabilityRoute?.Hops) ||
+    route.Hops.length !== 2 ||
+    capabilityRoute.Hops.length !== 2 ||
+    route.Hops.some((hop, index) => {
+      const expected = capabilityRoute.Hops[index]
+      return !expected ||
+        hop.From !== expected.From ||
+        hop.To !== expected.To ||
+        hop.Transport !== expected.Transport ||
+        hop.Cost !== expected.Cost
+    })
+  ) fail('router authorization does not bind the exact signed route')
+
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(route.ID)) {
+    fail('router authorization route id is invalid')
+  }
+  return {
+    id: route.ID,
+    jti: routeClaims.jti,
+    sourceDeviceID: route.Source,
+    destinationDeviceID: route.Destination,
+  }
 }
