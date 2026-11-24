@@ -109,13 +109,18 @@ func newLocalCoreForwardingVerifier(
 	if err := checkpointProvider.ValidateConfiguration(); err != nil {
 		return nil, fmt.Errorf("core process: invalid witnessed checkpoint provider: %w", err)
 	}
+	auditor, err := portforward.NewSupabaseCheckpointFinalizationAuditor(account.Client{}, account.SessionPath(stateDir))
+	if err != nil {
+		return nil, fmt.Errorf("core process: configure authenticated durable checkpoint finalization audit: %w", err)
+	}
 	replay := &portforward.CheckpointAuthorizationReplay{
-		Provider:        &checkpointProvider,
-		ControlPlaneKey: append(ed25519.PublicKey(nil), publicKey...),
-		LocalDeviceID:   deviceID,
-		DeviceSigner:    signer,
-		Memberships:     memberships,
-		RouteVerifier:   routeVerifier,
+		Provider:            &checkpointProvider,
+		ControlPlaneKey:     append(ed25519.PublicKey(nil), publicKey...),
+		LocalDeviceID:       deviceID,
+		DeviceSigner:        signer,
+		Memberships:         memberships,
+		RouteVerifier:       routeVerifier,
+		FinalizationAuditor: auditor,
 	}
 	return &portforward.AuthorizationVerifier{
 		PublicKey: append(ed25519.PublicKey(nil), publicKey...),
