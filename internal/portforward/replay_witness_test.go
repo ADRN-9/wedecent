@@ -1004,14 +1004,14 @@ func TestPendingJournalCorruptionAndAmbiguousStateFailClosed(t *testing.T) {
 				t.Fatal(err)
 			}
 			path := filepath.Join(dir, "pending.json")
+			store, err := NewFileCheckpointPendingStore(path)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if err := os.WriteFile(path, tc.data, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if err := setReplayFileOwner(path); err != nil {
-				t.Fatal(err)
-			}
-			store, err := NewFileCheckpointPendingStore(path)
-			if err != nil {
 				t.Fatal(err)
 			}
 			if _, err := store.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) {
@@ -1447,14 +1447,14 @@ func TestFilePendingJournalByteAndEntryExhaustion(t *testing.T) {
 		t.Fatal(err)
 	}
 	oversizedPath := filepath.Join(dir, "oversized.json")
+	oversized, err := NewFileCheckpointPendingStore(oversizedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(oversizedPath, make([]byte, 129), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := setReplayFileOwner(oversizedPath); err != nil {
-		t.Fatal(err)
-	}
-	oversized, err := NewFileCheckpointPendingStore(oversizedPath)
-	if err != nil {
 		t.Fatal(err)
 	}
 	oversized.maxSize = 128
@@ -2508,15 +2508,15 @@ func TestVersionTwoPendingJournalIsRejectedWithoutChangingOriginalBytes(t *testi
 		t.Fatal(err)
 	}
 	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	original := []byte("{\"version\":2,\"entries\":{}}\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := setReplayFileOwner(path); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewFileCheckpointPendingStore(path)
-	if err != nil {
 		t.Fatal(err)
 	}
 	primary := newDeterministicCheckpointProvider(t)
