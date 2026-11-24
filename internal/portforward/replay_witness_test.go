@@ -2127,8 +2127,8 @@ func TestInvalidSignedConflictCannotPoisonPersistedQuorum(t *testing.T) {
 	}); err != nil || !called {
 		t.Fatalf("invalid conflict poisoned valid cached quorum: err=%v callback=%t", err, called)
 	}
-	if _, err := client.Pending.(checkpointPendingAcknowledgements).LoadEquivocations(context.Background(), request, receipt, client.Witnesses); err != nil {
-		t.Fatalf("invalid evidence was persisted: %v", err)
+	if pending := client.Pending.(*MemoryCheckpointPendingStore); len(pending.entries) != 0 {
+		t.Fatal("invalid conflict evidence prevented successful quorum compaction")
 	}
 }
 
