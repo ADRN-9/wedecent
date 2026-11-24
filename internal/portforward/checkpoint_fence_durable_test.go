@@ -510,3 +510,29 @@ func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *test
 	}
 }
 
+
+
+func TestFileCheckpointFencePrimaryRecoversPreExpiryQuorumAfterExpiry(t *testing.T) {
+	ctx := context.Background()
+	primary, witnesses, _, request, _ := durableFenceFixture(t)
+	token, err := primary.ReserveFence(ctx, request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	acks := make([]CheckpointFenceAcknowledgement, 0, 2)
+	for _, witness := range witnesses[:2] {
+		ack, err := witness.CommitFence(ctx, token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		acks = append(acks, ack)
+	}
+	primary.now = func() time.Time { return time.UnixMilli(token.ExpiresAtUnixMS + 1000) }
+	if err := primary.CommitFence(ctx, token, acks); err != nil {
+		t.Fatalf("durable pre-expiry quorum could not recover after lost response: %v", err)
+	}
+	operation, found, err := primary.LoadFence(ctx, request.Scope, request.OperationID)
+	if err != nil || !found || !operation.Committed {
+		t.Fatalf("pre-expiry quorum was not committed during recovery: found=%v err=%v", found, err)
+	}
+}
