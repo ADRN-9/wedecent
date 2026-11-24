@@ -74,6 +74,35 @@ type CheckpointFencingPrimary interface {
 	LoadFence(context.Context, CheckpointWitnessScope, string) (CheckpointFenceOperation, bool, error)
 }
 
+type CheckpointFenceParticipantHead struct {
+	Endpoint CheckpointEndpoint
+	Head     CheckpointHead
+}
+
+type CheckpointFenceHead struct {
+	Generation            uint64
+	RevocationEpoch       uint64
+	FenceDigest           [sha256.Size]byte
+	PrimaryHeadGeneration uint64
+	PrimaryHeadSHA256     [sha256.Size]byte
+	PendingOperationID    string
+	LastOperationID       string
+	LastAction            CheckpointFenceAction
+}
+
+type CheckpointFenceHeadReader interface {
+	FenceHead(context.Context, CheckpointWitnessScope) (CheckpointFenceHead, error)
+}
+
+// CheckpointFenceAtomicPrimary must compare every supplied authoritative
+// checkpoint head and reserve/commit the fence in the same primary transaction.
+// For revoke commits it must also advance the targeted checkpoint revocation
+// head atomically with the quorum-backed fence commit.
+type CheckpointFenceAtomicPrimary interface {
+	ReserveFenceWithCheckpointHeads(context.Context, CheckpointFenceRequest, []CheckpointFenceParticipantHead) (CheckpointFenceToken, error)
+	CommitFenceWithCheckpointHeads(context.Context, CheckpointFenceToken, []CheckpointFenceAcknowledgement, []CheckpointFenceParticipantHead) error
+}
+
 // CheckpointFencingWitness advances an independently stored monotonic generation.
 type CheckpointFencingWitness interface {
 	CommitFence(context.Context, CheckpointFenceToken) (CheckpointFenceAcknowledgement, error)
@@ -180,6 +209,14 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 		_, err := b.WriteString(value)
 		return err
 	}
+	if token.Scope.Kind != "" {
+		if err := putString("checkpoint-fence-scope-kind-v1"); err != nil {
+			return nil, err
+		}
+		if err := putString(token.Scope.Kind); err != nil {
+			return nil, err
+		}
+	}
 	for _, value := range []string{
 		checkpointFenceDomain, token.Scope.DeviceID, token.Scope.AccountID,
 		token.Scope.OrganizationID, string(token.Action), token.OperationID,
@@ -212,6 +249,14 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 }
 
 func validCheckpointFenceScope(scope CheckpointWitnessScope) bool {
-	return deviceIDPattern.MatchString(scope.DeviceID) &&
-		canonicalUUID(scope.AccountID) && canonicalUUID(scope.OrganizationID)
+	switch scope.Kind {
+	case "", "device":
+		return deviceIDPattern.MatchString(scope.DeviceID) &&
+			canonicalUUID(scope.AccountID) && canonicalUUID(scope.OrganizationID)
+	case "organization":
+		return scope.DeviceID == "" && scope.AccountID == "" &&
+			canonicalUUID(scope.OrganizationID)
+	default:
+		return false
+	}
 }
