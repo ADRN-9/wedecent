@@ -3891,7 +3891,6 @@ func TestLifecycleFenceConcurrentFinalizeAndRevocationHasOneDurableOrder(t *test
 	}
 }
 
-
 type tamperedRevocationProofProvider struct {
 	delegate CheckpointRevocationProofProvider
 }
