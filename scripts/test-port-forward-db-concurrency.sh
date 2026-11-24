@@ -51,6 +51,7 @@ SQL
 
 start() {
  local n="$1" app="$2"
+ rm -f "$WORK/$n.in" "$WORK/$n.log"
  mkfifo "$WORK/$n.in"
  PGAPPNAME="$app" psql "$DB_URL" -X -qAt -v ON_ERROR_STOP=1 <"$WORK/$n.in" >"$WORK/$n.log" 2>&1 &
  PIDS[$n]=$!
