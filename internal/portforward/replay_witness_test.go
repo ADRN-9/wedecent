@@ -3091,13 +3091,15 @@ func TestCheckpointTransitionLockCancellation(t *testing.T) {
 			}()
 			contention := make(chan struct{}, 1)
 			setTransitionWaitHook(store, contention)
+			waitCtx, waitCancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer waitCancel()
 			ctx, cancel := context.WithCancel(context.Background())
 			done := make(chan error, 1)
 			go func() {
 				_, err := store.(checkpointPendingTransitionLocker).LockTransition(ctx)
 				done <- err
 			}()
-			waitForTestSignal(t, context.Background(), contention, "transition lock contention")
+			waitForTestSignal(t, waitCtx, contention, "transition lock contention")
 			cancel()
 			select {
 			case err := <-done:
