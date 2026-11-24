@@ -189,9 +189,9 @@ begin
     );
 
     for target_device_id in
-        select distinct d
-          from unnest(affected_device_ids) as d
-         order by d
+        select distinct ids.device_id
+          from unnest(affected_device_ids) as ids(device_id)
+         order by ids.device_idevice_id
     loop
         update public.devices
            set revocation_epoch = revocation_epoch + 1
@@ -380,7 +380,7 @@ begin
               v_pre_destination.organization_id,
               case when p_router_device_id is not null
                    then v_pre_router.organization_id else null end
-          ]) as org_id
+          ]) as ids(org_id)
          where org_id is not null
          order by org_id
     );
@@ -430,9 +430,9 @@ begin
     end if;
 
     for v_target_device_id in
-        select d
-          from unnest(v_device_ids) as d
-         order by d
+        select ids.device_id
+          from unnest(v_device_ids) as ids(device_id)
+         order by ids.device_id
     loop
         select d.* into v_locked_device
           from public.devices as d
