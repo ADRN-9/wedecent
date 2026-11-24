@@ -101,3 +101,30 @@ Port-forward authorizations use a distinct signing domain and must have a separa
 - Production provisioning of the separate port-forward signing public/private key pair and a non-exporting signing provider.
 
 This batch is a foundation, not a claim of usable or production-ready port forwarding.
+
+
+## C142 — atomic multi-participant Supabase authorization
+
+The replay Edge Function now verifies the separate signed mesh.forward route authorization for routed capabilities. It requires the dedicated route-authorization public key and verifies the exact route ID, source, destination, router, hops, transports, costs and expiry. A routed capability without this independent signature fails closed.
+
+The database transaction consume_port_forward_authorization now binds one forwarding_id and JTI to:
+- the initiating device, destination device and optional router;
+- each participant's current owner/account, organization and monotonic revocation epoch;
+- the capability direction and distinct port_forward.local / port_forward.remote permission;
+- current organization membership and explicit device-access grants;
+- the independent route-authorization grant ID/JTI for routed forwarding;
+- the signed authorization digest, issued time and expiry.
+
+The transaction re-reads and locks the participant records before committing. Its lock order is organization rows, subject membership rows, subject device-access rows, route authorization row, then participant device rows in canonical device-ID order. Device membership and access mutation triggers advance the affected device epochs while holding the mutated membership/access row. Device owner, organization, key, kind and revocation changes advance the same device epoch.
+
+The primary SQL transaction commit is the authorization/replay linearization point. A retry with the same forwarding ID, JTI, digest and participant snapshot returns the prior success without advancing replay state. Reuse of a forwarding ID with changed authorization context, or reuse of a JTI with a different forwarding ID, is rejected. Both endpoint devices may consume the same exact transaction once in their independent per-device replay ledgers.
+
+The Edge Function still verifies the local device Ed25519 proof against the enrolled public key. The SQL RPC receives that public key and compares it against the same locked device row, preventing a pre-read key from being substituted between proof verification and consumption.
+
+### Explicit boundaries
+
+- The SQL transaction serializes only the Supabase primary database. It does not make witness commitment, acknowledgement, primary consumption and revocation atomic across independent services.
+- The independent route grant is locked and checked for current revocation and exact participant binding. The route authorization signer remains a separate trust domain.
+- The transaction records database-derived account, organization and revocation snapshots. The existing port-forward capability wire profile does not yet carry those database snapshot fields as signed claims; authorization is therefore re-evaluated against current database state at each endpoint consumption.
+- The pgTAP suite exercises sequential authorization, replay, rollback, revocation and membership/access mutation behavior. It does not prove concurrent safety across independent database sessions. A barrier-controlled two-session race suite is still required.
+- Production application of the migrations, Edge Function deployment, route and port-forward public-key provisioning, and independently administered witness integration remain separate gates. No hosted production deployment is claimed.
