@@ -174,12 +174,22 @@ func (p *WitnessedReplayCheckpointProvider) Finalize(ctx context.Context, reques
 // FinalizeWithAudit invokes onQuorumCommitted after historical witness quorum is
 // authenticated and before local journal compaction. The callback cannot grant
 // a session; it records the finalization outcome durably.
-func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Context, request CheckpointRequest, onQuorumCommitted func() error) error {
+func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Context, request CheckpointRequest, onQuorumCommitted func() error) (resultErr error) {
 	if p == nil {
 		return ErrCheckpointUnavailable
 	}
 	p.finalizeMu.Lock()
 	defer p.finalizeMu.Unlock()
+
+	if locker, ok := p.Pending.(checkpointPendingFinalizationLocker); ok {
+		unlock, err := locker.LockFinalization(ctx, request)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			resultErr = errors.Join(resultErr, unlock())
+		}()
+	}
 
 	if err := p.ValidateConfiguration(); err != nil {
 		return err
