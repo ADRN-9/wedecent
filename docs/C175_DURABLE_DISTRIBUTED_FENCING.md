@@ -25,7 +25,7 @@ The primary refuses a stale expected generation, stale revocation epoch, mismatc
 
 - The witness validates the primary signature, fixed witness-set version and exact membership.
 - It compares the expected generation, revocation epoch and previous-fence digest with its own durable state.
-- It rejects same-generation equivocation and skips no generations.
+- It rejects same-generation equivocation, operation-ID reuse across scopes or generations, and skipped generations.
 - It signs an acknowledgement containing the exact token digest, action, operation ID, generation, key ID and commit timestamp.
 - The journal is fsynced before the acknowledgement is returned.
 - Exact retries recover the same acknowledgement, including after token expiry. Expired tokens cannot create a new witness commitment.
@@ -34,7 +34,7 @@ Witness state and keys must not be shared between witness identities or administ
 
 ## Quorum coordinator
 
-`CheckpointFenceCoordinator.Execute` reserves at the primary, requests witness commits concurrently, verifies distinct acknowledgements against configured witness public keys, and asks the primary to commit only after strict majority. If fewer than quorum acknowledge, the reservation remains pending and the call fails closed. Retrying the exact request resumes the same generation; it does not mint a replacement token.
+`CheckpointFenceCoordinator.Execute` reserves at the primary, requests witness commits concurrently, verifies distinct acknowledgements against configured witness public keys, and asks the primary to commit only after strict majority. If fewer than quorum acknowledge, the reservation remains pending and the call fails closed. Retrying the exact request resumes the same generation; it does not mint a replacement token. If the reservation expires before a strict majority is durable, already-committed witnesses can return their exact acknowledgements but uncommitted witnesses reject the expired token. There is no automatic abort or generation-reuse path; this blocks progress pending a future quorum-safe recovery protocol or operator-led reconciliation.
 
 If the primary commit response is ambiguous, the coordinator reads the stable operation ID back from the primary and only returns success when a matching committed operation is durably present.
 
@@ -42,7 +42,7 @@ The quorum is always `floor(n/2)+1`; between three and 31 configured witnesses a
 
 ## TLS and endpoint pinning
 
-`NewPinnedCheckpointFenceHTTPClient` creates an HTTP client restricted to TLS 1.3, an exact configured DNS hostname and an exact SHA-256 pin of the leaf certificate SubjectPublicKeyInfo. Standard PKI chain and hostname verification remain enabled; SPKI pinning is additional. The client refuses IP literals, URL-like host strings, empty pins and malformed hostnames.
+`NewPinnedCheckpointFenceHTTPClient` creates an HTTP client restricted to TLS 1.3, an exact configured DNS hostname and an exact SHA-256 pin of the leaf certificate SubjectPublicKeyInfo. Standard PKI chain and hostname verification remain enabled; SPKI pinning is additional. The client refuses IP literals, URL-like host strings, empty pins and malformed hostnames. Its dialer permits only the exact configured hostname on TCP 443, and redirects are returned without following them.
 
 This is a secure transport primitive, not a completed remote RPC protocol. Primary and witness HTTP service handlers, request/response schemas, mTLS/client authentication and deployment manifests are still required before these stores can be operated across hosts.
 
@@ -74,7 +74,7 @@ These are local filesystem integration tests. They do not prove cross-host conse
 
 ## Integration boundary and remaining blockers
 
-The existing `WitnessedReplayCheckpointProvider` still uses its legacy `Consume`, `Revoke`, witness receipt and pending-store flow. C175 does not route authorization consumption, finalization or revocation through `CheckpointFenceCoordinator`. Do not enable this journal as the production authorization path until an explicit lifecycle migration preserves pending finalization recovery and verifies the same committed fence evidence at every authorization boundary.
+The signed reservation token is not by itself proof of a committed authorization decision; consumers must require a `CheckpointFenceOperation` with `Committed=true` and a verified quorum. The existing `WitnessedReplayCheckpointProvider` still uses its legacy `Consume`, `Revoke`, witness receipt and pending-store flow. C175 does not route authorization consumption, finalization or revocation through `CheckpointFenceCoordinator`. Do not enable this journal as the production authorization path until an explicit lifecycle migration preserves pending finalization recovery and verifies the same committed fence evidence at every authorization boundary.
 
 Remaining work:
 1. Add remote primary/witness RPC servers and clients using the pinned TLS transport; bind every RPC to the configured authority identity and reject endpoint changes.
