@@ -1631,7 +1631,9 @@ func routedCheckpointRequestForRevocationTest(t *testing.T, primary *determinist
 		},
 		"signature": strings.Repeat("A", 86) + "==",
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	request.RouteAuthorizationJSON = string(routeAuthorization)
 	request.RouteAuthorizationSHA256 = sha256.Sum256(routeAuthorization)
 	request, err = SignCheckpointRequest(signer, request)
@@ -3263,7 +3265,6 @@ func TestFileCheckpointStandaloneDecisionWrappersPropagateUnlockErrors(t *testin
 		}
 	})
 }
-
 
 func TestFinalizationEvidenceIsDurableImmutableAndTamperEvident(t *testing.T) {
 	dir := t.TempDir()
