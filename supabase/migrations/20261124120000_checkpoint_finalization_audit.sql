@@ -44,6 +44,8 @@ create table public.checkpoint_finalization_operations (
     payload jsonb not null,
     payload_sha256 bytea not null check (pg_catalog.octet_length(payload_sha256) = 32),
     actor_id uuid not null references auth.users(id) on delete restrict,
+    evidence jsonb not null,
+    evidence_sha256 bytea not null check (pg_catalog.octet_length(evidence_sha256) = 32),
     created_at timestamptz not null default pg_catalog.clock_timestamp()
 );
 
@@ -60,6 +62,8 @@ create table public.checkpoint_finalization_audit (
     payload_version integer not null check (payload_version = 1),
     payload_sha256 bytea not null check (pg_catalog.octet_length(payload_sha256) = 32),
     actor_id uuid not null references auth.users(id) on delete restrict,
+    evidence jsonb not null,
+    evidence_sha256 bytea not null check (pg_catalog.octet_length(evidence_sha256) = 32),
     created_at timestamptz not null default pg_catalog.clock_timestamp(),
     unique (operation_id, outcome)
 );
@@ -81,6 +85,8 @@ create or replace function public.record_checkpoint_finalization(
     p_payload_version integer,
     p_payload jsonb,
     p_payload_sha256 bytea,
+    p_evidence jsonb,
+    p_evidence_sha256 bytea,
     p_actor_id uuid
 )
 returns jsonb
@@ -97,6 +103,10 @@ declare
     v_initiator text;
     v_destination text;
     v_actor_organization uuid;
+    v_device_ids text[];
+    v_org_ids uuid[];
+    v_device public.devices%rowtype;
+    v_route_grant public.route_authorization_grants%rowtype;
     v_replayed boolean := false;
 begin
     if p_operation_id is null
@@ -113,7 +123,11 @@ begin
        or pg_catalog.jsonb_typeof(p_payload) <> 'object'
        or p_actor_id is null
        or p_payload_sha256 is null
-       or pg_catalog.octet_length(p_payload_sha256) <> 32 then
+       or pg_catalog.octet_length(p_payload_sha256) <> 32
+       or p_evidence is null
+       or pg_catalog.jsonb_typeof(p_evidence) <> 'object'
+       or p_evidence_sha256 is null
+       or pg_catalog.octet_length(p_evidence_sha256) <> 32 then
         raise exception 'invalid audit request' using errcode = '22023';
     end if;
 
@@ -122,6 +136,25 @@ begin
         'sha256'
     ) <> p_payload_sha256 then
         raise exception 'audit digest mismatch' using errcode = '22023';
+    end if;
+
+    if extensions.digest(
+        pg_catalog.convert_to(wedecent_private.canonical_jsonb(p_evidence), 'UTF8'),
+        'sha256'
+    ) <> p_evidence_sha256 then
+        raise exception 'audit evidence digest mismatch' using errcode = '22023';
+    end if;
+
+    if p_outcome = 'finalized' and (
+        p_evidence = '{}'::jsonb
+        or not (p_evidence ? 'primary_receipt')
+        or not (p_evidence ? 'witness_acknowledgements')
+        or not (p_evidence ? 'revocation_proofs')
+    ) then
+        raise exception 'terminal audit evidence is incomplete' using errcode = '22023';
+    end if;
+    if p_outcome not in ('finalization_started', 'finalization_failed', 'membership_unavailable', 'finalized') then
+        raise exception 'unsupported checkpoint audit transition' using errcode = '22023';
     end if;
 
     v_jti := p_payload ->> 'jti';
@@ -149,23 +182,69 @@ begin
 
     perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_operation_id, 0));
 
-    -- Keep the organization -> membership -> authorization-transaction lock order.
-    perform 1
+    v_device_ids := array[v_initiator, v_destination];
+    if p_payload #>> '{router,device_id}' is not null then
+        v_device_ids := array_append(v_device_ids, p_payload #>> '{router,device_id}');
+    end if;
+    v_org_ids := array(
+        select distinct value::uuid
+          from unnest(array[
+              p_payload #>> '{initiator,organization_id}',
+              p_payload #>> '{destination,organization_id}',
+              p_payload #>> '{router,organization_id}'
+          ]) as orgs(value)
+         where value is not null
+         order by value::uuid
+    );
+
+    -- Match authorization issuance lock order: organizations, memberships,
+    -- device access, route grant, participant devices, then transaction.
+    perform organization_row.id
       from public.organizations as organization_row
-     where organization_row.id = v_actor_organization
+     where organization_row.id = any(v_org_ids)
+     order by organization_row.id
      for share;
-    if not found then
-        raise exception 'audit organization is unavailable' using errcode = '42501';
+    if (select pg_catalog.count(*) from public.organizations o where o.id = any(v_org_ids)) <> cardinality(v_org_ids) then
+        raise exception 'audit participant organization is unavailable' using errcode = '42501';
     end if;
 
-    perform 1
+    perform membership.organization_id
       from public.organization_memberships as membership
-     where membership.user_id = p_actor_id
-       and membership.organization_id = v_actor_organization
+     where (membership.user_id, membership.organization_id) in (
+        ((p_payload #>> '{initiator,account_id}')::uuid, (p_payload #>> '{initiator,organization_id}')::uuid),
+        ((p_payload #>> '{destination,account_id}')::uuid, (p_payload #>> '{destination,organization_id}')::uuid)
+     )
+        or (
+          p_payload #>> '{router,device_id}' is not null
+          and membership.user_id = (p_payload #>> '{router,account_id}')::uuid
+          and membership.organization_id = (p_payload #>> '{router,organization_id}')::uuid
+        )
+     order by membership.organization_id, membership.user_id
      for share;
-    if not found then
-        raise exception 'audit actor membership is unavailable' using errcode = '42501';
+    if not exists (
+        select 1 from public.organization_memberships m
+         where m.user_id = (p_payload #>> '{initiator,account_id}')::uuid
+           and m.organization_id = (p_payload #>> '{initiator,organization_id}')::uuid
+    ) or not exists (
+        select 1 from public.organization_memberships m
+         where m.user_id = (p_payload #>> '{destination,account_id}')::uuid
+           and m.organization_id = (p_payload #>> '{destination,organization_id}')::uuid
+    ) or (
+        p_payload #>> '{router,device_id}' is not null and not exists (
+            select 1 from public.organization_memberships m
+             where m.user_id = (p_payload #>> '{router,account_id}')::uuid
+               and m.organization_id = (p_payload #>> '{router,organization_id}')::uuid
+        )
+    ) then
+        raise exception 'audit participant membership is unavailable' using errcode = '42501';
     end if;
+
+    perform access.device_id
+      from public.device_access as access
+     where access.device_id = any(v_device_ids)
+       and access.user_id = (p_payload #>> '{initiator,account_id}')::uuid
+     order by access.device_id, access.permission
+     for share;
 
     select transaction_row.*
       into v_transaction
@@ -193,9 +272,9 @@ begin
     end if;
 
     insert into public.checkpoint_finalization_operations (
-        operation_id, payload_version, payload, payload_sha256, actor_id
+        operation_id, payload_version, payload, payload_sha256, actor_id, evidence, evidence_sha256
     )
-    values (p_operation_id, p_payload_version, p_payload, p_payload_sha256, p_actor_id)
+    values (p_operation_id, p_payload_version, p_payload, p_payload_sha256, p_actor_id, p_evidence, p_evidence_sha256)
     on conflict (operation_id) do nothing;
 
     select operation_row.*
@@ -207,7 +286,9 @@ begin
     if v_operation.payload_version <> p_payload_version
        or v_operation.payload_sha256 <> p_payload_sha256
        or v_operation.payload <> p_payload
-       or v_operation.actor_id <> p_actor_id then
+       or v_operation.actor_id <> p_actor_id
+       or v_operation.evidence <> p_evidence
+       or v_operation.evidence_sha256 <> p_evidence_sha256 then
         raise exception 'operation payload conflict' using errcode = '23505';
     end if;
 
@@ -220,7 +301,9 @@ begin
     if found then
         if v_event.payload_sha256 <> p_payload_sha256
            or v_event.payload_version <> p_payload_version
-           or v_event.actor_id <> p_actor_id then
+           or v_event.actor_id <> p_actor_id
+           or v_event.evidence <> p_evidence
+           or v_event.evidence_sha256 <> p_evidence_sha256 then
             raise exception 'outcome conflict' using errcode = '23505';
         end if;
         v_replayed := true;
@@ -236,10 +319,22 @@ begin
             raise exception 'contradictory terminal outcome' using errcode = '23505';
         end if;
 
+        if p_outcome = 'finalized' and not exists (
+            select 1 from public.checkpoint_finalization_audit
+             where operation_id = p_operation_id and outcome = 'finalization_started'
+        ) then
+            raise exception 'completion requires a started operation' using errcode = '23505';
+        end if;
+        if p_outcome in ('finalization_failed', 'membership_unavailable') and not exists (
+            select 1 from public.checkpoint_finalization_audit
+             where operation_id = p_operation_id and outcome = 'finalization_started'
+        ) then
+            raise exception 'failure transition requires a started operation' using errcode = '23505';
+        end if;
         insert into public.checkpoint_finalization_audit (
-            operation_id, outcome, payload_version, payload_sha256, actor_id
+            operation_id, outcome, payload_version, payload_sha256, actor_id, evidence, evidence_sha256
         )
-        values (p_operation_id, p_outcome, p_payload_version, p_payload_sha256, p_actor_id)
+        values (p_operation_id, p_outcome, p_payload_version, p_payload_sha256, p_actor_id, p_evidence, p_evidence_sha256)
         returning * into v_event;
     end if;
 
@@ -253,7 +348,7 @@ begin
 end;
 $$;
 
-revoke all on function public.record_checkpoint_finalization(text, text, integer, jsonb, bytea, uuid)
+revoke all on function public.record_checkpoint_finalization(text, text, integer, jsonb, bytea, jsonb, bytea, uuid)
     from public, anon, authenticated;
 grant execute on function public.record_checkpoint_finalization(text, text, integer, jsonb, bytea, uuid)
     to service_role;
