@@ -93,15 +93,14 @@ race() {
  if [[ "$order" == "consume-first" ]]; then
   start c "$ca"; send c "begin; select public.wd_c145_consume('$fid','$jti','$rid','$rj');"
   wait_text c '"accepted": true'
-  start r "$ra"; send r "begin; $mutation"
+  start r "$ra"; send r "begin; $mutation; select 'mutation-ready';"
   wait_lock "$ra"
   finish c || fail "$name consumer commit failed"
   finish r || fail "$name revocation commit failed"
   assertq t "select exists(select 1 from public.port_forward_authorization_transactions where forwarding_id='$fid')"
  else
   start r "$ra"; send r "begin; $mutation"
-  for _ in $(seq 1 300); do grep -Eq '^(UPDATE|DELETE) 1$' "$WORK/r.log" && break; sleep .05; done
-  grep -Eq '^(UPDATE|DELETE) 1$' "$WORK/r.log" || { cat "$WORK/r.log" >&2; fail "$name revocation did not execute"; }
+  wait_text r "mutation-ready"
   start c "$ca"; send c "begin; select public.wd_c145_consume('$fid','$jti','$rid','$rj');"
   wait_lock "$ca"
   finish r || fail "$name revocation commit failed"
