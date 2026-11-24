@@ -48,9 +48,6 @@ import {
   concat,
   providerKeyID,
   sha,
-  str,
-  u32,
-  u64,
   verifyFinalizationEvidence,
   witnessAckMessage,
   witnessHeadMessage,
@@ -156,20 +153,6 @@ async function positiveEvidenceFixture() {
   };
   const initiatorHead = await primaryHead(initiator, 1, recordHash);
   const destinationHead = await primaryHead(destination, 0, new Uint8Array(32));
-  const proofs = [];
-  for (const [id, keyID, key] of [
-    ["witness-a", witnessAID, witnessA],
-    ["witness-b", witnessBID, witnessB],
-  ] as const) {
-    proofs.push({
-      primary_head: initiatorHead,
-      witness_heads: [await witnessHead(id, keyID, key, initiator, 1, 1, recordHash), await witnessHead("witness-b", witnessBID, witnessB, initiator, 1, 1, recordHash)].filter((x) => x.witness_id === id),
-    });
-    proofs.push({
-      primary_head: destinationHead,
-      witness_heads: [await witnessHead(id, keyID, key, destination, 0, 0, new Uint8Array(32))],
-    });
-  }
   const evidence = {
     primary_receipt: receipt,
     witness_acknowledgements: [await ack("witness-a", witnessAID, witnessA.privateKey), await ack("witness-b", witnessBID, witnessB.privateKey)],
@@ -180,7 +163,7 @@ async function positiveEvidenceFixture() {
   };
   const operationID = hex(await sha(concat(new TextEncoder().encode("wedecent-checkpoint-finalization-v1\\n"), requestHash)));
   return {
-    primary, witnessA, witnessB, primaryRaw, witnessARaw, witnessBRaw,
+    primaryRaw, witnessARaw, witnessBRaw,
     payload, requestHash, evidence, operationID,
   };
 }
