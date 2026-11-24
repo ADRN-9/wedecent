@@ -30,6 +30,33 @@ Deno.test("shared Go and TypeScript checkpoint cryptographic golden vectors", as
   if (hex(witnessAckMessage(vector.witness_ack)) !== vector.witness_ack.message_hex) throw new Error("witness acknowledgement vector mismatch");
   if (hex(witnessHeadMessage(vector.witness_head)) !== vector.witness_head.message_hex) throw new Error("witness head vector mismatch");
   if (await digest(vector.canonical_payload.value) !== vector.canonical_payload.sha256) throw new Error("canonical payload digest vector mismatch");
+
+  const fromHex = (value: string) => Uint8Array.from(value.match(/../g) ?? [], (x) => parseInt(x, 16));
+  const verifyAndSign = async (item: Record<string, string>) => {
+    const publicKeyBytes = fromHex(item.public_key_hex);
+    const seed = fromHex(item.signing_seed_hex);
+    const message = fromHex(item.message_hex);
+    const signature = fromHex(item.signature_hex);
+    const publicKey = await crypto.subtle.importKey("raw", bufferSource(publicKeyBytes), { name: "Ed25519" }, false, ["verify"]);
+    if (!await crypto.subtle.verify({ name: "Ed25519" }, publicKey, bufferSource(signature), bufferSource(message))) {
+      throw new Error("Go-generated Ed25519 evidence signature rejected by TypeScript");
+    }
+    const pkcs8Prefix = Uint8Array.from([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20]);
+    const pkcs8 = new Uint8Array(pkcs8Prefix.length + seed.length);
+    pkcs8.set(pkcs8Prefix);
+    pkcs8.set(seed, pkcs8Prefix.length);
+    const privateKey = await crypto.subtle.importKey("pkcs8", bufferSource(pkcs8), { name: "Ed25519" }, false, ["sign"]);
+    const generated = new Uint8Array(await crypto.subtle.sign({ name: "Ed25519" }, privateKey, bufferSource(message)));
+    if (hex(generated) !== item.signature_hex) throw new Error("TypeScript-generated Ed25519 evidence differs from Go vector");
+    const forged = signature.slice();
+    forged[0] ^= 1;
+    if (await crypto.subtle.verify({ name: "Ed25519" }, publicKey, bufferSource(forged), bufferSource(message))) {
+      throw new Error("forged Ed25519 evidence signature accepted");
+    }
+  };
+  for (const item of [vector.primary_receipt, vector.primary_head, vector.witness_ack, vector.witness_head]) {
+    await verifyAndSign(item);
+  }
 });
 
 const evidence = {
