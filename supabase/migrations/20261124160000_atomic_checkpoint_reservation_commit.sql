@@ -199,6 +199,7 @@ begin
         p_request_sha256, v_participant_sha256, v_fingerprint
     )
     on conflict (operation_id) do nothing;
+    v_new_operation := found;
 
     select operation_row.*
       into v_operation
@@ -227,6 +228,15 @@ begin
         return v_committed.event_payload -> 'result';
     end if;
 
+    perform organization_row.id
+      from public.organizations as organization_row
+     where organization_row.id = p_organization_id
+     for share;
+    if not found then
+        raise exception 'checkpoint organization is unavailable'
+            using errcode = '42501';
+    end if;
+
     select membership.role
       into v_actor_role
       from public.organization_memberships as membership
@@ -237,15 +247,6 @@ begin
     if not found
        or (p_action = 'revoke' and v_actor_role not in ('owner', 'admin')) then
         raise exception 'checkpoint actor is not authorized for this operation'
-            using errcode = '42501';
-    end if;
-
-    perform organization_row.id
-      from public.organizations as organization_row
-     where organization_row.id = p_organization_id
-     for share;
-    if not found then
-        raise exception 'checkpoint organization is unavailable'
             using errcode = '42501';
     end if;
 
@@ -342,6 +343,16 @@ begin
                 using errcode = '55000';
         end if;
 
+        select device_row.*
+          into v_device
+          from public.devices as device_row
+         where device_row.device_id = v_participant ->> 'device_id';
+
+        if not found then
+            raise exception 'checkpoint participant device is unavailable'
+                using errcode = '42501';
+        end if;
+
         v_authoritative := v_authoritative || pg_catalog.jsonb_build_array(
             pg_catalog.jsonb_build_object(
                 'device_id', v_participant ->> 'device_id',
@@ -363,14 +374,6 @@ begin
     if not wedecent_private.checkpoint_v1_transition_matches(v_participants, v_authoritative) then
         raise exception 'checkpoint participant v1 transition is stale'
             using errcode = '40001';
-    end if;
-
-    if v_operation.created_at = v_operation.created_at
-       and not exists (
-           select 1 from public.checkpoint_operation_participants participant_row
-            where participant_row.operation_id = p_operation_id
-       ) then
-        v_new_operation := true;
     end if;
 
     if v_new_operation then
@@ -550,6 +553,7 @@ declare
     v_now timestamptz := pg_catalog.clock_timestamp();
     v_operation public.checkpoint_operations%rowtype;
     v_participant public.checkpoint_operation_participants%rowtype;
+    v_actor_role public.organization_role;
     v_device public.devices%rowtype;
     v_authority public.port_forward_replay_authority%rowtype;
     v_event public.checkpoint_operation_events%rowtype;
@@ -603,6 +607,19 @@ begin
      for share;
     if not found then
         raise exception 'checkpoint organization is unavailable'
+            using errcode = '42501';
+    end if;
+
+    select membership.role
+      into v_actor_role
+      from public.organization_memberships as membership
+     where membership.organization_id = v_operation.organization_id
+       and membership.user_id = v_operation.actor_id
+     for share;
+
+    if not found
+       or (v_operation.action = 'revoke' and v_actor_role not in ('owner', 'admin')) then
+        raise exception 'checkpoint actor authorization was revoked'
             using errcode = '42501';
     end if;
 
