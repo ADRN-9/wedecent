@@ -5,6 +5,14 @@ function reply(b:unknown,s=200){return new Response(JSON.stringify(b),{status:s,
 function canonical(v:unknown):string{if(v===null||typeof v==="boolean"||typeof v==="string")return JSON.stringify(v);if(typeof v==="number"){if(!Number.isSafeInteger(v))throw Error("unsafe number");return JSON.stringify(v)}if(Array.isArray(v))return "["+v.map(canonical).join(",")+"]";if(typeof v==="object")return "{"+Object.keys(v as object).sort().map(k=>JSON.stringify(k)+":"+canonical((v as Record<string,unknown>)[k])).join(",")+"}";throw Error("invalid value")}
 async function digest(v:unknown){const h=new Uint8Array(await crypto.subtle.digest("SHA-256",new TextEncoder().encode(canonical(v))));return [...h].map(x=>x.toString(16).padStart(2,"0")).join("")}
 function serviceKey(){const k=Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");if(k)return k;const x=Deno.env.get("SUPABASE_SECRET_KEYS");if(x){const o=JSON.parse(x);if(o.default)return o.default}throw Error("service key missing")}
+async function readBoundedBody(req:Request):Promise<string|null>{
+ const reader=req.body?.getReader();if(!reader)return "";
+ const chunks:Uint8Array[]=[];let total=0;
+ try{for(;;){const part=await reader.read();if(part.done)break;total+=part.value.byteLength;if(total>65536){await reader.cancel();return null}chunks.push(part.value)}}
+ finally{reader.releaseLock()}
+ const body=new Uint8Array(total);let offset=0;for(const chunk of chunks){body.set(chunk,offset);offset+=chunk.byteLength}
+ return new TextDecoder("utf-8",{fatal:true}).decode(body);
+}
 function endpoint(v:unknown){if(!v||typeof v!=="object"||Array.isArray(v))return false;const x=v as Record<string,unknown>;return Object.keys(x).sort().join(",")==="account_id,device_id,organization_id,revocation_epoch"&&typeof x.device_id==="string"&&/^wd_[a-z2-7]{16}$/.test(x.device_id)&&typeof x.account_id==="string"&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x.account_id)&&typeof x.organization_id==="string"&&/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(x.organization_id)&&Number.isSafeInteger(x.revocation_epoch)&&Number(x.revocation_epoch)>=0}
 function fromHex(s:string){if(!/^[0-9a-f]{64}$/.test(s))throw Error("invalid digest");return Uint8Array.from(s.match(/../g)!,x=>parseInt(x,16))}
 function fromBase64(s:string){if(!/^[A-Za-z0-9+/]{43}=$/.test(s))throw Error("invalid public key");const raw=atob(s);if(btoa(raw)!==s)throw Error("non-canonical public key");return Uint8Array.from(raw,x=>x.charCodeAt(0))}
@@ -34,7 +42,7 @@ async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:st
 }
 Deno.serve(async req=>{if(req.method==="OPTIONS")return new Response("ok",{headers});if(req.method!=="POST")return reply({error:"method not allowed"},405);try{
 const token=req.headers.get("authorization")?.match(/^Bearer\s+([^\s]+)$/i)?.[1];if(!token||token.length>8192)return reply({error:"authentication required"},401);
-const raw=await req.text();if(new TextEncoder().encode(raw).length>65536)return reply({error:"request too large"},413);
+const raw=await readBoundedBody(req);if(raw===null)return reply({error:"request too large"},413);
 const url=Deno.env.get("SUPABASE_URL");if(!url)throw Error("URL missing");const admin=createClient(url,serviceKey(),{auth:{persistSession:false,autoRefreshToken:false}});
 const {data:auth,error:authErr}=await admin.auth.getUser(token);if(authErr||!auth.user)return reply({error:"invalid user session"},401);
 const b=JSON.parse(raw) as Record<string,unknown>;if(Object.keys(b).sort().join(",")!=="operation_id,outcome,payload,payload_sha256,payload_version")return reply({error:"invalid fields"},400);
