@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(19);
+select plan(21);
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
@@ -76,8 +76,8 @@ select ok((select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.
 select ok((select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='checkpoint_finalization_audit'),'audit event RLS enabled');
 select ok(not has_table_privilege('authenticated','public.checkpoint_finalization_operations','SELECT,INSERT,UPDATE,DELETE'),'authenticated users cannot mutate or read operation ledger directly');
 select ok(not has_table_privilege('service_role','public.checkpoint_finalization_audit','SELECT,INSERT,UPDATE,DELETE'),'service role cannot mutate audit tables directly');
-select ok(not has_function_privilege('authenticated','public.record_checkpoint_finalization(text,text,integer,jsonb,bytea,uuid)','EXECUTE'),'authenticated users cannot execute privileged audit RPC');
-select ok(has_function_privilege('service_role','public.record_checkpoint_finalization(text,text,integer,jsonb,bytea,uuid)','EXECUTE'),'service role can execute audit RPC');
+select ok(not has_function_privilege('authenticated','public.record_checkpoint_finalization(text,text,integer,jsonb,bytea,jsonb,bytea,uuid)','EXECUTE'),'authenticated users cannot execute privileged audit RPC');
+select ok(has_function_privilege('service_role','public.record_checkpoint_finalization(text,text,integer,jsonb,bytea,jsonb,bytea,uuid)','EXECUTE'),'service role can execute audit RPC');
 select throws_ok($q$select pg_temp.record_audit_as('finalization_started',pg_temp.audit_payload(),'11000000-0000-4000-8000-000000000093')$q$,'42501','unauthorized audit actor','non-participant without organization membership cannot write audit records');
 select is(wedecent_private.canonical_jsonb('{"z":2,"a":1}'::jsonb),'{"a":1,"z":2}','canonical JSON sorts object keys');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'false','first intermediate audit transition is committed');
@@ -88,8 +88,8 @@ select is((pg_temp.record_audit('finalized',pg_temp.audit_payload())->>'replayed
 select throws_ok($$select pg_temp.record_audit('rejected_revocation',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome in('finalized','rejected_revocation')),1,'only one terminal outcome exists per operation');
-select throws_ok($select pg_temp.record_audit('finalized',pg_temp.audit_payload())$,'23505','completion requires a started operation','completion without a start event is rejected');
-select throws_ok($select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$,'23505','failure transition requires a started operation','failure transition without a start event is rejected');
+select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload())$q$,'23505','completion requires a started operation','completion without a start event is rejected');
+select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$q$,'23505','failure transition requires a started operation','failure transition without a start event is rejected');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'false','failure/recovery operation starts cleanly');
 select is((pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())->>'replayed'),'false','intermediate failure is recorded without terminalizing operation');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload())->>'replayed'),'false','successful retry can recover after intermediate failure');
