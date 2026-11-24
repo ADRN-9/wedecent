@@ -157,7 +157,7 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 	}
 	unlock, _, err := lockReplayFileContext(ctx, r.Path)
 	if err != nil {
-		return fmt.Errorf("%w: lock replay store: %v", ErrReplayUnavailable, err)
+		return errors.Join(ErrReplayUnavailable, fmt.Errorf("lock replay store: %w", err))
 	}
 	defer func() {
 		if unlockErr := unlock(); unlockErr != nil {
