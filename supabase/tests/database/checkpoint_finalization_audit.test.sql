@@ -1,10 +1,10 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(15);
+select plan(16);
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
-('11000000-0000-4000-8000-000000000092','authenticated','authenticated','audit-destination@example.test');
+('11000000-0000-4000-8000-000000000092','authenticated','authenticated','audit-destination@example.test'),\n('11000000-0000-4000-8000-000000000093','authenticated','authenticated','audit-outsider@example.test');
 
 insert into public.organizations(id,name,slug,created_by)
 values('22000000-0000-4000-8000-000000000091','Checkpoint Audit Test','checkpoint-audit-test','11000000-0000-4000-8000-000000000091');
@@ -41,14 +41,24 @@ select jsonb_build_object(
 $$;
 
 create function pg_temp.record_audit(p_outcome text,payload jsonb) returns jsonb
-language sql as $$
+language sql as $
 select public.record_checkpoint_finalization(
  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
  p_outcome,1,payload,
  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
  '11000000-0000-4000-8000-000000000091'
 )
-$$;
+$;
+
+create function pg_temp.record_audit_as(p_outcome text,payload jsonb,p_actor uuid) returns jsonb
+language sql as $
+select public.record_checkpoint_finalization(
+ 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+ p_outcome,1,payload,
+ extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
+ p_actor
+)
+$;
 
 select ok((select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='checkpoint_finalization_operations'),'operation ledger RLS enabled');
 select ok((select relrowsecurity from pg_class c join pg_namespace n on n.oid=c.relnamespace where n.nspname='public' and c.relname='checkpoint_finalization_audit'),'audit event RLS enabled');
@@ -56,6 +66,7 @@ select ok(not has_table_privilege('authenticated','public.checkpoint_finalizatio
 select ok(not has_table_privilege('service_role','public.checkpoint_finalization_audit','SELECT,INSERT,UPDATE,DELETE'),'service role cannot mutate audit tables directly');
 select ok(not has_function_privilege('authenticated','public.record_checkpoint_finalization(text,text,integer,jsonb,bytea,uuid)','EXECUTE'),'authenticated users cannot execute privileged audit RPC');
 select ok(has_function_privilege('service_role','public.record_checkpoint_finalization(text,text,integer,jsonb,bytea,uuid)','EXECUTE'),'service role can execute audit RPC');
+select throws_ok($select pg_temp.record_audit_as('finalization_started',pg_temp.audit_payload(),'11000000-0000-4000-8000-000000000093')$,'42501','unauthorized audit actor','non-participant without organization membership cannot write audit records');
 select is(wedecent_private.canonical_jsonb('{"z":2,"a":1}'::jsonb),'{"a":1,"z":2}','canonical JSON sorts object keys');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'false','first intermediate audit transition is committed');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'true','exact retry returns the original recorded result');
