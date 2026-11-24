@@ -328,7 +328,7 @@ func TestBuildCheckpointRequestBindsVerifiedCapabilityAndBothMemberships(t *test
 		string(claims.InitiatingDevice):  {DeviceID: string(claims.InitiatingDevice), AccountID: "11111111-1111-4111-8111-111111111111", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 4},
 		string(claims.DestinationDevice): {DeviceID: string(claims.DestinationDevice), AccountID: "22222222-2222-4222-8222-222222222222", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 7},
 	}
-	request, err := BuildCheckpointRequest(context.Background(), authorization, controlPublic, claims.InitiatingDevice, initPrivate, memberships, now)
+	request, err := BuildCheckpointRequest(context.Background(), authorization, controlPublic, claims.InitiatingDevice, initPrivate, memberships, nil, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestBuildCheckpointRequestBindsVerifiedCapabilityAndBothMemberships(t *test
 	}
 	tampered := authorization
 	tampered.Claims.DestinationPort++
-	if _, err := BuildCheckpointRequest(context.Background(), tampered, controlPublic, claims.InitiatingDevice, initPrivate, memberships, now); !errors.Is(err, ErrAuthorizationSignature) {
+	if _, err := BuildCheckpointRequest(context.Background(), tampered, controlPublic, claims.InitiatingDevice, initPrivate, memberships, nil, now); !errors.Is(err, ErrAuthorizationSignature) {
 		t.Fatalf("tampered capability accepted: %v", err)
 	}
 }
