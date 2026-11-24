@@ -286,7 +286,16 @@ func TestFileCheckpointFenceRejectsExpiredTokenAndTruncatedTailRecovers(t *testi
 
 func TestFileCheckpointFenceConcurrentReservationsHaveSingleWinner(t *testing.T) {
 	ctx := context.Background()
-	primary, _, _, request, _ := durableFenceFixture(t)
+	primary, witnesses, primaryKey, request, dir := durableFenceFixture(t)
+	trust := make([]CheckpointFenceWitnessTrust, len(witnesses))
+	for i, witness := range witnesses {
+		trust[i] = CheckpointFenceWitnessTrust{ID: request.WitnessIDs[i], PublicKey: witness.publicKey}
+	}
+	secondPrimary, err := OpenFileCheckpointFencePrimary(filepath.Join(dir, "primary", "fences.wal"), primaryKey, "witness-set-v1", trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondPrimary.now = primary.now
 	const workers = 12
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -297,7 +306,11 @@ func TestFileCheckpointFenceConcurrentReservationsHaveSingleWinner(t *testing.T)
 			defer wg.Done()
 			candidate := request
 			candidate.OperationID = "concurrent-fence-operation-" + string(rune('a'+i))
-			_, err := primary.ReserveFence(ctx, candidate)
+			store := primary
+			if i%2 == 1 {
+				store = secondPrimary
+			}
+			_, err := store.ReserveFence(ctx, candidate)
 			if err == nil {
 				mu.Lock()
 				successes++
