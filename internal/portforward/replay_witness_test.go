@@ -403,7 +403,7 @@ func TestCheckpointAuthorizationReplayUsesExactVerifiedCapability(t *testing.T) 
 	initiator := CheckpointEndpoint{DeviceID: string(claims.InitiatingDevice), AccountID: "11111111-1111-4111-8111-111111111111", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 4}
 	destination := CheckpointEndpoint{DeviceID: string(claims.DestinationDevice), AccountID: "22222222-2222-4222-8222-222222222222", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 7}
 	memberships := checkpointMembershipFixture{
-		string(claims.InitiatingDevice): initiator,
+		string(claims.InitiatingDevice):  initiator,
 		string(claims.DestinationDevice): destination,
 	}
 	primary := newDeterministicCheckpointProvider(t)
@@ -416,7 +416,7 @@ func TestCheckpointAuthorizationReplayUsesExactVerifiedCapability(t *testing.T) 
 		witness.revoked[witnessScope(destination)] = destination.RevocationEpoch
 		witness.ledgers[consumerScope] = &deterministicWitnessLedger{
 			revocationEpoch: initiator.RevocationEpoch,
-			used: make(map[string][32]byte),
+			used:            make(map[string][32]byte),
 		}
 	}
 	replay := &CheckpointAuthorizationReplay{

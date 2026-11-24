@@ -110,16 +110,16 @@ func newLocalCoreForwardingVerifier(
 		return nil, fmt.Errorf("core process: invalid witnessed checkpoint provider: %w", err)
 	}
 	replay := &portforward.CheckpointAuthorizationReplay{
-		Provider: &checkpointProvider,
+		Provider:        &checkpointProvider,
 		ControlPlaneKey: append(ed25519.PublicKey(nil), publicKey...),
-		LocalDeviceID: deviceID,
-		DeviceSigner: signer,
-		Memberships: memberships,
-		RouteVerifier: routeVerifier,
+		LocalDeviceID:   deviceID,
+		DeviceSigner:    signer,
+		Memberships:     memberships,
+		RouteVerifier:   routeVerifier,
 	}
 	return &portforward.AuthorizationVerifier{
 		PublicKey: append(ed25519.PublicKey(nil), publicKey...),
-		Replay: replay,
+		Replay:    replay,
 	}, nil
 }
 

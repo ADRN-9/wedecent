@@ -14,13 +14,13 @@ import (
 // CheckpointAuthorizationReplay binds Local Core's verified capability to the
 // witnessed checkpoint transaction. Bare-JTI replay calls are never accepted.
 type CheckpointAuthorizationReplay struct {
-	Provider       *WitnessedReplayCheckpointProvider
+	Provider        *WitnessedReplayCheckpointProvider
 	ControlPlaneKey ed25519.PublicKey
-	LocalDeviceID  mesh.DeviceID
-	DeviceSigner   crypto.Signer
-	Memberships    CheckpointMembershipResolver
-	RouteVerifier  CheckpointRouteAuthorizationVerifier
-	Now            func() time.Time
+	LocalDeviceID   mesh.DeviceID
+	DeviceSigner    crypto.Signer
+	Memberships     CheckpointMembershipResolver
+	RouteVerifier   CheckpointRouteAuthorizationVerifier
+	Now             func() time.Time
 }
 
 func (r *CheckpointAuthorizationReplay) ConsumePortForwardAuthorization(context.Context, string, time.Time) error {
