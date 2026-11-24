@@ -115,7 +115,6 @@ type WitnessedReplayCheckpointProvider struct {
 	Fencing    *CheckpointFenceCoordinator
 }
 
-
 func validIndependentFenceTrust(primaryKey ed25519.PublicKey, witnesses []CheckpointWitnessTrust, coordinator *CheckpointFenceCoordinator) bool {
 	if coordinator == nil || len(primaryKey) != ed25519.PublicKeySize ||
 		len(coordinator.PrimaryKey) != ed25519.PublicKeySize {
@@ -1251,7 +1250,6 @@ func (w *deterministicCheckpointWitness) remember(receipt CheckpointWitnessRecei
 	w.history[receipt.Scope] = append(w.history[receipt.Scope], receipt)
 }
 
-
 func organizationCheckpointFenceScope(organizationID string) CheckpointWitnessScope {
 	return CheckpointWitnessScope{Kind: "organization", OrganizationID: organizationID}
 }
@@ -1390,10 +1388,10 @@ func (p *WitnessedReplayCheckpointProvider) executeOrganizationFence(
 		Scope: scope, Participants: cloneCheckpointEndpoints(participants),
 		ExpectedFenceGeneration: fenceHead.Generation,
 		ExpectedRevocationEpoch: fenceHead.RevocationEpoch,
-		Action: action, OperationID: operationID,
+		Action:                  action, OperationID: operationID,
 		RequestSHA256: requestHash, AuthorizationSHA256: authorizationHash,
 		WitnessSetVersion: p.Fencing.WitnessSetVersion,
-		WitnessIDs: checkpointFenceClientIDs(p.Fencing.Witnesses),
+		WitnessIDs:        checkpointFenceClientIDs(p.Fencing.Witnesses),
 	}
 	existing, found, err := p.Fencing.Primary.LoadFence(ctx, scope, operationID)
 	if err != nil {
