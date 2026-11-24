@@ -313,7 +313,7 @@ jobs:
           with socket.socket() as probe:
               probe.bind(("0.0.0.0", 0))
               port = probe.getsockname()[1]
-          config.write_text(text.rstrip() + f"\\n\\n[db]\\nport = {port}\\n")
+          config.write_text(text.rstrip() + f"\n\n[db]\nport = {port}\n")
           print(f"Selected disposable Supabase database port: {port}")
           PY
       - name: Start disposable local Supabase database
