@@ -97,6 +97,11 @@ type FileCheckpointFenceWitness struct {
 	now               func() time.Time
 }
 
+var (
+	_ CheckpointFencingPrimary  = (*FileCheckpointFencePrimary)(nil)
+	_ CheckpointFencingWitness = (*FileCheckpointFenceWitness)(nil)
+)
+
 // OpenFileCheckpointFencePrimary opens a durable primary journal. The journal
 // contains signed reservations and quorum-verified commit records. Keep this
 // path and its private key under the primary operator's exclusive control.
