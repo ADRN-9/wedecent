@@ -1127,6 +1127,25 @@ func markFinalizationComplete(snapshot *checkpointPendingSnapshot, request Check
 	return nil
 }
 
+func checkpointEntryHasCommittedQuorum(entry checkpointPendingEntry, witnessKeys map[string]ed25519.PublicKey, quorum int) bool {
+	if quorum < 1 || entry.Receipt == nil {
+		return false
+	}
+	seen := make(map[string]bool, quorum)
+	for _, ack := range entry.Acknowledgements {
+		if ack.Decision != "committed" || seen[ack.WitnessID] {
+			continue
+		}
+		publicKey, ok := witnessKeys[ack.WitnessID]
+		if !ok || VerifyCheckpointWitnessAck(ack, ack.WitnessID, publicKey) != nil ||
+			!checkpointAckMatchesPendingOperation(ack, entry.Request, *entry.Receipt) {
+			continue
+		}
+		seen[ack.WitnessID] = true
+	}
+	return len(seen) >= quorum
+}
+
 func (s *FileCheckpointPendingStore) LoadFinalizationComplete(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, operationID string) (bool, error) {
 	if s == nil || ctx == nil {
 		return false, ErrReplayUnavailable
@@ -1147,6 +1166,14 @@ func (s *FileCheckpointPendingStore) MarkFinalizationComplete(ctx context.Contex
 		return ErrReplayUnavailable
 	}
 	_, err := s.update(ctx, func(snapshot *checkpointPendingSnapshot) (bool, error) {
+		_, witnessKeys := s.checkpointTrustAnchors()
+		s.trustMu.RLock()
+		quorum, trustSet := s.trustQuorum, s.trustSet
+		s.trustMu.RUnlock()
+		entry, ok := snapshot.Entries[checkpointPendingKey(request)]
+		if !trustSet || !ok || !checkpointEntryHasCommittedQuorum(entry, witnessKeys, quorum) {
+			return false, ErrCheckpointQuorum
+		}
 		return false, markFinalizationComplete(snapshot, request, receipt, operationID)
 	})
 	return err
@@ -1173,7 +1200,15 @@ func (s *MemoryCheckpointPendingStore) MarkFinalizationComplete(ctx context.Cont
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	_, witnessKeys := s.checkpointTrustAnchors()
+	s.trustMu.RLock()
+	quorum, trustSet := s.trustQuorum, s.trustSet
+	s.trustMu.RUnlock()
 	snapshot := checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}
+	entry, ok := snapshot.Entries[checkpointPendingKey(request)]
+	if !trustSet || !ok || !checkpointEntryHasCommittedQuorum(entry, witnessKeys, quorum) {
+		return ErrCheckpointQuorum
+	}
 	if err := markFinalizationComplete(&snapshot, request, receipt, operationID); err != nil {
 		return err
 	}
