@@ -66,6 +66,10 @@ type CheckpointWitnessHead struct {
 	Signature         []byte
 }
 
+type ReplayCheckpointRecoveryProvider interface {
+	Recover(context.Context, CheckpointRequest) (CheckpointResult, error)
+}
+
 type CheckpointWitness interface {
 	Commit(context.Context, CheckpointRequest, CheckpointReceipt) (CheckpointWitnessReceipt, error)
 	Revoke(context.Context, CheckpointEndpoint, uint64) (CheckpointWitnessReceipt, error)
@@ -153,6 +157,39 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	return result, nil
 }
 
+func (p *WitnessedReplayCheckpointProvider) Finalize(ctx context.Context, request CheckpointRequest) error {
+	if err := p.ValidateConfiguration(); err != nil { return err }
+	store, ok := p.Pending.(interface {
+		LoadFinalization(context.Context, string, string, [sha256.Size]byte) (CheckpointRequest, CheckpointReceipt, bool, bool, error)
+	})
+	if !ok { return ErrCheckpointUnavailable }
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil { return err }
+	saved, receipt, found, hasReceipt, err := store.LoadFinalization(ctx, request.ConsumingDeviceID, request.JTI, request.AuthorizationSHA256)
+	if err != nil { return err }
+	if !found { return ErrCheckpointHistorical }
+	savedFingerprint, err := CheckpointRequestFingerprint(saved)
+	if err != nil || savedFingerprint != fingerprint { return ErrCheckpointConflict }
+	if !hasReceipt {
+		recoverer, ok := p.Primary.(ReplayCheckpointRecoveryProvider)
+		if !ok { return ErrCheckpointAmbiguous }
+		result, err := recoverer.Recover(ctx, saved)
+		if err != nil { return errors.Join(ErrCheckpointAmbiguous, err) }
+		if result.Disposition != CheckpointRecovered || VerifyCheckpointResult(result, saved, p.PrimaryKey) != nil { return ErrCheckpointIntegrity }
+		receipt = cloneCheckpointReceipt(result.CheckpointReceipt)
+		if err := p.Pending.Resolve(ctx, saved, receipt); err != nil { return errors.Join(ErrCheckpointUnavailable, err) }
+	}
+	if err := VerifyCheckpointReceipt(receipt, saved, p.PrimaryKey); err != nil { return err }
+	ackStore, ok := p.Pending.(checkpointPendingAcknowledgements)
+	if !ok { return ErrCheckpointUnavailable }
+	acks, err := p.acknowledgeWitnessQuorum(ctx, saved, receipt, ackStore)
+	if err != nil { return errors.Join(ErrCheckpointQuorum, err) }
+	if len(acks) < p.Quorum { return ErrCheckpointQuorum }
+	compactor, ok := p.Pending.(checkpointPendingCompactor)
+	if !ok { return ErrCheckpointUnavailable }
+	if err := compactor.Compact(ctx, acks, p.Witnesses, p.Quorum); err != nil { return errors.Join(ErrCheckpointUnavailable, err) }
+	return nil
+}
 func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
 	if err := p.ValidateConfiguration(); err != nil {
 		return err
