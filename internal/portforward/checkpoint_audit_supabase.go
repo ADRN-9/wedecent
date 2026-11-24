@@ -107,38 +107,68 @@ func validCheckpointAuditAuthority(host string, port uint16) bool {
 	if net.ParseIP(host) != nil {
 		return true
 	}
-	if len(host) > 253 { return false }
+	if len(host) > 253 {
+		return false
+	}
 	for _, label := range strings.Split(host, ".") {
-		if len(label)==0 || len(label)>63 || label[0]=='-' || label[len(label)-1]=='-' { return false }
-		for _, ch := range label { if !(ch>='a'&&ch<='z'||ch>='0'&&ch<='9'||ch=='-') { return false } }
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, ch := range label {
+			if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '-') {
+				return false
+			}
+		}
 	}
 	return true
 }
 
 func parseCheckpointAuditPins(raw string) ([][sha256.Size]byte, error) {
 	parts := strings.Split(strings.TrimSpace(raw), ",")
-	if len(parts)==0 || len(parts)>4 { return nil, ErrCheckpointUnavailable }
-	pins:=make([][sha256.Size]byte,0,len(parts));seen:=make(map[[sha256.Size]byte]bool)
-	for _,part:=range parts {
-		part=strings.TrimSpace(part)
-		if len(part)!=sha256.Size*2 { return nil, ErrCheckpointUnavailable }
-		decoded,err:=hex.DecodeString(part);if err!=nil||len(decoded)!=sha256.Size||strings.ToLower(part)!=part{return nil,ErrCheckpointUnavailable}
-		var pin [sha256.Size]byte;copy(pin[:],decoded);if seen[pin]{return nil,ErrCheckpointUnavailable};seen[pin]=true;pins=append(pins,pin)
+	if len(parts) == 0 || len(parts) > 4 {
+		return nil, ErrCheckpointUnavailable
 	}
-	return pins,nil
+	pins := make([][sha256.Size]byte, 0, len(parts))
+	seen := make(map[[sha256.Size]byte]bool)
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if len(part) != sha256.Size*2 {
+			return nil, ErrCheckpointUnavailable
+		}
+		decoded, err := hex.DecodeString(part)
+		if err != nil || len(decoded) != sha256.Size || strings.ToLower(part) != part {
+			return nil, ErrCheckpointUnavailable
+		}
+		var pin [sha256.Size]byte
+		copy(pin[:], decoded)
+		if seen[pin] {
+			return nil, ErrCheckpointUnavailable
+		}
+		seen[pin] = true
+		pins = append(pins, pin)
+	}
+	return pins, nil
 }
 
 func auditEndpoint(session *account.Session, trust CheckpointAuditTrust) (string, error) {
-	if session == nil { return "", errors.New("checkpoint audit session missing") }
+	if session == nil {
+		return "", errors.New("checkpoint audit session missing")
+	}
 	u, err := url.Parse(session.SupabaseURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
 		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" ||
 		(u.Path != "" && u.Path != "/") || u.RawPath != "" || strings.HasSuffix(u.Host, ":") {
 		return "", errors.New("checkpoint audit requires a strict HTTPS Supabase origin")
 	}
-	port:=uint64(443)
-	if raw:=u.Port();raw!="" { parsed,parseErr:=strconv.ParseUint(raw,10,16);if parseErr!=nil||parsed==0||strconv.FormatUint(parsed,10)!=raw{return "",errors.New("invalid checkpoint audit port")};port=parsed }
-	if u.Hostname()!=trust.Hostname || uint16(port)!=trust.Port || !validCheckpointAuditAuthority(trust.Hostname,trust.Port) {
+	port := uint64(443)
+	if raw := u.Port(); raw != "" {
+		parsed, parseErr := strconv.ParseUint(raw, 10, 16)
+		if parseErr != nil || parsed == 0 || strconv.FormatUint(parsed, 10) != raw {
+			return "", errors.New("invalid checkpoint audit port")
+		}
+		port = parsed
+	}
+	if u.Hostname() != trust.Hostname || uint16(port) != trust.Port || !validCheckpointAuditAuthority(trust.Hostname, trust.Port) {
 		return "", errors.New("checkpoint audit session origin does not match independent trust configuration")
 	}
 	return strings.TrimRight(u.String(), "/") + "/functions/v1/port-forward-finalization-audit", nil
@@ -169,9 +199,9 @@ func checkpointAuditPayload(request CheckpointRequest) (map[string]any, error) {
 		"jti":                        request.JTI,
 		"authorization_sha256":       hex.EncodeToString(request.AuthorizationSHA256[:]),
 		"route_authorization_sha256": hex.EncodeToString(request.RouteAuthorizationSHA256[:]),
-		"route_authorization_id": request.RouteAuthorizationID,
-		"route_authorization_jti": request.RouteAuthorizationJTI,
-		"route_authorization_json": request.RouteAuthorizationJSON,
+		"route_authorization_id":     request.RouteAuthorizationID,
+		"route_authorization_jti":    request.RouteAuthorizationJTI,
+		"route_authorization_json":   request.RouteAuthorizationJSON,
 		"device_public_key":          request.DevicePublicKey,
 		"device_signature":           request.DeviceSignature,
 	}, nil
@@ -257,7 +287,7 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 		"payload_version": 1,
 		"payload":         payload,
 		"payload_sha256":  hex.EncodeToString(payloadDigest[:]),
-		"evidence": evidencePayload,
+		"evidence":        evidencePayload,
 		"evidence_sha256": hex.EncodeToString(evidenceDigest[:]),
 	})
 	if err != nil {
@@ -303,19 +333,29 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 
 func checkpointAuditCanonicalJSON(value any) ([]byte, error) {
 	raw, err := json.Marshal(value)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.UseNumber()
 	var decoded any
-	if err := decoder.Decode(&decoded); err != nil { return nil, err }
-	if err := validateCheckpointAuditJSONNumbers(decoded); err != nil { return nil, err }
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, err
+	}
+	if err := validateCheckpointAuditJSONNumbers(decoded); err != nil {
+		return nil, err
+	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF { return nil, errors.New("checkpoint audit JSON has trailing data") }
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errors.New("checkpoint audit JSON has trailing data")
+	}
 	var canonical bytes.Buffer
 	encoder := json.NewEncoder(&canonical)
 	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(decoded); err != nil { return nil, err }
-	return bytes.TrimSuffix(canonical.Bytes(), []byte{ '\n' }), nil
+	if err := encoder.Encode(decoded); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(canonical.Bytes(), []byte{'\n'}), nil
 }
 
 func validateCheckpointAuditJSONNumbers(value any) error {
@@ -327,7 +367,11 @@ func validateCheckpointAuditJSONNumbers(value any) error {
 			return errors.New("checkpoint audit JSON number is not a safe integer")
 		}
 	case []any:
-		for _, item := range typed { if err := validateCheckpointAuditJSONNumbers(item); err != nil { return err } }
+		for _, item := range typed {
+			if err := validateCheckpointAuditJSONNumbers(item); err != nil {
+				return err
+			}
+		}
 	case map[string]any:
 		for _, item := range typed { if err := validateCheckpointAuditJSONNumbers(item); err != nil { return err } }
 	}
@@ -350,7 +394,7 @@ func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvide
 		"version": receipt.Version, "device_id": receipt.DeviceID, "account_id": receipt.AccountID,
 		"organization_id": receipt.OrganizationID, "jti": receipt.JTI,
 		"authorization_sha256": hex.EncodeToString(receipt.AuthorizationSHA256[:]),
-		"request_sha256": hex.EncodeToString(receipt.RequestSHA256[:]), "generation": receipt.Generation,
+		"request_sha256":       hex.EncodeToString(receipt.RequestSHA256[:]), "generation": receipt.Generation,
 		"previous_hash": hex.EncodeToString(receipt.PreviousHash[:]), "record_hash": hex.EncodeToString(receipt.RecordHash[:]),
 		"provider_key_id": receipt.ProviderKeyID, "signature": base64.StdEncoding.EncodeToString(receipt.Signature),
 	}
@@ -364,7 +408,7 @@ func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvide
 				"device_id": ack.Scope.DeviceID, "account_id": ack.Scope.AccountID, "organization_id": ack.Scope.OrganizationID,
 			}, "jti": ack.JTI, "request_sha256": hex.EncodeToString(ack.RequestSHA256[:]),
 			"primary_receipt_sha256": hex.EncodeToString(ack.PrimaryReceiptSHA256[:]),
-			"decision": ack.Decision, "status": ack.Status, "witness_key_id": ack.WitnessKeyID,
+			"decision":               ack.Decision, "status": ack.Status, "witness_key_id": ack.WitnessKeyID,
 			"signature": base64.StdEncoding.EncodeToString(ack.Signature),
 		})
 	}
