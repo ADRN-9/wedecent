@@ -170,8 +170,10 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 		Quorum:     2,
 	}
 	auditTrust := portforward.CheckpointAuditTrust{Hostname: "audit-test.supabase.co", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64)}
+	missingTrustProvider := *provider
+	missingTrustProvider.Pending = nil
 	_, missingAuditTrustErr := newLocalCoreForwardingVerifier(
-		stateDir, mesh.DeviceID(created.ID), created.PrivateKey, controlPlaneKey, provider,
+		stateDir, mesh.DeviceID(created.ID), created.PrivateKey, controlPlaneKey, &missingTrustProvider,
 		coreProcessMembershipResolver{}, nil, portforward.CheckpointAuditTrust{}, "", "",
 	)
 	if missingAuditTrustErr == nil || !strings.Contains(missingAuditTrustErr.Error(), "independently provisioned checkpoint audit hostname and SPKI pins") {
