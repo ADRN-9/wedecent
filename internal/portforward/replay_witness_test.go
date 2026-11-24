@@ -316,9 +316,27 @@ func TestFileCheckpointPendingStoreSurvivesRestartAndRejectsHistoricalReceipt(t 
 
 type checkpointMembershipFixture map[string]CheckpointEndpoint
 
-type checkpointFinalizationAuditFixture struct{ outcomes []string }
+type checkpointFinalizationAuditFixture struct {
+	outcomes    []string
+	operationIDs []string
+	seen        map[string]map[string]bool
+}
 
-func (a *checkpointFinalizationAuditFixture) RecordCheckpointFinalization(_ context.Context, _ CheckpointRequest, outcome string) error {
+func (a *checkpointFinalizationAuditFixture) RecordCheckpointFinalization(_ context.Context, _ CheckpointRequest, operationID, outcome string) error {
+	if operationID == "" {
+		return ErrCheckpointIntegrity
+	}
+	if a.seen == nil {
+		a.seen = make(map[string]map[string]bool)
+	}
+	if a.seen[operationID] == nil {
+		a.seen[operationID] = make(map[string]bool)
+	}
+	if a.seen[operationID][outcome] {
+		return nil
+	}
+	a.seen[operationID][outcome] = true
+	a.operationIDs = append(a.operationIDs, operationID)
 	a.outcomes = append(a.outcomes, outcome)
 	return nil
 }
