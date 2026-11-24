@@ -2590,6 +2590,7 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	wrapped := &compactFailOncePendingStore{FileCheckpointPendingStore: base, fail: true}
 	client, witnesses, request, _, _ := preparePersistedWitnessQuorum(t, wrapped)
 
+	primary := client.Primary.(*deterministicCheckpointProvider)
 	var mu sync.Mutex
 	effects := make(map[string]bool)
 	effectCount := 0
@@ -2634,9 +2635,9 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	operationID, err := checkpointFinalizationID(request, func() CheckpointReceipt {
 		consumer, _ := checkpointConsumer(request)
 		ledgerKey := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
-		client.Primary.mu.Lock()
-		defer client.Primary.mu.Unlock()
-		return cloneCheckpointReceiptValue(client.Primary.ledgers[ledgerKey].used[request.JTI].receipt)
+		primary.mu.Lock()
+		defer primary.mu.Unlock()
+		return cloneCheckpointReceiptValue(primary.ledgers[ledgerKey].used[request.JTI].receipt)
 	}())
 	if err != nil {
 		t.Fatal(err)
@@ -2644,9 +2645,9 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	completed, err := restarted.LoadFinalizationComplete(context.Background(), request, func() CheckpointReceipt {
 		consumer, _ := checkpointConsumer(request)
 		ledgerKey := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
-		client.Primary.mu.Lock()
-		defer client.Primary.mu.Unlock()
-		return cloneCheckpointReceiptValue(client.Primary.ledgers[ledgerKey].used[request.JTI].receipt)
+		primary.mu.Lock()
+		defer primary.mu.Unlock()
+		return cloneCheckpointReceiptValue(primary.ledgers[ledgerKey].used[request.JTI].receipt)
 	}(), operationID)
 	if err != nil || !completed {
 		t.Fatalf("durable completion marker missing: completed=%t err=%v", completed, err)
