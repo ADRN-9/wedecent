@@ -51,6 +51,7 @@ SQL
 
 # One capability timestamp pair is reused verbatim for retries.
 ISSUED_AT="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() - interval '1 second'")"
+# Keep the fixture lifetime below the production 120-second maximum.
 EXPIRES_AT="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() + interval '90 seconds'")"
 
 start() {
