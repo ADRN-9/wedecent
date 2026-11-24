@@ -1,6 +1,8 @@
 package portforward
 
 import (
+	"bytes"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -57,6 +59,11 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	initiatorVector := object(requestVector["initiator"])
 	destinationVector := object(requestVector["destination"])
 	requestKey := decode(stringField(requestVector, "device_public_key_hex"))
+	requestSeed := decode(stringField(requestVector, "device_seed_hex"))
+	requestPrivateKey := ed25519.NewKeyFromSeed(requestSeed)
+	if !bytes.Equal(requestPrivateKey.Public().(ed25519.PublicKey), requestKey) {
+		t.Fatal("Go Ed25519 key derivation differs from shared vector")
+	}
 	consumingDeviceID := stringField(requestVector, "consuming_device_id")
 	if identity.DeviceID(requestKey) != consumingDeviceID {
 		t.Fatal("golden request device identity mismatch")
@@ -80,10 +87,15 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 		JTI:                 stringField(requestVector, "jti"),
 		AuthorizationSHA256: authorization,
 		DevicePublicKey:     requestKey,
+		DeviceSignature:    decode(stringField(requestVector, "device_signature_hex")),
 	}
 	requestMessage, err := checkpointRequestMessage(request)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !ed25519.Verify(requestKey, requestMessage, request.DeviceSignature) ||
+		!bytes.Equal(ed25519.Sign(requestPrivateKey, requestMessage), request.DeviceSignature) {
+		t.Fatal("Go Ed25519 signature differs from shared vector")
 	}
 	if hexBytes(requestMessage) != stringField(requestVector, "message_hex") {
 		t.Fatal("checkpoint request encoding differs from shared vector")
