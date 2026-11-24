@@ -1,10 +1,19 @@
 import {
-import {
+  canonical,
   checkpointHeadMessage,
   checkpointReceiptMessage,
+  checkpointRecordHash,
   concat,
+  digest,
   h32,
+  i64,
+  providerKeyID,
   sha,
+  str,
+  u32,
+  u64,
+  verifyFinalizationEvidence,
+  verifyRouteAuthorization,
   witnessAckMessage,
   witnessHeadMessage,
 } from "./index.ts";
@@ -22,11 +31,6 @@ Deno.test("shared Go and TypeScript checkpoint cryptographic golden vectors", as
   if (hex(witnessHeadMessage(vector.witness_head)) !== vector.witness_head.message_hex) throw new Error("witness head vector mismatch");
   if (await digest(vector.canonical_payload.value) !== vector.canonical_payload.sha256) throw new Error("canonical payload digest vector mismatch");
 });
-
-  canonical, checkpointHeadMessage, checkpointReceiptMessage, checkpointRecordHash,
-  concat, digest, i64, providerKeyID, sha, str, u32, u64,
-  verifyFinalizationEvidence, verifyRouteAuthorization, witnessAckMessage, witnessHeadMessage,
-} from "./index.ts";
 
 const evidence = {
   primary_receipt: { public_key: btoa("x".repeat(32)) },
