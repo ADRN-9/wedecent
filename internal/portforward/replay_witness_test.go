@@ -539,7 +539,7 @@ func TestWitnessHeadRejectsSignedWrongScopeFromQuorum(t *testing.T) {
 			for i := 0; i < 2; i++ {
 				client.Witnesses[i].Witness = &scopeMismatchWitness{
 					deterministicCheckpointWitness: witnesses[i],
-					dimension: dimension,
+					dimension:                      dimension,
 				}
 			}
 			if _, err := client.Head(context.Background(), initiator); !errors.Is(err, ErrCheckpointQuorum) {
@@ -560,7 +560,7 @@ func TestWitnessPreflightRejectsSignedWrongScopeFromQuorum(t *testing.T) {
 			for i := 0; i < 2; i++ {
 				client.Witnesses[i].Witness = &scopeMismatchWitness{
 					deterministicCheckpointWitness: witnesses[i],
-					dimension: dimension,
+					dimension:                      dimension,
 				}
 			}
 			if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointQuorum) {
