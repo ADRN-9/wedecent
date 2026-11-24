@@ -1774,3 +1774,49 @@ func TestWitnessConsumeAndRevocationRaceCannotCommitAfterRevocation(t *testing.T
 		t.Fatalf("primary consumption escaped router revocation fence: %v", err)
 	}
 }
+
+func TestPersistedAcknowledgementsCannotBypassLaterMembershipRevocation(t *testing.T) {
+	for _, participant := range []string{"initiator", "destination", "router"} {
+		t.Run(participant, func(t *testing.T) {
+			primary := newDeterministicCheckpointProvider(t)
+			pending := NewMemoryCheckpointPendingStore()
+			client, _ := newWitnessedFixture(t, primary, pending)
+			request, _, router := routedCheckpointRequestForRevocationTest(t, primary)
+			primary.register(router)
+			if err := client.ValidateConfiguration(); err != nil {
+				t.Fatal(err)
+			}
+			result, err := primary.Consume(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, trust := range client.Witnesses {
+				if _, err := trust.Witness.Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+					t.Fatal(err)
+				}
+				ack, err := trust.Witness.Acknowledge(context.Background(), request, result.CheckpointReceipt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := pending.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, ack, trust); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var revoked CheckpointEndpoint
+			switch participant {
+			case "initiator":
+				revoked = request.Initiator
+			case "destination":
+				revoked = request.Destination
+			default:
+				revoked = router
+			}
+			if err := client.Revoke(context.Background(), revoked, revoked.RevocationEpoch+1); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.acknowledgeWitnessQuorum(context.Background(), request, result.CheckpointReceipt, pending); !errors.Is(err, ErrCheckpointRevoked) {
+				t.Fatalf("persisted acknowledgements bypassed %s revocation: %v", participant, err)
+			}
+		})
+	}
+}
