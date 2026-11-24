@@ -145,7 +145,7 @@ func (s *FileCheckpointPendingStore) LockTransition(ctx context.Context) (func()
 	// This journal-wide lock serializes consume, finalization and revocation.
 	unlock, _, err := lockReplayFileContextForObserved(ctx, s.Path+".finalize", s.Path, s.transitionWait)
 	if err != nil {
-		return nil, fmt.Errorf("%w: lock transition: %v", ErrReplayUnavailable, err)
+		return nil, errors.Join(ErrReplayUnavailable, fmt.Errorf("lock transition: %w", err))
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, errors.Join(err, unlock())
@@ -661,7 +661,7 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 	}
 	unlock, _, err := lockReplayFileContext(ctx, s.Path)
 	if err != nil {
-		return false, fmt.Errorf("%w: lock pending store: %v", ErrReplayUnavailable, err)
+		return false, errors.Join(ErrReplayUnavailable, fmt.Errorf("lock pending store: %w", err))
 	}
 	defer func() {
 		if unlockErr := unlock(); unlockErr != nil {
