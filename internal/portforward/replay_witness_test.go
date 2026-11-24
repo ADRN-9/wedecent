@@ -472,8 +472,11 @@ func TestPendingJournalCompactionRetainsUnresolvedAndRejectsReplayAfterRestart(t
 	if err := json.Unmarshal(data, &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if len(snapshot.Entries) != 1 {
-		t.Fatalf("compaction entries=%d, want unresolved operation retained", len(snapshot.Entries))
+	if len(snapshot.Entries) != 2 {
+		t.Fatalf("compaction entries=%d, want both terminal evidence and unresolved operation retained", len(snapshot.Entries))
+	}
+	if entry, ok := snapshot.Entries[checkpointPendingKey(request1)]; !ok || entry.State != "resolved" {
+		t.Fatal("signed terminal decisions were discarded during compaction")
 	}
 	if entry, ok := snapshot.Entries[checkpointPendingKey(request2)]; !ok || entry.State != "pending" {
 		t.Fatal("unresolved pending operation was discarded during compaction")
@@ -826,16 +829,12 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 		t.Fatal(err)
 	}
 	failCompaction := true
-	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
-		snapshot, ok := value.(checkpointPendingSnapshot)
-		if !ok {
-			return errors.New("unexpected pending snapshot type")
-		}
-		if len(snapshot.Entries) == 0 && failCompaction {
+	store.compactHook = func(context.Context) error {
+		if failCompaction {
 			failCompaction = false
 			return errors.New("injected compaction interruption")
 		}
-		return writeReplayJSON(path, snapshot, pattern, maxSize)
+		return nil
 	}
 	client, _ := newWitnessedFixture(t, primary, store)
 	if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointUnavailable) {
@@ -1584,8 +1583,9 @@ func TestPendingJournalCompactionRequiresDurableAcknowledgements(t *testing.T) {
 	if err := store.Compact(context.Background(), acks, client.Witnesses, client.Quorum); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses); !errors.Is(err, ErrCheckpointHistorical) {
-		t.Fatalf("durably quorum-acknowledged journal entry was not compacted: %v", err)
+	persisted, err := store.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses)
+	if err != nil || committedCheckpointAckCount(persisted) != client.Quorum {
+		t.Fatalf("compaction discarded signed terminal evidence: acks=%d err=%v", len(persisted), err)
 	}
 }
 
