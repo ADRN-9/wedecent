@@ -121,8 +121,7 @@ begin
            'finalization_started',
            'membership_unavailable',
            'finalization_failed',
-           'finalized',
-           'rejected_revocation'
+           'finalized'
        )
        or p_payload_version <> 1
        or p_payload is null
@@ -171,7 +170,7 @@ begin
     ) then
         raise exception 'terminal audit evidence is incomplete' using errcode = '22023';
     end if;
-    if p_outcome not in ('finalization_started', 'finalization_failed', 'membership_unavailable', 'finalized', 'rejected_revocation') then
+    if p_outcome not in ('finalization_started', 'finalization_failed', 'membership_unavailable', 'finalized') then
         raise exception 'unsupported checkpoint audit transition' using errcode = '22023';
     end if;
 
@@ -410,7 +409,7 @@ begin
           into v_terminal_outcome
           from public.checkpoint_finalization_audit as event_row
          where event_row.operation_id = p_operation_id
-           and event_row.outcome in ('finalized', 'rejected_revocation')
+           and event_row.outcome = 'finalized'
          limit 1;
 
         if v_terminal_outcome is not null then
