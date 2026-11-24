@@ -99,7 +99,8 @@ type FileCheckpointPendingStore struct {
 	primaryTrust ed25519.PublicKey
 	witnessTrust map[string]ed25519.PublicKey
 	trustQuorum  int
-	trustSet     bool
+	trustSet       bool
+	transitionWait func()
 }
 
 func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, error) {
@@ -120,6 +121,13 @@ func NewFileCheckpointPendingStore(path string) (*FileCheckpointPendingStore, er
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("%w: inspect pending store: %v", ErrReplayUnavailable, err)
 	}
+	unlock, _, err := lockReplayFileContextForObserved(context.Background(), path+".finalize", path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("%w: initialize transition lock: %v", ErrReplayUnavailable, err)
+	}
+	if err := unlock(); err != nil {
+		return nil, fmt.Errorf("%w: initialize transition lock release: %v", ErrReplayUnavailable, err)
+	}
 	return &FileCheckpointPendingStore{Path: path}, nil
 }
 
@@ -134,7 +142,7 @@ func (s *FileCheckpointPendingStore) LockTransition(ctx context.Context) (func()
 		return nil, fmt.Errorf("%w: transition directory: %v", ErrReplayUnavailable, err)
 	}
 	// This journal-wide lock serializes consume, finalization and revocation.
-	unlock, _, err := lockReplayFile(s.Path + ".finalize")
+	unlock, _, err := lockReplayFileContextForObserved(ctx, s.Path+".finalize", s.Path, s.transitionWait)
 	if err != nil {
 		return nil, fmt.Errorf("%w: lock transition: %v", ErrReplayUnavailable, err)
 	}
@@ -648,7 +656,7 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 	if err := secureReplayDirectory(filepath.Dir(s.Path)); err != nil {
 		return false, fmt.Errorf("%w: pending directory: %v", ErrReplayUnavailable, err)
 	}
-	unlock, _, err := lockReplayFile(s.Path)
+	unlock, _, err := lockReplayFileContext(ctx, s.Path)
 	if err != nil {
 		return false, fmt.Errorf("%w: lock pending store: %v", ErrReplayUnavailable, err)
 	}
@@ -1254,7 +1262,20 @@ func (s *MemoryCheckpointPendingStore) LockTransition(ctx context.Context) (func
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	s.transitionMu.Lock()
+	for !s.transitionMu.TryLock() {
+		if s.transitionWait != nil {
+			s.transitionWait()
+		}
+		timer := time.NewTimer(5 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		s.transitionMu.Unlock()
 		return nil, err
