@@ -19,6 +19,7 @@ var (
 )
 
 type CheckpointWitnessScope struct {
+	Kind           string
 	DeviceID       string
 	AccountID      string
 	OrganizationID string
