@@ -17,7 +17,7 @@ C175 adds executable, append-only durable primary and witness journals plus a qu
 - `CommitFence` verifies a strict majority of distinct configured witness signatures, each bound to the exact token digest, operation ID, action and generation. The commit event is fsynced before success is returned.
 - `LoadFence` recovers reserved or committed operation state by stable operation ID.
 
-The primary refuses a stale expected generation, stale revocation epoch, mismatched previous-fence digest, primary-head rollback, or a second concurrent reservation.
+The primary refuses a stale expected generation, stale revocation epoch, mismatched previous-fence digest, primary-head rollback, or a second concurrent reservation. The primary-head value is currently supplied by the caller and checked for monotonic consistency within this fence journal; it is not yet atomically read from the replay-checkpoint provider. That cross-store comparison is a hard integration blocker, not a completed guarantee.
 
 ## Durable witness
 
