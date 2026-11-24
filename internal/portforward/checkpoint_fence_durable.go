@@ -152,8 +152,11 @@ func OpenFileCheckpointFencePrimary(path string, privateKey ed25519.PrivateKey, 
 func OpenFileCheckpointFenceWitness(path, witnessID string, privateKey ed25519.PrivateKey, primaryKey ed25519.PublicKey, witnessSetVersion string, witnessIDs []string) (*FileCheckpointFenceWitness, error) {
 	if path == "" || witnessID == "" || len(witnessID) > 128 ||
 		len(privateKey) != ed25519.PrivateKeySize || len(primaryKey) != ed25519.PublicKeySize ||
-		witnessSetVersion == "" || len(witnessSetVersion) > 128 || len(witnessIDs) < 3 {
+		witnessSetVersion == "" || len(witnessSetVersion) > 128 {
 		return nil, ErrCheckpointIntegrity
+	}
+	if _, err := CheckpointFenceQuorum(len(witnessIDs)); err != nil {
+		return nil, err
 	}
 	ids := append([]string(nil), witnessIDs...)
 	sort.Strings(ids)
