@@ -143,6 +143,11 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 		}
 		return nil, false, err
 	}
+	if created {
+		if err := file.Chmod(0o600); err != nil {
+			return nil, false, errors.Join(err, file.Close())
+		}
+	}
 	if err := secureReplayFile(anchorPath); err != nil {
 		return nil, false, errors.Join(err, file.Close())
 	}
