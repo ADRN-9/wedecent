@@ -2847,6 +2847,7 @@ func TestFinalizationCallbackIsIdempotentAcrossCompactionFailureAndRestart(t *te
 	wrapped := &compactFailOncePendingStore{FileCheckpointPendingStore: base, fail: true}
 	client, witnesses, request, _, _ := preparePersistedWitnessQuorum(t, wrapped)
 
+	// The witnessed fixture wraps the replay provider with its atomic fence adapter.
 	atomicPrimary, ok := client.Primary.(*testAtomicCheckpointPrimary)
 	if !ok || atomicPrimary.replay == nil {
 		t.Fatal("checkpoint primary test adapter is unavailable")
