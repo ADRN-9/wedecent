@@ -84,8 +84,8 @@ export async function verifyRouteAuthorization(auth:JsonObject,p:JsonObject){
    typeof r.ID!=="string"||r.ID.length===0||!Array.isArray(hops)||hops.length!==2)throw Error("invalid route authorization claims");
  const jtiRaw=atob(c.jti.replace(/-/g,"+").replace(/_/g,"/")+"==");
  if(jtiRaw.length!==16||b64url(Uint8Array.from(jtiRaw,x=>x.charCodeAt(0)))!==c.jti)throw Error("invalid route authorization JTI");
- const issued=Number(c.iat_unix_ms),expires=Number(c.exp_unix_ms),routeExpires=Date.parse(String(r.ExpiresAt));
- if(!Number.isSafeInteger(issued)||!Number.isSafeInteger(expires)||issued<=0||expires<=issued||expires-issued>120000||
+ const issued=Number(c.iat_unix_ms),expires=Number(c.exp_unix_ms),routeExpires=Date.parse(String(r.ExpiresAt)),now=Date.now();
+ if(!Number.isSafeInteger(issued)||!Number.isSafeInteger(expires)||issued<=0||issued>now+30000||expires<=now||expires<=issued||expires-issued>120000||
    !Number.isSafeInteger(routeExpires)||routeExpires!==expires)throw Error("invalid route authorization lifetime");
  if(r.Source!==(p.initiator as JsonObject).device_id||r.Destination!==(p.destination as JsonObject).device_id||
    c.router!==(p.router as JsonObject).device_id||r.ID!==p.route_authorization_id||c.jti!==p.route_authorization_jti)throw Error("route authorization participant mismatch");
