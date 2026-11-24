@@ -153,7 +153,7 @@ begin
     ) then
         raise exception 'terminal audit evidence is incomplete' using errcode = '22023';
     end if;
-    if p_outcome not in ('finalization_started', 'finalization_failed', 'membership_unavailable', 'finalized') then
+    if p_outcome not in ('finalization_started', 'finalization_failed', 'membership_unavailable', 'finalized', 'rejected_revocation') then
         raise exception 'unsupported checkpoint audit transition' using errcode = '22023';
     end if;
 
@@ -299,6 +299,10 @@ begin
         end if;
     end if;
 
+    if (select pg_catalog.count(*) from public.devices d where d.device_id = any(v_device_ids)) <> cardinality(v_device_ids) then
+        raise exception 'audit participant device is unavailable' using errcode = '42501';
+    end if;
+
     for v_device in
         select device_row.*
           from public.devices as device_row
@@ -418,7 +422,7 @@ $$;
 
 revoke all on function public.record_checkpoint_finalization(text, text, integer, jsonb, bytea, jsonb, bytea, uuid)
     from public, anon, authenticated;
-grant execute on function public.record_checkpoint_finalization(text, text, integer, jsonb, bytea, uuid)
+grant execute on function public.record_checkpoint_finalization(text, text, integer, jsonb, bytea, jsonb, bytea, uuid)
     to service_role;
 
 comment on table public.checkpoint_finalization_operations is
