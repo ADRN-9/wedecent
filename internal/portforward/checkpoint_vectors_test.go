@@ -15,8 +15,8 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	var vector struct {
 		Request struct {
-			Initiator CheckpointEndpoint `json:"initiator"`
-			Destination CheckpointEndpoint `json:"destination"`
+			Initiator struct { DeviceID string `json:"device_id"`; AccountID string `json:"account_id"`; OrganizationID string `json:"organization_id"`; RevocationEpoch uint64 `json:"revocation_epoch"` } `json:"initiator"`
+			Destination struct { DeviceID string `json:"device_id"`; AccountID string `json:"account_id"`; OrganizationID string `json:"organization_id"`; RevocationEpoch uint64 `json:"revocation_epoch"` } `json:"destination"`
 			ConsumingDeviceID string `json:"consuming_device_id"`
 			JTI string `json:"jti"`
 			AuthorizationSHA256 string `json:"authorization_sha256"`
@@ -90,7 +90,8 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	var authorization [sha256.Size]byte
 	copy(authorization[:], auth)
 	request := CheckpointRequest{
-		Initiator: vector.Request.Initiator, Destination: vector.Request.Destination,
+		Initiator: CheckpointEndpoint{DeviceID: vector.Request.Initiator.DeviceID, AccountID: vector.Request.Initiator.AccountID, OrganizationID: vector.Request.Initiator.OrganizationID, RevocationEpoch: vector.Request.Initiator.RevocationEpoch},
+		Destination: CheckpointEndpoint{DeviceID: vector.Request.Destination.DeviceID, AccountID: vector.Request.Destination.AccountID, OrganizationID: vector.Request.Destination.OrganizationID, RevocationEpoch: vector.Request.Destination.RevocationEpoch},
 		ConsumingDeviceID: vector.Request.ConsumingDeviceID, JTI: vector.Request.JTI,
 		AuthorizationSHA256: authorization, DevicePublicKey: requestKey,
 	}
