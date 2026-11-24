@@ -232,6 +232,8 @@ func checkpointFenceTokenMatchesRequest(token CheckpointFenceToken, request Chec
 		sameStringSet(token.WitnessIDs, request.WitnessIDs) &&
 		sameCheckpointEndpointSet(token.Participants, request.Participants) &&
 		(request.ExpectedFenceGeneration == 0 || token.ExpectedFenceGeneration == request.ExpectedFenceGeneration) &&
+		(request.PrimaryHeadGeneration == 0 || token.PrimaryHeadGeneration == request.PrimaryHeadGeneration) &&
+		(request.PrimaryHeadSHA256 == ([sha256.Size]byte{}) || token.PrimaryHeadSHA256 == request.PrimaryHeadSHA256) &&
 		(request.PreviousFenceSHA256 == ([sha256.Size]byte{}) || token.PreviousFenceSHA256 == request.PreviousFenceSHA256)
 }
 
