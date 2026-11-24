@@ -1980,11 +1980,13 @@ func preparePersistedWitnessQuorum(t *testing.T, store CheckpointPendingStore) (
 	if err := client.ValidateConfiguration(); err != nil {
 		t.Fatal(err)
 	}
-	acks := make([]CheckpointWitnessAck, client.Quorum)
-	for i := range acks {
-		if _, err := witnesses[i].Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+	for _, witness := range witnesses {
+		if _, err := witness.Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
 			t.Fatal(err)
 		}
+	}
+	acks := make([]CheckpointWitnessAck, client.Quorum)
+	for i := range acks {
 		acks[i], err = witnesses[i].Acknowledge(context.Background(), request, result.CheckpointReceipt)
 		if err != nil {
 			t.Fatal(err)
