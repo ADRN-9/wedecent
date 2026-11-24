@@ -29,7 +29,7 @@ type CheckpointAuthorizationReplay struct {
 
 // CheckpointFinalizationAuditor durably records outcomes and deduplicates retries by operation ID plus outcome.
 type CheckpointFinalizationAuditor interface {
-	RecordCheckpointFinalization(context.Context, CheckpointRequest, string, string) error
+	RecordCheckpointFinalization(context.Context, CheckpointRequest, string, string, *CheckpointFinalizationEvidence) error
 }
 
 const (
@@ -154,15 +154,9 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 		router, routerErr = r.Memberships.ResolveCheckpointMembership(ctx, claims.Router)
 	}
 	if errors.Is(initiatorErr, ErrCheckpointRevoked) || errors.Is(destinationErr, ErrCheckpointRevoked) || errors.Is(routerErr, ErrCheckpointRevoked) {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationRevoked); err != nil {
-			return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr, routerErr, err)
-		}
 		return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr, routerErr)
 	}
 	if initiatorErr != nil || destinationErr != nil || routerErr != nil {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationMembershipUnavailable); err != nil {
-			return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, routerErr, err)
-		}
 		return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, routerErr)
 	}
 	if initiator != request.Initiator || destination != request.Destination ||
@@ -171,20 +165,17 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 		initiator.OrganizationID != destination.OrganizationID ||
 		!validCheckpointEndpoint(initiator) || !validCheckpointEndpoint(destination) ||
 		router != request.Router {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationRevoked); err != nil {
-			return errors.Join(ErrCheckpointRevoked, err)
-		}
 		return ErrCheckpointRevoked
 	}
-	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationStarted); err != nil {
+	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationStarted, nil); err != nil {
 		return errors.Join(ErrCheckpointUnavailable, err)
 	}
 	finalizedAuditRecorded := false
-	err = r.Provider.FinalizeWithAudit(ctx, request, func(_ context.Context, stableOperationID string) error {
+	err = r.Provider.FinalizeWithAudit(ctx, request, func(_ context.Context, stableOperationID string, evidence CheckpointFinalizationEvidence) error {
 		if stableOperationID != operationID {
 			return ErrCheckpointIntegrity
 		}
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, stableOperationID, CheckpointFinalizationComplete); err != nil {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, stableOperationID, CheckpointFinalizationComplete, &evidence); err != nil {
 			return err
 		}
 		finalizedAuditRecorded = true
@@ -209,8 +200,8 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 				}
 			}
 		}
-		auditErr := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationFailed)
-		return errors.Join(err, auditErr)
+		// Do not create terminal failure events without independently verifiable checkpoint evidence.
+		return err
 	}
 	return nil
 }
