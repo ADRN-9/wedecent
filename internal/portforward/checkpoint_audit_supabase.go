@@ -159,6 +159,9 @@ func checkpointAuditPayload(request CheckpointRequest) (map[string]any, error) {
 		"jti":                        request.JTI,
 		"authorization_sha256":       hex.EncodeToString(request.AuthorizationSHA256[:]),
 		"route_authorization_sha256": hex.EncodeToString(request.RouteAuthorizationSHA256[:]),
+		"route_authorization_id": request.RouteAuthorizationID,
+		"route_authorization_jti": request.RouteAuthorizationJTI,
+		"route_authorization_json": request.RouteAuthorizationJSON,
 		"device_public_key":          request.DevicePublicKey,
 		"device_signature":           request.DeviceSignature,
 	}, nil
