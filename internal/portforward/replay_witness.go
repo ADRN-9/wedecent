@@ -227,6 +227,12 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if len(acks) < p.Quorum {
 		return ErrCheckpointQuorum
 	}
+	// Recheck the complete signed membership vector immediately before the
+	// audit/finalization boundary. Production adapters still need a shared
+	// durable ordering protocol with Revoke to eliminate the cross-service race.
+	if err := p.verifyRequestMembershipVector(ctx, saved); err != nil {
+		return err
+	}
 	if onQuorumCommitted != nil {
 		if err := onQuorumCommitted(); err != nil {
 			return err
@@ -383,6 +389,11 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 		seen[ack.WitnessID] = true
 	}
 	if len(acks) >= p.Quorum {
+		// Close the read window around persisted acknowledgements. This is a
+		// fail-closed recheck, not a substitute for a distributed finalize fence.
+		if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
+			return nil, err
+		}
 		return acks, nil
 	}
 	type response struct {
