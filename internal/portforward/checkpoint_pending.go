@@ -343,9 +343,14 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 			resultErr = errors.Join(resultErr, fmt.Errorf("%w: unlock pending store: %v", ErrReplayUnavailable, unlockErr))
 		}
 	}()
+	maxSize := int64(checkpointPendingMaxSize)
+	if s.maxSize > 0 && s.maxSize < maxSize { maxSize = s.maxSize }
+	maxEntries := checkpointPendingMaxEntries
+	if s.maxEntries > 0 && s.maxEntries < maxEntries { maxEntries = s.maxEntries }
 	snapshot := checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: map[string]checkpointPendingEntry{}}
-	data, err := readReplayJSON(s.Path, checkpointPendingMaxSize)
+	data, err := readReplayJSON(s.Path, maxSize)
 	if err == nil {
+		if err := rejectDuplicateJSONKeys(data); err != nil { return false, fmt.Errorf("%w: duplicate journal key: %v", ErrReplayUnavailable, err) }
 		decoder := json.NewDecoder(strings.NewReader(string(data)))
 		decoder.DisallowUnknownFields()
 		if err := decoder.Decode(&snapshot); err != nil {
@@ -358,6 +363,7 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 		if snapshot.Version != checkpointPendingVersion || snapshot.Entries == nil || len(snapshot.Entries) > checkpointPendingMaxEntries {
 			return false, ErrReplayUnavailable
 		}
+	if err := validateCheckpointPendingSnapshot(snapshot, time.Now().UTC()); err != nil { return false, fmt.Errorf("%w: invalid pending journal: %v", ErrReplayUnavailable, err) }
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("%w: read pending store: %v", ErrReplayUnavailable, err)
 	}
@@ -368,14 +374,13 @@ func (s *FileCheckpointPendingStore) update(ctx context.Context, change func(*ch
 	if err != nil {
 		return false, err
 	}
-	if len(snapshot.Entries) > checkpointPendingMaxEntries {
-		return false, ErrReplayUnavailable
-	}
+	if len(snapshot.Entries) > maxEntries { return false, ErrReplayUnavailable }
+	if err := validateCheckpointPendingSnapshot(snapshot, time.Now().UTC()); err != nil { return false, fmt.Errorf("%w: invalid pending mutation: %v", ErrReplayUnavailable, err) }
 	write := writeReplayJSON
 	if s.writeSnapshot != nil {
 		write = s.writeSnapshot
 	}
-	if err := write(s.Path, snapshot, replayStagingPattern(s.Path, "pendingops"), checkpointPendingMaxSize); err != nil {
+	if err := write(s.Path, snapshot, replayStagingPattern(s.Path, "pendingops"), maxSize); err != nil {
 		return false, fmt.Errorf("%w: persist pending operation: %v", ErrReplayUnavailable, err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -406,6 +411,55 @@ func cloneCheckpointRequest(request CheckpointRequest) CheckpointRequest {
 	return request
 }
 
+func rejectDuplicateJSONKeys(data []byte) error {
+	d := json.NewDecoder(strings.NewReader(string(data)))
+	var scan func() error
+	scan = func() error {
+		t, err := d.Token(); if err != nil { return err }
+		v, ok := t.(json.Delim); if !ok { return nil }
+		switch v {
+		case '{':
+			seen := map[string]bool{}
+			for d.More() {
+				k, err := d.Token(); if err != nil { return err }
+				key, ok := k.(string); if !ok || seen[key] { return ErrCheckpointIntegrity }; seen[key] = true
+				if err := scan(); err != nil { return err }
+			}
+			end, err := d.Token(); if err != nil || end != json.Delim('}') { return ErrCheckpointIntegrity }
+		case '[':
+			for d.More() { if err := scan(); err != nil { return err } }
+			end, err := d.Token(); if err != nil || end != json.Delim(']') { return ErrCheckpointIntegrity }
+		default: return ErrCheckpointIntegrity
+		}
+		return nil
+	}
+	if err := scan(); err != nil { return err }
+	if _, err := d.Token(); !errors.Is(err, io.EOF) { return ErrCheckpointIntegrity }
+	return nil
+}
+func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now time.Time) error {
+	if snapshot.Version != checkpointPendingVersion || snapshot.Entries == nil || now.IsZero() { return ErrCheckpointIntegrity }
+	for key, entry := range snapshot.Entries {
+		if entry.CreatedAt <= 0 || entry.CreatedAt > now.Add(5*time.Minute).UnixMilli() { return ErrCheckpointIntegrity }
+		fp, err := hex.DecodeString(entry.Fingerprint)
+		if err != nil || len(fp) != sha256.Size || hex.EncodeToString(fp) != entry.Fingerprint { return ErrCheckpointIntegrity }
+		requestFP, err := CheckpointRequestFingerprint(entry.Request)
+		if err != nil || !bytesEqual(fp, requestFP[:]) || checkpointPendingKey(entry.Request) != key { return ErrCheckpointIntegrity }
+		if entry.State == "pending" { if entry.ReceiptHash != "" || entry.Receipt != nil || len(entry.Acknowledgements) != 0 { return ErrCheckpointIntegrity }; continue }
+		if entry.State != "resolved" || entry.Receipt == nil { return ErrCheckpointIntegrity }
+		r := *entry.Receipt
+		digest, err := hex.DecodeString(entry.ReceiptHash)
+		if err != nil || len(digest) != sha256.Size || hex.EncodeToString(digest) != entry.ReceiptHash || entry.ReceiptHash != CheckpointReceiptDigest(r) { return ErrCheckpointIntegrity }
+		consumer, ok := checkpointConsumer(entry.Request)
+		if !ok || r.Version != checkpointVersion || r.DeviceID != consumer.DeviceID || r.AccountID != consumer.AccountID || r.OrganizationID != consumer.OrganizationID || r.JTI != entry.Request.JTI || r.AuthorizationSHA256 != entry.Request.AuthorizationSHA256 || r.RequestSHA256 != requestFP || r.Generation == 0 || r.RecordHash != checkpointRecordHash(r.PreviousHash, r.Generation, requestFP) || r.ProviderKeyID == "" || len(r.Signature) != ed25519.SignatureSize { return ErrCheckpointIntegrity }
+		seen := map[string]bool{}
+		for _, ack := range entry.Acknowledgements {
+			if ack.WitnessID == "" || seen[ack.WitnessID] || ack.Scope != witnessScope(checkpointEndpointForConsumer(entry.Request)) || ack.JTI != entry.Request.JTI || ack.RequestSHA256 != requestFP || ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(r)) || (ack.Status != "acknowledged" && ack.Status != "already_acknowledged") || ack.WitnessKeyID == "" || len(ack.Signature) != ed25519.SignatureSize { return ErrCheckpointIntegrity }
+			seen[ack.WitnessID] = true
+		}
+	}
+	return nil
+}
 func bytesEqual(a, b []byte) bool {
 	if len(a) != len(b) {
 		return false
