@@ -95,12 +95,12 @@ type FileCheckpointPendingStore struct {
 	maxSize       int64
 	maxEntries    int
 
-	trustMu      sync.RWMutex
-	primaryTrust ed25519.PublicKey
-	witnessTrust map[string]ed25519.PublicKey
-	trustQuorum  int
-	trustSet       bool
-	transitionWait     func()
+	trustMu             sync.RWMutex
+	primaryTrust        ed25519.PublicKey
+	witnessTrust        map[string]ed25519.PublicKey
+	trustQuorum         int
+	trustSet            bool
+	transitionWait      func()
 	transitionUnlockErr error
 }
 
@@ -1019,14 +1019,14 @@ func checkpointPendingKey(request CheckpointRequest) string {
 type MemoryCheckpointPendingStore struct {
 	entries map[string]checkpointPendingEntry
 
-	transitionMu sync.Mutex
-	mu           sync.RWMutex
-	trustMu      sync.RWMutex
-	primaryTrust ed25519.PublicKey
-	witnessTrust map[string]ed25519.PublicKey
-	trustQuorum   int
-	trustSet      bool
-	transitionWait     func()
+	transitionMu        sync.Mutex
+	mu                  sync.RWMutex
+	trustMu             sync.RWMutex
+	primaryTrust        ed25519.PublicKey
+	witnessTrust        map[string]ed25519.PublicKey
+	trustQuorum         int
+	trustSet            bool
+	transitionWait      func()
 	transitionUnlockErr error
 }
 
