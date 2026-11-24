@@ -86,6 +86,11 @@ type CheckpointWitnessTrust struct {
 
 // WitnessedReplayCheckpointProvider requires independent witness quorum for every
 // consume and revocation. Pending must be durable and local; it is not authority.
+// CheckpointFinalizationAuditSink must deduplicate its externally visible effect
+// by operationID. The same ID is retried if a process crashes before the local
+// completion marker is durable.
+type CheckpointFinalizationAuditSink func(context.Context, string) error
+
 type WitnessedReplayCheckpointProvider struct {
 	Primary    ReplayCheckpointProvider
 	PrimaryKey ed25519.PublicKey
@@ -183,7 +188,7 @@ func (p *WitnessedReplayCheckpointProvider) Finalize(ctx context.Context, reques
 // FinalizeWithAudit invokes an idempotent audit sink with a stable operation ID.
 // The sink must deduplicate effects by that ID because a crash can occur after the
 // sink commits but before the local completion marker is persisted.
-func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Context, request CheckpointRequest, onQuorumCommitted func(context.Context, string) error) (resultErr error) {
+func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Context, request CheckpointRequest, onQuorumCommitted CheckpointFinalizationAuditSink) (resultErr error) {
 	if p == nil {
 		return ErrCheckpointUnavailable
 	}
