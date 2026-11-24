@@ -98,6 +98,21 @@ The inspected Go tree defines `ReplayCheckpointProvider` and `CheckpointWitness`
 
 ## Verification status
 
-At the time this note was written, the first CI run on C159 changes exposed a compile-time error in the context-aware replay initialization call. That defect was corrected in commit `383f8f36969ff398d031fc80d056bdc149954b11`. The failed run is not counted as a pass.
+The executable-source revision `9a3185af8047c6f235d55794f6760cc005252531` passed these exact-HEAD workflows:
 
-Exact-HEAD CI and all three Desktop platform checks must be inspected again after the correction. Go tests, race tests, vet and platform checks are not claimed as passing until their exact-HEAD jobs and logs show success.
+- CI: [45387639798](https://github.com/ADRN-9/wedecent/actions/runs/45387639798) — all jobs successful.
+- Desktop shell: [45387639873](https://github.com/ADRN-9/wedecent/actions/runs/45387639873) — Linux, macOS and Windows Tauri checks successful.
+
+Observed CI job evidence and logs:
+
+- Linux: Go formatting, replay initialization/crash-recovery stress, port-forward/session/transport tests, targeted race tests, `go test ./...`, `go vet ./...`, protocol fuzzing, full `go test -race ./...`, Unix service packaging and transport smoke tests all passed.
+- macOS: full `go test ./...`, Unix service packaging, native macOS binaries and version checks passed. The port-forward package passed in 6.409 seconds.
+- Windows: targeted replay-store security regressions and full `go test ./...` passed. The port-forward package passed in 53.229 seconds. The full suite includes `TestVersionTwoPendingJournalIsRejectedWithoutChangingOriginalBytes`; the fixture sets the current Windows file owner and verifies original bytes are unchanged.
+- Supabase database tests, control-plane type checks, relay-worker tests and routed terminal E2E passed.
+- Desktop/Tauri checks passed on Linux, macOS and Windows.
+
+Earlier failed runs are retained as defect-discovery evidence, not counted as passes. The passing runs above supersede those failures.
+
+The production audit adapter and independent primary/witness distributed fencing remain unimplemented external dependencies. Passing repository CI does not establish either production integration or production readiness.
+
+The documentation-only updates after `9a3185af8047c6f235d55794f6760cc005252531` do not change executable source. The final PR HEAD is recorded in the C159 handoff and was queued for a fresh workflow run after these documentation updates.
