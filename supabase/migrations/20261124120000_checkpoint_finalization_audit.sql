@@ -98,6 +98,7 @@ declare
     v_operation public.checkpoint_finalization_operations%rowtype;
     v_event public.checkpoint_finalization_audit%rowtype;
     v_transaction public.port_forward_authorization_transactions%rowtype;
+    v_initial_transaction public.port_forward_authorization_transactions%rowtype;
     v_terminal_outcome text;
     v_jti text;
     v_initiator text;
@@ -121,6 +122,7 @@ begin
        or p_payload_version <> 1
        or p_payload is null
        or pg_catalog.jsonb_typeof(p_payload) <> 'object'
+       or p_payload ->> 'version' <> '1'
        or pg_catalog.jsonb_object_length(p_payload) <> 13
        or not (p_payload ?& array[
            'version','initiator','destination','router','consuming_device_id','jti',
@@ -280,6 +282,7 @@ begin
        or pg_catalog.encode(v_transaction.authorization_sha256, 'hex') <> p_payload ->> 'authorization_sha256' then
         raise exception 'unauthorized audit actor or operation scope' using errcode = '42501';
     end if;
+    v_initial_transaction := v_transaction;
 
     if v_transaction.router_device_id is null then
         if v_transaction.route_authorization_id is not null
@@ -356,8 +359,8 @@ begin
       from public.port_forward_authorization_transactions as transaction_row
      where transaction_row.jti = v_jti
      for share;
-    if not found then
-        raise exception 'authorization transaction disappeared' using errcode = '40001';
+    if not found or v_transaction is distinct from v_initial_transaction then
+        raise exception 'authorization transaction changed during audit binding' using errcode = '40001';
     end if;
 
     insert into public.checkpoint_finalization_operations (
