@@ -16,6 +16,9 @@ func TestPinnedCheckpointFenceHTTPClientRequiresTLS13AndExactSPKI(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := client.CheckRedirect(nil, nil); !errors.Is(err, http.ErrUseLastResponse) {
+		t.Fatalf("authority client must reject redirects: %v", err)
+	}
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatal("expected pinned HTTP transport")
