@@ -226,31 +226,6 @@ func (s *FileCheckpointPendingStore) LoadEquivocations(ctx context.Context, requ
 	return loadCheckpointEquivocations(snapshot, request, receipt, witnesses)
 }
 
-func (s *FileCheckpointPendingStore) RecordEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
-	if s == nil || ctx == nil {
-		return ErrReplayUnavailable
-	}
-	return recordCheckpointEquivocation(ctx, request, receipt, original, conflicting, trust, func(change func(*checkpointPendingSnapshot) (bool, error)) error {
-		_, err := s.update(ctx, change)
-		return err
-	})
-}
-
-func (s *FileCheckpointPendingStore) LoadEquivocations(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, witnesses []CheckpointWitnessTrust) ([]CheckpointWitnessEquivocation, error) {
-	if s == nil || ctx == nil {
-		return nil, ErrReplayUnavailable
-	}
-	var snapshot checkpointPendingSnapshot
-	_, err := s.update(ctx, func(current *checkpointPendingSnapshot) (bool, error) {
-		snapshot = *current
-		return false, nil
-	})
-	if err != nil {
-		return nil, err
-	}
-	return loadCheckpointEquivocations(snapshot, request, receipt, witnesses)
-}
-
 func checkpointAckMatchesPendingOperation(ack CheckpointWitnessAck, request CheckpointRequest, receipt CheckpointReceipt) bool {
 	fingerprint, err := CheckpointRequestFingerprint(request)
 	if err != nil {
@@ -468,36 +443,6 @@ func (s *MemoryCheckpointPendingStore) LoadAcknowledgements(ctx context.Context,
 	return validateStoredCheckpointAcknowledgements(checkpointPendingSnapshot{
 		Version: checkpointPendingVersion,
 		Entries: s.entries,
-	}, request, receipt, witnesses)
-}
-
-func (s *MemoryCheckpointPendingStore) RecordEquivocation(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, original, conflicting CheckpointWitnessAck, trust CheckpointWitnessTrust) error {
-	if s == nil || ctx == nil {
-		return ErrReplayUnavailable
-	}
-	return recordCheckpointEquivocation(ctx, request, receipt, original, conflicting, trust, func(change func(*checkpointPendingSnapshot) (bool, error)) error {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if s.entries == nil {
-			s.entries = make(map[string]checkpointPendingEntry)
-		}
-		snapshot := checkpointPendingSnapshot{Version: checkpointPendingVersion, Entries: s.entries}
-		_, err := change(&snapshot)
-		s.entries = snapshot.Entries
-		return err
-	})
-}
-
-func (s *MemoryCheckpointPendingStore) LoadEquivocations(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, witnesses []CheckpointWitnessTrust) ([]CheckpointWitnessEquivocation, error) {
-	if s == nil || ctx == nil {
-		return nil, ErrReplayUnavailable
-	}
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	return loadCheckpointEquivocations(checkpointPendingSnapshot{
-		Version: checkpointPendingVersion, Entries: s.entries,
 	}, request, receipt, witnesses)
 }
 
