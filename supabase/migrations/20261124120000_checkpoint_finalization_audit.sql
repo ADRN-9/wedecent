@@ -274,12 +274,18 @@ begin
         if v_transaction.route_authorization_id is not null
            or v_transaction.route_authorization_jti is not null
            or p_payload ->> 'route_authorization_sha256' <> repeat('0', 64)
+           or p_payload ->> 'route_authorization_id' <> ''
+           or p_payload ->> 'route_authorization_jti' <> ''
+           or p_payload ->> 'route_authorization_json' <> ''
            or p_payload -> 'router' <> 'null'::jsonb then
             raise exception 'unexpected route authorization binding' using errcode = '42501';
         end if;
     else
         if p_payload ->> 'route_authorization_sha256' = repeat('0', 64)
-           or p_payload -> 'router' is null then
+           or p_payload ->> 'route_authorization_id' <> v_transaction.route_authorization_id::text
+           or p_payload ->> 'route_authorization_jti' <> v_transaction.route_authorization_jti
+           or p_payload ->> 'route_authorization_json' = ''
+           or p_payload -> 'router' = 'null'::jsonb then
             raise exception 'missing route authorization binding' using errcode = '42501';
         end if;
         select grant_row.*
