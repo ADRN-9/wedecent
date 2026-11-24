@@ -97,11 +97,20 @@ $$;
 SQL
 
 start() {
-  local name="$1" app="$2" sql="$3"
-  PGAPPNAME="$app" psql "$DB_URL" -X -qAt -v ON_ERROR_STOP=1 -c "$sql" >"$WORK/$name.log" 2>&1 &
+  local name="$1" app="$2"
+  mkfifo "$WORK/$name.in"
+  PGAPPNAME="$app" psql "$DB_URL" -X -qAt -v ON_ERROR_STOP=1 <"$WORK/$name.in" >"$WORK/$name.log" 2>&1 &
   echo "$!" >"$WORK/$name.pid"
+  local fd
+  exec {fd}>"$WORK/$name.in"
+  echo "$fd" >"$WORK/$name.fd"
 }
 pid_of() { cat "$WORK/$1.pid"; }
+send() {
+  local fd
+  fd="$(cat "$WORK/$1.fd")"
+  printf '%s\n' "$2" >&"$fd"
+}
 wait_text() {
   local name="$1" needle="$2"
   for _ in $(seq 1 300); do
@@ -120,15 +129,25 @@ wait_lock() {
   done
   fail "$app did not reach a PostgreSQL lock wait"
 }
+close_input() {
+  local fd
+  fd="$(cat "$WORK/$1.fd")"
+  exec {fd}>&-
+  rm -f "$WORK/$1.fd"
+}
 finish_ok() {
   local name="$1" pid
+  send "$name" 'commit;'
+  send "$name" '\q'
   pid="$(pid_of "$name")"
+  close_input "$name"
   rm -f "$WORK/$name.pid"
   wait "$pid" || { cat "$WORK/$name.log" >&2; fail "$name failed"; }
 }
 finish_error() {
   local name="$1" expected="$2" pid
   pid="$(pid_of "$name")"
+  close_input "$name"
   rm -f "$WORK/$name.pid"
   if wait "$pid"; then cat "$WORK/$name.log" >&2; fail "$name unexpectedly succeeded"; fi
   grep -Fq "$expected" "$WORK/$name.log" || { cat "$WORK/$name.log" >&2; fail "$name failed for the wrong reason"; }
@@ -148,23 +167,36 @@ OP_F="$(printf 'f%.0s' {1..64})"
 OP_G="$(printf '1%.0s' {1..64})"
 
 # Independent sessions compete for the same two participant heads.
-start a wd-c195-same-a "begin; select public.wd_c195_reserve('$OP_A','finalize','$(printf '1%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff']); select pg_sleep(2); commit;"
+start a wd-c195-same-a
+send a "begin; select public.wd_c195_reserve('$OP_A','finalize','$(printf '1%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff']);"
 wait_text a '"status": "reserved"'
-start b wd-c195-same-b "begin; select public.wd_c195_reserve('$OP_B','finalize','$(printf '2%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff']); commit;"
+start b wd-c195-same-b
+send b "begin; select public.wd_c195_reserve('$OP_B','finalize','$(printf '2%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff']);"
 wait_lock wd-c195-same-b
 finish_ok a
 finish_error b 'checkpoint participant is reserved by another operation'
 assertq 2 "select count(*) from public.checkpoint_active_reservations where operation_id='$OP_A'"
 assertq 0 "select count(*) from public.checkpoint_operations where operation_id='$OP_B'"
-psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "select public.wd_c195_commit('$OP_A','finalize')" >/dev/null
-psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "select public.wd_c195_commit('$OP_A','finalize')" >/dev/null
+
+# Two simultaneous exact commits serialize and return one durable receipt.
+start commit_a wd-c195-commit-a
+send commit_a "begin; select public.wd_c195_commit('$OP_A','finalize');"
+wait_text commit_a '"status": "committed"'
+start commit_b wd-c195-commit-b
+send commit_b "begin; select public.wd_c195_commit('$OP_A','finalize');"
+wait_lock wd-c195-commit-b
+finish_ok commit_a
+wait_text commit_b '"status": "committed"'
+finish_ok commit_b
 assertq 1 "select min(checkpoint_head_generation) from public.port_forward_replay_authority where device_id in ('wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff')"
 assertq 1 "select max(checkpoint_head_generation) from public.port_forward_replay_authority where device_id in ('wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff')"
 
 # Overlapping sets serialize on the common participant and never partially reserve.
-start c wd-c195-overlap-a "begin; select public.wd_c195_reserve('$OP_C','finalize','$(printf '3%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff']); select pg_sleep(2); commit;"
+start c wd-c195-overlap-a
+send c "begin; select public.wd_c195_reserve('$OP_C','finalize','$(printf '3%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff']);"
 wait_text c '"status": "reserved"'
-start d wd-c195-overlap-b "begin; select public.wd_c195_reserve('$OP_D','finalize','$(printf '4%.0s' {1..64})',array['wd_ffffffffffffffff','wd_gggggggggggggggg']); commit;"
+start d wd-c195-overlap-b
+send d "begin; select public.wd_c195_reserve('$OP_D','finalize','$(printf '4%.0s' {1..64})',array['wd_ffffffffffffffff','wd_gggggggggggggggg']);"
 wait_lock wd-c195-overlap-b
 finish_ok c
 finish_error d 'checkpoint participant is reserved by another operation'
@@ -175,8 +207,10 @@ assertq 2 "select min(checkpoint_head_generation) from public.port_forward_repla
 assertq 2 "select max(checkpoint_head_generation) from public.port_forward_replay_authority where device_id in ('wd_eeeeeeeeeeeeeeee','wd_ffffffffffffffff')"
 
 # A backend killed after writing an uncommitted reservation leaves no operation.
-start e wd-c195-interrupted "begin; select public.wd_c195_reserve('$OP_E','finalize','$(printf '5%.0s' {1..64})',array['wd_gggggggggggggggg']); select pg_sleep(60); commit;"
+start e wd-c195-interrupted
+send e "begin; select public.wd_c195_reserve('$OP_E','finalize','$(printf '5%.0s' {1..64})',array['wd_gggggggggggggggg']);"
 wait_text e '"status": "reserved"'
+send e 'select pg_sleep(60);'
 PID="$(psql "$DB_URL" -X -Atqc "select pid from pg_stat_activity where application_name='wd-c195-interrupted'")"
 [[ "$PID" =~ ^[0-9]+$ ]] || fail 'could not find interrupted reservation backend'
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "select pg_terminate_backend($PID)" >/dev/null
@@ -185,9 +219,11 @@ assertq 0 "select count(*) from public.checkpoint_operations where operation_id=
 assertq 0 "select count(*) from public.checkpoint_active_reservations where operation_id='$OP_E'"
 
 # Revocation races with a pending finalization; whichever gets the device lock first wins.
-start f wd-c195-revoke-reserve "begin; select public.wd_c195_reserve('$OP_F','finalize','$(printf '6%.0s' {1..64})',array['wd_gggggggggggggggg']); select pg_sleep(2); commit;"
+start f wd-c195-revoke-reserve
+send f "begin; select public.wd_c195_reserve('$OP_F','finalize','$(printf '6%.0s' {1..64})',array['wd_gggggggggggggggg']);"
 wait_text f '"status": "reserved"'
-start revoke wd-c195-device-revoke "begin; update public.devices set revoked_at=pg_catalog.clock_timestamp() where device_id='wd_gggggggggggggggg'; commit;"
+start revoke wd-c195-device-revoke
+send revoke "begin; update public.devices set revoked_at=pg_catalog.clock_timestamp() where device_id='wd_gggggggggggggggg'; commit;"
 wait_lock wd-c195-device-revoke
 finish_ok f
 finish_ok revoke
@@ -202,18 +238,31 @@ grep -Fq 'checkpoint participant identity or revocation changed' "$WORK/revoke-c
 assertq 0 "select checkpoint_head_generation from public.port_forward_replay_authority where device_id='wd_gggggggggggggggg'"
 
 # Finalization audit and checkpoint reservation use the same operation advisory lock.
-start g wd-c195-finalization-lock "begin; select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('$OP_G',0)); select 'finalization-lock-ready'; select pg_sleep(2); commit;"
+start g wd-c195-finalization-lock
+send g "begin; select pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended('$OP_G',0));"
+send g "select 'finalization-lock-ready';"
 wait_text g 'finalization-lock-ready'
-start h wd-c195-finalization-reserve "begin; select public.wd_c195_reserve('$OP_G','finalize','$(printf '7%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee']); commit;"
+start h wd-c195-finalization-reserve
+send h "begin; select public.wd_c195_reserve('$OP_G','finalize','$(printf '7%.0s' {1..64})',array['wd_eeeeeeeeeeeeeeee']);"
 wait_lock wd-c195-finalization-reserve
 finish_ok g
+wait_text h '"status": "reserved"'
 finish_ok h
-psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "select public.wd_c195_commit('$OP_G','finalize')" >/dev/null
-assertq 3 "select checkpoint_head_generation from public.port_forward_replay_authority where device_id='wd_eeeeeeeeeeeeeeee'"
 
-# Simulate an ambiguous client response by discarding the first successful receipt,
-# then recover it by exact operation retry without a second head advancement.
-psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "select public.wd_c195_commit('$OP_G','finalize')" >/dev/null 2>&1
+# Lose the client connection after the database commit, then recover by exact retry.
+start lost wd-c195-lost-receipt
+send lost "begin; select public.wd_c195_commit('$OP_G','finalize');"
+wait_text lost '"status": "committed"'
+send lost 'commit;'
+send lost "select 'commit-durable';"
+wait_text lost 'commit-durable'
+send lost 'select pg_sleep(60);'
+PID="$(psql "$DB_URL" -X -Atqc "select pid from pg_stat_activity where application_name='wd-c195-lost-receipt'")"
+[[ "$PID" =~ ^[0-9]+$ ]] || fail 'could not find lost-receipt backend'
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "select pg_terminate_backend($PID)" >/dev/null
+finish_error lost 'terminating connection'
+assertq 3 "select checkpoint_head_generation from public.port_forward_replay_authority where device_id='wd_eeeeeeeeeeeeeeee'"
+psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "select public.wd_c195_commit('$OP_G','finalize')" >/dev/null
 assertq 3 "select checkpoint_head_generation from public.port_forward_replay_authority where device_id='wd_eeeeeeeeeeeeeeee'"
 
 # Restart local PostgreSQL and verify durable commit evidence survives.
@@ -224,4 +273,4 @@ assertq 3 "select checkpoint_head_generation from public.port_forward_replay_aut
 assertq 1 "select count(*) from public.checkpoint_operation_events where operation_id='$OP_G' and event_type='committed'"
 
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c195_commit(text,text); drop function public.wd_c195_reserve(text,text,text,text[]); drop function public.wd_c195_acks(text,text); drop function public.wd_c195_participants(text[]);' >/dev/null
-printf 'Checkpoint reservation concurrency, interruption, revocation ordering, ambiguous retry and database restart checks passed.\n'
+printf 'Checkpoint reservation concurrency, concurrent commit, interruption, revocation ordering, lost-session recovery and database restart checks passed.\n'
