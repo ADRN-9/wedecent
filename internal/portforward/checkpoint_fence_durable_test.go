@@ -56,19 +56,19 @@ func durableFenceFixture(t *testing.T) (*FileCheckpointFencePrimary, []*FileChec
 	}
 	request := CheckpointFenceRequest{
 		Scope: CheckpointWitnessScope{
-			DeviceID: identity.DeviceID(deviceKey.Public().(ed25519.PublicKey)),
-			AccountID: "11111111-1111-4111-8111-111111111111",
+			DeviceID:       identity.DeviceID(deviceKey.Public().(ed25519.PublicKey)),
+			AccountID:      "11111111-1111-4111-8111-111111111111",
 			OrganizationID: "22222222-2222-4222-8222-222222222222",
 		},
 		ExpectedFenceGeneration: 0,
 		ExpectedRevocationEpoch: 0,
-		Action: CheckpointFenceFinalize,
-		OperationID: "durable-fence-op-0001",
-		RequestSHA256: sha256.Sum256([]byte("durable-request")),
-		AuthorizationSHA256: sha256.Sum256([]byte("durable-authorization")),
-		WitnessSetVersion: "witness-set-v1",
-		WitnessIDs: ids,
-		ExpiresAtUnixMS: 5000,
+		Action:                  CheckpointFenceFinalize,
+		OperationID:             "durable-fence-op-0001",
+		RequestSHA256:           sha256.Sum256([]byte("durable-request")),
+		AuthorizationSHA256:     sha256.Sum256([]byte("durable-authorization")),
+		WitnessSetVersion:       "witness-set-v1",
+		WitnessIDs:              ids,
+		ExpiresAtUnixMS:         5000,
 	}
 	return primary, witnesses, primaryKey, request, dir
 }
@@ -350,7 +350,6 @@ func sameFenceToken(a, b CheckpointFenceToken) bool {
 	return true
 }
 
-
 func commitDurableFence(t *testing.T, primary *FileCheckpointFencePrimary, witnesses []*FileCheckpointFenceWitness, request CheckpointFenceRequest) CheckpointFenceToken {
 	t.Helper()
 	token, err := primary.ReserveFence(context.Background(), request)
@@ -427,7 +426,6 @@ func TestCheckpointFenceCoordinatorExecutesStrictMajority(t *testing.T) {
 	}
 }
 
-
 func TestFileCheckpointFencePrimaryRejectsStaleFenceAndPrimaryHeads(t *testing.T) {
 	primary, witnesses, _, request, _ := durableFenceFixture(t)
 	first := commitDurableFence(t, primary, witnesses, request)
@@ -456,7 +454,6 @@ func TestFileCheckpointFencePrimaryRejectsStaleFenceAndPrimaryHeads(t *testing.T
 	}
 }
 
-
 func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *testing.T) {
 	primary, witnesses, primaryKey, request, _ := durableFenceFixture(t)
 	clients := make([]CheckpointFenceWitnessClient, len(witnesses))
@@ -476,7 +473,7 @@ func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *test
 	start := make(chan struct{})
 	type outcome struct {
 		operation CheckpointFenceOperation
-		err error
+		err       error
 	}
 	results := make(chan outcome, 2)
 	for _, candidate := range []CheckpointFenceRequest{finalize, revoke} {
@@ -509,8 +506,6 @@ func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *test
 		t.Fatalf("expected one committed winner and one stale loser, success=%d stale=%d", successes, stale)
 	}
 }
-
-
 
 func TestFileCheckpointFencePrimaryRecoversPreExpiryQuorumAfterExpiry(t *testing.T) {
 	ctx := context.Background()
