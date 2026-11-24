@@ -1262,6 +1262,10 @@ func checkpointFenceParticipantHeadDigest(heads []CheckpointFenceParticipantHead
 }
 
 func (p *WitnessedReplayCheckpointProvider) checkpointParticipantHeads(ctx context.Context, participants []CheckpointEndpoint) ([]CheckpointFenceParticipantHead, error) {
+	return p.checkpointParticipantHeadsWithRecovery(ctx, participants, false)
+}
+
+func (p *WitnessedReplayCheckpointProvider) checkpointParticipantHeadsWithRecovery(ctx context.Context, participants []CheckpointEndpoint, allowAdvancedEpoch bool) ([]CheckpointFenceParticipantHead, error) {
 	heads := make([]CheckpointFenceParticipantHead, 0, len(participants))
 	for _, endpoint := range participants {
 		head, err := p.Primary.Head(ctx, endpoint)
@@ -1271,7 +1275,8 @@ func (p *WitnessedReplayCheckpointProvider) checkpointParticipantHeads(ctx conte
 		if err := VerifyCheckpointHead(head, endpoint, p.PrimaryKey); err != nil {
 			return nil, err
 		}
-		if head.RevocationEpoch != endpoint.RevocationEpoch {
+		if head.RevocationEpoch < endpoint.RevocationEpoch ||
+			(!allowAdvancedEpoch && head.RevocationEpoch != endpoint.RevocationEpoch) {
 			return nil, ErrCheckpointRevoked
 		}
 		heads = append(heads, CheckpointFenceParticipantHead{Endpoint: endpoint, Head: head})
@@ -1293,7 +1298,11 @@ func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context
 	}
 	operationID = checkpointFenceOperationID(CheckpointFenceFinalize, operationID, request.Initiator.OrganizationID)
 	scope := organizationCheckpointFenceScope(request.Initiator.OrganizationID)
-	heads, err := p.checkpointParticipantHeads(ctx, checkpointRequestParticipants(request))
+	existing, found, err := p.Fencing.Primary.LoadFence(ctx, scope, operationID)
+	if err != nil {
+		return CheckpointFenceOperation{}, err
+	}
+	heads, err := p.checkpointParticipantHeadsWithRecovery(ctx, checkpointRequestParticipants(request), found && existing.Committed)
 	if err != nil {
 		return CheckpointFenceOperation{}, err
 	}
@@ -1305,14 +1314,19 @@ func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.C
 		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
 		return ErrCheckpointStale
 	}
-	heads, err := p.checkpointParticipantHeads(ctx, []CheckpointEndpoint{endpoint})
-	if err != nil {
-		return err
-	}
 	fingerprint := checkpointRevocationFingerprint(endpoint, next)
 	operationID := checkpointFenceOperationID(CheckpointFenceRevoke,
 		hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
-	_, err = p.executeOrganizationFence(ctx, organizationCheckpointFenceScope(endpoint.OrganizationID),
+	scope := organizationCheckpointFenceScope(endpoint.OrganizationID)
+	existing, found, err := p.Fencing.Primary.LoadFence(ctx, scope, operationID)
+	if err != nil {
+		return err
+	}
+	heads, err := p.checkpointParticipantHeadsWithRecovery(ctx, []CheckpointEndpoint{endpoint}, found && existing.Committed)
+	if err != nil {
+		return err
+	}
+	_, err = p.executeOrganizationFence(ctx, scope,
 		CheckpointFenceRevoke, operationID, fingerprint, fingerprint, []CheckpointEndpoint{endpoint}, heads)
 	return err
 }
