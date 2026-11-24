@@ -488,12 +488,8 @@ func applyCheckpointFencePrimaryEvent(index *checkpointFencePrimaryIndex, event 
 		if oldScope, exists := index.IDs[token.OperationID]; exists && oldScope != token.Scope {
 			return ErrCheckpointConflict
 		}
-		if old, exists := state.Operations[token.OperationID]; exists {
-			oldDigest, _ := CheckpointFenceTokenDigest(old.Token)
-			if oldDigest != digest {
-				return ErrCheckpointConflict
-			}
-			return nil
+		if _, exists := state.Operations[token.OperationID]; exists {
+			return ErrCheckpointConflict
 		}
 		if token.OperationID == "" || state.PendingOperationID != "" ||
 			token.ExpectedFenceGeneration != state.Generation || token.Generation != state.Generation+1 ||
@@ -515,7 +511,7 @@ func applyCheckpointFencePrimaryEvent(index *checkpointFencePrimaryIndex, event 
 			return ErrCheckpointConflict
 		}
 		if old.Committed {
-			return nil
+			return ErrCheckpointConflict
 		}
 		if state.PendingOperationID != token.OperationID {
 			return ErrCheckpointStale
@@ -566,11 +562,8 @@ func applyCheckpointFenceWitnessEvent(index *checkpointFenceWitnessIndex, event 
 		ack.CommittedAtUnixMS > token.ExpiresAtUnixMS {
 		return ErrCheckpointIntegrity
 	}
-	if old, exists := state.Operations[token.Generation]; exists {
-		if old.TokenDigest != digest || !bytes.Equal(old.Ack.Signature, ack.Signature) {
-			return ErrCheckpointConflict
-		}
-		return nil
+	if _, exists := state.Operations[token.Generation]; exists {
+		return ErrCheckpointConflict
 	}
 	if old, exists := index.OperationIDs[token.OperationID]; exists &&
 		(old.Scope != token.Scope || old.Generation != token.Generation || old.TokenDigest != digest) {
