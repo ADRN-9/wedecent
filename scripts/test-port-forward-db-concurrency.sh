@@ -345,29 +345,29 @@ assertq 1 "select count(*) from public.checkpoint_finalization_audit where opera
 # Route-grant JTIs are unique in their own table and intentionally differ from forwarding JTIs.
 route 33000000-0000-4000-8000-0000000000d1 NNNNNNNNNNNNNNNNNNNNNN
 start c wd-c145-dup-a
-send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN','$ISSUED_AT','$EXPIRES_AT');"
+send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','VVVVVVVVVVVVVVVVVVVVVV','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN','$ISSUED_AT','$EXPIRES_AT');"
 wait_text c '"accepted": true'
 start d wd-c145-dup-b
-send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN','$ISSUED_AT','$EXPIRES_AT');"
+send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','VVVVVVVVVVVVVVVVVVVVVV','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN','$ISSUED_AT','$EXPIRES_AT');"
 wait_lock wd-c145-dup-b
 finish c || fail 'first duplicate transaction failed'
 wait_text d '"replayed": true'
 finish d || fail 'same forwarding retry failed'
 assertq 1 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d1'"
-assertq 1 "select count(*) from public.port_forward_replay_entries where jti='QQQQQQQQQQQQQQQQQQQQQQ'"
+assertq 1 "select count(*) from public.port_forward_replay_entries where jti='VVVVVVVVVVVVVVVVVVVVVV'"
 
 route 33000000-0000-4000-8000-0000000000d2 OOOOOOOOOOOOOOOOOOOOOO
 start c wd-c145-jti-a
-send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d2','RRRRRRRRRRRRRRRRRRRRRR','33000000-0000-4000-8000-0000000000d2','OOOOOOOOOOOOOOOOOOOOOO','$ISSUED_AT','$EXPIRES_AT');"
+send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d2','ZZZZZZZZZZZZZZZZZZZZZZ','33000000-0000-4000-8000-0000000000d2','OOOOOOOOOOOOOOOOOOOOOO','$ISSUED_AT','$EXPIRES_AT');"
 wait_text c '"accepted": true'
-route 33000000-0000-4000-8000-0000000000d3 PPPPPPPPPPPPPPPPPPPPPP
+route 33000000-0000-4000-8000-0000000000d3 RRRRRRRRRRRRRRRRRRRRRR
 start d wd-c145-jti-b
-send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d3','RRRRRRRRRRRRRRRRRRRRRR','33000000-0000-4000-8000-0000000000d3','PPPPPPPPPPPPPPPPPPPPPP','$ISSUED_AT','$EXPIRES_AT');"
+send d "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d3','ZZZZZZZZZZZZZZZZZZZZZZ','33000000-0000-4000-8000-0000000000d3','RRRRRRRRRRRRRRRRRRRRRR','$ISSUED_AT','$EXPIRES_AT');"
 wait_lock wd-c145-jti-b
 finish c || fail 'first JTI transaction failed'
 wait_text d '"jti-conflict"'
 finish d || fail 'JTI conflict transaction did not finish'
-assertq 1 "select count(*) from public.port_forward_authorization_transactions where jti='RRRRRRRRRRRRRRRRRRRRRR'"
+assertq 1 "select count(*) from public.port_forward_authorization_transactions where jti='ZZZZZZZZZZZZZZZZZZZZZZ'"
 assertq 0 "select count(*) from public.port_forward_authorization_transactions where forwarding_id='44000000-0000-4000-8000-0000000000d3'"
 
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c145_audit_finalized(text,text); drop function public.wd_c145_audit(text,text,text); drop function public.wd_c145_consume(uuid,text,uuid,text,timestamptz,timestamptz); drop function public.wd_c145_route(uuid,text);'
