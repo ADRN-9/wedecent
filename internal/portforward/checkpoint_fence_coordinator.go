@@ -87,7 +87,7 @@ func (c *CheckpointFenceCoordinator) execute(
 	if err := ctx.Err(); err != nil {
 		return CheckpointFenceOperation{}, err
 	}
-	if request.Action == CheckpointFenceRevoke {
+	if request.Scope.Kind == "organization" && request.Action == CheckpointFenceRevoke {
 		if len(request.AuthorizationProof) == 0 || len(request.AuthorizationProof) > 64<<10 ||
 			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 {
 			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
