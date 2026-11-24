@@ -113,14 +113,14 @@ func (s *FileCheckpointPendingStore) LockFinalization(ctx context.Context, reque
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	fingerprint, err := CheckpointRequestFingerprint(request)
-	if err != nil {
+	if _, err := CheckpointRequestFingerprint(request); err != nil {
 		return nil, err
 	}
 	if err := secureReplayDirectory(filepath.Dir(s.Path)); err != nil {
 		return nil, fmt.Errorf("%w: finalization directory: %v", ErrReplayUnavailable, err)
 	}
-	lockPath := s.Path + ".finalize-" + hex.EncodeToString(fingerprint[:])
+	// One persistent lock per journal bounds lock-file growth across operations.
+	lockPath := s.Path + ".finalize"
 	unlock, _, err := lockReplayFile(lockPath)
 	if err != nil {
 		return nil, fmt.Errorf("%w: lock finalization: %v", ErrReplayUnavailable, err)
