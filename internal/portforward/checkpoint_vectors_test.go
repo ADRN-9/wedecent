@@ -123,8 +123,18 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	copy(receipt.RequestSHA256[:], decode(stringField(receiptVector, "request_sha256")))
 	copy(receipt.PreviousHash[:], decode(stringField(receiptVector, "previous_hash")))
 	copy(receipt.RecordHash[:], decode(stringField(receiptVector, "record_hash")))
-	if hexBytes(checkpointReceiptMessage(receipt)) != stringField(receiptVector, "message_hex") {
+	receiptMessage := checkpointReceiptMessage(receipt)
+	if hexBytes(receiptMessage) != stringField(receiptVector, "message_hex") {
 		t.Fatal("primary receipt encoding differs from shared vector")
+	}
+	primarySeed := decode(stringField(receiptVector, "signing_seed_hex"))
+	primaryPrivate := ed25519.NewKeyFromSeed(primarySeed)
+	primaryPublic := ed25519.PublicKey(decode(stringField(receiptVector, "public_key_hex")))
+	receiptSignature := decode(stringField(receiptVector, "signature_hex"))
+	if !bytes.Equal(primaryPrivate.Public().(ed25519.PublicKey), primaryPublic) ||
+		!ed25519.Verify(primaryPublic, receiptMessage, receiptSignature) ||
+		!bytes.Equal(ed25519.Sign(primaryPrivate, receiptMessage), receiptSignature) {
+		t.Fatal("primary receipt signature differs from shared Go/TypeScript vector")
 	}
 
 	headVector := object(vector["primary_head"])
@@ -138,8 +148,14 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 		RevocationEpoch: uintField(headVector, "revocation_epoch"),
 	}
 	copy(head.RecordHash[:], decode(stringField(headVector, "record_hash")))
-	if hexBytes(checkpointHeadMessage(head)) != stringField(headVector, "message_hex") {
+	headMessage := checkpointHeadMessage(head)
+	if hexBytes(headMessage) != stringField(headVector, "message_hex") {
 		t.Fatal("primary head encoding differs from shared vector")
+	}
+	headSignature := decode(stringField(headVector, "signature_hex"))
+	if !ed25519.Verify(primaryPublic, headMessage, headSignature) ||
+		!bytes.Equal(ed25519.Sign(primaryPrivate, headMessage), headSignature) {
+		t.Fatal("primary head signature differs from shared Go/TypeScript vector")
 	}
 
 	ackVector := object(vector["witness_ack"])
@@ -157,8 +173,18 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	}
 	copy(ack.RequestSHA256[:], decode(stringField(ackVector, "request_sha256")))
 	copy(ack.PrimaryReceiptSHA256[:], decode(stringField(ackVector, "primary_receipt_sha256")))
-	if hexBytes(checkpointWitnessAckMessage(ack)) != stringField(ackVector, "message_hex") {
+	ackMessage := checkpointWitnessAckMessage(ack)
+	if hexBytes(ackMessage) != stringField(ackVector, "message_hex") {
 		t.Fatal("witness acknowledgement encoding differs from shared vector")
+	}
+	witnessSeed := decode(stringField(ackVector, "signing_seed_hex"))
+	witnessPrivate := ed25519.NewKeyFromSeed(witnessSeed)
+	witnessPublic := ed25519.PublicKey(decode(stringField(ackVector, "public_key_hex")))
+	ackSignature := decode(stringField(ackVector, "signature_hex"))
+	if !bytes.Equal(witnessPrivate.Public().(ed25519.PublicKey), witnessPublic) ||
+		!ed25519.Verify(witnessPublic, ackMessage, ackSignature) ||
+		!bytes.Equal(ed25519.Sign(witnessPrivate, ackMessage), ackSignature) {
+		t.Fatal("witness acknowledgement signature differs from shared Go/TypeScript vector")
 	}
 
 	witnessHeadVector := object(vector["witness_head"])
@@ -177,8 +203,14 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	}
 	copy(witnessHead.RecordHash[:], decode(stringField(witnessHeadVector, "record_hash")))
 	copy(witnessHead.PrimaryHead[:], decode(stringField(witnessHeadVector, "primary_head")))
-	if hexBytes(checkpointWitnessHeadMessage(witnessHead)) != stringField(witnessHeadVector, "message_hex") {
+	witnessHeadMessageBytes := checkpointWitnessHeadMessage(witnessHead)
+	if hexBytes(witnessHeadMessageBytes) != stringField(witnessHeadVector, "message_hex") {
 		t.Fatal("witness head encoding differs from shared vector")
+	}
+	witnessHeadSignature := decode(stringField(witnessHeadVector, "signature_hex"))
+	if !ed25519.Verify(witnessPublic, witnessHeadMessageBytes, witnessHeadSignature) ||
+		!bytes.Equal(ed25519.Sign(witnessPrivate, witnessHeadMessageBytes), witnessHeadSignature) {
+		t.Fatal("witness head signature differs from shared Go/TypeScript vector")
 	}
 
 	canonicalVector := object(vector["canonical_payload"])
