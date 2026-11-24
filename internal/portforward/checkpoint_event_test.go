@@ -376,7 +376,7 @@ func TestC192EventAndParticipantEncodingDecodeToStructuredFields(t *testing.T) {
 	if _, err := io.ReadFull(r, domain); err != nil {
 		t.Fatal(err)
 	}
-	if string(domain) != checkpointEventV2Domain+" " {
+	if string(domain) != checkpointEventV2Domain+string([]byte{0}) {
 		t.Fatalf("unexpected event domain %q", domain)
 	}
 	fields := make([]string, 6)
@@ -424,7 +424,7 @@ func TestC192EventAndParticipantEncodingDecodeToStructuredFields(t *testing.T) {
 	if _, err := io.ReadFull(pr, participantDomain); err != nil {
 		t.Fatal(err)
 	}
-	if string(participantDomain) != checkpointParticipantVectorV1Domain+" " {
+	if string(participantDomain) != checkpointParticipantVectorV1Domain+string([]byte{0}) {
 		t.Fatal("participant domain mismatch")
 	}
 	var count uint32
