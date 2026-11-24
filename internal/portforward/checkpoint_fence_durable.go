@@ -17,6 +17,7 @@ import (
 const checkpointFenceLogMaxRecord = 1 << 20
 
 var ErrCheckpointFenceStore = errors.New("portforward: durable fencing store unavailable")
+var ErrCheckpointFenceExpired = errors.New("portforward: fencing reservation expired")
 
 type CheckpointFenceWitnessTrust struct {
 	ID        string
@@ -227,7 +228,7 @@ func (p *FileCheckpointFencePrimary) ReserveFence(ctx context.Context, request C
 			return err
 		}
 		if token.ExpiresAtUnixMS <= p.now().UnixMilli() {
-			return ErrCheckpointStale
+			return ErrCheckpointFenceExpired
 		}
 		if err := appendCheckpointFenceEvent(file, checkpointFenceDiskEvent{Kind: "reserve", Token: token}); err != nil {
 			return err
@@ -335,7 +336,7 @@ func (w *FileCheckpointFenceWitness) CommitFence(ctx context.Context, token Chec
 		}
 		committedAt := w.now().UnixMilli()
 		if token.ExpiresAtUnixMS <= committedAt {
-			return ErrCheckpointStale
+			return ErrCheckpointFenceExpired
 		}
 		if token.ExpectedFenceGeneration != state.Generation ||
 			token.Generation != state.Generation+1 ||
