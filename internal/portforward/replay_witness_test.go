@@ -21,6 +21,17 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 )
 
+type testCheckpointRevocationAuthorizer struct{}
+
+func (testCheckpointRevocationAuthorizer) AuthorizeCheckpointRevocation(ctx context.Context, endpoint CheckpointEndpoint, next uint64) ([sha256.Size]byte, error) {
+	if ctx == nil || ctx.Err() != nil || !validCheckpointEndpoint(endpoint) ||
+		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
+		return [sha256.Size]byte{}, ErrCheckpointIntegrity
+	}
+	request := checkpointRevocationFingerprint(endpoint, next)
+	return sha256.Sum256(append([]byte("test-authorized-revocation-v1\n"), request[:]...)), nil
+}
+
 type testAtomicCheckpointPrimary struct {
 	mu                 sync.Mutex
 	replay             *deterministicCheckpointProvider
@@ -210,7 +221,7 @@ func newWitnessedFixture(t *testing.T, primary *deterministicCheckpointProvider,
 	atomicPrimary := fence.Primary.(*testAtomicCheckpointPrimary)
 	provider := &WitnessedReplayCheckpointProvider{
 		Primary: atomicPrimary, PrimaryKey: publicKey, Witnesses: trust, Quorum: 2,
-		Pending: pending, Fencing: fence,
+		Pending: pending, Fencing: fence, RevocationAuthorizer: testCheckpointRevocationAuthorizer{},
 	}
 	return provider, witnesses
 }
