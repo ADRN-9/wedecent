@@ -186,6 +186,10 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 	return file, created, nil
 }
 
+func lockReplayFileOS(path string) (func() error, bool, error) {
+	return lockReplayFileOSContext(context.Background(), path, path, nil)
+}
+
 func lockReplayFileOSContext(ctx context.Context, path, statePath string, onWait func()) (func() error, bool, error) {
 	if ctx == nil {
 		return nil, false, errors.New("replay lock context is nil")
