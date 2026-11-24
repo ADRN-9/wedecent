@@ -294,7 +294,7 @@ jobs:
 
   supabase-db:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -332,3 +332,5 @@ jobs:
           fi
       - name: Test port-forward authorization transaction races
         run: bash ./scripts/test-port-forward-db-concurrency.sh
+      - name: Test atomic checkpoint reservation and recovery across independent sessions
+        run: bash ./scripts/test-checkpoint-reservation-concurrency.sh
