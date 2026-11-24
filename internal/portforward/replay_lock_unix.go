@@ -275,7 +275,7 @@ func lockReplayFileOSContext(ctx context.Context, path, statePath string, onWait
 	if err != nil {
 		return nil, false, errors.Join(err, unix.Flock(int(file.Fd()), unix.LOCK_UN), file.Close())
 	}
-	for _, lockPath := range []string{path + ".lock.anchor", path + ".lock"} {
+	for _, lockPath := range []string{path + ".lock.anchor", path + ".lock", path + ".lock.marker"} {
 		pathInfo, statErr := os.Lstat(lockPath)
 		if statErr != nil || pathInfo.Mode()&os.ModeSymlink != 0 || !os.SameFile(openedInfo, pathInfo) {
 			return nil, false, errors.Join(errors.New("replay lock inode changed while acquiring lock"), unix.Flock(int(file.Fd()), unix.LOCK_UN), file.Close())
