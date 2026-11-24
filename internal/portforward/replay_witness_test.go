@@ -10,8 +10,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"testing"
 	"sync"
+	"testing"
 	"time"
 
 	"wedecent.com/wedecent/internal/identity"
@@ -684,43 +684,75 @@ func TestPendingJournalPartialAcknowledgementPersistenceAndValidation(t *testing
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
-	if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "pending.json")
 	store, err := NewFileCheckpointPendingStore(path)
-	if err != nil { t.Fatal(err) }
-	if _, err := store.Begin(context.Background(), request); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Begin(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
 	result, err := primary.Consume(context.Background(), request)
-	if err != nil { t.Fatal(err) }
-	if err := store.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil {
+		t.Fatal(err)
+	}
 	client, witnesses := newWitnessedFixture(t, primary, store)
 	for i := 0; i < client.Quorum; i++ {
-		if _, err := witnesses[i].Commit(context.Background(), request, result.CheckpointReceipt); err != nil { t.Fatal(err) }
+		if _, err := witnesses[i].Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+			t.Fatal(err)
+		}
 	}
 	acks := make([]CheckpointWitnessAck, client.Quorum)
 	for i := range acks {
 		acks[i], err = witnesses[i].Acknowledge(context.Background(), request, result.CheckpointReceipt)
-		if err != nil { t.Fatal(err) }
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 	writes := 0
 	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
 		writes++
-		if writes == 2 { return errors.New("injected acknowledgement persistence failure") }
+		if writes == 2 {
+			return errors.New("injected acknowledgement persistence failure")
+		}
 		return writeReplayJSON(path, value, pattern, maxSize)
 	}
-	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[0], client.Witnesses[0]); err != nil { t.Fatal(err) }
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[0], client.Witnesses[0]); err != nil {
+		t.Fatal(err)
+	}
 	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[1], client.Witnesses[1]); !errors.Is(err, ErrReplayUnavailable) {
 		t.Fatalf("partial acknowledgement write did not fail closed: %v", err)
 	}
 	restarted, err := NewFileCheckpointPendingStore(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	persisted, err := restarted.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses)
-	if err != nil { t.Fatal(err) }
-	if len(persisted) != 1 || persisted[0].WitnessID != acks[0].WitnessID { t.Fatalf("partial durable acknowledgements=%d", len(persisted)) }
-	if err := restarted.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[1], client.Witnesses[1]); err != nil { t.Fatal(err) }
-	if err := restarted.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[0], client.Witnesses[0]); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(persisted) != 1 || persisted[0].WitnessID != acks[0].WitnessID {
+		t.Fatalf("partial durable acknowledgements=%d", len(persisted))
+	}
+	if err := restarted.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[1], client.Witnesses[1]); err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, acks[0], client.Witnesses[0]); err != nil {
+		t.Fatal(err)
+	}
 	persisted, err = restarted.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses)
-	if err != nil || len(persisted) != client.Quorum { t.Fatalf("idempotent duplicate changed evidence count=%d err=%v", len(persisted), err) }
+	if err != nil || len(persisted) != client.Quorum {
+		t.Fatalf("idempotent duplicate changed evidence count=%d err=%v", len(persisted), err)
+	}
 
 	wrongScope := acks[0]
 	wrongScope.Scope.AccountID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
@@ -740,15 +772,23 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
-	if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "pending.json")
 	store, err := NewFileCheckpointPendingStore(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	failCompaction := true
 	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
 		snapshot, ok := value.(checkpointPendingSnapshot)
-		if !ok { return errors.New("unexpected pending snapshot type") }
+		if !ok {
+			return errors.New("unexpected pending snapshot type")
+		}
 		if len(snapshot.Entries) == 0 && failCompaction {
 			failCompaction = false
 			return errors.New("injected compaction interruption")
@@ -760,15 +800,21 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 		t.Fatalf("compaction interruption did not fail closed: %v", err)
 	}
 	restarted, err := NewFileCheckpointPendingStore(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	consumer, ok := checkpointConsumer(request)
-	if !ok { t.Fatal("request has no checkpoint consumer") }
+	if !ok {
+		t.Fatal("request has no checkpoint consumer")
+	}
 	ledgerKey := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
 	primary.mu.Lock()
 	receipt := primary.ledgers[ledgerKey].used[request.JTI].receipt
 	primary.mu.Unlock()
 	acks, err := restarted.LoadAcknowledgements(context.Background(), request, receipt, client.Witnesses)
-	if err != nil || len(acks) < client.Quorum { t.Fatalf("quorum evidence lost across compaction interruption: acks=%d err=%v", len(acks), err) }
+	if err != nil || len(acks) < client.Quorum {
+		t.Fatalf("quorum evidence lost across compaction interruption: acks=%d err=%v", len(acks), err)
+	}
 	restartedClient, _ := newWitnessedFixture(t, primary, restarted)
 	restartedClient.Witnesses = client.Witnesses
 	if _, err := restartedClient.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
@@ -778,22 +824,36 @@ func TestPendingJournalCompactionInterruptionRetainsQuorumEvidence(t *testing.T)
 	ledger := primary.ledgers[ledgerKey]
 	consumed := len(ledger.used)
 	primary.mu.Unlock()
-	if consumed != 1 { t.Fatalf("primary authorization consumed %d times", consumed) }
+	if consumed != 1 {
+		t.Fatalf("primary authorization consumed %d times", consumed)
+	}
 	data, err := os.ReadFile(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var snapshot checkpointPendingSnapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil { t.Fatal(err) }
-	if len(snapshot.Entries) != 0 { t.Fatalf("successful retry did not finish compaction: entries=%d", len(snapshot.Entries)) }
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		t.Fatal(err)
+	}
+	if len(snapshot.Entries) != 0 {
+		t.Fatalf("successful retry did not finish compaction: entries=%d", len(snapshot.Entries))
+	}
 }
 
 func TestPendingJournalConcurrentFinalizationIsIdempotent(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
-	if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	store, err := NewFileCheckpointPendingStore(filepath.Join(dir, "pending.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	client, _ := newWitnessedFixture(t, primary, store)
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -812,25 +872,40 @@ func TestPendingJournalConcurrentFinalizationIsIdempotent(t *testing.T) {
 	close(errs)
 	successes, historical := 0, 0
 	for err := range errs {
-		if err == nil { successes++; continue }
-		if errors.Is(err, ErrCheckpointHistorical) || errors.Is(err, ErrCheckpointReplay) { historical++; continue }
+		if err == nil {
+			successes++
+			continue
+		}
+		if errors.Is(err, ErrCheckpointHistorical) || errors.Is(err, ErrCheckpointReplay) {
+			historical++
+			continue
+		}
 		t.Fatalf("concurrent finalization failed unexpectedly: %v", err)
 	}
-	if successes > 1 || successes+historical != 2 { t.Fatalf("unsafe concurrent outcomes success=%d historical=%d", successes, historical) }
+	if successes > 1 || successes+historical != 2 {
+		t.Fatalf("unsafe concurrent outcomes success=%d historical=%d", successes, historical)
+	}
 	consumer, ok := checkpointConsumer(request)
-	if !ok { t.Fatal("request has no checkpoint consumer") }
+	if !ok {
+		t.Fatal("request has no checkpoint consumer")
+	}
 	ledgerKey := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
 	primary.mu.Lock()
 	ledger := primary.ledgers[ledgerKey]
 	consumed := len(ledger.used)
 	primary.mu.Unlock()
-	if consumed != 1 { t.Fatalf("concurrent retry consumed primary capability %d times", consumed) }
+	if consumed != 1 {
+		t.Fatalf("concurrent retry consumed primary capability %d times", consumed)
+	}
 }
 
 func TestPendingJournalCorruptionAndAmbiguousStateFailClosed(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
-	for _, tc := range []struct{name string; data []byte}{
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{
 		{name: "malformed-json", data: []byte(`{"version":1,"entries":`)},
 		{name: "unknown-state", data: func() []byte {
 			fp, _ := CheckpointRequestFingerprint(request)
@@ -844,12 +919,20 @@ func TestPendingJournalCorruptionAndAmbiguousStateFailClosed(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
-			if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
-			if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+			if err := os.Chmod(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := setReplayTestDirectoryOwner(dir); err != nil {
+				t.Fatal(err)
+			}
 			path := filepath.Join(dir, "pending.json")
-			if err := os.WriteFile(path, tc.data, 0o600); err != nil { t.Fatal(err) }
+			if err := os.WriteFile(path, tc.data, 0o600); err != nil {
+				t.Fatal(err)
+			}
 			store, err := NewFileCheckpointPendingStore(path)
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			if _, err := store.Begin(context.Background(), request); !errors.Is(err, ErrReplayUnavailable) {
 				t.Fatalf("corrupt/ambiguous journal accepted: %v", err)
 			}
@@ -861,15 +944,23 @@ func TestWitnessCommitCrashBeforeLocalResolutionRecoversIdempotently(t *testing.
 	primary := newDeterministicCheckpointProvider(t)
 	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
 	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }
-	if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join(dir, "pending.json")
 	store, err := NewFileCheckpointPendingStore(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	failResolve := true
 	store.writeSnapshot = func(path string, value any, pattern string, maxSize int64) error {
 		snapshot, ok := value.(checkpointPendingSnapshot)
-		if !ok { return errors.New("unexpected pending snapshot type") }
+		if !ok {
+			return errors.New("unexpected pending snapshot type")
+		}
 		if failResolve {
 			for _, entry := range snapshot.Entries {
 				if entry.State == "resolved" {
@@ -891,7 +982,9 @@ func TestWitnessCommitCrashBeforeLocalResolutionRecoversIdempotently(t *testing.
 		}
 	}
 	restartedStore, err := NewFileCheckpointPendingStore(path)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	restarted, _ := newWitnessedFixture(t, primary, restartedStore)
 	restarted.Witnesses = client.Witnesses
 	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
@@ -903,10 +996,14 @@ func TestWitnessCommitCrashBeforeLocalResolutionRecoversIdempotently(t *testing.
 		}
 	}
 	consumer, ok := checkpointConsumer(request)
-	if !ok { t.Fatal("request has no checkpoint consumer") }
+	if !ok {
+		t.Fatal("request has no checkpoint consumer")
+	}
 	key := checkpointLedgerKey{consumer.DeviceID, consumer.AccountID, consumer.OrganizationID}
 	primary.mu.Lock()
 	used := len(primary.ledgers[key].used)
 	primary.mu.Unlock()
-	if used != 1 { t.Fatalf("primary authorization consumption count=%d", used) }
+	if used != 1 {
+		t.Fatalf("primary authorization consumption count=%d", used)
+	}
 }
