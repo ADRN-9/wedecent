@@ -233,7 +233,9 @@ export async function verifyRouteAuthorizationBinding(
   const nested = authorization?.route_authorization
   const router = capabilityClaims?.router ?? ''
   if (!router) {
-    if (nested != null) fail('direct route must not include router authorization')
+    if (nested != null && (nested.kid || nested.signature || nested.claims?.jti)) {
+      fail('direct route must not include router authorization')
+    }
     return null
   }
   if (
@@ -276,6 +278,7 @@ export async function verifyRouteAuthorizationBinding(
     routeClaims.router !== router ||
     routeClaims.jti == null ||
     !/^[A-Za-z0-9_-]{22}$/.test(routeClaims.jti) ||
+    routeClaims.iat_unix_ms > capabilityClaims.iat_unix_ms ||
     routeClaims.exp_unix_ms !== capabilityClaims.exp_unix_ms ||
     route?.ID !== capabilityRoute?.ID ||
     route?.Source !== capabilityRoute?.Source ||
