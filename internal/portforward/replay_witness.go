@@ -49,6 +49,7 @@ type CheckpointWitnessAck struct {
 	JTI                  string
 	RequestSHA256        [sha256.Size]byte
 	PrimaryReceiptSHA256 [sha256.Size]byte
+	Decision             string
 	Status               string
 	WitnessKeyID         string
 	Signature            []byte
@@ -91,6 +92,8 @@ type WitnessedReplayCheckpointProvider struct {
 	Witnesses  []CheckpointWitnessTrust
 	Quorum     int
 	Pending    CheckpointPendingStore
+
+	finalizeMu sync.Mutex
 }
 
 func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
@@ -172,6 +175,12 @@ func (p *WitnessedReplayCheckpointProvider) Finalize(ctx context.Context, reques
 // authenticated and before local journal compaction. The callback cannot grant
 // a session; it records the finalization outcome durably.
 func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Context, request CheckpointRequest, onQuorumCommitted func() error) error {
+	if p == nil {
+		return ErrCheckpointUnavailable
+	}
+	p.finalizeMu.Lock()
+	defer p.finalizeMu.Unlock()
+
 	if err := p.ValidateConfiguration(); err != nil {
 		return err
 	}
@@ -375,8 +384,6 @@ func (p *WitnessedReplayCheckpointProvider) verifyRequestMembershipVector(ctx co
 }
 
 func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, store checkpointPendingAcknowledgements) ([]CheckpointWitnessAck, error) {
-	// Persisted acknowledgements are not a substitute for current membership:
-	// revocation may have advanced after the original acknowledgement.
 	if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
 		return nil, err
 	}
@@ -388,57 +395,81 @@ func (p *WitnessedReplayCheckpointProvider) acknowledgeWitnessQuorum(ctx context
 	for _, ack := range acks {
 		seen[ack.WitnessID] = ack
 	}
-	if len(acks) >= p.Quorum {
-		// A previously authenticated quorum is durable evidence. Recheck the
-		// participant vector before reusing it; do not require live witnesses.
-		if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
-			return nil, err
-		}
-		return acks, nil
-	}
+
 	type response struct {
 		trust CheckpointWitnessTrust
 		ack   CheckpointWitnessAck
 		err   error
 	}
-	// When the journal has not yet reached quorum, re-query every witness,
-	// including those with a persisted vote, so a signed retry conflict is
-	// detected before any new vote is persisted.
-	ch := make(chan response, len(p.Witnesses))
-	for _, trust := range p.Witnesses {
+	query := make([]CheckpointWitnessTrust, 0, len(p.Witnesses))
+	if len(acks) >= p.Quorum {
+		// Probe only witnesses whose authenticated votes make up the cached
+		// quorum. Uncounted/offline witnesses are not needed for recovery.
+		for _, ack := range acks {
+			for _, trust := range p.Witnesses {
+				if trust.ID == ack.WitnessID {
+					query = append(query, trust)
+					break
+				}
+			}
+		}
+	} else {
+		// An incomplete journal still needs new votes; query all configured
+		// witnesses while checking every previously counted witness for conflict.
+		query = append(query, p.Witnesses...)
+	}
+
+	ch := make(chan response, len(query))
+	for _, trust := range query {
 		trust := trust
 		go func() {
 			ack, err := trust.Witness.Acknowledge(ctx, request, receipt)
 			ch <- response{trust: trust, ack: ack, err: err}
 		}()
 	}
-	newAcks := make([]response, 0, len(p.Witnesses))
-	for range p.Witnesses {
+
+	newAcks := make([]response, 0, len(query))
+	for range query {
 		r := <-ch
-		if r.err != nil || VerifyCheckpointWitnessAck(r.ack, r.trust.ID, r.trust.PublicKey) != nil {
+		if r.err != nil || VerifyCheckpointWitnessAck(r.ack, r.trust.ID, r.trust.PublicKey) != nil ||
+			!checkpointAckMatchesOperation(r.ack, request, receipt) {
+			// Unauthenticated, malformed, or differently bound responses are
+			// not equivocation evidence and must not poison the durable journal.
 			continue
 		}
 		if previous, ok := seen[r.trust.ID]; ok {
-			if !sameCheckpointWitnessAckOutcome(previous, r.ack) {
+			if previous.Decision != r.ack.Decision {
+				if err := store.RecordEquivocation(ctx, request, receipt, previous, r.ack, r.trust); err != nil {
+					return nil, errors.Join(ErrCheckpointUnavailable, err)
+				}
 				return nil, ErrCheckpointConflict
 			}
+			// Status is unsigned retry metadata. The signed terminal decision
+			// remains identical, even when the transport reports a retry.
 			continue
 		}
-		if r.ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) ||
-			r.ack.JTI != request.JTI || r.ack.RequestSHA256 != receipt.RequestSHA256 ||
-			r.ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) ||
-			(r.ack.Status != "acknowledged" && r.ack.Status != "already_acknowledged") {
-			continue
+		if r.ack.Decision != "committed" {
+			return nil, ErrCheckpointConflict
 		}
 		newAcks = append(newAcks, r)
 	}
-	// Persist only after every returned signed retry has been checked. A
-	// conflict must not leave a newly assembled quorum in the durable journal.
+
+	if len(acks) >= p.Quorum {
+		if err := p.verifyRequestMembershipVector(ctx, request); err != nil {
+			return nil, err
+		}
+		// Return the original journaled evidence, never a live retry response.
+		return acks, nil
+	}
+
 	for _, r := range newAcks {
 		if err := store.RecordAcknowledgement(ctx, request, receipt, r.ack, r.trust); err != nil {
 			return nil, err
 		}
-		acks = append(acks, r.ack)
+	}
+	acks, err = store.LoadAcknowledgements(ctx, request, receipt, p.Witnesses)
+	if err != nil {
+		return nil, err
 	}
 	if len(acks) < p.Quorum {
 		return nil, ErrCheckpointQuorum
@@ -529,12 +560,23 @@ func (p *WitnessedReplayCheckpointProvider) commitWitnessQuorum(ctx context.Cont
 }
 
 func sameCheckpointWitnessAckOutcome(a, b CheckpointWitnessAck) bool {
-	validStatus := func(status string) bool {
-		return status == "acknowledged" || status == "already_acknowledged"
-	}
 	return a.WitnessID == b.WitnessID && a.Scope == b.Scope && a.JTI == b.JTI &&
 		a.RequestSHA256 == b.RequestSHA256 && a.PrimaryReceiptSHA256 == b.PrimaryReceiptSHA256 &&
-		a.WitnessKeyID == b.WitnessKeyID && validStatus(a.Status) && validStatus(b.Status)
+		a.Decision == b.Decision && a.WitnessKeyID == b.WitnessKeyID
+}
+
+func sameCheckpointWitnessAck(a, b CheckpointWitnessAck) bool {
+	return sameCheckpointWitnessAckOutcome(a, b) && bytes.Equal(a.Signature, b.Signature)
+}
+
+func checkpointAckMatchesOperation(ack CheckpointWitnessAck, request CheckpointRequest, receipt CheckpointReceipt) bool {
+	fingerprint, err := CheckpointRequestFingerprint(request)
+	if err != nil {
+		return false
+	}
+	return ack.Scope == witnessScope(checkpointEndpointForConsumer(request)) &&
+		ack.JTI == request.JTI && ack.RequestSHA256 == fingerprint &&
+		ack.PrimaryReceiptSHA256 == sha256.Sum256(checkpointReceiptMessage(receipt))
 }
 
 func validWitnessConfiguration(witnesses []CheckpointWitnessTrust, quorum int, primaryKey ed25519.PublicKey) bool {
@@ -603,9 +645,14 @@ func VerifyCheckpointWitnessReceipt(receipt CheckpointWitnessReceipt, witnessID 
 	return nil
 }
 
+func validCheckpointWitnessAckDecision(decision string) bool {
+	return decision == "committed" || decision == "revoked" || decision == "aborted"
+}
+
 func VerifyCheckpointWitnessAck(ack CheckpointWitnessAck, witnessID string, publicKey ed25519.PublicKey) error {
 	if witnessID == "" || ack.WitnessID != witnessID || len(publicKey) != ed25519.PublicKeySize ||
 		ack.WitnessKeyID != checkpointProviderKeyID(publicKey) ||
+		!validCheckpointWitnessAckDecision(ack.Decision) ||
 		(ack.Status != "acknowledged" && ack.Status != "already_acknowledged") ||
 		!validCheckpointEndpoint(CheckpointEndpoint{DeviceID: ack.Scope.DeviceID, AccountID: ack.Scope.AccountID, OrganizationID: ack.Scope.OrganizationID}) ||
 		len(ack.Signature) != ed25519.SignatureSize ||
@@ -617,7 +664,7 @@ func VerifyCheckpointWitnessAck(ack CheckpointWitnessAck, witnessID string, publ
 
 func checkpointWitnessAckMessage(ack CheckpointWitnessAck) []byte {
 	var b bytes.Buffer
-	io.WriteString(&b, "wedecent-independent-witness-ack-v1\n")
+	io.WriteString(&b, "wedecent-independent-witness-ack-v2\n")
 	putWitnessString(&b, ack.WitnessID)
 	putWitnessString(&b, ack.Scope.DeviceID)
 	putWitnessString(&b, ack.Scope.AccountID)
@@ -625,7 +672,7 @@ func checkpointWitnessAckMessage(ack CheckpointWitnessAck) []byte {
 	putWitnessString(&b, ack.JTI)
 	b.Write(ack.RequestSHA256[:])
 	b.Write(ack.PrimaryReceiptSHA256[:])
-	putWitnessString(&b, ack.Status)
+	putWitnessString(&b, ack.Decision)
 	putWitnessString(&b, ack.WitnessKeyID)
 	return b.Bytes()
 }
@@ -898,7 +945,7 @@ func (w *deterministicCheckpointWitness) Acknowledge(ctx context.Context, reques
 		w.acknowledged[key] = digest
 	}
 	ack := CheckpointWitnessAck{WitnessID: w.id, Scope: scope, JTI: request.JTI, RequestSHA256: fingerprint,
-		PrimaryReceiptSHA256: digest, Status: status, WitnessKeyID: checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
+		PrimaryReceiptSHA256: digest, Decision: "committed", Status: status, WitnessKeyID: checkpointProviderKeyID(w.private.Public().(ed25519.PublicKey))}
 	ack.Signature = ed25519.Sign(w.private, checkpointWitnessAckMessage(ack))
 	return ack, nil
 }
