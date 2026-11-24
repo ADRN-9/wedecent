@@ -61,8 +61,7 @@ create table public.checkpoint_finalization_audit (
         'finalization_started',
         'membership_unavailable',
         'finalization_failed',
-        'finalized',
-        'rejected_revocation'
+        'finalized'
     )),
     payload_version integer not null check (payload_version = 1),
     payload_sha256 bytea not null check (pg_catalog.octet_length(payload_sha256) = 32),
