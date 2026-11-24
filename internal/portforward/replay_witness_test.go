@@ -583,7 +583,9 @@ func TestFilePendingJournalPersistsVerifiedAcknowledgements(t *testing.T) {
 	if existing, err := store.Begin(context.Background(), request); err != nil || existing { t.Fatalf("begin existing=%t err=%v", existing, err) }
 	receiptResult, err := primary.Consume(context.Background(), request); if err != nil { t.Fatal(err) }
 	if err := store.Resolve(context.Background(), request, receiptResult.CheckpointReceipt); err != nil { t.Fatal(err) }
-	client, witnesses := newWitnessedFixture(t, primary, store); ack, err := witnesses[0].Acknowledge(context.Background(), request, receiptResult.CheckpointReceipt); if err != nil { t.Fatal(err) }
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	if _, err := witnesses[0].Commit(context.Background(), request, receiptResult.CheckpointReceipt); err != nil { t.Fatal(err) }
+	ack, err := witnesses[0].Acknowledge(context.Background(), request, receiptResult.CheckpointReceipt); if err != nil { t.Fatal(err) }
 	if err := store.RecordAcknowledgement(context.Background(), request, receiptResult.CheckpointReceipt, ack, client.Witnesses[0]); err != nil { t.Fatal(err) }
 	restarted, err := NewFileCheckpointPendingStore(path); if err != nil { t.Fatal(err) }
 	acks, err := restarted.LoadAcknowledgements(context.Background(), request, receiptResult.CheckpointReceipt, client.Witnesses); if err != nil { t.Fatal(err) }

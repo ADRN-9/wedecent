@@ -3,6 +3,7 @@ package portforward
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -156,10 +157,10 @@ func (s *FileCheckpointPendingStore) LoadAcknowledgements(ctx context.Context, r
 func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt, ack CheckpointWitnessAck, trust CheckpointWitnessTrust, update func(func(*checkpointPendingSnapshot) (bool, error)) error) error {
 	fp, err := CheckpointRequestFingerprint(request); if err != nil { return err }
 	rh := CheckpointReceiptDigest(receipt)
-	if receipt.RequestSHA256 != fp || receipt.JTI != request.JTI || VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil || ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) || ack.JTI != request.JTI || ack.RequestSHA256 != fp || ack.PrimaryReceiptSHA256 != rh { return ErrCheckpointIntegrity }
+	if receipt.RequestSHA256 != fp || receipt.JTI != request.JTI || VerifyCheckpointWitnessAck(ack, trust.ID, trust.PublicKey) != nil || ack.Scope != witnessScope(checkpointEndpointForConsumer(request)) || ack.JTI != request.JTI || ack.RequestSHA256 != fp || ack.PrimaryReceiptSHA256 != sha256.Sum256(checkpointReceiptMessage(receipt)) { return ErrCheckpointIntegrity }
 	return update(func(snapshot *checkpointPendingSnapshot) (bool, error) {
 		key := checkpointPendingKey(request); entry, ok := snapshot.Entries[key]
-		if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) || entry.State != "resolved" || entry.ReceiptHash != hex.EncodeToString(rh[:]) { return false, ErrCheckpointHistorical }
+		if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) || entry.State != "resolved" || entry.ReceiptHash != rh { return false, ErrCheckpointHistorical }
 		for _, old := range entry.Acknowledgements {
 			if old.WitnessID == ack.WitnessID {
 				if old.Scope != ack.Scope || old.JTI != ack.JTI || old.RequestSHA256 != ack.RequestSHA256 || old.PrimaryReceiptSHA256 != ack.PrimaryReceiptSHA256 || old.WitnessKeyID != ack.WitnessKeyID { return false, ErrCheckpointConflict }
