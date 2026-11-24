@@ -67,19 +67,7 @@ func NewSupabaseCheckpointFinalizationAuditor(client account.Client, path string
 	if !ok {
 		return nil, errors.New("checkpoint audit default HTTP transport is unavailable")
 	}
-	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, ServerName: trust.Hostname}
-	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
-		if len(state.PeerCertificates) == 0 {
-			return errors.New("checkpoint audit peer certificate missing")
-		}
-		actual := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
-		for _, expected := range pins {
-			if subtle.ConstantTimeCompare(actual[:], expected[:]) == 1 {
-				return nil
-			}
-		}
-		return errors.New("checkpoint audit SPKI pin mismatch")
-	}
+	tlsConfig := checkpointAuditTLSConfig(trust, pins)
 	transport := defaultTransport.Clone()
 	transport.TLSClientConfig = tlsConfig
 	return &SupabaseCheckpointFinalizationAuditor{
@@ -89,6 +77,25 @@ func NewSupabaseCheckpointFinalizationAuditor(client account.Client, path string
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}, nil
+}
+
+func checkpointAuditTLSConfig(trust CheckpointAuditTrust, pins [][sha256.Size]byte) *tls.Config {
+	return &tls.Config{
+		MinVersion: tls.VersionTLS13,
+		ServerName: trust.Hostname,
+		VerifyConnection: func(state tls.ConnectionState) error {
+			if len(state.PeerCertificates) == 0 {
+				return errors.New("checkpoint audit peer certificate missing")
+			}
+			actual := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
+			for _, expected := range pins {
+				if subtle.ConstantTimeCompare(actual[:], expected[:]) == 1 {
+					return nil
+				}
+			}
+			return errors.New("checkpoint audit SPKI pin mismatch")
+		},
+	}
 }
 
 func validCheckpointAuditAuthority(host string, port uint16) bool {
