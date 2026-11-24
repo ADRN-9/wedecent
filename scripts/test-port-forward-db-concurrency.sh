@@ -120,15 +120,26 @@ restore_access() { psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c "insert into public.d
 
 race initiator consume-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_aaaaaaaaaaaaaaaa'" "select (revoked_at is not null)::text from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'" 33000000-0000-4000-8000-0000000000c1 AAAAAAAAAAAAAAAAAAAAAA 44000000-0000-4000-8000-0000000000c1 AAAAAAAAAAAAAAAAAAAAAA
 restore_device wd_aaaaaaaaaaaaaaaa
+race initiator revoke-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_aaaaaaaaaaaaaaaa'" "select (revoked_at is not null)::text from public.devices where device_id='wd_aaaaaaaaaaaaaaaa'" 33000000-0000-4000-8000-0000000000c7 GGGGGGGGGGGGGGGGGGGGGG 44000000-0000-4000-8000-0000000000c7 GGGGGGGGGGGGGGGGGGGGGG
+restore_device wd_aaaaaaaaaaaaaaaa
 race destination revoke-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_bbbbbbbbbbbbbbbb'" "select (revoked_at is not null)::text from public.devices where device_id='wd_bbbbbbbbbbbbbbbb'" 33000000-0000-4000-8000-0000000000c2 BBBBBBBBBBBBBBBBBBBBBB 44000000-0000-4000-8000-0000000000c2 BBBBBBBBBBBBBBBBBBBBBB
+restore_device wd_bbbbbbbbbbbbbbbb
+race destination consume-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_bbbbbbbbbbbbbbbb'" "select (revoked_at is not null)::text from public.devices where device_id='wd_bbbbbbbbbbbbbbbb'" 33000000-0000-4000-8000-0000000000c8 HHHHHHHHHHHHHHHHHHHHHH 44000000-0000-4000-8000-0000000000c8 HHHHHHHHHHHHHHHHHHHHHH
 restore_device wd_bbbbbbbbbbbbbbbb
 race router consume-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_cccccccccccccccc'" "select (revoked_at is not null)::text from public.devices where device_id='wd_cccccccccccccccc'" 33000000-0000-4000-8000-0000000000c3 CCCCCCCCCCCCCCCCCCCCCC 44000000-0000-4000-8000-0000000000c3 CCCCCCCCCCCCCCCCCCCCCC
 restore_device wd_cccccccccccccccc
+race router revoke-first "update public.devices set revoked_at=clock_timestamp() where device_id='wd_cccccccccccccccc'" "select (revoked_at is not null)::text from public.devices where device_id='wd_cccccccccccccccc'" 33000000-0000-4000-8000-0000000000c9 IIIIIIIIIIIIIIIIIIIIII 44000000-0000-4000-8000-0000000000c9 IIIIIIIIIIIIIIIIIIIIII
+restore_device wd_cccccccccccccccc
 race membership revoke-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" 33000000-0000-4000-8000-0000000000c4 DDDDDDDDDDDDDDDDDDDDDD 44000000-0000-4000-8000-0000000000c4 DDDDDDDDDDDDDDDDDDDDDD
+restore_membership
+race membership consume-first "delete from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" "select (count(*)=0)::text from public.organization_memberships where organization_id='22000000-0000-4000-8000-0000000000c1' and user_id='11000000-0000-4000-8000-0000000000c1'" 33000000-0000-4000-8000-0000000000ca JJJJJJJJJJJJJJJJJJJJJJ 44000000-0000-4000-8000-0000000000ca JJJJJJJJJJJJJJJJJJJJJJ
 restore_membership
 race access consume-first "delete from public.device_access where device_id='wd_bbbbbbbbbbbbbbbb' and user_id='11000000-0000-4000-8000-0000000000c1' and permission='port_forward.local'" "select (count(*)=0)::text from public.device_access where device_id='wd_bbbbbbbbbbbbbbbb' and user_id='11000000-0000-4000-8000-0000000000c1' and permission='port_forward.local'" 33000000-0000-4000-8000-0000000000c5 EEEEEEEEEEEEEEEEEEEEEE 44000000-0000-4000-8000-0000000000c5 EEEEEEEEEEEEEEEEEEEEEE
 restore_access
+race access revoke-first "delete from public.device_access where device_id='wd_bbbbbbbbbbbbbbbb' and user_id='11000000-0000-4000-8000-0000000000c1' and permission='port_forward.local'" "select (count(*)=0)::text from public.device_access where device_id='wd_bbbbbbbbbbbbbbbb' and user_id='11000000-0000-4000-8000-0000000000c1' and permission='port_forward.local'" 33000000-0000-4000-8000-0000000000cb LLLLLLLLLLLLLLLLLLLLLL 44000000-0000-4000-8000-0000000000cb LLLLLLLLLLLLLLLLLLLLLL
+restore_access
 race route-grant revoke-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000c6'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000c6'" 33000000-0000-4000-8000-0000000000c6 FFFFFFFFFFFFFFFFFFFFFF 44000000-0000-4000-8000-0000000000c6 FFFFFFFFFFFFFFFFFFFFFF
+race route-grant consume-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000cc'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000cc'" 33000000-0000-4000-8000-0000000000cc MMMMMMMMMMMMMMMMMMMMMM 44000000-0000-4000-8000-0000000000cc MMMMMMMMMMMMMMMMMMMMMM
 
 route 33000000-0000-4000-8000-0000000000d1 HHHHHHHHHHHHHHHHHHHHHH
 start c wd-c145-dup-a
