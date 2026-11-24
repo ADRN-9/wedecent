@@ -25,17 +25,19 @@ insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000093','authenticated','authenticated','audit-outsider@example.test');
 
 insert into public.organizations(id,name,slug,created_by)
-values('22000000-0000-4000-8000-000000000091','Checkpoint Audit Test','checkpoint-audit-test','11000000-0000-4000-8000-000000000091');
+values
+('22000000-0000-4000-8000-000000000091','Checkpoint Audit Initiator','checkpoint-audit-initiator','11000000-0000-4000-8000-000000000091'),
+('22000000-0000-4000-8000-000000000092','Checkpoint Audit Destination','checkpoint-audit-destination','11000000-0000-4000-8000-000000000091');
 
 insert into public.organization_memberships(organization_id,user_id,role,created_by)
-values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091')
+values('22000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091')
 on conflict do nothing;
 
 insert into public.devices(device_id,public_key,kind,name,owner_user_id,organization_id,revocation_epoch)
 values
 ('wd_aaaaaaaaaaaaaaaa',repeat('A',43),'client','Audit initiator','11000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',1),
-('wd_bbbbbbbbbbbbbbbb',repeat('B',43),'agent','Audit destination','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000091',1),
-('wd_cccccccccccccccc',repeat('C',43),'agent','Audit router','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000091',1);
+('wd_bbbbbbbbbbbbbbbb',repeat('B',43),'agent','Audit destination','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000092',1),
+('wd_cccccccccccccccc',repeat('C',43),'agent','Audit router','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000092',1);
 
 insert into public.device_access(device_id,user_id,permission,granted_by)
 values
@@ -53,7 +55,7 @@ insert into public.port_forward_authorization_transactions(
  '44000000-0000-4000-8000-000000000091','AAAAAAAAAAAAAAAAAAAAAA',decode(repeat('a',64),'hex'),
  'port_forward.local','local','wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb',null,
  '11000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092',null,
- '22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',null,
+ direct transaction destination org
  1,2,null,null,null,clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
 );
 
@@ -78,7 +80,7 @@ insert into public.port_forward_authorization_transactions(
  '44000000-0000-4000-8000-000000000092','BBBBBBBBBBBBBBBBBBBBBB',decode(repeat('b',64),'hex'),
  'port_forward.local','local','wd_aaaaaaaaaaaaaaaa','wd_bbbbbbbbbbbbbbbb','wd_cccccccccccccccc',
  '11000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092',
- '22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091','22000000-0000-4000-8000-000000000091',
+ routed transaction participant orgs
  1,2,2,'55000000-0000-4000-8000-000000000091','BBBBBBBBBBBBBBBBBBBBBB',
  clock_timestamp()-interval '5 seconds',clock_timestamp()+interval '60 seconds'
 );
@@ -88,7 +90,7 @@ language sql as $$
 select jsonb_build_object(
  'version',1,
  'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-000000000091','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
- 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',2),
+ 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000092','revocation_epoch',2),
  'router',null,'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti','AAAAAAAAAAAAAAAAAAAAAA',
  'authorization_sha256',repeat('a',64),'route_authorization_sha256',repeat('0',64),
  'route_authorization_id','','route_authorization_jti','','route_authorization_json','',
@@ -101,8 +103,8 @@ language sql as $q$
 select jsonb_build_object(
  'version',1,
  'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-000000000091','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',1),
- 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',2),
- 'router',jsonb_build_object('device_id','wd_cccccccccccccccc','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000091','revocation_epoch',2),
+ 'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000092','revocation_epoch',2),
+ 'router',jsonb_build_object('device_id','wd_cccccccccccccccc','account_id','11000000-0000-4000-8000-000000000092','organization_id','22000000-0000-4000-8000-000000000092','revocation_epoch',2),
  'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti','BBBBBBBBBBBBBBBBBBBBBB',
  'authorization_sha256',repeat('b',64),'route_authorization_sha256',repeat('c',64),
  'route_authorization_id','55000000-0000-4000-8000-000000000091',
@@ -165,11 +167,11 @@ select throws_ok($q$select public.record_checkpoint_finalization(
  '11000000-0000-4000-8000-000000000091'
 )$q$,'23505','outcome conflict','same terminal outcome with different proof evidence is rejected');
 delete from public.organization_memberships
- where organization_id='22000000-0000-4000-8000-000000000091'
-   and user_id='11000000-0000-4000-8000-000000000092';
+ where organization_id='22000000-0000-4000-8000-000000000092'
+    and user_id='11000000-0000-4000-8000-000000000092';
 select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$q$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
 insert into public.organization_memberships(organization_id,user_id,role,created_by)
-values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
+values('22000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome='finalized'),1,'only one terminal outcome exists per operation');
 select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','completion requires a started operation','completion without a start event is rejected');
@@ -180,11 +182,11 @@ select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('d',6
 
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','membership recovery operation starts');
 delete from public.organization_memberships
- where organization_id='22000000-0000-4000-8000-000000000091'
-   and user_id='11000000-0000-4000-8000-000000000092';
+ where organization_id='22000000-0000-4000-8000-000000000092'
+    and user_id='11000000-0000-4000-8000-000000000092';
 select is((pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','missing participant membership is recorded as a nonterminal outcome');
 insert into public.organization_memberships(organization_id,user_id,role,created_by)
-values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
+values('22000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('9',64))->>'replayed'),'false','finalization recovers after participant membership restoration');
 
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_route_payload(),repeat('g',64))->>'replayed'),'false','routed operation binds stored route grant and router identities');
@@ -195,11 +197,11 @@ update public.route_authorization_grants set revoked_at=null
  where id='55000000-0000-4000-8000-000000000091';
 
 delete from public.organization_memberships
- where organization_id='22000000-0000-4000-8000-000000000091'
-   and user_id='11000000-0000-4000-8000-000000000092';
+ where organization_id='22000000-0000-4000-8000-000000000092'
+    and user_id='11000000-0000-4000-8000-000000000092';
 select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('e',64))$q$,'42501','audit participant membership is unavailable','destination membership revocation blocks audit');
 insert into public.organization_memberships(organization_id,user_id,role,created_by)
-values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
+values('22000000-0000-4000-8000-000000000092','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
 
 update public.devices set revocation_epoch=2 where device_id='wd_bbbbbbbbbbbbbbbb';
 select throws_ok($q$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('f',64))$q$,'42501','destination device membership or revocation changed','current device revocation epoch mismatch blocks audit');
