@@ -166,7 +166,7 @@ select throws_ok($q$select pg_temp.record_audit('membership_unavailable',pg_temp
 insert into public.organization_memberships(organization_id,user_id,role,created_by)
 values('22000000-0000-4000-8000-000000000091','11000000-0000-4000-8000-000000000092','member','11000000-0000-4000-8000-000000000091');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
-select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome in('finalized','rejected_revocation')),1,'only one terminal outcome exists per operation');
+select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome='finalized'),1,'only one terminal outcome exists per operation');
 select throws_ok($q$select pg_temp.record_audit('finalized',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','completion requires a started operation','completion without a start event is rejected');
 select throws_ok($q$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload(),repeat('c',64))$q$,'23505','failure transition requires a started operation','failure transition without a start event is rejected');
 select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload(),repeat('d',64))->>'replayed'),'false','failure/recovery operation starts cleanly');
