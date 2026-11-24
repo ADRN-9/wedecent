@@ -27,26 +27,42 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 		} `json:"request"`
 		Receipt struct {
 			Version uint32 `json:"version"`
-			DeviceID, AccountID, OrganizationID, JTI, ProviderKeyID string
+			DeviceID string `json:"device_id"`
+			AccountID string `json:"account_id"`
+			OrganizationID string `json:"organization_id"`
+			JTI string `json:"jti"`
+			ProviderKeyID string `json:"provider_key_id"`
 			Generation uint64 `json:"generation"`
-			AuthorizationSHA256, RequestSHA256, PreviousHash, RecordHash string
+			AuthorizationSHA256 string `json:"authorization_sha256"`
+			RequestSHA256 string `json:"request_sha256"`
+			PreviousHash string `json:"previous_hash"`
+			RecordHash string `json:"record_hash"`
 			MessageHex string `json:"message_hex"`
 		} `json:"primary_receipt"`
 		Head struct {
 			Version uint32 `json:"version"`
-			DeviceID, AccountID, OrganizationID, ProviderKeyID string
-			Generation, RevocationEpoch uint64
-			RecordHash, MessageHex string
+			DeviceID string `json:"device_id"`
+			AccountID string `json:"account_id"`
+			OrganizationID string `json:"organization_id"`
+			ProviderKeyID string `json:"provider_key_id"`
+			Generation uint64 `json:"generation"`
+			RevocationEpoch uint64 `json:"revocation_epoch"`
+			RecordHash string `json:"record_hash"`
+			MessageHex string `json:"message_hex"`
 		} `json:"primary_head"`
 		Ack struct {
 			WitnessID string `json:"witness_id"`
-			Scope CheckpointWitnessScope `json:"scope"`
-			JTI, RequestSHA256, PrimaryReceiptSHA256, Decision, WitnessKeyID string
+			Scope struct { DeviceID string `json:"device_id"`; AccountID string `json:"account_id"`; OrganizationID string `json:"organization_id"` } `json:"scope"`
+			JTI string `json:"jti"`
+			RequestSHA256 string `json:"request_sha256"`
+			PrimaryReceiptSHA256 string `json:"primary_receipt_sha256"`
+			Decision string `json:"decision"`
+			WitnessKeyID string `json:"witness_key_id"`
 			MessageHex string `json:"message_hex"`
 		} `json:"witness_ack"`
 		WitnessHead struct {
 			WitnessID string `json:"witness_id"`
-			Scope CheckpointWitnessScope `json:"scope"`
+			Scope struct { DeviceID string `json:"device_id"`; AccountID string `json:"account_id"`; OrganizationID string `json:"organization_id"` } `json:"scope"`
 			Generation uint64 `json:"generation"`
 			RecordHash string `json:"record_hash"`
 			PrimaryGeneration uint64 `json:"primary_generation"`
@@ -104,13 +120,13 @@ func TestSharedCheckpointCryptoGoldenVectors(t *testing.T) {
 	copy(head.RecordHash[:], decode(vector.Head.RecordHash))
 	if got := hex.EncodeToString(checkpointHeadMessage(head)); got != vector.Head.MessageHex { t.Fatal("primary head encoding differs from shared vector") }
 
-	ack := CheckpointWitnessAck{WitnessID: vector.Ack.WitnessID, Scope: vector.Ack.Scope, JTI: vector.Ack.JTI,
+	ack := CheckpointWitnessAck{WitnessID: vector.Ack.WitnessID, Scope: CheckpointWitnessScope{DeviceID: vector.Ack.Scope.DeviceID, AccountID: vector.Ack.Scope.AccountID, OrganizationID: vector.Ack.Scope.OrganizationID}, JTI: vector.Ack.JTI,
 		Decision: vector.Ack.Decision, WitnessKeyID: vector.Ack.WitnessKeyID}
 	copy(ack.RequestSHA256[:], decode(vector.Ack.RequestSHA256))
 	copy(ack.PrimaryReceiptSHA256[:], decode(vector.Ack.PrimaryReceiptSHA256))
 	if got := hex.EncodeToString(checkpointWitnessAckMessage(ack)); got != vector.Ack.MessageHex { t.Fatal("witness acknowledgement encoding differs from shared vector") }
 
-	witnessHead := CheckpointWitnessHead{WitnessID: vector.WitnessHead.WitnessID, Scope: vector.WitnessHead.Scope,
+	witnessHead := CheckpointWitnessHead{WitnessID: vector.WitnessHead.WitnessID, Scope: CheckpointWitnessScope{DeviceID: vector.WitnessHead.Scope.DeviceID, AccountID: vector.WitnessHead.Scope.AccountID, OrganizationID: vector.WitnessHead.Scope.OrganizationID},
 		Generation: vector.WitnessHead.Generation, PrimaryGeneration: vector.WitnessHead.PrimaryGeneration,
 		RevocationEpoch: vector.WitnessHead.RevocationEpoch, WitnessKeyID: vector.WitnessHead.WitnessKeyID}
 	copy(witnessHead.RecordHash[:], decode(vector.WitnessHead.RecordHash))
