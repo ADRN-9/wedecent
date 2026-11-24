@@ -10,9 +10,11 @@ import (
 func TestCurrentNormalizesEmptyInjectedValues(t *testing.T) {
 	oldVersion, oldCommit, oldBuiltAt := Version, Commit, BuiltAt
 	oldHostname, oldPins := ReplayAuthorityHostname, ReplayAuthoritySPKISHA256
+	oldAuditHostname, oldAuditPins := CheckpointAuditHostname, CheckpointAuditSPKISHA256
 	t.Cleanup(func() {
 		Version, Commit, BuiltAt = oldVersion, oldCommit, oldBuiltAt
 		ReplayAuthorityHostname, ReplayAuthoritySPKISHA256 = oldHostname, oldPins
+		CheckpointAuditHostname, CheckpointAuditSPKISHA256 = oldAuditHostname, oldAuditPins
 	})
 
 	Version, Commit, BuiltAt = "", " ", "\t"
@@ -57,17 +59,21 @@ func TestWriteIncludesReleaseMetadata(t *testing.T) {
 
 func TestWriteReleaseTrustIncludesEmbeddedAnchors(t *testing.T) {
 	oldHostname, oldPins := ReplayAuthorityHostname, ReplayAuthoritySPKISHA256
+	oldAuditHostname, oldAuditPins := CheckpointAuditHostname, CheckpointAuditSPKISHA256
 	t.Cleanup(func() {
 		ReplayAuthorityHostname, ReplayAuthoritySPKISHA256 = oldHostname, oldPins
+		CheckpointAuditHostname, CheckpointAuditSPKISHA256 = oldAuditHostname, oldAuditPins
 	})
 	ReplayAuthorityHostname = "replay.example.test"
 	ReplayAuthoritySPKISHA256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	CheckpointAuditHostname = "audit.example.test"
+	CheckpointAuditSPKISHA256 = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 
 	var out bytes.Buffer
 	if err := WriteReleaseTrust(&out); err != nil {
 		t.Fatal(err)
 	}
-	want := "hostname=replay.example.test\nspki_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"
+	want := "hostname=replay.example.test\nspki_sha256=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\ncheckpoint_audit_hostname=audit.example.test\ncheckpoint_audit_spki_sha256=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n"
 	if out.String() != want {
 		t.Fatalf("release trust output = %q, want %q", out.String(), want)
 	}
