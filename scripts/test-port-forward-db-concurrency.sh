@@ -51,7 +51,7 @@ SQL
 
 # One capability timestamp pair is reused verbatim for retries.
 ISSUED_AT="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() - interval '1 second'")"
-EXPIRES_AT="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() + interval '10 minutes'")"
+EXPIRES_AT="$(psql "$DB_URL" -X -Atqc "select clock_timestamp() + interval '90 seconds'")"
 
 start() {
  local n="$1" app="$2"
