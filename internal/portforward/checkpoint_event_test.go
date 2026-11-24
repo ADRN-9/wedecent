@@ -1,92 +1,11 @@
 package portforward
 
-import (
-	"encoding/hex"
-	"encoding/json"
-	"os"
-	"testing"
-)
-
-func TestCheckpointEventV2SharedSQLGoVector(t *testing.T) {
-	raw, err := os.ReadFile("../../testdata/portforward/checkpoint_event_v2_vector.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var vector struct {
-		Action            string `json:"action"`
-		ScopeKind         string `json:"scope_kind"`
-		DeviceID          string `json:"device_id"`
-		AccountID         string `json:"account_id"`
-		OrganizationID    string `json:"organization_id"`
-		OperationID       string `json:"operation_id"`
-		RequestSHA256     string `json:"request_sha256"`
-		ParticipantSHA256 string `json:"participant_sha256"`
-		PreviousHash      string `json:"previous_hash"`
-		Generation        uint64 `json:"generation"`
-		RevocationEpoch   uint64 `json:"revocation_epoch"`
-		EncodingHex       string `json:"encoding_hex"`
-		EventSHA256       string `json:"event_sha256"`
-	}
-	if err := json.Unmarshal(raw, &vector); err != nil {
-		t.Fatal(err)
-	}
-	decode32 := func(value string) [32]byte {
-		t.Helper()
-		decoded, err := hex.DecodeString(value)
-		if err != nil || len(decoded) != 32 {
-			t.Fatalf("invalid 32-byte vector value: %v", err)
-		}
-		var result [32]byte
-		copy(result[:], decoded)
-		return result
-	}
-	event := CheckpointEventV2{
-		Action: CheckpointFenceAction(vector.Action),
-		Scope: CheckpointWitnessScope{
-			Kind: vector.ScopeKind, DeviceID: vector.DeviceID,
-			AccountID: vector.AccountID, OrganizationID: vector.OrganizationID,
-		},
-		OperationID:       vector.OperationID,
-		RequestSHA256:     decode32(vector.RequestSHA256),
-		ParticipantSHA256: decode32(vector.ParticipantSHA256),
-		PreviousHash:      decode32(vector.PreviousHash),
-		Generation:        vector.Generation,
-		RevocationEpoch:   vector.RevocationEpoch,
-	}
-	encoding, err := CheckpointEventV2Encoding(event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := hex.EncodeToString(encoding); got != vector.EncodingHex {
-		t.Fatalf("canonical event encoding mismatch\n got: %s\nwant: %s", got, vector.EncodingHex)
-	}
-	hash, err := CheckpointEventV2Hash(event)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := hex.EncodeToString(hash[:]); got != vector.EventSHA256 {
-		t.Fatalf("canonical event hash mismatch: got %s want %s", got, vector.EventSHA256)
-	}
-}
-
-func TestCheckpointEventV2RejectsInvalidFields(t *testing.T) {
-	event := CheckpointEventV2{
-		Action: CheckpointFenceFinalize,
-		Scope: CheckpointWitnessScope{
-			Kind: "device", DeviceID: "wd_aaaaaaaaaaaaaaaa",
-			AccountID: "11111111-1111-4111-8111-111111111111",
-			OrganizationID: "22222222-2222-4222-8222-222222222222",
-		},
-		OperationID:       "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-		RequestSHA256:     [32]byte{1},
-		ParticipantSHA256: [32]byte{2},
-		Generation:        1,
-	}
-	if _, err := CheckpointEventV2Encoding(event); err != nil {
-		t.Fatalf("valid event rejected: %v", err)
-	}
-	event.Generation = 1 << 63
-	if _, err := CheckpointEventV2Encoding(event); err == nil {
-		t.Fatal("generation outside PostgreSQL bigint range was accepted")
-	}
-}
+import("bytes";"encoding/hex";"encoding/json";"os";"strings";"testing")
+func c187P()CheckpointParticipant{var h [32]byte;for i:=range h{h[i]=0x33};return CheckpointParticipant{DeviceID:"wd_aaaaaaaaaaaaaaaa",AccountID:"11111111-1111-4111-8111-111111111111",OrganizationID:"22222222-2222-4222-8222-222222222222",RevocationEpoch:7,HeadGeneration:41,HeadHash:h}}
+func c187E()CheckpointEventV2{var r,p [32]byte;for i:=range r{r[i]=0x11;p[i]=0x33};x:=c187P();return CheckpointEventV2{Action:CheckpointFenceFinalize,Scope:CheckpointWitnessScope{Kind:"device",DeviceID:x.DeviceID,AccountID:x.AccountID,OrganizationID:x.OrganizationID},OperationID:"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",RequestSHA256:r,Participants:[]CheckpointParticipant{x},PreviousHash:p,Generation:42,RevocationEpoch:7}}
+func TestC187ParticipantOrderingAndBindings(t *testing.T){a:=c187P();b:=a;b.DeviceID="wd_bbbbbbbbbbbbbbbb";b.AccountID="33333333-3333-4333-8333-333333333333";b.HeadGeneration=9;b.HeadHash[0]=0x44;d,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{a,b});if e!=nil{t.Fatal(e)};r,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{b,a});if e!=nil||r!=d{t.Fatal("ordering changed digest")};mods:=[]func(*CheckpointParticipant){func(p *CheckpointParticipant){p.DeviceID="wd_cccccccccccccccc"},func(p *CheckpointParticipant){p.AccountID="44444444-4444-4444-8444-444444444444"},func(p *CheckpointParticipant){p.RevocationEpoch++},func(p *CheckpointParticipant){p.HeadGeneration++},func(p *CheckpointParticipant){p.HeadHash[0]++}};for i,m:=range mods{x:=b;m(&x);got,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{a,x});if e!=nil||got==d{t.Fatalf("mutation %d not bound",i)}};b.OrganizationID="55555555-5555-4555-8555-555555555555";if _,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{a,b});e==nil{t.Fatal("mixed organizations accepted")}}
+func TestC187RejectsEmptyDuplicateMalformedAndOverflow(t *testing.T){p:=c187P();if _,e:=CheckpointParticipantVectorDigest(nil);e==nil{t.Fatal("empty vector accepted")};if _,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{p,p});e==nil{t.Fatal("duplicate accepted")};p.DeviceID="";if _,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{p});e==nil{t.Fatal("missing device accepted")};p=c187P();p.AccountID="";if _,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{p});e==nil{t.Fatal("missing account accepted")};p=c187P();p.HeadHash=[32]byte{};if _,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{p});e==nil{t.Fatal("bad head accepted")};p=c187P();p.RevocationEpoch=1<<63;if _,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{p});e==nil{t.Fatal("epoch overflow accepted")};p=c187P();p.HeadGeneration=1<<63;if _,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{p});e==nil{t.Fatal("generation overflow accepted")}}
+func TestC187HistoricalV1Transition(t *testing.T){p:=c187P();heads:=[]CheckpointV1Head{{DeviceID:p.DeviceID,AccountID:p.AccountID,OrganizationID:p.OrganizationID,RevocationEpoch:p.RevocationEpoch,Generation:p.HeadGeneration,StateHash:p.HeadHash}};d,e:=ValidateCheckpointV1ToV2Transition([]CheckpointParticipant{p},heads);if e!=nil{t.Fatal(e)};want,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{p});if e!=nil||d!=want{t.Fatal("v1 anchor digest mismatch")};stale:=append([]CheckpointV1Head(nil),heads...);stale[0].Generation--;if _,e:=ValidateCheckpointV1ToV2Transition([]CheckpointParticipant{p},stale);e==nil{t.Fatal("stale head accepted")};sub:=append([]CheckpointV1Head(nil),heads...);sub[0].StateHash[0]^=0xff;if _,e:=ValidateCheckpointV1ToV2Transition([]CheckpointParticipant{p},sub);e==nil{t.Fatal("substituted hash accepted")};if _,e:=ValidateCheckpointV1ToV2Transition([]CheckpointParticipant{p},nil);e==nil{t.Fatal("missing head accepted")}}
+func TestC187SharedVectorAndSQLConsistency(t *testing.T){raw,e:=os.ReadFile("../../testdata/portforward/checkpoint_event_v2_vector.json");if e!=nil{t.Fatal(e)};var v struct{Encoding string `json:"encoding_hex"`;Hash string `json:"event_sha256"`;Participant string `json:"participant_sha256"`};if e=json.Unmarshal(raw,&v);e!=nil{t.Fatal(e)};enc,e:=CheckpointEventV2Encoding(c187E());if e!=nil||hex.EncodeToString(enc)!=v.Encoding{t.Fatal("event vector mismatch")};h,e:=CheckpointEventV2Hash(c187E());if e!=nil||hex.EncodeToString(h[:])!=v.Hash{t.Fatal("event hash mismatch")};d,e:=CheckpointParticipantVectorDigest([]CheckpointParticipant{c187P()});if e!=nil||hex.EncodeToString(d[:])!=v.Participant{t.Fatal("participant digest mismatch")};sql,e:=os.ReadFile("../../supabase/tests/database/checkpoint_participant_binding.test.sql");if e!=nil{t.Fatal(e)};for _,x:=range []string{v.Encoding,v.Hash,v.Participant}{if !bytes.Contains(sql,[]byte(x)){t.Fatal("SQL fixture differs from Go vector")}}}
+func TestC187UTF8AndMalformedDigest(t *testing.T){var b bytes.Buffer;if e:=writeCheckpointV2String(&b,"café");e!=nil{t.Fatal(e)};if !bytes.Equal(b.Bytes(),[]byte{0,0,0,5,'c','a','f',0xc3,0xa9}){t.Fatalf("wrong UTF8 length %x",b.Bytes())};if _,e:=decodeCheckpointSHA256(strings.Repeat("ab",31));e==nil{t.Fatal("short digest accepted")};if _,e:=decodeCheckpointSHA256(strings.Repeat("zz",32));e==nil{t.Fatal("bad hex accepted")}}
+func TestC187EventScopeAndOverflow(t *testing.T){e:=c187E();e.Participants=nil;if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("missing participants accepted")};e=c187E();e.Participants[0].AccountID="33333333-3333-4333-8333-333333333333";if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("scope substitution accepted")};e=c187E();e.Generation=1<<63;if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("generation overflow accepted")};e=c187E();e.RevocationEpoch=1<<63;if _,err:=CheckpointEventV2Encoding(e);err==nil{t.Fatal("epoch overflow accepted")}}
