@@ -17,7 +17,7 @@ function endpoint(v:unknown){if(!v||typeof v!=="object"||Array.isArray(v))return
 function fromHex(s:string){if(!/^[0-9a-f]{64}$/.test(s))throw Error("invalid digest");return Uint8Array.from(s.match(/../g)!,x=>parseInt(x,16))}
 function fromBase64(s:string){if(!/^[A-Za-z0-9+/]{43}=$/.test(s))throw Error("invalid public key");const raw=atob(s);if(btoa(raw)!==s)throw Error("non-canonical public key");return Uint8Array.from(raw,x=>x.charCodeAt(0))}
 function fromBase64Signature(s:string){if(!/^[A-Za-z0-9+/]{86}==$/.test(s))throw Error("invalid signature");const raw=atob(s);if(btoa(raw)!==s)throw Error("non-canonical signature");return Uint8Array.from(raw,x=>x.charCodeAt(0))}
-async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:string){
+async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:string):Promise<Uint8Array>{
  const chunks:Uint8Array[]=[];const enc=new TextEncoder();
  const u32=(n:number)=>{const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,n,false);chunks.push(b)};
  const u64=(n:number)=>{if(!Number.isSafeInteger(n)||n<0)throw Error("invalid revocation epoch");const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(n),false);chunks.push(b)};
@@ -39,6 +39,7 @@ async function verifyCanonicalCheckpoint(p:Record<string,unknown>,operationID:st
  const fp=new Uint8Array(await crypto.subtle.digest("SHA-256",message));const prefix=enc.encode("wedecent-checkpoint-finalization-v1\n");const opInput=new Uint8Array(prefix.length+fp.length);opInput.set(prefix);opInput.set(fp,prefix.length);
  const op=new Uint8Array(await crypto.subtle.digest("SHA-256",opInput));const expected=[...op].map(x=>x.toString(16).padStart(2,"0")).join("");
  if(expected!==operationID)throw Error("operation ID does not bind signed checkpoint request");
+ return fp;
 }
 
 type JsonObject=Record<string,unknown>;
