@@ -95,6 +95,12 @@ type CheckpointWitnessTrust struct {
 // completion marker is durable.
 type CheckpointFinalizationAuditSink func(context.Context, string, CheckpointFinalizationEvidence) error
 
+// CheckpointRevocationAuthorizer validates the caller's revocation authority and
+// returns a stable digest of the authenticated authorization envelope.
+type CheckpointRevocationAuthorizer interface {
+	AuthorizeCheckpointRevocation(context.Context, CheckpointEndpoint, uint64) ([sha256.Size]byte, error)
+}
+
 type CheckpointFinalizationEvidence struct {
 	PrimaryReceipt          CheckpointReceipt
 	WitnessAcknowledgements []CheckpointWitnessAck
@@ -112,7 +118,8 @@ type WitnessedReplayCheckpointProvider struct {
 	Witnesses  []CheckpointWitnessTrust
 	Quorum     int
 	Pending    CheckpointPendingStore
-	Fencing    *CheckpointFenceCoordinator
+	Fencing               *CheckpointFenceCoordinator
+	RevocationAuthorizer CheckpointRevocationAuthorizer
 }
 
 func validIndependentFenceTrust(primaryKey ed25519.PublicKey, witnesses []CheckpointWitnessTrust, coordinator *CheckpointFenceCoordinator) bool {
@@ -149,7 +156,7 @@ func validIndependentFenceTrust(primaryKey ed25519.PublicKey, witnesses []Checkp
 }
 
 func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
-	if p == nil || p.Primary == nil || p.Pending == nil || p.Fencing == nil ||
+	if p == nil || p.Primary == nil || p.Pending == nil || p.Fencing == nil || p.RevocationAuthorizer == nil ||
 		!validWitnessConfiguration(p.Witnesses, p.Quorum, p.PrimaryKey) ||
 		p.Fencing.Primary == nil || p.Fencing.WitnessSetVersion == "" ||
 		!validFenceCoordinatorWitnesses(p.Fencing.Witnesses, p.Fencing.Quorum, p.Fencing.PrimaryKey) ||
@@ -500,7 +507,11 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 	defer func() {
 		resultErr = errors.Join(resultErr, unlock())
 	}()
-	if err := p.executeRevocationFence(ctx, endpoint, next); err != nil {
+	authorizationHash, err := p.RevocationAuthorizer.AuthorizeCheckpointRevocation(ctx, endpoint, next)
+	if err != nil || authorizationHash == ([sha256.Size]byte{}) {
+		return errors.Join(ErrCheckpointIntegrity, err)
+	}
+	if err := p.executeRevocationFence(ctx, endpoint, next, authorizationHash); err != nil {
 		return err
 	}
 	type response struct {
@@ -1348,14 +1359,17 @@ func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context
 	return p.executeOrganizationFence(ctx, scope, CheckpointFenceFinalize, operationID, fingerprint, request.AuthorizationSHA256, checkpointRequestParticipants(request), heads)
 }
 
-func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
+func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.Context, endpoint CheckpointEndpoint, next uint64, authorizationHash [sha256.Size]byte) error {
 	if p == nil || p.Fencing == nil || !validCheckpointEndpoint(endpoint) ||
 		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
 		return ErrCheckpointStale
 	}
 	fingerprint := checkpointRevocationFingerprint(endpoint, next)
+	if authorizationHash == ([sha256.Size]byte{}) {
+		return ErrCheckpointIntegrity
+	}
 	operationID := checkpointFenceOperationID(CheckpointFenceRevoke,
-		hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
+		hex.EncodeToString(fingerprint[:])+hex.EncodeToString(authorizationHash[:]), endpoint.OrganizationID)
 	scope := organizationCheckpointFenceScope(endpoint.OrganizationID)
 	existing, found, err := p.Fencing.Primary.LoadFence(ctx, scope, operationID)
 	if err != nil {
@@ -1366,7 +1380,7 @@ func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.C
 		return err
 	}
 	_, err = p.executeOrganizationFence(ctx, scope,
-		CheckpointFenceRevoke, operationID, fingerprint, fingerprint, []CheckpointEndpoint{endpoint}, heads)
+		CheckpointFenceRevoke, operationID, fingerprint, authorizationHash, []CheckpointEndpoint{endpoint}, heads)
 	return err
 }
 
