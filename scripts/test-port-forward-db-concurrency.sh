@@ -116,7 +116,7 @@ race() {
   grep -q 'ERROR:' "$WORK/c.log" || fail "$name consumer did not fail with SQL authorization error"
   assertq f "select exists(select 1 from public.port_forward_authorization_transactions where forwarding_id='$fid')"
  fi
- assertq t "$post"
+ assertq true "$post"
  printf 'verified %s (%s)\n' "$name" "$order"
 }
 
