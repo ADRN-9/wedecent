@@ -24,6 +24,45 @@ wedecent_replay_authority_approval_digest() {
     "$hostname" "$pins" | wedecent_sha256_stdin
 }
 
+wedecent_checkpoint_audit_approval_digest() {
+  local hostname="$1"
+  local pins="$2"
+  printf 'wedecent-checkpoint-audit-approval-v1\nhostname=%s\nspki_sha256=%s\n' \
+    "$hostname" "$pins" | wedecent_sha256_stdin
+}
+
+wedecent_require_approved_checkpoint_audit_trust() {
+  local hostname="${WEDECENT_CHECKPOINT_AUDIT_HOSTNAME:-}"
+  local pins="${WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256:-}"
+  local approval="${WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256:-}"
+  local actual pin seen=""
+  [[ -n "$hostname" && -n "$pins" && -n "$approval" ]] ||
+    wedecent_release_fail "production checkpoint-audit hostname, SPKI pins and approval digest are all required" || return 1
+  [[ "$hostname" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] ||
+    wedecent_release_fail "checkpoint-audit hostname must be a canonical lowercase DNS hostname" || return 1
+  [[ ! "$hostname" =~ ^[0-9.]+$ ]] ||
+    wedecent_release_fail "checkpoint-audit authority must be a DNS hostname, not an IP address" || return 1
+  [[ "$pins" =~ ^[0-9a-f]{64}(,[0-9a-f]{64}){0,3}$ ]] ||
+    wedecent_release_fail "checkpoint-audit SPKI pins must be one to four lowercase SHA-256 digests" || return 1
+  [[ "$approval" =~ ^[0-9a-f]{64}$ ]] ||
+    wedecent_release_fail "checkpoint-audit approval digest must be 64 lowercase hex characters" || return 1
+  local -a pin_array=()
+  IFS=',' read -r -a pin_array <<< "$pins"
+  for pin in "${pin_array[@]}"; do
+    case ",$seen," in
+      *",$pin,"*) wedecent_release_fail "duplicate checkpoint-audit SPKI pin" || return 1 ;;
+    esac
+    seen="${seen:+$seen,}$pin"
+  done
+  actual="$(wedecent_checkpoint_audit_approval_digest "$hostname" "$pins")" ||
+    wedecent_release_fail "cannot calculate checkpoint-audit approval digest" || return 1
+  [[ "$actual" == "$approval" ]] ||
+    wedecent_release_fail "checkpoint-audit trust does not match its independently approved digest" || return 1
+  CHECKPOINT_AUDIT_HOSTNAME="$hostname"
+  CHECKPOINT_AUDIT_SPKI_SHA256="$pins"
+  CHECKPOINT_AUDIT_APPROVAL_SHA256="$approval"
+}
+
 wedecent_require_approved_replay_trust() {
   local hostname="${WEDECENT_REPLAY_AUTHORITY_HOSTNAME:-}"
   local pins="${WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256:-}"
@@ -190,12 +229,14 @@ wedecent_verify_binary_trust() {
   local binary="$1"
   local hostname="$2"
   local pins="$3"
-  wedecent_python "$WEDECENT_RELEASE_ROOT/scripts/verify-release-binary-trust.py" "$binary" "$hostname" "$pins"
+  local audit_hostname="$4"
+  local audit_pins="$5"
+  wedecent_python "$WEDECENT_RELEASE_ROOT/scripts/verify-release-binary-trust.py" "$binary" "$hostname" "$pins" "$audit_hostname" "$audit_pins"
 }
 
 wedecent_verify_release_metadata() {
   local directory="$1"
-  local metadata expected version commit source_commit source_tree mode hostname pins approval platform core agent
+  local metadata expected version commit source_commit source_tree mode hostname pins approval audit_hostname audit_pins audit_approval platform core agent
 
   [[ -d "$directory" && ! -L "$directory" ]] ||
     wedecent_release_fail "release directory must be a regular non-symlink directory" || return 1
@@ -203,6 +244,7 @@ wedecent_verify_release_metadata() {
   [[ -f "$metadata" && ! -L "$metadata" ]] ||
     wedecent_release_fail "release VERSION.txt must be a regular non-symlink file" || return 1
   wedecent_require_approved_replay_trust || return 1
+  wedecent_require_approved_checkpoint_audit_trust || return 1
 
   version="$(wedecent_metadata_value "$metadata" version)" || return 1
   wedecent_require_production_release_context "$version" || return 1
@@ -214,6 +256,9 @@ wedecent_verify_release_metadata() {
   hostname="$(wedecent_metadata_value "$metadata" replay_authority_hostname)" || return 1
   pins="$(wedecent_metadata_value "$metadata" replay_authority_spki_sha256)" || return 1
   approval="$(wedecent_metadata_value "$metadata" replay_authority_approval_sha256)" || return 1
+  audit_hostname="$(wedecent_metadata_value "$metadata" checkpoint_audit_hostname)" || return 1
+  audit_pins="$(wedecent_metadata_value "$metadata" checkpoint_audit_spki_sha256)" || return 1
+  audit_approval="$(wedecent_metadata_value "$metadata" checkpoint_audit_approval_sha256)" || return 1
   platform="$(wedecent_metadata_value "$metadata" platform)" || return 1
 
   [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]] ||
@@ -225,7 +270,10 @@ wedecent_verify_release_metadata() {
   wedecent_verify_source_tree_provenance "$source_commit" "$source_tree" || return 1
   [[ "$hostname" == "$REPLAY_AUTHORITY_HOSTNAME" &&
      "$pins" == "$REPLAY_AUTHORITY_SPKI_SHA256" &&
-     "$approval" == "$REPLAY_AUTHORITY_APPROVAL_SHA256" ]] ||
+     "$approval" == "$REPLAY_AUTHORITY_APPROVAL_SHA256" &&
+     "$audit_hostname" == "$CHECKPOINT_AUDIT_HOSTNAME" &&
+     "$audit_pins" == "$CHECKPOINT_AUDIT_SPKI_SHA256" &&
+     "$audit_approval" == "$CHECKPOINT_AUDIT_APPROVAL_SHA256" ]] ||
     wedecent_release_fail "release metadata does not match the approved replay-authority configuration" || return 1
 
   case "$platform" in
@@ -272,16 +320,23 @@ wedecent_release_init() {
   TRUST_HOSTNAME=""
   TRUST_PINS=""
   TRUST_APPROVAL=""
+  TRUST_AUDIT_HOSTNAME=""
+  TRUST_AUDIT_PINS=""
+  TRUST_AUDIT_APPROVAL=""
 
   case "$BUILD_MODE" in
     production)
       [[ -z "$status" ]] ||
         wedecent_release_fail "production source tree is dirty or contains untracked files" || return 1
       wedecent_require_approved_replay_trust || return 1
+      wedecent_require_approved_checkpoint_audit_trust || return 1
       wedecent_require_production_provenance "$ROOT" "$VERSION" || return 1
       TRUST_HOSTNAME="$REPLAY_AUTHORITY_HOSTNAME"
       TRUST_PINS="$REPLAY_AUTHORITY_SPKI_SHA256"
       TRUST_APPROVAL="$REPLAY_AUTHORITY_APPROVAL_SHA256"
+      TRUST_AUDIT_HOSTNAME="$CHECKPOINT_AUDIT_HOSTNAME"
+      TRUST_AUDIT_PINS="$CHECKPOINT_AUDIT_SPKI_SHA256"
+      TRUST_AUDIT_APPROVAL="$CHECKPOINT_AUDIT_APPROVAL_SHA256"
       ;;
     diagnostic)
       [[ "${WEDECENT_ALLOW_DIRTY:-0}" == "0" || "${WEDECENT_ALLOW_DIRTY:-0}" == "1" ]] ||
@@ -293,7 +348,7 @@ wedecent_release_init() {
       else
         RELEASE_COMMIT="$head"
       fi
-      [[ -z "${WEDECENT_REPLAY_AUTHORITY_HOSTNAME:-}${WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256:-}${WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256:-}" ]] ||
+      [[ -z "${WEDECENT_REPLAY_AUTHORITY_HOSTNAME:-}${WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256:-}${WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256:-}${WEDECENT_CHECKPOINT_AUDIT_HOSTNAME:-}${WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256:-}${WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256:-}" ]] ||
         wedecent_release_fail "diagnostic builds must not accept production replay-authority configuration" || return 1
       ;;
     *)
@@ -362,7 +417,7 @@ wedecent_release_init() {
     wedecent_release_fail "release staging directory is not a regular directory" || return 1
   trap 'wedecent_release_cleanup' EXIT
 
-  RELEASE_LDFLAGS="-buildid= -X=wedecent.com/wedecent/internal/buildinfo.Version=$VERSION -X=wedecent.com/wedecent/internal/buildinfo.Commit=$RELEASE_COMMIT -X=wedecent.com/wedecent/internal/buildinfo.BuiltAt=$BUILT_AT -X=wedecent.com/wedecent/internal/buildinfo.ReplayAuthorityHostname=$TRUST_HOSTNAME -X=wedecent.com/wedecent/internal/buildinfo.ReplayAuthoritySPKISHA256=$TRUST_PINS"
+  RELEASE_LDFLAGS="-buildid= -X=wedecent.com/wedecent/internal/buildinfo.Version=$VERSION -X=wedecent.com/wedecent/internal/buildinfo.Commit=$RELEASE_COMMIT -X=wedecent.com/wedecent/internal/buildinfo.BuiltAt=$BUILT_AT -X=wedecent.com/wedecent/internal/buildinfo.ReplayAuthorityHostname=$TRUST_HOSTNAME -X=wedecent.com/wedecent/internal/buildinfo.ReplayAuthoritySPKISHA256=$TRUST_PINS -X=wedecent.com/wedecent/internal/buildinfo.CheckpointAuditHostname=$TRUST_AUDIT_HOSTNAME -X=wedecent.com/wedecent/internal/buildinfo.CheckpointAuditSPKISHA256=$TRUST_AUDIT_PINS"
 }
 
 wedecent_release_cleanup() {
@@ -392,6 +447,9 @@ build_mode=$BUILD_MODE
 replay_authority_hostname=$TRUST_HOSTNAME
 replay_authority_spki_sha256=$TRUST_PINS
 replay_authority_approval_sha256=$TRUST_APPROVAL
+checkpoint_audit_hostname=$TRUST_AUDIT_HOSTNAME
+checkpoint_audit_spki_sha256=$TRUST_AUDIT_PINS
+checkpoint_audit_approval_sha256=$TRUST_AUDIT_APPROVAL
 EOF_RELEASE
 
   for name in "${RELEASE_BINARIES[@]}"; do
@@ -402,7 +460,7 @@ EOF_RELEASE
   if [[ "$BUILD_MODE" == "production" ]]; then
     case "$RELEASE_PLATFORM" in
       windows)
-        wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-core.exe" "$TRUST_HOSTNAME" "$TRUST_PINS" || return 1
+        wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-core.exe" "$TRUST_HOSTNAME" "$TRUST_PINS" "$TRUST_AUDIT_HOSTNAME" "$TRUST_AUDIT_PINS" || return 1
         wedecent_verify_binary_trust "$WEDECENT_RELEASE_STAGE/wd-agent.exe" "$TRUST_HOSTNAME" "$TRUST_PINS" || return 1
         ;;
       *)
@@ -423,7 +481,7 @@ EOF_RELEASE
       *) host_arch=unknown ;;
     esac
     if [[ "$host_os" == "$RELEASE_PLATFORM" && "$host_arch" == "$RELEASE_ARCH" ]]; then
-      expected="$(printf 'hostname=%s\nspki_sha256=%s\n' "$TRUST_HOSTNAME" "$TRUST_PINS")"
+      expected="$(printf 'hostname=%s\nspki_sha256=%s\ncheckpoint_audit_hostname=%s\ncheckpoint_audit_spki_sha256=%s\n' "$TRUST_HOSTNAME" "$TRUST_PINS" "$TRUST_AUDIT_HOSTNAME" "$TRUST_AUDIT_PINS")"
       case "$RELEASE_PLATFORM" in
         windows)
           actual="$("$WEDECENT_RELEASE_STAGE/wd-core.exe" release-trust)" || return 1
