@@ -24,25 +24,25 @@ type CheckpointFenceWitnessTrust struct {
 }
 
 type CheckpointFenceOperation struct {
-	Token           CheckpointFenceToken
+	Token            CheckpointFenceToken
 	Acknowledgements []CheckpointFenceAcknowledgement
-	Committed       bool
+	Committed        bool
 }
 
 type checkpointFenceDiskEvent struct {
-	Kind            string
-	Token           CheckpointFenceToken
+	Kind             string
+	Token            CheckpointFenceToken
 	Acknowledgements []CheckpointFenceAcknowledgement
 }
 
 type checkpointFencePrimaryScopeState struct {
-	Generation              uint64
-	RevocationEpoch         uint64
-	FenceHead               [sha256.Size]byte
-	PrimaryHeadGeneration   uint64
-	PrimaryHeadSHA256       [sha256.Size]byte
-	PendingOperationID      string
-	Operations              map[string]CheckpointFenceOperation
+	Generation            uint64
+	RevocationEpoch       uint64
+	FenceHead             [sha256.Size]byte
+	PrimaryHeadGeneration uint64
+	PrimaryHeadSHA256     [sha256.Size]byte
+	PendingOperationID    string
+	Operations            map[string]CheckpointFenceOperation
 }
 
 type checkpointFencePrimaryIndex struct {
@@ -98,7 +98,7 @@ type FileCheckpointFenceWitness struct {
 }
 
 var (
-	_ CheckpointFencingPrimary  = (*FileCheckpointFencePrimary)(nil)
+	_ CheckpointFencingPrimary = (*FileCheckpointFencePrimary)(nil)
 	_ CheckpointFencingWitness = (*FileCheckpointFenceWitness)(nil)
 )
 
@@ -137,7 +137,7 @@ func OpenFileCheckpointFencePrimary(path string, privateKey ed25519.PrivateKey, 
 	sort.Strings(ids)
 	store := &FileCheckpointFencePrimary{
 		path: path, privateKey: append(ed25519.PrivateKey(nil), privateKey...),
-		publicKey: append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...),
+		publicKey:         append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...),
 		witnessSetVersion: witnessSetVersion, witnesses: trusted, witnessIDs: ids,
 		quorum: quorum, now: time.Now,
 	}
@@ -174,9 +174,9 @@ func OpenFileCheckpointFenceWitness(path, witnessID string, privateKey ed25519.P
 	}
 	store := &FileCheckpointFenceWitness{
 		path: path, id: witnessID,
-		privateKey: append(ed25519.PrivateKey(nil), privateKey...),
-		publicKey: append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...),
-		primaryKey: append(ed25519.PublicKey(nil), primaryKey...),
+		privateKey:        append(ed25519.PrivateKey(nil), privateKey...),
+		publicKey:         append(ed25519.PublicKey(nil), privateKey.Public().(ed25519.PublicKey)...),
+		primaryKey:        append(ed25519.PublicKey(nil), primaryKey...),
 		witnessSetVersion: witnessSetVersion, witnessIDs: ids, now: time.Now,
 	}
 	if err := store.withIndex(context.Background(), func(_ *os.File, _ *checkpointFenceWitnessIndex) error { return nil }); err != nil {
@@ -347,7 +347,7 @@ func (w *FileCheckpointFenceWitness) CommitFence(ctx context.Context, token Chec
 		ack := CheckpointFenceAcknowledgement{
 			WitnessID: w.id, TokenSHA256: digest, Generation: token.Generation,
 			Action: token.Action, OperationID: token.OperationID,
-			WitnessKeyID: checkpointProviderKeyID(w.publicKey),
+			WitnessKeyID:      checkpointProviderKeyID(w.publicKey),
 			CommittedAtUnixMS: committedAt,
 		}
 		ack.Signature = ed25519.Sign(w.privateKey, checkpointFenceAcknowledgementMessage(ack))
@@ -400,7 +400,7 @@ func (p *FileCheckpointFencePrimary) tokenForRequest(request CheckpointFenceRequ
 		RequestSHA256: request.RequestSHA256, AuthorizationSHA256: request.AuthorizationSHA256,
 		PrimaryHeadGeneration: request.PrimaryHeadGeneration, PrimaryHeadSHA256: request.PrimaryHeadSHA256,
 		PreviousFenceSHA256: request.PreviousFenceSHA256,
-		WitnessSetVersion: p.witnessSetVersion, WitnessIDs: append([]string(nil), p.witnessIDs...),
+		WitnessSetVersion:   p.witnessSetVersion, WitnessIDs: append([]string(nil), p.witnessIDs...),
 		ExpiresAtUnixMS: request.ExpiresAtUnixMS,
 	}
 	if token.Action == CheckpointFenceRevoke {
@@ -621,10 +621,10 @@ func checkpointFenceAcknowledgementMessage(ack CheckpointFenceAcknowledgement) [
 	putFenceString(&b, ack.WitnessID)
 	b.Write(ack.TokenSHA256[:])
 	_ = json.NewEncoder(&b).Encode(struct {
-		Generation uint64
-		Action CheckpointFenceAction
-		OperationID string
-		WitnessKeyID string
+		Generation        uint64
+		Action            CheckpointFenceAction
+		OperationID       string
+		WitnessKeyID      string
 		CommittedAtUnixMS int64
 	}{ack.Generation, ack.Action, ack.OperationID, ack.WitnessKeyID, ack.CommittedAtUnixMS})
 	return b.Bytes()
@@ -634,7 +634,7 @@ func putFenceString(b *bytes.Buffer, value string) {
 	_ = json.NewEncoder(b).Encode(value)
 }
 
-func validFencePrimaryHeadLink(state interface{ }, generation uint64, digest [sha256.Size]byte) bool {
+func validFencePrimaryHeadLink(state interface{}, generation uint64, digest [sha256.Size]byte) bool {
 	switch current := state.(type) {
 	case *checkpointFencePrimaryScopeState:
 		if generation < current.PrimaryHeadGeneration {
@@ -691,7 +691,7 @@ func newCheckpointFencePrimaryScope() *checkpointFencePrimaryScopeState {
 
 func newCheckpointFenceWitnessIndex() *checkpointFenceWitnessIndex {
 	return &checkpointFenceWitnessIndex{
-		Scopes: make(map[CheckpointWitnessScope]*checkpointFenceWitnessScopeState),
+		Scopes:       make(map[CheckpointWitnessScope]*checkpointFenceWitnessScopeState),
 		OperationIDs: make(map[string]checkpointFenceWitnessOperationRef),
 	}
 }
@@ -810,7 +810,6 @@ func withCheckpointFenceLog(ctx context.Context, path string, fn func(*os.File) 
 	}
 	return fn(file)
 }
-
 
 func sameCheckpointFenceToken(a, b CheckpointFenceToken) bool {
 	aDigest, aErr := CheckpointFenceTokenDigest(a)
