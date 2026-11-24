@@ -22,6 +22,8 @@ import (
 	"wedecent.com/wedecent/internal/account"
 )
 
+const checkpointAuditRequestMax = 64 << 10
+
 type CheckpointAuditTrust struct {
 	Hostname string
 	Port uint16
@@ -253,6 +255,9 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 	if err != nil {
 		return err
 	}
+	if len(body) == 0 || len(body) > checkpointAuditRequestMax {
+		return errors.New("checkpoint audit request exceeds size limit")
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -281,7 +286,8 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 	if result.OperationID != operationID || result.Outcome != outcome || result.Replayed == nil || !canonicalUUID(result.RecordID) {
 		return errors.New("checkpoint audit response mismatch")
 	}
-	if _, err := time.Parse(time.RFC3339Nano, result.CreatedAt); err != nil {
+	createdAt, err := time.Parse(time.RFC3339Nano, result.CreatedAt)
+	if err != nil || createdAt.IsZero() || createdAt.After(time.Now().Add(5*time.Minute)) {
 		return errors.New("checkpoint audit timestamp invalid")
 	}
 	return ctx.Err()
@@ -290,6 +296,9 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvidence) (map[string]any, error) {
 	if evidence == nil {
 		return map[string]any{}, nil
+	}
+	if len(evidence.WitnessAcknowledgements) > 16 || len(evidence.RevocationProofs) < 2 || len(evidence.RevocationProofs) > 3 {
+		return nil, ErrCheckpointIntegrity
 	}
 	safe := func(v uint64) bool { return v <= 1<<53-1 }
 	receipt := evidence.PrimaryReceipt
@@ -306,6 +315,7 @@ func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvide
 	}
 	acks := make([]any, 0, len(evidence.WitnessAcknowledgements))
 	for _, ack := range evidence.WitnessAcknowledgements {
+		if len(ack.Signature) != 64 { return nil, ErrCheckpointIntegrity }
 		acks = append(acks, map[string]any{
 			"witness_id": ack.WitnessID, "scope": map[string]any{
 				"device_id": ack.Scope.DeviceID, "account_id": ack.Scope.AccountID, "organization_id": ack.Scope.OrganizationID,
@@ -317,7 +327,9 @@ func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvide
 	}
 	proofs := make([]any, 0, len(evidence.RevocationProofs))
 	for _, proof := range evidence.RevocationProofs {
+		if len(proof.WitnessHeads) > 16 { return nil, ErrCheckpointIntegrity }
 		head := proof.PrimaryHead
+		if len(head.Signature) != 64 { return nil, ErrCheckpointIntegrity }
 		if !safe(head.Generation) || !safe(head.RevocationEpoch) {
 			return nil, ErrCheckpointIntegrity
 		}
@@ -329,7 +341,7 @@ func checkpointFinalizationEvidencePayload(evidence *CheckpointFinalizationEvide
 		}
 		witnessHeads := make([]any, 0, len(proof.WitnessHeads))
 		for _, witnessHead := range proof.WitnessHeads {
-			if !safe(witnessHead.Generation) || !safe(witnessHead.PrimaryGeneration) || !safe(witnessHead.RevocationEpoch) {
+			if len(witnessHead.Signature) != 64 || !safe(witnessHead.Generation) || !safe(witnessHead.PrimaryGeneration) || !safe(witnessHead.RevocationEpoch) {
 				return nil, ErrCheckpointIntegrity
 			}
 			witnessHeads = append(witnessHeads, map[string]any{
