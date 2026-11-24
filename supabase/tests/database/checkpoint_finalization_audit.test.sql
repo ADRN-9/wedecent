@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(23);
+select plan(25);
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
@@ -91,6 +91,14 @@ select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())-
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome='finalization_started'),1,'exact retry creates no duplicate logical event');
 select throws_ok($$select pg_temp.record_audit('finalization_started',pg_temp.audit_payload(repeat('B',86)||'=='))$$,'23505','operation payload conflict','conflicting payload for an existing operation is rejected');
 select is((pg_temp.record_audit('finalized',pg_temp.audit_payload())->>'replayed'),'false','terminal finalization transition is recorded');
+select is((pg_temp.record_audit('finalized',pg_temp.audit_payload())->>'replayed'),'true','exact terminal retry returns the original evidence record');
+select throws_ok($q$select public.record_checkpoint_finalization(
+ repeat('a',64),'finalized',1,pg_temp.audit_payload(),
+ extensions.digest(convert_to(wedecent_private.canonical_jsonb(pg_temp.audit_payload()),'UTF8'),'sha256'),
+ '{"primary_receipt":{"tampered":true},"witness_acknowledgements":[],"revocation_proofs":[]}'::jsonb,
+ extensions.digest(convert_to(wedecent_private.canonical_jsonb('{"primary_receipt":{"tampered":true},"witness_acknowledgements":[],"revocation_proofs":[]}'::jsonb),'UTF8'),'sha256'),
+ '11000000-0000-4000-8000-000000000091'
+)$q$,'23505','outcome conflict','same terminal outcome with different proof evidence is rejected');
 select throws_ok($$select pg_temp.record_audit('rejected_revocation',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome in('finalized','rejected_revocation')),1,'only one terminal outcome exists per operation');
