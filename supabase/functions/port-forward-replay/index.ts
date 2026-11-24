@@ -5,6 +5,7 @@ import {
   deviceIDFromPublicKey,
   encodeBase64URL,
   remoteReplayDeviceMessage,
+  verifyRouteAuthorizationBinding,
 } from "../_shared/port-forward-replay.mjs";
 
 const corsHeaders = {
@@ -14,6 +15,7 @@ const corsHeaders = {
 };
 const deviceIDPattern = /^wd_[a-z2-7]{16}$/;
 const digestPattern = /^[0-9a-f]{64}$/;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -37,6 +39,14 @@ function controlPlanePublicKey(): Uint8Array {
   const value = Deno.env.get("WEDECENT_PORT_FORWARD_AUTHORIZATION_PUBLIC_KEY_B64URL")?.trim() ?? "";
   if (!/^[A-Za-z0-9_-]{43}$/.test(value)) {
     throw new Error("WEDECENT_PORT_FORWARD_AUTHORIZATION_PUBLIC_KEY_B64URL is not configured");
+  }
+  return decodeBase64URLStrict(value, 32);
+}
+
+function routeAuthorizationPublicKey(): Uint8Array {
+  const value = Deno.env.get("WEDECENT_ROUTE_AUTHORIZATION_PUBLIC_KEY_B64URL")?.trim() ?? "";
+  if (!/^[A-Za-z0-9_-]{43}$/.test(value)) {
+    throw new Error("WEDECENT_ROUTE_AUTHORIZATION_PUBLIC_KEY_B64URL is not configured");
   }
   return decodeBase64URLStrict(value, 32);
 }
@@ -77,9 +87,26 @@ async function authorizationDigest(
   digestInput.set(canonical);
   digestInput.set(signature, canonical.length);
   const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", asArrayBuffer(digestInput)));
+  const forwardingID = String(claims.forwarding_id ?? "");
+  const direction = String(claims.direction ?? "");
+  const initiatingDevice = String(claims.initiating_device ?? "");
+  const destinationDevice = String(claims.destination_device ?? "");
+  const routerDevice = claims.router == null ? null : String(claims.router);
+  if (!uuidPattern.test(forwardingID) || !["local", "remote"].includes(direction) ||
+      !deviceIDPattern.test(initiatingDevice) || !deviceIDPattern.test(destinationDevice) ||
+      (routerDevice !== null && !deviceIDPattern.test(routerDevice))) {
+    throw new Error("authorization participant context is invalid");
+  }
   return {
     jti: claims.jti as string,
+    issuedAtUnixMS: issued,
     expiresAtUnixMS: expires,
+    forwardingID,
+    direction,
+    initiatingDevice,
+    destinationDevice,
+    routerDevice,
+    route: claims.route as Record<string, unknown>,
     digestHex: Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join(""),
   };
 }
@@ -112,6 +139,11 @@ Deno.serve(async (request) => {
     const publicKeyBytes = controlPlanePublicKey();
     const verified = await authorizationDigest(authorization, publicKeyBytes);
     if (body.authorization_sha256 !== verified.digestHex) return json({ error: "authorization digest mismatch" }, 400);
+    const routeBinding = await verifyRouteAuthorizationBinding(
+      authorization,
+      claims,
+      verified.routerDevice === null ? new Uint8Array() : routeAuthorizationPublicKey(),
+    );
 
     const url = Deno.env.get("SUPABASE_URL");
     if (!url) throw new Error("SUPABASE_URL is not configured");
@@ -148,7 +180,8 @@ Deno.serve(async (request) => {
     });
     if (error) {
       console.error("port-forward replay authority rejected", { code: error.code });
-      return json({ error: "independent replay authority unavailable" }, 503);
+      const status = error.code === "42501" ? 403 : error.code === "22023" ? 400 : error.code === "40001" ? 409 : 503;
+      return json({ error: status === 503 ? "independent replay authority unavailable" : "authorization context rejected" }, status);
     }
     const result = rowObject(data);
     if (!result || typeof result.accepted !== "boolean") throw new Error("replay RPC returned malformed state");
@@ -158,7 +191,7 @@ Deno.serve(async (request) => {
     if (!/^[1-9][0-9]{0,18}$/.test(generation) || !digestPattern.test(stateHash)) {
       throw new Error("replay RPC returned invalid authority state");
     }
-    return json({ accepted: true, generation, state_hash: stateHash });
+    return json({ accepted: true, replayed: result.replayed === true, generation, state_hash: stateHash });
   } catch (error) {
     console.error("port-forward-replay failed", error);
     const message = error instanceof Error ? error.message : "invalid request";
