@@ -38,7 +38,7 @@ wedecent_require_approved_checkpoint_audit_trust() {
   local actual pin seen=""
   [[ -n "$hostname" && -n "$pins" && -n "$approval" ]] ||
     wedecent_release_fail "production checkpoint-audit hostname, SPKI pins and approval digest are all required" || return 1
-  [[ "$hostname" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] ||
+  [[ "$hostname" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$ ]] ||
     wedecent_release_fail "checkpoint-audit hostname must be a canonical lowercase DNS hostname" || return 1
   [[ ! "$hostname" =~ ^[0-9.]+$ ]] ||
     wedecent_release_fail "checkpoint-audit authority must be a DNS hostname, not an IP address" || return 1
