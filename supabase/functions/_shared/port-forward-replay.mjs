@@ -278,6 +278,7 @@ export async function verifyRouteAuthorizationBinding(
     routeClaims.router !== router ||
     routeClaims.jti == null ||
     !/^[A-Za-z0-9_-]{22}$/.test(routeClaims.jti) ||
+    decodeBase64URLStrict(routeClaims.jti, 16).length !== 16 ||
     routeClaims.iat_unix_ms > capabilityClaims.iat_unix_ms ||
     routeClaims.exp_unix_ms !== capabilityClaims.exp_unix_ms ||
     route?.ID !== capabilityRoute?.ID ||
