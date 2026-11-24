@@ -632,3 +632,62 @@ func TestFilePendingJournalPersistsVerifiedAcknowledgements(t *testing.T) {
 		t.Fatalf("incorrectly signed acknowledgement accepted: %v", err)
 	}
 }
+
+type lostWitnessAckResponse struct {
+	CheckpointWitness
+	loseNext bool
+}
+
+func (w *lostWitnessAckResponse) Acknowledge(ctx context.Context, request CheckpointRequest, receipt CheckpointReceipt) (CheckpointWitnessAck, error) {
+	ack, err := w.CheckpointWitness.Acknowledge(ctx, request, receipt)
+	if err != nil {
+		return CheckpointWitnessAck{}, err
+	}
+	if w.loseNext {
+		w.loseNext = false
+		return CheckpointWitnessAck{}, errors.New("simulated lost acknowledgement response")
+	}
+	return ack, nil
+}
+
+func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := setReplayTestDirectoryOwner(dir); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	client.Witnesses[0].Witness = &lostWitnessAckResponse{CheckpointWitness: witnesses[0], loseNext: true}
+	client.Witnesses[1].Witness = &lostWitnessAckResponse{CheckpointWitness: witnesses[1], loseNext: true}
+	if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointQuorum) {
+		t.Fatalf("first attempt should retain the resolved journal without local quorum: %v", err)
+	}
+	restartedStore, err := NewFileCheckpointPendingStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restarted := &WitnessedReplayCheckpointProvider{
+		Primary: primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
+		Quorum: client.Quorum, Pending: restartedStore,
+	}
+	result, err := restarted.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Disposition != CheckpointRecovered || len(result.WitnessAcknowledgements) < restarted.Quorum {
+		t.Fatalf("recovered disposition=%q acknowledgements=%d", result.Disposition, len(result.WitnessAcknowledgements))
+	}
+	if len(primary.ledgers) != 1 {
+		t.Fatalf("primary authorization ledger changed during finalization recovery: %d", len(primary.ledgers))
+	}
+}
+

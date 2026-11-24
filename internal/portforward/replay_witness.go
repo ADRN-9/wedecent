@@ -115,15 +115,25 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	if result.Disposition == CheckpointRecovered && !existingPending {
 		return CheckpointResult{}, ErrCheckpointHistorical
 	}
-	receipts, err := p.commitWitnessQuorum(ctx, request, result.CheckpointReceipt, existingPending, result.Disposition)
-	if err != nil {
-		return CheckpointResult{}, err
+	ackStore, ok := p.Pending.(checkpointPendingAcknowledgements)
+	if !ok {
+		return CheckpointResult{}, ErrCheckpointUnavailable
+	}
+	// A resolved journal entry is past witness commitment. Resume only the
+	// acknowledgement/compaction tail; never issue another witness commit.
+	_, finalizationErr := ackStore.LoadAcknowledgements(ctx, request, result.CheckpointReceipt, p.Witnesses)
+	var receipts []CheckpointWitnessReceipt
+	if errors.Is(finalizationErr, ErrCheckpointHistorical) {
+		receipts, err = p.commitWitnessQuorum(ctx, request, result.CheckpointReceipt, existingPending, result.Disposition)
+		if err != nil {
+			return CheckpointResult{}, err
+		}
+	} else if finalizationErr != nil {
+		return CheckpointResult{}, finalizationErr
 	}
 	if err := p.Pending.Resolve(ctx, request, result.CheckpointReceipt); err != nil {
 		return CheckpointResult{}, err
 	}
-	ackStore, ok := p.Pending.(checkpointPendingAcknowledgements)
-	if !ok { return CheckpointResult{}, ErrCheckpointUnavailable }
 	acks, err := p.acknowledgeWitnessQuorum(ctx, request, result.CheckpointReceipt, ackStore)
 	if err != nil {
 		return CheckpointResult{}, err
