@@ -187,15 +187,17 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if p == nil {
 		return ErrCheckpointUnavailable
 	}
-	if locker, ok := p.Pending.(checkpointPendingFinalizationLocker); ok {
-		unlock, err := locker.LockFinalization(ctx, request)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			resultErr = errors.Join(resultErr, unlock())
-		}()
+	locker, ok := p.Pending.(checkpointPendingFinalizationLocker)
+	if !ok {
+		return ErrCheckpointUnavailable
 	}
+	unlock, err := locker.LockFinalization(ctx, request)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		resultErr = errors.Join(resultErr, unlock())
+	}()
 
 	if err := p.ValidateConfiguration(); err != nil {
 		return err
