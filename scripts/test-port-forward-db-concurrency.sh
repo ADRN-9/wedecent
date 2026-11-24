@@ -142,6 +142,7 @@ restore_access
 race route-grant revoke-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000c6'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000c6'" 33000000-0000-4000-8000-0000000000c6 FFFFFFFFFFFFFFFFFFFFFF 44000000-0000-4000-8000-0000000000c6 FFFFFFFFFFFFFFFFFFFFFF
 race route-grant consume-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000cc'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000cc'" 33000000-0000-4000-8000-0000000000cc MMMMMMMMMMMMMMMMMMMMMM 44000000-0000-4000-8000-0000000000cc MMMMMMMMMMMMMMMMMMMMMM
 
+# Route-grant JTIs are unique in their own table and intentionally differ from forwarding JTIs.
 route 33000000-0000-4000-8000-0000000000d1 NNNNNNNNNNNNNNNNNNNNNN
 start c wd-c145-dup-a
 send c "begin; select public.wd_c145_consume('44000000-0000-4000-8000-0000000000d1','QQQQQQQQQQQQQQQQQQQQQQ','33000000-0000-4000-8000-0000000000d1','NNNNNNNNNNNNNNNNNNNNNN');"
