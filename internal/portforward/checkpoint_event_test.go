@@ -2,10 +2,10 @@ package portforward
 
 import (
 	"bytes"
-	"encoding/hex"
 	"encoding/binary"
-	"io"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"os"
 	"reflect"
 	"strings"
@@ -248,7 +248,7 @@ func TestC187ParticipantOrderingAndHistoricalGoldenVectors(t *testing.T) {
 				DeviceID        string `json:"device_id"`
 				AccountID       string `json:"account_id"`
 				OrganizationID  string `json:"organization_id"`
-				RevocationEpoch uint64 `json:"revocation_epoch"`
+				RevocationEpoch   uint64 `json:"revocation_epoch"`
 				HeadGeneration  uint64 `json:"head_generation"`
 				HeadHash        string `json:"head_hash"`
 			} `json:"unordered"`
@@ -343,24 +343,24 @@ func TestC192EventAndParticipantEncodingDecodeToStructuredFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var vector struct {
-		Action        string `json:"action"`
-		ScopeKind     string `json:"scope_kind"`
-		DeviceID      string `json:"device_id"`
-		AccountID     string `json:"account_id"`
-		OrganizationID string `json:"organization_id"`
-		OperationID   string `json:"operation_id"`
-		RequestSHA256 string `json:"request_sha256"`
+		Action            string `json:"action"`
+		ScopeKind         string `json:"scope_kind"`
+		DeviceID          string `json:"device_id"`
+		AccountID         string `json:"account_id"`
+		OrganizationID    string `json:"organization_id"`
+		OperationID       string `json:"operation_id"`
+		RequestSHA256     string `json:"request_sha256"`
 		ParticipantSHA256 string `json:"participant_sha256"`
-		PreviousHash string `json:"previous_hash"`
-		Generation uint64 `json:"generation"`
+		PreviousHash      string `json:"previous_hash"`
+		Generation        uint64 `json:"generation"`
 		RevocationEpoch uint64 `json:"revocation_epoch"`
 		Participants []struct {
-			DeviceID string `json:"device_id"`
-			AccountID string `json:"account_id"`
-			OrganizationID string `json:"organization_id"`
+			DeviceID        string `json:"device_id"`
+			AccountID       string `json:"account_id"`
+			OrganizationID  string `json:"organization_id"`
 			RevocationEpoch uint64 `json:"revocation_epoch"`
-			HeadGeneration uint64 `json:"head_generation"`
-			HeadHash string `json:"head_hash"`
+			HeadGeneration  uint64 `json:"head_generation"`
+			HeadHash        string `json:"head_hash"`
 		} `json:"participants"`
 		Encoding string `json:"encoding_hex"`
 	}
