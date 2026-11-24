@@ -3705,3 +3705,66 @@ func TestLifecycleFenceRecoversPartialRevocationAfterRestartAndLostPrimaryRespon
 		t.Fatalf("revocation checkpoint head not committed: epoch=%d err=%v", head.RevocationEpoch, err)
 	}
 }
+
+
+func TestLifecycleFenceConcurrentFinalizeAndRevocationHasOneDurableOrder(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	client, _ := newWitnessedFixture(t, primary, NewMemoryCheckpointPendingStore())
+	request, _, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	result, err := client.Primary.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	type outcome struct {
+		action CheckpointFenceAction
+		err    error
+	}
+	results := make(chan outcome, 2)
+	go func() {
+		<-start
+		_, err := client.executeFinalizationFence(context.Background(), request, result.CheckpointReceipt)
+		results <- outcome{action: CheckpointFenceFinalize, err: err}
+	}()
+	go func() {
+		<-start
+		err := client.Revoke(context.Background(), request.Initiator, request.Initiator.RevocationEpoch+1)
+		results <- outcome{action: CheckpointFenceRevoke, err: err}
+	}()
+	close(start)
+	outcomes := []outcome{<-results, <-results}
+	successes := 0
+	var finalizeErr, revokeErr error
+	for _, result := range outcomes {
+		if result.err == nil {
+			successes++
+		}
+		if result.action == CheckpointFenceFinalize {
+			finalizeErr = result.err
+		} else {
+			revokeErr = result.err
+		}
+	}
+	if successes == 0 {
+		t.Fatalf("both lifecycle transitions failed: finalize=%v revoke=%v", finalizeErr, revokeErr)
+	}
+	reader := client.Fencing.Primary.(CheckpointFenceHeadReader)
+	head, err := reader.FenceHead(context.Background(), organizationCheckpointFenceScope(request.Initiator.OrganizationID))
+	if err != nil {
+		t.Fatal(err)
+	}
+	switch {
+	case finalizeErr == nil && revokeErr == nil:
+		if head.Generation != 2 || head.LastAction != CheckpointFenceRevoke {
+			t.Fatalf("both successful transitions were not ordered finalize then revoke: %+v", head)
+		}
+	case finalizeErr == nil:
+		if head.Generation != 1 || head.LastAction != CheckpointFenceFinalize {
+			t.Fatalf("finalization did not win the race: %+v", head)
+		}
+	case revokeErr == nil:
+		if head.Generation != 1 || head.LastAction != CheckpointFenceRevoke {
+			t.Fatalf("revocation did not win the race: %+v", head)
+		}
+	}
+}
