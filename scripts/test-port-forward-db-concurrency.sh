@@ -179,19 +179,19 @@ assertq "$((ROLLBACK_GENERATION + 1))" "select generation from public.port_forwa
 # Audit finalization uses the same participant locks as authorization and revocation.
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 <<'SQL'
 drop function if exists public.wd_c145_audit(text,text,text);
-create function public.wd_c145_audit(p_operation_id text,p_jti text,p_signature text default repeat('A',86)||'==') returns jsonb
+create function public.wd_c145_audit(p_operation_id text,p_jti text,p_signature text default pg_catalog.repeat('A',86)||'==') returns jsonb
 language plpgsql security definer set search_path=''
 as $c164$
 declare payload jsonb;
 begin
- payload := jsonb_build_object(
+ payload := pg_catalog.jsonb_build_object(
   'version',1,
   'initiator',jsonb_build_object('device_id','wd_aaaaaaaaaaaaaaaa','account_id','11000000-0000-4000-8000-0000000000c1','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_aaaaaaaaaaaaaaaa')),
   'destination',jsonb_build_object('device_id','wd_bbbbbbbbbbbbbbbb','account_id','11000000-0000-4000-8000-0000000000c2','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_bbbbbbbbbbbbbbbb')),
   'router',jsonb_build_object('device_id','wd_cccccccccccccccc','account_id','11000000-0000-4000-8000-0000000000c2','organization_id','22000000-0000-4000-8000-0000000000c1','revocation_epoch',(select revocation_epoch from public.devices where device_id='wd_cccccccccccccccc')),
   'consuming_device_id','wd_aaaaaaaaaaaaaaaa','jti',p_jti,
-  'authorization_sha256',(select encode(authorization_sha256,'hex') from public.port_forward_authorization_transactions where jti=p_jti),
-  'route_authorization_sha256',repeat('c',64),
+  'authorization_sha256',(select pg_catalog.encode(authorization_sha256,'hex') from public.port_forward_authorization_transactions where jti=p_jti),
+  'route_authorization_sha256',pg_catalog.repeat('c',64),
   'route_authorization_id',(select route_authorization_id::text from public.port_forward_authorization_transactions where jti=p_jti),
   'route_authorization_jti',(select route_authorization_jti from public.port_forward_authorization_transactions where jti=p_jti),
   'route_authorization_json','{"route":"signed"}',
@@ -200,8 +200,8 @@ begin
  );
  return public.record_checkpoint_finalization(
   p_operation_id,'finalization_started',1,payload,
-  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
-  '{}'::jsonb,extensions.digest(convert_to('{}','UTF8'),'sha256'),
+  extensions.digest(pg_catalog.convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
+  '{}'::jsonb,extensions.digest(pg_catalog.convert_to('{}','UTF8'),'sha256'),
   '11000000-0000-4000-8000-0000000000c1'
  );
 end;
