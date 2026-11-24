@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(26);
+select plan(30);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -22,7 +22,8 @@ insert into public.devices (device_id, public_key, kind, name, owner_user_id, or
 values
     ('wd_aaaaaaaaaaaaaaaa', repeat('A', 43), 'client', 'Initiator', '11000000-0000-4000-8000-000000000001', '22000000-0000-4000-8000-000000000001'),
     ('wd_bbbbbbbbbbbbbbbb', repeat('B', 43), 'agent', 'Destination', '11000000-0000-4000-8000-000000000002', '22000000-0000-4000-8000-000000000001'),
-    ('wd_cccccccccccccccc', repeat('C', 43), 'agent', 'Router', '11000000-0000-4000-8000-000000000002', '22000000-0000-4000-8000-000000000001');
+    ('wd_cccccccccccccccc', repeat('C', 43), 'agent', 'Router', '11000000-0000-4000-8000-000000000002', '22000000-0000-4000-8000-000000000001'),
+    ('wd_dddddddddddddddd', repeat('D', 43), 'agent', 'Alternate destination/router', '11000000-0000-4000-8000-000000000002', '22000000-0000-4000-8000-000000000001');
 
 insert into public.device_access (device_id, user_id, permission, granted_by)
 values
@@ -52,7 +53,11 @@ create function pg_temp.consume_pf(
     p_forwarding_id uuid,
     p_jti text,
     p_digest_hex text,
-    p_routed boolean default true
+    p_routed boolean default true,
+    p_destination_override text default null,
+    p_router_override text default null,
+    p_route_destination_override text default null,
+    p_route_fields_without_router boolean default false
 )
 returns jsonb
 language sql
@@ -63,16 +68,16 @@ as $$
         p_forwarding_id,
         'local',
         'wd_aaaaaaaaaaaaaaaa',
-        'wd_bbbbbbbbbbbbbbbb',
-        case when p_routed then 'wd_cccccccccccccccc' else null end,
-        case when p_routed then '33000000-0000-4000-8000-000000000001'::uuid else null end,
-        case when p_routed then 'AAAAAAAAAAAAAAAAAAAAAA' else null end,
-        case when p_routed then 'wd_aaaaaaaaaaaaaaaa' else null end,
-        case when p_routed then 'wd_bbbbbbbbbbbbbbbb' else null end,
-        case when p_routed then 'lan' else null end,
-        case when p_routed then 'lan' else null end,
-        case when p_routed then 1::bigint else null end,
-        case when p_routed then 1::bigint else null end,
+        coalesce(p_destination_override, 'wd_bbbbbbbbbbbbbbbb'),
+        case when p_routed then coalesce(p_router_override, 'wd_cccccccccccccccc') else null end,
+        case when p_routed or p_route_fields_without_router then '33000000-0000-4000-8000-000000000001'::uuid else null end,
+        case when p_routed or p_route_fields_without_router then 'AAAAAAAAAAAAAAAAAAAAAA' else null end,
+        case when p_routed or p_route_fields_without_router then 'wd_aaaaaaaaaaaaaaaa' else null end,
+        case when p_routed or p_route_fields_without_router then coalesce(p_route_destination_override, 'wd_bbbbbbbbbbbbbbbb') else null end,
+        case when p_routed or p_route_fields_without_router then 'lan' else null end,
+        case when p_routed or p_route_fields_without_router then 'lan' else null end,
+        case when p_routed or p_route_fields_without_router then 1::bigint else null end,
+        case when p_routed or p_route_fields_without_router then 1::bigint else null end,
         p_jti,
         pg_catalog.now() - interval '1 second',
         pg_catalog.now() + interval '60 seconds',
@@ -140,6 +145,33 @@ select is(
     (pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000002', repeat('A', 22), repeat('1', 64))->>'reason'),
     'jti-conflict',
     'same JTI cannot be rebound to another forwarding transaction'
+);
+select throws_ok(
+    $select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000014', repeat('M', 22), repeat('d', 64), false, null, null, null, true)$,
+    '22023',
+    'direct route contains router authorization fields',
+    'routed authorization with a missing router fails closed'
+);
+select throws_ok(
+    $select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000015', repeat('N', 22), repeat('e', 64), true, 'wd_dddddddddddddddd')$,
+    '22023',
+    'routed authorization binding is incomplete',
+    'destination participant cannot differ from the signed route destination'
+);
+select throws_ok(
+    $select pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000016', repeat('O', 22), repeat('f', 64), true, null, 'wd_dddddddddddddddd')$,
+    '42501',
+    'router authorization is missing, revoked or mismatched',
+    'router participant must match the locked router grant snapshot'
+);
+select is(
+    (select count(*)::integer from public.port_forward_authorization_transactions where forwarding_id in (
+        '44000000-0000-4000-8000-000000000014',
+        '44000000-0000-4000-8000-000000000015',
+        '44000000-0000-4000-8000-000000000016'
+    )),
+    0,
+    'failed participant checks leave no transaction or consumed JTI'
 );
 select is(
     (pg_temp.consume_pf('wd_aaaaaaaaaaaaaaaa', '44000000-0000-4000-8000-000000000013', repeat('L', 22), repeat('c', 64))->>'reason'),
