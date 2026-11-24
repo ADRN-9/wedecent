@@ -290,7 +290,7 @@ jobs:
       - name: Type-check authenticated checkpoint finalization audit Edge Function
         run: deno check supabase/functions/port-forward-finalization-audit/index.ts
       - name: Test checkpoint finalization audit trust-anchor enforcement
-        run: deno test --check --allow-env --allow-read=supabase/tests/fixtures/checkpoint-audit-canonical-vectors.json,./testdata/portforward/checkpoint_crypto_vectors.json supabase/functions/port-forward-finalization-audit/index_test.ts
+        run: deno test --check --allow-env --allow-read=supabase/tests/fixtures/checkpoint-audit-canonical-vectors.json,testdata/portforward/checkpoint_crypto_vectors.json,./testdata/portforward/checkpoint_crypto_vectors.json supabase/functions/port-forward-finalization-audit/index_test.ts
 
   supabase-db:
     runs-on: ubuntu-latest
