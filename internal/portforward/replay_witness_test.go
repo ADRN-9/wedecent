@@ -2732,7 +2732,6 @@ func TestFirstSeenNegativeDecisionPersistsBesideCommittedQuorum(t *testing.T) {
 	}
 }
 
-
 type transitionBlockingCheckpointPrimary struct {
 	ReplayCheckpointProvider
 	headEntered   chan struct{}
@@ -2890,7 +2889,6 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 		}
 	}
 }
-
 
 type fileCheckpointAuditRecord struct {
 	OperationID string `json:"operation_id"`
