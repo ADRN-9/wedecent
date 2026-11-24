@@ -271,11 +271,11 @@ func checkpointRequestMessage(request CheckpointRequest) ([]byte, error) {
 	if routed {
 		var routeBinding struct {
 			Claims struct {
-				JTI string `json:"jti"`
+				JTI    string `json:"jti"`
 				Router string `json:"router"`
-				Route struct {
-					ID string `json:"ID"`
-					Source string `json:"Source"`
+				Route  struct {
+					ID          string `json:"ID"`
+					Source      string `json:"Source"`
 					Destination string `json:"Destination"`
 				} `json:"route"`
 			} `json:"claims"`
