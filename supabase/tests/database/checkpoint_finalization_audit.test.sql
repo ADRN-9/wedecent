@@ -37,6 +37,11 @@ values
 ('wd_bbbbbbbbbbbbbbbb',repeat('B',43),'agent','Audit destination','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000091',1),
 ('wd_cccccccccccccccc',repeat('C',43),'agent','Audit router','11000000-0000-4000-8000-000000000092','22000000-0000-4000-8000-000000000091',1);
 
+insert into public.device_access(device_id,user_id,permission,granted_by)
+values
+('wd_bbbbbbbbbbbbbbbb','11000000-0000-4000-8000-000000000091','port_forward.local','11000000-0000-4000-8000-000000000091'),
+('wd_cccccccccccccccc','11000000-0000-4000-8000-000000000091','mesh.forward','11000000-0000-4000-8000-000000000091');
+
 insert into public.port_forward_authorization_transactions(
  forwarding_id,jti,authorization_sha256,permission,direction,
  initiating_device_id,destination_device_id,router_device_id,
