@@ -2943,7 +2943,7 @@ func TestFinalizationAuditSinkDeduplicatesAfterCompletionMarkerFailureAndRestart
 	if err != nil {
 		t.Fatal(err)
 	}
-	client, witnesses := newWitnessedFixture(t, primary, store)
+	client, _ := newWitnessedFixture(t, primary, store)
 	if _, err := client.Consume(context.Background(), request); err != nil {
 		t.Fatal(err)
 	}
