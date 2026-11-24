@@ -1055,17 +1055,20 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 		t.Fatal(err)
 	}
 	start := time.Now().UTC().Truncate(time.Millisecond)
-	claims := testClaims(start, DirectionLocal)
+	claims := testRoutedClaims(start, DirectionLocal)
 	claims.InitiatingDevice = mesh.DeviceID(identity.DeviceID(initPublic))
 	claims.DestinationDevice = mesh.DeviceID(identity.DeviceID(destPublic))
 	claims.Route.Source, claims.Route.Destination = claims.InitiatingDevice, claims.DestinationDevice
-	claims.Route.Hops[0].From, claims.Route.Hops[0].To = claims.InitiatingDevice, claims.DestinationDevice
+	claims.Route.Hops[0].From, claims.Route.Hops[0].To = claims.InitiatingDevice, claims.Router
+	claims.Route.Hops[1].From, claims.Route.Hops[1].To = claims.Router, claims.DestinationDevice
 	claims.ExpiresAtUnixMS = start.Add(20 * time.Second).UnixMilli()
 	claims.Route.ExpiresAt = time.UnixMilli(claims.ExpiresAtUnixMS).UTC()
+	routeAuthorization, routePublicKey := testRouteAuthorization(t, claims)
 	authorization, err := SignAuthorization(controlPrivate, claims)
 	if err != nil {
 		t.Fatal(err)
 	}
+	authorization.RouteAuthorization = routeAuthorization
 	initiator := CheckpointEndpoint{DeviceID: string(claims.InitiatingDevice), AccountID: "11111111-1111-4111-8111-111111111111", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 4}
 	destination := CheckpointEndpoint{DeviceID: string(claims.DestinationDevice), AccountID: "22222222-2222-4222-8222-222222222222", OrganizationID: "33333333-3333-4333-8333-333333333333", RevocationEpoch: 7}
 	memberships := checkpointMembershipFixture{string(claims.InitiatingDevice): initiator, string(claims.DestinationDevice): destination}
@@ -1103,7 +1106,9 @@ func TestExpiredAuthorizationFinalizationRecoversQuorumWithoutReconsuming(t *tes
 	}
 	now := start
 	audit := &checkpointFinalizationAuditFixture{}
-	replay := &CheckpointAuthorizationReplay{Provider: provider, ControlPlaneKey: controlPublic, LocalDeviceID: claims.InitiatingDevice, DeviceSigner: initPrivate, Memberships: memberships, FinalizationAuditor: audit, Now: func() time.Time { return now }}
+	routeReplay := mesh.NewMemoryRouteAuthorizationReplay()
+	routeVerifier := MeshCheckpointRouteAuthorizationVerifier{Verifier: mesh.RouteAuthorizationVerifier{KeyID:"route-key-1", PublicKey:routePublicKey, Replay:routeReplay, Now:func() time.Time{return now}}}
+	replay := &CheckpointAuthorizationReplay{Provider: provider, ControlPlaneKey: controlPublic, LocalDeviceID: claims.InitiatingDevice, DeviceSigner: initPrivate, Memberships: memberships, RouteVerifier:routeVerifier, FinalizationAuditor: audit, Now: func() time.Time { return now }}
 	if err := replay.ConsumeVerifiedPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrReplayUnavailable) {
 		t.Fatalf("injected unresolved journal result: %v", err)
 	}

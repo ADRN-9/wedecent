@@ -124,7 +124,16 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 	if !found {
 		return ErrCheckpointHistorical
 	}
-	if request.AuthorizationSHA256 != authorizationHash || request.JTI != claims.JTI || request.ConsumingDeviceID != string(r.LocalDeviceID) || request.Initiator.DeviceID != string(claims.InitiatingDevice) || request.Destination.DeviceID != string(claims.DestinationDevice) || !bytes.Equal(request.DevicePublicKey, devicePublicKey) {
+	var routeAuthorizationHash [sha256.Size]byte
+	if claims.Router != "" {
+		routeAuthorizationHash, err = checkpointRouteAuthorizationFingerprint(authorization.RouteAuthorization)
+		if err != nil { return err }
+	}
+	if request.AuthorizationSHA256 != authorizationHash || request.RouteAuthorizationSHA256 != routeAuthorizationHash ||
+		request.JTI != claims.JTI || request.ConsumingDeviceID != string(r.LocalDeviceID) ||
+		request.Initiator.DeviceID != string(claims.InitiatingDevice) ||
+		request.Destination.DeviceID != string(claims.DestinationDevice) ||
+		!bytes.Equal(request.DevicePublicKey, devicePublicKey) {
 		return ErrCheckpointIntegrity
 	}
 	if _, err := CheckpointRequestFingerprint(request); err != nil {

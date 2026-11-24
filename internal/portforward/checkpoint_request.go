@@ -6,6 +6,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -43,6 +44,12 @@ type CheckpointMembershipResolver interface {
 
 // BuildCheckpointRequest derives JTI, authorization digest, endpoints and current
 // membership epochs from one independently verified signed forwarding capability.
+func checkpointRouteAuthorizationFingerprint(authorization mesh.RouteAuthorization) ([sha256.Size]byte, error) {
+	encoded, err := json.Marshal(authorization)
+	if err != nil { return [sha256.Size]byte{}, ErrRouteAuthorizationMismatch }
+	return sha256.Sum256(encoded), nil
+}
+
 func BuildCheckpointRequest(
 	ctx context.Context,
 	authorization Authorization,
@@ -80,6 +87,7 @@ func BuildCheckpointRequest(
 	if err := ValidateRouteAuthorizationBinding(authorization); err != nil {
 		return CheckpointRequest{}, err
 	}
+	var routeAuthorizationHash [sha256.Size]byte
 	if claims.Router != "" {
 		if routeVerifier == nil {
 			return CheckpointRequest{}, ErrRouteAuthorizationRequired
@@ -87,6 +95,8 @@ func BuildCheckpointRequest(
 		if err := routeVerifier.VerifyCheckpointRouteAuthorization(ctx, authorization); err != nil {
 			return CheckpointRequest{}, errors.Join(ErrRouteAuthorizationMismatch, err)
 		}
+		routeAuthorizationHash, err = checkpointRouteAuthorizationFingerprint(authorization.RouteAuthorization)
+		if err != nil { return CheckpointRequest{}, err }
 	}
 	if localDeviceID != claims.InitiatingDevice && localDeviceID != claims.DestinationDevice {
 		return CheckpointRequest{}, ErrAuthorizationMismatch
@@ -124,7 +134,7 @@ func BuildCheckpointRequest(
 	digestInput = append(digestInput, signature...)
 	request := CheckpointRequest{
 		Initiator: initiator, Destination: destination, ConsumingDeviceID: string(localDeviceID),
-		JTI: claims.JTI, AuthorizationSHA256: sha256.Sum256(digestInput),
+		JTI: claims.JTI, AuthorizationSHA256: sha256.Sum256(digestInput), RouteAuthorizationSHA256: routeAuthorizationHash,
 	}
 	return SignCheckpointRequest(deviceSigner, request)
 }
