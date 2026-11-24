@@ -67,6 +67,12 @@ func (c *CheckpointFenceCoordinator) Execute(ctx context.Context, request Checkp
 		case response := <-responses:
 			trust, ok := byID[response.id]
 			if response.err != nil {
+				if errors.Is(response.err, ErrCheckpointConflict) || errors.Is(response.err, ErrCheckpointStale) {
+					return CheckpointFenceOperation{}, ErrCheckpointWitnessDisagreement
+				}
+				if errors.Is(response.err, ErrCheckpointIntegrity) {
+					return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+				}
 				continue
 			}
 			if !ok {
