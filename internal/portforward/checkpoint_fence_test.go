@@ -93,9 +93,9 @@ func TestCheckpointFenceTokenRequiresMonotonicActionEpoch(t *testing.T) {
 		t.Fatalf("non-monotonic revocation epoch accepted: %v", err)
 	}
 
-	finalize, privateKey := validFenceToken(t, CheckpointFenceFinalize)
+	finalize, finalizePrivateKey := validFenceToken(t, CheckpointFenceFinalize)
 	finalize.ExpectedFenceGeneration++
-	if err := VerifyCheckpointFenceToken(finalize, publicKey, 1000); !errors.Is(err, ErrCheckpointIntegrity) {
+	if err := VerifyCheckpointFenceToken(finalize, finalizePrivateKey.Public().(ed25519.PublicKey), 1000); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("unexpected expected-generation mutation accepted: %v", err)
 	}
 }
