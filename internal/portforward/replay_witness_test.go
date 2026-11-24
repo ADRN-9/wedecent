@@ -1829,3 +1829,90 @@ func TestPersistedAcknowledgementsCannotBypassLaterMembershipRevocation(t *testi
 		})
 	}
 }
+
+
+// TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence
+// checks signed conflicts from one configured witness across retries.
+func TestWitnessAcknowledgementEquivocationCannotReplaceOrContributeEvidence(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	store := NewMemoryCheckpointPendingStore()
+	client, witnesses := newWitnessedFixture(t, primary, store)
+	if _, err := store.Begin(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	result, err := primary.Consume(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Resolve(context.Background(), request, result.CheckpointReceipt); err != nil {
+		t.Fatal(err)
+	}
+	for _, trust := range client.Witnesses[:client.Quorum] {
+		if _, err := trust.Witness.Commit(context.Background(), request, result.CheckpointReceipt); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first, err := witnesses[0].Acknowledge(context.Background(), request, result.CheckpointReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, first, client.Witnesses[0]); err != nil {
+		t.Fatal(err)
+	}
+
+	// A valid signature does not make a second terminal outcome for the
+	// same witness/operation compatible with the first durable acknowledgement.
+	conflictingStatus := first
+	conflictingStatus.Status = "already_acknowledged"
+	conflictingStatus.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(conflictingStatus))
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, conflictingStatus, client.Witnesses[0]); !errors.Is(err, ErrCheckpointConflict) {
+		t.Fatalf("conflicting signed terminal outcome accepted: %v", err)
+	}
+
+	// Conflicting operation IDs, request fingerprints and participant vectors
+	// are validly signed by the same witness but cannot bind to this operation.
+	conflictingJTI := first
+	conflictingJTI.JTI = "CCCCCCCCCCCCCCCCCCCCCC"
+	conflictingJTI.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(conflictingJTI))
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, conflictingJTI, client.Witnesses[0]); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("acknowledgement for conflicting operation ID accepted: %v", err)
+	}
+
+	conflictingFingerprint := first
+	conflictingFingerprint.RequestSHA256[0] ^= 0x80
+	conflictingFingerprint.Signature = ed25519.Sign(witnesses[0].private, checkpointWitnessAckMessage(conflictingFingerprint))
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, conflictingFingerprint, client.Witnesses[0]); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("acknowledgement for conflicting request fingerprint accepted: %v", err)
+	}
+
+	conflictingVector := cloneCheckpointRequest(request)
+	conflictingVector.Destination.AccountID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	conflictingVector, err = SignCheckpointRequest(signer, conflictingVector)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAcknowledgement(context.Background(), conflictingVector, result.CheckpointReceipt, first, client.Witnesses[0]); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("acknowledgement for conflicting participant vector accepted: %v", err)
+	}
+
+	// The second witness may acknowledge the original operation, but one
+	// equivocated witness cannot replace its first durable vote.
+	second, err := witnesses[1].Acknowledge(context.Background(), request, result.CheckpointReceipt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RecordAcknowledgement(context.Background(), request, result.CheckpointReceipt, second, client.Witnesses[1]); err != nil {
+		t.Fatal(err)
+	}
+	acks, err := store.LoadAcknowledgements(context.Background(), request, result.CheckpointReceipt, client.Witnesses)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(acks) != client.Quorum || acks[0].Status != first.Status {
+		t.Fatalf("equivocation changed quorum evidence: count=%d first_status=%q", len(acks), acks[0].Status)
+	}
+	if _, err := client.acknowledgeWitnessQuorum(context.Background(), request, result.CheckpointReceipt, store); err != nil {
+		t.Fatalf("original authenticated quorum was not recoverable: %v", err)
+	}
+}
