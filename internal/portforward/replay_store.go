@@ -152,10 +152,10 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 		return ErrReplayUnavailable
 	}
 
-	if err := ensureReplayInitialization(r.Path, r.DeviceID, r.AllowLegacyMigration); err != nil {
+	if err := ensureReplayInitializationContext(ctx, r.Path, r.DeviceID, r.AllowLegacyMigration); err != nil {
 		return fmt.Errorf("%w: replay initialization: %v", ErrReplayUnavailable, err)
 	}
-	unlock, _, err := lockReplayFile(r.Path)
+	unlock, _, err := lockReplayFileContext(ctx, r.Path)
 	if err != nil {
 		return fmt.Errorf("%w: lock replay store: %v", ErrReplayUnavailable, err)
 	}
@@ -224,16 +224,27 @@ func (r *FileReplay) ConsumePortForwardAuthorization(ctx context.Context, jti st
 }
 
 func ensureReplayInitialization(path string, deviceID mesh.DeviceID, allowLegacyMigration bool) error {
-	return ensureReplayInitializationAttempt(path, deviceID, allowLegacyMigration, 0)
+	return ensureReplayInitializationContext(context.Background(), path, deviceID, allowLegacyMigration)
+}
+
+func ensureReplayInitializationContext(ctx context.Context, path string, deviceID mesh.DeviceID, allowLegacyMigration bool) error {
+	if ctx == nil {
+		return ErrReplayUnavailable
+	}
+	return ensureReplayInitializationAttempt(ctx, path, deviceID, allowLegacyMigration, 0)
 }
 
 func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allowLegacyMigration bool, attempt int) (result error) {
+	return ensureReplayInitializationAttemptContext(context.Background(), path, deviceID, allowLegacyMigration, attempt)
+}
+
+func ensureReplayInitializationAttemptContext(ctx context.Context, path string, deviceID mesh.DeviceID, allowLegacyMigration bool, attempt int) (result error) {
 	dir := filepath.Dir(path)
 	if err := secureReplayDirectory(dir); err != nil {
 		return err
 	}
 	initPath := path + ".init"
-	unlockReplay, lockCreated, err := lockReplayFile(path)
+	unlockReplay, lockCreated, err := lockReplayFileContext(ctx, path)
 	if err != nil {
 		return fmt.Errorf("lock replay store initialization: %w", err)
 	}
@@ -311,8 +322,10 @@ func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allo
 			return fmt.Errorf("release replay initialization lock before retry: %w", unlockErr)
 		}
 		locked = false
-		time.Sleep(5 * time.Millisecond)
-		return ensureReplayInitializationAttempt(path, deviceID, allowLegacyMigration, attempt+1)
+		if err := waitReplayLockContext(ctx); err != nil {
+			return err
+		}
+		return ensureReplayInitializationAttemptContext(ctx, path, deviceID, allowLegacyMigration, attempt+1)
 	}
 	if stateExists || (lockExists && !lockCreated) {
 		if !allowLegacyMigration || !stateExists || !lockExists {
@@ -329,6 +342,21 @@ func ensureReplayInitializationAttempt(path string, deviceID mesh.DeviceID, allo
 	return createReplayInitialization(path, replayInitialization{
 		Version: replayStoreVersion, DeviceID: string(deviceID), Status: "pending",
 	})
+}
+
+
+func waitReplayLockContext(ctx context.Context) error {
+	if ctx == nil {
+		return ErrReplayUnavailable
+	}
+	timer := time.NewTimer(5 * time.Millisecond)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func replayPathExists(path string) (bool, error) {
