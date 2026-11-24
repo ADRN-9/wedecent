@@ -2819,6 +2819,7 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 				}
 
 				callback := make(chan string, 1)
+				callbackSignal := make(chan struct{}, 1)
 				finalizeDone := make(chan error, 1)
 				revokeDone := make(chan error, 1)
 				if revokeFirst {
@@ -2835,10 +2836,11 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 					go func() {
 						finalizeDone <- client.FinalizeWithAudit(context.Background(), request, func(_ context.Context, operationID string) error {
 							callback <- operationID
+							callbackSignal <- struct{}{}
 							return nil
 						})
 					}()
-					requireNoSignal(t, callback)
+					requireNoSignal(t, callbackSignal)
 					close(blocking.releaseRevoke)
 					if err := <-revokeDone; err != nil {
 						t.Fatalf("revoke-first failed: %v", err)
