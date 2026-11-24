@@ -114,6 +114,9 @@ func TestCheckpointFenceTokenRejectsAmbiguousWitnessSet(t *testing.T) {
 	if quorum, err := CheckpointFenceQuorum(5); err != nil || quorum != 3 {
 		t.Fatalf("five-witness strict majority = %d, %v", quorum, err)
 	}
+	if _, err := CheckpointFenceQuorum(32); !errors.Is(err, ErrCheckpointQuorum) {
+		t.Fatalf("oversized witness set accepted: %v", err)
+	}
 }
 
 type fenceOrderingHarness struct {
