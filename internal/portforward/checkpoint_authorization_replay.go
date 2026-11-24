@@ -29,7 +29,7 @@ type CheckpointAuthorizationReplay struct {
 
 // CheckpointFinalizationAuditor durably records outcomes and deduplicates retries by operation ID plus outcome.
 type CheckpointFinalizationAuditor interface {
-	RecordCheckpointFinalization(context.Context, CheckpointRequest, string) error
+	RecordCheckpointFinalization(context.Context, CheckpointRequest, string, string) error
 }
 
 const (
@@ -139,6 +139,10 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 		return ErrCheckpointIntegrity
 	}
 	if _, err := CheckpointRequestFingerprint(request); err != nil {
+		return err
+	}
+	operationID, err := checkpointOperationID(request)
+	if err != nil {
 		return err
 	}
 
