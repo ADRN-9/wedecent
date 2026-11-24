@@ -311,11 +311,30 @@ func recordCheckpointAcknowledgement(ctx context.Context, request CheckpointRequ
 	err = update(func(snapshot *checkpointPendingSnapshot) (bool, error) {
 		key := checkpointPendingKey(request)
 		entry, ok := snapshot.Entries[key]
-		if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) ||
-			entry.State != "resolved" || entry.ReceiptHash != rh {
-			if ok && entry.State == "equivocated" {
-				return false, ErrCheckpointConflict
+		if !ok || entry.Fingerprint != hex.EncodeToString(fp[:]) || entry.ReceiptHash != rh {
+			return false, ErrCheckpointHistorical
+		}
+		if entry.State == "equivocated" {
+			for _, old := range entry.Acknowledgements {
+				if old.WitnessID != ack.WitnessID || old.Decision == ack.Decision {
+					continue
+				}
+				for _, evidence := range entry.Equivocations {
+					if evidence.WitnessID == trust.ID && sameCheckpointWitnessAck(evidence.Conflicting, ack) {
+						equivocated = true
+						return false, nil
+					}
+				}
+				entry.Equivocations = append(entry.Equivocations, CheckpointWitnessEquivocation{
+					WitnessID: trust.ID, Original: old, Conflicting: ack, ObservedAtUnixMs: time.Now().UTC().UnixMilli(),
+				})
+				snapshot.Entries[key] = entry
+				equivocated = true
+				return false, nil
 			}
+			return false, ErrCheckpointConflict
+		}
+		if entry.State != "resolved" {
 			return false, ErrCheckpointHistorical
 		}
 		for _, old := range entry.Acknowledgements {
