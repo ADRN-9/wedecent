@@ -144,6 +144,12 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 
 	initiator, initiatorErr := r.Memberships.ResolveCheckpointMembership(ctx, claims.InitiatingDevice)
 	destination, destinationErr := r.Memberships.ResolveCheckpointMembership(ctx, claims.DestinationDevice)
+	if errors.Is(initiatorErr, ErrCheckpointRevoked) || errors.Is(destinationErr, ErrCheckpointRevoked) {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationRevoked); err != nil {
+			return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr, err)
+		}
+		return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr)
+	}
 	if initiatorErr != nil || destinationErr != nil {
 		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationMembershipUnavailable); err != nil {
 			return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, err)
