@@ -17,6 +17,7 @@ import (
 const checkpointFenceLogMaxRecord = 1 << 20
 
 var ErrCheckpointFenceStore = errors.New("portforward: durable fencing store unavailable")
+var ErrCheckpointWitnessDisagreement = errors.New("portforward: checkpoint witnesses disagree on fencing outcome")
 
 type CheckpointFenceWitnessTrust struct {
 	ID        string
