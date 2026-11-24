@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(16);
+select plan(19);
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
@@ -41,12 +41,21 @@ select jsonb_build_object(
 )
 $$;
 
+create function pg_temp.audit_evidence(p_outcome text) returns jsonb
+language sql immutable as $
+select case when p_outcome in ('finalized','rejected_revocation')
+ then '{"primary_receipt":{},"witness_acknowledgements":[],"revocation_proofs":[]}'::jsonb
+ else '{}'::jsonb end
+$;
+
 create function pg_temp.record_audit(p_outcome text,payload jsonb) returns jsonb
 language sql as $q$
 select public.record_checkpoint_finalization(
  'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
  p_outcome,1,payload,
  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
+ pg_temp.audit_evidence(p_outcome),
+ extensions.digest(convert_to(wedecent_private.canonical_jsonb(pg_temp.audit_evidence(p_outcome)),'UTF8'),'sha256'),
  '11000000-0000-4000-8000-000000000091'
 )
 $q$;
@@ -57,6 +66,8 @@ select public.record_checkpoint_finalization(
  'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
  p_outcome,1,payload,
  extensions.digest(convert_to(wedecent_private.canonical_jsonb(payload),'UTF8'),'sha256'),
+ pg_temp.audit_evidence(p_outcome),
+ extensions.digest(convert_to(wedecent_private.canonical_jsonb(pg_temp.audit_evidence(p_outcome)),'UTF8'),'sha256'),
  p_actor
 )
 $q$;
@@ -77,6 +88,11 @@ select is((pg_temp.record_audit('finalized',pg_temp.audit_payload())->>'replayed
 select throws_ok($$select pg_temp.record_audit('rejected_revocation',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','contradictory terminal outcome is rejected atomically');
 select throws_ok($$select pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())$$,'23505','contradictory terminal outcome','no intermediate transition is appended after terminal completion');
 select is((select count(*)::integer from public.checkpoint_finalization_audit where operation_id=repeat('a',64) and outcome in('finalized','rejected_revocation')),1,'only one terminal outcome exists per operation');
+select throws_ok($select pg_temp.record_audit('finalized',pg_temp.audit_payload())$,'23505','completion requires a started operation','completion without a start event is rejected');
+select throws_ok($select pg_temp.record_audit('membership_unavailable',pg_temp.audit_payload())$,'23505','failure transition requires a started operation','failure transition without a start event is rejected');
+select is((pg_temp.record_audit('finalization_started',pg_temp.audit_payload())->>'replayed'),'false','failure/recovery operation starts cleanly');
+select is((pg_temp.record_audit('finalization_failed',pg_temp.audit_payload())->>'replayed'),'false','intermediate failure is recorded without terminalizing operation');
+select is((pg_temp.record_audit('finalized',pg_temp.audit_payload())->>'replayed'),'false','successful retry can recover after intermediate failure');
 
 select * from finish();
 rollback;
