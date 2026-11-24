@@ -272,7 +272,16 @@ select throws_ok(
     'router cannot impersonate an endpoint replay proof'
 );
 select throws_ok(
-    $$select public.consume_port_forward_authorization('wd_aaaaaaaaaaaaaaaa', repeat('Z', 43), '44000000-0000-4000-8000-000000000010', 'local', 'wd_aaaaaaaaaaaaaaaa', 'wd_dddddddddddddddd', null, null, null, null, null, null, null, null, null, repeat('I', 22), pg_catalog.clock_timestamp(), pg_catalog.clock_timestamp() + interval '60 seconds', pg_catalog.decode(repeat('a', 64), 'hex'))$$,
+    $q$select public.consume_port_forward_authorization(
+        'wd_aaaaaaaaaaaaaaaa',
+        (select d.public_key from public.devices as d where d.device_id = 'wd_aaaaaaaaaaaaaaaa'),
+        '44000000-0000-4000-8000-000000000010', 'local',
+        'wd_aaaaaaaaaaaaaaaa', 'wd_eeeeeeeeeeeeeeee',
+        null, null, null, null, null, null, null, null, null,
+        repeat('I', 22), pg_catalog.clock_timestamp(),
+        pg_catalog.clock_timestamp() + interval '60 seconds',
+        pg_catalog.decode(repeat('a', 64), 'hex')
+    )$q$,
     '42501',
     'destination device is not enrolled',
     'missing destination record fails closed'
