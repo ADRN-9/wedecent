@@ -85,6 +85,11 @@ type checkpointPendingCompletionStore interface {
 	MarkFinalizationComplete(context.Context, CheckpointRequest, CheckpointReceipt, string) error
 }
 
+// checkpointPendingEvidenceStore is the write-ahead boundary for external
+// finalization. StoreFinalizationEvidence must durably bind the stable operation
+// ID to the complete proof bundle before the audit sink is called. Every retry
+// must use LoadFinalizationEvidence; callers must not rebuild proof from current
+// provider heads after an ambiguous external response.
 type checkpointPendingEvidenceStore interface {
 	StoreFinalizationEvidence(context.Context, CheckpointRequest, CheckpointReceipt, string, CheckpointFinalizationEvidence) error
 	LoadFinalizationEvidence(context.Context, CheckpointRequest, CheckpointReceipt, string) (CheckpointFinalizationEvidence, bool, error)
