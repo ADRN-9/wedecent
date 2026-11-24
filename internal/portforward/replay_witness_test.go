@@ -21,15 +21,15 @@ import (
 	"wedecent.com/wedecent/internal/mesh"
 )
 
-type testCheckpointRevocationAuthorizer struct{}
+type testCheckpointRevocationProofProvider struct{}
 
-func (testCheckpointRevocationAuthorizer) AuthorizeCheckpointRevocation(ctx context.Context, endpoint CheckpointEndpoint, next uint64) ([sha256.Size]byte, error) {
+func (testCheckpointRevocationProofProvider) CheckpointRevocationProof(ctx context.Context, endpoint CheckpointEndpoint, next uint64) ([]byte, error) {
 	if ctx == nil || ctx.Err() != nil || !validCheckpointEndpoint(endpoint) ||
 		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
-		return [sha256.Size]byte{}, ErrCheckpointIntegrity
+		return nil, ErrCheckpointIntegrity
 	}
 	request := checkpointRevocationFingerprint(endpoint, next)
-	return sha256.Sum256(append([]byte("test-authorized-revocation-v1\n"), request[:]...)), nil
+	return append([]byte("test-revocation-proof-v1\n"), request[:]...), nil
 }
 
 type testAtomicCheckpointPrimary struct {
@@ -221,7 +221,7 @@ func newWitnessedFixture(t *testing.T, primary *deterministicCheckpointProvider,
 	atomicPrimary := fence.Primary.(*testAtomicCheckpointPrimary)
 	provider := &WitnessedReplayCheckpointProvider{
 		Primary: atomicPrimary, PrimaryKey: publicKey, Witnesses: trust, Quorum: 2,
-		Pending: pending, Fencing: fence, RevocationAuthorizer: testCheckpointRevocationAuthorizer{},
+		Pending: pending, Fencing: fence, RevocationProofs: testCheckpointRevocationProofProvider{},
 	}
 	return provider, witnesses
 }
@@ -900,7 +900,7 @@ func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
 	}
 	restarted := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: restartedStore, Fencing: client.Fencing, RevocationAuthorizer: client.RevocationAuthorizer,
+		Quorum: client.Quorum, Pending: restartedStore, Fencing: client.Fencing, RevocationProofs: client.RevocationProofs,
 	}
 	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("top-level exact-request recovery returned a new session: %v", err)
