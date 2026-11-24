@@ -2045,6 +2045,27 @@ func TestPersistedQuorumDetectsAndPersistsEquivocationAcrossRestart(t *testing.T
 		!sameCheckpointWitnessAck(evidence[0].Conflicting, conflict) {
 		t.Fatal("equivocation evidence does not preserve both signed decisions")
 	}
+	journalBytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var journal checkpointPendingSnapshot
+	if err := json.Unmarshal(journalBytes, &journal); err != nil {
+		t.Fatal(err)
+	}
+	entry := journal.Entries[checkpointPendingKey(request)]
+	if entry.State != "equivocated" || len(entry.Acknowledgements) != 2 {
+		t.Fatalf("terminal journal state=%q original acknowledgements=%d", entry.State, len(entry.Acknowledgements))
+	}
+	originalFound := false
+	for _, ack := range entry.Acknowledgements {
+		if ack.WitnessID == original[0].WitnessID && sameCheckpointWitnessAck(ack, original[0]) {
+			originalFound = true
+		}
+	}
+	if !originalFound {
+		t.Fatal("persisting equivocation replaced or deleted the original acknowledgement")
+	}
 
 	restarted, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
