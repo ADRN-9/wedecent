@@ -9,12 +9,11 @@ permissions:
 
 jobs:
   format-checkpoint-files:
-    if: github.event.pull_request.head.repo.full_name == github.repository && github.event.pull_request.head.ref == 'feat/secure-port-forwarding-foundation'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
-          ref: ${{ github.event.pull_request.head.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: true
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5
         with:
@@ -23,7 +22,7 @@ jobs:
         run: gofmt -w internal/portforward/replay_checkpoint.go internal/portforward/replay_checkpoint_test.go internal/portforward/replay_checkpoint_recovery_test.go
       - name: Commit formatting only when needed
         env:
-          BRANCH: ${{ github.event.pull_request.head.ref }}
+          BRANCH: ${{ github.event.pull_request.head.ref || github.ref_name }}
         run: |
           if ! git diff --quiet; then
             git config user.name 'github-actions[bot]'
