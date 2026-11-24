@@ -47,7 +47,7 @@ C139 therefore does not invent table names, permission semantics, or migration d
 ## Not completed / acceptance blockers
 
 - No production primary or independent witness adapters are present in the inspected PR tree.
-- No production membership/revocation resolver or trusted membership schema contract was available to safely implement the expanded SQL transaction.
+- The account authorization schema already existed in the 20260826160000_account_authorization_foundation.sql migration; C139 did not yet implement the expanded multi-participant SQL transaction. C142 extends those existing records rather than introducing a competing membership model.
 - No real primary/witness distributed prepare/finalize protocol was implemented.
 - No production credentials, service endpoints, TLS SPKI pins, KMS/HSM trust anchors, or independent witness infrastructure were provisioned.
 - No local Go toolchain/repository checkout was available in this execution environment; validation was performed through GitHub Actions rather than a claimed local test run.
