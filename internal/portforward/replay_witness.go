@@ -147,6 +147,9 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	}
 	result.WitnessReceipts = receipts
 	result.WitnessAcknowledgements = acks
+	if result.Disposition == CheckpointRecovered {
+		return CheckpointResult{}, ErrCheckpointHistorical
+	}
 	return result, nil
 }
 

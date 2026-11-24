@@ -159,12 +159,8 @@ func TestWitnessQuorumLossFailsClosedAndPendingRetryRecovers(t *testing.T) {
 		t.Fatalf("quorum loss error=%v", err)
 	}
 	witnesses[0].available, witnesses[1].available = true, true
-	result, err := client.Consume(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Disposition != CheckpointRecovered {
-		t.Fatalf("disposition=%q", result.Disposition)
+	if _, err := client.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
+		t.Fatalf("recovered authorization was returned as a new session: %v", err)
 	}
 }
 
@@ -194,12 +190,8 @@ func TestWitnessedClientRestartRecoversLostPrimaryCommit(t *testing.T) {
 	}
 	restarted, _ := newWitnessedFixture(t, primary, restartedStore)
 	restarted.Witnesses = client.Witnesses
-	result, err := restarted.Consume(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Disposition != CheckpointRecovered || len(result.WitnessReceipts) < restarted.Quorum {
-		t.Fatalf("restart recovery disposition=%q witnesses=%d", result.Disposition, len(result.WitnessReceipts))
+	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
+		t.Fatalf("recovered primary authorization was returned as a new session: %v", err)
 	}
 	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointReplay) && !errors.Is(err, ErrCheckpointHistorical) {
 		t.Fatalf("completed operation replay accepted: %v", err)
@@ -679,12 +671,8 @@ func TestWitnessFinalizationRecoversLostAckResponsesAfterRestart(t *testing.T) {
 		Primary: primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
 		Quorum: client.Quorum, Pending: restartedStore,
 	}
-	result, err := restarted.Consume(context.Background(), request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Disposition != CheckpointRecovered || len(result.WitnessAcknowledgements) < restarted.Quorum {
-		t.Fatalf("recovered disposition=%q acknowledgements=%d", result.Disposition, len(result.WitnessAcknowledgements))
+	if _, err := restarted.Consume(context.Background(), request); !errors.Is(err, ErrCheckpointHistorical) {
+		t.Fatalf("recovered authorization was returned as a new session: %v", err)
 	}
 	if len(primary.ledgers) != 1 {
 		t.Fatalf("primary authorization ledger changed during finalization recovery: %d", len(primary.ledgers))
