@@ -92,8 +92,6 @@ type WitnessedReplayCheckpointProvider struct {
 	Witnesses  []CheckpointWitnessTrust
 	Quorum     int
 	Pending    CheckpointPendingStore
-
-	finalizeMu sync.Mutex
 }
 
 func (p *WitnessedReplayCheckpointProvider) ValidateConfiguration() error {
@@ -178,9 +176,6 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 	if p == nil {
 		return ErrCheckpointUnavailable
 	}
-	p.finalizeMu.Lock()
-	defer p.finalizeMu.Unlock()
-
 	if locker, ok := p.Pending.(checkpointPendingFinalizationLocker); ok {
 		unlock, err := locker.LockFinalization(ctx, request)
 		if err != nil {
