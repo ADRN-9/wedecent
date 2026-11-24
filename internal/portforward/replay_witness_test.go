@@ -621,7 +621,7 @@ func TestFilePendingJournalPersistsVerifiedAcknowledgements(t *testing.T) {
 	forged := ack
 	forged.Signature = append([]byte(nil), ack.Signature...)
 	forged.Signature[0] ^= 0xff
-	if err := restarted.RecordAcknowledgement(context.Background(), request, receiptResult.CheckpointReceipt, forged, client.Witnesses[1]); !errors.Is(err, ErrCheckpointIntegrity) {
+	if err := restarted.RecordAcknowledgement(context.Background(), request, receiptResult.CheckpointReceipt, forged, client.Witnesses[0]); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("incorrectly signed acknowledgement accepted: %v", err)
 	}
 }
