@@ -97,6 +97,9 @@ func (a *testAtomicCheckpointPrimary) verifyHeadsLocked(ctx context.Context, exp
 func (a *testAtomicCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx context.Context, request CheckpointFenceRequest, heads []CheckpointFenceParticipantHead) (CheckpointFenceToken, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if !sameCheckpointEndpointSet(fenceHeadEndpoints(heads), request.Participants) {
+		return CheckpointFenceToken{}, ErrCheckpointIntegrity
+	}
 	if err := a.verifyHeadsLocked(ctx, heads); err != nil {
 		return CheckpointFenceToken{}, err
 	}
@@ -110,6 +113,9 @@ func (a *testAtomicCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx contex
 func (a *testAtomicCheckpointPrimary) CommitFenceWithCheckpointHeads(ctx context.Context, token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement, heads []CheckpointFenceParticipantHead) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if !sameCheckpointEndpointSet(fenceHeadEndpoints(heads), token.Participants) {
+		return ErrCheckpointIntegrity
+	}
 	if err := a.verifyHeadsLocked(ctx, heads); err != nil {
 		return err
 	}
@@ -181,9 +187,8 @@ func newWitnessedFixture(t *testing.T, primary *deterministicCheckpointProvider,
 		witnesses[i] = newDeterministicCheckpointWitness([]string{"witness-a", "witness-b", "witness-c"}[i], publicKey)
 		trust[i] = CheckpointWitnessTrust{Witness: witnesses[i], ID: witnesses[i].id, PublicKey: witnesses[i].private.Public().(ed25519.PublicKey)}
 	}
-	atomicPrimary := &testAtomicCheckpointPrimary{replay: primary}
 	fence := newTestFenceCoordinator(t, primary)
-	atomicPrimary = fence.Primary.(*testAtomicCheckpointPrimary)
+	atomicPrimary := fence.Primary.(*testAtomicCheckpointPrimary)
 	provider := &WitnessedReplayCheckpointProvider{
 		Primary: atomicPrimary, PrimaryKey: publicKey, Witnesses: trust, Quorum: 2,
 		Pending: pending, Fencing: fence,
