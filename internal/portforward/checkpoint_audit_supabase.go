@@ -11,8 +11,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +22,14 @@ import (
 	"wedecent.com/wedecent/internal/account"
 )
 
+type CheckpointAuditTrust struct {
+	Hostname string
+	Port uint16
+	SPKISHA256Pins string
+}
+
 type SupabaseCheckpointFinalizationAuditor struct {
+	trust CheckpointAuditTrust
 	mu          sync.Mutex
 	client      account.Client
 	sessionPath string
@@ -36,42 +45,91 @@ type finalizationAuditResponse struct {
 	Replayed    *bool  `json:"replayed"`
 }
 
-func NewSupabaseCheckpointFinalizationAuditor(client account.Client, path string) (*SupabaseCheckpointFinalizationAuditor, error) {
+func NewSupabaseCheckpointFinalizationAuditor(client account.Client, path string, trust CheckpointAuditTrust) (*SupabaseCheckpointFinalizationAuditor, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, errors.New("checkpoint audit session path is required")
+	}
+	pins, err := parseCheckpointAuditPins(trust.SPKISHA256Pins)
+	if err != nil || !validCheckpointAuditAuthority(trust.Hostname, trust.Port) {
+		return nil, errors.New("independently provisioned checkpoint audit hostname and SPKI pins are required")
 	}
 	session, err := account.Load(path)
 	if err != nil {
 		return nil, fmt.Errorf("load authenticated audit session: %w", err)
 	}
-	if _, err := auditEndpoint(session); err != nil {
+	if _, err := auditEndpoint(session, trust); err != nil {
 		return nil, err
 	}
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, errors.New("checkpoint audit default HTTP transport is unavailable")
+	}
+	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS13, ServerName: trust.Hostname}
+	tlsConfig.VerifyConnection = func(state tls.ConnectionState) error {
+		if len(state.PeerCertificates) == 0 {
+			return errors.New("checkpoint audit peer certificate missing")
+		}
+		actual := sha256.Sum256(state.PeerCertificates[0].RawSubjectPublicKeyInfo)
+		for _, expected := range pins {
+			if subtle.ConstantTimeCompare(actual[:], expected[:]) == 1 {
+				return nil
+			}
+		}
+		return errors.New("checkpoint audit SPKI pin mismatch")
+	}
+	transport := defaultTransport.Clone()
+	transport.TLSClientConfig = tlsConfig
 	return &SupabaseCheckpointFinalizationAuditor{
-		client:      client,
-		sessionPath: path,
-		session:     session,
+		trust: trust, client: client, sessionPath: path, session: session,
 		http: &http.Client{
-			Timeout: 12 * time.Second,
-			Transport: &http.Transport{
-				TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS13},
-			},
-			CheckRedirect: func(*http.Request, []*http.Request) error {
-				return http.ErrUseLastResponse
-			},
+			Timeout: 12 * time.Second, Transport: transport,
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}, nil
 }
 
-func auditEndpoint(session *account.Session) (string, error) {
-	if session == nil {
-		return "", errors.New("checkpoint audit session missing")
+func validCheckpointAuditAuthority(host string, port uint16) bool {
+	if host == "" || strings.TrimSpace(host) != host || strings.ToLower(host) != host ||
+		strings.HasSuffix(host, ".") || port == 0 {
+		return false
 	}
+	if net.ParseIP(host) != nil {
+		return true
+	}
+	if len(host) > 253 { return false }
+	for _, label := range strings.Split(host, ".") {
+		if len(label)==0 || len(label)>63 || label[0]=='-' || label[len(label)-1]=='-' { return false }
+		for _, ch := range label { if !(ch>='a'&&ch<='z'||ch>='0'&&ch<='9'||ch=='-') { return false } }
+	}
+	return true
+}
+
+func parseCheckpointAuditPins(raw string) ([][sha256.Size]byte, error) {
+	parts := strings.Split(strings.TrimSpace(raw), ",")
+	if len(parts)==0 || len(parts)>4 { return nil, ErrCheckpointUnavailable }
+	pins:=make([][sha256.Size]byte,0,len(parts));seen:=make(map[[sha256.Size]byte]bool)
+	for _,part:=range parts {
+		part=strings.TrimSpace(part)
+		if len(part)!=sha256.Size*2 { return nil, ErrCheckpointUnavailable }
+		decoded,err:=hex.DecodeString(part);if err!=nil||len(decoded)!=sha256.Size||strings.ToLower(part)!=part{return nil,ErrCheckpointUnavailable}
+		var pin [sha256.Size]byte;copy(pin[:],decoded);if seen[pin]{return nil,ErrCheckpointUnavailable};seen[pin]=true;pins=append(pins,pin)
+	}
+	return pins,nil
+}
+
+func auditEndpoint(session *account.Session, trust CheckpointAuditTrust) (string, error) {
+	if session == nil { return "", errors.New("checkpoint audit session missing") }
 	u, err := url.Parse(session.SupabaseURL)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil ||
-		u.RawQuery != "" || u.Fragment != "" || (u.Path != "" && u.Path != "/") {
-		return "", errors.New("checkpoint audit requires authenticated HTTPS Supabase origin")
+		u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.Opaque != "" ||
+		(u.Path != "" && u.Path != "/") || u.RawPath != "" || strings.HasSuffix(u.Host, ":") {
+		return "", errors.New("checkpoint audit requires a strict HTTPS Supabase origin")
+	}
+	port:=uint64(443)
+	if raw:=u.Port();raw!="" { parsed,parseErr:=strconv.ParseUint(raw,10,16);if parseErr!=nil||parsed==0||strconv.FormatUint(parsed,10)!=raw{return "",errors.New("invalid checkpoint audit port")};port=parsed }
+	if u.Hostname()!=trust.Hostname || uint16(port)!=trust.Port || !validCheckpointAuditAuthority(trust.Hostname,trust.Port) {
+		return "", errors.New("checkpoint audit session origin does not match independent trust configuration")
 	}
 	return strings.TrimRight(u.String(), "/") + "/functions/v1/port-forward-finalization-audit", nil
 }
@@ -176,7 +234,7 @@ func (a *SupabaseCheckpointFinalizationAuditor) RecordCheckpointFinalization(
 	if user.ID == "" || user.ID != fresh.UserID {
 		return errors.New("authenticated audit user mismatch")
 	}
-	endpointURL, err := auditEndpoint(fresh)
+	endpointURL, err := auditEndpoint(fresh, a.trust)
 	if err != nil {
 		return err
 	}
