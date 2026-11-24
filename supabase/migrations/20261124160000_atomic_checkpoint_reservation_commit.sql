@@ -163,7 +163,7 @@ begin
         select 1
           from pg_catalog.jsonb_array_elements(v_participants) as item(value)
          where item.value ->> 'organization_id' <> p_organization_id::text
-            or pg_catalog.jsonb_object_length(item.value) <> 7
+            or pg_catalog.jsonb_object_length(item.value) <> 6
             or not (item.value ?& array[
                 'device_id', 'account_id', 'organization_id',
                 'revocation_epoch', 'head_generation', 'head_hash'
