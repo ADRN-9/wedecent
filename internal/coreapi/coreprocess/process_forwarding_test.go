@@ -169,6 +169,7 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 		Witnesses:  witnesses,
 		Quorum:     2,
 	}
+	auditTrust := portforward.CheckpointAuditTrust{Hostname: "audit-test.supabase.co", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64)}
 	verifier, err := newLocalCoreForwardingVerifier(
 		stateDir,
 		mesh.DeviceID(created.ID),
@@ -177,6 +178,7 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 		provider,
 		coreProcessMembershipResolver{},
 		nil,
+		auditTrust,
 		"",
 		"",
 	)
@@ -225,7 +227,7 @@ func TestLocalCoreRejectsCheckpointKeyReuseAcrossTrustDomains(t *testing.T) {
 			Witnesses: newWitnesses(), Quorum: 2,
 		}
 		_, err := newLocalCoreForwardingVerifier(stateDir, mesh.DeviceID(created.ID), created.PrivateKey,
-			controlPlaneKey, provider, coreProcessMembershipResolver{}, nil, "", "")
+			controlPlaneKey, provider, coreProcessMembershipResolver{}, nil, portforward.CheckpointAuditTrust{}, "", "")
 		if !errors.Is(err, portforward.ErrCheckpointIntegrity) {
 			t.Fatalf("cross-domain primary key reuse accepted: %v", err)
 		}
@@ -242,7 +244,7 @@ func TestLocalCoreRejectsCheckpointKeyReuseAcrossTrustDomains(t *testing.T) {
 			Witnesses: witnesses, Quorum: 2,
 		}
 		_, err = newLocalCoreForwardingVerifier(stateDir, mesh.DeviceID(created.ID), created.PrivateKey,
-			controlPlaneKey, provider, coreProcessMembershipResolver{}, nil, "", "")
+			controlPlaneKey, provider, coreProcessMembershipResolver{}, nil, portforward.CheckpointAuditTrust{}, "", "")
 		if !errors.Is(err, portforward.ErrCheckpointIntegrity) {
 			t.Fatalf("cross-domain witness key reuse accepted: %v", err)
 		}
