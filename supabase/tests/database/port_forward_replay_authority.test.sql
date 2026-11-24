@@ -90,11 +90,11 @@ select ok(
     'service_role cannot directly rewrite transaction snapshots'
 );
 select ok(
-    not pg_catalog.has_function_privilege('authenticated', 'public.consume_port_forward_authorization(text,text,uuid,text,text,text,text,uuid,text,text,text,text,text,text,bigint,bigint,text,timestamp with time zone,timestamp with time zone,bytea)', 'EXECUTE'),
+    not pg_catalog.has_function_privilege('authenticated', 'public.consume_port_forward_authorization(text,text,uuid,text,text,text,text,uuid,text,text,text,text,text,bigint,bigint,text,timestamp with time zone,timestamp with time zone,bytea)', 'EXECUTE'),
     'authenticated cannot call atomic replay RPC'
 );
 select ok(
-    pg_catalog.has_function_privilege('service_role', 'public.consume_port_forward_authorization(text,text,uuid,text,text,text,text,uuid,text,text,text,text,timestamp with time zone,timestamp with time zone,bytea)', 'EXECUTE'),
+    pg_catalog.has_function_privilege('service_role', 'public.consume_port_forward_authorization(text,text,uuid,text,text,text,text,uuid,text,text,text,text,text,bigint,bigint,text,timestamp with time zone,timestamp with time zone,bytea)', 'EXECUTE'),
     'service_role can call atomic replay RPC'
 );
 
