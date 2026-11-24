@@ -1286,8 +1286,8 @@ func TestExpiredFinalizationRejectsMembershipRevocationAfterWitnessCommit(t *tes
 	if err := replay.FinalizeExpiredPortForwardAuthorization(context.Background(), authorization); !errors.Is(err, ErrCheckpointRevoked) {
 		t.Fatalf("revoked endpoint historical operation finalized: %v", err)
 	}
-	if len(audit.outcomes) != 1 || audit.outcomes[0] != CheckpointFinalizationRevoked {
-		t.Fatalf("duplicate revocation audit was not idempotent: %v", audit.outcomes)
+	if len(audit.outcomes) != 0 {
+		t.Fatalf("unsupported terminal revocation audit was emitted: %v", audit.outcomes)
 	}
 	for _, witness := range witnesses {
 		if len(witness.historyFor(witnessScope(initiator))) != 1 {
@@ -3306,6 +3306,9 @@ func TestFinalizationEvidenceIsDurableImmutableAndTamperEvident(t *testing.T) {
 
 	restarted, err := NewFileCheckpointPendingStore(path)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := restarted.SetCheckpointTrustAnchors(client.PrimaryKey, client.Witnesses, client.Quorum); err != nil {
 		t.Fatal(err)
 	}
 	recovered, found, err := restarted.LoadFinalizationEvidence(context.Background(), request, receipt, operationID)
