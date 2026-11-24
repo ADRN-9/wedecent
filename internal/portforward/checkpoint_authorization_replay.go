@@ -150,13 +150,13 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 		router, routerErr = r.Memberships.ResolveCheckpointMembership(ctx, claims.Router)
 	}
 	if errors.Is(initiatorErr, ErrCheckpointRevoked) || errors.Is(destinationErr, ErrCheckpointRevoked) || errors.Is(routerErr, ErrCheckpointRevoked) {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationRevoked); err != nil {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationRevoked); err != nil {
 			return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr, routerErr, err)
 		}
 		return errors.Join(ErrCheckpointRevoked, initiatorErr, destinationErr, routerErr)
 	}
 	if initiatorErr != nil || destinationErr != nil || routerErr != nil {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationMembershipUnavailable); err != nil {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationMembershipUnavailable); err != nil {
 			return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, routerErr, err)
 		}
 		return errors.Join(ErrCheckpointUnavailable, initiatorErr, destinationErr, routerErr)
@@ -167,17 +167,20 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 		initiator.OrganizationID != destination.OrganizationID ||
 		!validCheckpointEndpoint(initiator) || !validCheckpointEndpoint(destination) ||
 		router != request.Router {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationRevoked); err != nil {
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationRevoked); err != nil {
 			return errors.Join(ErrCheckpointRevoked, err)
 		}
 		return ErrCheckpointRevoked
 	}
-	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationStarted); err != nil {
+	if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationStarted); err != nil {
 		return errors.Join(ErrCheckpointUnavailable, err)
 	}
 	finalizedAuditRecorded := false
-	err = r.Provider.FinalizeWithAudit(ctx, request, func() error {
-		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationComplete); err != nil {
+	err = r.Provider.FinalizeWithAudit(ctx, request, func(_ context.Context, stableOperationID string) error {
+		if stableOperationID != operationID {
+			return ErrCheckpointIntegrity
+		}
+		if err := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, stableOperationID, CheckpointFinalizationComplete); err != nil {
 			return err
 		}
 		finalizedAuditRecorded = true
@@ -187,7 +190,22 @@ func (r *CheckpointAuthorizationReplay) FinalizeExpiredPortForwardAuthorization(
 		if finalizedAuditRecorded {
 			return err
 		}
-		auditErr := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, CheckpointFinalizationFailed)
+		// A retry may skip an already completed callback and fail only while
+		// compacting. Do not append a contradictory failed outcome in that case.
+		if finalizationStore, ok := r.Provider.Pending.(interface {
+			LoadFinalization(context.Context, string, string, [sha256.Size]byte) (CheckpointRequest, CheckpointReceipt, bool, bool, error)
+		}); ok {
+			saved, receipt, found, hasReceipt, loadErr := finalizationStore.LoadFinalization(ctx, request.ConsumingDeviceID, request.JTI, request.AuthorizationSHA256)
+			if loadErr == nil && found && hasReceipt {
+				if completionStore, ok := r.Provider.Pending.(checkpointPendingCompletionStore); ok {
+					completed, completionErr := completionStore.LoadFinalizationComplete(ctx, saved, receipt, operationID)
+					if completionErr == nil && completed {
+						return err
+					}
+				}
+			}
+		}
+		auditErr := r.FinalizationAuditor.RecordCheckpointFinalization(ctx, request, operationID, CheckpointFinalizationFailed)
 		return errors.Join(err, auditErr)
 	}
 	return nil
