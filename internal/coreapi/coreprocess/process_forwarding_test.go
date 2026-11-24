@@ -125,7 +125,7 @@ func (coreProcessMembershipResolver) ResolveCheckpointMembership(context.Context
 	return portforward.CheckpointEndpoint{}, portforward.ErrCheckpointRevoked
 }
 
-func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
+func TestLocalCoreRequiresAtomicFenceAuthorityForWitnessedCheckpointReplay(t *testing.T) {
 	stateDir := t.TempDir()
 	created, err := identity.Ensure(stateDir, "core-witnessed-forwarding-test")
 	if err != nil {
@@ -179,7 +179,7 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 	if missingAuditTrustErr == nil || !strings.Contains(missingAuditTrustErr.Error(), "independently provisioned checkpoint audit hostname and SPKI pins") {
 		t.Fatalf("missing Local Core audit trust did not fail closed: %v", missingAuditTrustErr)
 	}
-	verifier, err := newLocalCoreForwardingVerifier(
+	_, err = newLocalCoreForwardingVerifier(
 		stateDir,
 		mesh.DeviceID(created.ID),
 		created.PrivateKey,
@@ -191,11 +191,9 @@ func TestLocalCoreWiresOnlyWitnessedCheckpointReplay(t *testing.T) {
 		"",
 		"",
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := verifier.Replay.(portforward.VerifiedAuthorizationReplayStore); !ok {
-		t.Fatal("Local Core did not bind the complete verified capability to witnessed checkpoint replay")
+	if err == nil || !strings.Contains(err.Error(), "invalid witnessed checkpoint provider") ||
+		!strings.Contains(err.Error(), "checkpoint authority unavailable") {
+		t.Fatalf("Local Core accepted a provider without atomic distributed fencing: %v", err)
 	}
 	if provider.Pending != nil {
 		t.Fatal("Local Core mutated the caller's checkpoint provider instead of installing its own durable journal copy")
