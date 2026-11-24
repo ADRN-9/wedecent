@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(33);
+select plan(35);
 select is(wedecent_private.canonical_jsonb('{"n":-9007199254740991}'::jsonb),'{"n":-9007199254740991}','canonical JSON preserves minimum JavaScript safe integer');
 select is(wedecent_private.canonical_jsonb('{"n":9007199254740991}'::jsonb),'{"n":9007199254740991}','canonical JSON preserves maximum JavaScript safe integer');
 select is(wedecent_private.canonical_jsonb('{"z":[0,1,-1,9007199254740991],"a":{"b":true,"n":-9007199254740991,"s":"ok"}}'::jsonb),'{"a":{"b":true,"n":-9007199254740991,"s":"ok"},"z":[0,1,-1,9007199254740991]}','canonical JSON sorts nested keys and preserves array numeric boundaries');
@@ -16,6 +16,8 @@ select is(
  '624ae53f22de418876cf22927cd32407b01c39bd63adc1f8095dc15301cc22dd',
  'SQL canonical payload digest matches shared Go and TypeScript vector'
 );
+select throws_ok($q$select wedecent_private.canonical_jsonb('{"n":9007199254740992}'::jsonb)$q$,'22023','unsafe canonical JSON number','SQL canonical JSON rejects unsafe integers');
+select throws_ok($q$select wedecent_private.canonical_jsonb('{"n":1.5}'::jsonb)$q$,'22023','unsafe canonical JSON number','SQL canonical JSON rejects fractional numbers');
 
 insert into auth.users(id,aud,role,email) values
 ('11000000-0000-4000-8000-000000000091','authenticated','authenticated','audit-initiator@example.test'),
