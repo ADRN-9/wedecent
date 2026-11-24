@@ -13,6 +13,8 @@ var (
 	BuiltAt                   = "unknown"
 	ReplayAuthorityHostname   string
 	ReplayAuthoritySPKISHA256 string
+	CheckpointAuditHostname   string
+	CheckpointAuditSPKISHA256 string
 )
 
 type Info struct {
@@ -55,7 +57,7 @@ func WriteReleaseTrust(w io.Writer) error {
 	if w == nil {
 		return fmt.Errorf("release trust output writer is nil")
 	}
-	_, err := fmt.Fprintf(w, "hostname=%s\nspki_sha256=%s\n", ReplayAuthorityHostname, ReplayAuthoritySPKISHA256)
+	_, err := fmt.Fprintf(w, "hostname=%s\nspki_sha256=%s\ncheckpoint_audit_hostname=%s\ncheckpoint_audit_spki_sha256=%s\n", ReplayAuthorityHostname, ReplayAuthoritySPKISHA256, CheckpointAuditHostname, CheckpointAuditSPKISHA256)
 	return err
 }
 
