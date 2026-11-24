@@ -1297,7 +1297,7 @@ func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context
 	if err != nil {
 		return CheckpointFenceOperation{}, err
 	}
-	return p.executeOrganizationFence(ctx, scope, CheckpointFenceFinalize, operationID, fingerprint, request.AuthorizationSHA256, heads)
+	return p.executeOrganizationFence(ctx, scope, CheckpointFenceFinalize, operationID, fingerprint, request.AuthorizationSHA256, checkpointRequestParticipants(request), heads)
 }
 
 func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.Context, endpoint CheckpointEndpoint, next uint64) error {
@@ -1313,7 +1313,7 @@ func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.C
 	operationID := checkpointFenceOperationID(CheckpointFenceRevoke,
 		hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
 	_, err = p.executeOrganizationFence(ctx, organizationCheckpointFenceScope(endpoint.OrganizationID),
-		CheckpointFenceRevoke, operationID, fingerprint, fingerprint, heads)
+		CheckpointFenceRevoke, operationID, fingerprint, fingerprint, []CheckpointEndpoint{endpoint}, heads)
 	return err
 }
 
@@ -1323,6 +1323,7 @@ func (p *WitnessedReplayCheckpointProvider) executeOrganizationFence(
 	action CheckpointFenceAction,
 	operationID string,
 	requestHash, authorizationHash [sha256.Size]byte,
+	participants []CheckpointEndpoint,
 	heads []CheckpointFenceParticipantHead,
 ) (CheckpointFenceOperation, error) {
 	if p == nil || p.Fencing == nil || ctx == nil || len(heads) == 0 {
@@ -1337,7 +1338,8 @@ func (p *WitnessedReplayCheckpointProvider) executeOrganizationFence(
 		return CheckpointFenceOperation{}, err
 	}
 	request := CheckpointFenceRequest{
-		Scope: scope, ExpectedFenceGeneration: fenceHead.Generation,
+		Scope: scope, Participants: cloneCheckpointEndpoints(participants),
+		ExpectedFenceGeneration: fenceHead.Generation,
 		ExpectedRevocationEpoch: fenceHead.RevocationEpoch,
 		Action: action, OperationID: operationID,
 		RequestSHA256: requestHash, AuthorizationSHA256: authorizationHash,
