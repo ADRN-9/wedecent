@@ -854,7 +854,7 @@ func validateCheckpointPendingSnapshot(snapshot checkpointPendingSnapshot, now t
 		if entry.CreatedAt <= 0 || entry.CreatedAt > now.Add(5*time.Minute).UnixMilli() {
 			return ErrCheckpointIntegrity
 		}
-		if entry.FinalizationComplete && entry.FinalizationID == "" {
+		if entry.FinalizationComplete != (entry.FinalizationID != "") {
 			return ErrCheckpointIntegrity
 		}
 		if entry.FinalizationID != "" {
