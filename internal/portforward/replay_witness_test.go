@@ -2861,6 +2861,7 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 					headEntered:              make(chan struct{}),
 					releaseHead:              make(chan struct{}),
 					revokeEntered:            make(chan struct{}),
+					releaseRevoke:            make(chan struct{}),
 				}
 				client.Primary = blocking
 				go func() {
@@ -2881,6 +2882,7 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 				if id := <-callback; id == "" {
 					t.Fatal("finalization callback received empty operation ID")
 				}
+				close(blocking.releaseRevoke)
 				if err := <-revokeDone; err != nil {
 					t.Fatalf("revoke after finalization failed: %v", err)
 				}
