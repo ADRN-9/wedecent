@@ -2997,6 +2997,7 @@ func TestFirstSeenNegativeDecisionPersistsBesideCommittedQuorum(t *testing.T) {
 
 type transitionBlockingCheckpointPrimary struct {
 	ReplayCheckpointProvider
+	FencePrimary  CheckpointFencingPrimary
 	headEntered   chan struct{}
 	releaseHead   chan struct{}
 	revokeEntered chan struct{}
@@ -3027,6 +3028,58 @@ func (p *transitionBlockingCheckpointPrimary) Revoke(ctx context.Context, endpoi
 		}
 	}
 	return p.ReplayCheckpointProvider.Revoke(ctx, endpoint, next)
+}
+
+func (p *transitionBlockingCheckpointPrimary) CheckpointAuthorityKeyID() string {
+	binding, _ := p.FencePrimary.(CheckpointAuthorityBinding)
+	if binding == nil {
+		return ""
+	}
+	return binding.CheckpointAuthorityKeyID()
+}
+
+func (p *transitionBlockingCheckpointPrimary) ReserveFence(ctx context.Context, request CheckpointFenceRequest) (CheckpointFenceToken, error) {
+	return p.FencePrimary.ReserveFence(ctx, request)
+}
+
+func (p *transitionBlockingCheckpointPrimary) CommitFence(ctx context.Context, token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement) error {
+	return p.FencePrimary.CommitFence(ctx, token, acks)
+}
+
+func (p *transitionBlockingCheckpointPrimary) LoadFence(ctx context.Context, scope CheckpointWitnessScope, operationID string) (CheckpointFenceOperation, bool, error) {
+	return p.FencePrimary.LoadFence(ctx, scope, operationID)
+}
+
+func (p *transitionBlockingCheckpointPrimary) FenceHead(ctx context.Context, scope CheckpointWitnessScope) (CheckpointFenceHead, error) {
+	reader, ok := p.FencePrimary.(CheckpointFenceHeadReader)
+	if !ok {
+		return CheckpointFenceHead{}, ErrCheckpointUnavailable
+	}
+	return reader.FenceHead(ctx, scope)
+}
+
+func (p *transitionBlockingCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx context.Context, request CheckpointFenceRequest, heads []CheckpointFenceParticipantHead) (CheckpointFenceToken, error) {
+	atomicPrimary, ok := p.FencePrimary.(CheckpointFenceAtomicPrimary)
+	if !ok {
+		return CheckpointFenceToken{}, ErrCheckpointUnavailable
+	}
+	return atomicPrimary.ReserveFenceWithCheckpointHeads(ctx, request, heads)
+}
+
+func (p *transitionBlockingCheckpointPrimary) CommitFenceWithCheckpointHeads(ctx context.Context, token CheckpointFenceToken, acks []CheckpointFenceAcknowledgement, heads []CheckpointFenceParticipantHead) error {
+	if token.Action == CheckpointFenceRevoke && p.revokeEntered != nil {
+		p.revokeOnce.Do(func() { close(p.revokeEntered) })
+		select {
+		case <-p.releaseRevoke:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	atomicPrimary, ok := p.FencePrimary.(CheckpointFenceAtomicPrimary)
+	if !ok {
+		return ErrCheckpointUnavailable
+	}
+	return atomicPrimary.CommitFenceWithCheckpointHeads(ctx, token, acks, heads)
 }
 
 func newTransitionTestStore(t *testing.T, fileBacked bool) CheckpointPendingStore {
@@ -3129,7 +3182,9 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 					var releaseOnce sync.Once
 					release := func() { releaseOnce.Do(func() { close(blocking.releaseRevoke) }) }
 					t.Cleanup(release)
+					blocking.FencePrimary = client.Fencing.Primary
 					client.Primary = blocking
+					client.Fencing.Primary = blocking
 					go func() {
 						revokeDone <- client.Revoke(ctx, request.Initiator, request.Initiator.RevocationEpoch+1)
 					}()
@@ -3172,7 +3227,9 @@ func TestRevokeAndFinalizeShareTransitionLock(t *testing.T) {
 					releaseHead()
 					releaseRevoke()
 				})
+				blocking.FencePrimary = client.Fencing.Primary
 				client.Primary = blocking
+				client.Fencing.Primary = blocking
 				go func() {
 					finalizeDone <- client.FinalizeWithAudit(ctx, request, callbackFn)
 				}()
