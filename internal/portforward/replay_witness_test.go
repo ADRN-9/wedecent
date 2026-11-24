@@ -1085,6 +1085,22 @@ func TestFinalizationRejectsPrimaryOnlyAmbiguousOperation(t *testing.T) {
 	primary.mu.Lock(); used := len(primary.ledgers[key].used); primary.mu.Unlock()
 	if used != 1 { t.Fatalf("primary consumption count=%d", used) }
 }
+func TestPendingJournalInterruptedPublicationPreservesPreviousEvidence(t *testing.T) {
+	primary := newDeterministicCheckpointProvider(t)
+	first, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
+	second := nextCheckpointRequest(t, first, signer, "EEEEEEEEEEEEEEEEEEEEEE")
+	dir := t.TempDir(); if err := os.Chmod(dir, 0o700); err != nil { t.Fatal(err) }; if err := setReplayTestDirectoryOwner(dir); err != nil { t.Fatal(err) }
+	path := filepath.Join(dir, "pending.json")
+	store, err := NewFileCheckpointPendingStore(path); if err != nil { t.Fatal(err) }
+	if _, err := store.Begin(context.Background(), first); err != nil { t.Fatal(err) }
+	before, err := os.ReadFile(path); if err != nil { t.Fatal(err) }
+	store.writeSnapshot = func(string, any, string, int64) error { return errors.New("injected publication interruption") }
+	if _, err := store.Begin(context.Background(), second); !errors.Is(err, ErrReplayUnavailable) { t.Fatalf("interrupted publication returned %v", err) }
+	after, err := os.ReadFile(path); if err != nil { t.Fatal(err) }
+	if !bytes.Equal(before, after) { t.Fatal("failed publication changed durable journal bytes") }
+	store.writeSnapshot = nil
+	if existing, err := store.Begin(context.Background(), first); err != nil || !existing { t.Fatalf("previous pending evidence lost: existing=%t err=%v", existing, err) }
+}
 func TestFilePendingJournalByteAndEntryExhaustion(t *testing.T) {
 	primary := newDeterministicCheckpointProvider(t)
 	request, signer, _, _, _ := makeCheckpointFixture(t, primary, "11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222")
