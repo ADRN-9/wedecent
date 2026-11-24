@@ -1940,8 +1940,6 @@ func (w fixedCheckpointAckWitness) Acknowledge(context.Context, CheckpointReques
 	return w.ack, nil
 }
 
-
-
 type unavailableAckResponse struct {
 	CheckpointWitness
 }
