@@ -306,7 +306,7 @@ restore_membership
 prepare_audit_operation 44000000-0000-4000-8000-0000000000d9 RRRRRRRRRRRRRRRRRRRRRR 33000000-0000-4000-8000-0000000000d9 ZZZZZZZZZZZZZZZZZZZZZZ
 audit_race route-grant audit-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000d9'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000d9'" "$(printf '%064d' 7)" RRRRRRRRRRRRRRRRRRRRRR
 restore_route 33000000-0000-4000-8000-0000000000d9
-prepare_audit_operation 44000000-0000-4000-8000-0000000000da SSSSSSSSSSSSSSSSSSSSSS 33000000-0000-4000-8000-0000000000da AAAAAAAAAAAAAAAAAAAAAA
+prepare_audit_operation 44000000-0000-4000-8000-0000000000da SSSSSSSSSSSSSSSSSSSSSS 33000000-0000-4000-8000-0000000000da KKKKKKKKKKKKKKKKKKKKKK
 audit_race route-grant revoke-first "update public.route_authorization_grants set revoked_at=clock_timestamp() where id='33000000-0000-4000-8000-0000000000da'" "select (revoked_at is not null)::text from public.route_authorization_grants where id='33000000-0000-4000-8000-0000000000da'" "$(printf '%064d' 8)" SSSSSSSSSSSSSSSSSSSSSS
 restore_route 33000000-0000-4000-8000-0000000000da
 
