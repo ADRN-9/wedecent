@@ -185,11 +185,6 @@ func (p *WitnessedReplayCheckpointProvider) Consume(ctx context.Context, request
 	if err != nil {
 		return CheckpointResult{}, err
 	}
-	if !fenceCommitted {
-		if _, err := p.executeFinalizationFence(ctx, saved, receipt); err != nil {
-			return err
-		}
-	}
 	compactor, ok := p.Pending.(checkpointPendingCompactor)
 	if !ok {
 		return CheckpointResult{}, ErrCheckpointUnavailable
@@ -360,6 +355,11 @@ func (p *WitnessedReplayCheckpointProvider) FinalizeWithAudit(ctx context.Contex
 			if err := completionStore.MarkFinalizationComplete(ctx, saved, receipt, operationID); err != nil {
 				return errors.Join(ErrCheckpointUnavailable, err)
 			}
+		}
+	}
+	if !fenceCommitted {
+		if _, err := p.executeFinalizationFence(ctx, saved, receipt); err != nil {
+			return err
 		}
 	}
 	compactor, ok := p.Pending.(checkpointPendingCompactor)
