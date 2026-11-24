@@ -94,7 +94,7 @@ const (
 type CheckpointResult struct {
 	CheckpointReceipt
 	Disposition CheckpointDisposition
-	Signature []byte
+	Signature   []byte
 }
 
 // ReplayCheckpointProvider implementations must serialize Consume and Revoke
