@@ -2,7 +2,7 @@ begin;
 
 create extension if not exists pgtap with schema extensions;
 
-select plan(24);
+select plan(25);
 
 insert into auth.users (id, aud, role, email)
 values
@@ -33,7 +33,7 @@ insert into public.route_authorization_grants (
 )
 values (
     '33000000-0000-4000-8000-000000000001',
-    'RRRRRRRRRRRRRRRRRRRRRR',
+    'AAAAAAAAAAAAAAAAAAAAAA',
     '11000000-0000-4000-8000-000000000001',
     '22000000-0000-4000-8000-000000000001',
     'wd_aaaaaaaaaaaaaaaa',
@@ -63,12 +63,12 @@ as $$
         'wd_bbbbbbbbbbbbbbbb',
         case when p_routed then 'wd_cccccccccccccccc' else null end,
         case when p_routed then '33000000-0000-4000-8000-000000000001'::uuid else null end,
-        case when p_routed then 'RRRRRRRRRRRRRRRRRRRRRR' else null end,
+        case when p_routed then 'AAAAAAAAAAAAAAAAAAAAAA' else null end,
         case when p_routed then 'wd_aaaaaaaaaaaaaaaa' else null end,
         case when p_routed then 'wd_bbbbbbbbbbbbbbbb' else null end,
         p_jti,
-        pg_catalog.clock_timestamp() - interval '1 second',
-        pg_catalog.clock_timestamp() + interval '60 seconds',
+        pg_catalog.now() - interval '1 second',
+        pg_catalog.now() + interval '60 seconds',
         pg_catalog.decode(p_digest_hex, 'hex')
     );
 $$;
@@ -76,6 +76,10 @@ $$;
 select ok(
     (select c.relrowsecurity from pg_catalog.pg_class c join pg_catalog.pg_namespace n on n.oid = c.relnamespace where n.nspname = 'public' and c.relname = 'port_forward_authorization_transactions'),
     'authorization transaction ledger has RLS enabled'
+);
+select ok(
+    (select revocation_epoch >= 2 from public.devices where device_id = 'wd_bbbbbbbbbbbbbbbb'),
+    'device-access grants advance the target device revocation epoch'
 );
 select ok(
     not pg_catalog.has_table_privilege('service_role', 'public.port_forward_authorization_transactions', 'SELECT,INSERT,UPDATE,DELETE'),
