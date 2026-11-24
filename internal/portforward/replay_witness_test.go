@@ -2438,7 +2438,7 @@ func TestConcurrentFinalizationRunsCallbackAtMostOnce(t *testing.T) {
 	client, _, request, _, _ := preparePersistedWitnessQuorum(t, store)
 	other := &WitnessedReplayCheckpointProvider{
 		Primary: client.Primary, PrimaryKey: client.PrimaryKey, Witnesses: client.Witnesses,
-		Quorum: client.Quorum, Pending: store, Fencing: client.Fencing, RevocationAuthorizer: client.RevocationAuthorizer,
+		Quorum: client.Quorum, Pending: store, Fencing: client.Fencing, RevocationProofs: client.RevocationProofs,
 	}
 	var mu sync.Mutex
 	callbacks := 0
