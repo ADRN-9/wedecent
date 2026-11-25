@@ -14,11 +14,16 @@ create table public.checkpoint_fence_authority (
     pending_operation_id text references public.checkpoint_operations(operation_id) on delete restrict,
     pending_fingerprint bytea check (pending_fingerprint is null or pg_catalog.octet_length(pending_fingerprint) = 32),
     pending_expires_at timestamptz,
+    pending_primary_head_generation bigint,
+    pending_primary_head_hash bytea,
     updated_at timestamptz not null default pg_catalog.clock_timestamp(),
     constraint checkpoint_fence_pending_consistency check (
-        (pending_operation_id is null and pending_fingerprint is null and pending_expires_at is null)
+        (pending_operation_id is null and pending_fingerprint is null and pending_expires_at is null
+            and pending_primary_head_generation is null and pending_primary_head_hash is null)
         or
-        (pending_operation_id is not null and pending_fingerprint is not null and pending_expires_at is not null)
+        (pending_operation_id is not null and pending_fingerprint is not null and pending_expires_at is not null
+            and pending_primary_head_generation is not null and pending_primary_head_generation > 0
+            and pending_primary_head_hash is not null and pg_catalog.octet_length(pending_primary_head_hash) = 32)
     ),
     constraint checkpoint_fence_head_consistency check (
         (generation = 0 and fence_hash = pg_catalog.decode(pg_catalog.repeat('00', 32), 'hex'))
@@ -67,6 +72,8 @@ begin
             using errcode = '22023';
     end if;
 
+    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_operation_id, 0));
+
     insert into public.checkpoint_fence_authority(organization_id)
     values (p_organization_id)
     on conflict (organization_id) do nothing;
@@ -90,17 +97,20 @@ begin
     end if;
 
     if v_fence.pending_operation_id is not null
-       and v_fence.pending_operation_id <> p_operation_id
        and v_fence.pending_expires_at <= v_now then
         update public.checkpoint_fence_authority
            set pending_operation_id = null,
                pending_fingerprint = null,
                pending_expires_at = null,
+               pending_primary_head_generation = null,
+               pending_primary_head_hash = null,
                updated_at = pg_catalog.clock_timestamp()
          where organization_id = p_organization_id;
         v_fence.pending_operation_id := null;
         v_fence.pending_fingerprint := null;
         v_fence.pending_expires_at := null;
+        v_fence.pending_primary_head_generation := null;
+        v_fence.pending_primary_head_hash := null;
     end if;
 
     if p_primary_head_generation <> v_fence.generation + 1
@@ -132,7 +142,7 @@ begin
             'fence_hash', pg_catalog.encode(v_fence.fence_hash, 'hex'),
             'revocation_epoch', v_fence.revocation_epoch,
             'primary_head_generation', p_primary_head_generation,
-            'primary_head_sha256', pg_catalog.encode(p_primary_head_sha256, 'hex'),
+            'primary_head_sha256', pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex'),
             'fence_expires_at', v_fence.pending_expires_at
         );
     end if;
@@ -141,6 +151,8 @@ begin
        set pending_operation_id = p_operation_id,
            pending_fingerprint = v_fingerprint,
            pending_expires_at = (v_reservation ->> 'expires_at')::timestamptz,
+           pending_primary_head_generation = p_primary_head_generation,
+           pending_primary_head_hash = p_primary_head_sha256,
            updated_at = pg_catalog.clock_timestamp()
      where organization_id = p_organization_id;
 
@@ -206,7 +218,8 @@ begin
        or (p_token ->> 'generation')::bigint <> v_fence.generation + 1
        or p_token ->> 'previous_fence_sha256' <> pg_catalog.encode(v_fence.fence_hash, 'hex')
        or (p_token ->> 'expected_revocation_epoch')::bigint <> v_fence.revocation_epoch
-       or (p_token ->> 'primary_head_generation')::bigint < v_fence.primary_head_generation
+       or (p_token ->> 'primary_head_generation')::bigint <> v_fence.pending_primary_head_generation
+       or p_token ->> 'primary_head_sha256' <> pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex')
        or (p_token ->> 'expires_at_unix_ms')::bigint > (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
        or (p_token ->> 'expires_at_unix_ms')::bigint <= (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint then
         raise exception 'checkpoint fence token is stale or expired'
@@ -220,13 +233,33 @@ begin
      order by event_row.event_id desc
      limit 1;
 
-    if found then
-        if v_existing.event_payload ->> 'token_sha256' <> pg_catalog.encode(p_token_sha256, 'hex')
-           or v_existing.event_payload -> 'token' <> p_token then
-            raise exception 'checkpoint fence token retry conflicts'
-                using errcode = '23505';
-        end if;
+    if found and v_existing.event_payload ->> 'token_sha256' = pg_catalog.encode(p_token_sha256, 'hex')
+       and v_existing.event_payload -> 'token' = p_token then
         return v_existing.event_payload;
+    end if;
+    if found and (v_existing.event_payload -> 'token' ->> 'expires_at_unix_ms')::bigint
+        > (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint then
+        raise exception 'checkpoint fence token retry conflicts'
+            using errcode = '23505';
+    end if;
+
+    if (
+        select pg_catalog.jsonb_agg(
+            pg_catalog.jsonb_build_object(
+                'device_id', participant_row.device_id,
+                'account_id', participant_row.account_id,
+                'organization_id', participant_row.organization_id,
+                'revocation_epoch', participant_row.revocation_epoch
+            ) order by participant_row.device_id
+        )
+        from public.checkpoint_operation_participants as participant_row
+        where participant_row.operation_id = p_operation_id
+    ) <> (
+        select pg_catalog.jsonb_agg(item.value order by item.value ->> 'device_id')
+        from pg_catalog.jsonb_array_elements(p_token -> 'participants') as item(value)
+    ) then
+        raise exception 'checkpoint fence token participant vector conflicts'
+            using errcode = '23505';
     end if;
 
     v_payload := pg_catalog.jsonb_build_object(
@@ -356,6 +389,8 @@ begin
            pending_operation_id = null,
            pending_fingerprint = null,
            pending_expires_at = null,
+           pending_primary_head_generation = null,
+           pending_primary_head_hash = null,
            updated_at = pg_catalog.clock_timestamp()
      where organization_id = v_operation.organization_id
        and pending_operation_id = p_operation_id
@@ -422,6 +457,11 @@ begin
         'token', v_token,
         'token_sha256', v_token_sha256,
         'committed', v_commit is not null,
+        'fingerprint', (
+            select pg_catalog.encode(operation_row.fingerprint, 'hex')
+            from public.checkpoint_operations as operation_row
+            where operation_row.operation_id = p_operation_id
+        ),
         'acknowledgements', coalesce(v_commit -> 'result' -> 'witness_acknowledgements', '[]'::jsonb)
     );
 end;
@@ -444,6 +484,9 @@ as $$
  from public.checkpoint_fence_authority as authority
  where authority.organization_id = p_organization_id;
 $$;
+
+revoke all on function public.reserve_checkpoint_operation(text,text,uuid,uuid,bytea,jsonb,integer) from service_role;
+revoke all on function public.commit_checkpoint_operation(text,bytea,jsonb) from service_role;
 
 revoke all on function public.reserve_checkpoint_fence_operation(text,text,uuid,uuid,bytea,jsonb,bigint,bytea,integer)
     from public, anon, authenticated;
