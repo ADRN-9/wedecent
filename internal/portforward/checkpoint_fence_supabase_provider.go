@@ -51,6 +51,9 @@ func NewSupabaseWitnessedReplayCheckpointProvider(
 		if !ok || !bytes.Equal(key, witness.PublicKey) {
 			return nil, ErrCheckpointIntegrity
 		}
+		if _, fileOnly := witness.Witness.(*FileCheckpointFenceWitness); fileOnly {
+			return nil, ErrCheckpointUnavailable
+		}
 	}
 
 	for _, key := range [][]byte{
