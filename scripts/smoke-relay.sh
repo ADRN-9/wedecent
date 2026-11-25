@@ -9,7 +9,7 @@ cleanup() {
   if [ "$result" -ne 0 ]; then
     for log in "$TMP/agent.log" "$TMP/relay.log" "$TMP/auth.log" "$TMP/recovery-authority.log"; do
       if [ -f "$log" ]; then
-        printf '\\n--- %s ---\\n' "$log" >&2
+        printf '\n--- %s ---\n' "$log" >&2
         cat "$log" >&2
       fi
     done
@@ -96,7 +96,7 @@ while [ "$(grep -c 'relay slot parked' "$TMP/agent.log" 2>/dev/null || true)" -l
   fi
   attempts=$((attempts + 1))
   if [ "$attempts" -ge 100 ]; then
-    printf 'agent did not park both relay slots\\n' >&2
+    printf 'agent did not park both relay slots\n' >&2
     cat "$TMP/agent.log" >&2
     exit 1
   fi
