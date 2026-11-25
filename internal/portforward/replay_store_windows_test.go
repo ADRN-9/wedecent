@@ -189,10 +189,11 @@ func TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash(t *testing.T) {
 	for {
 		data, readErr := os.ReadFile(readyPath)
 		if readErr == nil {
-			orphanPath = string(data)
-			break
-		}
-		if !errors.Is(readErr, os.ErrNotExist) {
+			if len(data) > 0 {
+				orphanPath = string(data)
+				break
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
 			t.Fatalf("read Windows lock crash readiness: %v", readErr)
 		}
 		if time.Now().After(deadline) {
