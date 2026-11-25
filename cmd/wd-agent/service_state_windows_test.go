@@ -115,7 +115,7 @@ func TestServiceProvisionRefusesExistingMaterialBeforeACLMutation(t *testing.T) 
 func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	account := strings.TrimSpace(os.Getenv("WEDECENT_TEST_SERVICE_ACCOUNT"))
 	if account == "" {
-		t.Skip("requires controlled VM with a distinct dedicated service account and elevated installer")
+		t.Skip("requires an elevated Windows environment with a distinct dedicated service account")
 	}
 	adminSID, err := windows.StringToSid("S-1-5-32-544")
 	if err != nil {
