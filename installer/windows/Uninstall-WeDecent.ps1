@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'WeDecent'),
-    [string]$StateDir = (Join-Path $env:ProgramFiles 'WeDecentData\agent'),
+    [string]$StateDir = (Join-Path $env:ProgramData 'WeDecent\agent'),
     [ValidatePattern('^[A-Za-z0-9_.-]{1,128}$')]
     [string]$ServiceName = 'WeDecentAgent',
     [switch]$Purge,
@@ -167,7 +167,7 @@ if ($RemoveServiceAccount -and -not $Purge) {
 }
 
 $InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -Label 'InstallDir'
-$StateDir = Assert-SafeChildPath -Path $StateDir -Root $env:ProgramFiles -Label 'StateDir'
+$StateDir = Assert-SafeChildPath -Path $StateDir -Root (Join-Path $env:ProgramData 'WeDecent') -Label 'StateDir'
 $metadataPath = Get-MetadataPath
 $metadata = $null
 if ($RemoveServiceAccount) { $metadata = Read-Metadata }
