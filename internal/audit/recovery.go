@@ -166,11 +166,11 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 // OpenPairingRecoveryWithAuthority enables the independent recovery trust domain.
 // It never treats the local archive HMAC as an independent checkpoint. Existing
 // legacy archives without an external proof are rejected for operator reconciliation.
-func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority RecoveryAuthority, trust RecoveryAuthorityTrust) (*PairingRecovery, error) {
+func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority RecoveryAuthority, authorityTrust RecoveryAuthorityTrust) (*PairingRecovery, error) {
 	if authority == nil || scope == "" || len(scope) > 256 {
 		return nil, ErrRecoveryAuthorityUnavailable
 	}
-	if err := trust.Validate(); err != nil {
+	if err := authorityTrust.Validate(); err != nil {
 		return nil, err
 	}
 	dir := filepath.Clean(stateDir)
@@ -178,7 +178,7 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 		return nil, fmt.Errorf("unsafe pairing recovery directory: %w", err)
 	}
 	preflight := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName),
-		authority: authority, authorityScope: scope, authorityTrust: trust}
+		authority: authority, authorityScope: scope, authorityTrust: authorityTrust}
 	if err := preflight.loadArchiveKey(); err != nil {
 		return nil, err
 	}
@@ -203,7 +203,7 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 	}
 	recovery.authority = authority
 	recovery.authorityScope = scope
-	recovery.authorityTrust = trust
+	recovery.authorityTrust = authorityTrust
 	if _, err := recovery.readArchive(); err != nil {
 		return nil, err
 	}
@@ -213,11 +213,11 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 // OpenPairingRecoveryForMigration permits only the explicit migration operation
 // on a legacy archive. Ordinary reads and mutations still fail until migration
 // publishes a verified independent checkpoint.
-func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryAuthority, trust RecoveryAuthorityTrust) (*PairingRecovery, error) {
+func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryAuthority, authorityTrust RecoveryAuthorityTrust) (*PairingRecovery, error) {
 	if authority == nil || scope == "" || len(scope) > 256 {
 		return nil, ErrRecoveryAuthorityUnavailable
 	}
-	if err := trust.Validate(); err != nil {
+	if err := authorityTrust.Validate(); err != nil {
 		return nil, err
 	}
 	recovery, err := OpenPairingRecovery(stateDir)
@@ -226,7 +226,7 @@ func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryA
 	}
 	recovery.authority = authority
 	recovery.authorityScope = scope
-	recovery.authorityTrust = trust
+	recovery.authorityTrust = authorityTrust
 	archive, err := recovery.readArchive()
 	if err == nil {
 		if archive.LastSequence == 0 {
