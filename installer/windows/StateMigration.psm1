@@ -998,6 +998,7 @@ function Recover-WeDecentStateMigration {
     } finally {
         $recoveryLease.Dispose()
     }
+    return $true
 }
 
 function Get-WeDecentMigrationUpdatedServicePath {
