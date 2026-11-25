@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-	"encoding/hex"
 )
 
 func c197Key(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
@@ -166,19 +165,6 @@ func TestSupabaseCheckpointFenceWireRoundTripPreservesSignedFields(t *testing.T)
 	}
 	if !sameCheckpointFenceToken(token, decoded) {
 		t.Fatal("token wire round trip changed signed fields")
-	}
-	revokeToken, _ := validFenceToken(t, CheckpointFenceRevoke)
-	revokeWire, err := checkpointFenceTokenToWire(revokeToken)
-	if err != nil {
-		t.Fatal(err)
-	}
-	revokeEncoded, err := json.Marshal(revokeWire)
-	if err != nil {
-		t.Fatal(err)
-	}
-	revokeDecoded, err := checkpointFenceTokenFromWire(revokeEncoded)
-	if err != nil || !sameCheckpointFenceToken(revokeToken, revokeDecoded) {
-		t.Fatalf("revocation proof wire round trip failed: %v", err)
 	}
 	revokeToken, _ := validFenceToken(t, CheckpointFenceRevoke)
 	revokeWire, err := checkpointFenceTokenToWire(revokeToken)
