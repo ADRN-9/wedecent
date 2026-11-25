@@ -609,7 +609,9 @@ func openServiceLog(stateDir string) (*os.File, error) {
 			return nil, fmt.Errorf("create protected service log: %w", createErr)
 		}
 		return f, nil
-	} else if err != nil { return nil, err }
+	} else if err != nil {
+		return nil, err
+	}
 	if err := verifyWindowsServiceFile(path); err != nil {
 		return nil, err
 	}
