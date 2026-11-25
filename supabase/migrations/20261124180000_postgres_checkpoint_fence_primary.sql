@@ -436,7 +436,15 @@ begin
        or (v_token ->> 'resulting_revocation_epoch')::bigint is distinct from
             v_fence.revocation_epoch + (case when v_operation.action = 'revoke' then 1 else 0 end)
        or (v_token ->> 'primary_head_generation')::bigint is distinct from v_fence.pending_primary_head_generation
-       or v_token ->> 'primary_head_sha256' is distinct from pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex') then
+       or v_token ->> 'primary_head_sha256' is distinct from pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex')
+       or coalesce((v_token ->> 'expires_at_unix_ms')::bigint, 0) <=
+            (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint
+       or coalesce((v_token ->> 'expires_at_unix_ms')::bigint, 0) >
+            (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
+       or (v_operation.action = 'revoke' and
+            pg_catalog.encode(extensions.digest(
+                pg_catalog.decode(v_token ->> 'authorization_proof', 'base64'), 'sha256'
+            ), 'hex') is distinct from v_token ->> 'authorization_sha256') then
         raise exception 'checkpoint fence reservation is stale or expired'
             using errcode = '40001';
     end if;
