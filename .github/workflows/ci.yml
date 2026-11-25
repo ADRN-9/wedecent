@@ -100,6 +100,8 @@ jobs:
         run: go test -race ./...
       - name: Direct transport smoke test
         run: ./scripts/smoke-direct.sh
+      - name: Test interrupted smoke child cleanup
+        run: sh ./scripts/test-smoke-process-cleanup.sh
       - name: Outbound-only relay smoke test
         run: ./scripts/smoke-relay.sh
 
