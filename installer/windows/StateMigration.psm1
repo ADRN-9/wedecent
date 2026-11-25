@@ -891,10 +891,6 @@ function Restore-WeDecentMigrationTransaction {
         [string]$FaultAt
     )
 
-    Assert-WeDecentMigrationRecoverySource -Journal $Journal
-    $Journal.phase = 'RollingBack'
-    Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
-    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStarted' -FaultAt $FaultAt
     $service = Get-Service -Name $Journal.service_name -ErrorAction Stop
     if ($service.Status -ne 'Stopped') {
         Stop-Service -Name $Journal.service_name -Force -ErrorAction Stop
@@ -902,6 +898,9 @@ function Restore-WeDecentMigrationTransaction {
     }
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceStopped' -FaultAt $FaultAt
     Assert-WeDecentMigrationRecoverySource -Journal $Journal
+    $Journal.phase = 'RollingBack'
+    Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStarted' -FaultAt $FaultAt
     Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path -ServiceSid $Journal.service_sid -StartMode $Journal.service_start_mode
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt $FaultAt
     Restore-WeDecentMigrationMetadata -Path $Journal.metadata_path -OriginalJson $Journal.original_metadata_json
