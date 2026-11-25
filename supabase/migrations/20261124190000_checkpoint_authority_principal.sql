@@ -121,7 +121,7 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = ''
-as $
+as $fn$
 declare
     v_pending_operation_id text;
     v_pending_expires_at timestamptz;
