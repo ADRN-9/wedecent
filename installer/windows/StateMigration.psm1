@@ -589,11 +589,13 @@ function Read-WeDecentMigrationJournal {
         [string]$journal.service_start_mode -notin @('Boot', 'System', 'Auto', 'Manual', 'Disabled')) {
         throw 'Migration journal contains an invalid SCM service configuration.'
     }
-    if ($null -eq $journal.PSObject.Properties['staging_complete'] -or $journal.staging_complete -isnot [bool] -or
-        $null -eq $journal.identity -or
-        [string]::IsNullOrWhiteSpace([string]$journal.identity.DeviceId) -or
-        [string]::IsNullOrWhiteSpace([string]$journal.identity.Fingerprint)) {
-        throw 'Migration journal lacks its source identity snapshot or staging completion marker.'
+    $hasStagingMarker = $null -ne $journal.PSObject.Properties['staging_complete']
+    $hasIdentity = $null -ne $journal.identity -and
+        -not [string]::IsNullOrWhiteSpace([string]$journal.identity.DeviceId) -and
+        -not [string]::IsNullOrWhiteSpace([string]$journal.identity.Fingerprint)
+    if (-not $hasStagingMarker -or $journal.staging_complete -isnot [bool] -or -not $hasIdentity) {
+        $identityJson = if ($null -eq $journal.identity) { '<null>' } else { ConvertTo-Json -InputObject $journal.identity -Compress -Depth 3 }
+        throw "Migration journal lacks its source identity snapshot or staging completion marker (marker=$hasStagingMarker; markerType=$($journal.staging_complete.GetType().FullName); identity=$identityJson)."
     }
     [void](Assert-WeDecentMigrationPathsDisjoint -Paths @(
         [string]$journal.source, [string]$journal.destination, [string]$journal.staging,
