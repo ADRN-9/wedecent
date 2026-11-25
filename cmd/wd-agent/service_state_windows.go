@@ -322,7 +322,7 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 		"RD": 0,
 		"RE": 0,
 		"RA": 0,
-		"X":   0,
+		"X":  0,
 		"LC": 0,
 		"LO": 0,
 		"WA": 0x00000100,
