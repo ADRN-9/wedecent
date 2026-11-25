@@ -326,10 +326,10 @@ func validatePairingProof(record PairingOutcome, proof PairingAuditProof) error 
 	}
 	switch proof.Kind {
 	case "completion":
-		if (record.Outcome == PairingOutcomeSuccess &&
+		if record.Operation != "revocation" && ((record.Outcome == PairingOutcomeSuccess &&
 			event.Type == "pairing.trust_added" && event.Outcome == "success") ||
 			(record.Outcome == PairingOutcomeDenied &&
-				event.Type == "pairing.request" && event.Outcome == "denied") {
+				event.Type == "pairing.request" && event.Outcome == "denied")) {
 			return nil
 		}
 	case "revocation":
@@ -339,7 +339,7 @@ func validatePairingProof(record PairingOutcome, proof PairingAuditProof) error 
 			return nil
 		}
 	case "reconciliation":
-		if record.Outcome == PairingOutcomeSuccess &&
+		if record.Operation != "revocation" && record.Outcome == PairingOutcomeSuccess &&
 			event.Type == "pairing.reconciliation" && event.Outcome == "success" &&
 			event.Reason == "privileged_trust_review" {
 			return nil
