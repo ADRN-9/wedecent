@@ -759,7 +759,10 @@ if ($metadata) {
         throw 'Existing installer metadata is not ACL-trusted; refusing migration recovery or installer state changes.'
     }
 }
-[void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath)
+if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
+    [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $migrationJournalPath) -AgentPath $migrationAgentPath)
+    [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath)
+}
 $metadata = Read-WeDecentMetadata
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
 if (-not $service) {
@@ -814,9 +817,9 @@ if ($service) {
         $destinationParent = Split-Path -Parent $requestedStateDir
         if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
             New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
-            Set-WeDecentMigrationAdminDirectory -Path $destinationParent
+            Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $migrationAgentPath
         } else {
-            [void](Assert-WeDecentMigrationAdminDirectory -Path $destinationParent)
+            [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $migrationAgentPath)
         }
         Write-Host "Migrating authenticated service state from '$recordedStateDir' to '$requestedStateDir'."
         [void](Invoke-WeDecentStateMigration -Source $recordedStateDir -Destination $requestedStateDir -AgentPath $migrationAgentPath -ServiceName $ServiceName -ServiceSid $accountSid -MetadataPath $metadataPath -JournalPath $migrationJournalPath)
