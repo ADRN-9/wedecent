@@ -886,6 +886,7 @@ function Restore-WeDecentMigrationTransaction {
             }
             [void](Assert-WeDecentMigrationRollbackIdentityContinuity -Source $Journal.source -Candidate $candidate -AgentPath $Journal.agent_path)
         }
+        Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStagingValidated' -FaultAt $FaultAt
         Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
     }
     $Journal.phase = 'RolledBack'
@@ -898,7 +899,8 @@ function Recover-WeDecentStateMigration {
         [Parameter(Mandatory = $true)][string]$JournalPath,
         [Parameter(Mandatory = $true)][string]$AgentPath,
         [Parameter(Mandatory = $true)][string]$MetadataPath,
-        [Parameter(Mandatory = $true)][string]$ServiceName
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [string]$FaultAt
     )
 
     if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $false }
@@ -910,7 +912,7 @@ function Recover-WeDecentStateMigration {
     if ($journal.phase -in @('Committed', 'RolledBack')) { return $false }
     $journal | Add-Member -NotePropertyName journal_path -NotePropertyValue ([IO.Path]::GetFullPath($JournalPath)) -Force
     $journal | Add-Member -NotePropertyName agent_path -NotePropertyValue ([IO.Path]::GetFullPath($AgentPath)) -Force
-    Restore-WeDecentMigrationTransaction -Journal $journal
+    Restore-WeDecentMigrationTransaction -Journal $journal -FaultAt $FaultAt
     return $true
 }
 
@@ -1085,8 +1087,21 @@ function Invoke-WeDecentStateMigration {
         }
         throw "Migration failed and was rolled back; original state remains intact: $($failure.Exception.Message)"
     } finally {
-        if (Test-Path -LiteralPath $staging -PathType Container) {
-            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        # Staging is transaction state, not scratch space. Rollback owns its
+        # removal only after validating the tree and recording RolledBack.
+        # Preserve it across any pending or interrupted recovery.
+        if (Test-Path -LiteralPath $JournalPath -PathType Leaf) {
+            $terminalJournal = $null
+            try {
+                $terminalJournal = Read-WeDecentMigrationJournal -Path $JournalPath
+            } catch {
+                # An unreadable journal cannot authorize destructive cleanup.
+            }
+            if ($null -ne $terminalJournal -and $terminalJournal.phase -in @('Committed', 'RolledBack') -and
+                (Test-Path -LiteralPath $staging -PathType Container)) {
+                [void](Assert-WeDecentMigrationPartialTreeSafe -Path $staging -ServiceSid $ServiceSid)
+                throw 'Terminal migration journal unexpectedly retains staging; refusing implicit cleanup.'
+            }
         }
     }
 }
