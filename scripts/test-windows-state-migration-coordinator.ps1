@@ -452,6 +452,14 @@ try {
 
 $nestedFileAcl = New-MigrationFixture
 try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $nestedFileAcl.Source -Destination $nestedFileAcl.Destination -AgentPath $agentPath -ServiceName $nestedFileAcl.ServiceName -ServiceSid $nestedFileAcl.ServiceSid -MetadataPath $nestedFileAcl.MetadataPath -JournalPath $nestedFileAcl.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Nested ACL fixture did not stop at the pending rollback boundary.' }
     $nestedFile = Join-Path $nestedFileAcl.Source 'nested/policy.json'
     $output = & icacls.exe $nestedFile '/grant' '*S-1-5-32-545:(F)' 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Could not broaden nested file ACL for regression: $($output -join ' ')" }
@@ -485,6 +493,14 @@ try {
 
 $nestedDirectoryAcl = New-MigrationFixture
 try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $nestedDirectoryAcl.Source -Destination $nestedDirectoryAcl.Destination -AgentPath $agentPath -ServiceName $nestedDirectoryAcl.ServiceName -ServiceSid $nestedDirectoryAcl.ServiceSid -MetadataPath $nestedDirectoryAcl.MetadataPath -JournalPath $nestedDirectoryAcl.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Nested ACL fixture did not stop at the pending rollback boundary.' }
     $nestedDirectory = Join-Path $nestedDirectoryAcl.Source 'nested'
     $output = & icacls.exe $nestedDirectory '/grant' '*S-1-5-32-545:(F)' 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Could not broaden nested directory ACL for regression: $($output -join ' ')" }
@@ -516,6 +532,14 @@ try {
 
 $nestedDirectoryOwner = New-MigrationFixture
 try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $nestedDirectoryOwner.Source -Destination $nestedDirectoryOwner.Destination -AgentPath $agentPath -ServiceName $nestedDirectoryOwner.ServiceName -ServiceSid $nestedDirectoryOwner.ServiceSid -MetadataPath $nestedDirectoryOwner.MetadataPath -JournalPath $nestedDirectoryOwner.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Nested ACL fixture did not stop at the pending rollback boundary.' }
     $nestedDirectory = Join-Path $nestedDirectoryOwner.Source 'nested'
     $output = & icacls.exe $nestedDirectory '/setowner' '*S-1-5-32-545' 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Could not mutate nested directory owner for regression: $($output -join ' ')" }
