@@ -343,3 +343,46 @@ func TestPrematureAgentApplicationBytesFailClosedBeforeConnect(t *testing.T) {
 		}
 	}
 }
+
+
+func TestServeConnContextCancelsInitialProtocolRead(t *testing.T) {
+	server := &Server{Broker: NewBroker(1, time.Minute)}
+	serverSide, peer := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		server.ServeConnContext(ctx, serverSide)
+		close(done)
+	}()
+	challenge, err := relayproto.Read(peer)
+	if err != nil || challenge.Type != relayproto.TypeChallenge {
+		t.Fatalf("challenge = %#v, %v", challenge, err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not interrupt initial relay protocol read")
+	}
+	_ = peer.Close()
+}
+
+func TestServeConnContextTimesOutInitialProtocolRead(t *testing.T) {
+	server := &Server{Broker: NewBroker(1, time.Minute), ReadTimeout: 25 * time.Millisecond}
+	serverSide, peer := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		server.ServeConnContext(context.Background(), serverSide)
+		close(done)
+	}()
+	challenge, err := relayproto.Read(peer)
+	if err != nil || challenge.Type != relayproto.TypeChallenge {
+		t.Fatalf("challenge = %#v, %v", challenge, err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("initial relay protocol read did not time out")
+	}
+	_ = peer.Close()
+}
