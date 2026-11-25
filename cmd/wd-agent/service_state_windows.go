@@ -187,9 +187,10 @@ func verifyWindowsServiceStateParent(dir string) error {
 const windowsAncestorMutationRights = uint32(
 	windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER |
 	0x00000040 | // FILE_DELETE_CHILD
-	0x00000001 | // directory child creation
 	0x00000002 | // FILE_ADD_FILE / FILE_WRITE_DATA
 	0x00000004 | // FILE_ADD_SUBDIRECTORY / FILE_APPEND_DATA
+	0x00000010 | // FILE_WRITE_EA
+	0x00000100 | // FILE_WRITE_ATTRIBUTES
 	windows.GENERIC_WRITE | windows.GENERIC_ALL,
 )
 
@@ -308,7 +309,7 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 		"GW": windows.GENERIC_WRITE,
 		"FW": 0x00000002,
 		"AD": 0x00000004,
-		"CC": 0x00000001,
+		"CC": 0x00000002,
 		"DC": 0x00000040,
 		"DE": windows.DELETE,
 		"SD": windows.DELETE,
@@ -320,11 +321,13 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 		"GX": 0,
 		"RC": 0,
 		"RD": 0,
-		"REA": 0,
+		"RE":  0,
 		"RA": 0,
 		"X": 0,
 		"LC": 0,
 		"LO": 0,
+		"WA": 0x00000100,
+		"WE": 0x00000010,
 	}
 	var mask uint32
 	if len(rights)%2 != 0 {
