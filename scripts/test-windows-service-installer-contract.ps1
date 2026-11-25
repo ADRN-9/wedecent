@@ -177,7 +177,7 @@ foreach ($faultPoint in @(
     try { Invoke-WeDecentMigrationFaultPoint -Name $faultPoint -FaultAt $faultPoint } catch { $injected = $_.Exception.Message -like "*$faultPoint*" }
     if (-not $injected) { throw "Migration fault injection did not trigger at $faultPoint." }
 }
-$migrationRoot = Join-Path ([IO.Path]::GetTempPath()) ('wedecent-migration-' + [Guid]::NewGuid().ToString('N'))
+$migrationRoot = Join-Path $env:ProgramData ('WeDecentMigrationTest-' + [Guid]::NewGuid().ToString('N'))
 $sourceState = Join-Path $migrationRoot 'source'
 $stageState = Join-Path $migrationRoot 'stage'
 $journalPath = Join-Path $migrationRoot 'migration.json'
