@@ -2,10 +2,15 @@ package relay
 
 import (
 	"errors"
+	"fmt"
 	"net"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"wedecent.com/wedecent/internal/relayproto"
 )
 
 func TestBrokerReservationIsNotClaimableUntilActivated(t *testing.T) {
@@ -201,5 +206,76 @@ func TestBrokerDisconnectBeforeActivationCannotPublishReservation(t *testing.T) 
 	case <-slot.done:
 	default:
 		t.Fatal("disconnected reservation was not finished")
+	}
+}
+
+
+type concurrentWriteConn struct {
+	net.Conn
+	active atomic.Int32
+	maximum atomic.Int32
+}
+
+func (c *concurrentWriteConn) Write(p []byte) (int, error) {
+	active := c.active.Add(1)
+	for {
+		maximum := c.maximum.Load()
+		if active <= maximum || c.maximum.CompareAndSwap(maximum, active) {
+			break
+		}
+	}
+	n, err := c.Conn.Write(p)
+	c.active.Add(-1)
+	return n, err
+}
+
+func TestSlotSerializesCompleteProtocolWrites(t *testing.T) {
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	conn := &concurrentWriteConn{Conn: server}
+	slot := &slot{conn: conn, done: make(chan struct{})}
+	const writers = 32
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errors := make(chan error, writers)
+	wg.Add(writers)
+	for i := range writers {
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			errors <- slot.write(relayproto.Message{Type: "test", Code: strconv.Itoa(i)})
+		}(i)
+	}
+	received := make(chan error, 1)
+	go func() {
+		seen := make(map[string]bool, writers)
+		for range writers {
+			msg, err := relayproto.Read(client)
+			if err != nil {
+				received <- err
+				return
+			}
+			if seen[msg.Code] {
+				received <- fmt.Errorf("duplicate protocol message %q", msg.Code)
+				return
+			}
+			seen[msg.Code] = true
+		}
+		received <- nil
+	}()
+	close(start)
+	wg.Wait()
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatalf("serialized write failed: %v", err)
+		}
+	}
+	if err := <-received; err != nil {
+		t.Fatal(err)
+	}
+	if maximum := conn.maximum.Load(); maximum != 1 {
+		t.Fatalf("maximum concurrent connection writes = %d, want 1", maximum)
 	}
 }
