@@ -16,7 +16,7 @@ import (
 
 type c203StaticAuthorityTokenSource string
 
-func (s c203StaticAuthorityTokenSource) Token(context.Context, string) (string, error) {
+func (s c203StaticAuthorityTokenSource) Token(context.Context) (string, error) {
 	return string(s), nil
 }
 
@@ -96,7 +96,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 	}
 	config := SupabaseCheckpointFenceConfig{
 		Hostname: "localhost", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64), AnonAPIKey: "test-anon-api-key",
-		AuthorityTokenSource: c203StaticAuthorityTokenSource(c203AuthorityJWT("11111111-1111-4111-8111-111111111111")), ActorID: "11111111-1111-4111-8111-111111111111",
+		AuthorityTokenSource: c203StaticAuthorityTokenSource(c203AuthorityJWT("11111111-1111-4111-8111-111111111111")),
 		PrimarySigner: primaryPrivate, CheckpointHeadKey: headPublic,
 		RevocationAuthorizationKey: revocationPublic,
 		WitnessSetVersion:          "c197-test", Witnesses: witnesses,
