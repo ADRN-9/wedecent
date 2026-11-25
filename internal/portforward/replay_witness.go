@@ -514,16 +514,9 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 	if err != nil {
 		return err
 	}
-	proofRequest := CheckpointRevocationAuthorizationRequest{
-		Endpoint: endpoint, NextEpoch: next, OperationID: operationID,
-		Participants: []CheckpointEndpoint{endpoint},
-	}
-	authorizationProof, err := p.RevocationProofs.CheckpointRevocationProof(ctx, proofRequest)
+	authorizationProof, err := p.revocationProofForOperation(ctx, endpoint, next, operationID)
 	if err != nil {
-		return errors.Join(ErrCheckpointIntegrity, err)
-	}
-	if _, proofErr := decodeCheckpointRevocationAuthorizationProof(authorizationProof); proofErr != nil {
-		return ErrCheckpointIntegrity
+		return err
 	}
 	authorizationHash := sha256.Sum256(authorizationProof)
 	if err := p.executeRevocationFence(ctx, endpoint, next, operationID, authorizationHash, authorizationProof); err != nil {
@@ -1394,6 +1387,42 @@ func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context
 func decodeRevocationProofEnvelope(proof []byte) error {
 	_, err := decodeCheckpointRevocationAuthorizationProof(proof)
 	return err
+}
+
+func (p *WitnessedReplayCheckpointProvider) revocationProofForOperation(
+	ctx context.Context, endpoint CheckpointEndpoint, next uint64, operationID string,
+) ([]byte, error) {
+	if p == nil || p.Fencing == nil || ctx == nil {
+		return nil, ErrCheckpointUnavailable
+	}
+	scope := organizationCheckpointFenceScope(endpoint.OrganizationID)
+	existing, found, err := p.Fencing.Primary.LoadFence(ctx, scope, operationID)
+	if err != nil {
+		return nil, err
+	}
+	if found {
+		token := existing.Token
+		if token.Scope != scope || token.Action != CheckpointFenceRevoke ||
+			token.OperationID != operationID || token.ExpectedRevocationEpoch != endpoint.RevocationEpoch ||
+			token.ResultingRevocationEpoch != next || len(token.Participants) != 1 ||
+			token.Participants[0] != endpoint ||
+			verifyCheckpointFenceTokenSignature(token, p.Fencing.PrimaryKey) != nil {
+			return nil, ErrCheckpointIntegrity
+		}
+		return append([]byte(nil), token.AuthorizationProof...), nil
+	}
+	request := CheckpointRevocationAuthorizationRequest{
+		Endpoint: endpoint, NextEpoch: next, OperationID: operationID,
+		Participants: []CheckpointEndpoint{endpoint},
+	}
+	proof, err := p.RevocationProofs.CheckpointRevocationProof(ctx, request)
+	if err != nil {
+		return nil, errors.Join(ErrCheckpointIntegrity, err)
+	}
+	if decodeRevocationProofEnvelope(proof) != nil {
+		return nil, ErrCheckpointIntegrity
+	}
+	return append([]byte(nil), proof...), nil
 }
 
 func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.Context, endpoint CheckpointEndpoint, next uint64, operationID string, authorizationHash [sha256.Size]byte, authorizationProof []byte) error {
