@@ -21,7 +21,8 @@ type testIndependentRecoveryAuthority struct {
 	witnessPrivate map[string]ed25519.PrivateKey
 	head           RecoveryCheckpoint
 	heads          map[string]RecoveryCheckpoint
-	loseNextCommit bool
+	loseNextCommit       bool
+	rejectMigrationProof bool
 }
 
 func newTestIndependentRecoveryAuthority(t *testing.T) *testIndependentRecoveryAuthority {
@@ -109,6 +110,9 @@ func (a *testIndependentRecoveryAuthority) VerifyCheckpoint(_ context.Context, c
 }
 
 func (a *testIndependentRecoveryAuthority) MigrateLegacyArchive(_ context.Context, migration LegacyRecoveryMigrationRequest) (RecoveryCheckpoint, error) {
+	if a.rejectMigrationProof {
+		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
+	}
 	var proof struct {
 		StateDigest string `json:"state_digest"`
 	}
@@ -479,5 +483,117 @@ func TestActivePairingLedgerMigrationRejectsForgedProofWithoutMutation(t *testin
 	after, err := os.ReadFile(migration.path)
 	if err != nil || !bytes.Equal(before, after) {
 		t.Fatalf("forged proof modified active ledger: %v", err)
+	}
+}
+
+func TestActivePairingLedgerRejectsUnauthenticatedMatchingDigestProofWithoutMutation(t *testing.T) {
+	dir := recoveryTestDir(t)
+	legacy, err := OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "dededededededededededededededede"
+	if err := legacy.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(legacy.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newTestIndependentRecoveryAuthority(t)
+	authority.rejectMigrationProof = true
+	migration, err := OpenPairingRecoveryForMigration(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := migration.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := pairingSnapshotDigest(unsignedPairingSnapshot(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := json.Marshal(struct {
+		StateDigest string `json:"state_digest"`
+	}{StateDigest: hex.EncodeToString(digest[:])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migration.MigrateLegacyActiveLedger(context.Background(), proof); !errors.Is(err, ErrRecoveryMigrationUntrusted) {
+		t.Fatalf("authority rejection was not propagated: %v", err)
+	}
+	after, err := os.ReadFile(migration.path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("rejected migration changed active ledger: %v", err)
+	}
+	if _, err := os.Lstat(migration.path + ".authority-pending"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rejected migration left a replayable pending intent: %v", err)
+	}
+	if authority.head.Generation != 0 {
+		t.Fatalf("rejected migration advanced authority generation: %d", authority.head.Generation)
+	}
+}
+
+func TestActivePairingLedgerRejectsCompetingCheckpointGeneration(t *testing.T) {
+	dir := recoveryTestDir(t)
+	authority := newTestIndependentRecoveryAuthority(t)
+	recovery, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "efefefefefefefefefefefefefefefef"
+	if err := recovery.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(recovery.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := recovery.activeLedgerScope()
+	head, err := authority.LoadCheckpoint(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competingDigest := sha256.Sum256([]byte("independent competing state"))
+	request, err := NewRecoveryCheckpointRequest(scope, head.Generation, head.StateDigest, competingDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.CommitCheckpoint(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := recovery.Complete(id, PairingOutcomeSuccess); !errors.Is(err, ErrRecoveryCheckpointStale) {
+		t.Fatalf("stale active-ledger generation was accepted: %v", err)
+	}
+	after, err := os.ReadFile(recovery.path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("stale mutation changed local active ledger: %v", err)
+	}
+}
+
+func TestRecoveryCheckpointCommitIsIdempotentAndRejectsConflictingReplay(t *testing.T) {
+	authority := newTestIndependentRecoveryAuthority(t)
+	state := sha256.Sum256([]byte("committed pairing recovery state"))
+	request, err := NewRecoveryCheckpointRequest(authority.head.Scope, 0, [sha256.Size]byte{}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := authority.CommitCheckpoint(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := authority.CommitCheckpoint(context.Background(), request)
+	if err != nil || !sameRecoveryCheckpoint(first, replayed) {
+		t.Fatalf("exact checkpoint replay was not idempotent: %v", err)
+	}
+	conflictingState := sha256.Sum256([]byte("conflicting replay state"))
+	conflict, err := NewRecoveryCheckpointRequest(authority.head.Scope, 0, [sha256.Size]byte{}, conflictingState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict.OperationID = request.OperationID
+	if _, err := authority.CommitCheckpoint(context.Background(), conflict); !errors.Is(err, ErrRecoveryCheckpointStale) {
+		t.Fatalf("conflicting replay was not rejected: %v", err)
 	}
 }
