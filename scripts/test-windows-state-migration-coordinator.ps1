@@ -193,6 +193,35 @@ try {
 } finally {
     Remove-Item -LiteralPath $stagingRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+$partialStagingRecovery = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $partialStagingRecovery.Source -Destination $partialStagingRecovery.Destination -AgentPath $agentPath -ServiceName $partialStagingRecovery.ServiceName -ServiceSid $partialStagingRecovery.ServiceSid -MetadataPath $partialStagingRecovery.MetadataPath -JournalPath $partialStagingRecovery.Journal -FaultAt 'StagingEntryCopied,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Partial-copy interruption did not leave a pending rollback.' }
+    $pending = Read-WeDecentMigrationJournal -Path $partialStagingRecovery.Journal
+    if ($pending.phase -cne 'RollingBack' -or -not (Test-Path -LiteralPath $pending.staging -PathType Container)) {
+        throw 'Partial staging tree was not preserved with its recovery journal.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$pending.source_manifest_sha256)) {
+        throw 'Partial staging test unexpectedly recorded a complete source manifest.'
+    }
+    [void](Assert-WeDecentMigrationPartialTreeSafe -Path $pending.staging -ServiceSid $partialStagingRecovery.ServiceSid)
+    $global:WeDecentMigrationMockService.State = 'Stopped'
+    $global:WeDecentMigrationMockStatus = 'Stopped'
+    if (-not (Recover-WeDecentStateMigration -JournalPath $partialStagingRecovery.Journal -AgentPath $agentPath -MetadataPath $partialStagingRecovery.MetadataPath -ServiceName $partialStagingRecovery.ServiceName)) {
+        throw 'Recovery did not remove the validated partial staging tree.'
+    }
+    Assert-MigrationRolledBack -Fixture $partialStagingRecovery -Fault 'partial staging recovery'
+    Write-Host 'Migration coordinator partial-copy rollback recovery PASS'
+} finally {
+    Remove-Item -LiteralPath $partialStagingRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
     Write-Host 'Migration coordinator durable recovery PASS'
 } finally {
     Remove-Item -LiteralPath $recovery.Root -Recurse -Force -ErrorAction SilentlyContinue
