@@ -529,8 +529,8 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 	if err != nil || token.Scope != scope || token.OperationID != operationID ||
 		token.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(token.WitnessIDs, p.witnessIDs) ||
 		verifyCheckpointFenceTokenSignature(token, p.primaryKey) != nil ||
-		p.verifyRevocationAuthorization(token.Action, token.OperationID, token.Participants,
-			token.AuthorizationProof, token.AuthorizationSHA256) != nil {
+		p.verifyRevocationAuthorizationForRecovery(token.Action, token.OperationID, token.Participants,
+			token.AuthorizationProof, token.AuthorizationSHA256, response.Committed) != nil {
 		return CheckpointFenceOperation{}, false, ErrCheckpointIntegrity
 	}
 	if !response.Committed {
@@ -564,6 +564,20 @@ func (p *SupabaseCheckpointFencePrimary) verifyRevocationAuthorization(
 	action CheckpointFenceAction, operationID string, participants []CheckpointEndpoint,
 	proof []byte, authorizationHash [sha256.Size]byte,
 ) error {
+	return p.verifyRevocationAuthorizationAt(action, operationID, participants, proof, authorizationHash, p.now().UnixMilli(), true)
+}
+
+func (p *SupabaseCheckpointFencePrimary) verifyRevocationAuthorizationForRecovery(
+	action CheckpointFenceAction, operationID string, participants []CheckpointEndpoint,
+	proof []byte, authorizationHash [sha256.Size]byte, committed bool,
+) error {
+	return p.verifyRevocationAuthorizationAt(action, operationID, participants, proof, authorizationHash, p.now().UnixMilli(), !committed)
+}
+
+func (p *SupabaseCheckpointFencePrimary) verifyRevocationAuthorizationAt(
+	action CheckpointFenceAction, operationID string, participants []CheckpointEndpoint,
+	proof []byte, authorizationHash [sha256.Size]byte, nowUnixMS int64, requireCurrent bool,
+) error {
 	if action == CheckpointFenceFinalize {
 		if len(proof) != 0 {
 			return ErrCheckpointIntegrity
@@ -579,12 +593,15 @@ func (p *SupabaseCheckpointFencePrimary) verifyRevocationAuthorization(
 	if err != nil {
 		return ErrCheckpointIntegrity
 	}
-	now := p.now().UnixMilli()
-	if envelope.IssuedAtUnixMS > now+30000 || envelope.ExpiresAtUnixMS <= now {
+	if envelope.IssuedAtUnixMS > nowUnixMS+30000 ||
+		(requireCurrent && envelope.ExpiresAtUnixMS <= nowUnixMS) {
 		return ErrCheckpointFenceExpired
 	}
+	if len(participants) != 1 {
+		return ErrCheckpointIntegrity
+	}
 	endpoint := participants[0]
-	if len(participants) != 1 || endpoint.RevocationEpoch == ^uint64(0) {
+	if endpoint.RevocationEpoch == ^uint64(0) {
 		return ErrCheckpointStale
 	}
 	expectedOperationID, operationErr := CheckpointRevocationOperationID(endpoint, endpoint.RevocationEpoch+1)
