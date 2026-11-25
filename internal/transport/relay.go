@@ -90,7 +90,7 @@ func (d RelayDialer) Dial(ctx context.Context) (Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	challenge, err := relayproto.Read(conn)
+	challenge, err := readRelayMessage(ctx, conn, d.Options.Timeout)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -103,7 +103,7 @@ func (d RelayDialer) Dial(ctx context.Context) (Conn, error) {
 		conn.Close()
 		return nil, err
 	}
-	resp, err := relayproto.Read(conn)
+	resp, err := readRelayMessage(ctx, conn, d.Options.Timeout)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -124,7 +124,7 @@ func WaitRelaySession(ctx context.Context, address string, opts RelayOptions, id
 	if err != nil {
 		return nil, err
 	}
-	challenge, err := relayproto.Read(conn)
+	challenge, err := readRelayMessage(ctx, conn, opts.Timeout)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -143,7 +143,7 @@ func WaitRelaySession(ctx context.Context, address string, opts RelayOptions, id
 		conn.Close()
 		return nil, err
 	}
-	resp, err := relayproto.Read(conn)
+	resp, err := readRelayMessage(ctx, conn, opts.Timeout)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -156,16 +156,7 @@ func WaitRelaySession(ctx context.Context, address string, opts RelayOptions, id
 		conn.Close()
 		return nil, errors.New("relay did not accept registration")
 	}
-	cancelWatch := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-cancelWatch:
-		}
-	}()
-	resp, err = relayproto.Read(conn)
-	close(cancelWatch)
+	resp, err = readRelayMessage(ctx, conn, opts.Timeout)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -179,6 +170,39 @@ func WaitRelaySession(ctx context.Context, address string, opts RelayOptions, id
 		return nil, errors.New("relay did not enter ready state")
 	}
 	return conn, nil
+}
+
+func readRelayMessage(ctx context.Context, conn net.Conn, timeout time.Duration) (relayproto.Message, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return relayproto.Message{}, err
+	}
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return relayproto.Message{}, err
+	}
+	interruptDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(interruptDone)
+		_ = conn.SetReadDeadline(time.Now())
+	})
+	msg, err := relayproto.Read(conn)
+	if !stop() {
+		<-interruptDone
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return relayproto.Message{}, ctxErr
+	}
+	return msg, err
 }
 
 func dialRelayTLS(ctx context.Context, address string, opts RelayOptions) (*tls.Conn, error) {

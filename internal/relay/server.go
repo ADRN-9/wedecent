@@ -86,14 +86,21 @@ func (s *Server) handleRegister(conn net.Conn, challenge string, msg relayproto.
 		s.reject(conn, "bad_signature", "invalid registration signature")
 		return
 	}
-	slot, err := s.Broker.Park(msg.DeviceID, conn)
+	slot, err := s.Broker.Reserve(msg.DeviceID, conn)
 	if err != nil {
 		s.reject(conn, "slot_limit", err.Error())
 		return
 	}
-	if err := relayproto.Write(conn, relayproto.Message{Type: relayproto.TypeWaiting}); err != nil {
+	_ = conn.SetWriteDeadline(time.Now().Add(15 * time.Second))
+	if err := slot.write(relayproto.Message{Type: relayproto.TypeWaiting}); err != nil {
 		s.Broker.Remove(msg.DeviceID, slot)
-		_ = conn.Close()
+		return
+	}
+	_ = conn.SetWriteDeadline(time.Time{})
+	s.Broker.WatchDisconnect(msg.DeviceID, slot)
+	if err := s.Broker.Activate(msg.DeviceID, slot); err != nil {
+		slot.stopDisconnectWatch()
+		s.Broker.Remove(msg.DeviceID, slot)
 		return
 	}
 	s.log().Info("relay slot parked", "device_id", msg.DeviceID)
@@ -117,7 +124,7 @@ func (s *Server) handleConnect(client net.Conn, msg relayproto.Message) {
 		return
 	}
 	agent := slot.conn
-	if err := relayproto.Write(agent, relayproto.Message{Type: relayproto.TypeReady}); err != nil {
+	if err := slot.write(relayproto.Message{Type: relayproto.TypeReady}); err != nil {
 		_ = agent.Close()
 		slot.finish()
 		s.reject(client, "unavailable", "agent relay slot closed")
