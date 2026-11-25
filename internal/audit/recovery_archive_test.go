@@ -32,12 +32,12 @@ func TestPairingRecoveryArchivesOnlyContiguousVerifiedResolvedPrefix(t *testing.
 	first, second := strings.Repeat("1",32), strings.Repeat("2",32)
 	if err := recovery.Begin(testRecoveryRecord(first)); err != nil { t.Fatal(err) }
 	if err := recovery.Begin(testRecoveryRecord(second)); err != nil { t.Fatal(err) }
-	resolveAndAcknowledge(t, dir, recovery, second, PairingOutcomeSuccess)
+	resolveAndAcknowledgePairing(t, dir, recovery, second, PairingOutcomeSuccess)
 	if err := recovery.CompactResolved(); err != nil { t.Fatal(err) }
 	if _, err := os.Stat(filepath.Join(dir, pairingArchiveFileName)); !os.IsNotExist(err) {
 		t.Fatal("later resolved record bypassed earlier unresolved record")
 	}
-	resolveAndAcknowledge(t, dir, recovery, first, PairingOutcomeDenied)
+	resolveAndAcknowledgePairing(t, dir, recovery, first, PairingOutcomeDenied)
 	if err := recovery.CompactResolved(); err != nil { t.Fatal(err) }
 	archive, err := recovery.readArchive()
 	if err != nil { t.Fatal(err) }
@@ -56,7 +56,7 @@ func TestPairingRecoveryArchiveInterruptedCompactionReconciles(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	id := strings.Repeat("3",32)
 	if err := recovery.Begin(testRecoveryRecord(id)); err != nil { t.Fatal(err) }
-	resolveAndAcknowledge(t, dir, recovery, id, PairingOutcomeSuccess)
+	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
 	recovery.archiveAfterSync = func() error { return os.ErrPermission }
 	if err := recovery.CompactResolved(); err == nil { t.Fatal("injected archive/compaction interruption was ignored") }
 	restarted, err := OpenPairingRecovery(dir)
@@ -75,7 +75,7 @@ func TestPairingRecoveryArchiveAuthenticationAndSequenceFailClosed(t *testing.T)
 		recovery, err := OpenPairingRecovery(dir); if err != nil { t.Fatal(err) }
 		id := strings.Repeat("4",32)
 		if err := recovery.Begin(testRecoveryRecord(id)); err != nil { t.Fatal(err) }
-		resolveAndAcknowledge(t, dir, recovery, id, PairingOutcomeSuccess)
+		resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
 		if err := recovery.CompactResolved(); err != nil { t.Fatal(err) }
 		path := filepath.Join(dir, pairingArchiveFileName)
 		data, err := os.ReadFile(path); if err != nil { t.Fatal(err) }
