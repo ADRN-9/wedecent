@@ -747,6 +747,11 @@ $InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -La
 $StateDir = Assert-SafeChildPath -Path $StateDir -Root $InstallDir -Label 'StateDir'
 $version = Assert-ReleaseBundle
 $metadataPath = Get-WeDecentMetadataPath
+$migrationModule = Join-Path $PSScriptRoot 'StateMigration.psm1'
+Import-Module $migrationModule -Force -ErrorAction Stop
+$migrationJournalPath = Join-Path (Split-Path -Parent $metadataPath) 'state-migration.json'
+$migrationAgentPath = Join-Path $BundlePath 'wd-agent.exe'
+[void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath)
 $metadata = Read-WeDecentMetadata
 $metadataTrusted = $false
 if ($metadata) {
@@ -779,9 +784,7 @@ if ($service) {
     }
     $recordedStateDir = [IO.Path]::GetFullPath([string]$metadata.state_dir)
     $requestedStateDir = [IO.Path]::GetFullPath($StateDir)
-    if (-not [string]::Equals($recordedStateDir.TrimEnd('\'), $requestedStateDir.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Existing service state is at '$recordedStateDir', but the secure fresh-install location is '$requestedStateDir'. Refusing to redirect or overwrite identity state; perform the documented identity-preserving migration before upgrading."
-    }
+    $needsStateMigration = -not [string]::Equals($recordedStateDir.TrimEnd('\'), $requestedStateDir.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
     $stateArg = [regex]::Escape('--state=' + $recordedStateDir)
     if ($service.PathName -notmatch ('(?i)(?:^|\s)"?' + $stateArg + '"?(?:\s|$)')) {
         throw 'Existing SCM command line does not match the authenticated state_dir metadata; refusing upgrade.'
@@ -806,6 +809,22 @@ if ($service) {
 
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Upgrade WeDecent to $version")) { return }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    if ($needsStateMigration) {
+        $destinationParent = Split-Path -Parent $requestedStateDir
+        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+            Set-WeDecentMigrationAdminDirectory -Path $destinationParent
+        } else {
+            [void](Assert-WeDecentMigrationAdminDirectory -Path $destinationParent)
+        }
+        Write-Host "Migrating authenticated service state from '$recordedStateDir' to '$requestedStateDir'."
+        [void](Invoke-WeDecentStateMigration -Source $recordedStateDir -Destination $requestedStateDir -AgentPath $migrationAgentPath -ServiceName $ServiceName -ServiceSid $accountSid -MetadataPath $metadataPath -JournalPath $migrationJournalPath)
+        $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        $metadata = Read-WeDecentMetadata
+        if ([IO.Path]::GetFullPath([string]$metadata.state_dir) -ine $requestedStateDir) {
+            throw 'Authenticated installer metadata did not commit the migrated state path.'
+        }
+    }
     Write-Host "Upgrading existing $ServiceName service; state and service account will be preserved."
     if ($service.State -ne 'Stopped') {
         Stop-Service -Name $ServiceName -Force
