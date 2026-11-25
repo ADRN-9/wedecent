@@ -1181,7 +1181,7 @@ public static class WeDecentMigrationFileIdentityApi {
             }
             if (GetIdentity(parentPath)!=Id(parentInfo))
                 throw new InvalidOperationException("Publication parent identity changed before atomic publication.");
-            // Recheck the target after all other validation and immediately before the handle-relative rename.
+            // Recheck the target after all other validation and immediately before publication.
             if (replaceExisting) {
                 IntPtr target=Open(targetPath, FILE_READ_ATTRIBUTES, 7, BACKUP_SEMANTICS);
                 try {
@@ -1198,18 +1198,19 @@ public static class WeDecentMigrationFileIdentityApi {
                 int error=Marshal.GetLastWin32Error();
                 if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
             }
-            // The rename is relative to the retained parent handle, not a re-resolved absolute destination.
-            byte[] nameBytes=System.Text.Encoding.Unicode.GetBytes(targetName);
+            // The parent remains pinned; use a source handle for the atomic rename.
+            byte[] nameBytes=System.Text.Encoding.Unicode.GetBytes(targetPath);
             int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
-            int size=nameOffset+nameBytes.Length;
+            int size=nameOffset+nameBytes.Length+2;
             IntPtr buffer=Marshal.AllocHGlobal(size);
             try {
                 Marshal.WriteByte(buffer,0,replaceExisting?(byte)1:(byte)0);
-                Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),parent);
+                Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),IntPtr.Zero);
                 Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),nameBytes.Length);
                 Marshal.Copy(nameBytes,0,IntPtr.Add(buffer,nameOffset),nameBytes.Length);
+                Marshal.WriteInt16(buffer,nameOffset+nameBytes.Length,0);
                 if (!SetFileInformationByHandle(source,3,buffer,(uint)size))
-                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"SetFileInformationByHandle(FileRenameInfo) failed.");
             } finally { Marshal.FreeHGlobal(buffer); }
             string published=GetIdentity(targetPath);
             if (published!=sourceId) throw new InvalidOperationException("Published object identity did not match the verified source.");
