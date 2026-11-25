@@ -76,6 +76,9 @@ func provisionWindowsServiceState(dir, account string) (result error) {
 	if err := preflightAgentState(dir); err != nil {
 		return err
 	}
+	if err := verifyWindowsServiceStateParent(dir); err != nil {
+		return fmt.Errorf("refuse service state under an unprotected parent: %w", err)
+	}
 	if fresh {
 		// Never remove an unrelated directory: clean up only this exact new
 		// empty inode on an unsuccessful provisioning attempt. Preexisting
@@ -99,8 +102,11 @@ func provisionWindowsServiceState(dir, account string) (result error) {
 		return err
 	}
 	defer guard()
-	// Re-verify the exact directory after acquiring non-delete-sharing
+	// Re-verify the protected parent and exact directory after acquiring
 	// handles, before any owner/DACL mutation or sensitive file creation.
+	if err := verifyWindowsServiceStateParent(dir); err != nil {
+		return fmt.Errorf("revalidate protected service state parent: %w", err)
+	}
 	if err := verifyWindowsStateForSID(dir, installerSID); err != nil {
 		return fmt.Errorf("revalidate installer-owned service state under path guard: %w", err)
 	}
@@ -123,6 +129,24 @@ func requireEmptyWindowsServiceState(dir string) error {
 	}
 	if len(entries) != 0 {
 		return errors.New("existing service state is not empty: explicit offline migration and re-enrollment required")
+	}
+	return nil
+}
+
+func verifyWindowsServiceStateParent(dir string) error {
+	root, _, err := windowsStatePathComponents(dir)
+	if err != nil {
+		return err
+	}
+	parent := filepath.Clean(filepath.Dir(dir))
+	if strings.EqualFold(parent, strings.TrimRight(root, `\\`)) {
+		return nil
+	}
+	if _, err := inspectWindowsStateDirectory(parent); err != nil {
+		return fmt.Errorf("inspect service state parent: %w", err)
+	}
+	if err := trust.VerifyPairingStatePath(parent); err != nil {
+		return fmt.Errorf("service state parent must have a protected owner and DACL: %w", err)
 	}
 	return nil
 }
