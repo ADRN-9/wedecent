@@ -1,7 +1,6 @@
 package trust
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -92,7 +91,7 @@ func TestPairingCredentialAdmissionReceivesGenerationBeforeConsumption(t *testin
 	err = PairClientWithSecretAdmission(dir, secret, store, pairingTestPeer("wd_cccccccccccccccc"), func(generation uint64) error {
 		called = true
 		if generation != 1 { t.Fatalf("credential generation=%d, want 1", generation) }
-		if ok, checkErr := CheckPairingSecret(dir, secret); checkErr != nil || !ok { t.Fatalf("secret consumed before admission: %v %v", ok, checkErr) }
+		if hash, checkErr := readPairingHash(filepath.Join(dir, pairingSecretFile)); checkErr != nil || hash != HashSecret(secret) { t.Fatalf("secret consumed before admission: %q %v", hash, checkErr) }
 		return nil
 	})
 	if err != nil { t.Fatal(err) }
@@ -100,5 +99,4 @@ func TestPairingCredentialAdmissionReceivesGenerationBeforeConsumption(t *testin
 	if ok, err := CheckPairingSecret(dir, secret); err != nil || ok { t.Fatalf("consumed secret remained valid: %v %v", ok, err) }
 	consumed, err := readPairingCredentialRecord(dir)
 	if err != nil || !consumed.Consumed { t.Fatalf("credential metadata not marked consumed: %+v %v", consumed, err) }
-	_ = json.Valid
 }
