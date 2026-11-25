@@ -169,7 +169,9 @@ jobs:
       - name: Test native Windows agent
         run: go test ./...
       - name: Verify actual Windows service-state ancestor ACLs
-        run: go test ./cmd/wd-agent -run '^TestWindowsServiceStateDefaultLocationUsesProtectedProgramFilesAncestors
+        run: |
+          go test ./cmd/wd-agent -run TestWindowsServiceStateDefaultLocationUsesProtectedProgramFilesAncestors -count=1 -v
+      - name: Verify hostile ancestor owner startup rejection explicitly
         run: |
           go test ./cmd/wd-agent -run '^(TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoad|TestWindowsSDDLRightsMaskHandlesDirectoryServiceRightsFailClosed)$' -count=1 -v
       - name: Verify distinct service SID state provisioning explicitly
