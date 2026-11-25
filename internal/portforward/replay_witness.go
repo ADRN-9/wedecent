@@ -507,9 +507,10 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 	defer func() {
 		resultErr = errors.Join(resultErr, unlock())
 	}()
-	fingerprint := checkpointRevocationFingerprint(endpoint, next)
-	operationID := checkpointFenceOperationID(CheckpointFenceRevoke,
-		hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
+	operationID, err := CheckpointRevocationOperationID(endpoint, next)
+	if err != nil {
+		return err
+	}
 	proofRequest := CheckpointRevocationAuthorizationRequest{
 		Endpoint: endpoint, NextEpoch: next, OperationID: operationID,
 		Participants: []CheckpointEndpoint{endpoint},
@@ -1389,10 +1390,9 @@ func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.C
 		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
 		return ErrCheckpointStale
 	}
-	fingerprint := checkpointRevocationFingerprint(endpoint, next)
-	expectedOperationID := checkpointFenceOperationID(CheckpointFenceRevoke,
-		hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
-	if operationID != expectedOperationID || authorizationHash == ([sha256.Size]byte{}) || len(authorizationProof) != ed25519.SignatureSize {
+	expectedOperationID, operationErr := CheckpointRevocationOperationID(endpoint, next)
+	if operationErr != nil || operationID != expectedOperationID ||
+		authorizationHash == ([sha256.Size]byte{}) || len(authorizationProof) != ed25519.SignatureSize {
 		return ErrCheckpointIntegrity
 	}
 	scope := organizationCheckpointFenceScope(endpoint.OrganizationID)
