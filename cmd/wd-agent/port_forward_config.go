@@ -3,6 +3,7 @@ package main
 import (
 	"crypto/ed25519"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -30,6 +31,29 @@ func (cfg serveConfig) portForwardConfigured() bool {
 		strings.TrimSpace(cfg.PortForwardReplayURL) != "" || strings.TrimSpace(cfg.PortForwardReplayAPIKey) != ""
 }
 
+func validatePublicSupabaseDataAPIKey(raw string) error {
+	key := strings.TrimSpace(raw)
+	if strings.HasPrefix(strings.ToLower(key), "sb_secret_") {
+		return errors.New("service-role credentials must remain on the checkpoint authority server")
+	}
+	parts := strings.Split(key, ".")
+	if len(parts) == 3 {
+		payload, err := base64.RawURLEncoding.Strict().DecodeString(parts[1])
+		if err != nil {
+			payload, err = base64.URLEncoding.Strict().DecodeString(parts[1])
+		}
+		if err == nil {
+			var claims struct {
+				Role string `json:"role"`
+			}
+			if json.Unmarshal(payload, &claims) == nil && strings.EqualFold(strings.TrimSpace(claims.Role), "service_role") {
+				return errors.New("service-role credentials must remain on the checkpoint authority server")
+			}
+		}
+	}
+	return nil
+}
+
 func (cfg serveConfig) validatePortForward() error {
 	if !cfg.portForwardConfigured() {
 		return nil
@@ -42,6 +66,9 @@ func (cfg serveConfig) validatePortForward() error {
 	}
 	if strings.TrimSpace(cfg.PortForwardReplayAPIKey) == "" {
 		return errors.New("--port-forward-replay-api-key or WEDECENT_SUPABASE_ANON_KEY is required")
+	}
+	if err := validatePublicSupabaseDataAPIKey(cfg.PortForwardReplayAPIKey); err != nil {
+		return fmt.Errorf("--port-forward-replay-api-key: %w", err)
 	}
 	if cfg.PortForwardAllowLegacyReplayMigration {
 		return errors.New("--port-forward-allow-legacy-replay-migration cannot be used with the independent replay authority; preserve old state and follow the documented identity recovery procedure")
