@@ -153,6 +153,9 @@ func (b *Broker) Take(deviceID string) (*slot, error) {
 	return nil, ErrNoAgent
 }
 
+// WatchDisconnect owns the parked connection's read side until Take stops it.
+// The agent MUST remain silent after TypeWaiting until it receives TypeReady;
+// any earlier byte is a protocol violation and closes the reservation.
 func (b *Broker) WatchDisconnect(deviceID string, target *slot) {
 	target.watchStop = make(chan struct{})
 	target.watchDone = make(chan struct{})
