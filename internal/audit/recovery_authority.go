@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 )
 
 var (
@@ -62,6 +63,56 @@ type LegacyRecoveryMigrationRequest struct {
 	ExpectedGeneration      uint64
 	AuthenticatedCheckpoint []byte
 	MigrationOperationID    string
+}
+
+// RecoveryAuthorityTrust pins the independently provisioned primary and witness keys.
+// Witness identities and public keys must be unique, including across different IDs.
+type RecoveryAuthorityTrust struct {
+	PrimaryKey  ed25519.PublicKey
+	WitnessKeys map[string]ed25519.PublicKey
+	Quorum      int
+}
+
+func (t RecoveryAuthorityTrust) Validate() error {
+	if len(t.PrimaryKey) != ed25519.PublicKeySize || len(t.WitnessKeys) < 3 ||
+		t.Quorum <= len(t.WitnessKeys)/2 || t.Quorum > len(t.WitnessKeys) {
+		return ErrRecoveryCheckpointQuorum
+	}
+	seen := make(map[string]string, len(t.WitnessKeys)+1)
+	primary := string(t.PrimaryKey)
+	seen[primary] = "primary"
+	for id, key := range t.WitnessKeys {
+		if id == "" || len(id) > 128 || len(key) != ed25519.PublicKeySize {
+			return ErrRecoveryCheckpointConflict
+		}
+		fingerprint := string(key)
+		if previous, ok := seen[fingerprint]; ok {
+			return fmt.Errorf("%w: witness key reused by %q and %q", ErrRecoveryCheckpointConflict, previous, id)
+		}
+		seen[fingerprint] = id
+	}
+	return nil
+}
+
+func recoveryPrimaryKeyID(publicKey ed25519.PublicKey) string {
+	digest := sha256.Sum256(publicKey)
+	return "ed25519:" + hex.EncodeToString(digest[:])
+}
+
+// ValidateRecoveryCheckpointWithTrust is the mandatory complete verification
+// path: pinned primary signature, unique pinned witness identities and keys,
+// exact request binding, and strict-majority witness signatures.
+func ValidateRecoveryCheckpointWithTrust(request RecoveryCheckpointRequest, checkpoint RecoveryCheckpoint, trust RecoveryAuthorityTrust) error {
+	if err := trust.Validate(); err != nil {
+		return err
+	}
+	if err := VerifyRecoveryCheckpointSignature(checkpoint, trust.PrimaryKey); err != nil {
+		return err
+	}
+	if err := ValidateRecoveryCheckpoint(request, checkpoint, trust.WitnessKeys, trust.Quorum); err != nil {
+		return err
+	}
+	return nil
 }
 
 // RecoveryAuthority is implemented by a remote or platform-backed provider.
@@ -157,8 +208,7 @@ func VerifyRecoveryCheckpointSignature(checkpoint RecoveryCheckpoint, primaryKey
 	if len(primaryKey) != ed25519.PublicKeySize {
 		return ErrRecoveryAuthorityUnavailable
 	}
-	keyDigest := sha256.Sum256(primaryKey)
-	expectedKeyID := "ed25519:" + hex.EncodeToString(keyDigest[:])
+	expectedKeyID := recoveryPrimaryKeyID(primaryKey)
 	if checkpoint.SignerKeyID != expectedKeyID || len(checkpoint.Signature) != ed25519.SignatureSize {
 		return ErrRecoveryCheckpointConflict
 	}
@@ -206,6 +256,17 @@ func ValidateRecoveryCheckpoint(
 	}
 	if len(checkpoint.Signature) != ed25519.SignatureSize {
 		return ErrRecoveryAuthorityUnavailable
+	}
+	configuredKeys := make(map[string]string, len(witnessKeys))
+	for id, key := range witnessKeys {
+		if id == "" || len(key) != ed25519.PublicKeySize {
+			return ErrRecoveryCheckpointConflict
+		}
+		fingerprint := string(key)
+		if previous, duplicate := configuredKeys[fingerprint]; duplicate {
+			return fmt.Errorf("%w: configured witness keys %q and %q are identical", ErrRecoveryCheckpointConflict, previous, id)
+		}
+		configuredKeys[fingerprint] = id
 	}
 	seen := make(map[string]struct{}, len(checkpoint.Witnesses))
 	for _, witness := range checkpoint.Witnesses {

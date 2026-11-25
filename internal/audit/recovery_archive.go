@@ -2,6 +2,8 @@ package audit
 
 import (
 	"bytes"
+	"context"
+	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -12,6 +14,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"wedecent.com/wedecent/internal/trust"
 )
@@ -23,20 +26,27 @@ const (
 )
 
 type pairingRecoveryArchiveUnsigned struct {
-	Version       int              `json:"version"`
-	FirstSequence uint64           `json:"first_sequence"`
-	LastSequence  uint64           `json:"last_sequence"`
-	Checkpoint    string           `json:"checkpoint"`
-	Records       []PairingOutcome `json:"records"`
+	Version                 int              `json:"version"`
+	FirstSequence           uint64           `json:"first_sequence"`
+	LastSequence            uint64           `json:"last_sequence"`
+	Checkpoint              string           `json:"checkpoint"`
+	Records                 []PairingOutcome `json:"records"`
+	AuthorityGeneration     uint64           `json:"authority_generation,omitempty"`
+	AuthorityPreviousDigest string           `json:"authority_previous_digest,omitempty"`
 }
 
 type pairingRecoveryArchive struct {
-	Version       int              `json:"version"`
-	FirstSequence uint64           `json:"first_sequence"`
-	LastSequence  uint64           `json:"last_sequence"`
-	Checkpoint    string           `json:"checkpoint"`
-	Records       []PairingOutcome `json:"records"`
-	MAC           string           `json:"mac"`
+	Version                 int                `json:"version"`
+	FirstSequence           uint64             `json:"first_sequence"`
+	LastSequence            uint64             `json:"last_sequence"`
+	Checkpoint              string             `json:"checkpoint"`
+	Records                 []PairingOutcome   `json:"records"`
+	AuthorityGeneration     uint64             `json:"authority_generation,omitempty"`
+	AuthorityPreviousDigest string             `json:"authority_previous_digest,omitempty"`
+	AuthorityKeyID          string             `json:"authority_key_id,omitempty"`
+	AuthoritySignature      string             `json:"authority_signature,omitempty"`
+	AuthorityCheckpoint     RecoveryCheckpoint `json:"authority_checkpoint,omitempty"`
+	MAC                     string             `json:"mac"`
 }
 
 func (r *PairingRecovery) loadArchiveKey() error {
@@ -161,6 +171,181 @@ func pairingArchiveCheckpoint(records []PairingOutcome) (string, error) {
 	return hex.EncodeToString(checkpoint), nil
 }
 
+func ctxBackground() context.Context { return context.Background() }
+
+func (r *PairingRecovery) authorizeArchivePublication(unsigned pairingRecoveryArchiveUnsigned, archive pairingRecoveryArchive) (pairingRecoveryArchiveUnsigned, pairingRecoveryArchive, error) {
+	if r == nil || r.authority == nil {
+		return unsigned, archive, ErrRecoveryAuthorityUnavailable
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	head, err := r.authority.LoadCheckpoint(ctx, r.authorityScope)
+	if err != nil {
+		return unsigned, archive, fmt.Errorf("%w: load pairing archive checkpoint: %v", ErrRecoveryAuthorityUnavailable, err)
+	}
+	if head.Scope != r.authorityScope || (head.Generation == 0 && !emptyRecoveryCheckpoint(head)) {
+		return unsigned, archive, ErrRecoveryCheckpointConflict
+	}
+	if head.Generation > 0 {
+		if err := r.verifyAuthorityCheckpoint(ctx, head); err != nil {
+			return unsigned, archive, err
+		}
+	}
+	build := func(generation uint64, previous [sha256.Size]byte) (pairingRecoveryArchiveUnsigned, []byte, [sha256.Size]byte, error) {
+		candidate := unsigned
+		candidate.AuthorityGeneration = generation
+		candidate.AuthorityPreviousDigest = hex.EncodeToString(previous[:])
+		payload, marshalErr := json.Marshal(candidate)
+		if marshalErr != nil {
+			return candidate, nil, [sha256.Size]byte{}, marshalErr
+		}
+		return candidate, payload, sha256.Sum256(payload), nil
+	}
+	var candidate pairingRecoveryArchiveUnsigned
+	var payload []byte
+	var digest [sha256.Size]byte
+	if head.Generation > 0 {
+		candidate, payload, digest, err = build(head.Generation, head.PreviousDigest)
+		if err != nil {
+			return unsigned, archive, err
+		}
+	}
+	if head.Generation == 0 || digest != head.StateDigest {
+		if head.Generation == ^uint64(0) {
+			return unsigned, archive, ErrRecoveryCheckpointStale
+		}
+		candidate, payload, digest, err = build(head.Generation+1, head.StateDigest)
+		if err != nil {
+			return unsigned, archive, err
+		}
+	}
+	keyID, signature, err := r.authority.SignArchive(ctx, payload)
+	if err != nil {
+		return unsigned, archive, fmt.Errorf("%w: sign pairing archive: %v", ErrRecoveryAuthorityUnavailable, err)
+	}
+	if keyID != recoveryPrimaryKeyID(r.authorityTrust.PrimaryKey) || len(signature) != ed25519.SignatureSize {
+		return unsigned, archive, ErrRecoveryCheckpointConflict
+	}
+	var receipt RecoveryCheckpoint
+	if head.Generation > 0 && digest == head.StateDigest {
+		receipt = head
+	} else {
+		request, requestErr := NewRecoveryCheckpointRequest(r.authorityScope, candidate.AuthorityGeneration-1, head.StateDigest, digest)
+		if requestErr != nil {
+			return unsigned, archive, requestErr
+		}
+		receipt, err = r.authority.CommitCheckpoint(ctx, request)
+		if err != nil {
+			observed, loadErr := r.authority.LoadCheckpoint(ctx, r.authorityScope)
+			if loadErr != nil || observed.Scope != request.Scope || observed.Generation != request.Generation ||
+				observed.StateDigest != request.StateDigest || observed.PreviousDigest != request.PreviousDigest ||
+				observed.OperationID != request.OperationID {
+				return unsigned, archive, fmt.Errorf("%w: %v", ErrRecoveryCommitUncertain, err)
+			}
+			receipt = observed
+		}
+	}
+	request, err := NewRecoveryCheckpointRequest(r.authorityScope, receipt.Generation-1, receipt.PreviousDigest, receipt.StateDigest)
+	if err != nil {
+		return unsigned, archive, err
+	}
+	if receipt.StateDigest != digest || receipt.Generation != candidate.AuthorityGeneration ||
+		receipt.PreviousDigest != head.StateDigest || receipt.OperationID != request.OperationID {
+		return unsigned, archive, ErrRecoveryCheckpointConflict
+	}
+	if err := r.authority.VerifyCheckpoint(ctx, receipt); err != nil {
+		return unsigned, archive, fmt.Errorf("%w: provider checkpoint verification: %v", ErrRecoveryCheckpointConflict, err)
+	}
+	if err := ValidateRecoveryCheckpointWithTrust(request, receipt, r.authorityTrust); err != nil {
+		return unsigned, archive, err
+	}
+	if err := r.authority.VerifyArchive(ctx, keyID, payload, signature); err != nil {
+		return unsigned, archive, fmt.Errorf("%w: archive signature verification: %v", ErrRecoveryCheckpointConflict, err)
+	}
+	archive.AuthorityGeneration = candidate.AuthorityGeneration
+	archive.AuthorityPreviousDigest = candidate.AuthorityPreviousDigest
+	archive.AuthorityKeyID = keyID
+	archive.AuthoritySignature = hex.EncodeToString(signature)
+	archive.AuthorityCheckpoint = receipt
+	return candidate, archive, nil
+}
+
+func (r *PairingRecovery) verifyIndependentArchive(ctx context.Context, archive pairingRecoveryArchive, payload []byte) error {
+	if r == nil || r.authority == nil {
+		return ErrRecoveryAuthorityUnavailable
+	}
+	if archive.AuthorityGeneration == 0 || archive.AuthorityKeyID != recoveryPrimaryKeyID(r.authorityTrust.PrimaryKey) || archive.AuthorityPreviousDigest == "" ||
+		archive.AuthoritySignature == "" || archive.AuthorityCheckpoint.Generation == 0 {
+		return ErrRecoveryMigrationUntrusted
+	}
+	previousBytes, err := hex.DecodeString(archive.AuthorityPreviousDigest)
+	if err != nil || len(previousBytes) != sha256.Size {
+		return ErrRecoveryMigrationUntrusted
+	}
+	var previous [sha256.Size]byte
+	copy(previous[:], previousBytes)
+	if archive.AuthorityCheckpoint.Generation != archive.AuthorityGeneration ||
+		archive.AuthorityCheckpoint.PreviousDigest != previous ||
+		archive.AuthorityCheckpoint.StateDigest != sha256.Sum256(payload) {
+		return ErrRecoveryCheckpointConflict
+	}
+	signature, err := hex.DecodeString(archive.AuthoritySignature)
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return ErrRecoveryCheckpointConflict
+	}
+	if err := r.authority.VerifyArchive(ctx, archive.AuthorityKeyID, payload, signature); err != nil {
+		return fmt.Errorf("%w: independent archive signature rejected: %v", ErrRecoveryCheckpointConflict, err)
+	}
+	checkpoint := archive.AuthorityCheckpoint
+	if checkpoint.Scope != r.authorityScope {
+		return ErrRecoveryCheckpointConflict
+	}
+	request, err := NewRecoveryCheckpointRequest(r.authorityScope, checkpoint.Generation-1, checkpoint.PreviousDigest, checkpoint.StateDigest)
+	if err != nil {
+		return err
+	}
+	if err := r.authority.VerifyCheckpoint(ctx, checkpoint); err != nil {
+		return fmt.Errorf("%w: independent checkpoint rejected: %v", ErrRecoveryCheckpointConflict, err)
+	}
+	if err := ValidateRecoveryCheckpointWithTrust(request, checkpoint, r.authorityTrust); err != nil {
+		return err
+	}
+	head, err := r.authority.LoadCheckpoint(ctx, r.authorityScope)
+	if err != nil {
+		return fmt.Errorf("%w: current independent checkpoint unavailable: %v", ErrRecoveryAuthorityUnavailable, err)
+	}
+	if !sameRecoveryCheckpoint(head, checkpoint) {
+		return ErrRecoveryCheckpointStale
+	}
+	return nil
+}
+
+func (r *PairingRecovery) verifyAuthorityCheckpoint(ctx context.Context, checkpoint RecoveryCheckpoint) error {
+	if checkpoint.Scope != r.authorityScope || checkpoint.Generation == 0 {
+		return ErrRecoveryCheckpointStale
+	}
+	request, err := NewRecoveryCheckpointRequest(r.authorityScope, checkpoint.Generation-1, checkpoint.PreviousDigest, checkpoint.StateDigest)
+	if err != nil {
+		return err
+	}
+	if err := r.authority.VerifyCheckpoint(ctx, checkpoint); err != nil {
+		return fmt.Errorf("%w: independent checkpoint verification failed: %v", ErrRecoveryCheckpointConflict, err)
+	}
+	return ValidateRecoveryCheckpointWithTrust(request, checkpoint, r.authorityTrust)
+}
+
+func emptyRecoveryCheckpoint(checkpoint RecoveryCheckpoint) bool {
+	return checkpoint.Generation == 0 && checkpoint.StateDigest == ([sha256.Size]byte{}) &&
+		checkpoint.PreviousDigest == ([sha256.Size]byte{}) && checkpoint.OperationID == "" &&
+		checkpoint.SignerKeyID == "" && len(checkpoint.Signature) == 0 && len(checkpoint.Witnesses) == 0
+}
+
+func sameRecoveryCheckpoint(a, b RecoveryCheckpoint) bool {
+	left, errLeft := json.Marshal(a)
+	right, errRight := json.Marshal(b)
+	return errLeft == nil && errRight == nil && bytes.Equal(left, right)
+}
+
 func (r *PairingRecovery) readArchive() (pairingRecoveryArchive, error) {
 	archive := pairingRecoveryArchive{Version: 1}
 	if err := r.verifyArchiveKey(); err != nil {
@@ -223,7 +408,8 @@ func (r *PairingRecovery) readArchive() (pairingRecoveryArchive, error) {
 		return archive, errors.New("pairing recovery archive checkpoint mismatch")
 	}
 	unsigned := pairingRecoveryArchiveUnsigned{Version: archive.Version, FirstSequence: archive.FirstSequence,
-		LastSequence: archive.LastSequence, Checkpoint: archive.Checkpoint, Records: archive.Records}
+		LastSequence: archive.LastSequence, Checkpoint: archive.Checkpoint, Records: archive.Records,
+		AuthorityGeneration: archive.AuthorityGeneration, AuthorityPreviousDigest: archive.AuthorityPreviousDigest}
 	payload, err := json.Marshal(unsigned)
 	if err != nil {
 		return archive, err
@@ -233,6 +419,11 @@ func (r *PairingRecovery) readArchive() (pairingRecoveryArchive, error) {
 	provided, decodeErr := hex.DecodeString(archive.MAC)
 	if decodeErr != nil || !hmac.Equal(provided, mac.Sum(nil)) {
 		return archive, errors.New("pairing recovery archive authentication failed")
+	}
+	if r.authority != nil {
+		if err := r.verifyIndependentArchive(ctxBackground(), archive, payload); err != nil {
+			return archive, err
+		}
 	}
 	return archive, nil
 }
@@ -250,14 +441,21 @@ func (r *PairingRecovery) writeArchive(records []PairingOutcome) (pairingRecover
 		return empty, err
 	}
 	unsigned := pairingRecoveryArchiveUnsigned{Version: 1, FirstSequence: 1, LastSequence: uint64(len(records)), Checkpoint: checkpoint, Records: records}
+	archive := pairingRecoveryArchive{Version: 1, FirstSequence: 1, LastSequence: uint64(len(records)), Checkpoint: checkpoint, Records: records}
+	if r.authority != nil {
+		var err error
+		unsigned, archive, err = r.authorizeArchivePublication(unsigned, archive)
+		if err != nil {
+			return empty, err
+		}
+	}
 	payload, err := json.Marshal(unsigned)
 	if err != nil {
 		return empty, err
 	}
 	mac := hmac.New(sha256.New, r.archiveKey)
 	_, _ = mac.Write(payload)
-	archive := pairingRecoveryArchive{Version: 1, FirstSequence: 1, LastSequence: uint64(len(records)),
-		Checkpoint: checkpoint, Records: records, MAC: hex.EncodeToString(mac.Sum(nil))}
+	archive.MAC = hex.EncodeToString(mac.Sum(nil))
 	data, err := json.Marshal(archive)
 	if err != nil {
 		return empty, err

@@ -32,16 +32,20 @@ type DirectAuthorizer interface {
 }
 
 type Server struct {
-	Identity               *identity.Identity
-	Trust                  *trust.Store
-	StateDir               string
-	Shell                  string
-	Logger                 *slog.Logger
-	DirectAuthorizer       DirectAuthorizer
-	FileTransfer           *FileTransferRuntime
-	PortForwarding         *PortForwardRuntime
-	pairingCompletionAudit func(*audit.Log, audit.Event) error
-	Policy                 SessionPolicy
+	Identity                      *identity.Identity
+	Trust                         *trust.Store
+	StateDir                      string
+	Shell                         string
+	Logger                        *slog.Logger
+	DirectAuthorizer              DirectAuthorizer
+	RecoveryAuthority             audit.RecoveryAuthority
+	RecoveryAuthorityTrust        audit.RecoveryAuthorityTrust
+	RecoveryAuthorityScope        string
+	legacyPairingRecoveryForTests bool
+	FileTransfer                  *FileTransferRuntime
+	PortForwarding                *PortForwardRuntime
+	pairingCompletionAudit        func(*audit.Log, audit.Event) error
+	Policy                        SessionPolicy
 }
 
 func (s *Server) ServeConn(raw net.Conn) {
@@ -154,10 +158,30 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		_ = sendError(conn, "server_error", "pairing audit is unavailable")
 		return
 	}
-	recovery, err := audit.OpenPairingRecovery(s.StateDir)
+	var recovery *audit.PairingRecovery
+	if s.RecoveryAuthority != nil {
+		scope := ""
+		if s.Identity != nil && s.Identity.ID != "" {
+			scope = "pairing-recovery/" + s.Identity.ID
+		}
+		if scope == "" || (s.RecoveryAuthorityScope != "" && s.RecoveryAuthorityScope != scope) {
+			err = audit.ErrRecoveryAuthorityUnavailable
+		} else {
+			recovery, err = audit.OpenPairingRecoveryWithAuthority(s.StateDir, scope, s.RecoveryAuthority, s.RecoveryAuthorityTrust)
+		}
+	} else if s.legacyPairingRecoveryForTests {
+		// Explicit test-only compatibility; production never treats local HMAC as independent authority.
+		recovery, err = audit.OpenPairingRecovery(s.StateDir)
+	} else {
+		err = audit.ErrRecoveryAuthorityUnavailable
+	}
 	if err != nil {
-		s.log().Error("pairing recovery unavailable", "peer_id", clientID, "error", err)
-		_ = sendError(conn, "server_error", "pairing recovery is unavailable")
+		s.log().Error("independent pairing recovery authority unavailable", "peer_id", clientID, "error", err)
+		if s.legacyPairingRecoveryForTests && s.RecoveryAuthority == nil {
+			_ = sendError(conn, "server_error", "pairing recovery is unavailable")
+		} else {
+			_ = sendError(conn, "recovery_authority_unavailable", "independent pairing recovery authority is unavailable")
+		}
 		return
 	}
 	pairingAudit, err := audit.Open(s.StateDir)

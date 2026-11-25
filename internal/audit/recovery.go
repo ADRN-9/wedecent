@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -75,6 +76,10 @@ type PairingRecovery struct {
 	allowEmpty              bool
 	operatorCheck           func() error // test-only authorization fault seam
 	archiveKey              []byte
+	authority               RecoveryAuthority
+	authorityScope          string
+	authorityTrust          RecoveryAuthorityTrust
+	migrationPending        bool
 	archiveAfterSync        func() error
 	compactionBeforeReplace func() error
 }
@@ -87,6 +92,9 @@ func NewPairingAttemptID() (string, error) {
 	return hex.EncodeToString(id[:]), nil
 }
 
+// OpenPairingRecovery opens the local-only compatibility journal. Its HMAC and
+// filesystem protections do not provide independent rollback resistance. Production
+// pairing must use OpenPairingRecoveryWithAuthority.
 func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	if stateDir == "" {
 		return nil, errors.New("pairing recovery state directory is required")
@@ -156,6 +164,90 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 		}
 	}
 	return r, nil
+}
+
+// OpenPairingRecoveryWithAuthority enables the independent recovery trust domain.
+// It never treats the local archive HMAC as an independent checkpoint. Existing
+// legacy archives without an external proof are rejected for operator reconciliation.
+func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority RecoveryAuthority, authorityTrust RecoveryAuthorityTrust) (*PairingRecovery, error) {
+	if authority == nil || scope == "" || len(scope) > 256 {
+		return nil, ErrRecoveryAuthorityUnavailable
+	}
+	if err := authorityTrust.Validate(); err != nil {
+		return nil, err
+	}
+	dir := filepath.Clean(stateDir)
+	if err := trust.VerifyPairingStatePath(dir); err != nil {
+		return nil, fmt.Errorf("unsafe pairing recovery directory: %w", err)
+	}
+	preflight := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName),
+		authority: authority, authorityScope: scope, authorityTrust: authorityTrust}
+	if err := preflight.loadArchiveKey(); err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	archive, err := preflight.readArchive()
+	if err != nil {
+		return nil, err
+	}
+	if archive.LastSequence == 0 {
+		head, err := authority.LoadCheckpoint(ctx, scope)
+		if err != nil {
+			return nil, fmt.Errorf("independent pairing recovery checkpoint unavailable: %w", err)
+		}
+		if head.Scope != scope || !emptyRecoveryCheckpoint(head) {
+			return nil, ErrRecoveryMigrationUntrusted
+		}
+	}
+	recovery, err := OpenPairingRecovery(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	recovery.authority = authority
+	recovery.authorityScope = scope
+	recovery.authorityTrust = authorityTrust
+	if _, err := recovery.readArchive(); err != nil {
+		return nil, err
+	}
+	return recovery, nil
+}
+
+// OpenPairingRecoveryForMigration permits only the explicit migration operation
+// on a legacy archive. Ordinary reads and mutations still fail until migration
+// publishes a verified independent checkpoint.
+func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryAuthority, authorityTrust RecoveryAuthorityTrust) (*PairingRecovery, error) {
+	if authority == nil || scope == "" || len(scope) > 256 {
+		return nil, ErrRecoveryAuthorityUnavailable
+	}
+	if err := authorityTrust.Validate(); err != nil {
+		return nil, err
+	}
+	recovery, err := OpenPairingRecovery(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	recovery.authority = authority
+	recovery.authorityScope = scope
+	recovery.authorityTrust = authorityTrust
+	archive, err := recovery.readArchive()
+	if err == nil {
+		if archive.LastSequence == 0 {
+			head, loadErr := authority.LoadCheckpoint(context.Background(), scope)
+			if loadErr != nil {
+				return nil, fmt.Errorf("%w: verify empty migration state: %v", ErrRecoveryAuthorityUnavailable, loadErr)
+			}
+			if head.Scope != scope || !emptyRecoveryCheckpoint(head) {
+				return nil, ErrRecoveryMigrationUntrusted
+			}
+		}
+		return recovery, nil
+	}
+	if !errors.Is(err, ErrRecoveryMigrationUntrusted) {
+		return nil, err
+	}
+	recovery.migrationPending = true
+	return recovery, nil
 }
 
 // The marker lives beyond byte zero because Windows LockFileEx locks byte
