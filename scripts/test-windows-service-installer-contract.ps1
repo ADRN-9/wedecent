@@ -84,8 +84,9 @@ function Get-Item {
             $PSCmdlet.ThrowTerminatingError($record)
         }
         'ambiguous' { throw [System.UnauthorizedAccessException]::new('injected ambiguous state-path access') }
-        'file' { return [pscustomobject]@{ PSIsContainer = $false } }
-        default { return [pscustomobject]@{ PSIsContainer = $true } }
+        'file' { return [pscustomobject]@{ PSIsContainer = $false; Attributes = [System.IO.FileAttributes]::Normal } }
+        'reparse' { return [pscustomobject]@{ PSIsContainer = $true; Attributes = [System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint } }
+        default { return [pscustomobject]@{ PSIsContainer = $true; Attributes = [System.IO.FileAttributes]::Directory } }
     }
 }
 function Get-ChildItem {
@@ -103,6 +104,10 @@ $script:mockItemMode = 'missing'
 if (Test-DirectoryExistsStrict -Path 'C:\mock\WeDecent\Agent') {
     throw 'Missing state directory was reported present.'
 }
+$script:mockItemMode = 'reparse'
+$reparseRejected = $false
+try { [void](Test-DirectoryExistsStrict -Path 'C:\mock\WeDecent\Agent') } catch { $reparseRejected = $true }
+if (-not $reparseRejected) { throw 'Reparse state directory was accepted as a normal directory.' }
 $script:mockItemMode = 'ambiguous'
 $ambiguousRejected = $false
 try { [void](Test-DirectoryExistsStrict -Path 'C:\mock\WeDecent\Agent') } catch { $ambiguousRejected = $true }
@@ -125,6 +130,10 @@ $script:mockEnumerationFails = $false
 $script:mockItemMode = 'ambiguous'
 if (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent') {
     throw 'Ambiguous state-path existence was considered safe for account removal.'
+}
+$script:mockItemMode = 'reparse'
+if (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent') {
+    throw 'Reparse state directory was considered safe for account removal.'
 }
 $script:mockItemMode = 'file'
 if (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent') {
