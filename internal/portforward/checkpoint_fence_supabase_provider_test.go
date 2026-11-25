@@ -1,6 +1,7 @@
 package portforward
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"strings"
@@ -23,7 +24,7 @@ func TestNewSupabaseWitnessedReplayCheckpointProviderUsesAtomicServerPrimary(t *
 	replayFence := newTestFenceCoordinator(t, replay)
 	replayPrimary := replayFence.Primary.(*testAtomicCheckpointPrimary)
 
-	fencePublic, fencePrivate, err := ed25519.GenerateKey(rand.Reader)
+	_, fencePrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
