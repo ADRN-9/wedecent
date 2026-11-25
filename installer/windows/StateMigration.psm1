@@ -558,7 +558,7 @@ function Read-WeDecentMigrationJournal {
     }
     foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path',
         'service_name', 'service_sid', 'service_start_name', 'service_start_mode', 'agent_path', 'original_service_path',
-        'updated_service_path', 'original_metadata_json')) {
+        'updated_service_path', 'original_metadata_json', 'source_manifest_sha256', 'source_stable_manifest_sha256')) {
         if ([string]::IsNullOrWhiteSpace([string]$journal.$field)) {
             throw "Migration journal field '$field' is missing."
         }
@@ -589,6 +589,16 @@ function Read-WeDecentMigrationJournal {
         [string]$journal.service_start_mode -notin @('Boot', 'System', 'Auto', 'Manual', 'Disabled')) {
         throw 'Migration journal contains an invalid SCM service configuration.'
     }
+    if ($null -eq $journal.PSObject.Properties['staging_complete'] -or $journal.staging_complete -isnot [bool] -or
+        $null -eq $journal.identity -or
+        [string]::IsNullOrWhiteSpace([string]$journal.identity.DeviceId) -or
+        [string]::IsNullOrWhiteSpace([string]$journal.identity.Fingerprint)) {
+        throw 'Migration journal lacks its source identity snapshot or staging completion marker.'
+    }
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths @(
+        [string]$journal.source, [string]$journal.destination, [string]$journal.staging,
+        [string]$journal.journal_path, [string]$journal.metadata_path
+    ))
     foreach ($digestField in @('source_manifest_sha256', 'source_stable_manifest_sha256', 'destination_manifest_sha256')) {
         if (-not [string]::IsNullOrWhiteSpace([string]$journal.$digestField) -and
             [string]$journal.$digestField -notmatch '^[a-f0-9]{64}$') {
