@@ -27,8 +27,9 @@ const (
 	checkpointFenceLeaseSecs  = 60
 )
 
-// CheckpointAuthorityTokenSource mints short-lived actor-bound JWTs for the dedicated
-// database role. Its signing key must exist only on the trusted authority host.
+// CheckpointAuthorityTokenSource returns short-lived JWTs for the authenticated session.
+// It must derive sub from that session, never from a caller-supplied actor ID. Its signing
+// key must exist only on the trusted authority host.
 type CheckpointAuthorityTokenSource interface {
 	Token(context.Context) (string, error)
 }
