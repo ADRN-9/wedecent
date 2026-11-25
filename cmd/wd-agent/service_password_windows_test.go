@@ -25,13 +25,16 @@ func TestReadServicePasswordRejectsOversizedInput(t *testing.T) {
 	}
 }
 
-
 func TestReadServicePasswordPreservesFollowingCredential(t *testing.T) {
 	reader := bufio.NewReader(strings.NewReader("service-password\nrecovery-bearer-token\n"))
 	password, err := readServicePassword(reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	token, err := readServicePassword(reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if password != "service-password" || token != "recovery-bearer-token" {
 		t.Fatalf("credential lines = %q, %q", password, token)
 	}
