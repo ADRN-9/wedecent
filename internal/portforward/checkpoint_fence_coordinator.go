@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"sort"
+	"time"
 )
 
 type CheckpointFenceWitnessClient struct {
@@ -88,9 +89,14 @@ func (c *CheckpointFenceCoordinator) execute(
 		return CheckpointFenceOperation{}, err
 	}
 	if request.Scope.Kind == "organization" && request.Action == CheckpointFenceRevoke {
-		if len(request.Participants) != 1 || len(request.AuthorizationProof) != ed25519.SignatureSize ||
+		envelope, proofErr := decodeCheckpointRevocationAuthorizationProof(request.AuthorizationProof)
+		if len(request.Participants) != 1 || proofErr != nil ||
 			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 {
 			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+		}
+		now := time.Now().UnixMilli()
+		if envelope.IssuedAtUnixMS > now+30000 || envelope.ExpiresAtUnixMS <= now {
+			return CheckpointFenceOperation{}, ErrCheckpointFenceExpired
 		}
 		expectedOperationID, operationErr := CheckpointRevocationOperationID(
 			request.Participants[0], request.Participants[0].RevocationEpoch+1,
