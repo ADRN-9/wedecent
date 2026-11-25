@@ -10,7 +10,21 @@ end
 $$;
 grant wedecent_checkpoint_authority to authenticator;
 
-create extension if not exists pgsodium;
+create schema if not exists pgsodium;
+create extension if not exists pgsodium with schema pgsodium;
+do $
+declare
+    v_schema text;
+begin
+    select namespace_row.nspname into v_schema
+      from pg_catalog.pg_extension extension_row
+      join pg_catalog.pg_namespace namespace_row on namespace_row.oid = extension_row.extnamespace
+     where extension_row.extname = 'pgsodium';
+    if v_schema is distinct from 'pgsodium' then
+        raise exception 'pgsodium must be installed in the pgsodium schema for checkpoint signature verification';
+    end if;
+end
+$;
 grant usage on schema public, auth, pgsodium to wedecent_checkpoint_authority;
 
 create table public.checkpoint_fence_primary_trust (
