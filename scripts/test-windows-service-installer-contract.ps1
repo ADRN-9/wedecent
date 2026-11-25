@@ -91,7 +91,7 @@ function Get-Item {
 }
 function Get-ChildItem {
     [CmdletBinding()]
-    param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)
+    param([string]$LiteralPath, [switch]$Force)
     if ($script:mockEnumerationFails) { throw 'injected state enumeration failure' }
     return $script:mockEntries
 }
