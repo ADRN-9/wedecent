@@ -184,6 +184,9 @@ func (r *PairingRecovery) authorizeArchivePublication(unsigned pairingRecoveryAr
 	if err != nil {
 		return unsigned, archive, fmt.Errorf("%w: load pairing archive checkpoint: %v", ErrRecoveryAuthorityUnavailable, err)
 	}
+	if head.Scope != r.authorityScope || (head.Generation == 0 && !emptyRecoveryCheckpoint(head)) {
+		return unsigned, archive, ErrRecoveryCheckpointConflict
+	}
 	if head.Generation > 0 {
 		if err := r.verifyAuthorityCheckpoint(ctx, head); err != nil {
 			return unsigned, archive, err
@@ -295,6 +298,9 @@ func (r *PairingRecovery) verifyIndependentArchive(ctx context.Context, archive 
 		return fmt.Errorf("%w: independent archive signature rejected: %v", ErrRecoveryCheckpointConflict, err)
 	}
 	checkpoint := archive.AuthorityCheckpoint
+	if checkpoint.Scope != r.authorityScope {
+		return ErrRecoveryCheckpointConflict
+	}
 	request, err := NewRecoveryCheckpointRequest(r.authorityScope, checkpoint.Generation-1, checkpoint.PreviousDigest, checkpoint.StateDigest)
 	if err != nil {
 		return err
@@ -316,7 +322,7 @@ func (r *PairingRecovery) verifyIndependentArchive(ctx context.Context, archive 
 }
 
 func (r *PairingRecovery) verifyAuthorityCheckpoint(ctx context.Context, checkpoint RecoveryCheckpoint) error {
-	if checkpoint.Generation == 0 {
+	if checkpoint.Scope != r.authorityScope || checkpoint.Generation == 0 {
 		return ErrRecoveryCheckpointStale
 	}
 	request, err := NewRecoveryCheckpointRequest(r.authorityScope, checkpoint.Generation-1, checkpoint.PreviousDigest, checkpoint.StateDigest)
@@ -327,6 +333,12 @@ func (r *PairingRecovery) verifyAuthorityCheckpoint(ctx context.Context, checkpo
 		return fmt.Errorf("%w: independent checkpoint verification failed: %v", ErrRecoveryCheckpointConflict, err)
 	}
 	return ValidateRecoveryCheckpointWithTrust(request, checkpoint, r.authorityTrust)
+}
+
+func emptyRecoveryCheckpoint(checkpoint RecoveryCheckpoint) bool {
+	return checkpoint.Generation == 0 && checkpoint.StateDigest == ([sha256.Size]byte{}) &&
+		checkpoint.PreviousDigest == ([sha256.Size]byte{}) && checkpoint.OperationID == "" &&
+		checkpoint.SignerKeyID == "" && len(checkpoint.Signature) == 0 && len(checkpoint.Witnesses) == 0
 }
 
 func sameRecoveryCheckpoint(a, b RecoveryCheckpoint) bool {
