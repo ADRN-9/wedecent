@@ -165,6 +165,7 @@ jobs:
           $password = ConvertTo-SecureString ("C228!" + [guid]::NewGuid().ToString('N') + "aA1") -AsPlainText -Force
           New-LocalUser -Name $name -Password $password -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
           "WEDECENT_TEST_SERVICE_ACCOUNT=.\$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WEDECENT_C228_ACCOUNT_CREATED=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Test native Windows agent
         run: go test ./...
       - name: Remove distinct Windows service test account
@@ -172,7 +173,7 @@ jobs:
         shell: pwsh
         run: |
           $name = 'WeDecentC228Svc'
-          if (Get-LocalUser -Name $name -ErrorAction SilentlyContinue) {
+          if ($env:WEDECENT_C228_ACCOUNT_CREATED -eq '1' -and (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) {
             Remove-LocalUser -Name $name
           }
       - name: Build native Windows binaries
