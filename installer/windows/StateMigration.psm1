@@ -1354,11 +1354,14 @@ function Publish-WeDecentMigrationObject {
         [Parameter(Mandatory = $true)][string]$TemporaryPath,
         [Parameter(Mandatory = $true)][string]$ParentPath,
         [Parameter(Mandatory = $true)][string]$TargetName,
+        [string]$ExpectedTemporaryIdentity,
         [string]$ExpectedTargetIdentity,
         [switch]$ReplaceExisting,
         [string]$RacePoint
     )
-    $temporaryIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($TemporaryPath)
+    $temporaryIdentity = if ([string]::IsNullOrWhiteSpace($ExpectedTemporaryIdentity)) {
+        [WeDecentMigrationFileIdentityApi]::GetIdentity($TemporaryPath)
+    } else { $ExpectedTemporaryIdentity }
     if (-not [string]::IsNullOrWhiteSpace($RacePoint)) { Invoke-WeDecentMigrationRacePoint -Name $RacePoint }
     return [WeDecentMigrationFileIdentityApi]::PublishByHandle($TemporaryPath,$ParentPath,$TargetName,$temporaryIdentity,$ExpectedTargetIdentity,[bool]$ReplaceExisting)
 }
@@ -1574,7 +1577,13 @@ function Invoke-WeDecentStateMigration {
 
         Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
         Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-        [void](Publish-WeDecentMigrationObject -TemporaryPath $staging -ParentPath $destinationParent -TargetName ([IO.Path]::GetFileName($destinationFull)) -ExpectedTargetIdentity '' -RacePoint 'BeforeDestinationAtomicPublish')
+        Assert-WeDecentMigrationRecoverySource -Journal $journal
+        $stagingManifest = @(Get-WeDecentMigrationManifest -Root $staging)
+        if ((Get-WeDecentMigrationManifestDigest -Manifest $stagingManifest) -cne [string]$journal.destination_manifest_sha256) {
+            throw 'Verified staging content changed before atomic destination publication.'
+        }
+        $stagingObjectIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($staging)
+        [void](Publish-WeDecentMigrationObject -TemporaryPath $staging -ParentPath $destinationParent -TargetName ([IO.Path]::GetFileName($destinationFull)) -ExpectedTemporaryIdentity $stagingObjectIdentity -ExpectedTargetIdentity '' -RacePoint 'BeforeDestinationAtomicPublish')
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull -ServiceSid $ServiceSid)
         $journal.phase = 'StatePublished'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
