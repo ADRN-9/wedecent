@@ -235,10 +235,9 @@ func (r *PairingRecovery) authorizeArchivePublication(unsigned pairingRecoveryAr
 		receipt, err = r.authority.CommitCheckpoint(ctx, request)
 		if err != nil {
 			observed, loadErr := r.authority.LoadCheckpoint(ctx, r.authorityScope)
-			if loadErr != nil || !sameRecoveryCheckpoint(observed, RecoveryCheckpoint{
-				Scope: request.Scope, Generation: request.Generation, StateDigest: request.StateDigest,
-				PreviousDigest: request.PreviousDigest, OperationID: request.OperationID,
-			}) {
+			if loadErr != nil || observed.Scope != request.Scope || observed.Generation != request.Generation ||
+				observed.StateDigest != request.StateDigest || observed.PreviousDigest != request.PreviousDigest ||
+				observed.OperationID != request.OperationID {
 				return unsigned, archive, fmt.Errorf("%w: %v", ErrRecoveryCommitUncertain, err)
 			}
 			receipt = observed
