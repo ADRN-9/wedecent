@@ -203,6 +203,51 @@ func TestLocalCoreRequiresAtomicFenceAuthorityForWitnessedCheckpointReplay(t *te
 	}
 }
 
+
+func TestLocalCoreRejectsServerSidePostgresFencePrimary(t *testing.T) {
+	stateDir := t.TempDir()
+	created, err := identity.Ensure(stateDir, "core-server-primary-boundary")
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlPlaneKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayPrimaryKey, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	witnesses := make([]portforward.CheckpointWitnessTrust, 3)
+	for i := range witnesses {
+		publicKey, _, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			t.Fatal(err)
+		}
+		witnesses[i] = portforward.CheckpointWitnessTrust{
+			Witness: coreProcessCheckpointWitness{},
+			ID: []string{"witness-a", "witness-b", "witness-c"}[i],
+			PublicKey: publicKey,
+		}
+	}
+	provider := &portforward.WitnessedReplayCheckpointProvider{
+		Primary: coreProcessCheckpointPrimary{},
+		PrimaryKey: replayPrimaryKey,
+		Witnesses: witnesses,
+		Quorum: 2,
+		Fencing: &portforward.CheckpointFenceCoordinator{
+			Primary: &portforward.SupabaseCheckpointFencePrimary{},
+		},
+	}
+	_, err = newLocalCoreForwardingVerifier(
+		stateDir, mesh.DeviceID(created.ID), created.PrivateKey, controlPlaneKey,
+		provider, coreProcessMembershipResolver{}, nil, portforward.CheckpointAuditTrust{}, "", "",
+	)
+	if err == nil || !strings.Contains(err.Error(), "Local Core cannot host the PostgreSQL service-role checkpoint primary") {
+		t.Fatalf("Local Core accepted server-only Supabase authority configuration: %v", err)
+	}
+}
+
 func TestLocalCoreRejectsCheckpointKeyReuseAcrossTrustDomains(t *testing.T) {
 	stateDir := t.TempDir()
 	created, err := identity.Ensure(stateDir, "core-witnessed-key-separation-test")
