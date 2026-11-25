@@ -321,9 +321,13 @@ func TestServiceStartupRejectsUntrustedAncestorDeleteChild(t *testing.T) {
 
 func TestServiceStartupFailsClosedBeforeSensitiveStateOnAncestorMutationACL(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "protected-parent")
-	if err := preflightAgentState(parent); err != nil { t.Fatal(err) }
+	if err := preflightAgentState(parent); err != nil {
+		t.Fatal(err)
+	}
 	state := filepath.Join(parent, "agent")
-	if err := preflightAgentState(state); err != nil { t.Fatal(err) }
+	if err := preflightAgentState(state); err != nil {
+		t.Fatal(err)
+	}
 	active, err := activeWindowsSID()
 	if err != nil {
 		t.Fatal(err)
