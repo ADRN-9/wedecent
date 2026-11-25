@@ -130,6 +130,19 @@ func TestDeletePeerDistinguishesPreCommitAndUncertainDurability(t *testing.T) {
 					t.Fatal("visible replacement still contains revoked peer")
 				}
 			})
+			t.Run("after-replace", func(t *testing.T) {
+				store, path, peer := newStore()
+				store.commitHooks.afterReplace = func() error { return errors.New("injected after replacement failure") }
+				_, deleted, err := store.DeletePeer(peer.ID)
+				if err == nil || deleted || !errors.Is(err, ErrTrustStoreCommitUncertain) {
+					t.Fatalf("post-replacement result deleted=%v err=%v", deleted, err)
+				}
+				reopened, openErr := Open(path)
+				if openErr != nil { t.Fatal(openErr) }
+				if _, ok := reopened.Get(peer.ID); ok {
+					t.Fatal("replacement was not visible after injected post-replacement failure")
+				}
+			})
 		})
 	}
 }
