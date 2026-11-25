@@ -1003,16 +1003,50 @@ function Get-WeDecentMigrationCanonicalPath {
     if ([string]::IsNullOrWhiteSpace($Path) -or $Path.StartsWith('\\?\') -or $Path.StartsWith('\\.\')) {
         throw 'Migration paths must be ordinary, absolute local filesystem paths.'
     }
-    if ($Path -match '(?i)(?:^|\\)[^\\]*~[0-9](?:\\|$)') {
-        throw 'Migration paths using ambiguous 8.3 short-name components are not accepted.'
-    }
     $full = [IO.Path]::GetFullPath($Path)
     $root = [IO.Path]::GetPathRoot($full)
     if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\') -or $full -match '^[A-Za-z]:[^\\]') {
         throw 'Migration paths must use an absolute local drive path.'
     }
     if ([string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)) { return $root }
-    return $full.TrimEnd('\')
+
+    if (-not ('WeDecentMigrationPathApi' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class WeDecentMigrationPathApi {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetLongPathName(string shortPath, StringBuilder longPath, uint bufferLength);
+}
+'@ -ErrorAction Stop
+    }
+
+    $probe = $full
+    $suffix = [Collections.Generic.Stack[string]]::new()
+    while (-not (Test-Path -LiteralPath $probe)) {
+        $leaf = [IO.Path]::GetFileName($probe)
+        $parent = [IO.Path]::GetDirectoryName($probe)
+        if ([string]::IsNullOrWhiteSpace($leaf) -or [string]::IsNullOrWhiteSpace($parent) -or
+            [string]::Equals($parent, $probe, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Migration path has no resolvable existing ancestor: $Path"
+        }
+        $suffix.Push($leaf)
+        $probe = $parent
+    }
+
+    $item = Get-Item -LiteralPath $probe -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Migration path traverses a reparse point: $probe"
+    }
+    $buffer = [Text.StringBuilder]::new(32768)
+    $length = [WeDecentMigrationPathApi]::GetLongPathName($probe, $buffer, [uint32]$buffer.Capacity)
+    if ($length -eq 0 -or $length -ge $buffer.Capacity) {
+        throw "Migration path could not be resolved to its filesystem long name: $probe"
+    }
+    $resolved = $buffer.ToString()
+    while ($suffix.Count -gt 0) { $resolved = Join-Path $resolved $suffix.Pop() }
+    return $resolved.TrimEnd('\')
 }
 
 function Assert-WeDecentMigrationPathsDisjoint {
@@ -1046,6 +1080,7 @@ function Assert-WeDecentMigrationRecoverySource {
         throw 'Migration journal lacks an authenticated original-source snapshot; refusing recovery.'
     }
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $Journal.source -ServiceSid $Journal.service_sid -MigrationSource)
+    [void](Assert-WeDecentMigrationTreeAcl -Path $Journal.source -ServiceSid $Journal.service_sid)
     $manifest = @(Get-WeDecentMigrationManifest -Root $Journal.source)
     if ((Get-WeDecentMigrationManifestDigest -Manifest $manifest) -cne [string]$Journal.source_manifest_sha256 -or
         (Get-WeDecentMigrationStableManifestDigest -Manifest $manifest) -cne [string]$Journal.source_stable_manifest_sha256) {
