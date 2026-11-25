@@ -213,15 +213,23 @@ func TestWrongSecretCannotTriggerLegacyCredentialMigration(t *testing.T) {
 func TestPairingAdmissionFailureDoesNotConsumeCredential(t *testing.T) {
 	dir := t.TempDir()
 	secret, err := RotatePairingSecret(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	store, err := Open(filepath.Join(dir, "trusted-clients.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	admissionFailure := errors.New("recovery reservation unavailable")
 	if err := PairClientWithSecretAdmission(dir, secret, store, pairingTestPeer("wd_dddddddddddddddd"), func(uint64) error {
 		return admissionFailure
-	}); !errors.Is(err, admissionFailure) { t.Fatalf("admission failure not propagated: %v", err) }
+	}); !errors.Is(err, admissionFailure) {
+		t.Fatalf("admission failure not propagated: %v", err)
+	}
 	if ok, err := CheckPairingSecret(dir, secret); err != nil || !ok {
 		t.Fatalf("credential consumed despite failed durable reservation: %v %v", ok, err)
 	}
-	if _, found := store.Get("wd_dddddddddddddddd"); found { t.Fatal("peer trust was committed without durable admission") }
+	if _, found := store.Get("wd_dddddddddddddddd"); found {
+		t.Fatal("peer trust was committed without durable admission")
+	}
 }
