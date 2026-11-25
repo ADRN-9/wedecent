@@ -40,6 +40,7 @@ type Server struct {
 	DirectAuthorizer DirectAuthorizer
 	FileTransfer     *FileTransferRuntime
 	PortForwarding   *PortForwardRuntime
+	pairingCompletionAudit func(*audit.Log, audit.Event) error
 	Policy           SessionPolicy
 }
 
