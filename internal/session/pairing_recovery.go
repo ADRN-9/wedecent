@@ -32,6 +32,21 @@ func InspectPairingRecovery(stateDir string) ([]PairingRecoveryAssessment, error
 	if err != nil {
 		return nil, err
 	}
+	return inspectPairingRecoveryRecords(stateDir, recovery)
+}
+
+// InspectPairingRecoveryWithAuthority is the production-safe inspection path.
+// It requires independent primary and witness trust and rejects legacy archives
+// until an authenticated migration has been completed.
+func InspectPairingRecoveryWithAuthority(stateDir, scope string, authority audit.RecoveryAuthority, authorityTrust audit.RecoveryAuthorityTrust) ([]PairingRecoveryAssessment, error) {
+	recovery, err := audit.OpenPairingRecoveryWithAuthority(stateDir, scope, authority, authorityTrust)
+	if err != nil {
+		return nil, err
+	}
+	return inspectPairingRecoveryRecords(stateDir, recovery)
+}
+
+func inspectPairingRecoveryRecords(stateDir string, recovery *audit.PairingRecovery) ([]PairingRecoveryAssessment, error) {
 	records, err := recovery.Records()
 	if err != nil {
 		return nil, err
