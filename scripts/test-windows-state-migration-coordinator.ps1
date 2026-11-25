@@ -338,14 +338,15 @@ $canonicalRoot = Get-WeDecentMigrationCanonicalPath -Path 'C:\'
 if ($canonicalRoot -cne 'C:\') { throw "Drive-root canonicalization changed: $canonicalRoot" }
 $normalized = Get-WeDecentMigrationCanonicalPath -Path 'C:\ProgramData\WeDecent\legacy\..\agent\'
 if ($normalized -cne 'C:\ProgramData\WeDecent\agent') { throw "Windows dot-segment normalization failed: $normalized" }
-foreach ($pair in @(
-    @('C:\ProgramData\WeDecent', 'c:\programdata\wedecent\agent'),
-    @('C:\ProgramData\WeDecent\agent', 'C:\ProgramData\WeDecent')
-)) {
+$overlapCases = @(
+    [pscustomobject]@{ Paths = @('C:\ProgramData\WeDecent', 'c:\programdata\wedecent\agent') },
+    [pscustomobject]@{ Paths = @('C:\ProgramData\WeDecent\agent', 'C:\ProgramData\WeDecent') }
+)
+foreach ($case in $overlapCases) {
     $rejected = $false
-    try { [void](Assert-WeDecentMigrationPathsDisjoint -Paths $pair) }
+    try { [void](Assert-WeDecentMigrationPathsDisjoint -Paths $case.Paths) }
     catch { $rejected = $_.Exception.Message -like '*overlap or alias*'; if (-not $rejected) { throw } }
-    if (-not $rejected) { throw "Migration path overlap was accepted: $($pair -join ' <> ')" }
+    if (-not $rejected) { throw "Migration path overlap was accepted: $($case.Paths -join ' <> ')" }
 }
 [void](Assert-WeDecentMigrationPathsDisjoint -Paths @('C:\ProgramData\WeDecent\agent', 'C:\Program Files\WeDecent\data\agent'))
 Write-Host 'Migration coordinator Windows path normalization and overlap validators PASS'
@@ -391,6 +392,40 @@ try {
     Write-Host 'Migration coordinator mutated-source recovery fail-closed PASS'
 } finally {
     Remove-Item -LiteralPath $mutatedSource.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$aclMutatedSource = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $aclMutatedSource.Source -Destination $aclMutatedSource.Destination -AgentPath $agentPath -ServiceName $aclMutatedSource.ServiceName -ServiceSid $aclMutatedSource.ServiceSid -MetadataPath $aclMutatedSource.MetadataPath -JournalPath $aclMutatedSource.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'ACL mutation fixture did not stop at the pending rollback boundary.' }
+    $acl = Get-Acl -LiteralPath $aclMutatedSource.Source
+    $users = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+    $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+        $users, [Security.AccessControl.FileSystemRights]::FullControl,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$acl.AddAccessRule($rule)
+    Set-Acl -LiteralPath $aclMutatedSource.Source -AclObject $acl -ErrorAction Stop
+    $rejectedAcl = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $aclMutatedSource.Journal -AgentPath $agentPath -MetadataPath $aclMutatedSource.MetadataPath -ServiceName $aclMutatedSource.ServiceName)
+    } catch {
+        $rejectedAcl = $_.Exception.Message -like '*Protected state path verification failed*' -or
+            $_.Exception.Message -like '*DACL*'
+        if (-not $rejectedAcl) { throw }
+    }
+    if (-not $rejectedAcl) { throw 'Recovery accepted an original source with a broadened DACL.' }
+    if ($global:WeDecentMigrationMockService.PathName -cne $aclMutatedSource.OriginalServicePath) { throw 'Recovery changed SCM before authenticating the source ACL.' }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') { throw 'Recovery restarted the service after source ACL failure.' }
+    Write-Host 'Migration coordinator mutated-source ACL recovery fail-closed PASS'
+} finally {
+    Remove-Item -LiteralPath $aclMutatedSource.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 } finally {
