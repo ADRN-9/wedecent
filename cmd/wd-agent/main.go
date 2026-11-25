@@ -79,6 +79,9 @@ func runInit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
 		return err
@@ -106,6 +109,9 @@ func runPairingSecret(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	secret, err := trust.RotatePairingSecret(*stateDir)
 	if err != nil {
 		return err
@@ -120,6 +126,9 @@ func runIdentity(args []string) error {
 	stateDir := fs.String("state", state, "agent state directory")
 	name := fs.String("name", hostname(), "device display name")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := preflightAgentState(*stateDir); err != nil {
 		return err
 	}
 	id, err := identity.Ensure(*stateDir, *name)
@@ -145,6 +154,9 @@ func runEnrollmentProof(args []string) error {
 	userID := fs.String("user-id", "", "Supabase Auth user UUID returned by the enrollment service")
 	expiresUnixMS := fs.Int64("expires-unix-ms", 0, "challenge expiry in Unix milliseconds")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := preflightAgentState(*stateDir); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -660,6 +672,10 @@ func runServe(args []string) error {
 }
 
 func runAgent(ctx context.Context, cfg serveConfig) error {
+	if err := preflightAgentState(cfg.StateDir); err != nil {
+		return err
+	}
+
 	id, err := identity.Ensure(
 		cfg.StateDir,
 		cfg.Name,
