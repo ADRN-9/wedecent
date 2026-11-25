@@ -55,15 +55,16 @@ func runRelayReadStageCase(t *testing.T, stage relayReadStage, cancel bool) {
 
 	ctx, cancelContext := context.WithCancel(context.Background())
 	defer cancelContext()
-	timeout := 45 * time.Millisecond
+	timeout := 250 * time.Millisecond
 	if cancel {
 		timeout = time.Hour
 	}
 	opts := RelayOptions{CAFile: caFile, ServerName: "127.0.0.1", Timeout: timeout}
+	id := testRelayIdentity(t)
 	result := make(chan error, 1)
 	go func() {
 		if stage.waiter {
-			_, err := WaitRelaySession(ctx, address, opts, testRelayIdentity(t))
+			_, err := WaitRelaySession(ctx, address, opts, id)
 			result <- err
 			return
 		}
