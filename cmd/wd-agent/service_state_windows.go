@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"runtime"
+	"strconv"
 	"strings"
 	"unsafe"
 
@@ -183,15 +183,14 @@ func verifyWindowsServiceStateParent(dir string) error {
 	return nil
 }
 
-
 const windowsAncestorMutationRights = uint32(
 	windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER |
-	0x00000040 | // FILE_DELETE_CHILD
-	0x00000002 | // FILE_ADD_FILE / FILE_WRITE_DATA
-	0x00000004 | // FILE_ADD_SUBDIRECTORY / FILE_APPEND_DATA
-	0x00000010 | // FILE_WRITE_EA
-	0x00000100 | // FILE_WRITE_ATTRIBUTES
-	windows.GENERIC_WRITE | windows.GENERIC_ALL,
+		0x00000040 | // FILE_DELETE_CHILD
+		0x00000002 | // FILE_ADD_FILE / FILE_WRITE_DATA
+		0x00000004 | // FILE_ADD_SUBDIRECTORY / FILE_APPEND_DATA
+		0x00000010 | // FILE_WRITE_EA
+		0x00000100 | // FILE_WRITE_ATTRIBUTES
+		windows.GENERIC_WRITE | windows.GENERIC_ALL,
 )
 
 // Every directory traversed to reach protected state must reject mutation
@@ -304,30 +303,30 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 		return uint32(mask), err
 	}
 	codes := map[string]uint32{
-		"FA":  0x001F01FF,
-		"GA":  windows.GENERIC_ALL,
-		"GW":  windows.GENERIC_WRITE,
-		"FW":  0x00000002,
-		"AD":  0x00000004,
-		"CC":  0x00000002,
-		"DC":  0x00000040,
-		"DE":  windows.DELETE,
-		"SD":  windows.DELETE,
-		"WD":  windows.WRITE_DAC,
-		"WO":  windows.WRITE_OWNER,
-		"FR":  0,
-		"FX":  0,
-		"GR":  0,
-		"GX":  0,
-		"RC":  0,
-		"RD":  0,
-		"RE":  0,
-		"RA":  0,
+		"FA": 0x001F01FF,
+		"GA": windows.GENERIC_ALL,
+		"GW": windows.GENERIC_WRITE,
+		"FW": 0x00000002,
+		"AD": 0x00000004,
+		"CC": 0x00000002,
+		"DC": 0x00000040,
+		"DE": windows.DELETE,
+		"SD": windows.DELETE,
+		"WD": windows.WRITE_DAC,
+		"WO": windows.WRITE_OWNER,
+		"FR": 0,
+		"FX": 0,
+		"GR": 0,
+		"GX": 0,
+		"RC": 0,
+		"RD": 0,
+		"RE": 0,
+		"RA": 0,
 		"X":   0,
-		"LC":  0,
-		"LO":  0,
-		"WA":  0x00000100,
-		"WE":  0x00000010,
+		"LC": 0,
+		"LO": 0,
+		"WA": 0x00000100,
+		"WE": 0x00000010,
 	}
 	var mask uint32
 	if len(rights)%2 != 0 {
