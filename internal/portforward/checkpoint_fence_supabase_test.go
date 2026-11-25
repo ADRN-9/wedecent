@@ -28,12 +28,12 @@ func c197Ack(t *testing.T, token CheckpointFenceToken, id string, privateKey ed2
 		t.Fatal(err)
 	}
 	ack := CheckpointFenceAcknowledgement{
-		WitnessID:id, TokenSHA256:digest, Generation:token.Generation,
-		Action:token.Action, OperationID:token.OperationID,
-		WitnessKeyID:checkpointProviderKeyID(privateKey.Public().(ed25519.PublicKey)),
-		CommittedAtUnixMS:token.ExpiresAtUnixMS-1,
+		WitnessID: id, TokenSHA256: digest, Generation: token.Generation,
+		Action: token.Action, OperationID: token.OperationID,
+		WitnessKeyID:      checkpointProviderKeyID(privateKey.Public().(ed25519.PublicKey)),
+		CommittedAtUnixMS: token.ExpiresAtUnixMS - 1,
 	}
-	ack.Signature=ed25519.Sign(privateKey,checkpointFenceAcknowledgementMessage(ack))
+	ack.Signature = ed25519.Sign(privateKey, checkpointFenceAcknowledgementMessage(ack))
 	return ack
 }
 
