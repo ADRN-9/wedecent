@@ -13,7 +13,6 @@ import (
 	"encoding/pem"
 	"errors"
 	"flag"
-	"fmt"
 	"log"
 	"math/big"
 	"net"
@@ -316,4 +315,3 @@ func (a *recoveryAuthority) commit(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(checkpoint)
 }
 
-var _ = fmt.Sprintf
