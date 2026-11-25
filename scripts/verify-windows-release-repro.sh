@@ -1,17 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+DIST_ROOT="$ROOT/dist"
+mkdir -p -- "$DIST_ROOT"
+TMP="$(mktemp -d "$DIST_ROOT/.windows-release-repro.XXXXXX")"
+trap 'rm -rf -- "$TMP"' EXIT
 
 if [[ -z "${SOURCE_DATE_EPOCH:-}" ]]; then
   SOURCE_DATE_EPOCH="$(git -C "$ROOT" show -s --format=%ct HEAD)"
 fi
 export SOURCE_DATE_EPOCH
 
-OUT_DIR="$TMP/one" "$ROOT/scripts/build-windows-release.sh" >/dev/null
-OUT_DIR="$TMP/two" "$ROOT/scripts/build-windows-release.sh" >/dev/null
+WEDECENT_BUILD_MODE=diagnostic WEDECENT_ALLOW_DIRTY=1 \
+  OUT_DIR="$TMP/one" "$ROOT/scripts/build-windows-release.sh" >/dev/null
+WEDECENT_BUILD_MODE=diagnostic WEDECENT_ALLOW_DIRTY=1 \
+  OUT_DIR="$TMP/two" "$ROOT/scripts/build-windows-release.sh" >/dev/null
 
 for name in wd.exe wd-agent.exe wd-routerctl.exe wd-core.exe wd-ui.exe VERSION.txt SHA256SUMS.txt; do
   if ! cmp -s "$TMP/one/$name" "$TMP/two/$name"; then
@@ -25,4 +29,4 @@ done
   sha256sum -c SHA256SUMS.txt
 )
 
-printf 'Reproducible Windows release bundle verified.\n'
+printf 'Reproducible diagnostic Windows release bundle verified.\n'

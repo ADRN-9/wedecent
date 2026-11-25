@@ -32,14 +32,20 @@ type DirectAuthorizer interface {
 }
 
 type Server struct {
-	Identity         *identity.Identity
-	Trust            *trust.Store
-	StateDir         string
-	Shell            string
-	Logger           *slog.Logger
-	DirectAuthorizer DirectAuthorizer
-	FileTransfer     *FileTransferRuntime
-	Policy           SessionPolicy
+	Identity               *identity.Identity
+	Trust                  *trust.Store
+	StateDir               string
+	Shell                  string
+	Logger                 *slog.Logger
+	DirectAuthorizer       DirectAuthorizer
+	RecoveryAuthority              audit.RecoveryAuthority
+	RecoveryAuthorityTrust         audit.RecoveryAuthorityTrust
+	RecoveryAuthorityScope         string
+	legacyPairingRecoveryForTests bool
+	FileTransfer                   *FileTransferRuntime
+	PortForwarding                 *PortForwardRuntime
+	pairingCompletionAudit func(*audit.Log, audit.Event) error
+	Policy                 SessionPolicy
 }
 
 func (s *Server) ServeConn(raw net.Conn) {
@@ -60,15 +66,25 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 	if requireInBandAuthorization {
 		transport = "direct"
 	}
+	routerID := ""
+	if authenticated, ok := raw.(interface{ AuthenticatedRouterID() string }); ok {
+		routerID = authenticated.AuthenticatedRouterID()
+	}
 	tlsConn := tls.Server(raw, identity.ServerTLS(s.Identity))
 	if handshakeTimeout > 0 {
-		_ = tlsConn.SetDeadline(time.Now().Add(handshakeTimeout))
+		if err := tlsConn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			s.log().Warn("TLS handshake deadline could not be set", "remote", raw.RemoteAddr(), "error", err)
+			return
+		}
 	}
 	if err := tlsConn.Handshake(); err != nil {
 		s.log().Warn("TLS handshake failed", "remote", raw.RemoteAddr(), "error", err)
 		return
 	}
-	_ = tlsConn.SetDeadline(time.Time{})
+	if err := tlsConn.SetDeadline(time.Time{}); err != nil {
+		s.log().Warn("TLS handshake deadline could not be cleared", "remote", raw.RemoteAddr(), "error", err)
+		return
+	}
 	first, err := protocol.ReadFrame(tlsConn)
 	if err != nil {
 		return
@@ -89,7 +105,7 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 			_ = sendError(tlsConn, "unexpected_message", "authorized session requests are not valid on this transport")
 			return
 		}
-		s.handleAuthorizedTerminal(tlsConn, first, transport)
+		s.handleAuthorizedTerminalWithRouter(tlsConn, first, transport, routerID)
 	default:
 		_ = sendError(tlsConn, "unexpected_message", "expected pairing or session request")
 	}
@@ -108,12 +124,6 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		_ = sendError(conn, "bad_request", "invalid pair request")
 		return
 	}
-	ok, err := trust.CheckPairingSecret(s.StateDir, req.PairingSecret)
-	if err != nil || !ok {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "invalid_pairing_secret"})
-		_ = sendError(conn, "pairing_denied", "invalid pairing secret")
-		return
-	}
 	fp, err := identity.FingerprintPublicKey(peer.PublicKey)
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: req.ClientID, Transport: transport, Reason: "invalid_client_key"})
@@ -130,25 +140,174 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 	if name == "" {
 		name = peer.Subject.CommonName
 	}
-	// Consume the high-entropy secret before persisting trust so it cannot be reused.
-	if err := invalidatePairingSecret(s.StateDir); err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, Reason: "pairing_secret_consume_failed"})
-		_ = sendError(conn, "server_error", "could not consume pairing secret")
+	// Reject invalid secrets before reserving bounded recovery capacity.
+	// Locked consumption still checks again, including concurrent rotation.
+	valid, err := trust.CheckPairingSecret(s.StateDir, req.PairingSecret)
+	if err != nil {
+		s.log().Error("pairing state preflight failed", "peer_id", clientID, "error", err)
+		_ = sendError(conn, "server_error", "pairing state unavailable")
 		return
 	}
-	if err := s.Trust.Put(trust.Peer{ID: clientID, Name: name, Fingerprint: fp}); err != nil {
-		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, Reason: "trust_persist_failed"})
-		_ = sendError(conn, "server_error", "could not persist trust; generate a new pairing secret")
+	if !valid {
+		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_pairing_secret"})
+		_ = sendError(conn, "pairing_denied", "invalid or already consumed pairing secret")
 		return
 	}
-	s.recordAudit(audit.Event{Type: "pairing.trust_added", Outcome: "success", PeerID: clientID, Transport: transport})
+	attemptID, err := audit.NewPairingAttemptID()
+	if err != nil {
+		_ = sendError(conn, "server_error", "pairing audit is unavailable")
+		return
+	}
+	var recovery *audit.PairingRecovery
+	if s.RecoveryAuthority != nil {
+		scope := ""
+		if s.Identity != nil && s.Identity.ID != "" {
+			scope = "pairing-recovery/" + s.Identity.ID
+		}
+		if scope == "" || (s.RecoveryAuthorityScope != "" && s.RecoveryAuthorityScope != scope) {
+			err = audit.ErrRecoveryAuthorityUnavailable
+		} else {
+			recovery, err = audit.OpenPairingRecoveryWithAuthority(s.StateDir, scope, s.RecoveryAuthority, s.RecoveryAuthorityTrust)
+		}
+	} else if s.legacyPairingRecoveryForTests {
+		// Explicit test-only compatibility; production never treats local HMAC as independent authority.
+		recovery, err = audit.OpenPairingRecovery(s.StateDir)
+	} else {
+		err = audit.ErrRecoveryAuthorityUnavailable
+	}
+	if err != nil {
+		s.log().Error("independent pairing recovery authority unavailable", "peer_id", clientID, "error", err)
+		if s.legacyPairingRecoveryForTests && s.RecoveryAuthority == nil {
+			_ = sendError(conn, "server_error", "pairing recovery is unavailable")
+		} else {
+			_ = sendError(conn, "recovery_authority_unavailable", "independent pairing recovery authority is unavailable")
+		}
+		return
+	}
+	pairingAudit, err := audit.Open(s.StateDir)
+	if err != nil {
+		s.log().Error("pairing audit unavailable", "peer_id", clientID, "error", err)
+		_ = sendError(conn, "server_error", "pairing audit is unavailable")
+		return
+	}
+	admitted, auditReady := false, false
+	pairErr := trust.PairClientWithSecretAdmission(s.StateDir, req.PairingSecret, s.Trust, trust.Peer{
+		ID: clientID, Name: name, Fingerprint: fp,
+	}, func(generation uint64) error {
+		reserved, reserveErr := recovery.Reserve(audit.PairingOutcome{
+			AttemptID: attemptID, ActorID: s.Identity.ID, PeerID: clientID,
+			Fingerprint: fp, CredentialGeneration: generation,
+		})
+		if reserveErr != nil {
+			return reserveErr
+		}
+		admitted = true
+		attemptID = reserved.AttemptID
+		if appendErr := pairingAudit.Append(audit.Event{
+			Type: "pairing.request", Outcome: "pending", ActorID: s.Identity.ID,
+			PeerID: clientID, Transport: transport, AttemptID: attemptID,
+		}); appendErr != nil {
+			return appendErr
+		}
+		auditReady = true
+		return nil
+	})
+	if !admitted {
+		if errors.Is(pairErr, trust.ErrPairingSecretInvalid) {
+			s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_pairing_secret"})
+			_ = sendError(conn, "pairing_denied", "invalid, expired, or already consumed pairing secret")
+			return
+		}
+		s.log().Error("pairing generation admission failed", "peer_id", clientID, "error", pairErr)
+		_ = sendError(conn, "server_error", "pairing generation is reserved or recovery is unavailable")
+		return
+	}
+	if !auditReady {
+		// The durable generation reservation remains pending for exact retry.
+		s.log().Error("pairing pending audit could not be synchronized", "peer_id", clientID, "attempt_id", attemptID, "error", pairErr)
+		_ = sendError(conn, "server_error", "pairing audit is unavailable; retry the same pairing operation")
+		return
+	}
+	s.handlePairCommit(conn, transport, clientID, name, fp, attemptID, pairingAudit, recovery, pairErr)
+}
+
+// handlePairCommit runs only after both independent pending records are durable.
+func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp, attemptID string, pairingAudit *audit.Log, recovery *audit.PairingRecovery, pairErr error) {
+	reconciled := trust.IsPairingReconciled(pairErr)
+	outcome := audit.PairingOutcomeSuccess
+	if pairErr != nil && !reconciled {
+		outcome = audit.PairingOutcomeFailed
+		if errors.Is(pairErr, trust.ErrPairingTrustUncertain) {
+			outcome = audit.PairingOutcomeUncertain
+		} else if errors.Is(pairErr, trust.ErrPairingSecretInvalid) {
+			outcome = audit.PairingOutcomeDenied
+		}
+	}
+	if err := recovery.Complete(attemptID, outcome); err != nil {
+		// Trust may be committed. Preserve the pending entry, never fabricate denial.
+		s.log().Error("pairing outcome not synchronized", "peer_id", clientID, "attempt_id", attemptID, "error", err)
+	}
+	if pairErr != nil && !reconciled {
+		if errors.Is(pairErr, trust.ErrPairingSecretInvalid) {
+			// A denied recovery outcome also requires durable audit proof before
+			// it can be acknowledged. Missing completion leaves the record intact.
+			denial := audit.Event{
+				Time: time.Now().UTC(), Type: "pairing.request", Outcome: "denied",
+				ActorID: s.Identity.ID, PeerID: clientID, Transport: transport,
+				AttemptID: attemptID, Reason: "invalid_pairing_secret",
+			}
+			if err := pairingAudit.Append(denial); err != nil {
+				s.log().Error("pairing denial completion audit unavailable", "attempt_id", attemptID, "error", err)
+			} else if err := recovery.ConfirmCompletion(pairingAudit, attemptID, denial); err != nil {
+				s.log().Error("pairing denial audit proof uncertain", "attempt_id", attemptID, "error", err)
+			} else if err := recovery.AcknowledgeResolved(attemptID); err != nil {
+				s.log().Error("pairing denial recovery archive unavailable", "attempt_id", attemptID, "error", err)
+			}
+			_ = sendError(conn, "pairing_denied", "invalid or already consumed pairing secret")
+			return
+		}
+		reason := "pairing_secret_consume_failed"
+		switch {
+		case errors.Is(pairErr, trust.ErrPairingTrustPersist):
+			reason = "trust_persist_failed"
+		case errors.Is(pairErr, trust.ErrPairingTrustUncertain):
+			reason = "trust_commit_uncertain"
+		}
+		s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "failed", PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason})
+		_ = sendError(conn, "server_error", "pairing state unavailable; operator review and new secret required")
+		return
+	}
+	reason := ""
+	if reconciled {
+		reason = "trust_persist_reconciled"
+	}
+	completion := audit.Event{
+		Time: time.Now().UTC(), Type: "pairing.trust_added", Outcome: "success", ActorID: s.Identity.ID,
+		PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason,
+	}
+	appendCompletion := pairingAudit.Append
+	if s.pairingCompletionAudit != nil {
+		appendCompletion = func(event audit.Event) error {
+			return s.pairingCompletionAudit(pairingAudit, event)
+		}
+	}
+	if err := appendCompletion(completion); err != nil {
+		// Trust is already committed. Do not fabricate denial or audit proof.
+		s.log().Error("pairing success audit could not be completed", "peer_id", clientID, "error", err)
+	} else if err := recovery.ConfirmCompletion(pairingAudit, attemptID, completion); err != nil {
+		// A completed audit log line may rotate away; the unconfirmed ledger
+		// entry remains and requires privileged, independently audited repair.
+		s.log().Error("pairing completion proof not durable", "peer_id", clientID, "attempt_id", attemptID, "error", err)
+	} else if err := recovery.AcknowledgeResolved(attemptID); err != nil {
+		s.log().Error("pairing recovery archive unavailable", "peer_id", clientID, "attempt_id", attemptID, "error", err)
+	}
 	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypePairResponse, Payload: mustJSON(protocol.PairResponse{DeviceID: s.Identity.ID, DeviceName: s.Identity.Name})}); err != nil {
 		return
 	}
 	s.log().Info("paired client", "client_id", clientID, "client_name", name)
 }
 
-func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+func (s *Server) handleAuthorizedTerminalWithRouter(conn *tls.Conn, first protocol.Frame, transport, routerID string) {
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
@@ -202,10 +361,14 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport})
 
 	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, Capabilities: req.Capabilities})
-	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport)
+	s.handleTerminalWithRouter(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport, routerID)
 }
 
 func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+	s.handleTerminalWithRouter(conn, first, transport, "")
+}
+
+func (s *Server) handleTerminalWithRouter(conn *tls.Conn, first protocol.Frame, transport, routerID string) {
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
@@ -238,9 +401,10 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		return
 	}
 	fileReady := s.FileTransfer != nil && s.FileTransfer.Ready()
-	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady)
+	portForwardReady := s.PortForwarding != nil && s.PortForwarding.Ready()
+	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady, portForwardReady)
 	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
-		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities)
+		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities, routerID)
 		return
 	}
 	if open.Cols == 0 {
@@ -326,8 +490,12 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		// Bound terminal-output drain before the final close frame. Setting a
 		// write deadline first unblocks a PTY forwarding goroutine stuck on a
 		// peer that stopped reading.
-		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_ = pty.Close()
+		if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			s.log().Warn("terminal close deadline could not be set", "peer_id", peer.ID, "error", err)
+			_ = conn.Close()
+			return
+		}
 		if ptyReadDone != nil {
 			drainTimer := time.NewTimer(500 * time.Millisecond)
 			select {

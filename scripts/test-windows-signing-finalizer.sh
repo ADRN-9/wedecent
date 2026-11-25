@@ -7,15 +7,41 @@ fail() {
 }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-trust.sh"
+source "$ROOT/scripts/testlib/release-tag-fixture.sh"
+TEST_REPLAY_HOSTNAME='replay.example.test'
+TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
+TEST_AUDIT_HOSTNAME='checkpoint-audit.example.test'
+TEST_AUDIT_PINS='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+TEST_AUDIT_APPROVAL="$(wedecent_checkpoint_audit_approval_digest "$TEST_AUDIT_HOSTNAME" "$TEST_AUDIT_PINS")"
+TEST_SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
+TEST_TREE_SHA="$(git -C "$ROOT" rev-parse --verify "${TEST_SOURCE_SHA}^{tree}")"
+export GITHUB_ACTIONS=true
+export GITHUB_REPOSITORY='ADRN-9/wedecent'
+export GITHUB_SHA="$TEST_SOURCE_SHA"
+export GITHUB_REF_TYPE=tag
+export GITHUB_REF_NAME='v0.0.0-test'
+export WEDECENT_PRODUCTION_RELEASE_APPROVED=true
+export WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$TEST_REPLAY_HOSTNAME"
+export WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$TEST_REPLAY_PINS"
+export WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$TEST_REPLAY_APPROVAL"
+export WEDECENT_CHECKPOINT_AUDIT_HOSTNAME="$TEST_AUDIT_HOSTNAME"
+export WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256="$TEST_AUDIT_PINS"
+export WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256="$TEST_AUDIT_APPROVAL"
+export WEDECENT_EXPECTED_SOURCE_SHA="$TEST_SOURCE_SHA"
 DIST_ROOT="$ROOT/dist"
 FINALIZER="$ROOT/scripts/finalize-windows-signed-artifacts.sh"
 mkdir -p -- "$DIST_ROOT"
 WORK="$(mktemp -d "$DIST_ROOT/.signing-finalizer-test.XXXXXX")"
+wedecent_test_release_tags_init "$ROOT" "$WORK"
+wedecent_test_release_tag_add "$GITHUB_REF_NAME" "$TEST_SOURCE_SHA"
 OUT_DIR="$DIST_ROOT/$(basename "$WORK").signed"
 OUT_DIR_2="$DIST_ROOT/$(basename "$WORK").unexpected"
 FAILED_OUT="$DIST_ROOT/$(basename "$WORK").failed"
 NESTED_OUT="$DIST_ROOT/nested/$(basename "$WORK").signed"
 cleanup() {
+  wedecent_test_release_tags_cleanup
   rm -rf -- "$WORK" "$OUT_DIR" "$OUT_DIR_2" "$FAILED_OUT" "$DIST_ROOT/nested"
 }
 trap cleanup EXIT
@@ -29,17 +55,35 @@ installer_scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInst
 package_payload=("${binaries[@]}" VERSION.txt SHA256SUMS.txt "${installer_scripts[@]}" README.md)
 
 for name in "${binaries[@]}"; do
-  printf 'unsigned fixture: %s\n' "$name" > "$RELEASE/$name"
+  printf 'unsigned fixture: %s\n%s\n%s\n%s\n%s\n' "$name" "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS" "$TEST_AUDIT_HOSTNAME" "$TEST_AUDIT_PINS" > "$RELEASE/$name"
 done
-cat > "$RELEASE/VERSION.txt" <<'EOF_VERSION'
+cat > "$RELEASE/VERSION.txt" <<EOF_VERSION
 version=0.0.0-test
-commit=test
+commit=$TEST_SOURCE_SHA
+source_commit=$TEST_SOURCE_SHA
+source_tree=$TEST_TREE_SHA
 built_at=1970-01-01T00:00:00Z
-go=test
+go=go1.27.0
 platform=windows/amd64
+build_mode=production
+replay_authority_hostname=$TEST_REPLAY_HOSTNAME
+replay_authority_spki_sha256=$TEST_REPLAY_PINS
+replay_authority_approval_sha256=$TEST_REPLAY_APPROVAL
+checkpoint_audit_hostname=$TEST_AUDIT_HOSTNAME
+checkpoint_audit_spki_sha256=$TEST_AUDIT_PINS
+checkpoint_audit_approval_sha256=$TEST_AUDIT_APPROVAL
 EOF_VERSION
 OUT_DIR="$RELEASE" "$ROOT/scripts/refresh-windows-release-checksums.sh" >/dev/null
 [[ "$(wc -l < "$RELEASE/SHA256SUMS.txt" | tr -d '[:space:]')" == '5' ]] || fail 'checksum refresh did not emit five binary entries'
+
+BUILT_PACKAGE="$WORK/built-package"
+RELEASE_DIR="$RELEASE" OUT_DIR="$BUILT_PACKAGE" "$ROOT/scripts/build-windows-installer-package.sh" >/dev/null
+[[ -f "$BUILT_PACKAGE/README.md" && ! -e "$BUILT_PACKAGE/README.txt" ]] ||
+  fail 'installer package builder did not produce the README.md expected by signing and publication'
+(
+  cd "$BUILT_PACKAGE"
+  sha256sum -c PACKAGE_SHA256SUMS.txt >/dev/null
+) || fail 'built installer package checksums did not verify'
 for name in "${binaries[@]}"; do
   [[ "$(awk -v file="$name" '$2 == file { count++ } END { print count + 0 }' "$RELEASE/SHA256SUMS.txt")" == '1' ]] ||
     fail "checksum refresh did not emit exactly one entry for $name"
@@ -82,6 +126,36 @@ set -euo pipefail
 EOF_VERIFIER
 chmod 0700 "$SIGNER" "$VERIFIER"
 ln -s -- "$SIGNER" "$SIGNER_LINK"
+
+cp "$RELEASE/VERSION.txt" "$WORK/VERSION.production"
+sed 's/^build_mode=production$/build_mode=diagnostic/' "$WORK/VERSION.production" > "$RELEASE/VERSION.txt"
+if UNSIGNED_RELEASE_DIR="$RELEASE" UNSIGNED_PACKAGE_DIR="$PACKAGE" OUT_DIR="$OUT_DIR" \
+   WEDECENT_WINDOWS_AUTHENTICODE_SIGNER="$SIGNER" WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
+   WEDECENT_FAKE_SIGN_LOG="$SIGN_LOG" "$FINALIZER" >/dev/null 2>&1; then
+  fail 'signing finalizer accepted a diagnostic artifact'
+fi
+[[ ! -e "$OUT_DIR" && ! -e "$SIGN_LOG" ]] || fail 'diagnostic signing rejection reached signer or published output'
+mv "$WORK/VERSION.production" "$RELEASE/VERSION.txt"
+
+if env -u WEDECENT_REPLAY_AUTHORITY_HOSTNAME -u WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 \
+   -u WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 \
+   UNSIGNED_RELEASE_DIR="$RELEASE" UNSIGNED_PACKAGE_DIR="$PACKAGE" OUT_DIR="$OUT_DIR" \
+   WEDECENT_WINDOWS_AUTHENTICODE_SIGNER="$SIGNER" WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
+   WEDECENT_FAKE_SIGN_LOG="$SIGN_LOG" "$FINALIZER" >/dev/null 2>&1; then
+  fail 'signing finalizer accepted missing production trust anchors'
+fi
+[[ ! -e "$OUT_DIR" && ! -e "$SIGN_LOG" ]] || fail 'missing-anchor rejection reached signer or published output'
+
+cp "$RELEASE/VERSION.txt" "$WORK/VERSION.tree-good"
+sed "s/^source_tree=$TEST_TREE_SHA$/source_tree=cccccccccccccccccccccccccccccccccccccccc/" \
+  "$WORK/VERSION.tree-good" > "$RELEASE/VERSION.txt"
+if UNSIGNED_RELEASE_DIR="$RELEASE" UNSIGNED_PACKAGE_DIR="$PACKAGE" OUT_DIR="$OUT_DIR" \
+   WEDECENT_WINDOWS_AUTHENTICODE_SIGNER="$SIGNER" WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
+   WEDECENT_FAKE_SIGN_LOG="$SIGN_LOG" "$FINALIZER" >/dev/null 2>&1; then
+  fail 'signing finalizer accepted forged source-tree metadata'
+fi
+[[ ! -e "$OUT_DIR" && ! -e "$SIGN_LOG" ]] || fail 'forged source-tree rejection reached signer or published output'
+mv "$WORK/VERSION.tree-good" "$RELEASE/VERSION.txt"
 
 snapshot_sources() {
   (
@@ -129,6 +203,7 @@ fi
 [[ ! -e "$SIGN_LOG" ]] || fail 'nested output validation invoked the signer'
 rm -rf -- "$DIST_ROOT/nested"
 
+FAILURE_LOG="$WORK/intentional-signer-failure.log"
 if UNSIGNED_RELEASE_DIR="$RELEASE" \
    UNSIGNED_PACKAGE_DIR="$PACKAGE" \
    OUT_DIR="$FAILED_OUT" \
@@ -136,11 +211,15 @@ if UNSIGNED_RELEASE_DIR="$RELEASE" \
    WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER="$VERIFIER" \
    WEDECENT_FAKE_SIGN_LOG="$SIGN_LOG" \
    WEDECENT_FAKE_SIGN_FAIL_AT=3 \
-   "$FINALIZER" >/dev/null 2>&1; then
+   "$FINALIZER" >/dev/null 2>"$FAILURE_LOG"; then
   fail 'intentional signer failure unexpectedly succeeded'
 fi
 [[ ! -e "$FAILED_OUT" ]] || fail 'failed signer published partial output'
 [[ "$(snapshot_sources)" == "$BEFORE" ]] || fail 'failed signer mutated unsigned source artifacts'
+if [[ ! -f "$SIGN_LOG" ]]; then
+  cat "$FAILURE_LOG" >&2
+  fail 'intentional signer failure did not invoke the signer'
+fi
 [[ "$(wc -l < "$SIGN_LOG" | tr -d '[:space:]')" == '3' ]] || fail 'intentional signer failure did not occur at invocation 3'
 rm -f -- "$SIGN_LOG"
 
