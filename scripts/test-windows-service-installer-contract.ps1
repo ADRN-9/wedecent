@@ -174,7 +174,7 @@ $journalPath = Join-Path $migrationRoot 'migration.json'
 New-Item -ItemType Directory -Path $migrationRoot -Force | Out-Null
 $serviceSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $agentPath = Join-Path $root 'dist/wedecent-windows-amd64/wd-agent.exe'
-Set-WeDecentMigrationAdminDirectory -Path $migrationRoot
+Set-WeDecentMigrationAdminDirectory -Path $migrationRoot -AgentPath $agentPath
 New-Item -ItemType Directory -Path $sourceState -Force | Out-Null
 Set-WeDecentMigrationDirectoryAcl -Path $sourceState -ServiceSid $serviceSid
 New-Item -ItemType Directory -Path (Join-Path $sourceState 'nested') -Force | Out-Null
