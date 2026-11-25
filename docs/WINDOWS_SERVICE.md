@@ -14,6 +14,8 @@ Every service installation requires an origin-only HTTPS recovery-authority URL,
 
 The bearer is never placed in command-line arguments or environment variables. The installer writes it once, with create-exclusive semantics, to `recovery-authority.token` inside the newly provisioned service state directory, then applies and verifies the service DACL. The service command line contains only the credential file path. The service validates the file as a bounded regular file with a restrictive ACL before reading it.
 
+The bearer file is plaintext at rest; its protected NTFS DACL is the local access boundary, and local Administrators/LocalSystem remain trusted principals. The installer bounds token length and secures provisioning but does not parse bearer claims or enforce expiry. The authority/operator must issue a short-lived token and revoke or rotate it according to the authority's credential policy.
+
 The supplied trust file is validated and copied byte-for-byte with create-exclusive semantics into `recovery-authority-trust.json` inside the new protected state directory. The source file is never modified. The service uses only this protected copy; existing trust material is never overwritten or silently migrated.
 
 ## Install
