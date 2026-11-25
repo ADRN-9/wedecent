@@ -252,7 +252,9 @@ func TestPairingCredentialRejectsClockRollbackAndPersistsHighWaterMark(t *testin
 	}
 	hash := HashSecret(secret)
 	record, err := readPairingCredentialRecord(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	advanced := record.IssuedAt.Add(2 * time.Minute)
 	record.LastObservedAt = advanced
 	if err := writePairingCredential(dir, record); err != nil {
@@ -271,12 +273,16 @@ func TestPairingCredentialRejectsClockRollbackAndPersistsHighWaterMark(t *testin
 		t.Fatalf("clock high-water mark moved backwards: %s", accepted.LastObservedAt)
 	}
 	accepted, err = loadPairingCredential(dir, hash, advanced.Add(time.Minute))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !accepted.LastObservedAt.Equal(advanced.Add(time.Minute)) {
 		t.Fatalf("new clock high-water mark not persisted: %s", accepted.LastObservedAt)
 	}
 	persisted, err := readPairingCredentialRecord(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !persisted.LastObservedAt.Equal(advanced.Add(time.Minute)) {
 		t.Fatalf("persisted clock high-water mark mismatch: %s", persisted.LastObservedAt)
 	}
