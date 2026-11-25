@@ -132,8 +132,8 @@ func TestParseServeConfigRejectsEachMissingRecoveryTrustInput(t *testing.T) {
 		"--pairing-recovery-trust=/tmp/recovery-trust.json",
 	}
 	for _, tc := range []struct {
-		name string
-		args []string
+		name  string
+		args  []string
 		token string
 	}{
 		{name: "authority URL", args: []string{"--listen=127.0.0.1:7443", valid[2], valid[3]}, token: "test-token"},
