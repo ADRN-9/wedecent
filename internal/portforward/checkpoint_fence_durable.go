@@ -423,13 +423,18 @@ func (p *FileCheckpointFencePrimary) tokenForRequest(request CheckpointFenceRequ
 	if request.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(request.WitnessIDs, p.witnessIDs) {
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
+	version, err := checkpointFenceVersionForAction(request.Action)
+	if err != nil {
+		return CheckpointFenceToken{}, err
+	}
 	token := CheckpointFenceToken{
-		Version: checkpointFenceVersion, Scope: request.Scope,
+		Version: version, Scope: request.Scope,
 		Participants:            cloneCheckpointEndpoints(request.Participants),
 		ExpectedFenceGeneration: request.ExpectedFenceGeneration, Generation: request.ExpectedFenceGeneration + 1,
 		ExpectedRevocationEpoch: request.ExpectedRevocationEpoch, ResultingRevocationEpoch: request.ExpectedRevocationEpoch,
 		Action: request.Action, OperationID: request.OperationID,
 		RequestSHA256: request.RequestSHA256, AuthorizationSHA256: request.AuthorizationSHA256,
+		AuthorizationProof: append([]byte(nil), request.AuthorizationProof...),
 		PrimaryHeadGeneration: request.PrimaryHeadGeneration, PrimaryHeadSHA256: request.PrimaryHeadSHA256,
 		PreviousFenceSHA256: request.PreviousFenceSHA256,
 		WitnessSetVersion:   p.witnessSetVersion, WitnessIDs: append([]string(nil), p.witnessIDs...),
