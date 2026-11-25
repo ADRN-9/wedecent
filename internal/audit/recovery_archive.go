@@ -385,7 +385,9 @@ func (r *PairingRecovery) CompactResolved() error {
 	snapshot.Records = append([]PairingOutcome(nil), snapshot.Records[count:]...)
 	snapshot.ArchivedThrough = verified.LastSequence
 	if r.compactionBeforeReplace != nil {
-		if err := r.compactionBeforeReplace(); err != nil { return fmt.Errorf("pairing archive durable but active compaction interrupted: %w", err) }
+		if err := r.compactionBeforeReplace(); err != nil {
+			return fmt.Errorf("pairing archive durable but active compaction interrupted: %w", err)
+		}
 	}
 	if err := r.write(snapshot); err != nil {
 		return fmt.Errorf("pairing archive durable but active compaction uncertain: %w", err)
