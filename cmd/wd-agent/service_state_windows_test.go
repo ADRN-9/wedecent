@@ -312,10 +312,12 @@ func TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoa
 		name string
 		path string
 		owner *windows.SID
+		lookupErr error
 	}{
 		{name: "unauthorized ancestor owner", path: "root", owner: foreign},
 		{name: "unauthorized intermediate directory owner", path: "middle", owner: foreign},
 		{name: "missing ancestor owner", path: "middle", owner: nil},
+		{name: "ancestor owner lookup failure", path: "middle", lookupErr: errors.New("injected owner lookup failure")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			root := filepath.Join(t.TempDir(), "protected-root")
@@ -347,7 +349,7 @@ func TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoa
 			previousOwnerLookup := windowsStateAncestorOwnerLookup
 			windowsStateAncestorOwnerLookup = func(path string) (*windows.SID, error) {
 				if strings.EqualFold(filepath.Clean(path), filepath.Clean(rejectedPath)) {
-					return tc.owner, nil
+					return tc.owner, tc.lookupErr
 				}
 				return previousOwnerLookup(path)
 			}
