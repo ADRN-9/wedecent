@@ -64,15 +64,17 @@ type pairingOutcomeSnapshot struct {
 // PairingRecovery is independent of rotating audit files. Entries never
 // expire or disappear automatically, including when capacity is reached.
 type PairingRecovery struct {
-	path             string
-	syncDirectory    func(string) error
-	beforeReplace    func() error
-	afterReplace     func() error
-	beforeRead       func() error
-	allowEmpty       bool
-	operatorCheck    func() error // test-only authorization fault seam
-	archiveKey       []byte
-	archiveAfterSync func() error
+	mu                      sync.Mutex
+	path                    string
+	syncDirectory           func(string) error
+	beforeReplace           func() error
+	afterReplace            func() error
+	beforeRead              func() error
+	allowEmpty              bool
+	operatorCheck           func() error // test-only authorization fault seam
+	archiveKey              []byte
+	archiveAfterSync        func() error
+	compactionBeforeReplace func() error
 }
 
 func NewPairingAttemptID() (string, error) {
@@ -333,6 +335,8 @@ func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) e
 }
 
 func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, pairingRecoveryArchive) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
 		return fmt.Errorf("unsafe pairing recovery root: %w", err)
 	}
@@ -484,7 +488,9 @@ func (r *PairingRecovery) Reserve(record PairingOutcome) (PairingOutcome, error)
 	var reserved PairingOutcome
 	err := r.withArchiveLock(func(snapshot *pairingOutcomeSnapshot, archive pairingRecoveryArchive) error {
 		checkExisting := func(existing PairingOutcome) (bool, error) {
-			if existing.CredentialGeneration != record.CredentialGeneration { return false, nil }
+			if existing.CredentialGeneration != record.CredentialGeneration {
+				return false, nil
+			}
 			if existing.ActorID != record.ActorID || existing.PeerID != record.PeerID || existing.Fingerprint != record.Fingerprint {
 				return true, errors.New("pairing credential generation is reserved for a different device identity")
 			}
@@ -495,10 +501,14 @@ func (r *PairingRecovery) Reserve(record PairingOutcome) (PairingOutcome, error)
 			return true, nil
 		}
 		for _, existing := range archive.Records {
-			if found, err := checkExisting(existing); found { return err }
+			if found, err := checkExisting(existing); found {
+				return err
+			}
 		}
 		for _, existing := range snapshot.Records {
-			if found, err := checkExisting(existing); found { return err }
+			if found, err := checkExisting(existing); found {
+				return err
+			}
 		}
 		if len(snapshot.Records) >= maxPairingOutcomes {
 			return errors.New("pairing recovery capacity reached: operator review required")
@@ -533,6 +543,8 @@ func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 	if r == nil {
 		return nil, errors.New("pairing recovery unavailable")
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
 		return nil, err
 	}
@@ -571,14 +583,13 @@ func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 	return all, nil
 }
 
-// AcknowledgeResolved never deletes evidence. It records review of an
-// independently verified completion in the same bounded durable register.
-// Full registers require an approved offline evidence export/repair procedure.
+// AcknowledgeResolved records review of independently verified completion,
+// then archives a contiguous resolved prefix without deleting evidence.
 func (r *PairingRecovery) AcknowledgeResolved(attemptID string) error {
 	if !pairingAttemptPattern.MatchString(attemptID) {
 		return errors.New("invalid pairing recovery acknowledgment")
 	}
-	return r.withLock(func(snapshot *pairingOutcomeSnapshot) error {
+	err := r.withArchiveLock(func(snapshot *pairingOutcomeSnapshot, archive pairingRecoveryArchive) error {
 		for i := range snapshot.Records {
 			record := &snapshot.Records[i]
 			if record.AttemptID != attemptID {
@@ -601,8 +612,17 @@ func (r *PairingRecovery) AcknowledgeResolved(attemptID string) error {
 			record.UpdatedAt = now
 			return nil
 		}
+		for _, record := range archive.Records {
+			if record.AttemptID == attemptID && record.AcknowledgedAt != nil {
+				return nil
+			}
+		}
 		return errors.New("pairing recovery attempt not found")
 	})
+	if err != nil {
+		return err
+	}
+	return r.CompactResolved()
 }
 
 // A snapshot may be readable after a failed post-replacement directory sync.
@@ -746,7 +766,10 @@ func (r *PairingRecovery) ReconcilePrivileged(log *Log, attemptID string) error 
 	if err := log.VerifyDurableEvent(event); err != nil {
 		return err
 	}
-	return r.recordAuditProof(attemptID, PairingAuditProof{
+	if err := r.recordAuditProof(attemptID, PairingAuditProof{
 		Kind: "reconciliation", Event: event, VerifiedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		return err
+	}
+	return r.AcknowledgeResolved(attemptID)
 }

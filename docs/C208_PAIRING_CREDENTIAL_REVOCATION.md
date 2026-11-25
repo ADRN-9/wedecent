@@ -25,7 +25,7 @@ The one-time transaction holds the pairing credential cross-process lock while i
 5. marks the metadata record consumed and synchronizes it;
 6. persists the trusted peer.
 
-The recovery reservation binds credential generation to authenticated actor ID, certificate-derived device ID and public-key fingerprint. A retry for the same identity and a still-pending generation reuses the existing attempt ID. A different identity or a resolved record cannot reuse that generation. Recovery capacity remains bounded; unresolved entries are never silently evicted.
+The recovery ledger migrates its previous V1 snapshot to V2 with monotonic per-attempt sequence numbers. The recovery reservation binds credential generation to authenticated actor ID, certificate-derived device ID and public-key fingerprint. Generation uniqueness is checked against both active records and the authenticated archive, so compaction cannot make a consumed generation reusable. A retry for the same identity and a still-pending generation reuses the existing attempt ID. A different identity or a resolved record cannot reuse that generation. Recovery capacity remains bounded; unresolved entries are never silently evicted.
 
 Lock acquisition sequence is credential lock → recovery-ledger lock → audit-log lock → trust-store lock. Subsystem locks are released before acquiring the next subsystem lock; the credential lock remains held through reservation and consumption. Completion/audit reconciliation occurs after the credential transaction has released its lock.
 
@@ -42,7 +42,7 @@ The active recovery ledger remains bounded to 64 records. Compaction archives on
 - an explicit acknowledgement;
 - a valid sequence number.
 
-The archive has per-record sequence continuity, a SHA-256 checkpoint chain, and HMAC-SHA256 authentication. The random 32-byte HMAC key is stored as a 0600 file in the protected state directory. The archive is written to a same-directory temporary file, synced, atomically replaced, directory-synced and read back for verification before the active ledger is compacted.
+Successful and denied outcomes are archived automatically after independently verified audit completion and explicit acknowledgement; the Records API continues to return both archived and active evidence. The archive has per-record sequence continuity, a SHA-256 checkpoint chain, and HMAC-SHA256 authentication. The random 32-byte HMAC key is stored as a 0600 file in the protected state directory. The archive is written to a same-directory temporary file, synced, atomically replaced, directory-synced and read back for verification before the active ledger is compacted.
 
 If interruption occurs after archive synchronization but before active-ledger compaction, startup verifies the archive and the exact active prefix, then reconciles the duplicate prefix. Missing keys, missing archives after compaction, HMAC failures, checkpoint mismatches, sequence gaps, inconsistent active/archive prefixes, and archive capacity exhaustion fail closed. Unresolved records remain active and cannot be compacted.
 

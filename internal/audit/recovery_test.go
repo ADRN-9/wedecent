@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -368,15 +369,25 @@ func TestPairingRecoveryConcurrentGenerationReservationHasOneWinner(t *testing.T
 
 func TestPairingRecoveryMigratesLegacyLedgerWithDurableSequence(t *testing.T) {
 	dir := recoveryTestDir(t)
-	if _, err := OpenPairingRecovery(dir); err != nil { t.Fatal(err) }
-	record := testRecoveryRecord(strings.Repeat("6",32))
-	data, err := json.Marshal(pairingOutcomeSnapshot{Version:1, Records:[]PairingOutcome{record}})
-	if err != nil { t.Fatal(err) }
-	if err := os.WriteFile(filepath.Join(dir, PairingOutcomeFileName), data, 0o600); err != nil { t.Fatal(err) }
+	if _, err := OpenPairingRecovery(dir); err != nil {
+		t.Fatal(err)
+	}
+	record := testRecoveryRecord(strings.Repeat("6", 32))
+	data, err := json.Marshal(pairingOutcomeSnapshot{Version: 1, Records: []PairingOutcome{record}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, PairingOutcomeFileName), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	recovery, err := OpenPairingRecovery(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	snapshot, err := recovery.read()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if snapshot.Version != pairingOutcomeVersion || len(snapshot.Records) != 1 || snapshot.Records[0].Sequence != 1 {
 		t.Fatalf("legacy recovery ledger was not versioned and sequenced: %+v", snapshot)
 	}

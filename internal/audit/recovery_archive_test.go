@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func resolveAndAcknowledgePairing(t *testing.T, dir string, recovery *PairingRecovery, id, outcome string) {
+func resolvePairingWithProof(t *testing.T, dir string, recovery *PairingRecovery, id, outcome string) {
 	t.Helper()
 	if err := recovery.Complete(id, outcome); err != nil {
 		t.Fatal(err)
@@ -30,6 +30,11 @@ func resolveAndAcknowledgePairing(t *testing.T, dir string, recovery *PairingRec
 	if err := recovery.ConfirmCompletion(log, id, event); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func resolveAndAcknowledgePairing(t *testing.T, dir string, recovery *PairingRecovery, id, outcome string) {
+	t.Helper()
+	resolvePairingWithProof(t, dir, recovery, id, outcome)
 	if err := recovery.AcknowledgeResolved(id); err != nil {
 		t.Fatal(err)
 	}
@@ -86,9 +91,9 @@ func TestPairingRecoveryArchiveInterruptedCompactionReconciles(t *testing.T) {
 	if err := recovery.Begin(testRecoveryRecord(id)); err != nil {
 		t.Fatal(err)
 	}
-	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
+	resolvePairingWithProof(t, dir, recovery, id, PairingOutcomeSuccess)
 	recovery.archiveAfterSync = func() error { return os.ErrPermission }
-	if err := recovery.CompactResolved(); err == nil {
+	if err := recovery.AcknowledgeResolved(id); err == nil {
 		t.Fatal("injected archive/compaction interruption was ignored")
 	}
 	restarted, err := OpenPairingRecovery(dir)
@@ -170,14 +175,22 @@ func TestPairingRecoveryArchiveAuthenticationAndSequenceFailClosed(t *testing.T)
 func TestPairingRecoveryArchiveSurvivesActiveCompactionFailure(t *testing.T) {
 	dir := recoveryTestDir(t)
 	recovery, err := OpenPairingRecovery(dir)
-	if err != nil { t.Fatal(err) }
-	id := strings.Repeat("7",32)
-	if err := recovery.Begin(testRecoveryRecord(id)); err != nil { t.Fatal(err) }
-	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
-	recovery.beforeReplace = func() error { return os.ErrPermission }
-	if err := recovery.CompactResolved(); err == nil { t.Fatal("active-ledger compaction failure was ignored") }
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("7", 32)
+	if err := recovery.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	resolvePairingWithProof(t, dir, recovery, id, PairingOutcomeSuccess)
+	recovery.compactionBeforeReplace = func() error { return os.ErrPermission }
+	if err := recovery.AcknowledgeResolved(id); err == nil {
+		t.Fatal("active-ledger compaction failure was ignored")
+	}
 	restarted, err := OpenPairingRecovery(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	all, err := restarted.Records()
 	if err != nil || len(all) != 1 || all[0].AttemptID != id {
 		t.Fatalf("verified archive did not preserve outcome after compaction failure: %+v %v", all, err)
@@ -191,14 +204,22 @@ func TestPairingRecoveryArchiveSurvivesActiveCompactionFailure(t *testing.T) {
 func TestArchivedCredentialGenerationCannotBeReservedAgain(t *testing.T) {
 	dir := recoveryTestDir(t)
 	recovery, err := OpenPairingRecovery(dir)
-	if err != nil { t.Fatal(err) }
-	id := strings.Repeat("8",32)
-	record := PairingOutcome{AttemptID:id, ActorID:testPairingActor, PeerID:testPairingPeer,
-		Fingerprint:testPairingFingerprint, CredentialGeneration:77}
-	if _, err := recovery.Reserve(record); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("8", 32)
+	record := PairingOutcome{AttemptID: id, ActorID: testPairingActor, PeerID: testPairingPeer,
+		Fingerprint: testPairingFingerprint, CredentialGeneration: 77}
+	if _, err := recovery.Reserve(record); err != nil {
+		t.Fatal(err)
+	}
 	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
-	if err := recovery.CompactResolved(); err != nil { t.Fatal(err) }
+	if err := recovery.CompactResolved(); err != nil {
+		t.Fatal(err)
+	}
 	retry := record
-	retry.AttemptID = strings.Repeat("9",32)
-	if _, err := recovery.Reserve(retry); err == nil { t.Fatal("archived credential generation was reused") }
+	retry.AttemptID = strings.Repeat("9", 32)
+	if _, err := recovery.Reserve(retry); err == nil {
+		t.Fatal("archived credential generation was reused")
+	}
 }
