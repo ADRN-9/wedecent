@@ -203,7 +203,6 @@ func TestLocalCoreRequiresAtomicFenceAuthorityForWitnessedCheckpointReplay(t *te
 	}
 }
 
-
 func TestLocalCoreRejectsServerSidePostgresFencePrimary(t *testing.T) {
 	stateDir := t.TempDir()
 	created, err := identity.Ensure(stateDir, "core-server-primary-boundary")
@@ -225,16 +224,16 @@ func TestLocalCoreRejectsServerSidePostgresFencePrimary(t *testing.T) {
 			t.Fatal(err)
 		}
 		witnesses[i] = portforward.CheckpointWitnessTrust{
-			Witness: coreProcessCheckpointWitness{},
-			ID: []string{"witness-a", "witness-b", "witness-c"}[i],
+			Witness:   coreProcessCheckpointWitness{},
+			ID:        []string{"witness-a", "witness-b", "witness-c"}[i],
 			PublicKey: publicKey,
 		}
 	}
 	provider := &portforward.WitnessedReplayCheckpointProvider{
-		Primary: coreProcessCheckpointPrimary{},
+		Primary:    coreProcessCheckpointPrimary{},
 		PrimaryKey: replayPrimaryKey,
-		Witnesses: witnesses,
-		Quorum: 2,
+		Witnesses:  witnesses,
+		Quorum:     2,
 		Fencing: &portforward.CheckpointFenceCoordinator{
 			Primary: &portforward.SupabaseCheckpointFencePrimary{},
 		},
