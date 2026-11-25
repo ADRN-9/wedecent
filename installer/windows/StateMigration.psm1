@@ -1012,6 +1012,7 @@ function Invoke-WeDecentStateMigration {
         updated_service_path = $updatedPath
         metadata_path = [IO.Path]::GetFullPath($MetadataPath)
         original_metadata_json = $originalMetadataJson
+        identity = $null
         source_manifest_sha256 = ''
         source_stable_manifest_sha256 = ''
         destination_manifest_sha256 = ''
