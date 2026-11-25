@@ -110,10 +110,19 @@ func (r *PairingRecovery) writeWithActiveLedgerAuthority(snapshot *pairingOutcom
 			return ErrRecoveryCheckpointStale
 		}
 	} else {
-		if err := r.verifyActiveLedgerSnapshot(ctx, *snapshot); err != nil {
+		checkpoint := snapshot.AuthorityCheckpoint
+		if checkpoint.Scope != scope || checkpoint.Generation != snapshot.AuthorityGeneration ||
+			snapshot.AuthorityStateDigest != hex.EncodeToString(checkpoint.StateDigest[:]) ||
+			snapshot.AuthorityPreviousDigest != hex.EncodeToString(checkpoint.PreviousDigest[:]) {
+			return ErrRecoveryCheckpointConflict
+		}
+		if err := r.authority.VerifyCheckpoint(ctx, checkpoint); err != nil {
 			return err
 		}
-		head = snapshot.AuthorityCheckpoint
+		if !sameRecoveryCheckpoint(head, checkpoint) {
+			return ErrRecoveryCheckpointStale
+		}
+		head = checkpoint
 	}
 	if head.Generation == ^uint64(0) {
 		return ErrRecoveryCheckpointStale
