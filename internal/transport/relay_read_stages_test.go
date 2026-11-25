@@ -250,6 +250,11 @@ func TestRelayTLSHandshakeCancellationClosesPendingConnection(t *testing.T) {
 		result <- err
 	}()
 	var peer net.Conn
+	defer func() {
+		if peer != nil {
+			_ = peer.Close()
+		}
+	}()
 	select {
 	case peer = <-accepted:
 	case <-time.After(2 * time.Second):
