@@ -333,7 +333,7 @@ func TestPairingRecoveryReservesOneAttemptPerCredentialGeneration(t *testing.T) 
 }
 
 func TestPairingRecoveryConcurrentGenerationReservationHasOneWinner(t *testing.T) {
-	recovery, err := OpenPairingRecovery(t.TempDir())
+	recovery, err := OpenPairingRecovery(recoveryTestDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
