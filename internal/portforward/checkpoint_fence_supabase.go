@@ -565,13 +565,6 @@ func (p *SupabaseCheckpointFencePrimary) loadOperationFingerprint(
 	}
 	var response struct {
 		Found bool `json:"found"`
-		Token checkpointFenceTokenWire `json:"token"`
-	}
-	if err := json.Unmarshal(raw, &response); err != nil || !response.Found {
-		return [sha256.Size]byte{}, ErrCheckpointHistorical
-	}
-	var response struct {
-		Found bool `json:"found"`
 		Fingerprint string `json:"fingerprint"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil || !response.Found {
