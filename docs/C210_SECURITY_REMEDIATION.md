@@ -148,3 +148,31 @@ The ancestry merge commit changes the branch graph but retains the C208 source t
    exact C210 SHA; independently review the four shared files and native platform
    persistence semantics.
 6. Keep PR #176, #186 and #188 unmerged until all security and validation gates pass.
+
+
+## Follow-up integration refresh
+
+PR #188 advanced after the initial C210 ancestry merge to
+`690f6c6aa57bb9063872ac9336abef206a45a3f0`. C210 incorporated that exact
+revision using a second merge commit:
+
+`6d3dd2db71420f4add3de6f045f220a9667fda18`
+
+Its parents are the previous C210 head and the refreshed PR #188 head. The merge
+retains the C210 pairing clock and revocation changes while incorporating the newer
+recovery-ledger serialization, archive verification, and recovery regression tests.
+The four-file semantic integration remains in place.
+
+The first C210 workflow attempt exposed two failures on an intermediate SHA:
+- The intermediate merge lacked the newer recovery test import from PR #188.
+- The new legacy migration regression exposed that a wrong secret could trigger
+  V1 migration during preflight.
+
+The refreshed C208 merge includes the recovery test import. C210 additionally checks
+the supplied secret against the stored digest before calling the migration routine,
+both in the preflight and the locked consume transaction. The regression now covers
+both entry points and confirms wrong credentials do not cause migration.
+
+The current final validation candidate is tracked by draft PR #189. Exact-HEAD CI
+and Desktop results must be read from the final branch SHA, not the failed intermediate
+attempts. The intermediate failures are not represented as passing validation.
