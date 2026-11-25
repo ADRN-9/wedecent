@@ -681,9 +681,13 @@ func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, er
 		return CheckpointFenceToken{}, err
 	}
 	primaryHash, err := decodeSHA256Hex(wire.PrimaryHeadSHA256)
-	if err != nil { return CheckpointFenceToken{}, err }
+	if err != nil {
+		return CheckpointFenceToken{}, err
+	}
 	previousHash, err := decodeSHA256Hex(wire.PreviousFenceSHA256)
-	if err != nil { return CheckpointFenceToken{}, err }
+	if err != nil {
+		return CheckpointFenceToken{}, err
+	}
 	signature, err := base64.StdEncoding.Strict().DecodeString(wire.Signature)
 	if err != nil || len(signature) != ed25519.SignatureSize {
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
