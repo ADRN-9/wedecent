@@ -182,6 +182,7 @@ New-Item -ItemType Directory -Path (Join-Path $sourceState 'empty') -Force | Out
 & $agentPath identity "--state=$sourceState" --name=migration-test | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Failed to create valid migration identity fixture.' }
 [IO.File]::WriteAllText((Join-Path $sourceState 'nested/recovery-authority.token'), 'synthetic-recovery-bytes')
+Set-WeDecentMigrationTreeOwner -Path $sourceState -ServiceSid $serviceSid
 try {
     $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceState -Staging $stageState -SourceServiceSid $serviceSid -DestinationServiceSid $serviceSid -AgentPath $agentPath
     if ($copy.FileCount -ne 3 -or $copy.DirectoryCount -ne 2 -or
