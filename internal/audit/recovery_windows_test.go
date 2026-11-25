@@ -106,7 +106,7 @@ func recoveryAuthorityTrustFixtureJSON() []byte {
 		return base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{value}, 32))
 	}
 	return []byte(fmt.Sprintf(
-		`{"primary_key":%q,"witnesses":{"one":%q,"two":%q,"three":%q},"quorum":2}\n`,
+		"{\"primary_key\":%q,\"witnesses\":{\"one\":%q,\"two\":%q,\"three\":%q},\"quorum\":2}\n",
 		key(1), key(2), key(3), key(4),
 	))
 }
