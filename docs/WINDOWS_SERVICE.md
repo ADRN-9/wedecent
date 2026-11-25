@@ -14,7 +14,7 @@ Every service installation requires an origin-only HTTPS recovery-authority URL,
 
 The bearer is never placed in command-line arguments or environment variables. The installer writes it once, with create-exclusive semantics, to `recovery-authority.token` inside the newly provisioned service state directory, then applies and verifies the service DACL. The service command line contains only the credential file path. The service validates the file as a bounded regular file with a restrictive ACL before reading it.
 
-The trust file is external and is not copied, overwritten, or migrated by the installer. It must already be readable by the service account and pass Windows trust-file ACL validation.
+The supplied trust file is validated and copied byte-for-byte with create-exclusive semantics into `recovery-authority-trust.json` inside the new protected state directory. The source file is never modified. The service uses only this protected copy; existing trust material is never overwritten or silently migrated.
 
 ## Install
 
