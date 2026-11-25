@@ -139,9 +139,12 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	if serviceSID.Equals(configured.User.Sid) {
 		t.Fatal("same-user fixture does not prove distinct service identity")
 	}
-	// Exercise first-run creation below a parent with an unrelated BU allow
-	// ACE, while requiring the dedicated account to own the protected child.
-	parent := prepareWindowsPreflightTestDir(t, true)
+	// A service state parent must itself have a protected DACL; broad
+	// ancestors are rejected rather than relying on open-handle rename behavior.
+	parent := filepath.Join(t.TempDir(), "protected-parent")
+	if err := preflightAgentState(parent); err != nil {
+		t.Fatal(err)
+	}
 	state := filepath.Join(parent, "dedicated-service-state")
 	if err := provisionWindowsServiceState(state, account); err != nil {
 		t.Fatalf("distinct service SID preflight/provision failed: %v", err)
