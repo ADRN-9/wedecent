@@ -9,9 +9,9 @@ begin
 end
 $$;
 grant wedecent_checkpoint_authority to authenticator;
-grant usage on schema public, auth, pgsodium to wedecent_checkpoint_authority;
 
 create extension if not exists pgsodium;
+grant usage on schema public, auth, pgsodium to wedecent_checkpoint_authority;
 
 create table public.checkpoint_fence_primary_trust (
     key_id text primary key check (key_id ~ '^ed25519-[A-Za-z0-9_-]{43}$'),
