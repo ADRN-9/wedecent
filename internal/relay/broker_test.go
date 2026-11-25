@@ -278,14 +278,13 @@ func TestSlotSerializesCompleteProtocolWrites(t *testing.T) {
 	}
 }
 
-
 type gatedReadConn struct {
 	net.Conn
-	entered       chan struct{}
-	release       chan struct{}
-	deadlineSet   chan struct{}
-	deadlineOnce  sync.Once
-	readOnce      sync.Once
+	entered      chan struct{}
+	release      chan struct{}
+	deadlineSet  chan struct{}
+	deadlineOnce sync.Once
+	readOnce     sync.Once
 }
 
 func (c *gatedReadConn) Read(p []byte) (int, error) {
@@ -384,7 +383,6 @@ func TestDisconnectImmediatelyAfterActivationIsRejected(t *testing.T) {
 		t.Fatalf("claim after activated disconnect = %v, want ErrNoAgent", err)
 	}
 }
-
 
 func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
 	const workers = 16
