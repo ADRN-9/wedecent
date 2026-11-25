@@ -310,6 +310,12 @@ func (r *PairingRecovery) reconcileArchive(snapshot *pairingOutcomeSnapshot, arc
 		return false, errors.New("pairing recovery checkpoint is ahead of authenticated archive")
 	}
 	if snapshot.ArchivedThrough == archive.LastSequence {
+		if archive.LastSequence > 0 && snapshot.ArchiveCheckpoint != archive.Checkpoint {
+			return false, errors.New("active ledger checkpoint does not match authenticated archive")
+		}
+		if archive.LastSequence == 0 && snapshot.ArchiveCheckpoint != "" {
+			return false, errors.New("active ledger references a missing archive checkpoint")
+		}
 		return false, nil
 	}
 	if archive.LastSequence == 0 {
@@ -332,6 +338,7 @@ func (r *PairingRecovery) reconcileArchive(snapshot *pairingOutcomeSnapshot, arc
 	}
 	snapshot.Records = append([]PairingOutcome(nil), snapshot.Records[count:]...)
 	snapshot.ArchivedThrough = archive.LastSequence
+	snapshot.ArchiveCheckpoint = archive.Checkpoint
 	return true, nil
 }
 
@@ -421,6 +428,7 @@ func (r *PairingRecovery) CompactResolved() error {
 	}
 	snapshot.Records = append([]PairingOutcome(nil), snapshot.Records[count:]...)
 	snapshot.ArchivedThrough = verified.LastSequence
+	snapshot.ArchiveCheckpoint = verified.Checkpoint
 	if r.compactionBeforeReplace != nil {
 		if err := r.compactionBeforeReplace(); err != nil {
 			return fmt.Errorf("pairing archive durable but active compaction interrupted: %w", err)
