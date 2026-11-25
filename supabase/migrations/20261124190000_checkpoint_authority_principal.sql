@@ -18,7 +18,7 @@ create table public.checkpoint_fence_primary_trust (
     public_key bytea not null check (pg_catalog.octet_length(public_key) = 32),
     created_at timestamptz not null default pg_catalog.clock_timestamp(),
     check (key_id = 'ed25519-' || pg_catalog.translate(
-        pg_catalog.replace(pg_catalog.replace(pg_catalog.encode(extensions.digest(public_key,'sha256'),'base64'),'=',''),E'\\n',''),'+/','-_'
+        pg_catalog.replace(pg_catalog.replace(pg_catalog.encode(extensions.digest(public_key,'sha256'),'base64'),'=',''),'+/','-_'
     ))
 );
 
@@ -29,7 +29,7 @@ create table public.checkpoint_fence_witness_trust (
     public_key bytea not null check (pg_catalog.octet_length(public_key) = 32),
     created_at timestamptz not null default pg_catalog.clock_timestamp(),
     check (key_id = 'ed25519-' || pg_catalog.translate(
-        pg_catalog.replace(pg_catalog.replace(pg_catalog.encode(extensions.digest(public_key,'sha256'),'base64'),'=',''),E'\\n',''),'+/','-_'
+        pg_catalog.replace(pg_catalog.replace(pg_catalog.encode(extensions.digest(public_key,'sha256'),'base64'),'=',''),'+/','-_'
     )),
     primary key (witness_set_version, witness_id),
     unique (witness_set_version, key_id),
