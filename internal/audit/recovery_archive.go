@@ -224,7 +224,7 @@ func (r *PairingRecovery) authorizeArchivePublication(unsigned pairingRecoveryAr
 	if err != nil {
 		return unsigned, archive, fmt.Errorf("%w: sign pairing archive: %v", ErrRecoveryAuthorityUnavailable, err)
 	}
-	if keyID == "" || len(keyID) > 128 || len(signature) != ed25519.SignatureSize {
+	if keyID != recoveryPrimaryKeyID(r.authorityTrust.PrimaryKey) || len(signature) != ed25519.SignatureSize {
 		return unsigned, archive, ErrRecoveryCheckpointConflict
 	}
 	var receipt RecoveryCheckpoint
@@ -275,7 +275,7 @@ func (r *PairingRecovery) verifyIndependentArchive(ctx context.Context, archive 
 	if r == nil || r.authority == nil {
 		return ErrRecoveryAuthorityUnavailable
 	}
-	if archive.AuthorityGeneration == 0 || archive.AuthorityKeyID == "" || archive.AuthorityPreviousDigest == "" ||
+	if archive.AuthorityGeneration == 0 || archive.AuthorityKeyID != recoveryPrimaryKeyID(r.authorityTrust.PrimaryKey) || archive.AuthorityPreviousDigest == "" ||
 		archive.AuthoritySignature == "" || archive.AuthorityCheckpoint.Generation == 0 {
 		return ErrRecoveryMigrationUntrusted
 	}
