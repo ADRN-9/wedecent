@@ -201,7 +201,6 @@ func TestServerRemovesParkedSlotAfterPeerDisconnect(t *testing.T) {
 	}
 }
 
-
 func TestRelayRegistrationToSessionHandoffPreservesApplicationBytes(t *testing.T) {
 	broker := NewBroker(2, time.Minute)
 	handler := &relayTestHandler{activated: make(chan struct{})}
@@ -344,7 +343,6 @@ func TestPrematureAgentApplicationBytesFailClosedBeforeConnect(t *testing.T) {
 	}
 }
 
-
 func TestServeConnContextCancelsInitialProtocolRead(t *testing.T) {
 	server := &Server{Broker: NewBroker(1, time.Minute)}
 	serverSide, peer := net.Pipe()
@@ -386,7 +384,6 @@ func TestServeConnContextTimesOutInitialProtocolRead(t *testing.T) {
 	}
 	_ = peer.Close()
 }
-
 
 func TestReadRelayControlMessageTimeoutsAtHeaderAndPayload(t *testing.T) {
 	for _, stage := range []string{"header", "payload"} {
