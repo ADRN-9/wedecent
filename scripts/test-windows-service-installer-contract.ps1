@@ -179,6 +179,69 @@ try {
     $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceState -Staging $stageState
     if ($copy.FileCount -ne 2 -or $copy.DirectoryCount -ne 2 -or
         $copy.SourceManifestSHA256 -notmatch '^[0-9a-f]{64}
+        throw 'Verified state-tree copy returned an invalid manifest.'
+    }
+
+    $journal = [pscustomobject]@{
+        schema = 1
+        product = 'WeDecent'
+        transaction_id = [Guid]::NewGuid().ToString('D')
+        phase = 'Prepared'
+        source = $sourceState
+        destination = (Join-Path $migrationRoot 'destination')
+        staging = $stageState
+        original_service_path = 'synthetic-original-service-command'
+        updated_service_path = 'synthetic-updated-service-command'
+        source_manifest_sha256 = $copy.SourceManifestSHA256
+        updated_utc = ''
+    }
+    foreach ($phase in @(
+        'Prepared', 'Copying', 'Copied', 'Verified', 'StatePublished',
+        'ServiceReconfigured', 'Committed', 'RollingBack', 'RolledBack'
+    )) {
+        $journal.phase = $phase
+        Write-WeDecentMigrationJournal -Path $journalPath -Journal $journal
+        $recovered = Read-WeDecentMigrationJournal -Path $journalPath
+        if ($recovered.phase -cne $phase -or
+            $recovered.transaction_id -cne $journal.transaction_id) {
+            throw "Migration journal did not durably round-trip phase $phase."
+        }
+    }
+
+    $invalidPhaseRejected = $false
+    $journal.phase = 'Unknown'
+    try { Write-WeDecentMigrationJournal -Path $journalPath -Journal $journal } catch { $invalidPhaseRejected = $true }
+    if (-not $invalidPhaseRejected) { throw 'Migration journal accepted an unknown phase.' }
+
+    $corruptJournalRejected = $false
+    [IO.File]::WriteAllText($journalPath, '{"schema":99,"product":"WeDecent","phase":"Prepared"}')
+    try { [void](Read-WeDecentMigrationJournal -Path $journalPath) } catch { $corruptJournalRejected = $true }
+    if (-not $corruptJournalRejected) { throw 'Migration journal accepted an unsupported schema.' }
+
+    $manifest = @(Get-WeDecentMigrationManifest -Root $stageState)
+    [IO.File]::WriteAllText((Join-Path $stageState 'identity.key.dpapi'), 'tampered-identity-bytes')
+    $tamperedManifest = @(Get-WeDecentMigrationManifest -Root $stageState)
+    if ((Get-WeDecentMigrationManifestDigest -Manifest $manifest) -ceq
+        (Get-WeDecentMigrationManifestDigest -Manifest $tamperedManifest)) {
+        throw 'Migration manifest failed to detect changed identity bytes.'
+    }
+
+    $junctionRejected = $false
+    $junction = Join-Path $sourceState 'junction'
+    try {
+        New-Item -ItemType Junction -Path $junction -Target $stageState -ErrorAction Stop | Out-Null
+        try { [void](Get-WeDecentMigrationManifest -Root $sourceState) } catch { $junctionRejected = $true }
+    } catch {
+        Write-Warning "Junction fixture unavailable; reparse rejection was not exercised: $($_.Exception.Message)"
+    }
+    if ((Test-Path -LiteralPath $junction) -and -not $junctionRejected) {
+        throw 'Migration manifest accepted a directory junction.'
+    }
+} finally {
+    Remove-Item -LiteralPath $migrationRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host 'Windows service installer contract PASS'
 ) {
         throw 'Verified state-tree copy returned an invalid manifest.'
     }
