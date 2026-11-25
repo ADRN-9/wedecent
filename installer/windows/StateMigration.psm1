@@ -1079,7 +1079,7 @@ function Get-WeDecentMigrationPathObjectChain {
             $chain.Add('PATH:' + $part.ToUpperInvariant())
         }
     }
-    return ,@($chain.ToArray())
+    return $chain.ToArray()
 }
 
 function Get-WeDecentMigrationCanonicalPath {
