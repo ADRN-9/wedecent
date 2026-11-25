@@ -3,10 +3,19 @@ package portforward
 import (
 	"crypto/ed25519"
 	"crypto/rand"
-	"path/filepath"
 	"strings"
 	"testing"
 )
+
+type serverFenceWitnessStub struct{}
+
+func (serverFenceWitnessStub) CommitFence(context.Context, CheckpointFenceToken) (CheckpointFenceAcknowledgement, error) {
+	return CheckpointFenceAcknowledgement{}, ErrCheckpointUnavailable
+}
+
+func (serverFenceWitnessStub) LoadFence(context.Context, CheckpointWitnessScope, uint64) (CheckpointFenceAcknowledgement, bool, error) {
+	return CheckpointFenceAcknowledgement{}, false, ErrCheckpointUnavailable
+}
 
 func TestNewSupabaseWitnessedReplayCheckpointProviderUsesAtomicServerPrimary(t *testing.T) {
 	replay := newDeterministicCheckpointProvider(t)
@@ -30,18 +39,12 @@ func TestNewSupabaseWitnessedReplayCheckpointProviderUsesAtomicServerPrimary(t *
 	fenceClients := make([]CheckpointFenceWitnessClient, 3)
 	fenceIDs := []string{"postgres-fence-a", "postgres-fence-b", "postgres-fence-c"}
 	for i, id := range fenceIDs {
-		publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+		publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 		if err != nil {
 			t.Fatal(err)
 		}
 		fenceTrust[i] = CheckpointFenceWitnessTrust{ID: id, PublicKey: publicKey}
-		witness, err := OpenFileCheckpointFenceWitness(
-			filepath.Join(t.TempDir(), id+".wal"), id, privateKey, fencePublic, "postgres-fence-v1", fenceIDs,
-		)
-		if err != nil {
-			t.Fatal(err)
-		}
-		fenceClients[i] = CheckpointFenceWitnessClient{ID: id, PublicKey: publicKey, Witness: witness}
+		fenceClients[i] = CheckpointFenceWitnessClient{ID: id, PublicKey: publicKey, Witness: serverFenceWitnessStub{}}
 	}
 
 	config := SupabaseWitnessedReplayCheckpointConfig{
