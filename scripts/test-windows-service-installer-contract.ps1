@@ -50,7 +50,7 @@ Assert-Contains $validation 'recovery-authority.token' 'Installed-service valida
 Assert-Contains $validation 'recovery-authority-trust.json' 'Installed-service validation does not inspect the protected trust copy.'
 
 
-$rollbackAccountStart = $installer.IndexOf("if ($createdAccount)")
+$rollbackAccountStart = $installer.IndexOf('if ($createdAccount)')
 $rollbackFailureEnd = $installer.IndexOf('throw "Fresh installation failed;', $rollbackAccountStart)
 if ($rollbackAccountStart -lt 0 -or $rollbackFailureEnd -le $rollbackAccountStart) {
     throw 'Cannot locate fresh-install rollback account cleanup block.'
