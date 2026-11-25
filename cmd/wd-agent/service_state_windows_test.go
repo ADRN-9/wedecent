@@ -227,11 +227,14 @@ func TestServiceStartupLocksPathBeforeRejectingBroadACL(t *testing.T) {
 	}
 }
 
-func TestServiceRuntimeGuardBlocksStateAndAncestorRenameAndDeletion(t *testing.T) {
+func TestServiceRuntimeGuardDetectsStateAndAncestorSubstitution(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "protected-root")
 	state := filepath.Join(root, "agent")
 	if err := preflightAgentState(state); err != nil {
 		t.Fatal(err)
+	}
+	if err := trust.VerifyPairingStatePath(root); err != nil {
+		t.Fatalf("newly created service-state parent is not protected: %v", err)
 	}
 	release, err := guardWindowsServiceState(state)
 	if err != nil {
@@ -239,22 +242,48 @@ func TestServiceRuntimeGuardBlocksStateAndAncestorRenameAndDeletion(t *testing.T
 	}
 	defer release()
 
-	if err := os.Rename(state, state+"-renamed"); err == nil {
-		t.Fatal("state directory renamed while non-delete-sharing guard was held")
+	// Windows permits the directory owner to rename an open directory.
+	// The guard is not an ACL substitute; path verification must fail closed
+	// before a log or sensitive file can be created at the old pathname.
+	swappedState := state + "-renamed"
+	if err := os.Rename(state, swappedState); err != nil {
+		t.Fatalf("same-owner rename fixture: %v", err)
 	}
-	if err := os.Remove(state); err == nil {
-		t.Fatal("empty state directory deleted while non-delete-sharing guard was held")
+	if err := verifyWindowsServiceState(state); err == nil {
+		t.Fatal("renamed state path remained trusted")
 	}
-	if err := os.Rename(root, root+"-renamed"); err == nil {
-		t.Fatal("ancestor directory renamed while non-delete-sharing guard was held")
+	if _, err := openServiceLog(state); err == nil {
+		t.Fatal("service log opened through the substituted state pathname")
+	}
+	if err := os.Rename(swappedState, state); err != nil {
+		t.Fatalf("restore renamed state fixture: %v", err)
+	}
+
+	swappedRoot := root + "-renamed"
+	if err := os.Rename(root, swappedRoot); err != nil {
+		t.Fatalf("same-owner ancestor rename fixture: %v", err)
+	}
+	if err := verifyWindowsServiceState(state); err == nil {
+		t.Fatal("renamed ancestor path remained trusted")
+	}
+	if _, err := openServiceLog(state); err == nil {
+		t.Fatal("service log opened through the substituted ancestor pathname")
+	}
+	if err := os.Rename(swappedRoot, root); err != nil {
+		t.Fatalf("restore renamed ancestor fixture: %v", err)
 	}
 	if err := verifyWindowsServiceState(state); err != nil {
-		t.Fatalf("guarded state path stopped resolving to the verified directory: %v", err)
+		t.Fatalf("restored state unexpectedly invalid: %v", err)
 	}
-	if _, err := os.Lstat(state + "-renamed"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unexpected renamed state path exists: %v", err)
+}
+
+func TestServiceProvisionRejectsBroadExistingParentDACL(t *testing.T) {
+	broadParent := prepareWindowsPreflightTestDir(t, true)
+	if err := verifyWindowsServiceStateParent(filepath.Join(broadParent, "agent")); err == nil {
+		t.Fatal("service provisioning accepted an existing parent with broad access")
 	}
-	if _, err := os.Lstat(root + "-renamed"); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("unexpected renamed ancestor path exists: %v", err)
+	privateParent := prepareWindowsPreflightTestDir(t, false)
+	if err := verifyWindowsServiceStateParent(filepath.Join(privateParent, "agent")); err != nil {
+		t.Fatalf("service provisioning rejected a protected parent: %v", err)
 	}
 }
