@@ -7,9 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
-	"errors"
 	"testing"
 )
 
@@ -18,8 +18,8 @@ type testIndependentRecoveryAuthority struct {
 	primaryPrivate ed25519.PrivateKey
 	trust          RecoveryAuthorityTrust
 	witnessPrivate map[string]ed25519.PrivateKey
-	head            RecoveryCheckpoint
-	loseNextCommit  bool
+	head           RecoveryCheckpoint
+	loseNextCommit bool
 }
 
 func newTestIndependentRecoveryAuthority(t *testing.T) *testIndependentRecoveryAuthority {
@@ -215,7 +215,6 @@ func TestPairingRecoveryAuthorityRejectsDuplicateWitnessKeys(t *testing.T) {
 	}
 }
 
-
 func TestPairingRecoveryMigratesLegacyArchiveWithAuthenticatedAuthorityProof(t *testing.T) {
 	dir := recoveryTestDir(t)
 	legacy, err := OpenPairingRecovery(dir)
@@ -296,7 +295,6 @@ func TestPairingRecoveryMigrationRejectsForgedStateDigestProof(t *testing.T) {
 		t.Fatalf("forged migration proof changed the local archive: %+v %v", stillLegacy, err)
 	}
 }
-
 
 func TestPairingRecoveryAuthorityRejectsCompleteLocalSnapshotRollback(t *testing.T) {
 	dir := recoveryTestDir(t)
