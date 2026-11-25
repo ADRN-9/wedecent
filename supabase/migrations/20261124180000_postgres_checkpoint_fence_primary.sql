@@ -224,373 +224,7 @@ begin
             ((p_token ->> 'authorization_proof_issued_at_unix_ms')::bigint <> 0
              or (p_token ->> 'authorization_proof_expires_at_unix_ms')::bigint <> 0))
        or (v_operation.action = 'revoke' and
-            coalesce(p_token ->> 'authorization_proof', '') !~ '^[A-Za-z0-9+/]{118}==
-       or coalesce(p_token ->> 'authorization_sha256', '') !~ '^[0-9a-f]{64}$'
-       or coalesce(p_token ->> 'witness_set_version', '') = ''
-       or coalesce(p_token ->> 'primary_key_id', '') = ''
-       or coalesce(p_token ->> 'signature', '') !~ '^[A-Za-z0-9+/]{86}==$'
-       or coalesce(p_token ->> 'request_sha256', '') !~ '^[0-9a-f]{64}$'
-       or pg_catalog.jsonb_typeof(p_token -> 'participants') is distinct from 'array'
-       or pg_catalog.jsonb_array_length(p_token -> 'participants') <>
-            (select pg_catalog.count(*) from public.checkpoint_operation_participants
-             where operation_id = p_operation_id)
-       or pg_catalog.jsonb_typeof(p_token -> 'witness_ids') is distinct from 'array'
-       or pg_catalog.jsonb_array_length(p_token -> 'witness_ids') < 3
-       or pg_catalog.jsonb_array_length(p_token -> 'witness_ids') > 31
-       or (select pg_catalog.count(distinct item.value #>> '{}')
-             from pg_catalog.jsonb_array_elements(p_token -> 'witness_ids') as item(value))
-            <> pg_catalog.jsonb_array_length(p_token -> 'witness_ids') then
-        raise exception 'checkpoint fence token does not match reserved operation'
-            using errcode = '23505';
-    end if;
-
-    select authority.* into v_fence
-      from public.checkpoint_fence_authority as authority
-     where authority.organization_id = v_operation.organization_id
-     for update;
-    if not found or v_fence.pending_operation_id is distinct from p_operation_id
-       or v_fence.pending_fingerprint is distinct from p_fingerprint
-       or v_fence.pending_expires_at is null
-       or v_fence.pending_expires_at <= pg_catalog.clock_timestamp()
-       or (p_token ->> 'expected_fence_generation')::bigint is distinct from v_fence.generation
-       or (p_token ->> 'generation')::bigint is distinct from v_fence.generation + 1
-       or p_token ->> 'previous_fence_sha256' is distinct from pg_catalog.encode(v_fence.fence_hash, 'hex')
-       or (p_token ->> 'expected_revocation_epoch')::bigint is distinct from v_fence.revocation_epoch
-       or (p_token ->> 'resulting_revocation_epoch')::bigint is distinct from
-            v_fence.revocation_epoch + (case when v_operation.action = 'revoke' then 1 else 0 end)
-       or (p_token ->> 'primary_head_generation')::bigint is distinct from v_fence.pending_primary_head_generation
-       or p_token ->> 'primary_head_sha256' is distinct from pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex')
-       or coalesce((p_token ->> 'expires_at_unix_ms')::bigint, 0) >
-            (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
-       or coalesce((p_token ->> 'expires_at_unix_ms')::bigint, 0) <=
-            (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint then
-        raise exception 'checkpoint fence token is stale or expired'
-            using errcode = '40001';
-    end if;
-
-    select event_row.* into v_existing
-      from public.checkpoint_operation_events as event_row
-     where event_row.operation_id = p_operation_id
-       and event_row.event_type = 'fence_reserved'
-     order by event_row.event_id desc
-     limit 1;
-
-    if found and v_existing.event_payload ->> 'token_sha256' = pg_catalog.encode(p_token_sha256, 'hex')
-       and v_existing.event_payload -> 'token' = p_token then
-        return v_existing.event_payload;
-    end if;
-    if found and (v_existing.event_payload -> 'token' ->> 'expires_at_unix_ms')::bigint
-        > (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint then
-        raise exception 'checkpoint fence token retry conflicts'
-            using errcode = '23505';
-    end if;
-
-    if (
-        select pg_catalog.jsonb_agg(
-            pg_catalog.jsonb_build_object(
-                'device_id', participant_row.device_id,
-                'account_id', participant_row.account_id,
-                'organization_id', participant_row.organization_id,
-                'revocation_epoch', participant_row.revocation_epoch
-            ) order by participant_row.device_id
-        )
-        from public.checkpoint_operation_participants as participant_row
-        where participant_row.operation_id = p_operation_id
-    ) <> (
-        select pg_catalog.jsonb_agg(item.value order by item.value ->> 'device_id')
-        from pg_catalog.jsonb_array_elements(p_token -> 'participants') as item(value)
-    ) then
-        raise exception 'checkpoint fence token participant vector conflicts'
-            using errcode = '23505';
-    end if;
-
-    v_payload := pg_catalog.jsonb_build_object(
-        'token_sha256', pg_catalog.encode(p_token_sha256, 'hex'),
-        'token', p_token
-    );
-    insert into public.checkpoint_operation_events(
-        operation_id, event_type, event_payload, event_sha256
-    ) values (
-        p_operation_id, 'fence_reserved', v_payload,
-        extensions.digest(pg_catalog.convert_to(wedecent_private.canonical_jsonb(v_payload), 'UTF8'), 'sha256')
-    );
-    return v_payload;
-end;
-$$;
-
-create or replace function public.commit_checkpoint_fence_operation(
-    p_operation_id text,
-    p_fingerprint bytea,
-    p_token_sha256 bytea,
-    p_witness_acknowledgements jsonb
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-    v_operation public.checkpoint_operations%rowtype;
-    v_fence public.checkpoint_fence_authority%rowtype;
-    v_token_event public.checkpoint_operation_events%rowtype;
-    v_commit_event public.checkpoint_operation_events%rowtype;
-    v_token jsonb;
-    v_result jsonb;
-    v_ack_count integer;
-begin
-    if p_operation_id is null or p_operation_id !~ '^[0-9a-f]{64}$'
-       or p_fingerprint is null or pg_catalog.octet_length(p_fingerprint) <> 32
-       or p_token_sha256 is null or pg_catalog.octet_length(p_token_sha256) <> 32 then
-        raise exception 'invalid checkpoint fence commit'
-            using errcode = '22023';
-    end if;
-
-    perform pg_catalog.pg_advisory_xact_lock(pg_catalog.hashtextextended(p_operation_id, 0));
-
-    select operation_row.* into v_operation
-      from public.checkpoint_operations as operation_row
-     where operation_row.operation_id = p_operation_id
-     for update;
-    if not found or v_operation.fingerprint is distinct from p_fingerprint then
-        raise exception 'checkpoint operation fingerprint conflict'
-            using errcode = '23505';
-    end if;
-
-    select event_row.* into v_commit_event
-      from public.checkpoint_operation_events as event_row
-     where event_row.operation_id = p_operation_id
-       and event_row.event_type = 'fence_committed';
-    if found then
-        if v_commit_event.event_payload ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex') then
-            raise exception 'checkpoint committed token digest conflicts'
-                using errcode = '23505';
-        end if;
-        return v_commit_event.event_payload -> 'result';
-    end if;
-
-    select event_row.* into v_token_event
-      from public.checkpoint_operation_events as event_row
-     where event_row.operation_id = p_operation_id
-       and event_row.event_type = 'fence_reserved'
-     order by event_row.event_id desc
-     limit 1;
-    if not found or v_token_event.event_payload ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex') then
-        raise exception 'checkpoint signed reservation token is unavailable'
-            using errcode = '55000';
-    end if;
-    v_token := v_token_event.event_payload -> 'token';
-
-    if (v_operation.action = 'finalize' and v_token ->> 'version' is distinct from '1')
-       or (v_operation.action = 'revoke' and v_token ->> 'version' is distinct from '2')
-       or v_token ->> 'authorization_proof' is null
-       or (v_operation.action = 'finalize' and v_token ->> 'authorization_proof' <> '')
-       or (v_operation.action = 'revoke' and
-            coalesce(v_token ->> 'authorization_proof', '') !~ '^[A-Za-z0-9+/]{86}==$')
-       or (v_operation.action = 'revoke' and
-            pg_catalog.octet_length(pg_catalog.decode(v_token ->> 'authorization_proof', 'base64')) <> 64)
-       or (v_operation.action = 'revoke' and
-            pg_catalog.encode(extensions.digest(
-                pg_catalog.decode(v_token ->> 'authorization_proof', 'base64'), 'sha256'
-            ), 'hex') is distinct from v_token ->> 'authorization_sha256')
-       or (v_operation.action = 'revoke' and
-            (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint <=
-                (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint)
-       or (v_operation.action = 'revoke' and
-            (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint >
-                (v_token ->> 'expires_at_unix_ms')::bigint)
-       or (v_operation.action = 'revoke' and
-            (v_token ->> 'authorization_proof_issued_at_unix_ms')::bigint >
-                (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint + 30000) then
-        raise exception 'checkpoint revocation proof receipt is malformed'
-            using errcode = '22023';
-    end if;
-
-    if p_witness_acknowledgements is null
-       or pg_catalog.jsonb_typeof(p_witness_acknowledgements) <> 'array'
-       or pg_catalog.jsonb_array_length(p_witness_acknowledgements) < 2
-       or pg_catalog.jsonb_array_length(p_witness_acknowledgements) > 31 then
-        raise exception 'checkpoint witness acknowledgements are malformed'
-            using errcode = '22023';
-    end if;
-
-    v_ack_count := pg_catalog.jsonb_array_length(p_witness_acknowledgements);
-    if exists (
-        select 1 from pg_catalog.jsonb_array_elements(p_witness_acknowledgements) as item(value)
-        where pg_catalog.jsonb_typeof(item.value) is distinct from 'object'
-           or item.value ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex')
-           or (item.value ->> 'generation')::bigint is distinct from (v_token ->> 'generation')::bigint
-           or item.value ->> 'operation_id' is distinct from p_operation_id
-           or item.value ->> 'action' is distinct from v_operation.action
-    ) or (
-        select pg_catalog.count(distinct item.value ->> 'witness_id')
-          from pg_catalog.jsonb_array_elements(p_witness_acknowledgements) as item(value)
-    ) <> v_ack_count then
-        raise exception 'checkpoint witness acknowledgements do not bind to signed token'
-            using errcode = '22023';
-    end if;
-
-    select authority.* into v_fence
-      from public.checkpoint_fence_authority as authority
-     where authority.organization_id = v_operation.organization_id
-     for update;
-    if not found or v_fence.pending_operation_id is distinct from p_operation_id
-       or v_fence.pending_fingerprint is distinct from p_fingerprint
-       or v_fence.pending_expires_at is null
-       or v_fence.pending_expires_at <= pg_catalog.clock_timestamp()
-       or (v_token ->> 'expected_fence_generation')::bigint is distinct from v_fence.generation
-       or (v_token ->> 'generation')::bigint is distinct from v_fence.generation + 1
-       or v_token ->> 'previous_fence_sha256' is distinct from pg_catalog.encode(v_fence.fence_hash, 'hex')
-       or (v_token ->> 'expected_revocation_epoch')::bigint is distinct from v_fence.revocation_epoch
-       or (v_token ->> 'resulting_revocation_epoch')::bigint is distinct from
-            v_fence.revocation_epoch + (case when v_operation.action = 'revoke' then 1 else 0 end)
-       or (v_token ->> 'primary_head_generation')::bigint is distinct from v_fence.pending_primary_head_generation
-       or v_token ->> 'primary_head_sha256' is distinct from pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex')
-       or coalesce((v_token ->> 'expires_at_unix_ms')::bigint, 0) <=
-            (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint
-       or coalesce((v_token ->> 'expires_at_unix_ms')::bigint, 0) >
-            (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
-       or (v_operation.action = 'revoke' and
-            pg_catalog.encode(extensions.digest(
-                pg_catalog.decode(v_token ->> 'authorization_proof', 'base64'), 'sha256'
-            ), 'hex') is distinct from v_token ->> 'authorization_sha256') then
-        raise exception 'checkpoint fence reservation is stale or expired'
-            using errcode = '40001';
-    end if;
-
-    v_result := public.commit_checkpoint_operation(
-        p_operation_id, p_fingerprint, p_witness_acknowledgements
-    );
-
-    update public.checkpoint_fence_authority
-       set generation = (v_token ->> 'generation')::bigint,
-           revocation_epoch = (v_token ->> 'resulting_revocation_epoch')::bigint,
-           fence_hash = p_token_sha256,
-           primary_head_generation = (v_token ->> 'primary_head_generation')::bigint,
-           primary_head_hash = pg_catalog.decode(v_token ->> 'primary_head_sha256', 'hex'),
-           pending_operation_id = null,
-           pending_fingerprint = null,
-           pending_expires_at = null,
-           pending_primary_head_generation = null,
-           pending_primary_head_hash = null,
-           updated_at = pg_catalog.clock_timestamp()
-     where organization_id = v_operation.organization_id
-       and pending_operation_id = p_operation_id
-       and generation = (v_token ->> 'expected_fence_generation')::bigint
-       and fence_hash = pg_catalog.decode(v_token ->> 'previous_fence_sha256', 'hex');
-
-    if not found then
-        raise exception 'checkpoint fence authority advancement was incomplete'
-            using errcode = '40001';
-    end if;
-
-    v_result := pg_catalog.jsonb_build_object(
-        'token_sha256', pg_catalog.encode(p_token_sha256, 'hex'),
-        'token', v_token,
-        'result', v_result
-    );
-    insert into public.checkpoint_operation_events(
-        operation_id, event_type, event_payload, event_sha256
-    ) values (
-        p_operation_id, 'fence_committed', v_result,
-        extensions.digest(pg_catalog.convert_to(wedecent_private.canonical_jsonb(v_result), 'UTF8'), 'sha256')
-    );
-    return v_result -> 'result';
-end;
-$$;
-
-create or replace function public.load_checkpoint_fence_operation(
-    p_organization_id uuid,
-    p_operation_id text
-)
-returns jsonb
-language plpgsql
-security definer
-set search_path = ''
-as $$
-declare
-    v_token jsonb;
-    v_token_sha256 text;
-    v_commit jsonb;
-begin
-    select event_row.event_payload -> 'token',
-           event_row.event_payload ->> 'token_sha256'
-      into v_token, v_token_sha256
-      from public.checkpoint_operation_events as event_row
-      join public.checkpoint_operations as operation_row using (operation_id)
-     where event_row.operation_id = p_operation_id
-       and operation_row.organization_id = p_organization_id
-       and event_row.event_type = 'fence_reserved'
-     order by event_row.event_id desc
-     limit 1;
-
-    if v_token is null then
-        return pg_catalog.jsonb_build_object('found', false);
-    end if;
-
-    select event_row.event_payload
-      into v_commit
-      from public.checkpoint_operation_events as event_row
-     where event_row.operation_id = p_operation_id
-       and event_row.event_type = 'fence_committed';
-
-    return pg_catalog.jsonb_build_object(
-        'found', true,
-        'token', v_token,
-        'token_sha256', v_token_sha256,
-        'committed', v_commit is not null,
-        'fingerprint', (
-            select pg_catalog.encode(operation_row.fingerprint, 'hex')
-            from public.checkpoint_operations as operation_row
-            where operation_row.operation_id = p_operation_id
-        ),
-        'acknowledgements', coalesce(v_commit -> 'result' -> 'witness_acknowledgements', '[]'::jsonb)
-    );
-end;
-$$;
-
-create or replace function public.load_checkpoint_fence_head(p_organization_id uuid)
-returns jsonb
-language sql
-security definer
-set search_path = ''
-as $$
- select pg_catalog.jsonb_build_object(
-    'generation', authority.generation,
-    'revocation_epoch', authority.revocation_epoch,
-    'fence_hash', pg_catalog.encode(authority.fence_hash, 'hex'),
-    'primary_head_generation', authority.primary_head_generation,
-    'primary_head_sha256', pg_catalog.encode(authority.primary_head_hash, 'hex'),
-    'pending_operation_id', coalesce(authority.pending_operation_id, ''),
-    'pending_expires_at', authority.pending_expires_at
- )
- from public.checkpoint_fence_authority as authority
- where authority.organization_id = p_organization_id;
-$$;
-
-revoke all on function public.reserve_checkpoint_operation(text,text,uuid,uuid,bytea,jsonb,integer) from service_role;
-revoke all on function public.commit_checkpoint_operation(text,bytea,jsonb) from service_role;
-
-revoke all on function public.reserve_checkpoint_fence_operation(text,text,uuid,uuid,bytea,jsonb,bigint,bytea,integer)
-    from public, anon, authenticated;
-revoke all on function public.record_checkpoint_fence_token(text,bytea,bytea,jsonb)
-    from public, anon, authenticated;
-revoke all on function public.commit_checkpoint_fence_operation(text,bytea,bytea,jsonb)
-    from public, anon, authenticated;
-revoke all on function public.load_checkpoint_fence_operation(uuid,text)
-    from public, anon, authenticated;
-revoke all on function public.load_checkpoint_fence_head(uuid)
-    from public, anon, authenticated;
-
-grant execute on function public.reserve_checkpoint_fence_operation(text,text,uuid,uuid,bytea,jsonb,bigint,bytea,integer) to service_role;
-grant execute on function public.record_checkpoint_fence_token(text,bytea,bytea,jsonb) to service_role;
-grant execute on function public.commit_checkpoint_fence_operation(text,bytea,bytea,jsonb) to service_role;
-grant execute on function public.load_checkpoint_fence_operation(uuid,text) to service_role;
-grant execute on function public.load_checkpoint_fence_head(uuid) to service_role;
-
-comment on table public.checkpoint_fence_authority is
-    'Organization-scoped fence ordering metadata only. Participant generations and hashes remain solely authoritative in port_forward_replay_authority.';
-commit;
-)
+            coalesce(p_token ->> 'authorization_proof', '') !~ '^[A-Za-z0-9+/]{118}==$')
        or (v_operation.action = 'revoke' and
             pg_catalog.octet_length(pg_catalog.decode(p_token ->> 'authorization_proof', 'base64')) <> 88)
        or (v_operation.action = 'revoke' and
@@ -772,16 +406,38 @@ begin
     if (v_operation.action = 'finalize' and v_token ->> 'version' is distinct from '1')
        or (v_operation.action = 'revoke' and v_token ->> 'version' is distinct from '2')
        or v_token ->> 'authorization_proof' is null
+       or v_token ->> 'authorization_proof_issued_at_unix_ms' is null
+       or v_token ->> 'authorization_proof_expires_at_unix_ms' is null
        or (v_operation.action = 'finalize' and v_token ->> 'authorization_proof' <> '')
+       or (v_operation.action = 'finalize' and
+            ((v_token ->> 'authorization_proof_issued_at_unix_ms')::bigint <> 0
+             or (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint <> 0))
        or (v_operation.action = 'revoke' and
-            coalesce(v_token ->> 'authorization_proof', '') !~ '^[A-Za-z0-9+/]{86}==$')
+            coalesce(v_token ->> 'authorization_proof', '') !~ '^[A-Za-z0-9+/]{118}==$')
        or (v_operation.action = 'revoke' and
-            pg_catalog.octet_length(pg_catalog.decode(v_token ->> 'authorization_proof', 'base64')) <> 64)
+            pg_catalog.octet_length(pg_catalog.decode(v_token ->> 'authorization_proof', 'base64')) <> 88)
        or (v_operation.action = 'revoke' and
             pg_catalog.encode(extensions.digest(
                 pg_catalog.decode(v_token ->> 'authorization_proof', 'base64'), 'sha256'
-            ), 'hex') is distinct from v_token ->> 'authorization_sha256') then
-        raise exception 'checkpoint revocation proof receipt is malformed'
+            ), 'hex') is distinct from v_token ->> 'authorization_sha256')
+       or (v_operation.action = 'revoke' and
+            (v_token ->> 'authorization_proof_issued_at_unix_ms')::bigint <= 0)
+       or (v_operation.action = 'revoke' and
+            (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint <=
+                (v_token ->> 'authorization_proof_issued_at_unix_ms')::bigint)
+       or (v_operation.action = 'revoke' and
+            (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint -
+                (v_token ->> 'authorization_proof_issued_at_unix_ms')::bigint > 120000)
+       or (v_operation.action = 'revoke' and
+            (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint >
+                (v_token ->> 'expires_at_unix_ms')::bigint)
+       or (v_operation.action = 'revoke' and
+            (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint <=
+                (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint)
+       or (v_operation.action = 'revoke' and
+            (v_token ->> 'authorization_proof_issued_at_unix_ms')::bigint >
+                (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint + 30000) then
+        raise exception 'checkpoint revocation proof receipt is malformed or expired'
             using errcode = '22023';
     end if;
 
@@ -817,6 +473,10 @@ begin
        or v_fence.pending_fingerprint is distinct from p_fingerprint
        or v_fence.pending_expires_at is null
        or v_fence.pending_expires_at <= pg_catalog.clock_timestamp()
+       or (v_token ->> 'expires_at_unix_ms')::bigint <=
+            (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint
+       or (v_token ->> 'expires_at_unix_ms')::bigint >
+            (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
        or (v_token ->> 'expected_fence_generation')::bigint is distinct from v_fence.generation
        or (v_token ->> 'generation')::bigint is distinct from v_fence.generation + 1
        or v_token ->> 'previous_fence_sha256' is distinct from pg_catalog.encode(v_fence.fence_hash, 'hex')
@@ -824,15 +484,7 @@ begin
        or (v_token ->> 'resulting_revocation_epoch')::bigint is distinct from
             v_fence.revocation_epoch + (case when v_operation.action = 'revoke' then 1 else 0 end)
        or (v_token ->> 'primary_head_generation')::bigint is distinct from v_fence.pending_primary_head_generation
-       or v_token ->> 'primary_head_sha256' is distinct from pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex')
-       or coalesce((v_token ->> 'expires_at_unix_ms')::bigint, 0) <=
-            (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint
-       or coalesce((v_token ->> 'expires_at_unix_ms')::bigint, 0) >
-            (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
-       or (v_operation.action = 'revoke' and
-            pg_catalog.encode(extensions.digest(
-                pg_catalog.decode(v_token ->> 'authorization_proof', 'base64'), 'sha256'
-            ), 'hex') is distinct from v_token ->> 'authorization_sha256') then
+       or v_token ->> 'primary_head_sha256' is distinct from pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex') then
         raise exception 'checkpoint fence reservation is stale or expired'
             using errcode = '40001';
     end if;
