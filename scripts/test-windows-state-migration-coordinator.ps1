@@ -321,6 +321,9 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
     } finally {
         $process.Dispose()
     }
+    # Reflect the child process's successful mocked SCM transition in the parent assertions.
+    $global:WeDecentMigrationMockStatus = 'Running'
+    $global:WeDecentMigrationMockService.State = 'Running'
     Assert-MigrationRolledBack -Fixture $partialStagingRecovery -Fault 'partial staging recovery'
     if (Recover-WeDecentStateMigration -JournalPath $partialStagingRecovery.Journal -AgentPath $agentPath -MetadataPath $partialStagingRecovery.MetadataPath -ServiceName $partialStagingRecovery.ServiceName) {
         throw 'Recovery after fresh-process completion was not idempotent.'
