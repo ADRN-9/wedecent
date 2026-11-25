@@ -158,6 +158,10 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	if err := preflightWindowsAgentState(parent, windowsStateProvisionHooks{ownerSID: admins}); err != nil {
 		t.Fatal(err)
 	}
+	parentOwner, err := windowsServiceOwner(parent)
+	if err != nil || !parentOwner.Equals(admins) {
+		t.Fatalf("service ancestor was not provisioned under the trusted Administrators owner: %v: %v", parentOwner, err)
+	}
 	state := filepath.Join(parent, "dedicated-service-state")
 	if err := provisionWindowsServiceState(state, account); err != nil {
 		t.Fatalf("distinct service SID preflight/provision failed: %v", err)
