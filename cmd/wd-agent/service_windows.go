@@ -593,11 +593,11 @@ func extractServiceName(args []string) (string, []string, error) {
 }
 
 func defaultServiceStateDir() string {
-	base := strings.TrimSpace(os.Getenv("ProgramFiles"))
+	base := strings.TrimSpace(os.Getenv("ProgramData"))
 	if base == "" {
-		base = `C:\Program Files`
+		base = `C:\ProgramData`
 	}
-	return filepath.Join(base, "WeDecentData", "agent")
+	return filepath.Join(base, "WeDecent", "agent")
 }
 
 func openServiceLog(stateDir string) (*os.File, error) {
