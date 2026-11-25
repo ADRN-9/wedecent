@@ -557,7 +557,7 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal transaction identifier is invalid.'
     }
     foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path',
-        'service_name', 'service_sid', 'service_start_name', 'service_start_mode', 'agent_path', 'original_service_path',
+        'service_name', 'service_sid', 'installer_sid', 'service_start_name', 'service_start_mode', 'agent_path', 'original_service_path',
         'updated_service_path', 'original_metadata_json')) {
         if ([string]::IsNullOrWhiteSpace([string]$journal.$field)) {
             throw "Migration journal field '$field' is missing."
@@ -578,6 +578,7 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal path does not match the protected journal file.'
     }
     [void](ConvertTo-WeDecentMigrationSid -Sid ([string]$journal.service_sid))
+    [void](ConvertTo-WeDecentMigrationSid -Sid ([string]$journal.installer_sid))
     if ([string]$journal.service_name -notmatch '^[A-Za-z0-9_.-]{1,128}$' -or
         [string]$journal.service_start_mode -notin @('Boot', 'System', 'Auto', 'Manual', 'Disabled')) {
         throw 'Migration journal contains an invalid SCM service configuration.'
@@ -822,12 +823,17 @@ function Assert-WeDecentMigrationRollbackIdentityContinuity {
 function Assert-WeDecentMigrationPartialTreeSafe {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$ServiceSid
+        [Parameter(Mandatory = $true)][string]$ServiceSid,
+        [string]$InstallerSid
     )
 
     $root = Assert-WeDecentMigrationRealDirectory -Path $Path
     $service = ConvertTo-WeDecentMigrationSid -Sid $ServiceSid
     $allowed = @($service.Value, 'S-1-5-18', 'S-1-5-32-544')
+    if (-not [string]::IsNullOrWhiteSpace($InstallerSid)) {
+        $installer = ConvertTo-WeDecentMigrationSid -Sid $InstallerSid
+        $allowed += $installer.Value
+    }
     $paths = @($root) + @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop | ForEach-Object FullName)
     foreach ($entryPath in $paths) {
         $item = Get-Item -LiteralPath $entryPath -Force -ErrorAction Stop
@@ -882,7 +888,7 @@ function Restore-WeDecentMigrationTransaction {
             [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
         }
         if ($partialStaging) {
-            [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid)
+            [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid -InstallerSid $Journal.installer_sid)
         } else {
             $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
             $digest = Get-WeDecentMigrationStableManifestDigest -Manifest $manifest
@@ -1011,6 +1017,7 @@ function Invoke-WeDecentStateMigration {
         staging = $staging
         service_name = $ServiceName
         service_sid = $ServiceSid
+        installer_sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         service_start_name = [string]$service.StartName
         service_start_mode = [string]$service.StartMode
         agent_path = [IO.Path]::GetFullPath($AgentPath)
