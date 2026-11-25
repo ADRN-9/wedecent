@@ -672,10 +672,11 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	if err != nil {
 		return fmt.Errorf("load independent pairing recovery trust: %w", err)
 	}
-	recoveryAuthority, err := audit.NewHTTPRecoveryAuthority(
+	recoveryAuthority, err := audit.NewHTTPRecoveryAuthorityForDevice(
 		cfg.PairingRecoveryAuthorityURL,
 		cfg.PairingRecoveryAuthoritySPKISHA256,
 		os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN"),
+		id.Certificate,
 		authorityTrust,
 	)
 	if err != nil {
