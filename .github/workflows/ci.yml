@@ -130,6 +130,7 @@ jobs:
             'installer/windows/Install-WeDecent.ps1',
             'installer/windows/Uninstall-WeDecent.ps1',
             'installer/windows/Test-WeDecentInstall.ps1',
+            'installer/windows/StateMigration.psm1',
             'scripts/test-windows-upgrade-preflight.ps1',
             'scripts/test-windows-service-installer-contract.ps1',
             'scripts/test-windows-rfcomm-hardware.ps1'
