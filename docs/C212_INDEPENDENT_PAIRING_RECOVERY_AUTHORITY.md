@@ -61,6 +61,22 @@ A failed or ambiguous migration does not rewrite the legacy archive. Retry with 
 
 The current `cmd/wd-agent` composition does not yet provide a production `RecoveryAuthority` implementation. Therefore new pairing attempts intentionally fail closed until the independent service/provider is provisioned and injected. Existing trusted-device sessions are not downgraded or re-paired through the local HMAC path.
 
+## December 1, 2026 UTC pairing credential migration
+
+The existing cutoff in `internal/trust/pairing.go` is preserved. Legacy credentials may be migrated only before `pairingLegacyMigrationDeadline`; after the deadline, legacy credentials are rejected and no indefinite V1 compatibility is added. Existing versioned credential expiry, generation and clock high-water checks remain unchanged.
+
+Available deployment evidence in this repository is limited to implementation and regression tests, including `TestLegacyPairingCredentialMigratesDurablyWithShortExpiry` and `TestLegacyPairingCredentialMigrationDeadlineIsEnforced`. No production fleet inventory, per-installation migration telemetry, or upgrade-completion evidence was available to inspect. The number of devices still requiring migration is therefore unknown.
+
+Operational procedure:
+
+1. Ship a signed application update before the cutoff and ensure the pairing credential migration runs during supported startup/pairing operations.
+2. Verify migration by the presence of durable versioned credential metadata and a valid generation/expiry record; telemetry must report only aggregate migration outcome and version, never pairing secrets or secret hashes.
+3. Treat a missing, malformed, expired or post-deadline legacy credential as a hard rejection. Do not restore V1 acceptance.
+4. Recover a missed installation through an operator-assisted, identity-verified re-enrollment/re-pairing ceremony that issues a fresh high-entropy single-use credential and records a new generation.
+5. Preserve local recovery evidence during support escalation; do not delete or replace legacy archives to force migration.
+
+A production rollout still needs aggregate migration counters, last-seen application version, upgrade completion and post-cutoff rejection telemetry, plus a fleet owner who can identify unreachable installations. Those operational inputs are not present in this PR.
+
 ## Production acceptance still blocked
 
 This implementation is an integration contract and provider seam, not a deployed authority. Before production use, operators must provide and independently review:
