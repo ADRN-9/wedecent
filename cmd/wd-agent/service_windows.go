@@ -15,7 +15,6 @@ import (
 	"syscall"
 	"unsafe"
 
-	"wedecent.com/wedecent/internal/identity"
 	"wedecent.com/wedecent/internal/trust"
 	"wedecent.com/wedecent/internal/winservice"
 )
@@ -234,6 +233,7 @@ shell := fs.String(
 	}
 
 	password := ""
+	stdinReader := bufio.NewReader(os.Stdin)
 
 	if !strings.HasSuffix(
 		strings.TrimSpace(*account),
@@ -241,7 +241,7 @@ shell := fs.String(
 	) {
 		if *accountPasswordStdin {
 			password, err = readServicePassword(
-				os.Stdin,
+				stdinReader,
 			)
 		} else {
 			password, err = readHiddenLine(
@@ -264,7 +264,7 @@ shell := fs.String(
 	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
 		return fmt.Errorf("provision dedicated service state: %w", err)
 	}
-	tokenText, err := readServicePassword(os.Stdin)
+	tokenText, err := readServicePassword(stdinReader)
 	if err != nil { return fmt.Errorf("read recovery bearer token from stdin: %w", err) }
 	token := []byte(strings.TrimSpace(tokenText))
 	tokenText = ""
