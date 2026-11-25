@@ -95,6 +95,11 @@ func TestSupabaseCheckpointFencePrimaryVerifiesStrictWitnessQuorum(t *testing.T)
 	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first, second}); err != nil {
 		t.Fatalf("valid quorum rejected: %v", err)
 	}
+	wrongSet := token
+	wrongSet.WitnessIDs = append([]string(nil), token.WitnessIDs[:2]...)
+	if err := primary.verifyAcknowledgements(wrongSet, []CheckpointFenceAcknowledgement{first, second}); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("acknowledgements from a different configured witness set accepted: %v", err)
+	}
 	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first}); !errors.Is(err, ErrCheckpointQuorum) {
 		t.Fatalf("insufficient quorum accepted: %v", err)
 	}
