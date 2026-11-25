@@ -177,6 +177,19 @@ func TestSupabaseCheckpointFenceWireRoundTripPreservesSignedFields(t *testing.T)
 		t.Fatal(err)
 	}
 	revokeDecoded, err := checkpointFenceTokenFromWire(revokeEncoded)
+	if err != nil || !sameCheckpointFenceToken(revokeToken, revokeDecoded) {
+		t.Fatalf("revocation proof wire round trip failed: %v", err)
+	}
+	revokeToken, _ := validFenceToken(t, CheckpointFenceRevoke)
+	revokeWire, err := checkpointFenceTokenToWire(revokeToken)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeEncoded, err := json.Marshal(revokeWire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revokeDecoded, err := checkpointFenceTokenFromWire(revokeEncoded)
 	if err != nil || !sameCheckpointFenceToken(revokeToken, revokeDecoded) ||
 		!bytes.Equal(revokeToken.AuthorizationProof, revokeDecoded.AuthorizationProof) {
 		t.Fatalf("revocation proof wire round trip changed signed fields: %v", err)
