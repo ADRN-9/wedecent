@@ -87,6 +87,18 @@ Do not weaken execution policy or Defender to run unsigned, invalidly signed, or
 
 ## Install or upgrade
 
+Fresh installation requires recovery-authority provisioning. Stage the independently administered public trust JSON in a file whose ACL is restricted to the installer, SYSTEM and Administrators; supply the HTTPS origin and exact 64-hex leaf-SPKI SHA-256 pin. The bearer is prompted securely if not supplied as a `SecureString`.
+
+```powershell
+$env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL = 'https://recovery.example.invalid'
+$env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256 = '<64-hex-leaf-SPKI-pin>'
+$recoveryBearer = Read-Host 'Short-lived recovery-authority bearer token' -AsSecureString
+.\Install-WeDecent.ps1 -RecoveryAuthorityTrustFile 'C:\ProgramData\WeDecent\recovery-authority-trust.json' -RecoveryAuthorityBearerToken $recoveryBearer
+.\Test-WeDecentInstall.ps1
+```
+
+The trust file must be a valid primary/witness public trust document and pass the repository's protected-file ACL check. Never put the bearer in a command-line argument or environment variable. The installer streams the account password first and bearer second through the child process's inherited stdin pipe.
+
 ```powershell
 .\Install-WeDecent.ps1
 .\Test-WeDecentInstall.ps1
