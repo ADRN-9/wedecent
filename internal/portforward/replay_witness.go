@@ -1448,7 +1448,7 @@ func (p *WitnessedReplayCheckpointProvider) executeOrganizationFence(
 		request.PreviousFenceSHA256 = existing.Token.PreviousFenceSHA256
 		request.ExpiresAtUnixMS = existing.Token.ExpiresAtUnixMS
 	} else {
-		if fenceHead.PendingOperationID != "" {
+		if fenceHead.PendingOperationID != "" && fenceHead.PendingOperationID != operationID {
 			return CheckpointFenceOperation{}, ErrCheckpointAmbiguous
 		}
 		if fenceHead.Generation == ^uint64(0) {
