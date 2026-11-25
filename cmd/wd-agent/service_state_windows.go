@@ -223,9 +223,10 @@ func verifyWindowsServiceFile(path string) error {
 	return nil
 }
 
-// Keep non-delete-sharing handles on every component for the entire service
-// lifetime. A straightforward ancestor rename/junction swap then fails;
-// further access-control verification stays authoritative on every startup.
+// Keep handles on every component and compare object identity across open.
+// Windows permits a directory owner to rename an open directory through its
+// parent, so these handles are not an ACL substitute. Service provisioning
+// requires a protected parent DACL; startup revalidates the pathname and ACL.
 func guardWindowsServiceState(dir string) (func(), error) {
 	root, components, err := windowsStatePathComponents(dir)
 	if err != nil {
