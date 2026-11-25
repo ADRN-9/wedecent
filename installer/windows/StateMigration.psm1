@@ -805,6 +805,40 @@ function Recover-WeDecentStateMigration {
     return $true
 }
 
+function Get-WeDecentMigrationUpdatedServicePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ServicePath,
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $statePattern = '(?i)(?<!\S)"--state=([^"]+)"|(?<!\S)--state="([^"]+)"|(?<!\S)--state=([^\s"]+)'
+    $matches = [regex]::Matches($ServicePath, $statePattern)
+    if ($matches.Count -ne 1) {
+        throw 'SCM command line must contain exactly one unambiguous --state argument.'
+    }
+    $match = $matches[0]
+    $matchedState = if ($match.Groups[1].Success) {
+        $match.Groups[1].Value
+    } elseif ($match.Groups[2].Success) {
+        $match.Groups[2].Value
+    } else {
+        $match.Groups[3].Value
+    }
+    if (-not [string]::Equals($matchedState, [IO.Path]::GetFullPath($Source), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SCM command line does not reference the authenticated migration source.'
+    }
+    return [regex]::Replace(
+        $ServicePath,
+        $statePattern,
+        [System.Text.RegularExpressions.MatchEvaluator]{
+            param($entry)
+            return '"--state=' + [IO.Path]::GetFullPath($Destination) + '"'
+        },
+        [Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+}
+
 function Invoke-WeDecentStateMigration {
     [CmdletBinding()]
     param(
@@ -835,25 +869,7 @@ function Invoke-WeDecentStateMigration {
     if (-not $service) { throw "Migration service '$ServiceName' does not exist." }
     $account = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
     if ($account -cne $ServiceSid) { throw 'SCM service account SID differs from the migration target SID.' }
-    $statePattern = '(?i)(?<!\S)"--state=([^"]+)"|(?<!\S)--state="([^"]+)"|(?<!\S)--state=([^\s"]+)'
-    $stateMatches = [regex]::Matches([string]$service.PathName, $statePattern)
-    if ($stateMatches.Count -ne 1) {
-        throw 'SCM command line must contain exactly one unambiguous --state argument.'
-    }
-    $stateMatch = $stateMatches[0]
-    $matchedState = if ($stateMatch.Groups[1].Success) { $stateMatch.Groups[1].Value } elseif ($stateMatch.Groups[2].Success) { $stateMatch.Groups[2].Value } else { $stateMatch.Groups[3].Value }
-    if (-not [string]::Equals($matchedState, $sourceFull, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'SCM command line does not reference the authenticated migration source.'
-    }
-    $updatedPath = [regex]::Replace(
-        [string]$service.PathName,
-        $statePattern,
-        [System.Text.RegularExpressions.MatchEvaluator]{
-            param($match)
-            return '"--state=' + $destinationFull + '"'
-        },
-        [Text.RegularExpressions.RegexOptions]::CultureInvariant
-    )
+    $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath ([string]$service.PathName) -Source $sourceFull -Destination $destinationFull
     if ($updatedPath -ceq [string]$service.PathName) { throw 'Could not construct an unambiguous destination SCM command line.' }
 
     [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $JournalPath) -AgentPath $AgentPath)
@@ -981,6 +997,7 @@ Export-ModuleMember -Function @(
     'Assert-WeDecentMigrationMetadataAcl',
     'Recover-WeDecentStateMigration',
     'Invoke-WeDecentMigrationFaultPoint',
+    'Get-WeDecentMigrationUpdatedServicePath',
     'Invoke-WeDecentStateMigration'
 )
 ) {
