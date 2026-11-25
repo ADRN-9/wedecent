@@ -349,6 +349,10 @@ foreach ($case in $overlapCases) {
     if (-not $rejected) { throw "Migration path overlap was accepted: $($case.Paths -join ' <> ')" }
 }
 [void](Assert-WeDecentMigrationPathsDisjoint -Paths @('C:\ProgramData\WeDecent\agent', 'C:\Program Files\WeDecent\data\agent'))
+$shortNameRejected = $false
+try { [void](Get-WeDecentMigrationCanonicalPath -Path 'C:\PROGRA~1\WeDecent\data\agent') }
+catch { $shortNameRejected = $_.Exception.Message -like '*8.3 short-name*'; if (-not $shortNameRejected) { throw } }
+if (-not $shortNameRejected) { throw 'Migration accepted an ambiguous Windows 8.3 path alias.' }
 Write-Host 'Migration coordinator Windows path normalization and overlap validators PASS'
 
 $pathFixture = New-MigrationFixture
