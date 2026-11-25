@@ -23,16 +23,16 @@ const (
 )
 
 type slot struct {
-	conn       net.Conn
-	createdAt  time.Time
-	done       chan struct{}
-	finishOnce sync.Once
-	writeMu    sync.Mutex
-	state      slotState
-	watchStop  chan struct{}
-	watchDone  chan struct{}
-	watchOnce  sync.Once
-	disconnected chan struct{}
+	conn           net.Conn
+	createdAt      time.Time
+	done           chan struct{}
+	finishOnce     sync.Once
+	writeMu        sync.Mutex
+	state          slotState
+	watchStop      chan struct{}
+	watchDone      chan struct{}
+	watchOnce      sync.Once
+	disconnected   chan struct{}
 	disconnectOnce sync.Once
 }
 
