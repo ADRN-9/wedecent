@@ -49,7 +49,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 	}
 	primary,err:=NewSupabaseCheckpointFencePrimary(config)
 	if err!=nil { t.Fatalf("valid pinned primary config rejected: %v",err) }
-	if primary.CheckpointAuthorityKeyID()!=checkpointProviderKeyID(primaryPublic) {
+	if primary.CheckpointAuthorityKeyID()!=checkpointProviderKeyID(headPublic) {
 		t.Fatal("primary authority key ID mismatch")
 	}
 	config.CheckpointHeadKey=primaryPublic
