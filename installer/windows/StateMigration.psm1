@@ -994,7 +994,7 @@ function Recover-WeDecentStateMigration {
     try {
         Assert-WeDecentMigrationMutationLease -Lease $recoveryLease -Paths $recoveryPaths
         [void](Assert-WeDecentMigrationRecoverySource -Journal $journal)
-        Restore-WeDecentMigrationTransaction -Journal $journal -FaultAt $FaultAt -MutationLease $mutationLease -MutationLease $recoveryLease
+        Restore-WeDecentMigrationTransaction -Journal $journal -FaultAt $FaultAt -MutationLease $recoveryLease
     } finally {
         $recoveryLease.Dispose()
     }
