@@ -614,4 +614,136 @@ try {
 } finally {
     Remove-Item -LiteralPath $recovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
+
+$nativeLeaseFixture = New-MigrationFixture
+try {
+    $lease = New-WeDecentMigrationMutationLease -Directories @($nativeLeaseFixture.Root)
+    try {
+        $renameBlocked = $false
+        try {
+            [IO.Directory]::Move($nativeLeaseFixture.Root, $nativeLeaseFixture.Root + '.renamed')
+        } catch {
+            $renameBlocked = $true
+        }
+        if (-not $renameBlocked) { throw 'Retained directory lease did not block parent rename/substitution.' }
+        Assert-WeDecentMigrationMutationLease -Lease $lease -Paths @($nativeLeaseFixture.Source,$nativeLeaseFixture.Destination,$nativeLeaseFixture.Journal,$nativeLeaseFixture.MetadataPath)
+        Write-Host 'Migration native retained parent handle blocks rename PASS'
+    } finally { $lease.Dispose() }
+
+    $createFailureRejected = $false
+    $env:WEDECENT_MIGRATION_NATIVE_FAIL_CREATEFILE = '1'
+    try { [void](New-WeDecentMigrationMutationLease -Directories @($nativeLeaseFixture.Root)) }
+    catch { $createFailureRejected = $_.Exception.Message -like '*Injected native filesystem failure*' }
+    finally { Remove-Item Env:WEDECENT_MIGRATION_NATIVE_FAIL_CREATEFILE -ErrorAction SilentlyContinue }
+    if (-not $createFailureRejected) { throw 'Injected CreateFile failure was not rejected fail-closed.' }
+
+    $infoFailureRejected = $false
+    $env:WEDECENT_MIGRATION_NATIVE_FAIL_GETINFO = '1'
+    try { [void](Get-WeDecentMigrationIdentitySnapshot -Paths @($nativeLeaseFixture.Source)) }
+    catch { $infoFailureRejected = $_.Exception.Message -like '*Injected native filesystem failure*' }
+    finally { Remove-Item Env:WEDECENT_MIGRATION_NATIVE_FAIL_GETINFO -ErrorAction SilentlyContinue }
+    if (-not $infoFailureRejected) { throw 'Injected GetFileInformationByHandle failure was not rejected fail-closed.' }
+    Write-Host 'Migration native CreateFile/GetFileInformationByHandle fail-closed injection PASS'
+} finally {
+    Remove-Item Env:WEDECENT_MIGRATION_NATIVE_FAIL_CREATEFILE -ErrorAction SilentlyContinue
+    Remove-Item Env:WEDECENT_MIGRATION_NATIVE_FAIL_GETINFO -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $nativeLeaseFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$directoryRaceFixture = New-MigrationFixture
+try {
+    $raceSource = Join-Path $directoryRaceFixture.Root 'race-staging'
+    $raceDisplaced = Join-Path $directoryRaceFixture.Root 'race-staging-original'
+    $raceDestination = Join-Path $directoryRaceFixture.Root 'race-published'
+    [IO.Directory]::CreateDirectory($raceSource) | Out-Null
+    [IO.File]::WriteAllText((Join-Path $raceSource 'marker.txt'),'original-object')
+    $global:WeDecentMigrationRaceSource = $raceSource
+    $global:WeDecentMigrationRaceDisplaced = $raceDisplaced
+    $global:WeDecentMigrationRaceInjection = {
+        param($Name)
+        if ($Name -ceq 'BeforeDirectoryAtomicPublish') {
+            [IO.Directory]::Move($global:WeDecentMigrationRaceSource,$global:WeDecentMigrationRaceDisplaced)
+            [IO.Directory]::CreateDirectory($global:WeDecentMigrationRaceSource) | Out-Null
+            [IO.File]::WriteAllText((Join-Path $global:WeDecentMigrationRaceSource 'marker.txt'),'substituted-object')
+        }
+    }
+    $rejected = $false
+    try {
+        [void](Publish-WeDecentMigrationObject -TemporaryPath $raceSource -ParentPath $directoryRaceFixture.Root -TargetName 'race-published' -RacePoint 'BeforeDirectoryAtomicPublish')
+    } catch {
+        $rejected = $_.Exception.Message -like '*source object changed*'
+        if (-not $rejected) { throw }
+    } finally { $global:WeDecentMigrationRaceInjection = $null }
+    if (-not $rejected -or (Test-Path -LiteralPath $raceDestination)) {
+        throw 'Directory substitution race was not rejected before publication.'
+    }
+    if ($global:WeDecentMigrationMockService.PathName -cne $directoryRaceFixture.OriginalServicePath -or $global:WeDecentMigrationMockStatus -cne 'Running') {
+        throw 'Directory publication race changed SCM or service state.'
+    }
+    Write-Host 'Migration deterministic staging pathname substitution race rejection PASS'
+} finally {
+    $global:WeDecentMigrationRaceInjection = $null
+    Remove-Item -LiteralPath $directoryRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$metadataRaceFixture = New-MigrationFixture
+try {
+    $global:WeDecentMigrationRaceTarget = $metadataRaceFixture.MetadataPath
+    $global:WeDecentMigrationRaceBackup = $metadataRaceFixture.MetadataPath + '.race-original'
+    $global:WeDecentMigrationRaceInjection = {
+        param($Name)
+        if ($Name -ceq 'BeforeMetadataAtomicReplace') {
+            [IO.File]::Move($global:WeDecentMigrationRaceTarget,$global:WeDecentMigrationRaceBackup)
+            [IO.File]::WriteAllText($global:WeDecentMigrationRaceTarget,'{"attacker":"replacement"}')
+        }
+    }
+    $rejected = $false
+    try { Write-WeDecentMigrationMetadata -Path $metadataRaceFixture.MetadataPath -StatePath $metadataRaceFixture.Destination }
+    catch {
+        $rejected = $_.Exception.Message -like '*target object changed*'
+        if (-not $rejected) { throw }
+    } finally { $global:WeDecentMigrationRaceInjection = $null }
+    if (-not $rejected) { throw 'Metadata target substitution was not rejected before atomic publication.' }
+    if ((Get-Content -LiteralPath $metadataRaceFixture.MetadataPath -Raw) -cne '{"attacker":"replacement"}') {
+        throw 'Metadata publication overwrote the substituted target after the identity mismatch.'
+    }
+    if ($global:WeDecentMigrationMockService.PathName -cne $metadataRaceFixture.OriginalServicePath -or $global:WeDecentMigrationMockStatus -cne 'Running') {
+        throw 'Metadata target substitution changed SCM or service state.'
+    }
+    Write-Host 'Migration deterministic metadata target substitution race rejection PASS'
+} finally {
+    $global:WeDecentMigrationRaceInjection = $null
+    Remove-Item -LiteralPath $metadataRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$journalRaceFixture = New-MigrationFixture
+try {
+    $raceJournal = [pscustomobject]@{ schema=1; product='WeDecent'; phase='Prepared'; transaction_id=[Guid]::NewGuid().ToString('D') }
+    Write-WeDecentMigrationJournal -Path $journalRaceFixture.Journal -Journal $raceJournal
+    $global:WeDecentMigrationRaceTarget = $journalRaceFixture.Journal
+    $global:WeDecentMigrationRaceBackup = $journalRaceFixture.Journal + '.race-original'
+    $global:WeDecentMigrationRaceInjection = {
+        param($Name)
+        if ($Name -ceq 'BeforeJournalAtomicReplace') {
+            [IO.File]::Move($global:WeDecentMigrationRaceTarget,$global:WeDecentMigrationRaceBackup)
+            [IO.File]::WriteAllText($global:WeDecentMigrationRaceTarget,'{"attacker":"journal-substitution"}')
+        }
+    }
+    $rejected = $false
+    $raceJournal.phase = 'Copying'
+    try { Write-WeDecentMigrationJournal -Path $journalRaceFixture.Journal -Journal $raceJournal }
+    catch {
+        $rejected = $_.Exception.Message -like '*target object changed*'
+        if (-not $rejected) { throw }
+    } finally { $global:WeDecentMigrationRaceInjection = $null }
+    if (-not $rejected) { throw 'Journal target substitution was not rejected before atomic publication.' }
+    if ((Get-Content -LiteralPath $journalRaceFixture.Journal -Raw) -cne '{"attacker":"journal-substitution"}') {
+        throw 'Journal publication overwrote the substituted target after the identity mismatch.'
+    }
+    Write-Host 'Migration deterministic journal target substitution race rejection PASS'
+} finally {
+    $global:WeDecentMigrationRaceInjection = $null
+    Remove-Item -LiteralPath $journalRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host 'Windows state migration coordinator integration PASS'
