@@ -9,10 +9,6 @@ param(
     [ValidatePattern('^[A-Za-z0-9_.-]{1,64}$')]
     [string]$ServiceAccountName = 'WeDecentSvc',
     [string]$WebRelay = 'https://relay.wedecent.com',
-    [string]$RecoveryAuthorityUrl = $env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL,
-    [string]$RecoveryAuthoritySPKISHA256 = $env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256,
-    [string]$RecoveryAuthorityTrustFile,
-    [Security.SecureString]$RecoveryAuthorityBearerToken,
     [ValidateRange(1, 32)]
     [int]$RelaySlots = 4,
     [string]$DeviceName = $env:COMPUTERNAME,
@@ -428,8 +424,7 @@ function Quote-WindowsArgument {
 function Invoke-AgentServiceInstall {
     param(
         [Parameter(Mandatory = $true)][string]$AgentPath,
-        [Parameter(Mandatory = $true)][Security.SecureString]$Password,
-        [Parameter(Mandatory = $true)][Security.SecureString]$RecoveryBearerToken
+        [Parameter(Mandatory = $true)][Security.SecureString]$Password
     )
     $arguments = @(
         'service', 'install',
@@ -443,10 +438,6 @@ function Invoke-AgentServiceInstall {
         "--web-relay=$WebRelay",
         "--relay-slots=$RelaySlots",
         "--shell=$Shell",
-        "--pairing-recovery-authority-url=$RecoveryAuthorityUrl",
-        "--pairing-recovery-authority-spki-sha256=$RecoveryAuthoritySPKISHA256",
-        "--pairing-recovery-trust=$RecoveryAuthorityTrustFile",
-        '--pairing-recovery-authority-token-stdin',
         '--automatic=true',
         '--start=true'
     )
@@ -458,24 +449,15 @@ function Invoke-AgentServiceInstall {
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw 'Failed to start wd-agent.exe service installer' }
-    $plainPassword = $null
-    $plainBearer = $null
+    $plain = $null
     try {
-        $plainPassword = ConvertFrom-SecureStringTransient $Password
-        $plainBearer = ConvertFrom-SecureStringTransient $RecoveryBearerToken
-        $process.StandardInput.WriteLine($plainPassword)
-        $process.StandardInput.WriteLine($plainBearer)
+        $plain = ConvertFrom-SecureStringTransient $Password
+        $process.StandardInput.WriteLine($plain)
         $process.StandardInput.Close()
         $process.WaitForExit()
         $exitCode = $process.ExitCode
     } finally {
-        $plainPassword = $null
-        $plainBearer = $null
-        if (-not $process.HasExited) {
-            try { $process.StandardInput.Close() } catch {}
-            try { $process.Kill() } catch {}
-            $process.WaitForExit()
-        }
+        $plain = $null
         $process.Dispose()
     }
     if ($exitCode -ne 0) {
@@ -729,173 +711,6 @@ if ($service) {
     if ($localUser) { Assert-StandardLocalAccount $localUser }
 
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Install WeDecent $version")) { return }
-
-    if ([string]::IsNullOrWhiteSpace($RecoveryAuthorityUrl)) {
-        throw 'A recovery-authority HTTPS origin is required through -RecoveryAuthorityUrl or WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL.'
-    }
-    $authorityUri = $null
-    if (-not [Uri]::TryCreate($RecoveryAuthorityUrl, [UriKind]::Absolute, [ref]$authorityUri) -or
-        $authorityUri.Scheme -ne 'https' -or [string]::IsNullOrEmpty($authorityUri.Host) -or
-        $authorityUri.UserInfo -or $authorityUri.Query -or $authorityUri.Fragment -or
-        ($authorityUri.AbsolutePath -ne '' -and $authorityUri.AbsolutePath -ne '/')) {
-        throw 'RecoveryAuthorityUrl must be an origin-only HTTPS URL.'
-    }
-    if ($RecoveryAuthoritySPKISHA256 -notmatch '^[0-9A-Fa-f]{64}    $stateParent = Split-Path -Parent $StateDir
-    $stateParentExisted = Test-Path -LiteralPath $stateParent -PathType Container
-    $stateExisted = Test-Path -LiteralPath $StateDir -PathType Container
-    $createdAccount = $false
-    $hadLogonRight = $false
-    $originalMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
-    $managed = $false
-    $password = $null
-    $attemptedBinaryNames = [System.Collections.Generic.List[string]]::new()
-    $binaryOriginalState = @{}
-
-    try {
-        New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-        if ($localUser) {
-            $metadataManaged = $metadataTrusted -and [bool]$metadata.managed_service_account -and $metadata.service_account_sid -eq $localUser.SID.Value
-            if ($metadataManaged) {
-                $plainGenerated = New-ServiceAccountPassword
-                try {
-                    $password = ConvertTo-SecureString $plainGenerated -AsPlainText -Force
-                    Set-LocalUser -Name $ServiceAccountName -Password $password
-                } finally {
-                    $plainGenerated = $null
-                }
-                $managed = $true
-            } elseif ($AdoptExistingServiceAccount) {
-                if (-not $ServiceAccountCredential) {
-                    throw '-AdoptExistingServiceAccount requires -ServiceAccountCredential for a pre-existing account.'
-                }
-                $password = $ServiceAccountCredential.Password
-            } else {
-                throw "Local account $ServiceAccountName already exists but is not recorded as trusted installer-managed. Use -AdoptExistingServiceAccount with an in-memory PSCredential, or choose another account name."
-            }
-        } else {
-            if ($ServiceAccountCredential) {
-                $password = $ServiceAccountCredential.Password
-            } else {
-                $plainGenerated = New-ServiceAccountPassword
-                try {
-                    $password = ConvertTo-SecureString $plainGenerated -AsPlainText -Force
-                } finally {
-                    $plainGenerated = $null
-                }
-            }
-            $localUser = New-LocalUser -Name $ServiceAccountName -Password $password -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword -Description 'WeDecent dedicated terminal service account'
-            $createdAccount = $true
-            $managed = $true
-        }
-
-        Assert-StandardLocalAccount $localUser
-        $hadLogonRight = Test-ServiceLogonRight -Sid $localUser.SID.Value
-        if (-not $hadLogonRight) { Set-ServiceLogonRight -Sid $localUser.SID.Value -Present $true }
-
-        Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
-        Assert-InstalledBinaries -Destinations $binaryDestinations
-        Invoke-AgentServiceInstall -AgentPath $agentDestination -Password $password -RecoveryBearerToken $RecoveryAuthorityBearerToken
-
-        $finalService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
-        if (-not $finalService -or $finalService.State -ne 'Running') {
-            throw "$ServiceName is not running after installation"
-        }
-        $finalSid = Resolve-AccountSid $finalService.StartName
-        if ($finalSid -ne $localUser.SID.Value) {
-            throw 'Installed service account SID does not match the expected local account.'
-        }
-
-        if ($AddToMachinePath) { Add-MachinePathEntry $InstallDir }
-        Write-WeDecentMetadata -AccountSid $localUser.SID.Value -ManagedAccount $managed -AccountName $ServiceAccountName -Version $version
-        Remove-BinaryBackups -Destinations $binaryDestinations
-    } catch {
-        $failed = $_
-        Invoke-RollbackStep 'remove partially created service' {
-            $createdService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-            if ($createdService) {
-                Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-                & sc.exe delete $ServiceName | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
-            }
-        }
-        Invoke-RollbackStep 'restore installed binaries' {
-            Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
-        }
-        if ($AddToMachinePath) {
-            Invoke-RollbackStep 'restore machine PATH' {
-                [Environment]::SetEnvironmentVariable('Path', $originalMachinePath, 'Machine')
-            }
-        }
-        if (-not $stateExisted) {
-            Invoke-RollbackStep 'remove installer-created state directory' {
-                Remove-Item -LiteralPath $StateDir -Recurse -Force -ErrorAction Stop
-            }
-            if (-not $stateParentExisted) {
-                Invoke-RollbackStep 'remove empty installer-created state parent' {
-                    Remove-EmptyDirectory -Path $stateParent
-                }
-            }
-        }
-        if (-not $installDirExisted) {
-            Invoke-RollbackStep 'remove empty installer-created install directory' {
-                Remove-EmptyDirectory -Path $InstallDir
-            }
-        }
-        if ($localUser -and -not $hadLogonRight) {
-            Invoke-RollbackStep 'remove SeServiceLogonRight' {
-                Set-ServiceLogonRight -Sid $localUser.SID.Value -Present $false
-            }
-        }
-        if ($createdAccount) {
-            Invoke-RollbackStep 'remove installer-created service account' {
-                Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
-            }
-        }
-        throw "Fresh installation failed; rollback was attempted: $($failed.Exception.Message)"
-    }
-}
-
-if ($service -and $AddToMachinePath) { Add-MachinePathEntry $InstallDir }
-
-$finalService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
-if (-not $finalService -or $finalService.State -ne 'Running') { throw "$ServiceName is not running after installation" }
-
-Write-Host "WeDecent $version installed successfully."
-Write-Host "Client:    $wdDestination"
-Write-Host "Agent:     $agentDestination"
-Write-Host "RouterCtl: $($binaryDestinations['wd-routerctl.exe'])"
-Write-Host "Core:      $($binaryDestinations['wd-core.exe'])"
-Write-Host "UI:        $($binaryDestinations['wd-ui.exe'])"
-Write-Host "State:     $StateDir"
-Write-Host "Service:   $ServiceName ($($finalService.StartName))"
-Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the installer does not register them as services or autostart entries.') {
-        throw 'RecoveryAuthoritySPKISHA256 must contain exactly 64 hexadecimal characters.'
-    }
-    if ([string]::IsNullOrWhiteSpace($RecoveryAuthorityTrustFile)) {
-        throw 'RecoveryAuthorityTrustFile is required.'
-    }
-    $trustItem = Get-Item -LiteralPath $RecoveryAuthorityTrustFile -Force -ErrorAction Stop
-    if ($trustItem.PSIsContainer -or
-        ($trustItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'RecoveryAuthorityTrustFile must be a regular, non-reparse file.'
-    }
-    $RecoveryAuthorityTrustFile = $trustItem.FullName
-    if ($null -eq $RecoveryAuthorityBearerToken) {
-        $RecoveryAuthorityBearerToken = Read-Host -Prompt 'Short-lived recovery-authority bearer token' -AsSecureString
-    }
-    if ($null -eq $RecoveryAuthorityBearerToken -or $RecoveryAuthorityBearerToken.Length -lt 32 -or
-        $RecoveryAuthorityBearerToken.Length -gt 4096) {
-        throw 'RecoveryAuthorityBearerToken must contain 32 to 4096 characters.'
-    }
-    $bearerForValidation = ConvertFrom-SecureStringTransient $RecoveryAuthorityBearerToken
-    try {
-        if ($bearerForValidation.Trim() -ne $bearerForValidation -or
-            $bearerForValidation.IndexOf([char]13) -ge 0 -or $bearerForValidation.IndexOf([char]10) -ge 0) {
-            throw 'RecoveryAuthorityBearerToken must not contain leading, trailing or newline characters.'
-        }
-    } finally {
-        $bearerForValidation = $null
-    }
 
     $installDirExisted = Test-Path -LiteralPath $InstallDir -PathType Container
     $stateParent = Split-Path -Parent $StateDir
