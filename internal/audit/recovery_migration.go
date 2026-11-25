@@ -110,17 +110,8 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	migration := LegacyRecoveryMigrationRequest{Scope: r.authorityScope, LegacyArchiveSHA256: archiveDigest,
 		ExpectedGeneration: head.Generation, AuthenticatedCheckpoint: append([]byte(nil), authenticatedCheckpoint...),
 		MigrationOperationID: hex.EncodeToString(operationDigest[:])}
-	checkpoint, err := r.authority.MigrateLegacyArchive(ctx, migration)
-	if err != nil {
-		if errors.Is(err, ErrRecoveryMigrationUntrusted) || errors.Is(err, ErrRecoveryCheckpointStale) ||
-			errors.Is(err, ErrRecoveryCheckpointConflict) {
-			return err
-		}
-		return fmt.Errorf("%w: legacy migration result requires exact retry/reconciliation: %v", ErrRecoveryCommitUncertain, err)
-	}
-	if checkpoint.Scope != r.authorityScope || checkpoint.Generation != head.Generation+1 ||
-		checkpoint.PreviousDigest != head.StateDigest {
-		return ErrRecoveryCheckpointConflict
+	if head.Generation == ^uint64(0) {
+		return ErrRecoveryCheckpointStale
 	}
 	localCheckpoint, err := pairingArchiveCheckpoint(legacyArchive.Records)
 	if err != nil || localCheckpoint != legacyArchive.Checkpoint {
@@ -128,7 +119,7 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	}
 	unsigned := pairingRecoveryArchiveUnsigned{Version: legacyArchive.Version, FirstSequence: legacyArchive.FirstSequence,
 		LastSequence: legacyArchive.LastSequence, Checkpoint: legacyArchive.Checkpoint, Records: legacyArchive.Records,
-		AuthorityGeneration: checkpoint.Generation, AuthorityPreviousDigest: hex.EncodeToString(checkpoint.PreviousDigest[:])}
+		AuthorityGeneration: head.Generation + 1, AuthorityPreviousDigest: hex.EncodeToString(head.StateDigest[:])}
 	payload, err := json.Marshal(unsigned)
 	if err != nil {
 		return err
@@ -138,7 +129,23 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	if err != nil {
 		return err
 	}
-	if checkpoint.StateDigest != stateDigest || checkpoint.OperationID != request.OperationID {
+	checkpoint, err := r.authority.MigrateLegacyArchive(ctx, migration)
+	if err != nil {
+		if errors.Is(err, ErrRecoveryMigrationUntrusted) || errors.Is(err, ErrRecoveryCheckpointStale) ||
+			errors.Is(err, ErrRecoveryCheckpointConflict) {
+			return err
+		}
+		observed, loadErr := r.authority.LoadCheckpoint(ctx, r.authorityScope)
+		if loadErr != nil || observed.Scope != request.Scope || observed.Generation != request.Generation ||
+			observed.PreviousDigest != request.PreviousDigest || observed.StateDigest != request.StateDigest ||
+			observed.OperationID != request.OperationID {
+			return fmt.Errorf("%w: legacy migration result requires exact retry/reconciliation: %v", ErrRecoveryCommitUncertain, err)
+		}
+		checkpoint = observed
+	}
+	if checkpoint.Scope != r.authorityScope || checkpoint.Generation != request.Generation ||
+		checkpoint.PreviousDigest != request.PreviousDigest || checkpoint.StateDigest != request.StateDigest ||
+		checkpoint.OperationID != request.OperationID {
 		return ErrRecoveryCheckpointConflict
 	}
 	if err := r.authority.VerifyCheckpoint(ctx, checkpoint); err != nil {
