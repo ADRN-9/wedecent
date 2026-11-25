@@ -825,6 +825,7 @@ foreach ($nativeRaceKind in @('metadata', 'journal')) {
     }
 }
 
+
 foreach ($fallbackRaceKind in @('metadata', 'journal')) {
     $fallbackRaceFixture = New-MigrationFixture
     try {
@@ -841,32 +842,46 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
             }
             Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
         }
-        $beforeIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($fallbackTarget)
-        $beforeContent = Get-Content -LiteralPath $fallbackTarget -Raw
-        $env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED = '1'
-        $fallbackRejected = $false
-        try {
-            if ($fallbackRaceKind -ceq 'metadata') {
-                Write-WeDecentMigrationMetadata -Path $fallbackTarget -StatePath $fallbackRaceFixture.Destination
-            } else {
-                $fallbackJournal.phase = 'Copying'
-                Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
+        $global:WeDecentMigrationNativeRaceTarget = $fallbackTarget
+        $global:WeDecentMigrationNativeRaceBackup = $fallbackTarget + '.absolute-race-original'
+        $global:WeDecentMigrationNativeRaceBlocked = $false
+        $global:WeDecentMigrationNativeRaceHookInvoked = $false
+        [WeDecentMigrationFileIdentityApi]::PublicationHook = [System.Action[string]] {
+            param($targetPath)
+            if ([string]::Equals($targetPath, $global:WeDecentMigrationNativeRaceTarget, [StringComparison]::OrdinalIgnoreCase)) {
+                $global:WeDecentMigrationNativeRaceHookInvoked = $true
+                try {
+                    [IO.File]::Move($global:WeDecentMigrationNativeRaceTarget, $global:WeDecentMigrationNativeRaceBackup)
+                    [IO.File]::WriteAllText($global:WeDecentMigrationNativeRaceTarget, '{"attacker":"absolute-fallback-substitution"}')
+                } catch {
+                    $global:WeDecentMigrationNativeRaceBlocked = $_.Exception.HResult -in @(-2147024864, -2147024891)
+                    if (-not $global:WeDecentMigrationNativeRaceBlocked) { throw }
+                }
             }
-        } catch {
-            $fallbackRejected = $_.Exception.Message -like '*absolute-path fallback is disabled*'
-            if (-not $fallbackRejected) { throw }
-        } finally {
-            Remove-Item Env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED -ErrorAction SilentlyContinue
         }
-        if (-not $fallbackRejected) {
-            throw "Native $fallbackRaceKind publication did not fail closed when handle-relative rename was unavailable."
+        $env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED = '1'
+        if ($fallbackRaceKind -ceq 'metadata') {
+            Write-WeDecentMigrationMetadata -Path $fallbackTarget -StatePath $fallbackRaceFixture.Destination
+        } else {
+            $fallbackJournal.phase = 'Copying'
+            Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
         }
-        if ([WeDecentMigrationFileIdentityApi]::GetIdentity($fallbackTarget) -cne $beforeIdentity -or
-            (Get-Content -LiteralPath $fallbackTarget -Raw) -cne $beforeContent) {
-            throw "Native $fallbackRaceKind publication changed its destination when handle-relative rename was unavailable."
+        if (-not $global:WeDecentMigrationNativeRaceHookInvoked -or -not $global:WeDecentMigrationNativeRaceBlocked) {
+            throw "Absolute-path $fallbackRaceKind publication did not block destination substitution at the syscall boundary."
         }
-        Write-Host "Migration $fallbackRaceKind absolute-path fallback disabled and destination preserved PASS"
+        if (Test-Path -LiteralPath $global:WeDecentMigrationNativeRaceBackup) {
+            throw "Absolute-path $fallbackRaceKind publication allowed the original target to be renamed."
+        }
+        if ((Get-Content -LiteralPath $fallbackTarget -Raw | ConvertFrom-Json).attacker) {
+            throw "Absolute-path $fallbackRaceKind publication exposed attacker-controlled replacement content."
+        }
+        Write-Host "Migration absolute-fallback $fallbackRaceKind destination substitution blocked PASS"
     } finally {
+        [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
+        $global:WeDecentMigrationNativeRaceTarget = $null
+        $global:WeDecentMigrationNativeRaceBackup = $null
+        $global:WeDecentMigrationNativeRaceBlocked = $false
+        $global:WeDecentMigrationNativeRaceHookInvoked = $false
         Remove-Item Env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $fallbackRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
     }
