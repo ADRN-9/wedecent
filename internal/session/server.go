@@ -159,8 +159,16 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		return
 	}
 	var recovery *audit.PairingRecovery
-	if s.RecoveryAuthority != nil && s.RecoveryAuthorityScope != "" {
-		recovery, err = audit.OpenPairingRecoveryWithAuthority(s.StateDir, s.RecoveryAuthorityScope, s.RecoveryAuthority, s.RecoveryAuthorityTrust)
+	if s.RecoveryAuthority != nil {
+		scope := s.RecoveryAuthorityScope
+		if scope == "" && s.Identity != nil && s.Identity.ID != "" {
+			scope = "pairing-recovery/" + s.Identity.ID
+		}
+		if scope == "" {
+			err = audit.ErrRecoveryAuthorityUnavailable
+		} else {
+			recovery, err = audit.OpenPairingRecoveryWithAuthority(s.StateDir, scope, s.RecoveryAuthority, s.RecoveryAuthorityTrust)
+		}
 	} else if s.LegacyPairingRecoveryForTests {
 		// Explicit test-only compatibility; production never treats local HMAC as independent authority.
 		recovery, err = audit.OpenPairingRecovery(s.StateDir)
