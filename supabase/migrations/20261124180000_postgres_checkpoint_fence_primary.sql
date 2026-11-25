@@ -40,6 +40,10 @@ alter table public.checkpoint_operation_events
         'fence_reserved', 'fence_committed'
     ));
 
+create unique index checkpoint_operation_one_fence_commit
+    on public.checkpoint_operation_events(operation_id)
+    where event_type = 'fence_committed';
+
 alter table public.checkpoint_fence_authority enable row level security;
 revoke all on public.checkpoint_fence_authority from public, anon, authenticated, service_role;
 
