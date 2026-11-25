@@ -95,8 +95,7 @@ func (c *CheckpointFenceCoordinator) execute(
 		expectedOperationID, operationErr := CheckpointRevocationOperationID(
 			request.Participants[0], request.Participants[0].RevocationEpoch+1,
 		)
-		if operationErr != nil || request.OperationID != expectedOperationID ||
-			request.ExpectedRevocationEpoch != request.Participants[0].RevocationEpoch {
+		if operationErr != nil || request.OperationID != expectedOperationID {
 			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
 		}
 	} else if len(request.AuthorizationProof) != 0 {
