@@ -27,13 +27,18 @@ const (
 	checkpointFenceLeaseSecs  = 60
 )
 
-// SupabaseCheckpointFenceConfig is restricted to the checkpoint authority host. The
-// authority JWT must be signed by the Supabase JWT issuer with the dedicated database role.
+// CheckpointAuthorityTokenSource mints short-lived actor-bound JWTs for the dedicated
+// database role. Its signing key must exist only on the trusted authority host.
+type CheckpointAuthorityTokenSource interface {
+	Token(context.Context, string) (string, error)
+}
+
+// SupabaseCheckpointFenceConfig is restricted to the checkpoint authority host.
 type SupabaseCheckpointFenceConfig struct {
 	Hostname                   string
 	Port                       uint16
 	SPKISHA256Pins             string
-	AuthorityJWT               string
+	AuthorityTokenSource       CheckpointAuthorityTokenSource
 	ActorID                    string
 	PrimarySigner              crypto.Signer
 	CheckpointHeadKey          ed25519.PublicKey
@@ -46,7 +51,7 @@ type SupabaseCheckpointFenceConfig struct {
 type SupabaseCheckpointFencePrimary struct {
 	endpoint                   string
 	actorID                    string
-	authorityJWT               string
+	authorityTokenSource       CheckpointAuthorityTokenSource
 	primarySigner              crypto.Signer
 	primaryKey                 ed25519.PublicKey
 	checkpointHeadKey          ed25519.PublicKey
@@ -118,11 +123,14 @@ type checkpointFenceAckWire struct {
 
 func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*SupabaseCheckpointFencePrimary, error) {
 	if !validCheckpointAuditAuthority(config.Hostname, config.Port) ||
-		!validCheckpointAuthorityJWT(config.AuthorityJWT, config.ActorID, config.Now) ||
-		!canonicalUUID(config.ActorID) || config.PrimarySigner == nil ||
+		config.AuthorityTokenSource == nil || !canonicalUUID(config.ActorID) || config.PrimarySigner == nil ||
 		config.WitnessSetVersion == "" || len(config.WitnessSetVersion) > 128 ||
 		len(config.CheckpointHeadKey) != ed25519.PublicKeySize ||
 		len(config.RevocationAuthorizationKey) != ed25519.PublicKeySize {
+		return nil, ErrCheckpointUnavailable
+	}
+	initialAuthorityJWT, tokenErr := config.AuthorityTokenSource.Token(context.Background(), config.ActorID)
+	if tokenErr != nil || !validCheckpointAuthorityJWT(initialAuthorityJWT, config.ActorID, config.Now) {
 		return nil, ErrCheckpointUnavailable
 	}
 	publicKey, ok := config.PrimarySigner.Public().(ed25519.PublicKey)
@@ -186,7 +194,7 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 		now = time.Now
 	}
 	return &SupabaseCheckpointFencePrimary{
-		endpoint: endpoint, actorID: config.ActorID, authorityJWT: config.AuthorityJWT,
+		endpoint: endpoint, actorID: config.ActorID, authorityTokenSource: config.AuthorityTokenSource,
 		primarySigner: config.PrimarySigner, primaryKey: append(ed25519.PublicKey(nil), publicKey...),
 		checkpointHeadKey:          append(ed25519.PublicKey(nil), config.CheckpointHeadKey...),
 		revocationAuthorizationKey: append(ed25519.PublicKey(nil), config.RevocationAuthorizationKey...),
@@ -804,8 +812,12 @@ func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, a
 	if err != nil {
 		return ErrCheckpointUnavailable
 	}
-	request.Header.Set("apikey", p.authorityJWT)
-	request.Header.Set("Authorization", "Bearer "+p.authorityJWT)
+	authorityJWT, tokenErr := p.authorityTokenSource.Token(ctx, p.actorID)
+	if tokenErr != nil || !validCheckpointAuthorityJWT(authorityJWT, p.actorID, p.now) {
+		return ErrCheckpointUnavailable
+	}
+	request.Header.Set("apikey", authorityJWT)
+	request.Header.Set("Authorization", "Bearer "+authorityJWT)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	response, err := p.http.Do(request)
