@@ -453,14 +453,13 @@ try {
 $nestedFileAcl = New-MigrationFixture
 try {
     $nestedFile = Join-Path $nestedFileAcl.Source 'nested/policy.json'
-    $fileAcl = Get-Acl -LiteralPath $nestedFile
     $users = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
-    $broadRule = [Security.AccessControl.FileSystemAccessRule]::new(
-        $users, [Security.AccessControl.FileSystemRights]::FullControl,
-        [Security.AccessControl.AccessControlType]::Allow
-    )
-    [void]$fileAcl.AddAccessRule($broadRule)
-    Set-Acl -LiteralPath $nestedFile -AclObject $fileAcl -ErrorAction Stop
+    $output = & icacls.exe $nestedFile '/grant' '*S-1-5-32-545:(F)' 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not broaden nested file ACL for regression: $($output -join ' ')" }
+    $fileRules = (Get-Acl -LiteralPath $nestedFile).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+    if (-not @($fileRules | Where-Object { $_.IdentityReference.Value -ceq 'S-1-5-32-545' }).Count) {
+        throw 'Nested file ACL mutation did not create the expected Users ACE.'
+    }
     $rejectedNestedFileAcl = $false
     try {
         [void](Recover-WeDecentStateMigration -JournalPath $nestedFileAcl.Journal -AgentPath $agentPath -MetadataPath $nestedFileAcl.MetadataPath -ServiceName $nestedFileAcl.ServiceName)
@@ -479,14 +478,12 @@ try {
 $nestedDirectoryAcl = New-MigrationFixture
 try {
     $nestedDirectory = Join-Path $nestedDirectoryAcl.Source 'nested'
-    $directoryAcl = Get-Acl -LiteralPath $nestedDirectory
-    $users = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
-    $broadRule = [Security.AccessControl.FileSystemAccessRule]::new(
-        $users, [Security.AccessControl.FileSystemRights]::FullControl,
-        [Security.AccessControl.AccessControlType]::Allow
-    )
-    [void]$directoryAcl.AddAccessRule($broadRule)
-    Set-Acl -LiteralPath $nestedDirectory -AclObject $directoryAcl -ErrorAction Stop
+    $output = & icacls.exe $nestedDirectory '/grant' '*S-1-5-32-545:(F)' 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not broaden nested directory ACL for regression: $($output -join ' ')" }
+    $directoryRules = (Get-Acl -LiteralPath $nestedDirectory).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+    if (-not @($directoryRules | Where-Object { $_.IdentityReference.Value -ceq 'S-1-5-32-545' }).Count) {
+        throw 'Nested directory ACL mutation did not create the expected Users ACE.'
+    }
     $rejectedNestedDirectoryAcl = $false
     try {
         [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryAcl.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryAcl.MetadataPath -ServiceName $nestedDirectoryAcl.ServiceName)
