@@ -2,10 +2,12 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select plan(28);
 
--- Temporary fixture-only grants are rolled back with this test transaction.
-grant usage on schema pgsodium to public;
-grant execute on function pgsodium.crypto_sign_new_keypair() to public;
-grant execute on function pgsodium.crypto_sign_detached(bytea,bytea) to public;
+-- The fixture needs pgsodium's keymaker capability only inside this rolled-back test transaction.
+do $fn$
+begin
+    execute pg_catalog.format('grant pgsodium_keymaker to %I', current_user);
+end
+$fn$;
 
 insert into auth.users(id,aud,role,email)
 values ('11000000-0000-4000-8000-000000000197','authenticated','authenticated','c197-primary@example.test');
