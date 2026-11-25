@@ -28,6 +28,8 @@ const (
 	checkpointFenceLeaseSecs   = 60
 )
 
+// SupabaseCheckpointFenceConfig is server-only configuration. Never embed the service-role
+// key or primary signing key in Local Core, a desktop renderer, or an installer.
 type SupabaseCheckpointFenceConfig struct {
 	Hostname       string
 	Port           uint16
@@ -119,7 +121,8 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 		return nil, ErrCheckpointUnavailable
 	}
 	publicKey, ok := config.PrimarySigner.Public().(ed25519.PublicKey)
-	if !ok || len(publicKey) != ed25519.PublicKeySize {
+	if !ok || len(publicKey) != ed25519.PublicKeySize ||
+		bytes.Equal(publicKey, config.CheckpointHeadKey) {
 		return nil, ErrCheckpointIntegrity
 	}
 	pins, err := parseCheckpointAuditPins(config.SPKISHA256Pins)
@@ -140,7 +143,7 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 		if _, exists := trusted[witness.ID]; exists {
 			return nil, ErrCheckpointIntegrity
 		}
-		if bytes.Equal(witness.PublicKey, publicKey) {
+		if bytes.Equal(witness.PublicKey, publicKey) || bytes.Equal(witness.PublicKey, config.CheckpointHeadKey) {
 			return nil, ErrCheckpointIntegrity
 		}
 		keyHash := sha256.Sum256(witness.PublicKey)
