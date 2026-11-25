@@ -43,25 +43,25 @@ type RecoveryCheckpointWitness struct {
 // witness proof. Signatures are public-key verifiable; private keys never leave
 // the authority or witness provider.
 type RecoveryCheckpoint struct {
-	Scope       string
-	Generation  uint64
-	StateDigest [sha256.Size]byte
+	Scope          string
+	Generation     uint64
+	StateDigest    [sha256.Size]byte
 	PreviousDigest [sha256.Size]byte
-	OperationID string
-	SignerKeyID string
-	Signature   []byte
-	Witnesses   []RecoveryCheckpointWitness
+	OperationID    string
+	SignerKeyID    string
+	Signature      []byte
+	Witnesses      []RecoveryCheckpointWitness
 }
 
 // LegacyRecoveryMigrationRequest requires an independently authenticated
 // checkpoint supplied out of band. The legacy local MAC alone is not migration
 // authority because a same-account attacker could have changed both archive and MAC.
 type LegacyRecoveryMigrationRequest struct {
-	Scope                       string
-	LegacyArchiveSHA256         [sha256.Size]byte
-	ExpectedGeneration          uint64
-	AuthenticatedCheckpoint     []byte
-	MigrationOperationID        string
+	Scope                   string
+	LegacyArchiveSHA256     [sha256.Size]byte
+	ExpectedGeneration      uint64
+	AuthenticatedCheckpoint []byte
+	MigrationOperationID    string
 }
 
 // RecoveryAuthority is implemented by a remote or platform-backed provider.
