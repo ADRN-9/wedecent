@@ -145,6 +145,33 @@ func verifyWindowsServiceStateParent(dir string) error {
 	if _, err := inspectWindowsStateDirectory(parent); err != nil {
 		return fmt.Errorf("inspect service state parent: %w", err)
 	}
+	owner, err := windowsServiceOwner(parent)
+	if err != nil {
+		return fmt.Errorf("read service state parent owner: %w", err)
+	}
+	current, err := activeWindowsSID()
+	if err != nil {
+		return err
+	}
+	trustedOwners := []string{
+		"S-1-5-18",
+		"S-1-5-32-544",
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+	}
+	ownerTrusted := owner.Equals(current)
+	for _, sidText := range trustedOwners {
+		sid, err := windows.StringToSid(sidText)
+		if err != nil {
+			return err
+		}
+		if owner.Equals(sid) {
+			ownerTrusted = true
+			break
+		}
+	}
+	if !ownerTrusted {
+		return fmt.Errorf("service state parent owner %s is not the installer or a trusted Windows principal", owner)
+	}
 	if err := trust.VerifyPairingStatePath(parent); err != nil {
 		return fmt.Errorf("service state parent must have a protected owner and DACL: %w", err)
 	}
