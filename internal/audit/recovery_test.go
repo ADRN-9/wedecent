@@ -295,7 +295,7 @@ func TestPairingRecoveryRemovedFileRequiresOperatorRepair(t *testing.T) {
 }
 
 func TestPairingRecoveryReservesOneAttemptPerCredentialGeneration(t *testing.T) {
-	recovery, err := OpenPairingRecovery(t.TempDir())
+	recovery, err := OpenPairingRecovery(recoveryTestDir(t))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,6 +373,8 @@ func TestPairingRecoveryMigratesLegacyLedgerWithDurableSequence(t *testing.T) {
 		t.Fatal(err)
 	}
 	record := testRecoveryRecord(strings.Repeat("6", 32))
+	now := time.Now().UTC()
+	record.Outcome, record.CreatedAt, record.UpdatedAt = PairingOutcomePending, now, now
 	data, err := json.Marshal(pairingOutcomeSnapshot{Version: 1, Records: []PairingOutcome{record}})
 	if err != nil {
 		t.Fatal(err)
