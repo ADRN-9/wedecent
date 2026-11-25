@@ -765,18 +765,21 @@ function Restore-WeDecentMigrationMetadata {
         [Parameter(Mandatory = $true)][string]$OriginalJson
     )
 
+    $parent = Split-Path -Parent $Path
+    $parentLease = New-WeDecentMigrationMutationLease -Directories @($parent)
+    $targetIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($Path)
     $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
-    $temp = Join-Path (Split-Path -Parent $Path) ('.installer-restore-' + [Guid]::NewGuid().ToString('N') + '.tmp')
-    $backup = $Path + '.migration-restore-previous'
+    $temp = Join-Path $parent ('.installer-restore-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes($OriginalJson)
-        $stream = [IO.FileStream]::new($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
-        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        $stream = [IO.FileStream]::new($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
         Set-Acl -LiteralPath $temp -AclObject $acl -ErrorAction Stop
-        [IO.File]::Replace($temp, $Path, $backup, $true)
-        Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+        [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($parentLease)
+        [void](Publish-WeDecentMigrationObject -TemporaryPath $temp -ParentPath $parent -TargetName ([IO.Path]::GetFileName($Path)) -ExpectedTargetIdentity $targetIdentity -ReplaceExisting)
     } finally {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+        $parentLease.Dispose()
     }
 }
 
