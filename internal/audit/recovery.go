@@ -215,8 +215,17 @@ func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryA
 	recovery.authority = authority
 	recovery.authorityScope = scope
 	recovery.authorityTrust = trust
-	_, err = recovery.readArchive()
+	archive, err := recovery.readArchive()
 	if err == nil {
+		if archive.LastSequence == 0 {
+			head, loadErr := authority.LoadCheckpoint(context.Background(), scope)
+			if loadErr != nil {
+				return nil, fmt.Errorf("%w: verify empty migration state: %v", ErrRecoveryAuthorityUnavailable, loadErr)
+			}
+			if head.Scope != scope || !emptyRecoveryCheckpoint(head) {
+				return nil, ErrRecoveryMigrationUntrusted
+			}
+		}
 		return recovery, nil
 	}
 	if !errors.Is(err, ErrRecoveryMigrationUntrusted) {
