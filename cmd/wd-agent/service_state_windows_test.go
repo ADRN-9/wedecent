@@ -208,7 +208,6 @@ func TestServiceProvisionRejectsExistingSensitiveFilesWithoutRepair(t *testing.T
 	}
 }
 
-
 func TestServiceStartupLocksPathBeforeRejectingBroadACL(t *testing.T) {
 	dir := prepareWindowsPreflightTestDir(t, true)
 	if _, err := os.Lstat(filepath.Join(dir, "service.log")); !errors.Is(err, os.ErrNotExist) {
