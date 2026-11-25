@@ -214,8 +214,81 @@ try {
     [void](Assert-WeDecentMigrationPartialTreeSafe -Path $pending.staging -ServiceSid $partialStagingRecovery.ServiceSid)
     $global:WeDecentMigrationMockService.State = 'Stopped'
     $global:WeDecentMigrationMockStatus = 'Stopped'
-    if (-not (Recover-WeDecentStateMigration -JournalPath $partialStagingRecovery.Journal -AgentPath $agentPath -MetadataPath $partialStagingRecovery.MetadataPath -ServiceName $partialStagingRecovery.ServiceName)) {
-        throw 'Recovery did not remove the validated partial staging tree.'
+    $childScript = Join-Path $partialStagingRecovery.Root 'recover-in-new-process.ps1'
+    $childBody = @'
+[CmdletBinding()]
+param([string]$ModulePath, [string]$JournalPath, [string]$AgentPath, [string]$MetadataPath, [string]$ServiceName)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Import-Module $ModulePath -Force
+$journal = Read-WeDecentMigrationJournal -Path $JournalPath
+$global:MigrationChildService = [pscustomobject]@{
+    Name = $journal.service_name
+    StartName = $journal.service_start_name
+    StartMode = $journal.service_start_mode
+    State = 'Stopped'
+    PathName = $journal.original_service_path
+}
+$global:MigrationChildStatus = 'Stopped'
+function global:Get-CimInstance {
+    param([string]$ClassName, [string]$Filter)
+    if ($ClassName -ne 'Win32_Service') { throw "Unexpected CIM class: $ClassName" }
+    return $global:MigrationChildService
+}
+function global:Get-Service {
+    param([string]$Name)
+    if ($Name -cne $global:MigrationChildService.Name) { throw "Unexpected service: $Name" }
+    $result = [pscustomobject]@{ Status = $global:MigrationChildStatus }
+    $result | Add-Member -MemberType ScriptMethod -Name WaitForStatus -Value {
+        param($Expected, $Timeout)
+        if ($global:MigrationChildStatus -cne $Expected) { throw "Mock service did not reach $Expected." }
+        $this.Status = $Expected
+    }
+    return $result
+}
+function global:Stop-Service {
+    param([string]$Name, [switch]$Force)
+    $global:MigrationChildStatus = 'Stopped'
+    $global:MigrationChildService.State = 'Stopped'
+}
+function global:Start-Service {
+    param([string]$Name)
+    $global:MigrationChildStatus = 'Running'
+    $global:MigrationChildService.State = 'Running'
+}
+function global:sc.exe {
+    param([string]$Verb, [string]$Name, [string]$Config)
+    if ($Verb -cne 'config' -or $Name -cne $global:MigrationChildService.Name -or $Config -notmatch '^binPath= ') {
+        $global:LASTEXITCODE = 1
+        return 'Unexpected mocked SCM command.'
+    }
+    $global:MigrationChildService.PathName = $Config.Substring('binPath= '.Length)
+    $global:LASTEXITCODE = 0
+    return 'SUCCESS'
+}
+if (-not (Recover-WeDecentStateMigration -JournalPath $JournalPath -AgentPath $AgentPath -MetadataPath $MetadataPath -ServiceName $ServiceName)) {
+    throw 'Fresh-process recovery did not resume the pending transaction.'
+}
+$terminal = Read-WeDecentMigrationJournal -Path $JournalPath
+if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in $($terminal.phase)." }
+'@
+    [IO.File]::WriteAllText($childScript, $childBody)
+    $child = [Diagnostics.ProcessStartInfo]::new()
+    $child.FileName = (Join-Path $PSHOME 'pwsh.exe')
+    $child.UseShellExecute = $false
+    $child.RedirectStandardOutput = $true
+    $child.RedirectStandardError = $true
+    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$partialStagingRecovery.Journal,'-AgentPath',$agentPath,'-MetadataPath',$partialStagingRecovery.MetadataPath,'-ServiceName',$partialStagingRecovery.ServiceName)) {
+        [void]$child.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::Start($child)
+    try {
+        $childOutput = $process.StandardOutput.ReadToEnd()
+        $childError = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Fresh-process migration recovery failed: $childError $childOutput" }
+    } finally {
+        $process.Dispose()
     }
     Assert-MigrationRolledBack -Fixture $partialStagingRecovery -Fault 'partial staging recovery'
     Write-Host 'Migration coordinator partial-copy rollback recovery PASS'
