@@ -51,7 +51,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 		ServiceRoleKey: "test-service-role-key", ActorID: "11111111-1111-4111-8111-111111111111",
 		PrimarySigner: primaryPrivate, CheckpointHeadKey: headPublic,
 		RevocationAuthorizationKey: revocationPublic,
-		WitnessSetVersion: "c197-test", Witnesses: witnesses,
+		WitnessSetVersion:          "c197-test", Witnesses: witnesses,
 	}
 	primary, err := NewSupabaseCheckpointFencePrimary(config)
 	if err != nil {
@@ -214,13 +214,12 @@ func TestSupabaseCheckpointFenceWireRoundTripPreservesSignedFields(t *testing.T)
 	}
 }
 
-
 func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *testing.T) {
 	revocationPublic, revocationPrivate := c197Key(t)
 	now := time.UnixMilli(1000)
 	primary := &SupabaseCheckpointFencePrimary{
 		revocationAuthorizationKey: revocationPublic,
-		now: func() time.Time { return now },
+		now:                        func() time.Time { return now },
 	}
 	endpoint := CheckpointEndpoint{
 		DeviceID: "wd_gggggggggggggggg", AccountID: "11111111-1111-4111-8111-111111111111",
