@@ -20,7 +20,18 @@ import (
 )
 
 func pairingWireRequest(t *testing.T, server *Server, client *identity.Identity, serverFingerprint, secret, claimedID string) (protocol.Frame, error) {
+	return pairingWireRequestMode(t, server, client, serverFingerprint, secret, claimedID, true)
+}
+
+func pairingWireRequestWithoutLegacyRecovery(t *testing.T, server *Server, client *identity.Identity, serverFingerprint, secret, claimedID string) (protocol.Frame, error) {
+	return pairingWireRequestMode(t, server, client, serverFingerprint, secret, claimedID, false)
+}
+
+func pairingWireRequestMode(t *testing.T, server *Server, client *identity.Identity, serverFingerprint, secret, claimedID string, allowLegacy bool) (protocol.Frame, error) {
 	t.Helper()
+	if allowLegacy {
+		server.LegacyPairingRecoveryForTests = true
+	}
 	clientSide, serverSide := net.Pipe()
 	done := make(chan struct{})
 	go func() {
@@ -393,5 +404,42 @@ func TestInspectPairingRecoveryDoesNotEquateVisibilityWithCommit(t *testing.T) {
 	assessed, err = InspectPairingRecovery(dir)
 	if err != nil || assessed[1].Status != PairingRecoveryDenied {
 		t.Fatalf("denied record lost on restart: %+v, %v", assessed, err)
+	}
+}
+
+
+func TestServerPairingFailsClosedWithoutIndependentRecoveryAuthority(t *testing.T) {
+	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
+	if err != nil {
+		t.Fatal(err)
+	}
+	clientIdentity, err := identity.Ensure(t.TempDir(), "client")
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverFingerprint, err := identity.FingerprintPublicKey(serverIdentity.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := t.TempDir()
+	preparePairingSessionTestDir(t, stateDir)
+	store, err := trust.Open(filepath.Join(stateDir, "trusted-clients.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{Identity: serverIdentity, Trust: store, StateDir: stateDir}
+	secret, err := trust.RotatePairingSecret(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frame, err := pairingWireRequestWithoutLegacyRecovery(t, server, clientIdentity, serverFingerprint, secret, clientIdentity.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := pairingErrorCode(t, frame); code != "recovery_authority_unavailable" {
+		t.Fatalf("pairing without independent authority returned %q", code)
+	}
+	if _, found := store.Get(clientIdentity.ID); found {
+		t.Fatal("pairing trusted a client without independent recovery authority")
 	}
 }
