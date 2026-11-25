@@ -352,6 +352,24 @@ function Copy-WeDecentMigrationTreeVerified {
     }
 }
 
+function Set-WeDecentMigrationAdminFileAcl {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
+    $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
+    $acl = [Security.AccessControl.FileSecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($admins)
+    foreach ($sid in @($admins, $system)) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, [Security.AccessControl.FileSystemRights]::FullControl,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $Path -AclObject $acl -ErrorAction Stop
+}
+
 function Write-WeDecentMigrationJournal {
     [CmdletBinding()]
     param(
@@ -394,6 +412,7 @@ function Write-WeDecentMigrationJournal {
         $stream.Flush($true)
         $stream.Dispose()
         $stream = $null
+        Set-WeDecentMigrationAdminFileAcl -Path $temporary
 
         if (Test-Path -LiteralPath $fullPath) {
             if (Test-Path -LiteralPath $backup) {
@@ -791,6 +810,7 @@ Export-ModuleMember -Function @(
     'Invoke-WeDecentMigrationStatePathCheck',
     'Set-WeDecentMigrationAdminDirectory',
     'Assert-WeDecentMigrationAdminDirectory',
+    'Set-WeDecentMigrationAdminFileAcl',
     'Recover-WeDecentStateMigration',
     'Invoke-WeDecentStateMigration'
 )
