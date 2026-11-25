@@ -97,7 +97,9 @@ func (s *Server) handleRegister(conn net.Conn, challenge string, msg relayproto.
 		return
 	}
 	_ = conn.SetWriteDeadline(time.Time{})
+	s.Broker.WatchDisconnect(msg.DeviceID, slot)
 	if err := s.Broker.Activate(msg.DeviceID, slot); err != nil {
+		slot.stopDisconnectWatch()
 		s.Broker.Remove(msg.DeviceID, slot)
 		return
 	}
