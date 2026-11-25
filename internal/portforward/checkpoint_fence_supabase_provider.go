@@ -10,14 +10,14 @@ import (
 // Its service-role key, primary signer and proof-verification key must never be
 // copied into Local Core, wd-agent, desktop, or installer configuration.
 type SupabaseWitnessedReplayCheckpointConfig struct {
-	ReplayPrimary               ReplayCheckpointProvider
-	ReplayPrimaryKey            ed25519.PublicKey
-	ReplayWitnesses             []CheckpointWitnessTrust
-	ReplayQuorum                int
-	Pending                     CheckpointPendingStore
-	FencePrimary                SupabaseCheckpointFenceConfig
-	FenceWitnesses              []CheckpointFenceWitnessClient
-	RevocationProofs            CheckpointRevocationProofProvider
+	ReplayPrimary                ReplayCheckpointProvider
+	ReplayPrimaryKey             ed25519.PublicKey
+	ReplayWitnesses              []CheckpointWitnessTrust
+	ReplayQuorum                 int
+	Pending                      CheckpointPendingStore
+	FencePrimary                 SupabaseCheckpointFenceConfig
+	FenceWitnesses               []CheckpointFenceWitnessClient
+	RevocationProofs             CheckpointRevocationProofProvider
 	ControlPlaneAuthorizationKey ed25519.PublicKey
 }
 
@@ -101,9 +101,9 @@ func NewSupabaseWitnessedReplayCheckpointProvider(
 		PrimaryKey:       append(ed25519.PublicKey(nil), config.ReplayPrimaryKey...),
 		Witnesses:        append([]CheckpointWitnessTrust(nil), config.ReplayWitnesses...),
 		Quorum:           config.ReplayQuorum,
-		Pending:           config.Pending,
-		Fencing:           coordinator,
-		RevocationProofs:  config.RevocationProofs,
+		Pending:          config.Pending,
+		Fencing:          coordinator,
+		RevocationProofs: config.RevocationProofs,
 	}
 	if err := provider.ValidateConfiguration(); err != nil {
 		return nil, errors.Join(ErrCheckpointUnavailable, err)
