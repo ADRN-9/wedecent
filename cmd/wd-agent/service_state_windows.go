@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"runtime"
 	"strings"
 	"unsafe"
@@ -202,8 +203,8 @@ func verifyWindowsStateAncestors(root string, components []string, required *win
 	}
 	trusted := map[string]bool{
 		active.String(): true,
-		"S-1-5-18": true,
-		"S-1-5-32-544": true,
+		"S-1-5-18":      true,
+		"S-1-5-32-544":  true,
 		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": true,
 	}
 	if required != nil {
@@ -215,36 +216,11 @@ func verifyWindowsStateAncestors(root string, components []string, required *win
 		if err != nil {
 			return fmt.Errorf("read state ancestor owner %q: %w", path, err)
 		}
-		// Ancestor owners are accepted here only because provisioning validates
-		// every owner against the installer/system administrator allowlist.
-		// Replacing an owner later requires WRITE_OWNER, which is rejected below.
+		// Provisioning validates ancestor owners against the installer/system
+		// allowlist. A later owner replacement requires WRITE_OWNER, rejected below.
 		trusted[owner.String()] = true
 		if err := verifyWindowsStateAncestorDirectory(path, trusted); err != nil {
 			return fmt.Errorf("untrusted state ancestor %q: %w", path, err)
-		}
-		path = filepath.Join(path, components[i])
-	}
-	return nil
-}
-
-
-func verifyWindowsStateAncestorOwners(root string, components []string, installer *windows.SID) error {
-	allowed := map[string]bool{installer.String(): true}
-	for _, sidText := range []string{
-		"S-1-5-18",
-		"S-1-5-32-544",
-		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
-	} {
-		allowed[sidText] = true
-	}
-	path := root
-	for i := 0; i < len(components); i++ {
-		owner, err := windowsServiceOwner(path)
-		if err != nil {
-			return fmt.Errorf("read state ancestor owner %q: %w", path, err)
-		}
-		if !allowed[owner.String()] {
-			return fmt.Errorf("state ancestor %q is owned by untrusted SID %s", path, owner)
 		}
 		path = filepath.Join(path, components[i])
 	}
@@ -259,37 +235,97 @@ func verifyWindowsStateAncestorDirectory(path string, trusted map[string]bool) e
 	if err != nil || sd == nil {
 		return fmt.Errorf("read ancestor DACL: %v", err)
 	}
-	dacl, _, err := sd.DACL()
-	if err != nil || dacl == nil {
-		return errors.New("ancestor requires an explicit non-null DACL")
+	sddl := sd.String()
+	start := strings.Index(sddl, "D:")
+	if start < 0 {
+		return errors.New("ancestor requires an explicit DACL")
 	}
-	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
-		var ace *windows.ACCESS_ALLOWED_ACE
-		if err := windows.GetAce(dacl, i, &ace); err != nil || ace == nil {
-			return fmt.Errorf("read ancestor DACL ACE %d: %v", i, err)
+	entries := sddl[start+2:]
+	if end := strings.Index(entries, "S:"); end >= 0 {
+		entries = entries[:end]
+	}
+	if !strings.Contains(entries, "(") || strings.Count(entries, "(") != strings.Count(entries, ")") {
+		return errors.New("ancestor DACL is missing or malformed")
+	}
+	for {
+		open := strings.IndexByte(entries, '(')
+		if open < 0 {
+			if strings.Trim(entries, "PAIR") != "" {
+				return errors.New("unsupported ancestor DACL flags")
+			}
+			break
 		}
-		switch ace.Header.AceType {
-		case windows.ACCESS_DENIED_ACE_TYPE:
+		if strings.Trim(entries[:open], "PAIR") != "" {
+			return errors.New("unsupported ancestor DACL prefix")
+		}
+		close := strings.IndexByte(entries[open+1:], ')')
+		if close < 0 {
+			return errors.New("unterminated ancestor DACL ACE")
+		}
+		close += open + 1
+		parts := strings.Split(entries[open+1:close], ";")
+		if len(parts) != 6 || parts[5] == "" {
+			return errors.New("unsupported ancestor DACL ACE representation")
+		}
+		if parts[0] == "D" {
+			entries = entries[close+1:]
 			continue
-		case windows.ACCESS_ALLOWED_ACE_TYPE:
-		default:
-			return fmt.Errorf("unsupported ancestor DACL ACE type %d", ace.Header.AceType)
 		}
-		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+		if parts[0] != "A" {
+			return errors.New("unsupported ancestor DACL ACE type")
+		}
+		if strings.Contains(parts[1], "IO") {
+			entries = entries[close+1:]
 			continue
 		}
-		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
-		if !sid.IsValid() {
+		trustee, err := windows.StringToSid(parts[5])
+		if err != nil || trustee == nil || !trustee.IsValid() {
 			return errors.New("ancestor DACL contains an invalid trustee SID")
 		}
-		if trusted[sid.String()] {
-			continue
+		if !trusted[trustee.String()] {
+			mask, err := windowsSDDLRightsMask(parts[2])
+			if err != nil {
+				return fmt.Errorf("parse ancestor DACL rights: %w", err)
+			}
+			if mask&windowsAncestorMutationRights != 0 {
+				return fmt.Errorf("ancestor grants pathname mutation rights %s to untrusted SID %s", parts[2], trustee)
+			}
 		}
-		if uint32(ace.Mask)&windowsAncestorMutationRights != 0 {
-			return fmt.Errorf("ancestor grants pathname mutation rights 0x%08x to untrusted SID %s", uint32(ace.Mask), sid)
-		}
+		entries = entries[close+1:]
 	}
 	return nil
+}
+
+func windowsSDDLRightsMask(rights string) (uint32, error) {
+	if strings.HasPrefix(rights, "0x") {
+		mask, err := strconv.ParseUint(strings.TrimPrefix(rights, "0x"), 16, 32)
+		return uint32(mask), err
+	}
+	codes := map[string]uint32{
+		"FA": 0x001F01FF,
+		"GA": windows.GENERIC_ALL,
+		"GW": windows.GENERIC_WRITE,
+		"FW": 0x00000002,
+		"AD": 0x00000004,
+		"DC": 0x00000040,
+		"DE": windows.DELETE,
+		"WD": windows.WRITE_DAC,
+		"WO": windows.WRITE_OWNER,
+	}
+	var mask uint32
+	if len(rights)%2 != 0 {
+		return 0, errors.New("invalid SDDL rights token")
+	}
+	for i := 0; i < len(rights); i += 2 {
+		code := rights[i : i+2]
+		value, ok := codes[code]
+		if !ok {
+			// Unrecognized rights are not treated as mutation authority.
+			continue
+		}
+		mask |= value
+	}
+	return mask, nil
 }
 
 func verifyWindowsStateForSID(dir string, required *windows.SID) error {
