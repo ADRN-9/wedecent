@@ -6,8 +6,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"strconv"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/windows"
