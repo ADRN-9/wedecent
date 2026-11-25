@@ -20,8 +20,12 @@ func validFenceToken(t *testing.T, action CheckpointFenceAction) (CheckpointFenc
 	if err != nil {
 		t.Fatal(err)
 	}
+	version, err := checkpointFenceVersionForAction(action)
+	if err != nil {
+		t.Fatal(err)
+	}
 	token := CheckpointFenceToken{
-		Version: checkpointFenceVersion,
+		Version: version,
 		Scope: CheckpointWitnessScope{
 			DeviceID:       identity.DeviceID(deviceKey.Public().(ed25519.PublicKey)),
 			AccountID:      "11111111-1111-4111-8111-111111111111",
