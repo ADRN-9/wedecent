@@ -68,11 +68,11 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 		t.Fatalf("witness reused primary signing key: %v", err)
 	}
 	config.Witnesses[0].PublicKey = headPublic
-	if _,err:=NewSupabaseCheckpointFencePrimary(config);!errors.Is(err,ErrCheckpointIntegrity) {
+	if _, err := NewSupabaseCheckpointFencePrimary(config); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("witness reused checkpoint-head signing key: %v", err)
 	}
 	config.Witnesses[0].PublicKey = witnesses[1].PublicKey
-	if _,err:=NewSupabaseCheckpointFencePrimary(config);!errors.Is(err,ErrCheckpointIntegrity) {
+	if _, err := NewSupabaseCheckpointFencePrimary(config); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("duplicate witness key accepted: %v", err)
 	}
 }
@@ -137,22 +137,30 @@ func TestSupabaseCheckpointFenceWireRoundTripPreservesSignedFields(t *testing.T)
 		t.Fatal(err)
 	}
 	encoded, err := json.Marshal(wire)
-	if err!=nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	decoded, err := checkpointFenceTokenFromWire(encoded)
-	if err!=nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !sameCheckpointFenceToken(token, decoded) {
 		t.Fatal("token wire round trip changed signed fields")
 	}
 	_, witnessPrivate := c197Key(t)
 	ack := c197Ack(t, token, token.WitnessIDs[0], witnessPrivate)
 	ackBytes, err := json.Marshal(checkpointFenceAckToWire(ack))
-	if err!=nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	var ackWire checkpointFenceAckWire
 	if err := json.Unmarshal(ackBytes, &ackWire); err != nil {
 		t.Fatal(err)
 	}
 	decodedAck, err := checkpointFenceAckFromWire(ackWire)
-	if err!=nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if decodedAck.WitnessID != ack.WitnessID || decodedAck.TokenSHA256 != ack.TokenSHA256 ||
 		decodedAck.Generation != ack.Generation || decodedAck.Action != ack.Action ||
 		decodedAck.OperationID != ack.OperationID || decodedAck.WitnessKeyID != ack.WitnessKeyID ||
