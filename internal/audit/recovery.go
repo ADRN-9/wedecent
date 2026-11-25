@@ -2,6 +2,7 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -75,6 +76,9 @@ type PairingRecovery struct {
 	allowEmpty              bool
 	operatorCheck           func() error // test-only authorization fault seam
 	archiveKey              []byte
+	authority               RecoveryAuthority
+	authorityScope          string
+	authorityTrust          RecoveryAuthorityTrust
 	archiveAfterSync        func() error
 	compactionBeforeReplace func() error
 }
@@ -156,6 +160,41 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 		}
 	}
 	return r, nil
+}
+
+// OpenPairingRecoveryWithAuthority enables the independent recovery trust domain.
+// It never treats the local archive HMAC as an independent checkpoint. Existing
+// legacy archives without an external proof are rejected for operator reconciliation.
+func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority RecoveryAuthority, trust RecoveryAuthorityTrust) (*PairingRecovery, error) {
+	if authority == nil || scope == "" || len(scope) > 256 {
+		return nil, ErrRecoveryAuthorityUnavailable
+	}
+	if err := trust.Validate(); err != nil {
+		return nil, err
+	}
+	recovery, err := OpenPairingRecovery(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	recovery.authority = authority
+	recovery.authorityScope = scope
+	recovery.authorityTrust = trust
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	archive, err := recovery.readArchive()
+	if err != nil {
+		return nil, err
+	}
+	if archive.LastSequence == 0 {
+		head, err := authority.LoadCheckpoint(ctx, scope)
+		if err != nil {
+			return nil, fmt.Errorf("independent pairing recovery checkpoint unavailable: %w", err)
+		}
+		if head.Generation != 0 || head.StateDigest != ([32]byte{}) || len(head.Signature) != 0 || len(head.Witnesses) != 0 {
+			return nil, ErrRecoveryMigrationUntrusted
+		}
+	}
+	return recovery, nil
 }
 
 // The marker lives beyond byte zero because Windows LockFileEx locks byte
