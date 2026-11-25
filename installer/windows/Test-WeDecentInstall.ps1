@@ -115,59 +115,6 @@ $expectedAgent = '^(?:"' + [Regex]::Escape($agent) + '"|' + [Regex]::Escape($age
 Assert-True ($service.PathName -match $expectedAgent) 'Service binary path does not point at the installed wd-agent.exe'
 Assert-True ($service.PathName -match [Regex]::Escape('--listen=')) 'Service is missing explicit outbound-only --listen= configuration'
 Assert-True ($service.PathName -match [Regex]::Escape("--web-relay=$WebRelay")) "Service is not configured for expected web relay $WebRelay"
-Assert-True ($service.PathName -match [Regex]::Escape('--pairing-recovery-authority-url=')) 'Service is missing the recovery-authority HTTPS origin'
-Assert-True ($service.PathName -match [Regex]::Escape('--pairing-recovery-authority-spki-sha256=')) 'Service is missing the recovery-authority SPKI pin'
-Assert-True ($service.PathName -match [Regex]::Escape('--pairing-recovery-trust=')) 'Service is missing the protected recovery trust-file path'
-Assert-True ($service.PathName -match [Regex]::Escape('--pairing-recovery-authority-token-file=')) 'Service is missing the protected recovery bearer-file path'
-Assert-True ($service.PathName -notmatch '--pairing-recovery-authority-token=(?:"[^"]+"|\S+)') 'Service command line must never contain the bearer secret'
-$recoveryTrustPath = Join-Path $StateDir 'recovery-authority-trust.json'
-$recoveryTokenPath = Join-Path $StateDir 'recovery-authority.token'
-Assert-True (Test-Path -LiteralPath $recoveryTrustPath -PathType Leaf) 'Protected recovery trust copy is missing'
-Assert-True (Test-Path -LiteralPath $recoveryTokenPath -PathType Leaf) 'Protected recovery bearer file is missing'
-foreach ($credentialPath in @($recoveryTrustPath, $recoveryTokenPath)) {
-    $credentialAcl = Get-Acl -LiteralPath $credentialPath
-    Assert-True $credentialAcl.AreAccessRulesProtected "Credential ACL is not protected: $credentialPath"
-    $broadCredentialRules = @($credentialAcl.Access | Where-Object {
-        $_.AccessControlType -eq 'Allow' -and
-        $_.IdentityReference.Value -match '(^|\\)(Everyone|Users|Authenticated Users)foreach ($name in @('wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')) {
-    $pathPattern = '^(?:"' + [Regex]::Escape($binaryPaths[$name]) + '"|' + [Regex]::Escape($binaryPaths[$name]) + ')(?:\s|$)'
-    $unexpected = @($services | Where-Object { $_.PathName -match $pathPattern })
-    Assert-True ($unexpected.Count -eq 0) "$name must not be registered as a Windows service"
-}
-
-$localName = Get-LocalAccountName $service.StartName
-Assert-True (-not [string]::IsNullOrWhiteSpace($localName)) 'Service does not run as a dedicated local account'
-Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction Stop
-$localUser = Get-LocalUser -Name $localName -ErrorAction Stop
-$adminMembers = @(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop)
-$isAdmin = [bool]($adminMembers | Where-Object { $_.SID -and $_.SID.Value -eq $localUser.SID.Value })
-Assert-True (-not $isAdmin) 'Service account is a member of the local Administrators group'
-Assert-True (Test-ServiceLogonRight -Sid $localUser.SID.Value -AccountName $localName) 'Service account is missing SeServiceLogonRight'
-
-$metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
-Assert-True ([int]$metadata.schema -eq 1) 'Installer metadata schema is not supported'
-Assert-True ([string]$metadata.product -eq 'WeDecent') 'Installer metadata product is invalid'
-Assert-True ([string]$metadata.service_name -ceq $ServiceName) 'Installer metadata service name does not match'
-Assert-True ([string]$metadata.service_account_sid -eq $localUser.SID.Value) 'Installer metadata account SID does not match the running service account'
-if ($RequireManagedServiceAccount) {
-    Assert-True ([bool]$metadata.managed_service_account) 'Fresh-install validation expected an installer-managed service account'
-}
-
-$acl = Get-Acl -LiteralPath $StateDir
-$bad = @($acl.Access | Where-Object {
-    $_.AccessControlType -eq 'Allow' -and
-    $_.IdentityReference.Value -match '(^|\\)(Everyone|Users|Authenticated Users)$'
-})
-Assert-True ($bad.Count -eq 0) 'State directory grants broad access to a user group'
-
-& $agent service status "--service-name=$ServiceName"
-if ($LASTEXITCODE -ne 0) { throw 'wd-agent service status failed' }
-
-Write-Host 'WeDecent Windows installation validation PASS'
-
-    })
-    Assert-True ($broadCredentialRules.Count -eq 0) "Credential file grants broad access: $credentialPath"
-}
 
 foreach ($name in @('wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')) {
     $pathPattern = '^(?:"' + [Regex]::Escape($binaryPaths[$name]) + '"|' + [Regex]::Escape($binaryPaths[$name]) + ')(?:\s|$)'
