@@ -350,6 +350,16 @@ func sameFenceToken(a, b CheckpointFenceToken) bool {
 	return true
 }
 
+
+func testRevocationFenceRequest(request CheckpointFenceRequest) CheckpointFenceRequest {
+	request.AuthorizationProof = make([]byte, ed25519.SignatureSize)
+	for i := range request.AuthorizationProof {
+		request.AuthorizationProof[i] = byte(i + 1)
+	}
+	request.AuthorizationSHA256 = sha256.Sum256(request.AuthorizationProof)
+	return request
+}
+
 func commitDurableFence(t *testing.T, primary *FileCheckpointFencePrimary, witnesses []*FileCheckpointFenceWitness, request CheckpointFenceRequest) CheckpointFenceToken {
 	t.Helper()
 	token, err := primary.ReserveFence(context.Background(), request)
@@ -373,6 +383,7 @@ func commitDurableFence(t *testing.T, primary *FileCheckpointFencePrimary, witne
 func TestDurableFenceOrderingRevocationFirstRejectsStaleFinalization(t *testing.T) {
 	primary, witnesses, _, request, _ := durableFenceFixture(t)
 	request.Action = CheckpointFenceRevoke
+	request = testRevocationFenceRequest(request)
 	request.OperationID = "durable-revoke-first"
 	revoked := commitDurableFence(t, primary, witnesses, request)
 	if revoked.Generation != 1 || revoked.ResultingRevocationEpoch != 1 {
@@ -393,6 +404,7 @@ func TestDurableFenceOrderingFinalizationFirstSurvivesLaterRevocation(t *testing
 	finalized := commitDurableFence(t, primary, witnesses, request)
 	revoke := request
 	revoke.Action = CheckpointFenceRevoke
+	revoke = testRevocationFenceRequest(revoke)
 	revoke.OperationID = "durable-revoke-after-finalize"
 	revoke.ExpectedFenceGeneration = finalized.Generation
 	revoke.ExpectedRevocationEpoch = finalized.ResultingRevocationEpoch
@@ -469,6 +481,7 @@ func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *test
 	finalize.OperationID = "concurrent-finalize"
 	revoke := request
 	revoke.Action = CheckpointFenceRevoke
+	revoke = testRevocationFenceRequest(revoke)
 	revoke.OperationID = "concurrent-revoke"
 	start := make(chan struct{})
 	type outcome struct {
