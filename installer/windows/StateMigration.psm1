@@ -1165,8 +1165,7 @@ public static class WeDecentMigrationFileIdentityApi {
             if (replaceExisting) {
                 if (String.IsNullOrEmpty(expectedTargetIdentity))
                     throw new InvalidOperationException("Replacing an existing object requires its verified identity.");
-                // Acquiring DELETE access while denying FILE_SHARE_DELETE excludes later rename/delete opens.
-                // If an incompatible delete-capable handle already exists, opening this guard fails closed.
+                // Keep the verified destination object open through publication; deny later delete-capable opens.
                 targetGuard=Open(targetPath, FILE_READ_ATTRIBUTES|DELETE_ACCESS, SHARE_READ_WRITE, BACKUP_SEMANTICS);
                 BY_HANDLE_FILE_INFORMATION targetInfo=Info(targetGuard);
                 if ((targetInfo.FileAttributes&0x400)!=0 ||
@@ -1189,22 +1188,49 @@ public static class WeDecentMigrationFileIdentityApi {
             byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
             int relativeSize=nameOffset+relativeName.Length;
             IntPtr relativeBuffer=Marshal.AllocHGlobal(relativeSize);
+            int renameError=0;
             try {
                 Marshal.WriteByte(relativeBuffer,0,replaceExisting?(byte)1:(byte)0);
                 Marshal.WriteIntPtr(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),parent);
                 Marshal.WriteInt32(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),relativeName.Length);
                 Marshal.Copy(relativeName,0,IntPtr.Add(relativeBuffer,nameOffset),relativeName.Length);
-                // Test hook is at the actual final validation-to-syscall boundary.
-                if (PublicationHook!=null) PublicationHook(targetPath);
-                if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED")=="1")
-                    throw new NotSupportedException("Handle-relative publication is unsupported; absolute-path fallback is disabled to preserve parent-handle anchoring.");
-                if (!SetFileInformationByHandle(source,3,relativeBuffer,(uint)relativeSize)) {
-                    int error=Marshal.GetLastWin32Error();
-                    if (error==87)
-                        throw new NotSupportedException("Handle-relative publication is unsupported; absolute-path fallback is disabled to preserve parent-handle anchoring.");
-                    throw new System.ComponentModel.Win32Exception(error,"Handle-relative atomic rename failed.");
+                if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED")=="1") {
+                    renameError=87;
+                } else {
+                    if (PublicationHook!=null) PublicationHook(targetPath);
+                    if (!SetFileInformationByHandle(source,3,relativeBuffer,(uint)relativeSize))
+                        renameError=Marshal.GetLastWin32Error();
                 }
             } finally { Marshal.FreeHGlobal(relativeBuffer); }
+            if (renameError!=0) {
+                if (renameError!=87) throw new System.ComponentModel.Win32Exception(renameError,"Handle-relative atomic rename failed.");
+                // The absolute fallback is safe only while the already-verified parent and target handles remain open.
+                if (GetIdentity(parentPath)!=Id(parentInfo))
+                    throw new InvalidOperationException("Publication parent identity changed before absolute fallback.");
+                if (replaceExisting) {
+                    BY_HANDLE_FILE_INFORMATION guardedTarget=Info(targetGuard);
+                    if (Id(guardedTarget)!=expectedTargetIdentity || (guardedTarget.FileAttributes&0x400)!=0)
+                        throw new InvalidOperationException("Publication target handle changed before absolute fallback.");
+                } else {
+                    IntPtr target=CreateFile(targetPath,FILE_READ_ATTRIBUTES,7,IntPtr.Zero,OPEN_EXISTING,BACKUP_SEMANTICS|OPEN_REPARSE_POINT,IntPtr.Zero);
+                    if (target!=new IntPtr(-1)) { CloseHandle(target); throw new System.IO.IOException("Publication destination appeared before absolute fallback."); }
+                    int error=Marshal.GetLastWin32Error();
+                    if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
+                }
+                byte[] absoluteName=System.Text.Encoding.Unicode.GetBytes(targetPath);
+                int absoluteSize=nameOffset+absoluteName.Length+2;
+                IntPtr absoluteBuffer=Marshal.AllocHGlobal(absoluteSize);
+                try {
+                    Marshal.WriteByte(absoluteBuffer,0,replaceExisting?(byte)1:(byte)0);
+                    Marshal.WriteIntPtr(absoluteBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),IntPtr.Zero);
+                    Marshal.WriteInt32(absoluteBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),absoluteName.Length);
+                    Marshal.Copy(absoluteName,0,IntPtr.Add(absoluteBuffer,nameOffset),absoluteName.Length);
+                    Marshal.WriteInt16(absoluteBuffer,nameOffset+absoluteName.Length,0);
+                    if (PublicationHook!=null) PublicationHook(targetPath);
+                    if (!SetFileInformationByHandle(source,3,absoluteBuffer,(uint)absoluteSize))
+                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"SetFileInformationByHandle(FileRenameInfo) absolute fallback failed.");
+                } finally { Marshal.FreeHGlobal(absoluteBuffer); }
+            }
             string published=GetIdentity(targetPath);
             if (published!=sourceId) throw new InvalidOperationException("Published object identity did not match the verified source.");
             return published;
@@ -1214,179 +1240,6 @@ public static class WeDecentMigrationFileIdentityApi {
             if (parent!=IntPtr.Zero) CloseHandle(parent);
         }
     }}
-'@ -ErrorAction Stop
-}
-
-function Get-WeDecentMigrationPathObjectChain {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    Initialize-WeDecentMigrationFileIdentityApi
-    $full = [IO.Path]::GetFullPath($Path)
-    $root = [IO.Path]::GetPathRoot($full)
-    if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\')) {
-        throw 'Filesystem identity requires a local drive path.'
-    }
-    $parts = @($full.Substring($root.Length).Split([char[]]@([char]92), [StringSplitOptions]::RemoveEmptyEntries))
-    $chain = [Collections.Generic.List[string]]::new()
-    $walk = $root
-    $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
-    $missing = $false
-    for ($index = 0; $index -lt $parts.Count; $index++) {
-        $part = $parts[$index]
-        $walk = Join-Path $walk $part
-        if (-not $missing) {
-            try {
-                $item = Get-Item -LiteralPath $walk -Force -ErrorAction Stop
-                if ($index -lt ($parts.Count - 1) -and -not $item.PSIsContainer) {
-                    throw "Migration path traverses a non-directory component: $walk"
-                }
-                $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
-            } catch {
-                if ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound -or
-                    $_.Exception -is [IO.FileNotFoundException] -or
-                    $_.Exception -is [IO.DirectoryNotFoundException]) {
-                    $missing = $true
-                    $chain.Add('PATH:' + $part.ToUpperInvariant())
-                } else {
-                    throw
-                }
-            }
-        } else {
-            $chain.Add('PATH:' + $part.ToUpperInvariant())
-        }
-    }
-    return $chain.ToArray()
-}
-
-function Get-WeDecentMigrationCanonicalPath {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    if ([string]::IsNullOrWhiteSpace($Path) -or $Path.StartsWith('\\?\') -or $Path.StartsWith('\\.\')) {
-        throw 'Migration paths must be ordinary, absolute local filesystem paths.'
-    }
-    $full = [IO.Path]::GetFullPath($Path)
-    $root = [IO.Path]::GetPathRoot($full)
-    if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\') -or $full -match '^[A-Za-z]:[^\\]') {
-        throw 'Migration paths must use an absolute local drive path.'
-    }
-    if ([string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)) { return $root }
-    $full = $full.TrimEnd('\')
-
-    if (-not ('WeDecentMigrationPathApi' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-public static class WeDecentMigrationPathApi {
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern uint GetLongPathName(string shortPath, StringBuilder longPath, uint bufferLength);
-    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
-    public static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferLength);
-}
-'@ -ErrorAction Stop
-    }
-
-    $walk = $root
-    $relativeParts = $full.Substring($root.Length).Split([char[]]@([char]92), [System.StringSplitOptions]::RemoveEmptyEntries)
-    foreach ($part in $relativeParts) {
-        $walk = Join-Path $walk $part
-        if (Test-Path -LiteralPath $walk) {
-            $component = Get-Item -LiteralPath $walk -Force -ErrorAction Stop
-            if (($component.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw "Migration path traverses a reparse point: $walk"
-            }
-        }
-    }
-
-    $probe = $full
-    $suffix = [Collections.Generic.Stack[string]]::new()
-    while (-not (Test-Path -LiteralPath $probe)) {
-        $leaf = [IO.Path]::GetFileName($probe)
-        $parent = [IO.Path]::GetDirectoryName($probe)
-        if ([string]::IsNullOrWhiteSpace($leaf) -or [string]::IsNullOrWhiteSpace($parent) -or
-            [string]::Equals($parent, $probe, [StringComparison]::OrdinalIgnoreCase)) {
-            throw "Migration path has no resolvable existing ancestor: $Path"
-        }
-        $suffix.Push($leaf)
-        $probe = $parent
-    }
-
-    $item = Get-Item -LiteralPath $probe -Force -ErrorAction Stop
-    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw "Migration path traverses a reparse point: $probe"
-    }
-    $buffer = [Text.StringBuilder]::new(32768)
-    $length = [WeDecentMigrationPathApi]::GetLongPathName($probe, $buffer, [uint32]$buffer.Capacity)
-    if ($length -eq 0 -or $length -ge $buffer.Capacity) {
-        throw "Migration path could not be resolved to its filesystem long name: $probe"
-    }
-    $resolved = $buffer.ToString()
-    while ($suffix.Count -gt 0) { $resolved = Join-Path $resolved $suffix.Pop() }
-    return $resolved.TrimEnd('\')
-}
-
-function New-WeDecentMigrationMutationLease {
-    [CmdletBinding()]
-    param([Parameter(Mandatory = $true)][string[]]$Directories)
-    Initialize-WeDecentMigrationFileIdentityApi
-    $resolved = @($Directories | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
-        ForEach-Object { Assert-WeDecentMigrationRealDirectory -Path $_ } | Sort-Object -Unique)
-    if ($resolved.Count -eq 0) { throw 'A filesystem mutation lease requires at least one directory.' }
-    return [WeDecentMigrationFileIdentityApi]::AcquireDirectoryLease([string[]]$resolved)
-}
-function Assert-WeDecentMigrationMutationLease {
-    param([Parameter(Mandatory = $true)]$Lease,[Parameter(Mandatory = $true)][string[]]$Paths)
-    [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($Lease)
-    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $Paths)
-}
-function Invoke-WeDecentMigrationRacePoint {
-    param([Parameter(Mandatory = $true)][string]$Name)
-    $injection = Get-Variable -Name WeDecentMigrationRaceInjection -Scope Global -ValueOnly -ErrorAction SilentlyContinue
-    if ($injection -is [scriptblock]) { & $injection $Name }
-}
-function Publish-WeDecentMigrationObject {
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory = $true)][string]$TemporaryPath,
-        [Parameter(Mandatory = $true)][string]$ParentPath,
-        [Parameter(Mandatory = $true)][string]$TargetName,
-        [string]$ExpectedTemporaryIdentity,
-        [string]$ExpectedTargetIdentity,
-        [switch]$ReplaceExisting,
-        [string]$RacePoint
-    )
-    $temporaryIdentity = if ([string]::IsNullOrWhiteSpace($ExpectedTemporaryIdentity)) {
-        [WeDecentMigrationFileIdentityApi]::GetIdentity($TemporaryPath)
-    } else { $ExpectedTemporaryIdentity }
-    if (-not [string]::IsNullOrWhiteSpace($RacePoint)) { Invoke-WeDecentMigrationRacePoint -Name $RacePoint }
-    return [WeDecentMigrationFileIdentityApi]::PublishByHandle($TemporaryPath,$ParentPath,$TargetName,$temporaryIdentity,$ExpectedTargetIdentity,[bool]$ReplaceExisting)
-}
-
-function Get-WeDecentMigrationIdentitySnapshot {
-    param([Parameter(Mandatory = $true)][string[]]$Paths)
-    $snapshot = @{}
-    foreach ($path in $Paths) {
-        $snapshot[$path] = @(Get-WeDecentMigrationPathObjectChain -Path $path)
-    }
-    return $snapshot
-}
-
-function Assert-WeDecentMigrationIdentitySnapshot {
-    param(
-        [Parameter(Mandatory = $true)][hashtable]$Snapshot,
-        [Parameter(Mandatory = $true)][string[]]$Paths
-    )
-    foreach ($path in $Paths) {
-        if (-not $Snapshot.ContainsKey($path)) { throw "Missing migration filesystem identity snapshot: $path" }
-        $current = @(Get-WeDecentMigrationPathObjectChain -Path $path)
-        $before = @($Snapshot[$path])
-        if ($current.Count -ne $before.Count) { throw "Migration pathname component chain changed: $path" }
-        for ($i = 0; $i -lt $before.Count; $i++) {
-            if ($current[$i] -cne $before[$i]) {
-                throw "Migration filesystem object changed after preflight: $path"
-            }
-        }
-    }
-}
 
 function Assert-WeDecentMigrationPathsDisjoint {
     param([Parameter(Mandatory = $true)][string[]]$Paths)
