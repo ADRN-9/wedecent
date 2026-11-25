@@ -159,69 +159,72 @@ func TestWindowsReplayLockBootstrapCrashHelper(t *testing.T) {
 	}
 }
 
-func TestWindowsReplayCleansLockBootstrapOrphanAfterProcessCrash(t *testing.T) {
+func TestWindowsReplayCleansLockBootstrapOrphanAfterRepeatedProcessCrashes(t *testing.T) {
 	path := newReplayTestPath(t)
-	readyPath := path + ".lock-crash-ready"
-	stopPath := path + ".lock-crash-stop"
-	var output bytes.Buffer
-	cmd := exec.Command(os.Args[0], "-test.run=^TestWindowsReplayLockBootstrapCrashHelper$")
-	cmd.Env = append(os.Environ(),
-		"WEDECENT_REPLAY_LOCK_CRASH_PATH="+path,
-		"WEDECENT_REPLAY_LOCK_CRASH_READY="+readyPath,
-		"WEDECENT_REPLAY_LOCK_CRASH_STOP="+stopPath,
-	)
-	cmd.Stdout, cmd.Stderr = &output, &output
-	if err := cmd.Start(); err != nil {
-		t.Fatalf("start Windows lock bootstrap crash helper: %v", err)
-	}
-	t.Cleanup(func() {
-		if cmd.ProcessState == nil {
-			_ = os.WriteFile(stopPath, []byte("stop"), 0o600)
-			_ = cmd.Process.Kill()
-			_ = cmd.Wait()
+	for iteration := 0; iteration < 3; iteration++ {
+		readyPath := fmt.Sprintf("%s.lock-crash-ready-%d", path, iteration)
+		stopPath := fmt.Sprintf("%s.lock-crash-stop-%d", path, iteration)
+		var output bytes.Buffer
+		cmd := exec.Command(os.Args[0], "-test.run=^TestWindowsReplayLockBootstrapCrashHelper$")
+		cmd.Env = append(os.Environ(),
+			"WEDECENT_REPLAY_LOCK_CRASH_PATH="+path,
+			"WEDECENT_REPLAY_LOCK_CRASH_READY="+readyPath,
+			"WEDECENT_REPLAY_LOCK_CRASH_STOP="+stopPath,
+		)
+		cmd.Stdout, cmd.Stderr = &output, &output
+		if err := cmd.Start(); err != nil {
+			t.Fatalf("iteration %d: start Windows lock bootstrap crash helper: %v", iteration, err)
 		}
-		_ = os.Remove(readyPath)
-		_ = os.Remove(stopPath)
-	})
+		t.Cleanup(func() {
+			if cmd.ProcessState == nil {
+				_ = os.WriteFile(stopPath, []byte("stop"), 0o600)
+				_ = cmd.Process.Kill()
+				_ = cmd.Wait()
+			}
+			_ = os.Remove(readyPath)
+			_ = os.Remove(stopPath)
+		})
 
-	deadline := time.Now().Add(10 * time.Second)
-	var orphanPath string
-	for {
-		data, readErr := os.ReadFile(readyPath)
-		if readErr == nil {
-			orphanPath = string(data)
-			break
+		deadline := time.Now().Add(10 * time.Second)
+		var orphanPath string
+		for {
+			data, readErr := os.ReadFile(readyPath)
+			if readErr == nil {
+				if len(data) > 0 {
+					orphanPath = string(data)
+					break
+				}
+			} else if !errors.Is(readErr, os.ErrNotExist) {
+				t.Fatalf("iteration %d: read Windows lock crash readiness: %v", iteration, readErr)
+			}
+			if time.Now().After(deadline) {
+				_ = cmd.Process.Kill()
+				waitErr := cmd.Wait()
+				t.Fatalf("iteration %d: lock bootstrap helper did not reach crash barrier: wait=%v output=%s", iteration, waitErr, output.String())
+			}
+			time.Sleep(5 * time.Millisecond)
 		}
-		if !errors.Is(readErr, os.ErrNotExist) {
-			t.Fatalf("read Windows lock crash readiness: %v", readErr)
+		if _, err := os.Lstat(orphanPath); err != nil {
+			t.Fatalf("iteration %d: expected orphan lock staging file before recovery: %v", iteration, err)
 		}
-		if time.Now().After(deadline) {
-			_ = cmd.Process.Kill()
-			waitErr := cmd.Wait()
-			t.Fatalf("Windows lock bootstrap helper did not reach crash barrier: wait=%v output=%s", waitErr, output.String())
+		if err := os.WriteFile(stopPath, []byte("stop"), 0o600); err != nil {
+			t.Fatal(err)
 		}
-		time.Sleep(5 * time.Millisecond)
-	}
-	if _, err := os.Lstat(orphanPath); err != nil {
-		t.Fatalf("expected orphan lock staging file before recovery: %v", err)
-	}
-	if err := os.WriteFile(stopPath, []byte("stop"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := cmd.Wait(); err == nil {
-		t.Fatal("Windows lock bootstrap helper exited normally, expected abrupt process exit")
-	}
+		if err := cmd.Wait(); err == nil {
+			t.Fatalf("iteration %d: Windows lock bootstrap helper exited normally, expected abrupt process exit", iteration)
+		}
 
-	replay, err := NewFileReplay(path, testInitiator)
-	if err != nil {
-		t.Fatal(err)
-	}
-	jti := base64.RawURLEncoding.EncodeToString([]byte("windowscrash0001"))
-	if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute)); err != nil {
-		t.Fatalf("replay store did not recover after pre-publication lock crash: %v", err)
-	}
-	if _, err := os.Lstat(orphanPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("crashed Windows lock staging file remains: %v", err)
+		replay, err := NewFileReplay(path, testInitiator)
+		if err != nil {
+			t.Fatalf("iteration %d: reopen replay store after crash: %v", iteration, err)
+		}
+		jti := base64.RawURLEncoding.EncodeToString([]byte(fmt.Sprintf("%016d", iteration)))
+		if err := replay.ConsumePortForwardAuthorization(context.Background(), jti, time.Now().UTC().Add(time.Minute)); err != nil {
+			t.Fatalf("iteration %d: replay store did not recover after pre-publication lock crash: %v", iteration, err)
+		}
+		if _, err := os.Lstat(orphanPath); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("iteration %d: crashed Windows lock staging file remains: %v", iteration, err)
+		}
 	}
 }
 

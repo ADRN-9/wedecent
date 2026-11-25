@@ -58,10 +58,14 @@ type PairingAuditProof struct {
 }
 
 type pairingOutcomeSnapshot struct {
-	Version           int              `json:"version"`
-	Records           []PairingOutcome `json:"records"`
-	ArchivedThrough   uint64           `json:"archived_through,omitempty"`
-	ArchiveCheckpoint string           `json:"archive_checkpoint,omitempty"`
+	Version                 int                `json:"version"`
+	Records                 []PairingOutcome   `json:"records"`
+	ArchivedThrough         uint64             `json:"archived_through,omitempty"`
+	ArchiveCheckpoint       string             `json:"archive_checkpoint,omitempty"`
+	AuthorityGeneration     uint64             `json:"authority_generation,omitempty"`
+	AuthorityPreviousDigest string             `json:"authority_previous_digest,omitempty"`
+	AuthorityStateDigest    string             `json:"authority_state_digest,omitempty"`
+	AuthorityCheckpoint     RecoveryCheckpoint `json:"authority_checkpoint,omitempty"`
 }
 
 // PairingRecovery is independent of rotating audit files. Unresolved evidence
@@ -96,6 +100,10 @@ func NewPairingAttemptID() (string, error) {
 // filesystem protections do not provide independent rollback resistance. Production
 // pairing must use OpenPairingRecoveryWithAuthority.
 func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
+	return openPairingRecovery(stateDir, nil, "", RecoveryAuthorityTrust{})
+}
+
+func openPairingRecovery(stateDir string, authority RecoveryAuthority, scope string, authorityTrust RecoveryAuthorityTrust) (*PairingRecovery, error) {
 	if stateDir == "" {
 		return nil, errors.New("pairing recovery state directory is required")
 	}
@@ -106,7 +114,8 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	if err := syncAuditDirectory(dir); err != nil {
 		return nil, fmt.Errorf("pairing recovery durability unavailable: %w", err)
 	}
-	r := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName)}
+	r := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName), authority: authority,
+		authorityScope: scope, authorityTrust: authorityTrust}
 	// Initialization is serialized with mutation. A second opener must not
 	// confuse an in-progress first creation with a deleted durable ledger.
 	unlock, err := lockFile(r.path)
@@ -140,6 +149,14 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	snapshot, err := r.read()
 	if err != nil {
 		return nil, err
+	}
+	if r.authority != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = r.verifyActiveLedgerSnapshot(ctx, snapshot)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
 	}
 	archive, err := r.readArchive()
 	if err != nil {
@@ -191,6 +208,13 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 	if err != nil {
 		return nil, err
 	}
+	if _, pending, err := preflight.readActiveLedgerPending(); err != nil {
+		return nil, err
+	} else if pending {
+		if err := preflight.reconcileActiveLedger(); err != nil {
+			return nil, fmt.Errorf("recover pending active ledger checkpoint: %w", err)
+		}
+	}
 	if archive.LastSequence == 0 {
 		head, err := authority.LoadCheckpoint(ctx, scope)
 		if err != nil {
@@ -200,15 +224,9 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 			return nil, ErrRecoveryMigrationUntrusted
 		}
 	}
-	recovery, err := OpenPairingRecovery(stateDir)
+	recovery, err := openPairingRecovery(stateDir, authority, scope, authorityTrust)
 	if err != nil {
-		return nil, err
-	}
-	recovery.authority = authority
-	recovery.authorityScope = scope
-	recovery.authorityTrust = authorityTrust
-	if _, err := recovery.readArchive(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("independent pairing recovery startup reconciliation: %w", err)
 	}
 	return recovery, nil
 }
@@ -223,30 +241,32 @@ func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryA
 	if err := authorityTrust.Validate(); err != nil {
 		return nil, err
 	}
-	recovery, err := OpenPairingRecovery(stateDir)
+	if stateDir == "" {
+		return nil, errors.New("pairing recovery state directory is required")
+	}
+	dir := filepath.Clean(stateDir)
+	if err := trust.VerifyPairingStatePath(dir); err != nil {
+		return nil, err
+	}
+	if err := syncAuditDirectory(dir); err != nil {
+		return nil, err
+	}
+	recovery := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName),
+		authority: authority, authorityScope: scope, authorityTrust: authorityTrust, migrationPending: true}
+	unlock, err := lockFile(recovery.path)
 	if err != nil {
 		return nil, err
 	}
-	recovery.authority = authority
-	recovery.authorityScope = scope
-	recovery.authorityTrust = authorityTrust
-	archive, err := recovery.readArchive()
-	if err == nil {
-		if archive.LastSequence == 0 {
-			head, loadErr := authority.LoadCheckpoint(context.Background(), scope)
-			if loadErr != nil {
-				return nil, fmt.Errorf("%w: verify empty migration state: %v", ErrRecoveryAuthorityUnavailable, loadErr)
-			}
-			if head.Scope != scope || !emptyRecoveryCheckpoint(head) {
-				return nil, ErrRecoveryMigrationUntrusted
-			}
-		}
-		return recovery, nil
-	}
-	if !errors.Is(err, ErrRecoveryMigrationUntrusted) {
+	defer unlock()
+	if err := recovery.loadArchiveKey(); err != nil {
 		return nil, err
 	}
-	recovery.migrationPending = true
+	if err := trust.VerifyPairingStatePath(recovery.path + ".lock"); err != nil {
+		return nil, err
+	}
+	if _, err := recovery.read(); err != nil {
+		return nil, fmt.Errorf("legacy active recovery ledger cannot be read for operator migration: %w", err)
+	}
 	return recovery, nil
 }
 
@@ -429,6 +449,11 @@ func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) e
 }
 
 func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, pairingRecoveryArchive) error) error {
+	if r.authority != nil {
+		if err := r.reconcileActiveLedger(); err != nil {
+			return err
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
@@ -445,6 +470,14 @@ func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, p
 	snapshot, err := r.read()
 	if err != nil {
 		return err
+	}
+	if r.authority != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = r.verifyActiveLedgerSnapshot(ctx, snapshot)
+		cancel()
+		if err != nil {
+			return err
+		}
 	}
 	archive, err := r.readArchive()
 	if err != nil {
@@ -483,6 +516,13 @@ func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, p
 }
 
 func (r *PairingRecovery) write(snapshot pairingOutcomeSnapshot) error {
+	if r.authority != nil {
+		return r.writeWithActiveLedgerAuthority(&snapshot)
+	}
+	return r.writeLocal(snapshot)
+}
+
+func (r *PairingRecovery) writeLocal(snapshot pairingOutcomeSnapshot) error {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return err
@@ -636,6 +676,11 @@ func (r *PairingRecovery) Complete(attemptID, outcome string) error {
 func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 	if r == nil {
 		return nil, errors.New("pairing recovery unavailable")
+	}
+	if r.authority != nil {
+		if err := r.reconcileActiveLedger(); err != nil {
+			return nil, err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

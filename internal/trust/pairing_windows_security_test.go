@@ -160,6 +160,64 @@ func TestWindowsPairingLocalAdministratorSDDLRoundTrip(t *testing.T) {
 	t.Logf("local Administrator alias emitted by Windows SDDL serializer: %v", strings.Contains(sddl, ";;;LA)"))
 }
 
+func setPairingTestDACL(path, additionalACE string) error {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	sid := user.User.Sid.String()
+	descriptor, err := windows.SecurityDescriptorFromString(
+		"O:" + sid + "D:P(A;;FA;;;" + sid + ")(A;;FA;;;SY)(A;;FA;;;BA)" + additionalACE,
+	)
+	if err != nil {
+		return err
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	return windows.SetNamedSecurityInfo(
+		path,
+		windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+		owner,
+		nil,
+		dacl,
+		nil,
+	)
+}
+
+func TestSecureWindowsPairingPathAcceptsPrivateACL(t *testing.T) {
+	dir := t.TempDir()
+	preparePairingTestDir(t, dir)
+	path := filepath.Join(dir, "pairing-state.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureWindowsPairingPath(path); err != nil {
+		t.Fatalf("private owner/DACL rejected: %v", err)
+	}
+}
+
+func TestSecureWindowsPairingPathRejectsBroadACL(t *testing.T) {
+	dir := t.TempDir()
+	preparePairingTestDir(t, dir)
+	path := filepath.Join(dir, "pairing-state.json")
+	if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := setPairingTestDACL(path, "(A;;FA;;;BU)"); err != nil {
+		t.Fatal(err)
+	}
+	if err := secureWindowsPairingPath(path); err == nil {
+		t.Fatal("pairing state with BUILTIN Users full-control ACE was accepted")
+	}
+}
+
 func TestSecureWindowsPairingPathRejectsReparsePoint(t *testing.T) {
 	target := t.TempDir()
 	link := filepath.Join(t.TempDir(), "state-link")

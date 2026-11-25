@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"wedecent.com/wedecent/internal/trust"
 )
 
 const maxServeConfigBytes = 64 * 1024
@@ -138,7 +140,11 @@ func loadServeConfigArgs(path string) ([]string, error) {
 	if info.Size() <= 0 || info.Size() > maxServeConfigBytes {
 		return nil, fmt.Errorf("%q must contain between 1 byte and %d bytes", path, maxServeConfigBytes)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+	if runtime.GOOS == "windows" {
+		if err := trust.VerifyPairingStatePath(path); err != nil {
+			return nil, fmt.Errorf("%q has unsafe Windows owner or ACL: %w", path, err)
+		}
+	} else if info.Mode().Perm()&0o022 != 0 {
 		return nil, fmt.Errorf("%q must not be group- or world-writable", path)
 	}
 
@@ -147,6 +153,11 @@ func loadServeConfigArgs(path string) ([]string, error) {
 		return nil, fmt.Errorf("open %q: %w", path, err)
 	}
 	defer f.Close()
+	opened, err := f.Stat()
+	current, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || !os.SameFile(info, opened) || !os.SameFile(opened, current) {
+		return nil, fmt.Errorf("%q changed during secure open", path)
+	}
 
 	dec := json.NewDecoder(io.LimitReader(f, maxServeConfigBytes+1))
 	dec.DisallowUnknownFields()

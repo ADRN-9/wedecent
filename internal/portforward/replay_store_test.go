@@ -1275,10 +1275,11 @@ func TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging(t *testing.T)
 	for {
 		data, readErr := os.ReadFile(readyPath)
 		if readErr == nil {
-			activePath = string(data)
-			break
-		}
-		if !errors.Is(readErr, os.ErrNotExist) {
+			if len(data) > 0 {
+				activePath = string(data)
+				break
+			}
+		} else if !errors.Is(readErr, os.ErrNotExist) {
 			t.Fatalf("read active staging readiness: %v", readErr)
 		}
 		if time.Now().After(deadline) {
