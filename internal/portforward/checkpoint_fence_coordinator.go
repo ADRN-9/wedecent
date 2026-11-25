@@ -235,7 +235,11 @@ func (c *CheckpointFenceCoordinator) verifyCommittedOperation(operation Checkpoi
 }
 
 func checkpointFenceTokenMatchesOperation(token CheckpointFenceToken, request CheckpointFenceRequest) bool {
-	return token.Scope == request.Scope && token.Action == request.Action &&
+	version, err := checkpointFenceVersionForAction(request.Action)
+	if err != nil {
+		return false
+	}
+	return token.Version == version && token.Scope == request.Scope && token.Action == request.Action &&
 		token.OperationID == request.OperationID && token.RequestSHA256 == request.RequestSHA256 &&
 		token.AuthorizationSHA256 == request.AuthorizationSHA256 &&
 		bytes.Equal(token.AuthorizationProof, request.AuthorizationProof) &&
@@ -245,7 +249,11 @@ func checkpointFenceTokenMatchesOperation(token CheckpointFenceToken, request Ch
 }
 
 func checkpointFenceTokenMatchesRequest(token CheckpointFenceToken, request CheckpointFenceRequest) bool {
-	return token.Scope == request.Scope && token.Action == request.Action &&
+	version, err := checkpointFenceVersionForAction(request.Action)
+	if err != nil {
+		return false
+	}
+	return token.Version == version && token.Scope == request.Scope && token.Action == request.Action &&
 		token.OperationID == request.OperationID && token.RequestSHA256 == request.RequestSHA256 &&
 		token.AuthorizationSHA256 == request.AuthorizationSHA256 &&
 		bytes.Equal(token.AuthorizationProof, request.AuthorizationProof) &&
