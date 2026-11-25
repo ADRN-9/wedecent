@@ -91,6 +91,7 @@ func (s *Server) handleRegister(conn net.Conn, challenge string, msg relayproto.
 		s.reject(conn, "slot_limit", err.Error())
 		return
 	}
+	s.log().Info("relay slot parked", "device_id", msg.DeviceID)
 	if err := relayproto.Write(conn, relayproto.Message{Type: relayproto.TypeWaiting}); err != nil {
 		s.Broker.Remove(msg.DeviceID, slot)
 		_ = conn.Close()
