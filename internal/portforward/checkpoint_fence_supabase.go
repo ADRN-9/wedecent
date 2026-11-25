@@ -475,6 +475,7 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 	var response struct {
 		Found            bool                     `json:"found"`
 		Token            json.RawMessage          `json:"token"`
+		TokenSHA256      string                   `json:"token_sha256"`
 		Fingerprint      string                   `json:"fingerprint"`
 		Committed        bool                     `json:"committed"`
 		Acknowledgements []checkpointFenceAckWire `json:"acknowledgements"`
@@ -564,8 +565,12 @@ func (p *SupabaseCheckpointFencePrimary) loadOperationFingerprint(
 		return [sha256.Size]byte{}, err
 	}
 	var response struct {
-		Found       bool   `json:"found"`
-		Fingerprint string `json:"fingerprint"`
+		Found            bool                     `json:"found"`
+		Token            json.RawMessage          `json:"token"`
+		TokenSHA256      string                   `json:"token_sha256"`
+		Fingerprint      string                   `json:"fingerprint"`
+		Committed        bool                     `json:"committed"`
+		Acknowledgements []checkpointFenceAckWire `json:"acknowledgements"`
 	}
 	if err := decodeCheckpointFenceJSON(raw, &response); err != nil || !response.Found {
 		return [sha256.Size]byte{}, ErrCheckpointHistorical
