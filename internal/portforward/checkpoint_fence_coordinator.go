@@ -88,8 +88,15 @@ func (c *CheckpointFenceCoordinator) execute(
 		return CheckpointFenceOperation{}, err
 	}
 	if request.Scope.Kind == "organization" && request.Action == CheckpointFenceRevoke {
-		if len(request.AuthorizationProof) == 0 || len(request.AuthorizationProof) > 64<<10 ||
+		if len(request.Participants) != 1 || len(request.AuthorizationProof) != ed25519.SignatureSize ||
 			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 {
+			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
+		}
+		expectedOperationID, operationErr := CheckpointRevocationOperationID(
+			request.Participants[0], request.Participants[0].RevocationEpoch+1,
+		)
+		if operationErr != nil || request.OperationID != expectedOperationID ||
+			request.ExpectedRevocationEpoch != request.Participants[0].RevocationEpoch {
 			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
 		}
 	} else if len(request.AuthorizationProof) != 0 {
@@ -231,6 +238,7 @@ func checkpointFenceTokenMatchesOperation(token CheckpointFenceToken, request Ch
 	return token.Scope == request.Scope && token.Action == request.Action &&
 		token.OperationID == request.OperationID && token.RequestSHA256 == request.RequestSHA256 &&
 		token.AuthorizationSHA256 == request.AuthorizationSHA256 &&
+		bytes.Equal(token.AuthorizationProof, request.AuthorizationProof) &&
 		token.WitnessSetVersion == request.WitnessSetVersion &&
 		sameStringSet(token.WitnessIDs, request.WitnessIDs) &&
 		sameCheckpointEndpointSet(token.Participants, request.Participants)
