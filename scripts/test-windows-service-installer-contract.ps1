@@ -249,6 +249,8 @@ try {
         original_metadata_json = (ConvertTo-Json -InputObject ([ordered]@{ schema = 1; product = 'WeDecent'; state_dir = $sourceState }))
         original_service_path = 'synthetic-original-service-command'
         updated_service_path = 'synthetic-updated-service-command'
+        identity = $copy.Identity
+        staging_complete = $true
         source_manifest_sha256 = $copy.SourceManifestSHA256
         source_stable_manifest_sha256 = $copy.SourceStableManifestSHA256
         destination_manifest_sha256 = $destinationManifest
