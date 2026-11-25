@@ -234,13 +234,17 @@ func runServiceInstall(args []string) error {
 		return errors.New("recovery trust file must be an existing bounded regular file")
 	}
 	authorityTrustSource, err := audit.LoadRecoveryAuthorityTrust(*recoveryTrustFile)
-	if err != nil { return fmt.Errorf("validate supplied recovery trust: %w", err) }
+	if err != nil {
+		return fmt.Errorf("validate supplied recovery trust: %w", err)
+	}
 	if _, err := audit.NewHTTPRecoveryAuthority(*recoveryAuthorityURL, *recoveryAuthorityPin, "validation-only", authorityTrustSource); err != nil {
 		return fmt.Errorf("validate recovery authority URL and SPKI pin: %w", err)
 	}
 
 	executable, err := os.Executable()
-	if err != nil { return fmt.Errorf("resolve wd-agent executable: %w", err) }
+	if err != nil {
+		return fmt.Errorf("resolve wd-agent executable: %w", err)
+	}
 
 	password := ""
 	stdinReader := bufio.NewReaderSize(os.Stdin, maxServicePasswordBytes+2)
@@ -271,65 +275,100 @@ func runServiceInstall(args []string) error {
 	}
 
 	tokenText, err := readServiceCredential(stdinReader)
-	if err != nil { return fmt.Errorf("read recovery bearer token from stdin: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read recovery bearer token from stdin: %w", err)
+	}
 	token := []byte(tokenText)
 	tokenText = ""
 	if len(token) < 32 || len(token) > 4096 || strings.TrimSpace(string(token)) != string(token) || strings.ContainsAny(string(token), "\r\n") {
-		for i := range token { token[i] = 0 }
+		for i := range token {
+			token[i] = 0
+		}
 		return errors.New("recovery bearer token must contain 32 to 4096 non-newline bytes")
 	}
 	// Provision only after all operator-supplied inputs are present and bounded.
 	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
-		for i := range token { token[i] = 0 }
+		for i := range token {
+			token[i] = 0
+		}
 		return fmt.Errorf("provision dedicated service state: %w", err)
 	}
 	trustPath := filepath.Join(*stateDir, "recovery-authority-trust.json")
 	trustSource, err := os.Open(*recoveryTrustFile)
-	if err != nil { for i := range token { token[i] = 0 }; return fmt.Errorf("open recovery trust file: %w", err) }
+	if err != nil {
+		for i := range token {
+			token[i] = 0
+		}
+		return fmt.Errorf("open recovery trust file: %w", err)
+	}
 	openedTrust, statErr := trustSource.Stat()
 	currentTrust, pathErr := os.Lstat(*recoveryTrustFile)
 	if statErr != nil || pathErr != nil || !os.SameFile(trustInfo, openedTrust) || !os.SameFile(openedTrust, currentTrust) {
 		_ = trustSource.Close()
-		for i := range token { token[i] = 0 }
+		for i := range token {
+			token[i] = 0
+		}
 		return errors.New("recovery trust file changed during secure open")
 	}
 	trustBytes, readErr := io.ReadAll(io.LimitReader(trustSource, 64*1024+1))
 	closeTrustErr := trustSource.Close()
 	if readErr != nil || closeTrustErr != nil || len(trustBytes) == 0 || len(trustBytes) > 64*1024 {
-		for i := range token { token[i] = 0 }
-		for i := range trustBytes { trustBytes[i] = 0 }
+		for i := range token {
+			token[i] = 0
+		}
+		for i := range trustBytes {
+			trustBytes[i] = 0
+		}
 		return errors.New("recovery trust file could not be read within bounds")
 	}
 	trustCopy, err := os.OpenFile(trustPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		for i := range token { token[i] = 0 }
-		for i := range trustBytes { trustBytes[i] = 0 }
+		for i := range token {
+			token[i] = 0
+		}
+		for i := range trustBytes {
+			trustBytes[i] = 0
+		}
 		return fmt.Errorf("create immutable service trust copy: %w", err)
 	}
 	_, trustWriteErr := trustCopy.Write(trustBytes)
 	trustCloseErr := trustCopy.Close()
-	for i := range trustBytes { trustBytes[i] = 0 }
+	for i := range trustBytes {
+		trustBytes[i] = 0
+	}
 	if trustWriteErr != nil || trustCloseErr != nil {
-		for i := range token { token[i] = 0 }
+		for i := range token {
+			token[i] = 0
+		}
 		_ = os.Remove(trustPath)
 		return errors.New("write service trust copy failed")
 	}
 	if _, err := audit.LoadRecoveryAuthorityTrust(trustPath); err != nil {
-		for i := range token { token[i] = 0 }
+		for i := range token {
+			token[i] = 0
+		}
 		_ = os.Remove(trustPath)
 		return fmt.Errorf("validate provisioned recovery trust: %w", err)
 	}
 	tokenPath := filepath.Join(*stateDir, "recovery-authority.token")
 	tokenFile, err := os.OpenFile(tokenPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		for i := range token { token[i] = 0 }
+		for i := range token {
+			token[i] = 0
+		}
 		return fmt.Errorf("create recovery bearer credential: %w", err)
 	}
 	_, writeErr := tokenFile.Write(token)
 	closeErr := tokenFile.Close()
-	for i := range token { token[i] = 0 }
-	if writeErr != nil { return fmt.Errorf("write recovery bearer credential: %w", writeErr) }
-	if closeErr != nil { return fmt.Errorf("close recovery bearer credential: %w", closeErr) }
+	for i := range token {
+		token[i] = 0
+	}
+	if writeErr != nil {
+		return fmt.Errorf("write recovery bearer credential: %w", writeErr)
+	}
+	if closeErr != nil {
+		return fmt.Errorf("close recovery bearer credential: %w", closeErr)
+	}
 	if err := winservice.RestrictDirectory(*stateDir, *account); err != nil {
 		return fmt.Errorf("protect recovery credentials: %w", err)
 	}
@@ -340,14 +379,17 @@ func runServiceInstall(args []string) error {
 		return fmt.Errorf("verify recovery trust copy ACL: %w", err)
 	}
 	authorityTrust, err := audit.LoadRecoveryAuthorityTrust(trustPath)
-	if err != nil { return fmt.Errorf("validate recovery authority trust: %w", err) }
+	if err != nil {
+		return fmt.Errorf("validate recovery authority trust: %w", err)
+	}
 	bearer, err := loadRecoveryAuthorityToken(tokenPath)
-	if err != nil { return fmt.Errorf("validate recovery authority bearer: %w", err) }
+	if err != nil {
+		return fmt.Errorf("validate recovery authority bearer: %w", err)
+	}
 	if _, err := audit.NewHTTPRecoveryAuthority(*recoveryAuthorityURL, *recoveryAuthorityPin, bearer, authorityTrust); err != nil {
 		return fmt.Errorf("validate recovery authority endpoint and credential: %w", err)
 	}
 	bearer = ""
-
 
 	serviceArgs := []string{
 		"service",
@@ -428,20 +470,32 @@ func runServiceInstall(args []string) error {
 
 func runServiceRun(args []string) error {
 	serviceName, serveArgs, err := extractServiceName(args)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	stateDir := defaultServiceStateDir()
 	for i := 0; i < len(serveArgs); i++ {
-		if serveArgs[i] == "--state" && i+1 < len(serveArgs) { stateDir = serveArgs[i+1]; i++; continue }
-		if strings.HasPrefix(serveArgs[i], "--state=") { stateDir = strings.TrimPrefix(serveArgs[i], "--state=") }
+		if serveArgs[i] == "--state" && i+1 < len(serveArgs) {
+			stateDir = serveArgs[i+1]
+			i++
+			continue
+		}
+		if strings.HasPrefix(serveArgs[i], "--state=") {
+			stateDir = strings.TrimPrefix(serveArgs[i], "--state=")
+		}
 	}
 	if err := verifyWindowsServiceState(stateDir); err != nil {
 		return fmt.Errorf("verify service state before loading recovery credentials: %w", err)
 	}
 	stateGuard, err := guardWindowsServiceState(stateDir)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer stateGuard()
 	cfg, err := parseServeConfig(serveArgs)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	if filepath.Clean(cfg.StateDir) != filepath.Clean(stateDir) {
 		return errors.New("service state directory changed during startup parsing")
 	}
@@ -551,12 +605,18 @@ func openServiceLog(stateDir string) (*os.File, error) {
 	path := filepath.Join(stateDir, "service.log")
 	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
 		f, createErr := createWindowsServiceLog(path)
-		if createErr != nil { return nil, fmt.Errorf("create protected service log: %w", createErr) }
+		if createErr != nil {
+			return nil, fmt.Errorf("create protected service log: %w", createErr)
+		}
 		return f, nil
 	} else if err != nil { return nil, err }
-	if err := verifyWindowsServiceFile(path); err != nil { return nil, err }
+	if err := verifyWindowsServiceFile(path); err != nil {
+		return nil, err
+	}
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
-	if err != nil { return nil, fmt.Errorf("open service log: %w", err) }
+	if err != nil {
+		return nil, fmt.Errorf("open service log: %w", err)
+	}
 	return f, nil
 }
 
@@ -589,14 +649,20 @@ func readHiddenLine(prompt string) (string, error) {
 	reader := bufio.NewReaderSize(os.Stdin, maxServicePasswordBytes+2)
 	line, err := reader.ReadSlice('\n')
 	if errors.Is(err, bufio.ErrBufferFull) {
-		for errors.Is(err, bufio.ErrBufferFull) { _, err = reader.ReadSlice('\n') }
+		for errors.Is(err, bufio.ErrBufferFull) {
+			_, err = reader.ReadSlice('\n')
+		}
 		fmt.Fprintln(os.Stderr)
 		return "", errors.New("service credential is too long")
 	}
 	fmt.Fprintln(os.Stderr)
-	if err != nil && len(line) == 0 { return "", err }
+	if err != nil && len(line) == 0 {
+		return "", err
+	}
 	line = []byte(strings.TrimRight(string(line), "\r\n"))
-	if len(line) > maxServicePasswordBytes { return "", errors.New("service credential is too long") }
+	if len(line) > maxServicePasswordBytes {
+		return "", errors.New("service credential is too long")
+	}
 	return string(line), nil
 }
 
