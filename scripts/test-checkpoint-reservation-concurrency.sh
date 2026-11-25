@@ -90,19 +90,19 @@ $$;
 
 create or replace function public.wd_c195_commit(p_operation_id text,p_action text) returns jsonb
 language sql security definer set search_path=''
-as $
+as $$
  select public.commit_checkpoint_operation(
   p_operation_id,
   (select fingerprint from public.checkpoint_operations where operation_id=p_operation_id),
   public.wd_c195_acks(p_operation_id,p_action)
  );
-$;
+$$;
 
 create or replace function public.wd_c195_reserve_fence(
  p_operation_id text,p_request_hex text,p_device text,p_primary_head_hex text
 ) returns jsonb
 language sql security definer set search_path=''
-as $
+as $$
  select public.reserve_checkpoint_fence_operation(
   p_operation_id,'finalize','22000000-0000-4000-8000-000000000195',
   '11000000-0000-4000-8000-000000000195',
@@ -110,7 +110,7 @@ as $
   public.wd_c195_participants(array[p_device]),
   1,pg_catalog.decode(p_primary_head_hex,'hex'),60
  );
-$;
+$$;
 SQL
 
 start() {
