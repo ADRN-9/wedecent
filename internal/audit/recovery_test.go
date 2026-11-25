@@ -368,6 +368,7 @@ func TestPairingRecoveryConcurrentGenerationReservationHasOneWinner(t *testing.T
 
 func TestPairingRecoveryMigratesLegacyLedgerWithDurableSequence(t *testing.T) {
 	dir := recoveryTestDir(t)
+	if _, err := OpenPairingRecovery(dir); err != nil { t.Fatal(err) }
 	record := testRecoveryRecord(strings.Repeat("6",32))
 	data, err := json.Marshal(pairingOutcomeSnapshot{Version:1, Records:[]PairingOutcome{record}})
 	if err != nil { t.Fatal(err) }
