@@ -133,8 +133,10 @@ begin
     v_fingerprint := pg_catalog.decode(v_reservation ->> 'fingerprint', 'hex');
 
     if v_fence.pending_operation_id = p_operation_id then
-        if v_fence.pending_fingerprint <> v_fingerprint then
-            raise exception 'checkpoint fence operation fingerprint conflict'
+        if v_fence.pending_fingerprint <> v_fingerprint
+           or v_fence.pending_primary_head_generation <> p_primary_head_generation
+           or v_fence.pending_primary_head_hash <> p_primary_head_sha256 then
+            raise exception 'checkpoint fence operation fingerprint or primary-head conflict'
                 using errcode = '23505';
         end if;
         return v_reservation || pg_catalog.jsonb_build_object(
