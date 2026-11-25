@@ -20,10 +20,11 @@ const (
 	pairingCredentialFile = "pairing-credential.json"
 	pairingCredentialVersion = 2
 	pairingCredentialLifetime = 15 * time.Minute
-	pairingLegacyMigrationDeadline = time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
 	pairingHashBytes    = 65 // 64 lowercase SHA-256 hex characters and LF.
 	consumedPairingHash = "0000000000000000000000000000000000000000000000000000000000000000"
 )
+
+var pairingLegacyMigrationDeadline = time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
 
 var (
 	ErrPairingSecretInvalid  = errors.New("pairing secret is invalid, missing, or already consumed")
