@@ -8,8 +8,6 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
-	"fmt"
-	"sort"
 )
 
 var (
@@ -199,12 +197,6 @@ func ValidateRecoveryCheckpoint(
 	}
 	if len(seen) < quorum {
 		return ErrRecoveryCheckpointQuorum
-	}
-	ids := make([]string, 0, len(seen))
-	for id := range seen { ids = append(ids, id) }
-	sort.Strings(ids)
-	if len(ids) == 0 {
-		return fmt.Errorf("%w: empty witness set", ErrRecoveryCheckpointQuorum)
 	}
 	return nil
 }
