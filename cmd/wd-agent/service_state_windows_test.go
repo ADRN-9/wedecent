@@ -512,8 +512,8 @@ func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
 		parentACE  string
 		wantAccept bool
 	}{
-		{name: "ProgramData-style create-child permission", parentACE: "(A;OICI;0x00000004;;;BU)", wantAccept: true},
-		{name: "untrusted delete-child permission", parentACE: "(A;OICI;0x00000040;;;BU)", wantAccept: false},
+		{name: "ProgramData-style create-child permission", parentACE: "(A;OICI;AD;;;BU)", wantAccept: true},
+		{name: "untrusted delete-child permission", parentACE: "(A;OICI;DC;;;BU)", wantAccept: false},
 		{name: "untrusted full control", parentACE: "(A;OICI;FA;;;BU)", wantAccept: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -572,8 +572,8 @@ func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
 			if tc.wantAccept {
 				trusted := map[string]bool{
 					user.User.Sid.String(): true,
-					"S-1-5-18": true,
-					"S-1-5-32-544": true,
+					"S-1-5-18":             true,
+					"S-1-5-32-544":         true,
 				}
 				strictErr := verifyWindowsStateAncestorDirectory(parent, trusted)
 				if strictErr == nil || !strings.Contains(strictErr.Error(), "ancestor grants pathname mutation rights") {
