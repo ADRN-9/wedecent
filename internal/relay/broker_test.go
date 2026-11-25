@@ -390,6 +390,8 @@ func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
 	const workers = 16
 	const rounds = 12
 	broker := NewBroker(workers, time.Minute)
+	var peersMu sync.Mutex
+	peers := make(map[net.Conn]net.Conn)
 	for round := 0; round < rounds; round++ {
 		start := make(chan struct{})
 		var registered sync.WaitGroup
@@ -433,7 +435,9 @@ func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
 					t.Errorf("take round %d: %v", round, err)
 					return
 				}
-				peer := peersForSlot(slot)
+				peersMu.Lock()
+				peer := peers[slot.conn]
+				peersMu.Unlock()
 				if peer == nil {
 					t.Errorf("round %d: claimed slot has no peer", round)
 					broker.Remove("shared-device", slot)
@@ -467,13 +471,3 @@ func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
 	}
 }
 
-var (
-	peersMu sync.Mutex
-	peers = make(map[net.Conn]net.Conn)
-)
-
-func peersForSlot(slot *slot) net.Conn {
-	peersMu.Lock()
-	defer peersMu.Unlock()
-	return peers[slot.conn]
-}
