@@ -3842,6 +3842,17 @@ func TestLifecycleFenceRecoversPartialRevocationAfterRestartAndLostPrimaryRespon
 	if err := client.Revoke(context.Background(), endpoint, next); !errors.Is(err, ErrCheckpointQuorum) {
 		t.Fatalf("partial witness quorum did not fail closed: %v", err)
 	}
+	operationID, err := CheckpointRevocationOperationID(endpoint, next)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, found, err := client.Fencing.Primary.LoadFence(
+		context.Background(), organizationCheckpointFenceScope(endpoint.OrganizationID), operationID,
+	)
+	if err != nil || !found || pending.Committed {
+		t.Fatalf("partial revocation reservation was not persisted: found=%v committed=%v err=%v", found, pending.Committed, err)
+	}
+	persistedProof := append([]byte(nil), pending.Token.AuthorizationProof...)
 	restartedFence := restartTestFenceCoordinator(t, client.Fencing)
 	client.Fencing = restartedFence
 	client.Primary = restartedFence.Primary.(*testAtomicCheckpointPrimary)
@@ -3849,6 +3860,12 @@ func TestLifecycleFenceRecoversPartialRevocationAfterRestartAndLostPrimaryRespon
 	atomicPrimary.loseCommitResponse = true
 	if err := client.Revoke(context.Background(), endpoint, next); err != nil {
 		t.Fatalf("restart did not recover exact pending revocation after lost primary response: %v", err)
+	}
+	committed, found, err := client.Fencing.Primary.LoadFence(
+		context.Background(), organizationCheckpointFenceScope(endpoint.OrganizationID), operationID,
+	)
+	if err != nil || !found || !committed.Committed || !bytes.Equal(persistedProof, committed.Token.AuthorizationProof) {
+		t.Fatalf("recovery did not reuse the exact persisted revocation proof: found=%v committed=%v err=%v", found, committed.Committed, err)
 	}
 	head, err := client.Primary.Head(context.Background(), endpoint)
 	if err != nil || head.RevocationEpoch != next {
