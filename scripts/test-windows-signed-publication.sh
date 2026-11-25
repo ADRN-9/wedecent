@@ -7,11 +7,36 @@ fail() {
 }
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-trust.sh"
+source "$ROOT/scripts/testlib/release-tag-fixture.sh"
+TEST_REPLAY_HOSTNAME='replay.example.test'
+TEST_REPLAY_PINS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+TEST_REPLAY_APPROVAL="$(wedecent_replay_authority_approval_digest "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS")"
+TEST_AUDIT_HOSTNAME='checkpoint-audit.example.test'
+TEST_AUDIT_PINS='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+TEST_AUDIT_APPROVAL="$(wedecent_checkpoint_audit_approval_digest "$TEST_AUDIT_HOSTNAME" "$TEST_AUDIT_PINS")"
+TEST_SOURCE_SHA="${GITHUB_SHA:-$(git -C "$ROOT" rev-parse --verify 'HEAD^{commit}')}"
+TEST_TREE_SHA="$(git -C "$ROOT" rev-parse --verify "${TEST_SOURCE_SHA}^{tree}")"
+export GITHUB_ACTIONS=true
+export GITHUB_REPOSITORY='ADRN-9/wedecent'
+export GITHUB_SHA="$TEST_SOURCE_SHA"
+export GITHUB_REF_TYPE=tag
+export GITHUB_REF_NAME='v0.3.0-rc.9'
+export WEDECENT_PRODUCTION_RELEASE_APPROVED=true
+export WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$TEST_REPLAY_HOSTNAME"
+export WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$TEST_REPLAY_PINS"
+export WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$TEST_REPLAY_APPROVAL"
+export WEDECENT_CHECKPOINT_AUDIT_HOSTNAME="$TEST_AUDIT_HOSTNAME"
+export WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256="$TEST_AUDIT_PINS"
+export WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256="$TEST_AUDIT_APPROVAL"
+export WEDECENT_EXPECTED_SOURCE_SHA="$TEST_SOURCE_SHA"
 PUBLISH="$ROOT/scripts/publish-windows-downloads.sh"
 DIST_ROOT="$ROOT/dist"
 mkdir -p -- "$DIST_ROOT"
 WORK="$(mktemp -d "$DIST_ROOT/.signed-publication-test.XXXXXX")"
-cleanup() { rm -rf -- "$WORK"; }
+wedecent_test_release_tags_init "$ROOT" "$WORK"
+wedecent_test_release_tag_add "$GITHUB_REF_NAME" "$TEST_SOURCE_SHA"
+cleanup() { wedecent_test_release_tags_cleanup; rm -rf -- "$WORK"; }
 trap cleanup EXIT
 
 RELEASE="$WORK/release"
@@ -24,14 +49,23 @@ scripts=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
 RELEASE_ARCHIVE='wedecent-v0.3.0-rc.9-windows-amd64.zip'
 INSTALLER_ARCHIVE='wedecent-v0.3.0-rc.9-windows-installer.zip'
 for name in "${binaries[@]}"; do
-  printf 'signed fixture: %s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" > "$RELEASE/$name"
+  printf 'signed fixture: %s\n%s\n%s\n%s\n%s\nWEDECENT_FAKE_AUTHENTICODE_SIGNATURE\n' "$name" "$TEST_REPLAY_HOSTNAME" "$TEST_REPLAY_PINS" "$TEST_AUDIT_HOSTNAME" "$TEST_AUDIT_PINS" > "$RELEASE/$name"
 done
-cat > "$RELEASE/VERSION.txt" <<'EOF_VERSION'
+cat > "$RELEASE/VERSION.txt" <<EOF_VERSION
 version=0.3.0-rc.9
-commit=test
+commit=$TEST_SOURCE_SHA
+source_commit=$TEST_SOURCE_SHA
+source_tree=$TEST_TREE_SHA
 built_at=1970-01-01T00:00:00Z
-go=test
+go=go1.27.0
 platform=windows/amd64
+build_mode=production
+replay_authority_hostname=$TEST_REPLAY_HOSTNAME
+replay_authority_spki_sha256=$TEST_REPLAY_PINS
+replay_authority_approval_sha256=$TEST_REPLAY_APPROVAL
+checkpoint_audit_hostname=$TEST_AUDIT_HOSTNAME
+checkpoint_audit_spki_sha256=$TEST_AUDIT_PINS
+checkpoint_audit_approval_sha256=$TEST_AUDIT_APPROVAL
 EOF_VERSION
 (
   cd "$RELEASE"
@@ -186,11 +220,33 @@ run_publish() {
 
 OUTPUT="$WORK/output.txt"
 : > "$CURL_LOG"
+cp "$RELEASE/VERSION.txt" "$WORK/VERSION.production"
+sed 's/^build_mode=production$/build_mode=diagnostic/' "$WORK/VERSION.production" > "$RELEASE/VERSION.txt"
+cp "$RELEASE/VERSION.txt" "$INSTALLER/VERSION.txt"
+if run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run >/dev/null 2>&1; then
+  fail 'public publisher accepted a diagnostic artifact'
+fi
+[[ ! -s "$CURL_LOG" ]] || fail 'diagnostic publication performed network requests'
+mv "$WORK/VERSION.production" "$RELEASE/VERSION.txt"
+cp "$RELEASE/VERSION.txt" "$INSTALLER/VERSION.txt"
+refresh_installer
+
+: > "$CURL_LOG"
 run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run > "$OUTPUT"
 grep -Fq 'Dry run: signed release and installer verified; no upload performed.' "$OUTPUT" ||
   fail 'publisher did not report signed dry-run success'
 [[ "$(wc -l < "$CURL_LOG" | tr -d '[:space:]')" == '4' ]] ||
   fail 'absent-object dry-run should perform exactly four remote-state probes'
+
+cp "$RELEASE/VERSION.txt" "$WORK/VERSION.tree-good"
+sed "s/^source_tree=$TEST_TREE_SHA$/source_tree=cccccccccccccccccccccccccccccccccccccccc/" \
+  "$WORK/VERSION.tree-good" > "$RELEASE/VERSION.txt"
+: > "$CURL_LOG"
+if run_publish WEDECENT_FAKE_CURL_MODE=normal --dry-run >/dev/null 2>&1; then
+  fail 'publisher accepted forged source-tree metadata'
+fi
+[[ ! -s "$CURL_LOG" ]] || fail 'forged source-tree rejection performed network requests'
+mv "$WORK/VERSION.tree-good" "$RELEASE/VERSION.txt"
 
 for failure_mode in http500 transport-error; do
   : > "$CURL_LOG"

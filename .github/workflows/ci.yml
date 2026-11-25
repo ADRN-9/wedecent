@@ -2,7 +2,15 @@ name: CI
 
 on:
   push:
+    branches:
+      - main
   pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -12,8 +20,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.0'
           cache: true
@@ -27,8 +37,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.0'
           cache: true
@@ -40,13 +52,40 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.0'
           cache: true
-      - name: Verify formatting
+      - name: Validate production release workflow syntax
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/production-release-build.yml
+      - name: Test immutable live release tags
+        run: bash ./scripts/test-release-tags.sh
+      - name: Test production release trust and output containment
+        run: |
+          bash ./scripts/test-release-trust.sh
+          bash ./scripts/test-release-build-safety.sh
+          python3 ./scripts/test-release-provenance.py
+      - name: Build diagnostic Linux release bundle
+        run: WEDECENT_BUILD_MODE=diagnostic ./scripts/build-linux-release.sh
+      - name: List Go files requiring formatting
+        run: |
+          gofmt -l cmd internal
+          gofmt -d cmd internal || true
+      - name: Verify Go formatting (read-only)
         run: test -z "$(gofmt -l cmd internal)"
+      - name: Stress Linux replay initialization and crash recovery
+        run: |
+          go test ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*)$' -count=3 -v
+          go test -race ./internal/portforward -run '^(TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayRecoversPendingInitializationAfterProcessTermination|TestFileReplayRejectsInitializationInterruptedBeforeMarker|TestFileReplayRejectsMalformedInitializationMetadata|TestFileReplayRejectsPartialInitializationWithoutMarker|TestLinuxFileReplayRejectsInsecurePreexistingPermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*)$' -count=1 -v
+      - name: Test port-forward session and transport packages
+        run: go test ./internal/session ./internal/portforward ./internal/transport
+      - name: Race-test port-forward session and transport packages
+        run: go test -race ./internal/session ./internal/portforward ./internal/transport
+      - name: Test all Go packages
+        run: go test ./...
       - name: Vet
         run: go vet ./...
       - name: Test Unix service packaging
@@ -68,11 +107,16 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Build diagnostic Windows release bundle
+        shell: bash
+        run: WEDECENT_BUILD_MODE=diagnostic ./scripts/build-windows-release.sh
       - name: Parse Windows installer and hardware scripts
         shell: pwsh
         run: |
@@ -99,6 +143,8 @@ jobs:
       - name: Verify Windows upgrade user-process preflight
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
+      - name: Test Windows replay-store security regressions
+        run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterRepeatedProcessCrashes|TestWindowsReplayRepairsBootstrapLockOwnerAfterInterruptedCreation|TestWindowsReplayRejectsUnauthorizedOrphanStagingACL|TestWindowsReplayRejectsInsecurePreexistingBootstrapLock|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
       - name: Test native Windows agent
         run: go test ./...
       - name: Build native Windows binaries
@@ -122,11 +168,15 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Build diagnostic macOS release bundle
+        run: WEDECENT_BUILD_MODE=diagnostic GOARCH=arm64 ./scripts/build-macos-release.sh
       - name: Test Unix service packaging
         run: sh ./scripts/test-unix-service-packaging.sh
       - name: Test native macOS code
@@ -148,8 +198,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v7
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version: '1.27.0'
           cache: true
@@ -167,8 +219,8 @@ jobs:
         run: ./scripts/test-windows-public-installer.sh
       - name: Verify reproducible Windows release bundle
         run: ./scripts/verify-windows-release-repro.sh
-      - name: Build Windows release bundle
-        run: ./scripts/build-windows-release.sh
+      - name: Build diagnostic Windows release bundle
+        run: WEDECENT_BUILD_MODE=diagnostic ./scripts/build-windows-release.sh
       - name: Verify release checksums
         run: |
           cd dist/wedecent-windows-amd64
@@ -185,8 +237,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
       - name: Install pinned Worker tooling
@@ -209,31 +263,85 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
-      - uses: denoland/setup-deno@v2
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
         with:
           deno-version: v2.x
-      - name: Check route authorization encoder syntax
-        run: node --check supabase/functions/_shared/route-authorization.mjs
+      - name: Check authorization and replay authority JavaScript syntax
+        run: |
+          node --check supabase/functions/_shared/route-authorization.mjs
+          node --check supabase/functions/_shared/port-forward-replay.mjs
+          node --check supabase/functions/_shared/route-authorization-signer.mjs
       - name: Test Go-compatible route authorization signing
         run: node --test supabase/functions/_shared/route-authorization.test.mjs
+      - name: Test non-extractable route authorization signer
+        run: node --test supabase/functions/_shared/route-authorization-signer.test.mjs
+      - name: Test Go-compatible remote replay authority encoding
+        run: node --test supabase/functions/_shared/port-forward-replay.test.mjs
       - name: Type-check route authorization Edge Function
         run: deno check supabase/functions/route-authorization/index.ts
+      - name: Type-check independent replay authority Edge Function
+        run: deno check supabase/functions/port-forward-replay/index.ts
+      - name: Type-check authenticated checkpoint finalization audit Edge Function
+        run: deno check supabase/functions/port-forward-finalization-audit/index.ts
+      - name: Test checkpoint finalization audit trust-anchor enforcement
+        run: deno test --check --allow-env --allow-read=supabase/tests/fixtures/checkpoint-audit-canonical-vectors.json,testdata/portforward/checkpoint_crypto_vectors.json supabase/functions/port-forward-finalization-audit/index_test.ts
 
   supabase-db:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v6
-      - uses: supabase/setup-cli@v1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
         with:
           version: 2.117.0
       - name: Test registry fallback and throttle retry policy
         run: ./scripts/test-start-supabase-db-ci.sh
+      - name: Select an available isolated Supabase database port
+        run: |
+          python3 - <<'PY'
+          import socket
+          from pathlib import Path
+
+          config = Path("supabase/config.toml")
+          text = config.read_text()
+          if "[db]" in text:
+              raise SystemExit("CI port selection expects no committed [db] override")
+          with socket.socket() as probe:
+              probe.bind(("0.0.0.0", 0))
+              port = probe.getsockname()[1]
+          config.write_text(text.rstrip() + f"\n\n[db]\nport = {port}\n")
+          print(f"Selected disposable Supabase database port: {port}")
+          PY
       - name: Start disposable local Supabase database
         run: ./scripts/start-supabase-db-ci.sh
+      - name: Grant pgsodium keymaker to the disposable test role
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_container="$(docker ps --filter 'name=supabase_db_wedecent-local' --format '{{.Names}}' | head -n 1)"
+          if [[ -z "$db_container" ]]; then
+            echo "disposable Supabase database container not found" >&2
+            exit 1
+          fi
+          docker exec "$db_container" psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+            -c 'GRANT pgsodium_keymaker TO postgres WITH ADMIN OPTION'
       - name: Run database pgTAP tests
         run: env -u SUPABASE_INTERNAL_IMAGE_REGISTRY supabase test db
+      - name: Install PostgreSQL client for independent-session tests
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+      - name: Test port-forward authorization transaction races
+        run: bash ./scripts/test-port-forward-db-concurrency.sh
+      - name: Test atomic checkpoint reservation and recovery across independent sessions
+        run: bash ./scripts/test-checkpoint-reservation-concurrency.sh

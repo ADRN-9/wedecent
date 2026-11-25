@@ -1,3 +1,14 @@
 # Disposable local/CI Supabase stack only.
 # This identifier is intentionally not a hosted project reference.
 project_id = "wedecent-local"
+
+
+[functions.port-forward-replay]
+# The function authenticates each request with the enrolled device Ed25519 key
+# and independently verifies the control-plane capability signature.
+verify_jwt = false
+
+
+[functions.port-forward-finalization-audit]
+# The endpoint explicitly verifies Supabase Auth before calling the privileged RPC.
+verify_jwt = false
