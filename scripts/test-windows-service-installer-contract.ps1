@@ -60,8 +60,9 @@ Assert-Contains $installer 'Existing service state location is not authenticated
 Assert-Contains $installer 'Invoke-WeDecentStateMigration' 'Upgrade must use the authenticated journaled state migration coordinator.'
 Assert-Contains $installer 'Recover-WeDecentStateMigration' 'Installer must recover interrupted migration transactions before proceeding.'
 Assert-Contains $installer 'Existing SCM command line does not match the authenticated state_dir metadata' 'Upgrade must verify the SCM state path matches authenticated metadata.'
-Assert-Contains $installer 'original_metadata_json' 'Migration rollback must retain authenticated original installer metadata.'
-Assert-Contains $installer 'source_manifest_sha256' 'Migration journal must retain source integrity evidence.'
+$migrationModuleText = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $installerPath) 'StateMigration.psm1') -Raw
+Assert-Contains $migrationModuleText 'original_metadata_json' 'Migration rollback must retain authenticated original installer metadata.'
+Assert-Contains $migrationModuleText 'source_manifest_sha256' 'Migration journal must retain source integrity evidence.'
 Assert-Contains $installer 'Existing SCM command line does not match the authenticated state_dir metadata' 'Upgrade must verify the SCM state path matches authenticated metadata.'
 Assert-Contains $uninstaller "[string]`$StateDir = (Join-Path `$InstallDir 'data\agent')" 'Uninstaller default must match the fresh-install state location.'
 Assert-Contains $uninstaller '$StateDir = $metadataStateDir' 'Uninstaller must resolve existing state from authenticated metadata.'
