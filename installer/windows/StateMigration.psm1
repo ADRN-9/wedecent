@@ -578,8 +578,12 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal path does not match the protected journal file.'
     }
     [void](ConvertTo-WeDecentMigrationSid -Sid ([string]$journal.service_sid))
-    if (-not [string]::IsNullOrWhiteSpace([string]$journal.installer_sid)) {
-        [void](ConvertTo-WeDecentMigrationSid -Sid ([string]$journal.installer_sid))
+    $installerSid = $null
+    if ($null -ne $journal.PSObject.Properties['installer_sid']) {
+        $installerSid = [string]$journal.installer_sid
+    }
+    if (-not [string]::IsNullOrWhiteSpace($installerSid)) {
+        [void](ConvertTo-WeDecentMigrationSid -Sid $installerSid)
     }
     if ([string]$journal.service_name -notmatch '^[A-Za-z0-9_.-]{1,128}$' -or
         [string]$journal.service_start_mode -notin @('Boot', 'System', 'Auto', 'Manual', 'Disabled')) {
@@ -890,7 +894,11 @@ function Restore-WeDecentMigrationTransaction {
             [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
         }
         if ($partialStaging) {
-            [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid -InstallerSid $Journal.installer_sid)
+            $installerSid = $null
+            if ($null -ne $Journal.PSObject.Properties['installer_sid']) {
+                $installerSid = [string]$Journal.installer_sid
+            }
+            [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid -InstallerSid $installerSid)
         } else {
             $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
             $digest = Get-WeDecentMigrationStableManifestDigest -Manifest $manifest
