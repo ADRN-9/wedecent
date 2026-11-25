@@ -174,7 +174,16 @@ $journalPath = Join-Path $migrationRoot 'migration.json'
 New-Item -ItemType Directory -Path (Join-Path $sourceState 'nested') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $sourceState 'empty') -Force | Out-Null
 [IO.File]::WriteAllText((Join-Path $sourceState 'identity.key.dpapi'), 'synthetic-identity-bytes')
-[IO.File]::WriteAllText((Join-Path $sourceState 'identity.crt'), 'synthetic-ed25519-certificate-bytes')
+[IO.File]::WriteAllText((Join-Path $sourceState 'identity.crt'), @'
+-----BEGIN CERTIFICATE-----
+MIHwMIGjoAMCAQICAQEwBQYDK2VwMCIxIDAeBgNVBAMMF1dlRGVjZW50IE1pZ3Jh
+dGlvbiBUZXN0MB4XDTI2MTEyNDE4MzU0MFoXDTI2MTIyNTE4MzU0MFowIjEgMB4G
+A1UEAwwXV2VEZWNlbnQgTWlncmF0aW9uIFRlc3QwKjAFBgMrZXADIQCRJaD9Qjmc
+xe4ZJi7tYn9YjbmEcq006Jqdt84yqvxGOTAFBgMrZXADQQB9mOP2iLiGwpmm1Nx/
+MCUXZEkGzLLaDyDfcSHMSOfJDwj04cxFwkZesO7UQRjkl5BqwNSrkX4v/tJneBY0
+L3YC
+-----END CERTIFICATE-----
+'@)
 $serviceSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 Set-WeDecentMigrationDirectoryAcl -Path $sourceState -ServiceSid $serviceSid
 [IO.File]::WriteAllText((Join-Path $sourceState 'nested/recovery-authority.token'), 'synthetic-recovery-bytes')
