@@ -234,30 +234,32 @@ func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryA
 	if err := authorityTrust.Validate(); err != nil {
 		return nil, err
 	}
-	recovery, err := OpenPairingRecovery(stateDir)
+	if stateDir == "" {
+		return nil, errors.New("pairing recovery state directory is required")
+	}
+	dir := filepath.Clean(stateDir)
+	if err := trust.VerifyPairingStatePath(dir); err != nil {
+		return nil, err
+	}
+	if err := syncAuditDirectory(dir); err != nil {
+		return nil, err
+	}
+	recovery := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName),
+		authority: authority, authorityScope: scope, authorityTrust: authorityTrust, migrationPending: true}
+	unlock, err := lockFile(recovery.path)
 	if err != nil {
 		return nil, err
 	}
-	recovery.authority = authority
-	recovery.authorityScope = scope
-	recovery.authorityTrust = authorityTrust
-	archive, err := recovery.readArchive()
-	if err == nil {
-		if archive.LastSequence == 0 {
-			head, loadErr := authority.LoadCheckpoint(context.Background(), scope)
-			if loadErr != nil {
-				return nil, fmt.Errorf("%w: verify empty migration state: %v", ErrRecoveryAuthorityUnavailable, loadErr)
-			}
-			if head.Scope != scope || !emptyRecoveryCheckpoint(head) {
-				return nil, ErrRecoveryMigrationUntrusted
-			}
-		}
-		return recovery, nil
-	}
-	if !errors.Is(err, ErrRecoveryMigrationUntrusted) {
+	defer unlock()
+	if err := recovery.loadArchiveKey(); err != nil {
 		return nil, err
 	}
-	recovery.migrationPending = true
+	if err := trust.VerifyPairingStatePath(recovery.path + ".lock"); err != nil {
+		return nil, err
+	}
+	if _, err := recovery.read(); err != nil {
+		return nil, fmt.Errorf("legacy active recovery ledger cannot be read for operator migration: %w", err)
+	}
 	return recovery, nil
 }
 
