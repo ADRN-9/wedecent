@@ -11,8 +11,10 @@ import (
 func recoveryAuthorityFixture(t *testing.T) (RecoveryCheckpointRequest, RecoveryCheckpoint, map[string]ed25519.PublicKey) {
 	t.Helper()
 	var previous, state [sha256.Size]byte
-	copy(previous[:], sha256.Sum256([]byte("previous-state"))[:])
-	copy(state[:], sha256.Sum256([]byte("new-state"))[:])
+	previousDigest := sha256.Sum256([]byte("previous-state"))
+	stateDigest := sha256.Sum256([]byte("new-state"))
+	copy(previous[:], previousDigest[:])
+	copy(state[:], stateDigest[:])
 	request, err := NewRecoveryCheckpointRequest("pairing-recovery/device-a", 7, previous, state)
 	if err != nil {
 		t.Fatal(err)
