@@ -585,6 +585,14 @@ func (r *PairingRecovery) CompactResolved() error {
 	if err != nil {
 		return err
 	}
+	if r.authority != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = r.verifyActiveLedgerSnapshot(ctx, snapshot)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
 	archive, err := r.readArchive()
 	if err != nil {
 		return err
