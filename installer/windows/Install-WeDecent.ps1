@@ -9,6 +9,10 @@ param(
     [ValidatePattern('^[A-Za-z0-9_.-]{1,64}$')]
     [string]$ServiceAccountName = 'WeDecentSvc',
     [string]$WebRelay = 'https://relay.wedecent.com',
+    [string]$RecoveryAuthorityUrl = $env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL,
+    [string]$RecoveryAuthoritySPKISHA256 = $env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256,
+    [string]$RecoveryAuthorityTrustFile,
+    [Security.SecureString]$RecoveryAuthorityBearerToken,
     [ValidateRange(1, 32)]
     [int]$RelaySlots = 4,
     [string]$DeviceName = $env:COMPUTERNAME,
@@ -424,7 +428,8 @@ function Quote-WindowsArgument {
 function Invoke-AgentServiceInstall {
     param(
         [Parameter(Mandatory = $true)][string]$AgentPath,
-        [Parameter(Mandatory = $true)][Security.SecureString]$Password
+        [Parameter(Mandatory = $true)][Security.SecureString]$Password,
+        [Parameter(Mandatory = $true)][Security.SecureString]$RecoveryBearerToken
     )
     $arguments = @(
         'service', 'install',
@@ -438,6 +443,10 @@ function Invoke-AgentServiceInstall {
         "--web-relay=$WebRelay",
         "--relay-slots=$RelaySlots",
         "--shell=$Shell",
+        "--pairing-recovery-authority-url=$RecoveryAuthorityUrl",
+        "--pairing-recovery-authority-spki-sha256=$RecoveryAuthoritySPKISHA256",
+        "--pairing-recovery-trust=$RecoveryAuthorityTrustFile",
+        '--pairing-recovery-authority-token-stdin',
         '--automatic=true',
         '--start=true'
     )
@@ -449,15 +458,24 @@ function Invoke-AgentServiceInstall {
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw 'Failed to start wd-agent.exe service installer' }
-    $plain = $null
+    $plainPassword = $null
+    $plainBearer = $null
     try {
-        $plain = ConvertFrom-SecureStringTransient $Password
-        $process.StandardInput.WriteLine($plain)
+        $plainPassword = ConvertFrom-SecureStringTransient $Password
+        $plainBearer = ConvertFrom-SecureStringTransient $RecoveryBearerToken
+        $process.StandardInput.WriteLine($plainPassword)
+        $process.StandardInput.WriteLine($plainBearer)
         $process.StandardInput.Close()
         $process.WaitForExit()
         $exitCode = $process.ExitCode
     } finally {
-        $plain = $null
+        $plainPassword = $null
+        $plainBearer = $null
+        if (-not $process.HasExited) {
+            try { $process.StandardInput.Close() } catch {}
+            try { $process.Kill() } catch {}
+            $process.WaitForExit()
+        }
         $process.Dispose()
     }
     if ($exitCode -ne 0) {
@@ -712,6 +730,45 @@ if ($service) {
 
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Install WeDecent $version")) { return }
 
+    if ([string]::IsNullOrWhiteSpace($RecoveryAuthorityUrl)) {
+        throw 'A recovery-authority HTTPS origin is required through -RecoveryAuthorityUrl or WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL.'
+    }
+    $authorityUri = $null
+    if (-not [Uri]::TryCreate($RecoveryAuthorityUrl, [UriKind]::Absolute, [ref]$authorityUri) -or
+        $authorityUri.Scheme -ne 'https' -or [string]::IsNullOrEmpty($authorityUri.Host) -or
+        $authorityUri.UserInfo -or $authorityUri.Query -or $authorityUri.Fragment -or
+        ($authorityUri.AbsolutePath -ne '' -and $authorityUri.AbsolutePath -ne '/')) {
+        throw 'RecoveryAuthorityUrl must be an origin-only HTTPS URL.'
+    }
+    if ($RecoveryAuthoritySPKISHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw 'RecoveryAuthoritySPKISHA256 must contain exactly 64 hexadecimal characters.'
+    }
+    if ([string]::IsNullOrWhiteSpace($RecoveryAuthorityTrustFile)) {
+        throw 'RecoveryAuthorityTrustFile is required.'
+    }
+    $trustItem = Get-Item -LiteralPath $RecoveryAuthorityTrustFile -Force -ErrorAction Stop
+    if ($trustItem.PSIsContainer -or
+        ($trustItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'RecoveryAuthorityTrustFile must be a regular, non-reparse file.'
+    }
+    $RecoveryAuthorityTrustFile = $trustItem.FullName
+    if ($null -eq $RecoveryAuthorityBearerToken) {
+        $RecoveryAuthorityBearerToken = Read-Host -Prompt 'Short-lived recovery-authority bearer token' -AsSecureString
+    }
+    if ($null -eq $RecoveryAuthorityBearerToken -or $RecoveryAuthorityBearerToken.Length -lt 32 -or
+        $RecoveryAuthorityBearerToken.Length -gt 4096) {
+        throw 'RecoveryAuthorityBearerToken must contain 32 to 4096 characters.'
+    }
+    $bearerForValidation = ConvertFrom-SecureStringTransient $RecoveryAuthorityBearerToken
+    try {
+        if ($bearerForValidation.Trim() -ne $bearerForValidation -or
+            $bearerForValidation.IndexOf([char]13) -ge 0 -or $bearerForValidation.IndexOf([char]10) -ge 0) {
+            throw 'RecoveryAuthorityBearerToken must not contain leading, trailing or newline characters.'
+        }
+    } finally {
+        $bearerForValidation = $null
+    }
+
     $installDirExisted = Test-Path -LiteralPath $InstallDir -PathType Container
     $stateParent = Split-Path -Parent $StateDir
     $stateParentExisted = Test-Path -LiteralPath $stateParent -PathType Container
@@ -767,7 +824,7 @@ if ($service) {
 
         Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
         Assert-InstalledBinaries -Destinations $binaryDestinations
-        Invoke-AgentServiceInstall -AgentPath $agentDestination -Password $password
+        Invoke-AgentServiceInstall -AgentPath $agentDestination -Password $password -RecoveryBearerToken $RecoveryAuthorityBearerToken
 
         $finalService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
         if (-not $finalService -or $finalService.State -ne 'Running') {
