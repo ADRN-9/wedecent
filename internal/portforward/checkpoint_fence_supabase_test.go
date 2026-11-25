@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"encoding/hex"
 )
 
 func c197Key(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
@@ -40,6 +41,7 @@ func c197Ack(t *testing.T, token CheckpointFenceToken, id string, privateKey ed2
 func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T) {
 	primaryPublic, primaryPrivate := c197Key(t)
 	headPublic, _ := c197Key(t)
+	revocationPublic, _ := c197Key(t)
 	witnesses := make([]CheckpointFenceWitnessTrust, 3)
 	for i, id := range []string{"witness-a", "witness-b", "witness-c"} {
 		publicKey, _ := c197Key(t)
@@ -49,6 +51,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 		Hostname: "localhost", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64),
 		ServiceRoleKey: "test-service-role-key", ActorID: "11111111-1111-4111-8111-111111111111",
 		PrimarySigner: primaryPrivate, CheckpointHeadKey: headPublic,
+		RevocationAuthorizationKey: revocationPublic,
 		WitnessSetVersion: "c197-test", Witnesses: witnesses,
 	}
 	primary, err := NewSupabaseCheckpointFencePrimary(config)
@@ -63,6 +66,15 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 		t.Fatalf("primary/checkpoint-head key reuse accepted: %v", err)
 	}
 	config.CheckpointHeadKey = headPublic
+	config.RevocationAuthorizationKey = primaryPublic
+	if _, err := NewSupabaseCheckpointFencePrimary(config); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("revocation proof key reused primary signing key: %v", err)
+	}
+	config.RevocationAuthorizationKey = revocationPublic
+	config.Witnesses[0].PublicKey = revocationPublic
+	if _, err := NewSupabaseCheckpointFencePrimary(config); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("witness reused revocation authorization key: %v", err)
+	}
 	config.Witnesses[0].PublicKey = primaryPublic
 	if _, err := NewSupabaseCheckpointFencePrimary(config); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("witness reused primary signing key: %v", err)
@@ -181,6 +193,48 @@ func TestSupabaseCheckpointFenceWireRoundTripPreservesSignedFields(t *testing.T)
 		decodedAck.OperationID != ack.OperationID || decodedAck.WitnessKeyID != ack.WitnessKeyID ||
 		decodedAck.CommittedAtUnixMS != ack.CommittedAtUnixMS || !bytes.Equal(decodedAck.Signature, ack.Signature) {
 		t.Fatal("acknowledgement wire round trip changed signed fields")
+	}
+}
+
+
+func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *testing.T) {
+	revocationPublic, revocationPrivate := c197Key(t)
+	primary := &SupabaseCheckpointFencePrimary{revocationAuthorizationKey: revocationPublic}
+	endpoint := CheckpointEndpoint{
+		DeviceID: "wd_gggggggggggggggg", AccountID: "11111111-1111-4111-8111-111111111111",
+		OrganizationID: "22222222-2222-4222-8222-222222222222", RevocationEpoch: 8,
+	}
+	next := endpoint.RevocationEpoch + 1
+	fingerprint := checkpointRevocationFingerprint(endpoint, next)
+	operationID := checkpointFenceOperationID(CheckpointFenceRevoke, hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
+	participants := []CheckpointEndpoint{endpoint}
+	message, err := CheckpointRevocationAuthorizationMessage(CheckpointRevocationAuthorizationRequest{
+		Endpoint: endpoint, NextEpoch: next, OperationID: operationID, Participants: participants,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof := ed25519.Sign(revocationPrivate, message)
+	digest := sha256.Sum256(proof)
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, proof, digest); err != nil {
+		t.Fatalf("valid operation-bound proof rejected: %v", err)
+	}
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID+"0", participants, proof, digest); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("proof replayed against another operation: %v", err)
+	}
+	mutated := append([]byte(nil), proof...)
+	mutated[0] ^= 0x80
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, mutated, sha256.Sum256(mutated)); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("forged proof accepted: %v", err)
+	}
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, proof, sha256.Sum256([]byte("wrong"))); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("proof digest mismatch accepted: %v", err)
+	}
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, []CheckpointEndpoint{endpoint, endpoint}, proof, digest); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("mismatched participant vector accepted: %v", err)
+	}
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceFinalize, operationID, participants, proof, digest); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("revocation proof accepted for finalize action: %v", err)
 	}
 }
 
