@@ -493,13 +493,13 @@ func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *test
 	base := CheckpointFenceRequest{
 		Scope: scope, Participants: []CheckpointEndpoint{endpoint},
 		ExpectedFenceGeneration: fenceHead.Generation, ExpectedRevocationEpoch: fenceHead.RevocationEpoch,
-		RequestSHA256: sha256.Sum256([]byte("concurrent-fence-request")),
-		AuthorizationSHA256: sha256.Sum256([]byte("concurrent-fence-authorization")),
+		RequestSHA256:         sha256.Sum256([]byte("concurrent-fence-request")),
+		AuthorizationSHA256:   sha256.Sum256([]byte("concurrent-fence-authorization")),
 		PrimaryHeadGeneration: fenceHead.Generation + 1, PrimaryHeadSHA256: primaryHeadDigest,
-		PreviousFenceSHA256: fenceHead.FenceDigest,
-		WitnessSetVersion: coordinator.WitnessSetVersion,
-		WitnessIDs: checkpointFenceClientIDs(coordinator.Witnesses),
-		ExpiresAtUnixMS: time.Now().Add(time.Minute).UnixMilli(),
+		PreviousFenceSHA256:  fenceHead.FenceDigest,
+		WitnessSetVersion:    coordinator.WitnessSetVersion,
+		WitnessIDs:           checkpointFenceClientIDs(coordinator.Witnesses),
+		ExpiresAtUnixMS:      time.Now().Add(time.Minute).UnixMilli(),
 	}
 	finalize := base
 	finalize.Action = CheckpointFenceFinalize
