@@ -1,0 +1,32 @@
+{
+  "vectors": [
+    {
+      "name": "minimum-safe-integer",
+      "input": {"n": -9007199254740991},
+      "canonical": "{\"n\":-9007199254740991}",
+      "sha256": "d49d713821fc149f81ef6ca8054beeba696f5da052f0ab3e2d773808c5a9d625"
+    },
+    {
+      "name": "maximum-safe-integer",
+      "input": {"n": 9007199254740991},
+      "canonical": "{\"n\":9007199254740991}",
+      "sha256": "e1da48c6a6089f06ecb4e0a2259e658e3786b2420f52baccdf929ec6460d7b41"
+    },
+    {
+      "name": "nested-numeric-boundaries",
+      "input": {"z": [0, 1, -1, 9007199254740991], "a": {"b": true, "n": -9007199254740991, "s": "ok"}},
+      "canonical": "{\"a\":{\"b\":true,\"n\":-9007199254740991,\"s\":\"ok\"},\"z\":[0,1,-1,9007199254740991]}",
+      "sha256": "c50d2e3cc33a7c29a3ea6dbf13b38a8f86d450b5c2872ed771d0b81c77d53b79"
+    },
+    {
+      "name": "arrays-and-escaped-keys",
+      "input": {"~key": [null, false, {"a/b": "x\ny"}], "a": 2},
+      "canonical": "{\"a\":2,\"~key\":[null,false,{\"a/b\":\"x\\ny\"}]}",
+      "sha256": "68795cac111b83f5ca4f9adc793d09ab10732a7c7291baa5b88ec1c4542a1ed0"
+    }
+  ],
+  "invalid": [
+    {"name": "unsafe-positive-integer", "input": {"n": 9007199254740992}},
+    {"name": "fractional-number", "input": {"n": 1.5}}
+  ]
+}

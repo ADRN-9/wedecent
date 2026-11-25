@@ -191,6 +191,28 @@ func (c *Client) GetRouterStats(ctx context.Context) (v1.RouterStats, error) {
 	return out, err
 }
 
+func (c *Client) StartPortForward(ctx context.Context, req v1.PortForwardStartRequest) (v1.PortForwardStatus, error) {
+	var out v1.PortForwardStatus
+	err := c.call(ctx, v1.MethodPortForwardStart, req, &out)
+	return out, err
+}
+
+func (c *Client) StopPortForward(ctx context.Context, req v1.PortForwardStopRequest) error {
+	return c.call(ctx, v1.MethodPortForwardStop, req, nil)
+}
+
+func (c *Client) GetPortForwardStatus(ctx context.Context, req v1.PortForwardStatusRequest) (v1.PortForwardStatus, error) {
+	var out v1.PortForwardStatus
+	err := c.call(ctx, v1.MethodPortForwardStatus, req, &out)
+	return out, err
+}
+
+func (c *Client) ListPortForwards(ctx context.Context) ([]v1.PortForwardStatus, error) {
+	var out []v1.PortForwardStatus
+	err := c.call(ctx, v1.MethodPortForwardList, nil, &out)
+	return out, err
+}
+
 func (c *Client) call(parent context.Context, method string, params any, out any) error {
 	if parent == nil {
 		return fmt.Errorf("%w: context is required", ErrInvalidConfig)

@@ -18,7 +18,12 @@ func routeTypedApplicationFrame(
 	terminalServer *typedTerminalServer,
 	fileServer *typedFileServer,
 	frame protocol.Frame,
+	forwardServers ...*typedPortForwardServer,
 ) (bool, error) {
+	var forwardServer *typedPortForwardServer
+	if len(forwardServers) > 0 {
+		forwardServer = forwardServers[0]
+	}
 	if !isTypedTerminalFrame(frame.Type) {
 		return false, nil
 	}
@@ -37,6 +42,14 @@ func routeTypedApplicationFrame(
 		switch open.Kind {
 		case protocol.StreamKindTerminal:
 			return routeTypedTerminalFrame(capabilities, terminalServer, frame)
+		case protocol.StreamKindPortForwardParent, protocol.StreamKindPortForwardChild:
+			if !hasSessionCapability(capabilities, protocol.CapabilityPortForwardV1) {
+				return true, fmt.Errorf("%w: forwarding stream received without negotiation", errTypedStreamProtocol)
+			}
+			if forwardServer == nil {
+				return true, fmt.Errorf("%w: typed forwarding server unavailable", errTypedStreamProtocol)
+			}
+			return true, forwardServer.Handle(ctx, frame)
 		case protocol.StreamKindFileUpload, protocol.StreamKindFileDownload:
 			if !hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1) {
 				return true, fmt.Errorf("%w: file stream received without negotiation", errTypedStreamProtocol)
@@ -57,6 +70,14 @@ func routeTypedApplicationFrame(
 	switch kind {
 	case protocol.StreamKindTerminal:
 		return routeTypedTerminalFrame(capabilities, terminalServer, frame)
+	case protocol.StreamKindPortForwardParent, protocol.StreamKindPortForwardChild:
+		if !hasSessionCapability(capabilities, protocol.CapabilityPortForwardV1) {
+			return true, fmt.Errorf("%w: forwarding stream received without negotiation", errTypedStreamProtocol)
+		}
+		if forwardServer == nil {
+			return true, fmt.Errorf("%w: typed forwarding server unavailable", errTypedStreamProtocol)
+		}
+		return true, forwardServer.Handle(ctx, frame)
 	case protocol.StreamKindFileUpload, protocol.StreamKindFileDownload:
 		if !hasSessionCapability(capabilities, protocol.CapabilityFileTransferV1) {
 			return true, fmt.Errorf("%w: file stream received without negotiation", errTypedStreamProtocol)

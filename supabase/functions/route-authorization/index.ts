@@ -1,9 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import {
-  calculateJwkThumbprint,
-  exportJWK,
-  importPKCS8,
-} from "npm:jose@6";
+import { loadRouteAuthorizationSigner } from "../_shared/route-authorization-signer.mjs";
 
 import {
   generateRouteAuthorizationJTI,
@@ -44,47 +40,31 @@ function serviceKey(): string {
   throw new Error("Supabase secret key is not configured");
 }
 
-function signingKeyPEM(): string {
-  const der =
-    Deno.env
-      .get("WEDECENT_ROUTE_AUTHORIZATION_PKCS8_B64")
-      ?.trim() ?? "";
-
-  if (!der || !/^[A-Za-z0-9+/=]+$/.test(der)) {
-    throw new Error(
-      "WEDECENT_ROUTE_AUTHORIZATION_PKCS8_B64 is not configured",
-    );
+function signingKeyPKCS8Base64(): string {
+  const value = Deno.env.get("WEDECENT_ROUTE_AUTHORIZATION_PKCS8_B64")?.trim() ?? "";
+  if (!value || !/^[A-Za-z0-9+/]+={0,2}$/.test(value)) {
+    throw new Error("WEDECENT_ROUTE_AUTHORIZATION_PKCS8_B64 is not configured");
   }
-
-  const lines = der.match(/.{1,64}/g) ?? [];
-
-  return (
-    "-----BEGIN PRIVATE KEY-----\n" +
-    lines.join("\n") +
-    "\n-----END PRIVATE KEY-----"
-  );
+  return value;
 }
 
-let signerPromise:
-  Promise<{ key: CryptoKey; kid: string }> | null = null;
-
-async function signer():
-  Promise<{ key: CryptoKey; kid: string }> {
-  if (!signerPromise) {
-    signerPromise = (async () => {
-      const key = await importPKCS8(
-        signingKeyPEM(),
-        "EdDSA",
-        { extractable: true },
-      );
-
-      const jwk = await exportJWK(key);
-      const kid = await calculateJwkThumbprint(jwk, "sha256");
-
-      return { key, kid };
-    })();
+function signingPublicKeyBase64URL(): string {
+  const value = Deno.env.get("WEDECENT_ROUTE_AUTHORIZATION_PUBLIC_KEY_B64URL")?.trim() ?? "";
+  if (!value || !/^[A-Za-z0-9_-]{43}$/.test(value)) {
+    throw new Error("WEDECENT_ROUTE_AUTHORIZATION_PUBLIC_KEY_B64URL is not configured");
   }
+  return value;
+}
 
+let signerPromise: Promise<{ key: CryptoKey; kid: string }> | null = null;
+
+async function signer(): Promise<{ key: CryptoKey; kid: string }> {
+  if (!signerPromise) {
+    signerPromise = loadRouteAuthorizationSigner(
+      signingKeyPKCS8Base64(),
+      signingPublicKeyBase64URL(),
+    );
+  }
   return signerPromise;
 }
 
