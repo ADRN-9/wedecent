@@ -1468,11 +1468,14 @@ function Invoke-WeDecentStateMigration {
     Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
     [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
     Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+    $mutationLease = $null
     try {
+        $mutationLease = New-WeDecentMigrationMutationLease -Directories $directoryAnchors
+        Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
         Invoke-WeDecentMigrationFaultPoint -Name 'Prepared' -FaultAt $FaultAt
         if ($journal.service_was_running) {
+            Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
             Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-            [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
             Stop-Service -Name $ServiceName -Force -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
@@ -1480,8 +1483,8 @@ function Invoke-WeDecentStateMigration {
         $journal.phase = 'Copying'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Copying' -FaultAt $FaultAt
+        Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
         Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-        [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
         $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath -FaultAt $FaultAt
         if ($copy.SourceManifestSHA256 -cne [string]$journal.source_manifest_sha256 -or
             $copy.SourceStableManifestSHA256 -cne [string]$journal.source_stable_manifest_sha256 -or
@@ -1507,9 +1510,9 @@ function Invoke-WeDecentStateMigration {
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Verified' -FaultAt $FaultAt
 
+        Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
         Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-        [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
-        [IO.Directory]::Move($staging, $destinationFull)
+        [void](Publish-WeDecentMigrationObject -TemporaryPath $staging -ParentPath $destinationParent -TargetName ([IO.Path]::GetFileName($destinationFull)) -ExpectedTargetIdentity '' -RacePoint 'BeforeDestinationAtomicPublish')
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull -ServiceSid $ServiceSid)
         $journal.phase = 'StatePublished'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
@@ -1517,19 +1520,19 @@ function Invoke-WeDecentStateMigration {
 
         Assert-WeDecentMigrationRecoverySource -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'SCMTransition' -FaultAt $FaultAt
+        Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
         Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-        [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
         Set-WeDecentMigrationServicePath -ServiceName $ServiceName -BinaryPath $updatedPath -ServiceSid $ServiceSid -StartMode ([string]$service.StartMode)
         $journal.phase = 'ServiceReconfigured'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'ServiceReconfigured' -FaultAt $FaultAt
+        Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
         Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-        [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
         Write-WeDecentMigrationMetadata -Path $MetadataPath -StatePath $destinationFull
         Invoke-WeDecentMigrationFaultPoint -Name 'MetadataUpdated' -FaultAt $FaultAt
         if ($journal.service_was_running) {
+            Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths @($sourceFull, $destinationFull, $journalFull, $metadataFull)
             Assert-WeDecentMigrationIdentitySnapshot -Snapshot $directorySnapshot -Paths $directoryAnchors
-            [void](Assert-WeDecentMigrationPathsDisjoint -Paths @($sourceFull, $destinationFull, $journalFull, $metadataFull))
             Assert-WeDecentMigrationRecoverySource -Journal $journal
             Start-Service -Name $ServiceName -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
@@ -1553,6 +1556,7 @@ function Invoke-WeDecentStateMigration {
         }
         throw "Migration failed and was rolled back; original state remains intact: $($failure.Exception.Message)"
     } finally {
+        if ($null -ne $mutationLease) { $mutationLease.Dispose() }
         # Staging is transaction state, not scratch space. Rollback owns its
         # removal only after validating the tree and recording RolledBack.
         # Preserve it across any pending or interrupted recovery.
