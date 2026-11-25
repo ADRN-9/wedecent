@@ -208,6 +208,13 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 	if err != nil {
 		return nil, err
 	}
+	if _, pending, err := preflight.readActiveLedgerPending(); err != nil {
+		return nil, err
+	} else if pending {
+		if err := preflight.reconcileActiveLedger(); err != nil {
+			return nil, fmt.Errorf("recover pending active ledger checkpoint: %w", err)
+		}
+	}
 	if archive.LastSequence == 0 {
 		head, err := authority.LoadCheckpoint(ctx, scope)
 		if err != nil {
