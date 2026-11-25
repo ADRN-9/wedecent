@@ -500,3 +500,72 @@ func TestWindowsServiceStateDefaultLocationUsesProtectedProgramFilesAncestors(t 
 		t.Log("legacy ProgramData probe passed strict ancestor validation on this runner")
 	}
 }
+
+func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil {
+		t.Fatalf("resolve test SID: %v", err)
+	}
+	for _, tc := range []struct {
+		name       string
+		parentACE  string
+		wantAccept bool
+	}{
+		{name: "ProgramData-style create-child permission", parentACE: "(A;OICI;0x00000004;;;BU)", wantAccept: true},
+		{name: "untrusted delete-child permission", parentACE: "(A;OICI;0x00000040;;;BU)", wantAccept: false},
+		{name: "untrusted full control", parentACE: "(A;OICI;FA;;;BU)", wantAccept: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			parent := filepath.Join(t.TempDir(), "legacy-parent")
+			if err := os.Mkdir(parent, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			sddl := "O:" + user.User.Sid.String() + "D:P(A;OICI;FA;;;" +
+				user.User.Sid.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)" + tc.parentACE
+			sd, err := windows.SecurityDescriptorFromString(sddl)
+			if err != nil {
+				t.Fatal(err)
+			}
+			dacl, _, err := sd.DACL()
+			if err != nil || dacl == nil {
+				t.Fatalf("parse parent DACL: %v", err)
+			}
+			if err := windows.SetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT,
+				windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+				nil, nil, dacl, nil); err != nil {
+				t.Fatal(err)
+			}
+			source := filepath.Join(parent, "agent")
+			if err := os.Mkdir(source, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			privateSD, err := windows.SecurityDescriptorFromString("O:" + user.User.Sid.String() +
+				"D:P(A;OICI;FA;;;" + user.User.Sid.String() + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
+			if err != nil {
+				t.Fatal(err)
+			}
+			privateDACL, _, err := privateSD.DACL()
+			if err != nil || privateDACL == nil {
+				t.Fatalf("parse source DACL: %v", err)
+			}
+			if err := windows.SetNamedSecurityInfo(source, windows.SE_FILE_OBJECT,
+				windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+				nil, nil, privateDACL, nil); err != nil {
+				t.Fatal(err)
+			}
+			got := verifyMigrationSourceForSID(source, user.User.Sid.String())
+			if tc.wantAccept && got != nil {
+				t.Fatalf("migration-only policy rejected safe legacy ancestor: %v", got)
+			}
+			if !tc.wantAccept && got == nil {
+				t.Fatal("migration-only policy accepted ancestor with pathname replacement rights")
+			}
+			if tc.wantAccept {
+				if err := verifyWindowsStateForSID(source, user.User.Sid); err == nil {
+					t.Fatal("normal service startup accepted legacy ancestor permissions")
+				}
+			}
+		})
+	}
+}
+
