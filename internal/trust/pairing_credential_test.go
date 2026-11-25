@@ -203,7 +203,9 @@ func TestWrongSecretCannotTriggerLegacyCredentialMigration(t *testing.T) {
 		t.Fatalf("wrong secret triggered legacy migration: %v", err)
 	}
 	store, err := Open(filepath.Join(dir, "trusted-clients.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := PairClientWithSecret(dir, "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", store, pairingTestPeer("wd_dddddddddddddddd")); !errors.Is(err, ErrPairingSecretInvalid) {
 		t.Fatalf("pairing transaction accepted wrong legacy secret: %v", err)
 	}
@@ -245,20 +247,26 @@ func TestPairingAdmissionFailureDoesNotConsumeCredential(t *testing.T) {
 func TestPairingCredentialRejectsClockRollbackAndPersistsHighWaterMark(t *testing.T) {
 	dir := t.TempDir()
 	secret, err := RotatePairingSecret(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	hash := HashSecret(secret)
 	record, err := readPairingCredentialRecord(dir)
 	if err != nil { t.Fatal(err) }
 	advanced := record.IssuedAt.Add(2 * time.Minute)
 	record.LastObservedAt = advanced
-	if err := writePairingCredential(dir, record); err != nil { t.Fatal(err) }
+	if err := writePairingCredential(dir, record); err != nil {
+		t.Fatal(err)
+	}
 
 	_, err = loadPairingCredential(dir, hash, advanced.Add(-time.Minute))
 	if !errors.Is(err, ErrPairingStateUnsafe) {
 		t.Fatalf("clock rollback was not rejected: %v", err)
 	}
 	accepted, err := loadPairingCredential(dir, hash, advanced.Add(-10*time.Second))
-	if err != nil { t.Fatalf("small clock skew within tolerance rejected: %v", err) }
+	if err != nil {
+		t.Fatalf("small clock skew within tolerance rejected: %v", err)
+	}
 	if !accepted.LastObservedAt.Equal(advanced) {
 		t.Fatalf("clock high-water mark moved backwards: %s", accepted.LastObservedAt)
 	}
