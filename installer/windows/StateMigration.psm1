@@ -256,7 +256,7 @@ function Copy-WeDecentMigrationTreeVerified {
     )
 
     $sourceFull = Assert-WeDecentMigrationRealDirectory -Path $Source
-    [void](Assert-WeDecentMigrationDirectoryAcl -Path $sourceFull -ServiceSid $SourceServiceSid)
+    [void](Assert-WeDecentMigrationTreeAcl -Path $sourceFull -ServiceSid $SourceServiceSid)
     $sourceManifest = @(Get-WeDecentMigrationManifest -Root $sourceFull)
     $stagingFull = [IO.Path]::GetFullPath($Staging)
     if (Test-Path -LiteralPath $stagingFull) {
@@ -277,7 +277,8 @@ function Copy-WeDecentMigrationTreeVerified {
         [IO.File]::Copy((Join-Path $sourceFull $relative), $destination, $false)
     }
 
-    [void](Assert-WeDecentMigrationDirectoryAcl -Path $stagingFull -ServiceSid $DestinationServiceSid)
+    Set-WeDecentMigrationTreeOwner -Path $stagingFull -ServiceSid $DestinationServiceSid
+    [void](Assert-WeDecentMigrationTreeAcl -Path $stagingFull -ServiceSid $DestinationServiceSid)
     $copiedManifest = @(Get-WeDecentMigrationManifest -Root $stagingFull)
     $sourceDigest = Get-WeDecentMigrationManifestDigest -Manifest $sourceManifest
     $copiedDigest = Get-WeDecentMigrationManifestDigest -Manifest $copiedManifest
@@ -384,6 +385,8 @@ Export-ModuleMember -Function @(
     'Copy-WeDecentMigrationTreeVerified',
     'Set-WeDecentMigrationDirectoryAcl',
     'Assert-WeDecentMigrationDirectoryAcl',
+    'Set-WeDecentMigrationTreeOwner',
+    'Assert-WeDecentMigrationTreeAcl',
     'Assert-WeDecentMigrationIdentityContinuity',
     'Invoke-WeDecentMigrationIdentityCheck',
     'Write-WeDecentMigrationJournal',
@@ -588,6 +591,54 @@ Export-ModuleMember -Function @(
     } finally {
         $process.Dispose()
     }
+}
+
+function Set-WeDecentMigrationTreeOwner {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceSid
+    )
+
+    $full = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $sid = ConvertTo-WeDecentMigrationSid -Sid $ServiceSid
+    $output = & icacls.exe $full '/setowner' ('*' + $sid.Value) '/T' 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to set migration tree ownership: $($output -join [Environment]::NewLine)"
+    }
+}
+
+function Assert-WeDecentMigrationTreeAcl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceSid
+    )
+
+    $root = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $sid = ConvertTo-WeDecentMigrationSid -Sid $ServiceSid
+    $allowed = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')
+    $paths = @($root) + @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop | ForEach-Object FullName)
+    foreach ($entryPath in $paths) {
+        $item = Get-Item -LiteralPath $entryPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Migration ACL validation refuses reparse points: $entryPath"
+        }
+        $acl = Get-Acl -LiteralPath $entryPath -ErrorAction Stop
+        $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($owner -cne $sid.Value) {
+            throw "Migration tree object has an unexpected owner SID: $entryPath"
+        }
+        $rules = $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
+        foreach ($rule in $rules) {
+            if ($rule.IdentityReference.Value -notin $allowed -or
+                $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+                throw "Migration tree object has an unexpected access rule: $entryPath"
+            }
+        }
+    }
+    return $true
 }
 
 function Assert-WeDecentMigrationIdentityContinuity {
