@@ -37,6 +37,7 @@ type PairingOutcome struct {
 	PeerID         string             `json:"peer_id"`
 	Fingerprint    string             `json:"fingerprint"`
 	CredentialGeneration uint64 `json:"credential_generation,omitempty"`
+	Sequence uint64 `json:"sequence,omitempty"`
 	Outcome        string             `json:"outcome"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
@@ -54,8 +55,9 @@ type PairingAuditProof struct {
 }
 
 type pairingOutcomeSnapshot struct {
-	Version int              `json:"version"`
+	Version int `json:"version"`
 	Records []PairingOutcome `json:"records"`
+	ArchivedThrough uint64 `json:"archived_through,omitempty"`
 }
 
 // PairingRecovery is independent of rotating audit files. Entries never
@@ -68,6 +70,8 @@ type PairingRecovery struct {
 	beforeRead    func() error
 	allowEmpty    bool
 	operatorCheck func() error // test-only authorization fault seam
+	archiveKey []byte
+	archiveAfterSync func() error
 }
 
 func NewPairingAttemptID() (string, error) {
@@ -97,6 +101,7 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 		return nil, err
 	}
 	defer unlock()
+	if err := r.loadArchiveKey(); err != nil { return nil, err }
 	if err := trust.VerifyPairingStatePath(r.path + ".lock"); err != nil {
 		return nil, err
 	}
@@ -117,8 +122,16 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	} else if stateErr != nil {
 		return nil, stateErr
 	}
-	if _, err := r.read(); err != nil {
-		return nil, err
+	snapshot, err := r.read()
+	if err != nil { return nil, err }
+	archive, err := r.readArchive()
+	if err != nil { return nil, err }
+	changed, err := r.reconcileArchive(&snapshot, archive)
+	if err != nil { return nil, err }
+	assigned, err := r.assignSequences(&snapshot, archive.LastSequence)
+	if err != nil { return nil, err }
+	if changed || assigned {
+		if err := r.write(snapshot); err != nil { return nil, fmt.Errorf("pairing recovery archive reconciliation: %w", err) }
 	}
 	if !initialized {
 		if err := r.markInitialized(); err != nil {
@@ -315,15 +328,19 @@ func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) e
 		return fmt.Errorf("unsafe pairing recovery lock: %w", err)
 	}
 	snapshot, err := r.read()
-	if err != nil {
-		return err
+	if err != nil { return err }
+	archive, err := r.readArchive()
+	if err != nil { return err }
+	changed, err := r.reconcileArchive(&snapshot, archive)
+	if err != nil { return err }
+	assigned, err := r.assignSequences(&snapshot, archive.LastSequence)
+	if err != nil { return err }
+	if changed || assigned {
+		if err := r.write(snapshot); err != nil { return fmt.Errorf("pairing archive recovery reconciliation: %w", err) }
 	}
-	if err := change(&snapshot); err != nil {
-		return err
-	}
-	if err := validatePairingSnapshot(snapshot); err != nil {
-		return err
-	}
+	if err := change(&snapshot); err != nil { return err }
+	if _, err := r.assignSequences(&snapshot, archive.LastSequence); err != nil { return err }
+	if err := validatePairingSnapshot(snapshot); err != nil { return err }
 	if err := r.write(snapshot); err != nil {
 		if _, statErr := os.Lstat(r.path); statErr == nil {
 			r.allowEmpty = false
@@ -483,10 +500,20 @@ func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 		return nil, err
 	}
 	snapshot, err := r.read()
-	if err != nil {
-		return nil, err
+	if err != nil { return nil, err }
+	archive, err := r.readArchive()
+	if err != nil { return nil, err }
+	changed, err := r.reconcileArchive(&snapshot, archive)
+	if err != nil { return nil, err }
+	assigned, err := r.assignSequences(&snapshot, archive.LastSequence)
+	if err != nil { return nil, err }
+	if changed || assigned {
+		if err := r.write(snapshot); err != nil { return nil, fmt.Errorf("pairing archive reconciliation: %w", err) }
 	}
-	return append([]PairingOutcome(nil), snapshot.Records...), nil
+	all := make([]PairingOutcome, 0, len(archive.Records)+len(snapshot.Records))
+	all = append(all, archive.Records...)
+	all = append(all, snapshot.Records...)
+	return all, nil
 }
 
 // AcknowledgeResolved never deletes evidence. It records review of an
