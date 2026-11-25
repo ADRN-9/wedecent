@@ -173,12 +173,19 @@ func runStatePathCheck(args []string) error {
 	fs := flag.NewFlagSet("state-path-check", flag.ContinueOnError)
 	stateDir := fs.String("state", state, "agent state directory")
 	serviceSID := fs.String("service-sid", "", "expected dedicated Windows service SID")
+	prepareParent := fs.Bool("prepare-parent", false, "validate trusted ancestors and parent ownership before applying a protected DACL")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if *prepareParent {
+		if strings.TrimSpace(*serviceSID) != "" {
+			return errors.New("--prepare-parent cannot be combined with --service-sid")
+		}
+		return verifyMigrationParentForProvisioning(*stateDir)
+	}
 	if strings.TrimSpace(*serviceSID) == "" {
 		return verifyMigrationStateParent(*stateDir)
-	}
+}
 	return verifyMigrationStateForSID(*stateDir, strings.TrimSpace(*serviceSID))
 }
 
