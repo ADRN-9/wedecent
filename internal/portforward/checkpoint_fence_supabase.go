@@ -189,7 +189,7 @@ func (p *SupabaseCheckpointFencePrimary) CheckpointAuthorityKeyID() string {
 	if p == nil {
 		return ""
 	}
-	return checkpointProviderKeyID(p.primaryKey)
+	return checkpointProviderKeyID(p.checkpointHeadKey)
 }
 
 func (p *SupabaseCheckpointFencePrimary) ReserveFence(context.Context, CheckpointFenceRequest) (CheckpointFenceToken, error) {
