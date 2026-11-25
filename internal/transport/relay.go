@@ -21,7 +21,8 @@ import (
 type RelayOptions struct {
 	CAFile     string
 	ServerName string
-	Timeout    time.Duration
+	Timeout     time.Duration
+	ReadTimeout time.Duration
 }
 
 type MultiDialer struct {
@@ -90,7 +91,7 @@ func (d RelayDialer) Dial(ctx context.Context) (Conn, error) {
 	if err != nil {
 		return nil, err
 	}
-	challenge, err := readRelayMessage(ctx, conn, d.Options.Timeout)
+	challenge, err := readRelayMessage(ctx, conn, d.Options.readTimeout())
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -124,7 +125,7 @@ func WaitRelaySession(ctx context.Context, address string, opts RelayOptions, id
 	if err != nil {
 		return nil, err
 	}
-	challenge, err := readRelayMessage(ctx, conn, opts.Timeout)
+	challenge, err := readRelayMessage(ctx, conn, opts.readTimeout())
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -170,6 +171,13 @@ func WaitRelaySession(ctx context.Context, address string, opts RelayOptions, id
 		return nil, errors.New("relay did not enter ready state")
 	}
 	return conn, nil
+}
+
+func (o RelayOptions) readTimeout() time.Duration {
+	if o.ReadTimeout > 0 {
+		return o.ReadTimeout
+	}
+	return o.Timeout
 }
 
 func readRelayMessage(ctx context.Context, conn net.Conn, timeout time.Duration) (relayproto.Message, error) {
