@@ -80,7 +80,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 func TestSupabaseCheckpointFencePrimaryVerifiesStrictWitnessQuorum(t *testing.T) {
 	token, primaryPrivate := validFenceToken(t, CheckpointFenceFinalize)
 	primary := &SupabaseCheckpointFencePrimary{
-		primaryKey: primaryPrivate.Public().(ed25519.PublicKey),
+		primaryKey:        primaryPrivate.Public().(ed25519.PublicKey),
 		witnesses:         make(map[string]ed25519.PublicKey),
 		witnessSetVersion: token.WitnessSetVersion,
 		witnessIDs:        append([]string(nil), token.WitnessIDs...),
