@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 	"syscall"
 	"unsafe"
 
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/trust"
 	"wedecent.com/wedecent/internal/winservice"
 )
@@ -228,8 +230,8 @@ shell := fs.String(
 		return fmt.Errorf("recovery trust file ACL: %w", err)
 	}
 	trustInfo, err := os.Lstat(*recoveryTrustFile)
-	if err != nil || !trustInfo.Mode().IsRegular() || trustInfo.Mode()&os.ModeSymlink != 0 {
-		return errors.New("recovery trust file must be an existing regular file")
+	if err != nil || !trustInfo.Mode().IsRegular() || trustInfo.Mode()&os.ModeSymlink != 0 || trustInfo.Size() <= 0 || trustInfo.Size() > 64*1024 {
+		return errors.New("recovery trust file must be an existing bounded regular file")
 	}
 
 	password := ""
@@ -272,6 +274,42 @@ shell := fs.String(
 		for i := range token { token[i] = 0 }
 		return errors.New("recovery bearer token must contain 32 to 4096 non-newline bytes")
 	}
+	trustPath := filepath.Join(*stateDir, "recovery-authority-trust.json")
+	trustSource, err := os.Open(*recoveryTrustFile)
+	if err != nil { for i := range token { token[i] = 0 }; return fmt.Errorf("open recovery trust file: %w", err) }
+	openedTrust, statErr := trustSource.Stat()
+	currentTrust, pathErr := os.Lstat(*recoveryTrustFile)
+	if statErr != nil || pathErr != nil || !os.SameFile(trustInfo, openedTrust) || !os.SameFile(openedTrust, currentTrust) {
+		_ = trustSource.Close()
+		for i := range token { token[i] = 0 }
+		return errors.New("recovery trust file changed during secure open")
+	}
+	trustBytes, readErr := io.ReadAll(io.LimitReader(trustSource, 64*1024+1))
+	closeTrustErr := trustSource.Close()
+	if readErr != nil || closeTrustErr != nil || len(trustBytes) == 0 || len(trustBytes) > 64*1024 {
+		for i := range token { token[i] = 0 }
+		for i := range trustBytes { trustBytes[i] = 0 }
+		return errors.New("recovery trust file could not be read within bounds")
+	}
+	trustCopy, err := os.OpenFile(trustPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		for i := range token { token[i] = 0 }
+		for i := range trustBytes { trustBytes[i] = 0 }
+		return fmt.Errorf("create immutable service trust copy: %w", err)
+	}
+	_, trustWriteErr := trustCopy.Write(trustBytes)
+	trustCloseErr := trustCopy.Close()
+	for i := range trustBytes { trustBytes[i] = 0 }
+	if trustWriteErr != nil || trustCloseErr != nil {
+		for i := range token { token[i] = 0 }
+		_ = os.Remove(trustPath)
+		return errors.New("write service trust copy failed")
+	}
+	if _, err := audit.LoadRecoveryAuthorityTrust(trustPath); err != nil {
+		for i := range token { token[i] = 0 }
+		_ = os.Remove(trustPath)
+		return fmt.Errorf("validate provisioned recovery trust: %w", err)
+	}
 	tokenPath := filepath.Join(*stateDir, "recovery-authority.token")
 	tokenFile, err := os.OpenFile(tokenPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
@@ -284,10 +322,13 @@ shell := fs.String(
 	if writeErr != nil { return fmt.Errorf("write recovery bearer credential: %w", writeErr) }
 	if closeErr != nil { return fmt.Errorf("close recovery bearer credential: %w", closeErr) }
 	if err := winservice.RestrictDirectory(*stateDir, *account); err != nil {
-		return fmt.Errorf("protect recovery bearer credential: %w", err)
+		return fmt.Errorf("protect recovery credentials: %w", err)
 	}
 	if err := trust.VerifyPairingStatePath(tokenPath); err != nil {
 		return fmt.Errorf("verify recovery bearer credential ACL: %w", err)
+	}
+	if err := trust.VerifyPairingStatePath(trustPath); err != nil {
+		return fmt.Errorf("verify recovery trust copy ACL: %w", err)
 	}
 
 	executable, err := os.Executable()
@@ -327,7 +368,7 @@ shell := fs.String(
 		"--shell=" + *shell,
 		"--pairing-recovery-authority-url=" + strings.TrimSpace(*recoveryAuthorityURL),
 		"--pairing-recovery-authority-spki-sha256=" + strings.TrimSpace(*recoveryAuthorityPin),
-		"--pairing-recovery-trust=" + filepath.Clean(*recoveryTrustFile),
+		"--pairing-recovery-trust=" + trustPath,
 		"--pairing-recovery-authority-token-file=" + tokenPath,
 	}
 
@@ -374,19 +415,23 @@ shell := fs.String(
 
 func runServiceRun(args []string) error {
 	serviceName, serveArgs, err := extractServiceName(args)
-	if err != nil {
-		return err
+	if err != nil { return err }
+	stateDir := defaultServiceStateDir()
+	for i := 0; i < len(serveArgs); i++ {
+		if serveArgs[i] == "--state" && i+1 < len(serveArgs) { stateDir = serveArgs[i+1]; i++; continue }
+		if strings.HasPrefix(serveArgs[i], "--state=") { stateDir = strings.TrimPrefix(serveArgs[i], "--state=") }
 	}
-	cfg, err := parseServeConfig(serveArgs)
-	if err != nil {
-		return err
+	if err := verifyWindowsServiceState(stateDir); err != nil {
+		return fmt.Errorf("verify service state before loading recovery credentials: %w", err)
 	}
-	if err := verifyWindowsServiceState(cfg.StateDir); err != nil {
-		return fmt.Errorf("verify service state before startup: %w", err)
-	}
-	stateGuard, err := guardWindowsServiceState(cfg.StateDir)
+	stateGuard, err := guardWindowsServiceState(stateDir)
 	if err != nil { return err }
 	defer stateGuard()
+	cfg, err := parseServeConfig(serveArgs)
+	if err != nil { return err }
+	if filepath.Clean(cfg.StateDir) != filepath.Clean(stateDir) {
+		return errors.New("service state directory changed during startup parsing")
+	}
 
 	logFile, err := openServiceLog(cfg.StateDir)
 	if err != nil {
