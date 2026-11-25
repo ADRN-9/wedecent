@@ -543,6 +543,8 @@ func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 	if r == nil {
 		return nil, errors.New("pairing recovery unavailable")
 	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
 		return nil, err
 	}
