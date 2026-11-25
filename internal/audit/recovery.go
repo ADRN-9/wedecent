@@ -215,7 +215,7 @@ func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryA
 	recovery.authority = authority
 	recovery.authorityScope = scope
 	recovery.authorityTrust = trust
-	archive, err := recovery.readArchive()
+	_, err = recovery.readArchive()
 	if err == nil {
 		return recovery, nil
 	}
