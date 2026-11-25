@@ -2,13 +2,13 @@ package audit
 
 import (
 	"context"
-	"io"
-	"crypto/sha256"
 	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
@@ -253,4 +253,3 @@ func hmacSHA256(key, payload []byte) []byte {
 	_, _ = mac.Write(payload)
 	return mac.Sum(nil)
 }
-
