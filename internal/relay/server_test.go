@@ -306,8 +306,12 @@ func TestPrematureAgentApplicationBytesFailClosedBeforeConnect(t *testing.T) {
 	}
 
 	// The agent protocol forbids application data until TypeReady.
-	if _, err := agentPeer.Write([]byte("premature")); err != nil && !errors.Is(err, io.ErrClosedPipe) {
-		t.Fatalf("premature probe write failed unexpectedly: %v", err)
+	written, writeErr := agentPeer.Write([]byte("premature"))
+	if written < 1 {
+		t.Fatalf("premature probe did not reach the watcher: wrote %d bytes, err=%v", written, writeErr)
+	}
+	if writeErr != nil && !errors.Is(writeErr, io.ErrClosedPipe) {
+		t.Fatalf("premature probe write failed unexpectedly after %d bytes: %v", written, writeErr)
 	}
 	select {
 	case <-parked.done:
