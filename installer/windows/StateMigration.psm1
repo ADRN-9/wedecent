@@ -557,17 +557,36 @@ function Assert-WeDecentMigrationAdminDirectory {
     return $true
 }
 
-function Write-WeDecentMigrationMetadata {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$StatePath
-    )
+function Assert-WeDecentMigrationMetadataAcl {
+    param([Parameter(Mandatory = $true)][string]$Path)
 
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Installer metadata must be a regular non-reparse file.'
     }
     $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    $allowed = @('S-1-5-18', 'S-1-5-32-544')
+    if ($owner -notin $allowed -or -not $acl.AreAccessRulesProtected) {
+        throw 'Installer metadata owner or DACL is not trusted.'
+    }
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference.Value -notin $allowed -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw 'Installer metadata contains an unexpected access rule.'
+        }
+    }
+    return $acl
+}
+
+function Write-WeDecentMigrationMetadata {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$StatePath
+    )
+
+    $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
     $metadata = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
     if ([int]$metadata.schema -ne 1 -or [string]$metadata.product -cne 'WeDecent') {
         throw 'Cannot migrate unauthenticated or unsupported installer metadata.'
@@ -584,6 +603,11 @@ function Write-WeDecentMigrationMetadata {
         Set-Acl -LiteralPath $temp -AclObject $acl -ErrorAction Stop
         [IO.File]::Replace($temp, $Path, $backup, $true)
         Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+        $verified = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ([IO.Path]::GetFullPath([string]$verified.state_dir) -ine [IO.Path]::GetFullPath($StatePath)) {
+            throw 'Authenticated installer metadata failed post-migration state-path verification.'
+        }
+        [void](Assert-WeDecentMigrationMetadataAcl -Path $Path)
     } finally {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
     }
@@ -595,7 +619,7 @@ function Restore-WeDecentMigrationMetadata {
         [Parameter(Mandatory = $true)][string]$OriginalJson
     )
 
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
     $temp = Join-Path (Split-Path -Parent $Path) ('.installer-restore-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     $backup = $Path + '.migration-restore-previous'
     try {
@@ -780,7 +804,7 @@ function Invoke-WeDecentStateMigration {
     }
     $originalMetadataJson = Get-Content -LiteralPath $MetadataPath -Raw -ErrorAction Stop
     $metadata = $originalMetadataJson | ConvertFrom-Json
-    if ([IO.Path]::GetFullPath([string]$metadata.state_dir) -cne $sourceFull) {
+    if (-not [string]::Equals([IO.Path]::GetFullPath([string]$metadata.state_dir), $sourceFull, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Authenticated installer metadata does not match the migration source.'
     }
 
@@ -886,6 +910,7 @@ Export-ModuleMember -Function @(
     'Set-WeDecentMigrationAdminDirectory',
     'Assert-WeDecentMigrationAdminDirectory',
     'Set-WeDecentMigrationAdminFileAcl',
+    'Assert-WeDecentMigrationMetadataAcl',
     'Recover-WeDecentStateMigration',
     'Invoke-WeDecentMigrationFaultPoint',
     'Invoke-WeDecentStateMigration'
