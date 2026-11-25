@@ -37,7 +37,7 @@ Before committing, PostgreSQL independently:
 6. Verifies every Ed25519 witness acknowledgement using pgsodium.
 7. Verifies a primary Ed25519 commit attestation over the operation fingerprint, token digest, canonical token JSON digest, canonical acknowledgement JSON digest, and actor ID.
 
-The trusted Go authority verifies the original primary token signature and all witness acknowledgements before producing the primary commit attestation. PostgreSQL verifies that attestation and independently verifies each witness acknowledgement. A service-role caller cannot manufacture a structurally valid quorum and call the commit RPC.
+The trusted Go authority verifies the original primary token signature and all witness acknowledgements before producing the primary commit attestation. PostgreSQL verifies that attestation and independently verifies each witness acknowledgement. PostgreSQL does not duplicate the Go token-signature parser: the commit attestation is signed by the same primary key over the exact stored token JSON digest, token digest, operation fingerprint, acknowledgement digest and actor. The database therefore accepts the token only with a primary signature binding that exact stored token and the verified quorum. A service-role caller cannot manufacture a structurally valid quorum and call the commit RPC.
 
 The pgsodium extension is currently used for Ed25519 verification because it exposes libsodium's detached-signature verifier. Supabase has marked pgsodium as pending deprecation. Production adoption therefore requires an explicit compatibility check for the target Supabase/PostgreSQL version and a migration plan to a supported Ed25519 verification primitive before relying on this long-term.
 
@@ -54,7 +54,7 @@ The coordinator now treats an expired token as recovery-only:
 - Only after both cryptographic checks does the database renew the short commit lease and set the transaction-local C195 expiry exception.
 - An expired pending operation cannot be replaced by a different operation. A persisted reservation token cannot be replaced by a different token at the same operation/generation.
 
-The C195 participant reservation remains present and must match the original operation fingerprint. Participant-head and organization-fence advancement still occur in one PostgreSQL transaction. If the participant rows or original reservation evidence are missing, recovery fails closed.
+The C195 participant reservation remains present and must match the original operation fingerprint. Participant-head and organization-fence advancement still occur in one PostgreSQL transaction. If the participant rows or original reservation evidence are missing, recovery fails closed. If no pre-expiry witness quorum exists, the expired organization operation remains pending and blocks replacement; there is not yet an automatic quorum-backed abort path, so this exceptional state requires privileged operator recovery.
 
 ## Regression coverage added
 
