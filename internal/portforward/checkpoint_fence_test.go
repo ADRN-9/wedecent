@@ -48,9 +48,17 @@ func validFenceToken(t *testing.T, action CheckpointFenceAction) (CheckpointFenc
 	}
 	if action == CheckpointFenceRevoke {
 		token.ResultingRevocationEpoch++
-		token.AuthorizationProof = make([]byte, ed25519.SignatureSize)
-		for i := range token.AuthorizationProof {
-			token.AuthorizationProof[i] = byte(i + 1)
+		signature := make([]byte, ed25519.SignatureSize)
+		for i := range signature {
+			signature[i] = byte(i + 1)
+		}
+		token.AuthorizationProofIssuedAtUnixMS = 1000
+		token.AuthorizationProofExpiresAtUnixMS = 1800
+		token.AuthorizationProof, err = EncodeCheckpointRevocationAuthorizationProof(
+			token.AuthorizationProofIssuedAtUnixMS, token.AuthorizationProofExpiresAtUnixMS, signature,
+		)
+		if err != nil {
+			t.Fatal(err)
 		}
 		token.AuthorizationSHA256 = sha256.Sum256(token.AuthorizationProof)
 	}
