@@ -75,7 +75,7 @@ func provisionWindowsServiceState(dir, account string) (result error) {
 	if beforeErr != nil && !fresh {
 		return beforeErr
 	}
-	if err := preflightAgentState(dir); err != nil {
+	if err := preflightWindowsAgentState(dir, windowsStateProvisionHooks{ownerSID: admins}); err != nil {
 		return err
 	}
 	if fresh {
@@ -109,8 +109,8 @@ func provisionWindowsServiceState(dir, account string) (result error) {
 	if err := verifyWindowsServiceStateParent(dir); err != nil {
 		return fmt.Errorf("revalidate protected service state parent: %w", err)
 	}
-	if err := verifyWindowsStateForSID(dir, installerSID); err != nil {
-		return fmt.Errorf("revalidate installer-owned service state under path guard: %w", err)
+	if err := verifyWindowsStateForSID(dir, admins); err != nil {
+		return fmt.Errorf("revalidate administrator-owned service state under path guard: %w", err)
 	}
 	if err := requireEmptyWindowsServiceState(dir); err != nil {
 		return err
