@@ -236,6 +236,8 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 				s.log().Error("pairing denial completion audit unavailable", "attempt_id", attemptID, "error", err)
 			} else if err := recovery.ConfirmCompletion(pairingAudit, attemptID, denial); err != nil {
 				s.log().Error("pairing denial audit proof uncertain", "attempt_id", attemptID, "error", err)
+			} else if err := recovery.AcknowledgeResolved(attemptID); err != nil {
+				s.log().Error("pairing denial recovery archive unavailable", "attempt_id", attemptID, "error", err)
 			}
 			_ = sendError(conn, "pairing_denied", "invalid or already consumed pairing secret")
 			return
@@ -272,6 +274,8 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 		// A completed audit log line may rotate away; the unconfirmed ledger
 		// entry remains and requires privileged, independently audited repair.
 		s.log().Error("pairing completion proof not durable", "peer_id", clientID, "attempt_id", attemptID, "error", err)
+	} else if err := recovery.AcknowledgeResolved(attemptID); err != nil {
+		s.log().Error("pairing recovery archive unavailable", "peer_id", clientID, "attempt_id", attemptID, "error", err)
 	}
 	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypePairResponse, Payload: mustJSON(protocol.PairResponse{DeviceID: s.Identity.ID, DeviceName: s.Identity.Name})}); err != nil {
 		return
