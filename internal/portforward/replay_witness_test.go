@@ -26,25 +26,15 @@ type testCheckpointRevocationProofProvider struct {
 	privateKey ed25519.PrivateKey
 }
 
-func (p testCheckpointRevocationProofProvider) CheckpointRevocationProof(ctx context.Context, endpoint CheckpointEndpoint, next uint64) ([]byte, error) {
-	if ctx == nil || ctx.Err() != nil || !validCheckpointEndpoint(endpoint) ||
-		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 ||
-		len(p.privateKey) != ed25519.PrivateKeySize {
+func (p testCheckpointRevocationProofProvider) CheckpointRevocationProof(ctx context.Context, request CheckpointRevocationAuthorizationRequest) ([]byte, error) {
+	if ctx == nil || ctx.Err() != nil || len(p.privateKey) != ed25519.PrivateKeySize {
 		return nil, ErrCheckpointIntegrity
 	}
-	return ed25519.Sign(p.privateKey, testRevocationProofMessage(endpoint, next)), nil
-}
-
-func testRevocationProofMessage(endpoint CheckpointEndpoint, next uint64) []byte {
-	var b bytes.Buffer
-	b.WriteString("wedecent-test-revocation-authorization-v1\n")
-	for _, value := range []string{endpoint.DeviceID, endpoint.AccountID, endpoint.OrganizationID} {
-		binary.Write(&b, binary.BigEndian, uint32(len(value)))
-		b.WriteString(value)
+	message, err := CheckpointRevocationAuthorizationMessage(request)
+	if err != nil {
+		return nil, err
 	}
-	binary.Write(&b, binary.BigEndian, endpoint.RevocationEpoch)
-	binary.Write(&b, binary.BigEndian, next)
-	return b.Bytes()
+	return ed25519.Sign(p.privateKey, message), nil
 }
 
 type testAtomicCheckpointPrimary struct {
@@ -141,10 +131,14 @@ func (a *testAtomicCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx contex
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
 	if request.Action == CheckpointFenceRevoke {
+		proofRequest := CheckpointRevocationAuthorizationRequest{
+			Endpoint: request.Participants[0], NextEpoch: request.Participants[0].RevocationEpoch + 1,
+			OperationID: request.OperationID, Participants: request.Participants,
+		}
+		message, messageErr := CheckpointRevocationAuthorizationMessage(proofRequest)
 		if len(request.Participants) != 1 || len(request.AuthorizationProof) != ed25519.SignatureSize ||
-			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 ||
-			!ed25519.Verify(a.revocationPublicKey, testRevocationProofMessage(
-				request.Participants[0], request.Participants[0].RevocationEpoch+1), request.AuthorizationProof) {
+			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 || messageErr != nil ||
+			!ed25519.Verify(a.revocationPublicKey, message, request.AuthorizationProof) {
 			return CheckpointFenceToken{}, ErrCheckpointIntegrity
 		}
 	}
@@ -172,7 +166,16 @@ func (a *testAtomicCheckpointPrimary) CommitFenceWithCheckpointHeads(ctx context
 		return ErrCheckpointIntegrity
 	}
 	if token.Action == CheckpointFenceRevoke {
-		if len(heads) != 1 || heads[0].Endpoint.RevocationEpoch == ^uint64(0) {
+		if len(heads) != 1 || heads[0].Endpoint.RevocationEpoch == ^uint64(0) ||
+			len(token.AuthorizationProof) != ed25519.SignatureSize ||
+			sha256.Sum256(token.AuthorizationProof) != token.AuthorizationSHA256 {
+			return ErrCheckpointIntegrity
+		}
+		message, messageErr := CheckpointRevocationAuthorizationMessage(CheckpointRevocationAuthorizationRequest{
+			Endpoint: heads[0].Endpoint, NextEpoch: heads[0].Endpoint.RevocationEpoch + 1,
+			OperationID: token.OperationID, Participants: token.Participants,
+		})
+		if messageErr != nil || !ed25519.Verify(a.revocationPublicKey, message, token.AuthorizationProof) {
 			return ErrCheckpointIntegrity
 		}
 		if err := a.replay.Revoke(ctx, heads[0].Endpoint, heads[0].Endpoint.RevocationEpoch+1); err != nil {
