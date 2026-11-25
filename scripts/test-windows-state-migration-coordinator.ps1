@@ -59,6 +59,7 @@ function global:sc.exe {
     return 'SUCCESS'
 }
 function New-MigrationFixture {
+    param([string]$ServiceSid)
     $root = Join-Path $env:ProgramFiles ('WeDecentMigrationCoordinator-' + [Guid]::NewGuid().ToString('N'))
     $source = Join-Path $root 'source-state'
     $destination = Join-Path $root 'destination-state'
@@ -66,8 +67,14 @@ function New-MigrationFixture {
     $metadataPath = Join-Path $root 'installer.json'
     $serviceName = 'WeDecentMigrationTest'
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $serviceSid = $identity.User.Value
-    $serviceAccount = $identity.Name
+    if ([string]::IsNullOrWhiteSpace($ServiceSid)) {
+        $serviceSid = $identity.User.Value
+        $serviceAccount = $identity.Name
+    } else {
+        $serviceIdentity = [Security.Principal.SecurityIdentifier]::new($ServiceSid)
+        $serviceSid = $serviceIdentity.Value
+        $serviceAccount = $serviceIdentity.Translate([Security.Principal.NTAccount]).Value
+    }
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     Set-WeDecentMigrationAdminDirectory -Path $root -AgentPath $agentPath
     New-Item -ItemType Directory -Path $source | Out-Null
@@ -194,7 +201,9 @@ try {
     Remove-Item -LiteralPath $stagingRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-$partialStagingRecovery = New-MigrationFixture
+# Use a distinct service SID to prove partial entries owned by the installer
+# are accepted only through the transaction's authenticated installer_sid.
+$partialStagingRecovery = New-MigrationFixture -ServiceSid 'S-1-5-19'
 try {
     $interrupted = $false
     try {
