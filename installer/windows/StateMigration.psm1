@@ -1001,6 +1001,18 @@ function Initialize-WeDecentMigrationFileIdentityApi {
     Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
+public sealed class WeDecentMigrationDirectoryLease : IDisposable {
+    private readonly System.Collections.Generic.List<IntPtr> handles=new System.Collections.Generic.List<IntPtr>();
+    private readonly System.Collections.Generic.List<string> paths=new System.Collections.Generic.List<string>();
+    private readonly System.Collections.Generic.List<string> identities=new System.Collections.Generic.List<string>();
+    public bool Disposed { get; private set; }
+    public int Count { get { return handles.Count; } }
+    internal void Add(string path,string identity,IntPtr handle) { paths.Add(path); identities.Add(identity); handles.Add(handle); }
+    internal IntPtr HandleAt(int i) { return handles[i]; }
+    internal string PathAt(int i) { return paths[i]; }
+    internal string IdentityAt(int i) { return identities[i]; }
+    public void Dispose() { if (Disposed) return; foreach(IntPtr h in handles) WeDecentMigrationFileIdentityApi.CloseHandle(h); handles.Clear(); Disposed=true; }
+}
 public static class WeDecentMigrationFileIdentityApi {
     // Volume serial plus the 64-bit file index is the filesystem object identity.
     [StructLayout(LayoutKind.Sequential)]
@@ -1023,21 +1035,134 @@ public static class WeDecentMigrationFileIdentityApi {
     public static extern bool GetFileInformationByHandle(IntPtr handle, out BY_HANDLE_FILE_INFORMATION info);
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool CloseHandle(IntPtr handle);
-    public static string GetIdentity(string path) {
-        const uint FILE_READ_ATTRIBUTES=0x80, SHARE_ALL=7, OPEN_EXISTING=3;
-        const uint BACKUP_SEMANTICS=0x02000000, OPEN_REPARSE_POINT=0x00200000;
-        IntPtr h=CreateFile(path, FILE_READ_ATTRIBUTES, SHARE_ALL, IntPtr.Zero, OPEN_EXISTING,
-            BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
+    private const uint FILE_READ_ATTRIBUTES=0x80, FILE_LIST_DIRECTORY=0x1, DELETE_ACCESS=0x10000;
+    private const uint SHARE_READ_WRITE=3, OPEN_EXISTING=3;
+    private const uint BACKUP_SEMANTICS=0x02000000, OPEN_REPARSE_POINT=0x00200000;
+    private static void Inject(string name) {
+        if (String.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal))
+            throw new System.ComponentModel.Win32Exception(5, "Injected native filesystem failure: " + name);
+    }
+    private static BY_HANDLE_FILE_INFORMATION Info(IntPtr handle) {
+        Inject("WEDECENT_MIGRATION_NATIVE_FAIL_GETINFO");
+        BY_HANDLE_FILE_INFORMATION i;
+        if (!GetFileInformationByHandle(handle, out i))
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        return i;
+    }
+    private static string Id(BY_HANDLE_FILE_INFORMATION i) {
+        return i.VolumeSerialNumber.ToString("X8") + ":" +
+            i.FileIndexHigh.ToString("X8") + i.FileIndexLow.ToString("X8");
+    }
+    private static IntPtr Open(string path, uint access, uint share, uint flags) {
+        Inject("WEDECENT_MIGRATION_NATIVE_FAIL_CREATEFILE");
+        IntPtr h=CreateFile(path, access, share, IntPtr.Zero, OPEN_EXISTING,
+            flags|OPEN_REPARSE_POINT, IntPtr.Zero);
         if (h == new IntPtr(-1)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        return h;
+    }
+    public static string GetIdentity(string path) {
+        IntPtr h=Open(path, FILE_READ_ATTRIBUTES, 7, BACKUP_SEMANTICS);
         try {
-            BY_HANDLE_FILE_INFORMATION i;
-            if (!GetFileInformationByHandle(h, out i))
-                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            BY_HANDLE_FILE_INFORMATION i=Info(h);
             if ((i.FileAttributes & 0x400) != 0)
                 throw new InvalidOperationException("Migration path contains a reparse point: " + path);
-            return i.VolumeSerialNumber.ToString("X8") + ":" +
-                i.FileIndexHigh.ToString("X8") + i.FileIndexLow.ToString("X8");
+            return Id(i);
         } finally { CloseHandle(h); }
+    }
+    public static WeDecentMigrationDirectoryLease AcquireDirectoryLease(string[] paths) {
+        var lease=new WeDecentMigrationDirectoryLease();
+        try {
+            foreach (string path in paths) {
+                IntPtr h=Open(path, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY, SHARE_READ_WRITE, BACKUP_SEMANTICS);
+                BY_HANDLE_FILE_INFORMATION i=Info(h);
+                if ((i.FileAttributes & 0x10)==0 || (i.FileAttributes & 0x400)!=0) {
+                    CloseHandle(h);
+                    throw new InvalidOperationException("Mutation lease requires a real directory: " + path);
+                }
+                lease.Add(path, Id(i), h);
+            }
+            return lease;
+        } catch { lease.Dispose(); throw; }
+    }
+    public static void AssertDirectoryLease(WeDecentMigrationDirectoryLease lease) {
+        if (lease==null || lease.Disposed) throw new InvalidOperationException("Filesystem mutation lease is closed.");
+        for (int n=0;n<lease.Count;n++) {
+            BY_HANDLE_FILE_INFORMATION held=Info(lease.HandleAt(n));
+            if ((held.FileAttributes & 0x410)!=0x10 || Id(held)!=lease.IdentityAt(n))
+                throw new InvalidOperationException("Held migration directory identity changed: " + lease.PathAt(n));
+            if (GetIdentity(lease.PathAt(n))!=lease.IdentityAt(n))
+                throw new InvalidOperationException("Migration directory pathname no longer identifies its leased object: " + lease.PathAt(n));
+        }
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    private struct FILE_RENAME_INFO {
+        [MarshalAs(UnmanagedType.U1)] public bool ReplaceIfExists;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        public char FileName;
+    }
+    [DllImport("kernel32.dll", SetLastError=true)]
+    private static extern bool SetFileInformationByHandle(IntPtr h, int infoClass, IntPtr info, uint size);
+    public static string PublishByHandle(string temporaryPath, string parentPath, string targetName,
+        string expectedTemporaryIdentity, string expectedTargetIdentity, bool replaceExisting) {
+        if (String.IsNullOrWhiteSpace(targetName) || targetName.IndexOfAny(new char[]{'\\','/'})>=0 ||
+            targetName=="." || targetName=="..")
+            throw new ArgumentException("Publication target must be a single path component.");
+        IntPtr parent=IntPtr.Zero, source=IntPtr.Zero;
+        try {
+            parent=Open(parentPath, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY, SHARE_READ_WRITE, BACKUP_SEMANTICS);
+            BY_HANDLE_FILE_INFORMATION parentInfo=Info(parent);
+            if ((parentInfo.FileAttributes & 0x410)!=0x10)
+                throw new InvalidOperationException("Publication parent is not a real directory.");
+            source=Open(temporaryPath, DELETE_ACCESS|FILE_READ_ATTRIBUTES, SHARE_READ_WRITE, BACKUP_SEMANTICS);
+            BY_HANDLE_FILE_INFORMATION sourceInfo=Info(source);
+            if ((sourceInfo.FileAttributes & 0x400)!=0)
+                throw new InvalidOperationException("Publication source is a reparse point.");
+            string sourceId=Id(sourceInfo);
+            if (!String.IsNullOrEmpty(expectedTemporaryIdentity) && sourceId!=expectedTemporaryIdentity)
+                throw new InvalidOperationException("Publication source object changed after verification.");
+            string targetPath=System.IO.Path.Combine(parentPath,targetName);
+            if (replaceExisting) {
+                if (String.IsNullOrEmpty(expectedTargetIdentity))
+                    throw new InvalidOperationException("Replacing an existing object requires its verified identity.");
+                IntPtr target=Open(targetPath, FILE_READ_ATTRIBUTES, 7, BACKUP_SEMANTICS);
+                try {
+                    BY_HANDLE_FILE_INFORMATION targetInfo=Info(target);
+                    if ((targetInfo.FileAttributes & 0x400)!=0 || Id(targetInfo)!=expectedTargetIdentity)
+                        throw new InvalidOperationException("Publication target object changed after verification.");
+                } finally { CloseHandle(target); }
+            } else {
+                IntPtr target=CreateFile(targetPath, FILE_READ_ATTRIBUTES, 7, IntPtr.Zero, OPEN_EXISTING,
+                    BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
+                if (target!=new IntPtr(-1)) {
+                    CloseHandle(target);
+                    throw new IOException("Publication destination already exists.");
+                }
+                int error=Marshal.GetLastWin32Error();
+                if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
+            }
+            if (GetIdentity(parentPath)!=Id(parentInfo))
+                throw new InvalidOperationException("Publication parent identity changed before atomic publication.");
+            // The rename is relative to the retained parent handle, not a re-resolved absolute destination.
+            byte[] nameBytes=System.Text.Encoding.Unicode.GetBytes(targetName);
+            int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
+            int size=nameOffset+nameBytes.Length;
+            IntPtr buffer=Marshal.AllocHGlobal(size);
+            try {
+                Marshal.WriteByte(buffer,0,replaceExisting?(byte)1:(byte)0);
+                Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),parent);
+                Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),nameBytes.Length);
+                Marshal.Copy(nameBytes,0,IntPtr.Add(buffer,nameOffset),nameBytes.Length);
+                if (!SetFileInformationByHandle(source,3,buffer,(uint)size))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            } finally { Marshal.FreeHGlobal(buffer); }
+            string published=GetIdentity(targetPath);
+            if (published!=sourceId) throw new InvalidOperationException("Published object identity did not match the verified source.");
+            return published;
+        } finally {
+            if (source!=IntPtr.Zero) CloseHandle(source);
+            if (parent!=IntPtr.Zero) CloseHandle(parent);
+        }
     }
 }
 '@ -ErrorAction Stop
