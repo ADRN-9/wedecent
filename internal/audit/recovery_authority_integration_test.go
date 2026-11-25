@@ -6,10 +6,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"os"
 	"errors"
 	"testing"
-	"time"
 )
 
 type testIndependentRecoveryAuthority struct {
@@ -99,8 +99,35 @@ func (a *testIndependentRecoveryAuthority) VerifyCheckpoint(_ context.Context, c
 	return ValidateRecoveryCheckpointWithTrust(request, checkpoint, a.trust)
 }
 
-func (a *testIndependentRecoveryAuthority) MigrateLegacyArchive(context.Context, LegacyRecoveryMigrationRequest) (RecoveryCheckpoint, error) {
-	return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
+func (a *testIndependentRecoveryAuthority) MigrateLegacyArchive(_ context.Context, migration LegacyRecoveryMigrationRequest) (RecoveryCheckpoint, error) {
+	var proof struct {
+		StateDigest string `json:"state_digest"`
+	}
+	if migration.Scope != a.head.Scope || migration.MigrationOperationID == "" ||
+		len(migration.AuthenticatedCheckpoint) == 0 || json.Unmarshal(migration.AuthenticatedCheckpoint, &proof) != nil {
+		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
+	}
+	digestBytes, err := hex.DecodeString(proof.StateDigest)
+	if err != nil || len(digestBytes) != sha256.Size {
+		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
+	}
+	var stateDigest [sha256.Size]byte
+	copy(stateDigest[:], digestBytes)
+	if a.head.Generation == migration.ExpectedGeneration+1 && a.head.StateDigest == stateDigest {
+		return a.head, nil
+	}
+	if a.head.Generation != migration.ExpectedGeneration {
+		return RecoveryCheckpoint{}, ErrRecoveryCheckpointStale
+	}
+	request, err := NewRecoveryCheckpointRequest(migration.Scope, migration.ExpectedGeneration, a.head.StateDigest, stateDigest)
+	if err != nil {
+		return RecoveryCheckpoint{}, err
+	}
+	checkpoint, err := a.CommitCheckpoint(context.Background(), request)
+	if err != nil {
+		return RecoveryCheckpoint{}, err
+	}
+	return checkpoint, nil
 }
 
 func TestPairingRecoveryUsesIndependentAuthorityAndResolvesLostCommitResponse(t *testing.T) {
@@ -185,5 +212,74 @@ func TestPairingRecoveryAuthorityRejectsDuplicateWitnessKeys(t *testing.T) {
 	if err := trust.Validate(); !errors.Is(err, ErrRecoveryCheckpointConflict) {
 		t.Fatalf("duplicate witness key counted as independent identity: %v", err)
 	}
-	_ = time.Second
+}
+
+
+func TestPairingRecoveryMigratesLegacyArchiveWithAuthenticatedAuthorityProof(t *testing.T) {
+	dir := recoveryTestDir(t)
+	legacy, err := OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "dddddddddddddddddddddddddddddddd"
+	if err := legacy.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	resolveAndAcknowledgePairing(t, dir, legacy, id, PairingOutcomeSuccess)
+
+	authority := newTestIndependentRecoveryAuthority(t)
+	migration, err := OpenPairingRecoveryForMigration(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyReader := *migration
+	legacyReader.authority = nil
+	archive, err := legacyReader.readArchive()
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned := pairingRecoveryArchiveUnsigned{Version: archive.Version, FirstSequence: archive.FirstSequence,
+		LastSequence: archive.LastSequence, Checkpoint: archive.Checkpoint, Records: archive.Records,
+		AuthorityGeneration: 1, AuthorityPreviousDigest: hex.EncodeToString(make([]byte, sha256.Size))}
+	payload, err := json.Marshal(unsigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(payload)
+	proof, err := json.Marshal(struct {
+		StateDigest string `json:"state_digest"`
+	}{StateDigest: hex.EncodeToString(digest[:])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority.loseNextCommit = true
+	if err := migration.MigrateLegacyArchive(context.Background(), proof); err != nil {
+		t.Fatalf("authenticated migration did not recover exact lost commit: %v", err)
+	}
+	verified, err := migration.readArchive()
+	if err != nil || verified.AuthorityGeneration != 1 || verified.AuthorityCheckpoint.StateDigest != digest {
+		t.Fatalf("migrated archive lacks authenticated monotonic checkpoint: %+v %v", verified, err)
+	}
+}
+
+func TestPairingRecoveryMigrationRejectsForgedStateDigestProof(t *testing.T) {
+	dir := recoveryTestDir(t)
+	legacy, err := OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+	if err := legacy.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	resolveAndAcknowledgePairing(t, dir, legacy, id, PairingOutcomeSuccess)
+	authority := newTestIndependentRecoveryAuthority(t)
+	migration, err := OpenPairingRecoveryForMigration(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, _ := json.Marshal(struct {
+		StateDigest string `json:"state_digest"`
+	}{StateDigest: hex.EncodeToString(sha256.Sum256([]byte("forged"))[:])})
+	_ = proof
 }
