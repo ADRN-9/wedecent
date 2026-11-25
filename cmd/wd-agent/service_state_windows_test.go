@@ -207,3 +207,55 @@ func TestServiceProvisionRejectsExistingSensitiveFilesWithoutRepair(t *testing.T
 		t.Fatalf("existing identity material changed: %q, %v", read, err)
 	}
 }
+
+
+func TestServiceStartupLocksPathBeforeRejectingBroadACL(t *testing.T) {
+	dir := prepareWindowsPreflightTestDir(t, true)
+	if _, err := os.Lstat(filepath.Join(dir, "service.log")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("test fixture unexpectedly contains service log: %v", err)
+	}
+	err := runServiceRun([]string{
+		"--state=" + dir,
+		"--name=acl-order-test",
+		"--listen=",
+		"--web-relay=",
+	})
+	if err == nil || !strings.Contains(err.Error(), "verify guarded service state") {
+		t.Fatalf("service startup did not reject broad ACL under path guard: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "service.log")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("service logged before guarded ACL verification: %v", err)
+	}
+}
+
+func TestServiceRuntimeGuardBlocksStateAndAncestorRenameAndDeletion(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "protected-root")
+	state := filepath.Join(root, "agent")
+	if err := preflightAgentState(state); err != nil {
+		t.Fatal(err)
+	}
+	release, err := guardWindowsServiceState(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if err := os.Rename(state, state+"-renamed"); err == nil {
+		t.Fatal("state directory renamed while non-delete-sharing guard was held")
+	}
+	if err := os.Remove(state); err == nil {
+		t.Fatal("empty state directory deleted while non-delete-sharing guard was held")
+	}
+	if err := os.Rename(root, root+"-renamed"); err == nil {
+		t.Fatal("ancestor directory renamed while non-delete-sharing guard was held")
+	}
+	if err := verifyWindowsServiceState(state); err != nil {
+		t.Fatalf("guarded state path stopped resolving to the verified directory: %v", err)
+	}
+	if _, err := os.Lstat(state + "-renamed"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected renamed state path exists: %v", err)
+	}
+	if _, err := os.Lstat(root + "-renamed"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unexpected renamed ancestor path exists: %v", err)
+	}
+}
