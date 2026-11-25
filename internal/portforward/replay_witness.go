@@ -97,6 +97,9 @@ type CheckpointFinalizationAuditSink func(context.Context, string, CheckpointFin
 
 // CheckpointRevocationProofProvider supplies the signed revocation envelope.
 // The atomic primary independently validates it and binds its digest to the fence.
+// CheckpointRevocationProofProvider must obtain or validate an independently
+// authenticated control-plane grant for the exact request before returning a
+// short-lived signed proof. A blind local signer is not an authorization source.
 type CheckpointRevocationProofProvider interface {
 	CheckpointRevocationProof(context.Context, CheckpointRevocationAuthorizationRequest) ([]byte, error)
 }
