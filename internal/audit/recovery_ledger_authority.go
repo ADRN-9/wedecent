@@ -343,3 +343,132 @@ func (r *PairingRecovery) reconcileActiveLedger() error {
 	}
 	return r.removeActiveLedgerPending()
 }
+
+
+// MigrateLegacyActiveLedger requires an out-of-band authority proof for the
+// exact pre-migration snapshot. The provider must authenticate historical
+// provenance and deduplicate MigrationOperationID across retries.
+func (r *PairingRecovery) MigrateLegacyActiveLedger(ctx context.Context, authenticatedCheckpoint []byte) error {
+	if r == nil || r.authority == nil || ctx == nil {
+		return ErrRecoveryAuthorityUnavailable
+	}
+	if len(authenticatedCheckpoint) == 0 || len(authenticatedCheckpoint) > maxLegacyRecoveryMigrationProofBytes {
+		return ErrRecoveryMigrationUntrusted
+	}
+	if err := r.authorityTrust.Validate(); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
+		return err
+	}
+	unlock, err := lockFile(r.path)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	snapshot, err := r.read()
+	if err != nil {
+		return err
+	}
+	if snapshot.AuthorityGeneration != 0 {
+		return r.verifyActiveLedgerSnapshot(ctx, snapshot)
+	}
+	if snapshot.AuthorityPreviousDigest != "" || snapshot.AuthorityStateDigest != "" ||
+		!emptyRecoveryCheckpoint(snapshot.AuthorityCheckpoint) {
+		return ErrRecoveryCheckpointConflict
+	}
+	pendingPath := r.path + ".authority-pending"
+	if _, err := os.Lstat(pendingPath); err == nil {
+		return ErrRecoveryCommitUncertain
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	info, err := os.Lstat(r.path)
+	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxPairingOutcomeBytes {
+		return ErrRecoveryMigrationUntrusted
+	}
+	if err := trust.VerifyPairingStatePath(r.path); err != nil {
+		return err
+	}
+	file, err := os.Open(r.path)
+	if err != nil {
+		return err
+	}
+	opened, statErr := file.Stat()
+	if statErr != nil || !os.SameFile(info, opened) {
+		_ = file.Close()
+		return ErrRecoveryMigrationUntrusted
+	}
+	raw, readErr := io.ReadAll(io.LimitReader(file, maxPairingOutcomeBytes+1))
+	closeErr := file.Close()
+	if readErr != nil || closeErr != nil || len(raw) == 0 || len(raw) > maxPairingOutcomeBytes {
+		return ErrRecoveryMigrationUntrusted
+	}
+	if err := validatePairingSnapshot(snapshot); err != nil {
+		return err
+	}
+	scope := r.activeLedgerScope()
+	head, err := r.authority.LoadCheckpoint(ctx, scope)
+	if err != nil {
+		return fmt.Errorf("%w: load active ledger migration head: %v", ErrRecoveryAuthorityUnavailable, err)
+	}
+	if head.Scope != scope || !emptyRecoveryCheckpoint(head) {
+		return ErrRecoveryCheckpointStale
+	}
+	unsigned := unsignedPairingSnapshot(snapshot)
+	stateDigest, err := pairingSnapshotDigest(unsigned)
+	if err != nil {
+		return err
+	}
+	archiveDigest := sha256.Sum256(raw)
+	operationMaterial, err := json.Marshal(struct {
+		Domain     string `json:"domain"`
+		Scope      string `json:"scope"`
+		Snapshot   string `json:"snapshot"`
+		Generation uint64 `json:"generation"`
+	}{Domain: "wedecent-pairing-active-ledger-migration-v1", Scope: scope,
+		Snapshot: hex.EncodeToString(archiveDigest[:]), Generation: head.Generation})
+	if err != nil {
+		return err
+	}
+	operationDigest := sha256.Sum256(operationMaterial)
+	request, err := NewRecoveryCheckpointRequest(scope, head.Generation, head.StateDigest, stateDigest)
+	if err != nil {
+		return err
+	}
+	migration := LegacyRecoveryMigrationRequest{Scope: scope, LegacyArchiveSHA256: archiveDigest,
+		ExpectedGeneration: head.Generation, AuthenticatedCheckpoint: append([]byte(nil), authenticatedCheckpoint...),
+		MigrationOperationID: hex.EncodeToString(operationDigest[:])}
+	if err := r.writeActiveLedgerPending(pairingOutcomeSnapshotPending{
+		Unsigned: unsigned, Request: request, Migration: &migration,
+	}); err != nil {
+		return err
+	}
+	checkpoint, commitErr := r.authority.MigrateLegacyArchive(ctx, migration)
+	if commitErr != nil {
+		observed, loadErr := r.authority.LoadCheckpoint(ctx, scope)
+		if loadErr != nil || observed.Scope != scope || observed.Generation != request.Generation ||
+			observed.PreviousDigest != request.PreviousDigest || observed.StateDigest != request.StateDigest ||
+			observed.OperationID != request.OperationID {
+			return fmt.Errorf("%w: active ledger migration outcome uncertain: %v", ErrRecoveryCommitUncertain, commitErr)
+		}
+		checkpoint = observed
+	}
+	if err := validateRecoveryAuthorityReceipt(request, checkpoint, r.authorityTrust); err != nil {
+		return err
+	}
+	snapshot.AuthorityGeneration = checkpoint.Generation
+	snapshot.AuthorityPreviousDigest = hex.EncodeToString(checkpoint.PreviousDigest[:])
+	snapshot.AuthorityStateDigest = hex.EncodeToString(checkpoint.StateDigest[:])
+	snapshot.AuthorityCheckpoint = checkpoint
+	if err := r.writeLocal(snapshot); err != nil {
+		return fmt.Errorf("%w: active ledger migration publication uncertain: %v", ErrRecoveryCommitUncertain, err)
+	}
+	if err := r.removeActiveLedgerPending(); err != nil {
+		return fmt.Errorf("%w: active ledger migration pending cleanup uncertain: %v", ErrRecoveryCommitUncertain, err)
+	}
+	r.migrationPending = false
+	return nil
+}
