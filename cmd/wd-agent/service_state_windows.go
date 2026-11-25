@@ -171,7 +171,7 @@ func verifyWindowsServiceStateParent(dir string) error {
 		}
 	}
 	if !ownerTrusted {
-		return fmt.Errorf("service state parent owner %s is not the installer or a trusted Windows principal", owner)
+		return fmt.Errorf("service state parent owner %s is not a trusted Windows principal", owner)
 	}
 	if err := trust.VerifyPairingStatePath(parent); err != nil {
 		return fmt.Errorf("service state parent must have a protected owner and DACL: %w", err)
