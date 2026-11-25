@@ -1346,7 +1346,8 @@ function Assert-WeDecentMigrationMutationLease {
 }
 function Invoke-WeDecentMigrationRacePoint {
     param([Parameter(Mandatory = $true)][string]$Name)
-    if ($global:WeDecentMigrationRaceInjection -is [scriptblock]) { & $global:WeDecentMigrationRaceInjection $Name }
+    $injection = Get-Variable -Name WeDecentMigrationRaceInjection -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+    if ($injection -is [scriptblock]) { & $injection $Name }
 }
 function Publish-WeDecentMigrationObject {
     [CmdletBinding()]
