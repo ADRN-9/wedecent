@@ -599,7 +599,7 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 		token.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(token.WitnessIDs, p.witnessIDs) ||
 		verifyCheckpointFenceTokenSignature(token, p.primaryKey) != nil ||
 		p.verifyRevocationAuthorizationForRecovery(token.Action, token.OperationID, token.Participants,
-			token.AuthorizationProof, token.AuthorizationSHA256, response.Committed) != nil {
+			token.AuthorizationProof, token.AuthorizationSHA256, true) != nil {
 		return CheckpointFenceOperation{}, false, ErrCheckpointIntegrity
 	}
 	if !response.Committed {
