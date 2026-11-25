@@ -51,7 +51,9 @@ func TestBrokerConcurrentTakeClaimsSlotExactlyOnce(t *testing.T) {
 	for range workers {
 		go func() {
 			defer wg.Done()
-			if _, err := broker.Take("device"); err == nil {
+			if claimed, err := broker.Take("device"); err == nil {
+				claimed.finish()
+				_ = claimed.conn.Close()
 				mu.Lock()
 				claims++
 				mu.Unlock()
