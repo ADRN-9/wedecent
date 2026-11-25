@@ -891,12 +891,18 @@ if ($service) {
             }
         }
         if (-not $stateExisted) {
-            Invoke-RollbackStep 'remove installer-created state directory' {
-                Remove-Item -LiteralPath $StateDir -Recurse -Force -ErrorAction Stop
+            Invoke-RollbackStep 'remove only an empty installer-created state directory' {
+                Remove-EmptyDirectory -Path $StateDir
             }
             if (-not $stateParentExisted) {
                 Invoke-RollbackStep 'remove empty installer-created state parent' {
                     Remove-EmptyDirectory -Path $stateParent
+                }
+            }
+            if (Test-Path -LiteralPath $StateDir -PathType Container) {
+                $remainingState = @(Get-ChildItem -LiteralPath $StateDir -Force -ErrorAction Stop)
+                if ($remainingState.Count -gt 0) {
+                    Write-Warning "Preserving non-empty protected service state after interrupted installation. Do not delete or repair identity/trust material; use the documented offline recovery and re-enrollment procedure. State: $StateDir"
                 }
             }
         }
