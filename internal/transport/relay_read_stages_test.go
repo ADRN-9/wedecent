@@ -261,4 +261,9 @@ func TestRelayTLSHandshakeCancellationClosesPendingConnection(t *testing.T) {
 		t.Fatal("TLS handshake did not stop after context cancellation")
 	}
 	if peer != nil { _ = peer.Close() }
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stalled TLS peer was not reaped after client cancellation")
+	}
 }
