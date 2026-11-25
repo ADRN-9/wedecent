@@ -26,7 +26,7 @@ type pairingOutcomeSnapshotUnsigned struct {
 }
 
 type pairingOutcomeSnapshotPending struct {
-	Unsigned  pairingOutcomeSnapshotUnsigned `json:"unsigned"`
+	Unsigned  pairingOutcomeSnapshotUnsigned  `json:"unsigned"`
 	Request   RecoveryCheckpointRequest       `json:"request"`
 	Migration *LegacyRecoveryMigrationRequest `json:"migration,omitempty"`
 }
@@ -42,9 +42,9 @@ func unsignedPairingSnapshot(snapshot pairingOutcomeSnapshot) pairingOutcomeSnap
 
 func activeLedgerMigrationOperationID(scope string, digest [sha256.Size]byte) (string, error) {
 	material, err := json.Marshal(struct {
-		Domain     string `json:"domain"`
-		Scope      string `json:"scope"`
-		Snapshot   string `json:"snapshot"`
+		Domain   string `json:"domain"`
+		Scope    string `json:"scope"`
+		Snapshot string `json:"snapshot"`
 	}{Domain: "wedecent-pairing-active-ledger-migration-v1", Scope: scope,
 		Snapshot: hex.EncodeToString(digest[:])})
 	if err != nil {
@@ -391,7 +391,6 @@ func (r *PairingRecovery) reconcileActiveLedger() error {
 	}
 	return r.removeActiveLedgerPending()
 }
-
 
 // MigrateLegacyActiveLedger requires an out-of-band authority proof for the
 // exact pre-migration snapshot. The provider must authenticate historical
