@@ -9,30 +9,25 @@ import (
 	"time"
 )
 
-func resolveAndAcknowledgePairing(t *testing.T, dir string, recovery *PairingRecovery, id, outcome string) {
+func resolvePairingWithProof(t *testing.T, dir string, recovery *PairingRecovery, id, outcome string) {
 	t.Helper()
-	if err := recovery.Complete(id, outcome); err != nil {
-		t.Fatal(err)
-	}
-	event := Event{Time: time.Now().UTC(), ActorID: testPairingActor, PeerID: testPairingPeer, AttemptID: id}
+	if err := recovery.Complete(id, outcome); err != nil { t.Fatal(err) }
+	event := Event{Time:time.Now().UTC(), ActorID:testPairingActor, PeerID:testPairingPeer, AttemptID:id}
 	if outcome == PairingOutcomeSuccess {
 		event.Type, event.Outcome = "pairing.trust_added", "success"
 	} else {
 		event.Type, event.Outcome = "pairing.request", "denied"
 	}
 	log, err := Open(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := log.Append(event); err != nil {
-		t.Fatal(err)
-	}
-	if err := recovery.ConfirmCompletion(log, id, event); err != nil {
-		t.Fatal(err)
-	}
-	if err := recovery.AcknowledgeResolved(id); err != nil {
-		t.Fatal(err)
-	}
+	if err != nil { t.Fatal(err) }
+	if err := log.Append(event); err != nil { t.Fatal(err) }
+	if err := recovery.ConfirmCompletion(log, id, event); err != nil { t.Fatal(err) }
+}
+
+func resolveAndAcknowledgePairing(t *testing.T, dir string, recovery *PairingRecovery, id, outcome string) {
+	t.Helper()
+	resolvePairingWithProof(t, dir, recovery, id, outcome)
+	if err := recovery.AcknowledgeResolved(id); err != nil { t.Fatal(err) }
 }
 
 func TestPairingRecoveryArchivesOnlyContiguousVerifiedResolvedPrefix(t *testing.T) {
@@ -86,9 +81,9 @@ func TestPairingRecoveryArchiveInterruptedCompactionReconciles(t *testing.T) {
 	if err := recovery.Begin(testRecoveryRecord(id)); err != nil {
 		t.Fatal(err)
 	}
-	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
+	resolvePairingWithProof(t, dir, recovery, id, PairingOutcomeSuccess)
 	recovery.archiveAfterSync = func() error { return os.ErrPermission }
-	if err := recovery.CompactResolved(); err == nil {
+	if err := recovery.AcknowledgeResolved(id); err == nil {
 		t.Fatal("injected archive/compaction interruption was ignored")
 	}
 	restarted, err := OpenPairingRecovery(dir)
@@ -173,9 +168,9 @@ func TestPairingRecoveryArchiveSurvivesActiveCompactionFailure(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	id := strings.Repeat("7",32)
 	if err := recovery.Begin(testRecoveryRecord(id)); err != nil { t.Fatal(err) }
-	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
-	recovery.beforeReplace = func() error { return os.ErrPermission }
-	if err := recovery.CompactResolved(); err == nil { t.Fatal("active-ledger compaction failure was ignored") }
+	resolvePairingWithProof(t, dir, recovery, id, PairingOutcomeSuccess)
+	recovery.compactionBeforeReplace = func() error { return os.ErrPermission }
+	if err := recovery.AcknowledgeResolved(id); err == nil { t.Fatal("active-ledger compaction failure was ignored") }
 	restarted, err := OpenPairingRecovery(dir)
 	if err != nil { t.Fatal(err) }
 	all, err := restarted.Records()
