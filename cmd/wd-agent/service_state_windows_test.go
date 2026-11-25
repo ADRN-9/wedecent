@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"strconv"
 	"testing"
 
 	"golang.org/x/sys/windows"
@@ -145,7 +146,7 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	if programData == "" {
 		t.Fatal("ProgramData is required for a machine-wide service-state fixture")
 	}
-	parent := filepath.Join(programData, fmt.Sprintf("WeDecent-C232-%d", os.Getpid()))
+	parent := filepath.Join(programData, "WeDecent-C232-" + strconv.Itoa(os.Getpid()))
 	if _, err := os.Lstat(parent); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("service-state fixture path already exists: %v", err)
 	}
