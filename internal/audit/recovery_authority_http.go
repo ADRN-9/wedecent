@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"crypto"
+	"crypto/x509"
 	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
@@ -41,6 +43,33 @@ type HTTPRecoveryAuthority struct {
 // the leaf certificate SPKI, an authentication token, and independently
 // provisioned public trust anchors. Normal WebPKI validation remains enabled.
 func NewHTTPRecoveryAuthority(endpoint, spkiSHA256, token string, trust RecoveryAuthorityTrust) (*HTTPRecoveryAuthority, error) {
+	return newHTTPRecoveryAuthority(endpoint, spkiSHA256, token, nil, trust)
+}
+
+// NewHTTPRecoveryAuthorityForDevice authenticates the agent with its existing
+// Ed25519 device certificate in addition to the short-lived service token.
+func NewHTTPRecoveryAuthorityForDevice(endpoint, spkiSHA256, token string, deviceCertificate tls.Certificate, trust RecoveryAuthorityTrust) (*HTTPRecoveryAuthority, error) {
+	if len(deviceCertificate.Certificate) == 0 || deviceCertificate.PrivateKey == nil {
+		return nil, errors.New("recovery authority requires a device client certificate and private key")
+	}
+	leaf := deviceCertificate.Leaf
+	if leaf == nil {
+		var err error
+		leaf, err = x509.ParseCertificate(deviceCertificate.Certificate[0])
+		if err != nil {
+			return nil, errors.New("recovery authority device certificate is invalid")
+		}
+	}
+	if _, ok := leaf.PublicKey.(ed25519.PublicKey); !ok {
+		return nil, errors.New("recovery authority client certificate must use Ed25519")
+	}
+	if _, ok := deviceCertificate.PrivateKey.(crypto.Signer); !ok {
+		return nil, errors.New("recovery authority client identity is not a crypto.Signer")
+	}
+	return newHTTPRecoveryAuthority(endpoint, spkiSHA256, token, &deviceCertificate, trust)
+}
+
+func newHTTPRecoveryAuthority(endpoint, spkiSHA256, token string, deviceCertificate *tls.Certificate, trust RecoveryAuthorityTrust) (*HTTPRecoveryAuthority, error) {
 	parsed, err := url.Parse(strings.TrimSpace(endpoint))
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil ||
 		parsed.RawQuery != "" || parsed.Fragment != "" || (parsed.Path != "" && parsed.Path != "/") {
@@ -71,6 +100,9 @@ func NewHTTPRecoveryAuthority(endpoint, spkiSHA256, token string, trust Recovery
 			}
 			return nil
 		},
+	}
+	if deviceCertificate != nil {
+		tlsConfig.Certificates = []tls.Certificate{*deviceCertificate}
 	}
 	transport := &http.Transport{TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true}
 	client := &http.Client{
