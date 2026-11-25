@@ -104,7 +104,7 @@ func (d RelayDialer) Dial(ctx context.Context) (Conn, error) {
 		conn.Close()
 		return nil, err
 	}
-	resp, err := readRelayMessage(ctx, conn, d.Options.Timeout)
+	resp, err := readRelayMessage(ctx, conn, d.Options.readTimeout())
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -144,7 +144,7 @@ func WaitRelaySession(ctx context.Context, address string, opts RelayOptions, id
 		conn.Close()
 		return nil, err
 	}
-	resp, err := readRelayMessage(ctx, conn, opts.Timeout)
+	resp, err := readRelayMessage(ctx, conn, opts.readTimeout())
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -157,7 +157,7 @@ func WaitRelaySession(ctx context.Context, address string, opts RelayOptions, id
 		conn.Close()
 		return nil, errors.New("relay did not accept registration")
 	}
-	resp, err = readRelayMessage(ctx, conn, opts.Timeout)
+	resp, err = readRelayMessage(ctx, conn, opts.readTimeout())
 	if err != nil {
 		conn.Close()
 		return nil, err
