@@ -688,8 +688,9 @@ function Test-DirectoryExistsStrict {
 
     try {
         $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-        if (-not $item.PSIsContainer) {
-            throw "Expected a directory at '$Path'."
+        if (-not $item.PSIsContainer -or
+            ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Expected a real, non-reparse directory at '$Path'."
         }
         return $true
     } catch {
@@ -713,7 +714,10 @@ function Test-ServiceStateSafeForAccountRemoval {
         }
         return $false
     }
-    if (-not $item.PSIsContainer) { return $false }
+    if (-not $item.PSIsContainer -or
+        ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $false
+    }
 
     try {
         $remainingState = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
