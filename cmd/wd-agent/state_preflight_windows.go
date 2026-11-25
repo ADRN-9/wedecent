@@ -247,3 +247,15 @@ func windowsAgentStateOwnerAllowed(owner, active *windows.SID) bool {
 	}
 	return owner.Equals(active) || owner.Equals(system) || owner.Equals(admins)
 }
+
+func verifyMigrationStateParent(path string) error {
+	return verifyWindowsServiceStateParent(path)
+}
+
+func verifyMigrationStateForSID(path, serviceSID string) error {
+	sid, err := windows.StringToSid(serviceSID)
+	if err != nil || sid == nil || !sid.IsValid() {
+		return errors.New("migration service SID is invalid")
+	}
+	return verifyWindowsStateForSID(path, sid)
+}
