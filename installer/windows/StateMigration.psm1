@@ -702,7 +702,8 @@ function Invoke-WeDecentMigrationFaultPoint {
     if ([string]::IsNullOrWhiteSpace($selected)) {
         $selected = [Environment]::GetEnvironmentVariable('WEDECENT_MIGRATION_FAULT_AT')
     }
-    if ($selected -ceq $Name) {
+    $selectedPoints = @($selected -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($selectedPoints -ccontains $Name) {
         throw "Injected WeDecent migration interruption at $Name."
     }
 }
