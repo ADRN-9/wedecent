@@ -322,8 +322,12 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 	}
 	canonicalParticipants := cloneCheckpointEndpoints(request.Participants)
 	sort.Slice(canonicalParticipants, func(i, j int) bool { return canonicalParticipants[i].DeviceID < canonicalParticipants[j].DeviceID })
+	version, err := checkpointFenceVersionForAction(request.Action)
+	if err != nil {
+		return CheckpointFenceToken{}, err
+	}
 	token := CheckpointFenceToken{
-		Version:                  checkpointFenceVersion,
+		Version:                  version,
 		Scope:                    request.Scope,
 		Participants:             canonicalParticipants,
 		ExpectedFenceGeneration:  fenceGeneration,
@@ -332,6 +336,7 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 		ResultingRevocationEpoch: revocationEpoch + boolUint64(request.Action == CheckpointFenceRevoke),
 		Action:                   request.Action, OperationID: request.OperationID,
 		RequestSHA256: request.RequestSHA256, AuthorizationSHA256: request.AuthorizationSHA256,
+		AuthorizationProof: append([]byte(nil), request.AuthorizationProof...),
 		AuthorizationProof: append([]byte(nil), request.AuthorizationProof...),
 		PrimaryHeadGeneration: primaryGeneration, PrimaryHeadSHA256: request.PrimaryHeadSHA256,
 		PreviousFenceSHA256: fenceHashBytes,
