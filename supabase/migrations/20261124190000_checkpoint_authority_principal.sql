@@ -12,7 +12,7 @@ grant wedecent_checkpoint_authority to authenticator;
 
 create schema if not exists pgsodium;
 create extension if not exists pgsodium with schema pgsodium;
-do $
+do $fn$
 declare
     v_schema text;
 begin
@@ -24,7 +24,7 @@ begin
         raise exception 'pgsodium must be installed in the pgsodium schema for checkpoint signature verification';
     end if;
 end
-$;
+$fn$;
 grant usage on schema public, auth, pgsodium to wedecent_checkpoint_authority;
 
 create table public.checkpoint_fence_primary_trust (
@@ -167,7 +167,7 @@ begin
         p_participants, p_primary_head_generation, p_primary_head_sha256, p_lease_seconds
     );
 end;
-$$;
+$fn$;
 
 create or replace function public.record_checkpoint_fence_token(
     p_operation_id text,
