@@ -1441,7 +1441,21 @@ func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.C
 	if err != nil {
 		return err
 	}
-	heads, err := p.checkpointParticipantHeadsWithRecovery(ctx, []CheckpointEndpoint{endpoint}, found && existing.Committed)
+	if found && existing.Committed {
+		token := existing.Token
+		if token.Scope != scope || token.Action != CheckpointFenceRevoke ||
+			token.OperationID != operationID || token.RequestSHA256 != fingerprint ||
+			token.AuthorizationSHA256 != authorizationHash ||
+			!bytes.Equal(token.AuthorizationProof, authorizationProof) ||
+			token.ExpectedRevocationEpoch != endpoint.RevocationEpoch ||
+			token.ResultingRevocationEpoch != next || len(token.Participants) != 1 ||
+			token.Participants[0] != endpoint ||
+			verifyCheckpointFenceTokenSignature(token, p.Fencing.PrimaryKey) != nil {
+			return ErrCheckpointIntegrity
+		}
+		return p.Fencing.verifyCommittedOperation(existing, token)
+	}
+	heads, err := p.checkpointParticipantHeadsWithRecovery(ctx, []CheckpointEndpoint{endpoint}, false)
 	if err != nil {
 		return err
 	}
