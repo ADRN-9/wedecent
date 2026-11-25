@@ -8,18 +8,21 @@ func negotiateSessionCapabilities(requested []protocol.Capability, typedStreamsR
 	return negotiateSessionCapabilitiesForRuntime(requested, typedStreamsReady, false)
 }
 
-func negotiateSessionCapabilitiesForRuntime(requested []protocol.Capability, typedStreamsReady, fileTransferReady bool) []protocol.Capability {
+func negotiateSessionCapabilitiesForRuntime(requested []protocol.Capability, typedStreamsReady, fileTransferReady bool, portForwardReady ...bool) []protocol.Capability {
 	if !typedStreamsReady {
 		return nil
 	}
 	requestedTyped := false
 	requestedFile := false
+	requestedPortForward := false
 	for _, capability := range requested {
 		switch capability {
 		case protocol.CapabilityTypedStreamsV1:
 			requestedTyped = true
 		case protocol.CapabilityFileTransferV1:
 			requestedFile = true
+		case protocol.CapabilityPortForwardV1:
+			requestedPortForward = true
 		}
 	}
 	if !requestedTyped || !protocol.SupportedCapability(protocol.CapabilityTypedStreamsV1) {
@@ -28,6 +31,9 @@ func negotiateSessionCapabilitiesForRuntime(requested []protocol.Capability, typ
 	negotiated := []protocol.Capability{protocol.CapabilityTypedStreamsV1}
 	if fileTransferReady && requestedFile && protocol.SupportedCapability(protocol.CapabilityFileTransferV1) {
 		negotiated = append(negotiated, protocol.CapabilityFileTransferV1)
+	}
+	if len(portForwardReady) > 0 && portForwardReady[0] && requestedPortForward && protocol.SupportedCapability(protocol.CapabilityPortForwardV1) {
+		negotiated = append(negotiated, protocol.CapabilityPortForwardV1)
 	}
 	return negotiated
 }

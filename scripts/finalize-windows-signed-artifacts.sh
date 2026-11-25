@@ -12,6 +12,7 @@ done
 
 ROOT="$(realpath -m -- "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)")"
 DIST_ROOT="$(realpath -m -- "$ROOT/dist")"
+source "$ROOT/scripts/lib/release-trust.sh"
 UNSIGNED_RELEASE_DIR="$(realpath -m -- "${UNSIGNED_RELEASE_DIR:-$DIST_ROOT/wedecent-windows-amd64}")"
 UNSIGNED_PACKAGE_DIR="$(realpath -m -- "${UNSIGNED_PACKAGE_DIR:-$DIST_ROOT/wedecent-windows-installer}")"
 OUT_DIR="$(realpath -m -- "${OUT_DIR:-$DIST_ROOT/wedecent-windows-signed}")"
@@ -82,6 +83,8 @@ assert_unsigned() {
 
 sign_and_verify() {
   local path="$1"
+  "$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+    fail 'live release tag changed before Authenticode signing'
   "$SIGNER" "$path" || fail "signer failed for $path"
   [[ -f "$path" && ! -L "$path" ]] || fail "signer did not leave a regular artifact: $path"
   "$VERIFIER" "$path" || fail "signature verification failed for $path"
@@ -111,6 +114,8 @@ write_package_checksums() {
 
 assert_input_dir "$UNSIGNED_RELEASE_DIR" "UNSIGNED_RELEASE_DIR"
 assert_input_dir "$UNSIGNED_PACKAGE_DIR" "UNSIGNED_PACKAGE_DIR"
+wedecent_verify_release_metadata "$UNSIGNED_RELEASE_DIR"
+wedecent_verify_release_metadata "$UNSIGNED_PACKAGE_DIR"
 assert_dist_child "$OUT_DIR" "OUT_DIR"
 [[ "${OUT_DIR%/*}" == "$DIST_ROOT" ]] || fail "OUT_DIR must be a direct child of $DIST_ROOT for atomic publication"
 [[ "$UNSIGNED_RELEASE_DIR" != "$UNSIGNED_PACKAGE_DIR" ]] || fail 'unsigned release and package directories must be distinct'
@@ -199,6 +204,10 @@ done
 
 assert_exact_files "$SIGNED_RELEASE_DIR" 'signed release directory' "${release_files[@]}"
 assert_exact_files "$SIGNED_PACKAGE_DIR" 'signed installer package directory' "${package_files[@]}"
+wedecent_verify_release_metadata "$SIGNED_RELEASE_DIR"
+wedecent_verify_release_metadata "$SIGNED_PACKAGE_DIR"
+"$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+  fail 'live release tag changed before signed artifact finalization'
 
 mv -- "$TEMP_ROOT" "$OUT_DIR"
 TEMP_ROOT=''

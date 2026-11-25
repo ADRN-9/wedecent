@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
+	"encoding/base64"
 	"errors"
 	"flag"
 	"fmt"
@@ -13,11 +15,23 @@ import (
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/coreapi/coreprocess"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/portforward"
 	"wedecent.com/wedecent/internal/routercontrol"
 	"wedecent.com/wedecent/internal/trust"
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "release-trust" {
+		if len(os.Args) != 2 {
+			fmt.Fprintln(os.Stderr, "wd-core: release-trust takes no arguments")
+			os.Exit(2)
+		}
+		if err := buildinfo.WriteReleaseTrust(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "wd-core:", err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "version" {
 		if err := buildinfo.Write(os.Stdout, "wd-core"); err != nil {
 			fmt.Fprintln(os.Stderr, "wd-core:", err)
@@ -43,11 +57,19 @@ func run(args []string) error {
 	publishableKey := fs.String("publishable-key", strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_PUBLISHABLE_KEY")), "Supabase publishable key (or WEDECENT_SUPABASE_PUBLISHABLE_KEY)")
 	routerAgentID := fs.String("router-agent-id", strings.TrimSpace(os.Getenv("WEDECENT_ROUTER_AGENT_ID")), "local router agent device ID (or WEDECENT_ROUTER_AGENT_ID)")
 	routerAgentFingerprint := fs.String("router-agent-fingerprint", strings.TrimSpace(os.Getenv("WEDECENT_ROUTER_AGENT_FINGERPRINT")), "local router agent public-key fingerprint (or WEDECENT_ROUTER_AGENT_FINGERPRINT)")
+	forwardingPublicKeyPath := fs.String("port-forward-authorization-public-key", "", "path to the trusted Ed25519 public key used to verify port-forwarding capabilities")
+	forwardingReplayURL := fs.String("port-forward-replay-url", "", "deprecated single-provider replay endpoint; unsupported")
+	forwardingReplayAPIKey := fs.String("port-forward-replay-api-key", "", "deprecated single-provider replay API key; unsupported")
+	forwardingLegacyMigration := fs.Bool("port-forward-allow-legacy-replay-migration", false, "deprecated; local replay migration is not supported by production Local Core")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
-		return errors.New("usage: wd-core [--state directory] [--supabase-url URL] [--publishable-key key] [--router-agent-id id --router-agent-fingerprint SHA256:hex]")
+		return errors.New("usage: wd-core [--state directory] [--supabase-url URL] [--publishable-key key] [--router-agent-id id --router-agent-fingerprint SHA256:hex] [--port-forward-authorization-public-key path]")
+	}
+	if strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_URL")) != "" ||
+		strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_API_KEY")) != "" {
+		return errors.New("legacy single-provider replay environment variables are unsupported; configure the witnessed checkpoint provider")
 	}
 
 	agentID := strings.TrimSpace(*routerAgentID)
@@ -60,6 +82,30 @@ func run(args []string) error {
 		ClientStateDir: *clientStateDir,
 		SupabaseURL:    *supabaseURL,
 		PublishableKey: *publishableKey,
+	}
+	if keyPath := strings.TrimSpace(*forwardingPublicKeyPath); keyPath != "" {
+		publicKey, err := loadForwardingAuthorizationPublicKey(keyPath)
+		if err != nil {
+			return fmt.Errorf("load forwarding authorization trust anchor: %w", err)
+		}
+		if strings.TrimSpace(*forwardingReplayURL) != "" || strings.TrimSpace(*forwardingReplayAPIKey) != "" || *forwardingLegacyMigration {
+			return errors.New("single-provider replay configuration and legacy replay migration are unsupported; Local Core requires the witnessed checkpoint provider")
+		}
+		config.Forwarding = &portforward.ManagerConfig{
+			AuthorizationPublicKey: publicKey,
+			Limits:                 portforward.DefaultManagerLimits(),
+		}
+		config.ForwardingAuditTrust = portforward.CheckpointAuditTrust{
+			Hostname:       buildinfo.CheckpointAuditHostname,
+			Port:           443,
+			SPKISHA256Pins: buildinfo.CheckpointAuditSPKISHA256,
+		}
+		if strings.TrimSpace(config.ForwardingAuditTrust.Hostname) == "" ||
+			strings.TrimSpace(config.ForwardingAuditTrust.SPKISHA256Pins) == "" {
+			return errors.New("Local Core forwarding requires checkpoint audit hostname and SPKI pins embedded in the release build")
+		}
+	} else if *forwardingLegacyMigration || strings.TrimSpace(*forwardingReplayURL) != "" || strings.TrimSpace(*forwardingReplayAPIKey) != "" {
+		return errors.New("legacy single-provider replay configuration is unsupported")
 	}
 	if agentID != "" {
 		controller, err := identity.Load(*clientStateDir)
@@ -88,4 +134,30 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
 	return coreprocess.RunLocalRuntime(ctx, runtime)
+}
+
+func loadForwardingAuthorizationPublicKey(path string) (ed25519.PublicKey, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() < ed25519.PublicKeySize || info.Size() > 256 {
+		return nil, errors.New("authorization trust anchor must be a bounded regular file, not a symlink")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == ed25519.PublicKeySize {
+		return append(ed25519.PublicKey(nil), data...), nil
+	}
+	encoded := strings.TrimSpace(string(data))
+	key, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+	if err != nil {
+		key, err = base64.StdEncoding.Strict().DecodeString(encoded)
+	}
+	if err != nil || len(key) != ed25519.PublicKeySize {
+		return nil, errors.New("authorization trust anchor must contain exactly 32 Ed25519 public-key bytes")
+	}
+	return ed25519.PublicKey(key), nil
 }

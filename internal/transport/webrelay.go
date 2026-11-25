@@ -350,19 +350,35 @@ func (c *wsNetConn) Write(p []byte) (int, error) {
 }
 
 func (c *wsNetConn) Close() error {
+	// A TCP close is sufficient to terminate the relay stream. Do not require
+	// a WebSocket close frame before local shutdown.
+	return c.Abort()
+}
+
+// Abort closes the underlying socket without waiting for the WebSocket writer
+// lock or attempting a close control frame. It is used for forced session
+// teardown when a TLS write may be blocked inside this transport.
+func (c *wsNetConn) Abort() error {
 	c.closeMu.Lock()
-	if c.closed {
-		c.closeMu.Unlock()
+	if !c.closed {
+		c.closed = true
+		close(c.done)
+	}
+	c.closeMu.Unlock()
+	return abortUnderlyingConn(c.raw)
+}
+
+func abortUnderlyingConn(conn net.Conn) error {
+	if conn == nil {
 		return nil
 	}
-	c.closed = true
-	close(c.done)
-	c.closeMu.Unlock()
-
-	c.writeMu.Lock()
-	_ = c.writeFrame(0x8, []byte{0x03, 0xE8})
-	c.writeMu.Unlock()
-	return c.raw.Close()
+	if aborter, ok := conn.(interface{ Abort() error }); ok {
+		return aborter.Abort()
+	}
+	if unwrapped, ok := conn.(interface{ NetConn() net.Conn }); ok {
+		return abortUnderlyingConn(unwrapped.NetConn())
+	}
+	return conn.Close()
 }
 
 func (c *wsNetConn) LocalAddr() net.Addr                { return c.raw.LocalAddr() }

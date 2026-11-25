@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    - wedecent-signing
+    - wedecent-release-publisher
