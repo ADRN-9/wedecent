@@ -835,14 +835,23 @@ function Invoke-WeDecentStateMigration {
     if (-not $service) { throw "Migration service '$ServiceName' does not exist." }
     $account = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
     if ($account -cne $ServiceSid) { throw 'SCM service account SID differs from the migration target SID.' }
-    $stateArg = [regex]::Escape($sourceFull)
-    if ($service.PathName -notmatch ('(?i)(?:^|\s)--state=(?:"' + $stateArg + '"|' + $stateArg + ')(?:\s|$)')) {
+    $statePattern = '(?i)(?<!\S)"?--state=(?:"([^"]+)"|([^"]+))"?'
+    $stateMatches = [regex]::Matches([string]$service.PathName, $statePattern)
+    if ($stateMatches.Count -ne 1) {
+        throw 'SCM command line must contain exactly one unambiguous --state argument.'
+    }
+    $stateMatch = $stateMatches[0]
+    $matchedState = if ($stateMatch.Groups[1].Success) { $stateMatch.Groups[1].Value } else { $stateMatch.Groups[2].Value }
+    if (-not [string]::Equals($matchedState, $sourceFull, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'SCM command line does not reference the authenticated migration source.'
     }
     $updatedPath = [regex]::Replace(
         [string]$service.PathName,
-        '(?i)(?<!\S)--state=(?:"[^"]+"|\S+)',
-        ('--state="' + $destinationFull + '"'),
+        $statePattern,
+        [System.Text.RegularExpressions.MatchEvaluator]{
+            param($match)
+            return '"--state=' + $destinationFull + '"'
+        },
         [Text.RegularExpressions.RegexOptions]::CultureInvariant
     )
     if ($updatedPath -ceq [string]$service.PathName) { throw 'Could not construct an unambiguous destination SCM command line.' }
