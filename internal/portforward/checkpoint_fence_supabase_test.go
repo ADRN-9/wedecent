@@ -212,7 +212,11 @@ func TestSupabaseCheckpointFenceWireRoundTripPreservesSignedFields(t *testing.T)
 
 func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *testing.T) {
 	revocationPublic, revocationPrivate := c197Key(t)
-	primary := &SupabaseCheckpointFencePrimary{revocationAuthorizationKey: revocationPublic}
+	now := time.UnixMilli(1000)
+	primary := &SupabaseCheckpointFencePrimary{
+		revocationAuthorizationKey: revocationPublic,
+		now: func() time.Time { return now },
+	}
 	endpoint := CheckpointEndpoint{
 		DeviceID: "wd_gggggggggggggggg", AccountID: "11111111-1111-4111-8111-111111111111",
 		OrganizationID: "22222222-2222-4222-8222-222222222222", RevocationEpoch: 8,
@@ -223,13 +227,19 @@ func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *
 		t.Fatal(err)
 	}
 	participants := []CheckpointEndpoint{endpoint}
+	issuedAt, expiresAt := int64(900), int64(1800)
 	message, err := CheckpointRevocationAuthorizationMessage(CheckpointRevocationAuthorizationRequest{
 		Endpoint: endpoint, NextEpoch: next, OperationID: operationID, Participants: participants,
+		IssuedAtUnixMS: issuedAt, ExpiresAtUnixMS: expiresAt,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof := ed25519.Sign(revocationPrivate, message)
+	signature := ed25519.Sign(revocationPrivate, message)
+	proof, err := EncodeCheckpointRevocationAuthorizationProof(issuedAt, expiresAt, signature)
+	if err != nil {
+		t.Fatal(err)
+	}
 	digest := sha256.Sum256(proof)
 	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, proof, digest); err != nil {
 		t.Fatalf("valid operation-bound proof rejected: %v", err)
@@ -238,7 +248,7 @@ func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *
 		t.Fatalf("proof replayed against another operation: %v", err)
 	}
 	mutated := append([]byte(nil), proof...)
-	mutated[0] ^= 0x80
+	mutated[len(mutated)-1] ^= 0x80
 	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, mutated, sha256.Sum256(mutated)); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("forged proof accepted: %v", err)
 	}
@@ -251,8 +261,37 @@ func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *
 	if err := primary.verifyRevocationAuthorization(CheckpointFenceFinalize, operationID, participants, proof, digest); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("revocation proof accepted for finalize action: %v", err)
 	}
+	expiredMessage, err := CheckpointRevocationAuthorizationMessage(CheckpointRevocationAuthorizationRequest{
+		Endpoint: endpoint, NextEpoch: next, OperationID: operationID, Participants: participants,
+		IssuedAtUnixMS: 900, ExpiresAtUnixMS: 999,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	expiredSignature := ed25519.Sign(revocationPrivate, expiredMessage)
+	expiredProof, err := EncodeCheckpointRevocationAuthorizationProof(900, 999, expiredSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, expiredProof, sha256.Sum256(expiredProof)); !errors.Is(err, ErrCheckpointFenceExpired) {
+		t.Fatalf("expired authorization proof accepted: %v", err)
+	}
+	futureMessage, err := CheckpointRevocationAuthorizationMessage(CheckpointRevocationAuthorizationRequest{
+		Endpoint: endpoint, NextEpoch: next, OperationID: operationID, Participants: participants,
+		IssuedAtUnixMS: 40000, ExpiresAtUnixMS: 50000,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	futureSignature := ed25519.Sign(revocationPrivate, futureMessage)
+	futureProof, err := EncodeCheckpointRevocationAuthorizationProof(40000, 50000, futureSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, futureProof, sha256.Sum256(futureProof)); !errors.Is(err, ErrCheckpointFenceExpired) {
+		t.Fatalf("future-dated authorization proof accepted: %v", err)
+	}
 }
-
 func TestSupabaseCheckpointFencePrimaryLegacyMethodsFailClosed(t *testing.T) {
 	var primary SupabaseCheckpointFencePrimary
 	if _, err := primary.ReserveFence(t.Context(), CheckpointFenceRequest{}); !errors.Is(err, ErrCheckpointUnavailable) {
