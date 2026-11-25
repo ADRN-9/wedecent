@@ -51,6 +51,8 @@ type CheckpointFenceToken struct {
 	RequestSHA256            [sha256.Size]byte
 	AuthorizationSHA256      [sha256.Size]byte
 	AuthorizationProof       []byte
+	AuthorizationProofIssuedAtUnixMS int64
+	AuthorizationProofExpiresAtUnixMS int64
 	PrimaryHeadGeneration    uint64
 	PrimaryHeadSHA256        [sha256.Size]byte
 	PreviousFenceSHA256      [sha256.Size]byte
@@ -168,6 +170,56 @@ type CheckpointRevocationAuthorizationRequest struct {
 	NextEpoch       uint64
 	OperationID     string
 	Participants    []CheckpointEndpoint
+	IssuedAtUnixMS  int64
+	ExpiresAtUnixMS int64
+}
+
+const checkpointRevocationProofEnvelopeVersion uint32 = 1
+const checkpointRevocationProofEnvelopeSize = 4 + 4 + 8 + 8 + ed25519.SignatureSize
+
+type checkpointRevocationProofEnvelope struct {
+	IssuedAtUnixMS  int64
+	ExpiresAtUnixMS int64
+	Signature       []byte
+}
+
+// EncodeCheckpointRevocationAuthorizationProof encodes the signed proof claims
+// returned by a control-plane authorization service.
+func EncodeCheckpointRevocationAuthorizationProof(issuedAtUnixMS, expiresAtUnixMS int64, signature []byte) ([]byte, error) {
+	if issuedAtUnixMS <= 0 || expiresAtUnixMS <= issuedAtUnixMS ||
+		expiresAtUnixMS-issuedAtUnixMS > 120000 || len(signature) != ed25519.SignatureSize {
+		return nil, ErrCheckpointIntegrity
+	}
+	var b bytes.Buffer
+	b.WriteString("WDRP")
+	if err := binary.Write(&b, binary.BigEndian, checkpointRevocationProofEnvelopeVersion); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&b, binary.BigEndian, issuedAtUnixMS); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&b, binary.BigEndian, expiresAtUnixMS); err != nil {
+		return nil, err
+	}
+	b.Write(signature)
+	return b.Bytes(), nil
+}
+
+func decodeCheckpointRevocationAuthorizationProof(raw []byte) (checkpointRevocationProofEnvelope, error) {
+	if len(raw) != checkpointRevocationProofEnvelopeSize || string(raw[:4]) != "WDRP" {
+		return checkpointRevocationProofEnvelope{}, ErrCheckpointIntegrity
+	}
+	version := binary.BigEndian.Uint32(raw[4:8])
+	issuedAt := int64(binary.BigEndian.Uint64(raw[8:16]))
+	expiresAt := int64(binary.BigEndian.Uint64(raw[16:24]))
+	if version != checkpointRevocationProofEnvelopeVersion || issuedAt <= 0 ||
+		expiresAt <= issuedAt || expiresAt-issuedAt > 120000 {
+		return checkpointRevocationProofEnvelope{}, ErrCheckpointIntegrity
+	}
+	return checkpointRevocationProofEnvelope{
+		IssuedAtUnixMS: issuedAt, ExpiresAtUnixMS: expiresAt,
+		Signature: append([]byte(nil), raw[24:]...),
+	}, nil
 }
 
 // CheckpointRevocationAuthorizationMessage canonically binds the control-plane
@@ -176,7 +228,9 @@ func CheckpointRevocationAuthorizationMessage(request CheckpointRevocationAuthor
 	if !validCheckpointEndpoint(request.Endpoint) || request.Endpoint.RevocationEpoch == ^uint64(0) ||
 		request.NextEpoch != request.Endpoint.RevocationEpoch+1 ||
 		len(request.OperationID) != 64 || !validLowerSHA256(request.OperationID) ||
-		len(request.Participants) != 1 || request.Participants[0] != request.Endpoint {
+		len(request.Participants) != 1 || request.Participants[0] != request.Endpoint ||
+		request.IssuedAtUnixMS <= 0 || request.ExpiresAtUnixMS <= request.IssuedAtUnixMS ||
+		request.ExpiresAtUnixMS-request.IssuedAtUnixMS > 120000 {
 		return nil, ErrCheckpointIntegrity
 	}
 	var b bytes.Buffer
@@ -195,6 +249,12 @@ func CheckpointRevocationAuthorizationMessage(request CheckpointRevocationAuthor
 		return nil, err
 	}
 	if err := binary.Write(&b, binary.BigEndian, request.NextEpoch); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&b, binary.BigEndian, request.IssuedAtUnixMS); err != nil {
+		return nil, err
+	}
+	if err := binary.Write(&b, binary.BigEndian, request.ExpiresAtUnixMS); err != nil {
 		return nil, err
 	}
 	if err := binary.Write(&b, binary.BigEndian, uint64(len(request.Participants))); err != nil {
@@ -288,7 +348,9 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 		return nil, err
 	}
 	if token.Action == CheckpointFenceFinalize &&
-		(len(token.AuthorizationProof) != 0 || token.ResultingRevocationEpoch != token.ExpectedRevocationEpoch) {
+		(len(token.AuthorizationProof) != 0 || token.AuthorizationProofIssuedAtUnixMS != 0 ||
+			token.AuthorizationProofExpiresAtUnixMS != 0 ||
+			token.ResultingRevocationEpoch != token.ExpectedRevocationEpoch) {
 		return nil, ErrCheckpointStale
 	}
 	if token.Action == CheckpointFenceRevoke &&
@@ -296,10 +358,14 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 			token.ResultingRevocationEpoch != token.ExpectedRevocationEpoch+1) {
 		return nil, ErrCheckpointStale
 	}
-	if token.Action == CheckpointFenceRevoke &&
-		(len(token.AuthorizationProof) != ed25519.SignatureSize ||
-			sha256.Sum256(token.AuthorizationProof) != token.AuthorizationSHA256) {
-		return nil, ErrCheckpointIntegrity
+	if token.Action == CheckpointFenceRevoke {
+		proof, proofErr := decodeCheckpointRevocationAuthorizationProof(token.AuthorizationProof)
+		if proofErr != nil || sha256.Sum256(token.AuthorizationProof) != token.AuthorizationSHA256 ||
+			proof.IssuedAtUnixMS != token.AuthorizationProofIssuedAtUnixMS ||
+			proof.ExpiresAtUnixMS != token.AuthorizationProofExpiresAtUnixMS ||
+			proof.ExpiresAtUnixMS > token.ExpiresAtUnixMS {
+			return nil, ErrCheckpointIntegrity
+		}
 	}
 	ids := append([]string(nil), token.WitnessIDs...)
 	sort.Strings(ids)
@@ -377,6 +443,8 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 	b.Write(token.RequestSHA256[:])
 	b.Write(token.AuthorizationSHA256[:])
 	if token.Action == CheckpointFenceRevoke {
+		binary.Write(&b, binary.BigEndian, token.AuthorizationProofIssuedAtUnixMS)
+		binary.Write(&b, binary.BigEndian, token.AuthorizationProofExpiresAtUnixMS)
 		b.Write(token.AuthorizationProof)
 	}
 	b.Write(token.PrimaryHeadSHA256[:])
