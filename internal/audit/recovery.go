@@ -58,14 +58,14 @@ type PairingAuditProof struct {
 }
 
 type pairingOutcomeSnapshot struct {
-	Version           int              `json:"version"`
-	Records           []PairingOutcome `json:"records"`
-	ArchivedThrough   uint64           `json:"archived_through,omitempty"`
-	ArchiveCheckpoint string             `json:"archive_checkpoint,omitempty"`
-	AuthorityGeneration uint64            `json:"authority_generation,omitempty"`
-	AuthorityPreviousDigest string        `json:"authority_previous_digest,omitempty"`
-	AuthorityStateDigest string           `json:"authority_state_digest,omitempty"`
-	AuthorityCheckpoint RecoveryCheckpoint `json:"authority_checkpoint,omitempty"`
+	Version                 int                `json:"version"`
+	Records                 []PairingOutcome   `json:"records"`
+	ArchivedThrough         uint64             `json:"archived_through,omitempty"`
+	ArchiveCheckpoint       string             `json:"archive_checkpoint,omitempty"`
+	AuthorityGeneration     uint64             `json:"authority_generation,omitempty"`
+	AuthorityPreviousDigest string             `json:"authority_previous_digest,omitempty"`
+	AuthorityStateDigest    string             `json:"authority_state_digest,omitempty"`
+	AuthorityCheckpoint     RecoveryCheckpoint `json:"authority_checkpoint,omitempty"`
 }
 
 // PairingRecovery is independent of rotating audit files. Unresolved evidence
