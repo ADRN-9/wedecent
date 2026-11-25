@@ -35,9 +35,9 @@ type SupabaseCheckpointFenceConfig struct {
 	ServiceRoleKey string
 	ActorID        string
 	PrimarySigner  crypto.Signer
+	CheckpointHeadKey ed25519.PublicKey
 	WitnessSetVersion string
 	Witnesses      []CheckpointFenceWitnessTrust
-	HTTPClient     *http.Client
 	Now            func() time.Time
 }
 
@@ -47,6 +47,7 @@ type SupabaseCheckpointFencePrimary struct {
 	serviceRoleKey string
 	primarySigner crypto.Signer
 	primaryKey ed25519.PublicKey
+	checkpointHeadKey ed25519.PublicKey
 	witnessSetVersion string
 	witnesses map[string]ed25519.PublicKey
 	witnessIDs []string
@@ -113,7 +114,8 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 	if !validCheckpointAuditAuthority(config.Hostname, config.Port) ||
 		strings.TrimSpace(config.ServiceRoleKey) == "" || strings.TrimSpace(config.ServiceRoleKey) != config.ServiceRoleKey ||
 		!canonicalUUID(config.ActorID) || config.PrimarySigner == nil ||
-		config.WitnessSetVersion == "" || len(config.WitnessSetVersion) > 128 {
+		config.WitnessSetVersion == "" || len(config.WitnessSetVersion) > 128 ||
+		len(config.CheckpointHeadKey) != ed25519.PublicKeySize {
 		return nil, ErrCheckpointUnavailable
 	}
 	publicKey, ok := config.PrimarySigner.Public().(ed25519.PublicKey)
@@ -155,23 +157,18 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 	if err != nil || parsed.Host != net.JoinHostPort(config.Hostname, fmt.Sprint(config.Port)) {
 		return nil, ErrCheckpointUnavailable
 	}
-	httpClient := config.HTTPClient
-	if httpClient == nil {
-		defaultTransport, ok := http.DefaultTransport.(*http.Transport)
-		if !ok {
-			return nil, ErrCheckpointUnavailable
-		}
-		transport := defaultTransport.Clone()
-		transport.TLSClientConfig = checkpointAuditTLSConfig(CheckpointAuditTrust{
-			Hostname: config.Hostname, Port: config.Port, SPKISHA256Pins: config.SPKISHA256Pins,
-		}, pins)
-		httpClient = &http.Client{
-			Timeout: 12 * time.Second,
-			Transport: transport,
-			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
-		}
-	} else if httpClient.CheckRedirect == nil {
-		return nil, errors.New("custom checkpoint HTTP client must reject redirects")
+	defaultTransport, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return nil, ErrCheckpointUnavailable
+	}
+	transport := defaultTransport.Clone()
+	transport.TLSClientConfig = checkpointAuditTLSConfig(CheckpointAuditTrust{
+		Hostname: config.Hostname, Port: config.Port, SPKISHA256Pins: config.SPKISHA256Pins,
+	}, pins)
+	httpClient := &http.Client{
+		Timeout: 12 * time.Second,
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	now := config.Now
 	if now == nil {
@@ -180,6 +177,7 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 	return &SupabaseCheckpointFencePrimary{
 		endpoint: endpoint, actorID: config.ActorID, serviceRoleKey: config.ServiceRoleKey,
 		primarySigner: config.PrimarySigner, primaryKey: append(ed25519.PublicKey(nil), publicKey...),
+		checkpointHeadKey: append(ed25519.PublicKey(nil), config.CheckpointHeadKey...),
 		witnessSetVersion: config.WitnessSetVersion, witnesses: trusted, witnessIDs: ids,
 		quorum: quorum, http: httpClient, now: now,
 	}, nil
@@ -228,7 +226,7 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 	ordered := cloneCheckpointFenceParticipantHeads(heads)
 	sort.Slice(ordered, func(i, j int) bool { return ordered[i].Endpoint.DeviceID < ordered[j].Endpoint.DeviceID })
 	for _, item := range ordered {
-		if err := VerifyCheckpointHead(item.Head, item.Endpoint, item.HeadProviderKey); err != nil {
+		if err := VerifyCheckpointHead(item.Head, item.Endpoint, p.checkpointHeadKey); err != nil {
 			return CheckpointFenceToken{}, err
 		}
 		participants = append(participants, map[string]any{
@@ -302,10 +300,12 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 		subtle.ConstantTimeCompare(fenceHashBytes[:], request.PreviousFenceSHA256[:]) != 1 {
 		return CheckpointFenceToken{}, ErrCheckpointStale
 	}
+	canonicalParticipants := cloneCheckpointEndpoints(request.Participants)
+	sort.Slice(canonicalParticipants, func(i, j int) bool { return canonicalParticipants[i].DeviceID < canonicalParticipants[j].DeviceID })
 	token := CheckpointFenceToken{
 		Version: checkpointFenceVersion,
 		Scope: request.Scope,
-		Participants: cloneCheckpointEndpoints(request.Participants),
+		Participants: canonicalParticipants,
 		ExpectedFenceGeneration: fenceGeneration,
 		Generation: fenceGeneration + 1,
 		ExpectedRevocationEpoch: revocationEpoch,
@@ -453,6 +453,7 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 	var response struct {
 		Found bool `json:"found"`
 		Token json.RawMessage `json:"token"`
+		Fingerprint string `json:"fingerprint"`
 		Committed bool `json:"committed"`
 		Acknowledgements []checkpointFenceAckWire `json:"acknowledgements"`
 	}
@@ -547,13 +548,14 @@ func (p *SupabaseCheckpointFencePrimary) loadOperationFingerprint(
 	if err := json.Unmarshal(raw, &response); err != nil || !response.Found {
 		return [sha256.Size]byte{}, ErrCheckpointHistorical
 	}
-	var operation struct {
+	var response struct {
+		Found bool `json:"found"`
 		Fingerprint string `json:"fingerprint"`
 	}
-	_ = operation
-	// The fingerprint is immutable operation metadata returned by the reservation
-	// RPC; it is retained on the adapter instance only for the active call.
-	return [sha256.Size]byte{}, ErrCheckpointUnavailable
+	if err := json.Unmarshal(raw, &response); err != nil || !response.Found {
+		return [sha256.Size]byte{}, ErrCheckpointHistorical
+	}
+	return decodeSHA256Hex(response.Fingerprint)
 }
 
 func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, args any, out any) error {
