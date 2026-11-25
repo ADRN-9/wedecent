@@ -116,6 +116,8 @@ begin
     if p_primary_head_generation <> v_fence.generation + 1
        or (p_primary_head_generation = v_fence.primary_head_generation
            and p_primary_head_sha256 <> v_fence.primary_head_hash)
+       or (p_primary_head_generation > v_fence.primary_head_generation
+           and p_primary_head_sha256 = v_fence.primary_head_hash)
        or p_primary_head_generation < v_fence.primary_head_generation then
         raise exception 'checkpoint fence primary head is stale'
             using errcode = '40001';
