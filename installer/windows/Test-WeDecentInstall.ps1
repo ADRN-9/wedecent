@@ -96,9 +96,16 @@ foreach ($name in $binaryNames) {
 $wd = $binaryPaths['wd.exe']
 $agent = $binaryPaths['wd-agent.exe']
 $metadataPath = Join-Path (Join-Path $env:ProgramData 'WeDecent') 'installer.json'
-Assert-True (Test-Path -LiteralPath $StateDir -PathType Container) "Missing state directory $StateDir"
 Assert-True (Test-Path -LiteralPath $metadataPath -PathType Leaf) "Missing installer metadata $metadataPath"
 Assert-True (Test-MetadataTrusted $metadataPath) 'Installer metadata ACL/owner is not trusted'
+$metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+$metadataStateDir = [IO.Path]::GetFullPath([string]$metadata.state_dir)
+if ($PSBoundParameters.ContainsKey('StateDir') -and
+    ([IO.Path]::GetFullPath($StateDir) -ine $metadataStateDir)) {
+    throw 'Requested validation state path does not match authenticated installer metadata.'
+}
+$StateDir = $metadataStateDir
+Assert-True (Test-Path -LiteralPath $StateDir -PathType Container) "Missing state directory $StateDir"
 
 foreach ($name in $binaryNames) {
     & $binaryPaths[$name] version
