@@ -22,7 +22,6 @@ type testIndependentRecoveryAuthority struct {
 	head                 RecoveryCheckpoint
 	heads                map[string]RecoveryCheckpoint
 	loseNextCommit       bool
-	rejectMigrationProof bool
 }
 
 func newTestIndependentRecoveryAuthority(t *testing.T) *testIndependentRecoveryAuthority {
@@ -110,23 +109,34 @@ func (a *testIndependentRecoveryAuthority) VerifyCheckpoint(_ context.Context, c
 }
 
 func (a *testIndependentRecoveryAuthority) MigrateLegacyArchive(_ context.Context, migration LegacyRecoveryMigrationRequest) (RecoveryCheckpoint, error) {
-	if a.rejectMigrationProof {
-		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
-	}
 	var proof struct {
-		StateDigest string `json:"state_digest"`
+		Scope         string `json:"scope"`
+		ArchiveSHA256 string `json:"archive_sha256"`
+		StateDigest   string `json:"state_digest"`
+		Signature     string `json:"signature"`
 	}
 	head, _ := a.LoadCheckpoint(context.Background(), migration.Scope)
 	if migration.MigrationOperationID == "" ||
-		len(migration.AuthenticatedCheckpoint) == 0 || json.Unmarshal(migration.AuthenticatedCheckpoint, &proof) != nil {
+		len(migration.AuthenticatedCheckpoint) == 0 ||
+		json.Unmarshal(migration.AuthenticatedCheckpoint, &proof) != nil ||
+		proof.Scope != migration.Scope ||
+		proof.ArchiveSHA256 != hex.EncodeToString(migration.LegacyArchiveSHA256[:]) {
 		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
 	}
 	digestBytes, err := hex.DecodeString(proof.StateDigest)
 	if err != nil || len(digestBytes) != sha256.Size {
 		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
 	}
+	signature, err := hex.DecodeString(proof.Signature)
+	if err != nil || len(signature) != ed25519.SignatureSize {
+		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
+	}
 	var stateDigest [sha256.Size]byte
 	copy(stateDigest[:], digestBytes)
+	message, err := testLegacyMigrationProofSigningBytes(proof.Scope, proof.ArchiveSHA256, proof.StateDigest)
+	if err != nil || !ed25519.Verify(a.primaryPublic, message, signature) {
+		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
+	}
 	if head.Generation == migration.ExpectedGeneration+1 && head.StateDigest == stateDigest {
 		return head, nil
 	}
@@ -142,6 +152,43 @@ func (a *testIndependentRecoveryAuthority) MigrateLegacyArchive(_ context.Contex
 		return RecoveryCheckpoint{}, err
 	}
 	return checkpoint, nil
+}
+
+func testLegacyMigrationProofSigningBytes(scope, archiveSHA256, stateDigest string) ([]byte, error) {
+	return json.Marshal(struct {
+		Domain        string `json:"domain"`
+		Scope         string `json:"scope"`
+		ArchiveSHA256 string `json:"archive_sha256"`
+		StateDigest   string `json:"state_digest"`
+	}{
+		Domain: "wedecent-test-authenticated-legacy-migration-v1",
+		Scope: scope, ArchiveSHA256: archiveSHA256, StateDigest: stateDigest,
+	})
+}
+
+func makeTestLegacyMigrationProof(t *testing.T, authority *testIndependentRecoveryAuthority, scope string, archive []byte, stateDigest [sha256.Size]byte) []byte {
+	t.Helper()
+	archiveDigest := sha256.Sum256(archive)
+	proof := struct {
+		Scope         string `json:"scope"`
+		ArchiveSHA256 string `json:"archive_sha256"`
+		StateDigest   string `json:"state_digest"`
+		Signature     string `json:"signature"`
+	}{
+		Scope: scope,
+		ArchiveSHA256: hex.EncodeToString(archiveDigest[:]),
+		StateDigest: hex.EncodeToString(stateDigest[:]),
+	}
+	message, err := testLegacyMigrationProofSigningBytes(proof.Scope, proof.ArchiveSHA256, proof.StateDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof.Signature = hex.EncodeToString(ed25519.Sign(authority.primaryPrivate, message))
+	encoded, err := json.Marshal(proof)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return encoded
 }
 
 func TestPairingRecoveryUsesIndependentAuthorityAndResolvesLostCommitResponse(t *testing.T) {
@@ -258,12 +305,11 @@ func TestPairingRecoveryMigratesLegacyArchiveWithAuthenticatedAuthorityProof(t *
 		t.Fatal(err)
 	}
 	digest := sha256.Sum256(payload)
-	proof, err := json.Marshal(struct {
-		StateDigest string `json:"state_digest"`
-	}{StateDigest: hex.EncodeToString(digest[:])})
+	archiveBytes, err := os.ReadFile(filepath.Join(dir, pairingArchiveFileName))
 	if err != nil {
 		t.Fatal(err)
 	}
+	proof := makeTestLegacyMigrationProof(t, authority, authority.head.Scope, archiveBytes, digest)
 	authority.loseNextCommit = true
 	if err := migration.MigrateLegacyArchive(context.Background(), proof); err != nil {
 		t.Fatalf("authenticated migration did not recover exact lost commit: %v", err)
@@ -297,7 +343,7 @@ func TestPairingRecoveryMigrationRejectsForgedStateDigestProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := migration.MigrateLegacyArchive(context.Background(), proof); !errors.Is(err, ErrRecoveryCheckpointConflict) {
+	if err := migration.MigrateLegacyArchive(context.Background(), proof); !errors.Is(err, ErrRecoveryMigrationUntrusted) {
 		t.Fatalf("forged migration state digest accepted: %v", err)
 	}
 	legacyReader := &PairingRecovery{path: migration.path, archiveKey: migration.archiveKey}
@@ -427,12 +473,11 @@ func TestActivePairingLedgerMigrationRequiresProofAndPreservesSnapshot(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, err := json.Marshal(struct {
-		StateDigest string `json:"state_digest"`
-	}{StateDigest: hex.EncodeToString(digest[:])})
+	archiveBytes, err := os.ReadFile(migration.path)
 	if err != nil {
 		t.Fatal(err)
 	}
+	proof := makeTestLegacyMigrationProof(t, authority, migration.activeLedgerScope(), archiveBytes, digest)
 	migration.beforeReplace = func() error { return errors.New("simulated interruption after active-ledger authority commit") }
 	if err := migration.MigrateLegacyActiveLedger(context.Background(), proof); !errors.Is(err, ErrRecoveryCommitUncertain) {
 		t.Fatalf("expected interrupted migration publication, got %v", err)
@@ -501,7 +546,6 @@ func TestActivePairingLedgerRejectsUnauthenticatedMatchingDigestProofWithoutMuta
 		t.Fatal(err)
 	}
 	authority := newTestIndependentRecoveryAuthority(t)
-	authority.rejectMigrationProof = true
 	migration, err := OpenPairingRecoveryForMigration(dir, authority.head.Scope, authority, authority.trust)
 	if err != nil {
 		t.Fatal(err)
