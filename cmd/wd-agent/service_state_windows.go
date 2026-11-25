@@ -140,11 +140,7 @@ func verifyWindowsServiceStateParent(dir string) error {
 	if err != nil {
 		return err
 	}
-	current, err := activeWindowsSID()
-	if err != nil {
-		return err
-	}
-	if err := verifyWindowsStateAncestorOwners(root, components, current, nil); err != nil {
+	if err := verifyWindowsStateAncestorOwners(root, components, nil, nil); err != nil {
 		return fmt.Errorf("verify state ancestor ownership: %w", err)
 	}
 	parent := filepath.Clean(filepath.Dir(dir))
@@ -163,7 +159,7 @@ func verifyWindowsServiceStateParent(dir string) error {
 		"S-1-5-32-544",
 		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
 	}
-	ownerTrusted := owner.Equals(current)
+	ownerTrusted := false
 	for _, sidText := range trustedOwners {
 		sid, err := windows.StringToSid(sidText)
 		if err != nil {
@@ -343,10 +339,10 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 }
 
 func verifyWindowsStateAncestorOwners(root string, components []string, installer, required *windows.SID) error {
-	if installer == nil {
-		return errors.New("active Windows SID is required for ancestor owner validation")
+	allowed := make(map[string]bool)
+	if installer != nil {
+		allowed[installer.String()] = true
 	}
-	allowed := map[string]bool{installer.String(): true}
 	if required != nil {
 		allowed[required.String()] = true
 	}
