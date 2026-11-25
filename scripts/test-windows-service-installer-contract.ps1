@@ -167,6 +167,16 @@ if (-not (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent')
 # Exercise durable migration journal and complete-tree SHA-256 copy primitives.
 $migrationModule = Join-Path (Split-Path -Parent $installerPath) 'StateMigration.psm1'
 Import-Module $migrationModule -Force
+foreach ($faultPoint in @(
+    'Prepared', 'ServiceStopped', 'Copying', 'Copied', 'Verified',
+    'StatePublished', 'ServiceReconfigured', 'MetadataUpdated', 'ServiceRestarted',
+    'RollbackStarted', 'RollbackServiceStopped', 'RollbackSCMRestored',
+    'RollbackMetadataRestored', 'RollbackServiceRestarted', 'RolledBack'
+)) {
+    $injected = $false
+    try { Invoke-WeDecentMigrationFaultPoint -Name $faultPoint -FaultAt $faultPoint } catch { $injected = $_.Exception.Message -like "*$faultPoint*" }
+    if (-not $injected) { throw "Migration fault injection did not trigger at $faultPoint." }
+}
 $migrationRoot = Join-Path ([IO.Path]::GetTempPath()) ('wedecent-migration-' + [Guid]::NewGuid().ToString('N'))
 $sourceState = Join-Path $migrationRoot 'source'
 $stageState = Join-Path $migrationRoot 'stage'
