@@ -485,41 +485,27 @@ function Write-WeDecentMigrationJournal {
         }
     }
 
+    $parentLease = New-WeDecentMigrationMutationLease -Directories @($directory)
+    $targetExists = Test-Path -LiteralPath $fullPath -PathType Leaf
+    $targetIdentity = if ($targetExists) { [WeDecentMigrationFileIdentityApi]::GetIdentity($fullPath) } else { '' }
     $Journal.updated_utc = [DateTime]::UtcNow.ToString('o')
     $json = ConvertTo-Json -InputObject $Journal -Depth 10
     $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + [Environment]::NewLine)
     $temporary = Join-Path $directory ('.migration-journal-' + [Guid]::NewGuid().ToString('N') + '.tmp')
-    $backup = $fullPath + '.previous'
     $stream = $null
     try {
-        $stream = [IO.FileStream]::new(
-            $temporary,
-            [IO.FileMode]::CreateNew,
-            [IO.FileAccess]::Write,
-            [IO.FileShare]::None,
-            4096,
-            [IO.FileOptions]::WriteThrough
-        )
-        $stream.Write($bytes, 0, $bytes.Length)
+        $stream = [IO.FileStream]::new($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+        $stream.Write($bytes,0,$bytes.Length)
         $stream.Flush($true)
         $stream.Dispose()
         $stream = $null
         Set-WeDecentMigrationAdminFileAcl -Path $temporary
-
-        if (Test-Path -LiteralPath $fullPath) {
-            if (Test-Path -LiteralPath $backup) {
-                Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
-            }
-            [IO.File]::Replace($temporary, $fullPath, $backup, $true)
-            Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
-        } else {
-            [IO.File]::Move($temporary, $fullPath)
-        }
+        [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($parentLease)
+        [void](Publish-WeDecentMigrationObject -TemporaryPath $temporary -ParentPath $directory -TargetName ([IO.Path]::GetFileName($fullPath)) -ExpectedTargetIdentity $targetIdentity -ReplaceExisting:$targetExists -RacePoint 'BeforeJournalAtomicReplace')
     } finally {
         if ($null -ne $stream) { $stream.Dispose() }
-        if (Test-Path -LiteralPath $temporary) {
-            Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue
-        }
+        if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
+        $parentLease.Dispose()
     }
 }
 
@@ -742,23 +728,26 @@ function Write-WeDecentMigrationMetadata {
         [Parameter(Mandatory = $true)][string]$StatePath
     )
 
+    $parent = Split-Path -Parent $Path
+    $parentLease = New-WeDecentMigrationMutationLease -Directories @($parent)
+    $targetIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($Path)
     $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
     $metadata = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
     if ([int]$metadata.schema -ne 1 -or [string]$metadata.product -cne 'WeDecent') {
+        $parentLease.Dispose()
         throw 'Cannot migrate unauthenticated or unsupported installer metadata.'
     }
     $metadata.state_dir = [IO.Path]::GetFullPath($StatePath)
     $metadata.updated_at = [DateTime]::UtcNow.ToString('o')
     $json = ConvertTo-Json -InputObject $metadata -Depth 10
-    $temp = Join-Path (Split-Path -Parent $Path) ('.installer-migration-' + [Guid]::NewGuid().ToString('N') + '.tmp')
-    $backup = $Path + '.migration-previous'
+    $temp = Join-Path $parent ('.installer-migration-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + [Environment]::NewLine)
-        $stream = [IO.FileStream]::new($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
-        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        $stream = [IO.FileStream]::new($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
+        try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
         Set-Acl -LiteralPath $temp -AclObject $acl -ErrorAction Stop
-        [IO.File]::Replace($temp, $Path, $backup, $true)
-        Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+        [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($parentLease)
+        [void](Publish-WeDecentMigrationObject -TemporaryPath $temp -ParentPath $parent -TargetName ([IO.Path]::GetFileName($Path)) -ExpectedTargetIdentity $targetIdentity -ReplaceExisting -RacePoint 'BeforeMetadataAtomicReplace')
         $verified = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
         if ([IO.Path]::GetFullPath([string]$verified.state_dir) -ine [IO.Path]::GetFullPath($StatePath)) {
             throw 'Authenticated installer metadata failed post-migration state-path verification.'
@@ -766,6 +755,7 @@ function Write-WeDecentMigrationMetadata {
         [void](Assert-WeDecentMigrationMetadataAcl -Path $Path)
     } finally {
         if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+        $parentLease.Dispose()
     }
 }
 
@@ -1273,6 +1263,39 @@ public static class WeDecentMigrationPathApi {
     $resolved = $buffer.ToString()
     while ($suffix.Count -gt 0) { $resolved = Join-Path $resolved $suffix.Pop() }
     return $resolved.TrimEnd('\')
+}
+
+function New-WeDecentMigrationMutationLease {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string[]]$Directories)
+    Initialize-WeDecentMigrationFileIdentityApi
+    $resolved = @($Directories | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { Assert-WeDecentMigrationRealDirectory -Path $_ } | Sort-Object -Unique)
+    if ($resolved.Count -eq 0) { throw 'A filesystem mutation lease requires at least one directory.' }
+    return [WeDecentMigrationFileIdentityApi]::AcquireDirectoryLease([string[]]$resolved)
+}
+function Assert-WeDecentMigrationMutationLease {
+    param([Parameter(Mandatory = $true)]$Lease,[Parameter(Mandatory = $true)][string[]]$Paths)
+    [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($Lease)
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $Paths)
+}
+function Invoke-WeDecentMigrationRacePoint {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    if ($global:WeDecentMigrationRaceInjection -is [scriptblock]) { & $global:WeDecentMigrationRaceInjection $Name }
+}
+function Publish-WeDecentMigrationObject {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TemporaryPath,
+        [Parameter(Mandatory = $true)][string]$ParentPath,
+        [Parameter(Mandatory = $true)][string]$TargetName,
+        [string]$ExpectedTargetIdentity,
+        [switch]$ReplaceExisting,
+        [string]$RacePoint
+    )
+    $temporaryIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($TemporaryPath)
+    if (-not [string]::IsNullOrWhiteSpace($RacePoint)) { Invoke-WeDecentMigrationRacePoint -Name $RacePoint }
+    return [WeDecentMigrationFileIdentityApi]::PublishByHandle($TemporaryPath,$ParentPath,$TargetName,$temporaryIdentity,$ExpectedTargetIdentity,[bool]$ReplaceExisting)
 }
 
 function Get-WeDecentMigrationIdentitySnapshot {
