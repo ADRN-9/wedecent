@@ -5,20 +5,40 @@ import (
 	"net"
 	"sync"
 	"time"
+
+	"wedecent.com/wedecent/internal/relayproto"
 )
 
 var ErrNoAgent = errors.New("no agent relay slot is available")
 var ErrTooManySlots = errors.New("device has too many parked relay slots")
+var ErrSlotNotReserved = errors.New("relay slot is not reserved")
+
+type slotState uint8
+
+const (
+	slotReserved slotState = iota
+	slotActive
+	slotClaimed
+	slotClosed
+)
 
 type slot struct {
 	conn       net.Conn
 	createdAt  time.Time
 	done       chan struct{}
 	finishOnce sync.Once
+	writeMu    sync.Mutex
+	state      slotState
 }
 
 func (s *slot) finish() {
 	s.finishOnce.Do(func() { close(s.done) })
+}
+
+func (s *slot) write(msg relayproto.Message) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return relayproto.Write(s.conn, msg)
 }
 
 type Broker struct {
@@ -38,15 +58,50 @@ func NewBroker(maxSlotsPerDevice int, slotTTL time.Duration) *Broker {
 	return &Broker{slots: make(map[string][]*slot), maxSlotsPerDevice: maxSlotsPerDevice, slotTTL: slotTTL}
 }
 
-func (b *Broker) Park(deviceID string, conn net.Conn) (*slot, error) {
+// Reserve accounts for capacity without making the connection claimable.
+func (b *Broker) Reserve(deviceID string, conn net.Conn) (*slot, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.pruneLocked(deviceID)
 	if len(b.slots[deviceID]) >= b.maxSlotsPerDevice {
 		return nil, ErrTooManySlots
 	}
-	s := &slot{conn: conn, createdAt: time.Now(), done: make(chan struct{})}
+	s := &slot{conn: conn, createdAt: time.Now(), done: make(chan struct{}), state: slotReserved}
 	b.slots[deviceID] = append(b.slots[deviceID], s)
+	return s, nil
+}
+
+// Activate publishes a reservation only after the registration acknowledgement succeeds.
+func (b *Broker) Activate(deviceID string, target *slot) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, s := range b.slots[deviceID] {
+		if s != target {
+			continue
+		}
+		if s.state != slotReserved {
+			return ErrSlotNotReserved
+		}
+		if s.createdAt.Before(time.Now().Add(-b.slotTTL)) {
+			b.removeLocked(deviceID, s)
+			return ErrNoAgent
+		}
+		s.state = slotActive
+		return nil
+	}
+	return ErrNoAgent
+}
+
+// Park retains the active-only semantics for callers that already completed registration.
+func (b *Broker) Park(deviceID string, conn net.Conn) (*slot, error) {
+	s, err := b.Reserve(deviceID, conn)
+	if err != nil {
+		return nil, err
+	}
+	if err := b.Activate(deviceID, s); err != nil {
+		b.Remove(deviceID, s)
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -55,32 +110,49 @@ func (b *Broker) Take(deviceID string) (*slot, error) {
 	defer b.mu.Unlock()
 	b.pruneLocked(deviceID)
 	q := b.slots[deviceID]
-	if len(q) == 0 {
-		return nil, ErrNoAgent
+	for i, s := range q {
+		if s.state != slotActive {
+			continue
+		}
+		s.state = slotClaimed
+		q = append(q[:i], q[i+1:]...)
+		if len(q) == 0 {
+			delete(b.slots, deviceID)
+		} else {
+			b.slots[deviceID] = q
+		}
+		return s, nil
 	}
-	s := q[0]
-	if len(q) == 1 {
-		delete(b.slots, deviceID)
-	} else {
-		b.slots[deviceID] = q[1:]
-	}
-	return s, nil
+	return nil, ErrNoAgent
 }
 
 func (b *Broker) Remove(deviceID string, target *slot) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	q := b.slots[deviceID]
-	for i, s := range q {
+	for _, s := range b.slots[deviceID] {
 		if s == target {
-			q = append(q[:i], q[i+1:]...)
-			if len(q) == 0 {
-				delete(b.slots, deviceID)
-			} else {
-				b.slots[deviceID] = q
-			}
+			b.removeLocked(deviceID, s)
 			return
 		}
+	}
+}
+
+func (b *Broker) removeLocked(deviceID string, target *slot) {
+	q := b.slots[deviceID]
+	for i, s := range q {
+		if s != target {
+			continue
+		}
+		s.state = slotClosed
+		q = append(q[:i], q[i+1:]...)
+		if len(q) == 0 {
+			delete(b.slots, deviceID)
+		} else {
+			b.slots[deviceID] = q
+		}
+		s.finish()
+		_ = s.conn.Close()
+		return
 	}
 }
 
@@ -90,18 +162,9 @@ func (b *Broker) pruneLocked(deviceID string) {
 		return
 	}
 	cutoff := time.Now().Add(-b.slotTTL)
-	keep := q[:0]
-	for _, s := range q {
+	for _, s := range append([]*slot(nil), q...) {
 		if s.createdAt.Before(cutoff) {
-			_ = s.conn.Close()
-			s.finish()
-			continue
+			b.removeLocked(deviceID, s)
 		}
-		keep = append(keep, s)
-	}
-	if len(keep) == 0 {
-		delete(b.slots, deviceID)
-	} else {
-		b.slots[deviceID] = keep
 	}
 }
