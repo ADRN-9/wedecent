@@ -100,3 +100,20 @@ func TestPairingCredentialAdmissionReceivesGenerationBeforeConsumption(t *testin
 	consumed, err := readPairingCredentialRecord(dir)
 	if err != nil || !consumed.Consumed { t.Fatalf("credential metadata not marked consumed: %+v %v", consumed, err) }
 }
+
+func TestPairingCredentialRotationRecoversInterruptedConsumptionMetadata(t *testing.T) {
+	dir := t.TempDir()
+	secret, err := RotatePairingSecret(dir)
+	if err != nil { t.Fatal(err) }
+	record, err := readPairingCredentialRecord(dir)
+	if err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(dir, pairingSecretFile), []byte(consumedPairingHash+"\n"), 0o600); err != nil { t.Fatal(err) }
+	rotated, err := RotatePairingSecret(dir)
+	if err != nil { t.Fatalf("rotation did not reconcile durable tombstone: %v", err) }
+	if rotated == secret { t.Fatal("rotation reused the consumed secret") }
+	next, err := readPairingCredentialRecord(dir)
+	if err != nil { t.Fatal(err) }
+	if next.Generation != record.Generation+1 || next.SecretSHA256 != HashSecret(rotated) || next.Consumed {
+		t.Fatalf("interrupted consumption recovery produced invalid generation: %+v", next)
+	}
+}
