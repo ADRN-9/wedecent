@@ -85,6 +85,11 @@ func newLocalCoreForwardingVerifier(
 	if len(publicKey) != ed25519.PublicKeySize || signer == nil || provider == nil || memberships == nil {
 		return nil, errors.New("production forwarding requires a witnessed checkpoint provider and independently authenticated endpoint membership resolver")
 	}
+	if provider.Fencing != nil {
+		if _, serverSide := provider.Fencing.Primary.(*portforward.SupabaseCheckpointFencePrimary); serverSide {
+			return nil, errors.New("Local Core cannot host the PostgreSQL service-role checkpoint primary; use a remote authority client with endpoint-safe credentials")
+		}
+	}
 	devicePublicKey, ok := signer.Public().(ed25519.PublicKey)
 	if !ok || len(devicePublicKey) != ed25519.PublicKeySize ||
 		identity.DeviceID(devicePublicKey) != string(deviceID) ||
