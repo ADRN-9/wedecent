@@ -222,7 +222,7 @@ func TestPairingCredentialRejectsClockRollbackAndPersistsHighWaterMark(t *testin
 	if !errors.Is(err, ErrPairingStateUnsafe) {
 		t.Fatalf("clock rollback was not rejected: %v", err)
 	}
-	accepted, err := loadPairingCredential(dir, hash, advanced.Add(10*time.Second))
+	accepted, err := loadPairingCredential(dir, hash, advanced.Add(-10*time.Second))
 	if err != nil { t.Fatalf("small clock skew within tolerance rejected: %v", err) }
 	if !accepted.LastObservedAt.Equal(advanced) {
 		t.Fatalf("clock high-water mark moved backwards: %s", accepted.LastObservedAt)
