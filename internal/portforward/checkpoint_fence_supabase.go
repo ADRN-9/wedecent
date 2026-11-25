@@ -366,9 +366,6 @@ func (p *SupabaseCheckpointFencePrimary) CommitFenceWithCheckpointHeads(
 		token.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(token.WitnessIDs, p.witnessIDs) {
 		return ErrCheckpointIntegrity
 	}
-	if token.ExpiresAtUnixMS <= p.now().UnixMilli() {
-		return ErrCheckpointFenceExpired
-	}
 	if err := validateFenceParticipantHeads(heads, token.Scope, token.Participants); err != nil {
 		return err
 	}
@@ -493,7 +490,13 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 		return CheckpointFenceOperation{}, false, ErrCheckpointIntegrity
 	}
 	if !response.Committed && token.ExpiresAtUnixMS <= p.now().UnixMilli() {
-		return CheckpointFenceOperation{}, false, nil
+		head, headErr := p.FenceHead(ctx, scope)
+		if headErr != nil {
+			return CheckpointFenceOperation{}, false, headErr
+		}
+		if head.PendingOperationID != operationID {
+			return CheckpointFenceOperation{}, false, nil
+		}
 	}
 	acks := make([]CheckpointFenceAcknowledgement, 0, len(response.Acknowledgements))
 	for _, wire := range response.Acknowledgements {
