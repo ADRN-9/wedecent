@@ -917,8 +917,22 @@ if ($service) {
             }
         }
         if ($createdAccount) {
-            Invoke-RollbackStep 'remove installer-created service account' {
-                Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
+            Invoke-RollbackStep 'remove installer-created service account only when protected state is empty' {
+                $stateContainsProtectedMaterial = $false
+                if (Test-Path -LiteralPath $StateDir) {
+                    try {
+                        $remainingState = @(Get-ChildItem -LiteralPath $StateDir -Force -ErrorAction Stop)
+                        $stateContainsProtectedMaterial = $remainingState.Count -gt 0
+                    } catch {
+                        # An unreadable or ambiguous state directory is not safe to orphan.
+                        $stateContainsProtectedMaterial = $true
+                    }
+                }
+                if ($stateContainsProtectedMaterial) {
+                    Write-Warning "Retaining installer-created service account '$ServiceAccountName': protected state is non-empty or could not be inspected. Preserve the account for offline recovery."
+                } else {
+                    Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
+                }
             }
         }
         throw "Fresh installation failed; rollback was attempted: $($failed.Exception.Message)"
