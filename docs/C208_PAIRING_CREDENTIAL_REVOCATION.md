@@ -56,7 +56,7 @@ This branch is based on the current C203 checkpoint-authority branch and retains
 - internal/session/server.go: pairing recovery/admission plus router-aware forwarding session handling;
 - internal/trust/store.go: pairing durable write/delete plus context-aware IsTrusted.
 
-PR #176 and PR #186 original branches and histories remain untouched.
+PR #176 and PR #186 original branches and histories remain untouched. The inherited C203 pgTAP fixture temporarily grants the test session pgsodium_keymaker membership inside its rolled-back transaction to create ephemeral signatures; no production service-role or authority membership is added.
 
 Regression tests cover credential expiry, future/malformed records, V1 migration cutoff, generation increments, interrupted tombstone reconciliation, concurrent generation reservations, both trust-store deletion paths, pre-commit and uncertain post-commit failure, archive authentication, sequence continuity, and interrupted archive compaction.
 
