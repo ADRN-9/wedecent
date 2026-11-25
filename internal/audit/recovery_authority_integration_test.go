@@ -15,9 +15,11 @@ import (
 )
 
 type testIndependentRecoveryAuthority struct {
-	primaryPublic  ed25519.PublicKey
-	primaryPrivate ed25519.PrivateKey
-	trust          RecoveryAuthorityTrust
+	primaryPublic         ed25519.PublicKey
+	primaryPrivate        ed25519.PrivateKey
+	migrationProofPublic  ed25519.PublicKey
+	migrationProofPrivate ed25519.PrivateKey
+	trust                 RecoveryAuthorityTrust
 	witnessPrivate map[string]ed25519.PrivateKey
 	head           RecoveryCheckpoint
 	heads          map[string]RecoveryCheckpoint
@@ -30,7 +32,12 @@ func newTestIndependentRecoveryAuthority(t *testing.T) *testIndependentRecoveryA
 	if err != nil {
 		t.Fatal(err)
 	}
+	migrationProofPublic, migrationProofPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
 	a := &testIndependentRecoveryAuthority{primaryPublic: primaryPublic, primaryPrivate: primaryPrivate,
+		migrationProofPublic: migrationProofPublic, migrationProofPrivate: migrationProofPrivate,
 		witnessPrivate: make(map[string]ed25519.PrivateKey), head: RecoveryCheckpoint{Scope: "pairing-recovery/test-installation"},
 		heads: make(map[string]RecoveryCheckpoint)}
 	a.heads[a.head.Scope] = a.head
@@ -134,7 +141,7 @@ func (a *testIndependentRecoveryAuthority) MigrateLegacyArchive(_ context.Contex
 	var stateDigest [sha256.Size]byte
 	copy(stateDigest[:], digestBytes)
 	message, err := testLegacyMigrationProofSigningBytes(proof.Scope, proof.ArchiveSHA256, proof.StateDigest)
-	if err != nil || !ed25519.Verify(a.primaryPublic, message, signature) {
+	if err != nil || !ed25519.Verify(a.migrationProofPublic, message, signature) {
 		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
 	}
 	if head.Generation == migration.ExpectedGeneration+1 && head.StateDigest == stateDigest {
@@ -183,7 +190,7 @@ func makeTestLegacyMigrationProof(t *testing.T, authority *testIndependentRecove
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof.Signature = hex.EncodeToString(ed25519.Sign(authority.primaryPrivate, message))
+	proof.Signature = hex.EncodeToString(ed25519.Sign(authority.migrationProofPrivate, message))
 	encoded, err := json.Marshal(proof)
 	if err != nil {
 		t.Fatal(err)
