@@ -550,6 +550,12 @@ func TestBrokerSimultaneousRegistrationActivationAndClaimStress(t *testing.T) {
 			s.finish()
 			_ = s.conn.Close()
 		}
+		for _, entry := range entries {
+			select {
+			case <-entry.slot.done:
+			case <-time.After(time.Second):
+			}
+		}
 	})
 	claimers.Wait()
 	close(claims)
