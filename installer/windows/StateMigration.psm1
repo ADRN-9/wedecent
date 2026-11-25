@@ -1134,6 +1134,33 @@ public static class WeDecentMigrationPathApi {
     return $resolved.TrimEnd('\')
 }
 
+function Get-WeDecentMigrationIdentitySnapshot {
+    param([Parameter(Mandatory = $true)][string[]]$Paths)
+    $snapshot = @{}
+    foreach ($path in $Paths) {
+        $snapshot[$path] = @(Get-WeDecentMigrationPathObjectChain -Path $path)
+    }
+    return $snapshot
+}
+
+function Assert-WeDecentMigrationIdentitySnapshot {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Snapshot,
+        [Parameter(Mandatory = $true)][string[]]$Paths
+    )
+    foreach ($path in $Paths) {
+        if (-not $Snapshot.ContainsKey($path)) { throw "Missing migration filesystem identity snapshot: $path" }
+        $current = @(Get-WeDecentMigrationPathObjectChain -Path $path)
+        $before = @($Snapshot[$path])
+        if ($current.Count -ne $before.Count) { throw "Migration pathname component chain changed: $path" }
+        for ($i = 0; $i -lt $before.Count; $i++) {
+            if ($current[$i] -cne $before[$i]) {
+                throw "Migration filesystem object changed after preflight: $path"
+            }
+        }
+    }
+}
+
 function Assert-WeDecentMigrationPathsDisjoint {
     param([Parameter(Mandatory = $true)][string[]]$Paths)
 
@@ -1211,7 +1238,12 @@ function Invoke-WeDecentStateMigration {
     $staging = Get-WeDecentMigrationCanonicalPath -Path $staging
     $journalFull = Get-WeDecentMigrationCanonicalPath -Path $JournalPath
     $metadataFull = Get-WeDecentMigrationCanonicalPath -Path $MetadataPath
-    [void](Assert-WeDecentMigrationPathsDisjoint -Paths @($sourceFull, $destinationFull, $staging, $journalFull, $metadataFull))
+    $migrationPaths = @($sourceFull, $destinationFull, $staging, $journalFull, $metadataFull)
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
+    $identityAnchors = @($sourceFull, $destinationParent, (Split-Path -Parent $JournalPath),
+        (Split-Path -Parent $MetadataPath), $MetadataPath)
+    $identitySnapshot = Get-WeDecentMigrationIdentitySnapshot -Paths $identityAnchors
+    Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
     [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
 
@@ -1262,10 +1294,14 @@ function Invoke-WeDecentStateMigration {
         journal_path = [IO.Path]::GetFullPath($JournalPath)
         updated_utc = ''
     }
+    Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
     Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
     try {
         Invoke-WeDecentMigrationFaultPoint -Name 'Prepared' -FaultAt $FaultAt
         if ($journal.service_was_running) {
+            Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
+            [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
             Stop-Service -Name $ServiceName -Force -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
@@ -1273,6 +1309,8 @@ function Invoke-WeDecentStateMigration {
         $journal.phase = 'Copying'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Copying' -FaultAt $FaultAt
+        Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
+        [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
         $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath -FaultAt $FaultAt
         if ($copy.SourceManifestSHA256 -cne [string]$journal.source_manifest_sha256 -or
             $copy.SourceStableManifestSHA256 -cne [string]$journal.source_stable_manifest_sha256 -or
@@ -1298,6 +1336,8 @@ function Invoke-WeDecentStateMigration {
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Verified' -FaultAt $FaultAt
 
+        Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
+        [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
         [IO.Directory]::Move($staging, $destinationFull)
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull -ServiceSid $ServiceSid)
         $journal.phase = 'StatePublished'
@@ -1306,10 +1346,14 @@ function Invoke-WeDecentStateMigration {
 
         Assert-WeDecentMigrationRecoverySource -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'SCMTransition' -FaultAt $FaultAt
+        Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
+        [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
         Set-WeDecentMigrationServicePath -ServiceName $ServiceName -BinaryPath $updatedPath -ServiceSid $ServiceSid -StartMode ([string]$service.StartMode)
         $journal.phase = 'ServiceReconfigured'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'ServiceReconfigured' -FaultAt $FaultAt
+        Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
+        [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
         Write-WeDecentMigrationMetadata -Path $MetadataPath -StatePath $destinationFull
         Invoke-WeDecentMigrationFaultPoint -Name 'MetadataUpdated' -FaultAt $FaultAt
         if ($journal.service_was_running) {
