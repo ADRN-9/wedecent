@@ -154,36 +154,56 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		return
 	}
 	recovery, err := audit.OpenPairingRecovery(s.StateDir)
-	if err == nil {
-		var pairingAudit *audit.Log
-		pairingAudit, err = audit.Open(s.StateDir)
-		if err == nil {
-			err = pairingAudit.Append(audit.Event{
-				Type: "pairing.request", Outcome: "pending", ActorID: s.Identity.ID,
-				PeerID: clientID, Transport: transport, AttemptID: attemptID,
-			})
-		}
-		if err == nil {
-			err = recovery.Begin(audit.PairingOutcome{
-				AttemptID: attemptID, ActorID: s.Identity.ID,
-				PeerID: clientID, Fingerprint: fp,
-			})
-		}
-		if err == nil {
-			s.handlePairCommit(conn, transport, clientID, name, fp, req.PairingSecret, attemptID, pairingAudit, recovery)
+	if err != nil {
+		s.log().Error("pairing recovery unavailable", "peer_id", clientID, "error", err)
+		_ = sendError(conn, "server_error", "pairing recovery is unavailable")
+		return
+	}
+	pairingAudit, err := audit.Open(s.StateDir)
+	if err != nil {
+		s.log().Error("pairing audit unavailable", "peer_id", clientID, "error", err)
+		_ = sendError(conn, "server_error", "pairing audit is unavailable")
+		return
+	}
+	admitted, auditReady := false, false
+	pairErr := trust.PairClientWithSecretAdmission(s.StateDir, req.PairingSecret, s.Trust, trust.Peer{
+		ID: clientID, Name: name, Fingerprint: fp,
+	}, func(generation uint64) error {
+		reserved, reserveErr := recovery.Reserve(audit.PairingOutcome{
+			AttemptID: attemptID, ActorID: s.Identity.ID, PeerID: clientID,
+			Fingerprint: fp, CredentialGeneration: generation,
+		})
+		if reserveErr != nil { return reserveErr }
+		admitted = true
+		attemptID = reserved.AttemptID
+		if appendErr := pairingAudit.Append(audit.Event{
+			Type: "pairing.request", Outcome: "pending", ActorID: s.Identity.ID,
+			PeerID: clientID, Transport: transport, AttemptID: attemptID,
+		}); appendErr != nil { return appendErr }
+		auditReady = true
+		return nil
+	})
+	if !admitted {
+		if errors.Is(pairErr, trust.ErrPairingSecretInvalid) {
+			s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, Reason: "invalid_pairing_secret"})
+			_ = sendError(conn, "pairing_denied", "invalid, expired, or already consumed pairing secret")
 			return
 		}
+		s.log().Error("pairing generation admission failed", "peer_id", clientID, "error", pairErr)
+		_ = sendError(conn, "server_error", "pairing generation is reserved or recovery is unavailable")
+		return
 	}
-	s.log().Error("pairing audit preflight failed", "peer_id", clientID, "error", err)
-	_ = sendError(conn, "server_error", "pairing audit is unavailable")
+	if !auditReady {
+		// The durable generation reservation remains pending for exact retry.
+		s.log().Error("pairing pending audit could not be synchronized", "peer_id", clientID, "attempt_id", attemptID, "error", pairErr)
+		_ = sendError(conn, "server_error", "pairing audit is unavailable; retry the same pairing operation")
+		return
+	}
+	s.handlePairCommit(conn, transport, clientID, name, fp, attemptID, pairingAudit, recovery, pairErr)
 }
 
 // handlePairCommit runs only after both independent pending records are durable.
-func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp, secret, attemptID string, pairingAudit *audit.Log, recovery *audit.PairingRecovery) {
-	// Identity and fingerprint were verified before the durable transaction.
-	pairErr := trust.PairClientWithSecret(s.StateDir, secret, s.Trust, trust.Peer{
-		ID: clientID, Name: name, Fingerprint: fp,
-	})
+func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp, attemptID string, pairingAudit *audit.Log, recovery *audit.PairingRecovery, pairErr error) {
 	reconciled := trust.IsPairingReconciled(pairErr)
 	outcome := audit.PairingOutcomeSuccess
 	if pairErr != nil && !reconciled {
