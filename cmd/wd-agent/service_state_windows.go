@@ -344,6 +344,8 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 	return mask, nil
 }
 
+var windowsStateAncestorOwnerLookup = windowsServiceOwner
+
 func verifyWindowsStateAncestorOwners(root string, components []string, installer, required *windows.SID) error {
 	allowed := make(map[string]bool)
 	if installer != nil {
@@ -361,7 +363,7 @@ func verifyWindowsStateAncestorOwners(root string, components []string, installe
 	}
 	path := root
 	for i := 0; i < len(components); i++ {
-		owner, err := windowsServiceOwner(path)
+		owner, err := windowsStateAncestorOwnerLookup(path)
 		if err != nil {
 			return fmt.Errorf("read state ancestor owner %q: %w", path, err)
 		}
