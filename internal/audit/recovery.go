@@ -73,6 +73,7 @@ type PairingRecovery struct {
 	operatorCheck    func() error // test-only authorization fault seam
 	archiveKey       []byte
 	archiveAfterSync func() error
+	compactionBeforeReplace func() error
 }
 
 func NewPairingAttemptID() (string, error) {
@@ -571,19 +572,16 @@ func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 	return all, nil
 }
 
-// AcknowledgeResolved never deletes evidence. It records review of an
-// independently verified completion in the same bounded durable register.
-// Full registers require an approved offline evidence export/repair procedure.
+// AcknowledgeResolved records review of independently verified completion,
+// then archives a contiguous resolved prefix without deleting evidence.
 func (r *PairingRecovery) AcknowledgeResolved(attemptID string) error {
 	if !pairingAttemptPattern.MatchString(attemptID) {
 		return errors.New("invalid pairing recovery acknowledgment")
 	}
-	return r.withLock(func(snapshot *pairingOutcomeSnapshot) error {
+	err := r.withArchiveLock(func(snapshot *pairingOutcomeSnapshot, archive pairingRecoveryArchive) error {
 		for i := range snapshot.Records {
 			record := &snapshot.Records[i]
-			if record.AttemptID != attemptID {
-				continue
-			}
+			if record.AttemptID != attemptID { continue }
 			if record.Outcome != PairingOutcomeSuccess && record.Outcome != PairingOutcomeDenied {
 				return errors.New("unresolved pairing recovery record cannot be acknowledged")
 			}
@@ -593,16 +591,19 @@ func (r *PairingRecovery) AcknowledgeResolved(attemptID string) error {
 			if err := r.ensureCurrentSnapshotDurable(); err != nil {
 				return fmt.Errorf("pairing recovery proof durability uncertain: %w", err)
 			}
-			if record.AcknowledgedAt != nil {
-				return nil
-			}
+			if record.AcknowledgedAt != nil { return nil }
 			now := time.Now().UTC()
 			record.AcknowledgedAt = &now
 			record.UpdatedAt = now
 			return nil
 		}
+		for _, record := range archive.Records {
+			if record.AttemptID == attemptID && record.AcknowledgedAt != nil { return nil }
+		}
 		return errors.New("pairing recovery attempt not found")
 	})
+	if err != nil { return err }
+	return r.CompactResolved()
 }
 
 // A snapshot may be readable after a failed post-replacement directory sync.
