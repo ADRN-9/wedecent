@@ -10,6 +10,9 @@ import (
 
 func TestLoadRecoveryAuthorityTokenRequiresPrivateRegularFile(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "private")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := preflightAgentState(dir); err != nil {
 		t.Skipf("secure test directory unavailable: %v", err)
 	}
