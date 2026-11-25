@@ -49,6 +49,8 @@ func main() {
 		err = runServe(os.Args[2:])
 	case "identity":
 		err = runIdentity(os.Args[2:])
+	case "identity-check":
+		err = runIdentityCheck(os.Args[2:])
 	case "version":
 		err = buildinfo.Write(os.Stdout, "wd-agent")
 	case "release-trust":
@@ -138,6 +140,33 @@ func runIdentity(args []string) error {
 	fp, _ := identity.FingerprintPublicKey(id.PublicKey)
 	fmt.Printf("%s\t%s\t%s\n", id.ID, id.Name, fp)
 	return nil
+}
+
+// runIdentityCheck verifies an existing identity without creating, renewing, or migrating key material.
+func runIdentityCheck(args []string) error {
+	state, _ := appdirs.Agent()
+	fs := flag.NewFlagSet("identity-check", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "agent state directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	id, err := loadIdentityForCheck(*stateDir)
+	if err != nil {
+		return err
+	}
+	fp, err := identity.FingerprintPublicKey(id.PublicKey)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s\t%s\t%s\n", id.ID, id.Name, fp)
+	return nil
+}
+
+func loadIdentityForCheck(stateDir string) (*identity.Identity, error) {
+	if err := preflightAgentState(stateDir); err != nil {
+		return nil, err
+	}
+	return identity.Load(stateDir)
 }
 
 func runEnrollmentProof(args []string) error {
@@ -993,6 +1022,7 @@ func usage() {
 Commands:
   init             Create identity and one-time pairing secret
   identity         Print device ID and fingerprint
+  identity-check   Verify an existing identity without modifying state
   version          Print build and release metadata
   enrollment-proof Print or sign a cryptographic device-enrollment request
   pairing-secret   Rotate and print a one-time pairing secret
