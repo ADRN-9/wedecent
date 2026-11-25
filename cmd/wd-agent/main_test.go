@@ -118,7 +118,7 @@ func parseServeConfigForTest(t *testing.T, args []string) (serveConfig, error) {
 
 func TestParseServeConfigRequiresIndependentRecoveryAuthority(t *testing.T) {
 	t.Setenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN", "")
-	_, err := parseServeConfig([]string{"--listen="})
+	_, err := parseServeConfig([]string{"--listen=127.0.0.1:7443"})
 	if err == nil || !strings.Contains(err.Error(), "pairing recovery requires") {
 		t.Fatalf("missing recovery authority was not rejected: %v", err)
 	}
