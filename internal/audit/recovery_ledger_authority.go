@@ -26,8 +26,9 @@ type pairingOutcomeSnapshotUnsigned struct {
 }
 
 type pairingOutcomeSnapshotPending struct {
-	Unsigned pairingOutcomeSnapshotUnsigned `json:"unsigned"`
-	Request  RecoveryCheckpointRequest       `json:"request"`
+	Unsigned  pairingOutcomeSnapshotUnsigned `json:"unsigned"`
+	Request   RecoveryCheckpointRequest       `json:"request"`
+	Migration *LegacyRecoveryMigrationRequest `json:"migration,omitempty"
 }
 
 func (r *PairingRecovery) activeLedgerScope() string {
@@ -287,23 +288,39 @@ func (r *PairingRecovery) reconcileActiveLedger() error {
 	if pending.Request.Scope != r.activeLedgerScope() || pending.Request.Generation != pending.Request.ExpectedGeneration+1 {
 		return ErrRecoveryCheckpointConflict
 	}
+	expectedRequest, requestErr := NewRecoveryCheckpointRequest(pending.Request.Scope, pending.Request.ExpectedGeneration,
+		pending.Request.PreviousDigest, pending.Request.StateDigest)
+	if requestErr != nil || expectedRequest.OperationID != pending.Request.OperationID {
+		return ErrRecoveryCheckpointConflict
+	}
 	digest, err := pairingSnapshotDigest(pending.Unsigned)
 	if err != nil || digest != pending.Request.StateDigest {
 		return ErrRecoveryCheckpointConflict
 	}
 	candidate := pairingOutcomeSnapshot{Version: pending.Unsigned.Version, Records: pending.Unsigned.Records,
 		ArchivedThrough: pending.Unsigned.ArchivedThrough, ArchiveCheckpoint: pending.Unsigned.ArchiveCheckpoint}
+	if err := validatePairingSnapshot(candidate); err != nil {
+		return ErrRecoveryCheckpointConflict
+	}
 	head, err := r.authority.LoadCheckpoint(ctx, r.activeLedgerScope())
 	if err != nil {
 		return fmt.Errorf("%w: resolve pending active ledger operation: %v", ErrRecoveryAuthorityUnavailable, err)
 	}
+	if head.Scope != r.activeLedgerScope() {
+		return ErrRecoveryCheckpointConflict
+	}
 	var receipt RecoveryCheckpoint
 	if head.Generation == pending.Request.ExpectedGeneration && head.StateDigest == pending.Request.PreviousDigest {
-		receipt, err = r.authority.CommitCheckpoint(ctx, pending.Request)
+		if pending.Migration != nil {
+			receipt, err = r.authority.MigrateLegacyArchive(ctx, *pending.Migration)
+		} else {
+			receipt, err = r.authority.CommitCheckpoint(ctx, pending.Request)
+		}
 		if err != nil {
 			observed, loadErr := r.authority.LoadCheckpoint(ctx, r.activeLedgerScope())
 			if loadErr != nil || observed.Generation != pending.Request.Generation ||
-				observed.StateDigest != pending.Request.StateDigest || observed.OperationID != pending.Request.OperationID {
+				observed.StateDigest != pending.Request.StateDigest || observed.OperationID != pending.Request.OperationID ||
+				observed.PreviousDigest != pending.Request.PreviousDigest {
 				return fmt.Errorf("%w: pending active ledger commit remains uncertain: %v", ErrRecoveryCommitUncertain, err)
 			}
 			receipt = observed
