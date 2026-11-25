@@ -6,7 +6,9 @@ import (
 	"bufio"
 	"errors"
 	"io"
+	"os"
 	"strings"
+	"unsafe"
 )
 
 const maxServicePasswordBytes = 4096
