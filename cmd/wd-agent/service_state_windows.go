@@ -139,7 +139,7 @@ func verifyWindowsServiceStateParent(dir string) error {
 		return err
 	}
 	parent := filepath.Clean(filepath.Dir(dir))
-	if strings.EqualFold(parent, strings.TrimRight(root, `\\`)) {
+	if strings.EqualFold(parent, filepath.Clean(root)) {
 		return nil
 	}
 	if _, err := inspectWindowsStateDirectory(parent); err != nil {
