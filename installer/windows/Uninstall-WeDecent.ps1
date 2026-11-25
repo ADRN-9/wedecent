@@ -306,7 +306,7 @@ if (Test-Path -LiteralPath $InstallDir -PathType Container) {
 }
 if ($RemoveFromMachinePath) { Remove-MachinePathEntry $InstallDir }
 
-if ($Purge -and (Test-DirectoryExistsStrict -Path $StateDir))
+if ($Purge -and (Test-DirectoryExistsStrict -Path $StateDir)) {
     Remove-Item -LiteralPath $StateDir -Recurse -Force -ErrorAction Stop
     Remove-EmptyDirectory -Path (Split-Path -Parent $StateDir)
 }
