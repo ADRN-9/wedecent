@@ -224,3 +224,12 @@ func TestCheckpointFenceOrderingFinalizationFirstRemainsValidAtOrderPoint(t *tes
 		t.Fatalf("later revocation retroactively invalidated committed finalization token: %v", err)
 	}
 }
+
+func TestCheckpointFenceTokenRejectsRevocationProofDigestMismatch(t *testing.T) {
+	token, _ := validFenceToken(t, CheckpointFenceRevoke)
+	token.AuthorizationProof = append([]byte(nil), token.AuthorizationProof...)
+	token.AuthorizationProof[0] ^= 0xff
+	if _, err := checkpointFenceTokenMessage(token); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("revocation proof not bound to authorization digest: %v", err)
+	}
+}
