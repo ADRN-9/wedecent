@@ -61,7 +61,11 @@ type pairingOutcomeSnapshot struct {
 	Version           int              `json:"version"`
 	Records           []PairingOutcome `json:"records"`
 	ArchivedThrough   uint64           `json:"archived_through,omitempty"`
-	ArchiveCheckpoint string           `json:"archive_checkpoint,omitempty"`
+	ArchiveCheckpoint string             `json:"archive_checkpoint,omitempty"`
+	AuthorityGeneration uint64            `json:"authority_generation,omitempty"`
+	AuthorityPreviousDigest string        `json:"authority_previous_digest,omitempty"`
+	AuthorityStateDigest string           `json:"authority_state_digest,omitempty"`
+	AuthorityCheckpoint RecoveryCheckpoint `json:"authority_checkpoint,omitempty"
 }
 
 // PairingRecovery is independent of rotating audit files. Unresolved evidence
@@ -207,6 +211,9 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 	recovery.authority = authority
 	recovery.authorityScope = scope
 	recovery.authorityTrust = authorityTrust
+	if err := recovery.reconcileActiveLedger(); err != nil {
+		return nil, fmt.Errorf("independent active pairing ledger reconciliation: %w", err)
+	}
 	if _, err := recovery.readArchive(); err != nil {
 		return nil, err
 	}
@@ -429,6 +436,11 @@ func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) e
 }
 
 func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, pairingRecoveryArchive) error) error {
+	if r.authority != nil {
+		if err := r.reconcileActiveLedger(); err != nil {
+			return err
+		}
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
@@ -483,6 +495,13 @@ func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, p
 }
 
 func (r *PairingRecovery) write(snapshot pairingOutcomeSnapshot) error {
+	if r.authority != nil {
+		return r.writeWithActiveLedgerAuthority(&snapshot)
+	}
+	return r.writeLocal(snapshot)
+}
+
+func (r *PairingRecovery) writeLocal(snapshot pairingOutcomeSnapshot) error {
 	data, err := json.Marshal(snapshot)
 	if err != nil {
 		return err
@@ -636,6 +655,11 @@ func (r *PairingRecovery) Complete(attemptID, outcome string) error {
 func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 	if r == nil {
 		return nil, errors.New("pairing recovery unavailable")
+	}
+	if r.authority != nil {
+		if err := r.reconcileActiveLedger(); err != nil {
+			return nil, err
+		}
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
