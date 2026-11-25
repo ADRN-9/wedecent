@@ -32,7 +32,7 @@ This current-user setting is owned by `wd-ui`, not by the elevated installer. On
 - Every installed binary is checksum-verified after copy and before the installation transaction is committed.
 - Fresh installs create a dedicated standard local account named `WeDecentSvc` by default.
 - The service-account password is cryptographically random and is never written to disk, an environment variable, or a process command line. It is sent to `wd-agent.exe service install --account-password-stdin` through an inherited anonymous pipe.
-- Fresh service installation requires an origin-only HTTPS recovery-authority URL, its exact 64-hex SPKI pin, a protected public trust file, and a short-lived bearer. URL/pin may be supplied as non-secret parameters or environment configuration; the trust file is passed by path. The bearer is prompted as a `SecureString` (or supplied as one) and streamed after the account password through stdin; it is never placed in argv or environment variables. SecureString characters are copied through a zeroed character buffer and zeroed unmanaged allocation.
+- Fresh service state defaults to `C:\\Program Files\\WeDecent\\data\\agent`, beneath the protected Program Files hierarchy. The installer refuses state paths outside the selected installation directory; it does not fall back to ProgramData when ancestor ACL validation fails. Existing installations retain their recorded state path until an explicit identity-preserving migration has been completed.\n- Fresh service installation requires an origin-only HTTPS recovery-authority URL, its exact 64-hex SPKI pin, a protected public trust file, and a short-lived bearer. URL/pin may be supplied as non-secret parameters or environment configuration; the trust file is passed by path. The bearer is prompted as a `SecureString` (or supplied as one) and streamed after the account password through stdin; it is never placed in argv or environment variables. SecureString characters are copied through a zeroed character buffer and zeroed unmanaged allocation.
 - The service installer copies the trust anchors and bearer into create-exclusive files in the protected service state directory, then validates their ACLs. The bearer file is plaintext at rest protected by the NTFS DACL; Local Administrators and LocalSystem remain trusted.
 - Service-state provisioning also requires the immediate parent directory to have a protected owner/DACL owned by the installer, SYSTEM, Administrators, or TrustedInstaller. It refuses broad existing parents rather than changing ancestor ACLs. Windows permits the same directory owner to rename an open directory; the handle guard is not a substitute for the parent ACL. A same-identity rename makes the old pathname fail closed on subsequent verification.
 - The installer rejects service accounts that are members of the local Administrators group and grants `SeServiceLogonRight` when needed.
@@ -179,3 +179,18 @@ session stays on the client and the agent private key stays on the agent.
 
 
 If a fresh installation is interrupted after the service installer has created recovery files or identity state, rollback removes only an empty newly created state directory. It preserves non-empty protected state and reports that explicit offline recovery/re-enrollment is required; it never recursively deletes newly created identity, trust, audit or pairing material.
+
+
+## Windows service-state location and migration
+
+Fresh installations use:
+
+```text
+%ProgramFiles%\WeDecent\data\agent
+```
+
+The state directory is created with a protected DACL and then assigned to the dedicated service account. The complete ancestor chain remains subject to the same owner and ACL validation used at service startup. ProgramData is not a fallback: if the Program Files hierarchy does not pass strict validation, installation must fail.
+
+Existing installations must not be silently redirected to the new default. The installer metadata records the existing `state_dir`; upgrade logic must preserve that recorded location until a migration is explicitly executed. A migration must stop the service, validate source ownership and ACLs (including a narrowly documented ProgramData ancestor exception only where no principal can delete, replace, take ownership of, or change the DACL of the protected child), copy the complete state tree to a protected staging sibling on the destination volume, verify every copied file byte-for-byte and by SHA-256, verify identity certificate/public-key correspondence and trust/recovery material, then atomically rename staging to a previously absent destination. The source remains untouched as rollback evidence until the service has restarted from the destination and its device fingerprint is confirmed unchanged. Service configuration is switched only after destination verification; any interrupted stage or failed restart restores the original service binary path and leaves both state trees intact. No recursive overwrite or identity regeneration is permitted.
+
+**Migration status:** automated migration and its privileged rollback acceptance are not yet implemented. Existing installations requiring relocation must not be upgraded by changing only the state path. The operator must retain the old state and service account until the migration tool and privileged Windows acceptance are available.
