@@ -50,6 +50,12 @@ func main() {
 		err = runIdentity(os.Args[2:])
 	case "version":
 		err = buildinfo.Write(os.Stdout, "wd-agent")
+	case "release-trust":
+		if len(os.Args) != 2 {
+			err = errors.New("release-trust takes no arguments")
+		} else {
+			err = buildinfo.WriteReleaseTrust(os.Stdout)
+		}
 	case "enrollment-proof":
 		err = runEnrollmentProof(os.Args[2:])
 	case "service":
@@ -252,31 +258,39 @@ func writeJSON(value any) error {
 }
 
 type serveConfig struct {
-	StateDir                  string
-	Name                      string
-	ListenAddr                string
-	RFCOMMChannel             int
-	SerialDevice              string
-	Shell                     string
-	Discover                  bool
-	MaxConnections            int
-	SessionIdleTimeout        time.Duration
-	SessionMaxDuration        time.Duration
-	FileTransferRoot          string
-	FileTransferAllowUpload   bool
-	FileTransferAllowDownload bool
-	FileTransferMaxBytes      uint64
-	RelayAddr                 string
-	WebRelay                  string
-	RelaySlots                int
-	RelayCA                   string
-	RelayServerName           string
-	AuthorizationURL          string
-	RouteControlListenAddr    string
-	RouteControlTransport     string
-	RouteTunnelListenAddr     string
-	RouteTunnelTransport      string
-	RouteMaxConnections       int
+	StateDir                              string
+	Name                                  string
+	ListenAddr                            string
+	RFCOMMChannel                         int
+	SerialDevice                          string
+	Shell                                 string
+	Discover                              bool
+	MaxConnections                        int
+	SessionIdleTimeout                    time.Duration
+	SessionMaxDuration                    time.Duration
+	FileTransferRoot                      string
+	FileTransferAllowUpload               bool
+	FileTransferAllowDownload             bool
+	FileTransferMaxBytes                  uint64
+	RelayAddr                             string
+	WebRelay                              string
+	RelaySlots                            int
+	RelayCA                               string
+	RelayServerName                       string
+	AuthorizationURL                      string
+	RouteControlListenAddr                string
+	RouteControlTransport                 string
+	RouteTunnelListenAddr                 string
+	RouteTunnelTransport                  string
+	RouteMaxConnections                   int
+	PortForwardAuthorizationPublicKey     string
+	PortForwardReplayURL                  string
+	PortForwardReplayAPIKey               string
+	PortForwardAllowedPorts               string
+	PortForwardAllowedPrivateCIDRs        string
+	PortForwardAllowPublic                bool
+	PortForwardMaxConnections             int
+	PortForwardAllowLegacyReplayMigration bool
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
@@ -443,12 +457,68 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		defaultRouteMaxConnections,
 		"maximum concurrent accepted connections per routing listener",
 	)
+	fs.StringVar(
+		&cfg.PortForwardAuthorizationPublicKey,
+		"port-forward-authorization-public-key",
+		"",
+		"path to the trusted Ed25519 public key used to verify forwarding capabilities",
+	)
+	fs.StringVar(
+		&cfg.PortForwardReplayURL,
+		"port-forward-replay-url",
+		strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_URL")),
+		"HTTPS Supabase Edge Function URL for the independent port-forward replay authority",
+	)
+	fs.StringVar(
+		&cfg.PortForwardReplayAPIKey,
+		"port-forward-replay-api-key",
+		strings.TrimSpace(os.Getenv("WEDECENT_SUPABASE_ANON_KEY")),
+		"public Supabase Data API key used to invoke the signed replay authority",
+	)
+	fs.StringVar(
+		&cfg.PortForwardAllowedPorts,
+		"port-forward-allowed-ports",
+		"",
+		"comma-separated allowed TCP ports or ranges, e.g. 22,443,8000-8100",
+	)
+	fs.StringVar(
+		&cfg.PortForwardAllowedPrivateCIDRs,
+		"port-forward-allowed-private-cidrs",
+		"",
+		"comma-separated private destination CIDRs; empty denies private destinations",
+	)
+	fs.BoolVar(
+		&cfg.PortForwardAllowPublic,
+		"port-forward-allow-public",
+		false,
+		"allow globally routable destination addresses (metadata and reserved ranges remain denied)",
+	)
+	fs.IntVar(
+		&cfg.PortForwardMaxConnections,
+		"port-forward-max-connections",
+		0,
+		"maximum concurrent destination child connections (default 16 when enabled; maximum 64)",
+	)
+	fs.BoolVar(
+		&cfg.PortForwardAllowLegacyReplayMigration,
+		"port-forward-allow-legacy-replay-migration",
+		false,
+		"explicitly migrate an unanchored legacy v1 replay store once; remove this flag after successful initialization",
+	)
 
 	if err := fs.Parse(args); err != nil {
 		return serveConfig{}, err
 	}
 
 	cfg.FileTransferRoot = strings.TrimSpace(cfg.FileTransferRoot)
+	cfg.PortForwardAuthorizationPublicKey = strings.TrimSpace(cfg.PortForwardAuthorizationPublicKey)
+	cfg.PortForwardReplayURL = strings.TrimSpace(cfg.PortForwardReplayURL)
+	cfg.PortForwardReplayAPIKey = strings.TrimSpace(cfg.PortForwardReplayAPIKey)
+	cfg.PortForwardAllowedPorts = strings.TrimSpace(cfg.PortForwardAllowedPorts)
+	cfg.PortForwardAllowedPrivateCIDRs = strings.TrimSpace(cfg.PortForwardAllowedPrivateCIDRs)
+	if cfg.PortForwardAuthorizationPublicKey != "" && cfg.PortForwardMaxConnections == 0 {
+		cfg.PortForwardMaxConnections = 16
+	}
 	cfg.RouteControlListenAddr = strings.TrimSpace(
 		cfg.RouteControlListenAddr,
 	)
@@ -502,6 +572,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		return serveConfig{}, fmt.Errorf("session policy: %w", err)
 	}
 	if err := cfg.validateFileTransfer(); err != nil {
+		return serveConfig{}, err
+	}
+	if err := cfg.validatePortForward(); err != nil {
 		return serveConfig{}, err
 	}
 
@@ -592,6 +665,14 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		defer fileTransferRuntime.Store.Close()
 	}
 
+	portForwardRuntime, err := openAgentPortForwardRuntime(cfg, id, store)
+	if err != nil {
+		return err
+	}
+	if portForwardRuntime != nil && directAuthorizer == nil {
+		return errors.New("destination port forwarding requires --authorization-url or --web-relay for the authenticated endpoint session")
+	}
+
 	server := &session.Server{
 		Identity:         id,
 		Trust:            store,
@@ -600,6 +681,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		Logger:           slog.Default(),
 		DirectAuthorizer: directAuthorizer,
 		FileTransfer:     fileTransferRuntime,
+		PortForwarding:   portForwardRuntime,
 		Policy:           cfg.sessionPolicy(),
 	}
 

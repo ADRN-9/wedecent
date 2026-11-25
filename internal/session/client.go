@@ -23,6 +23,9 @@ type Client struct {
 	Trust           *trust.Store
 	Dialer          transport.Dialer
 	ConnectionGrant string
+	// ForceInBandAuthorization is used by routed endpoint tunnels whose outer
+	// relay locator is not the endpoint's actual session authorization mode.
+	ForceInBandAuthorization bool
 }
 
 // Probe verifies that peer.Endpoint is reachable and presents the already

@@ -39,6 +39,7 @@ type Server struct {
 	Logger           *slog.Logger
 	DirectAuthorizer DirectAuthorizer
 	FileTransfer     *FileTransferRuntime
+	PortForwarding   *PortForwardRuntime
 	Policy           SessionPolicy
 }
 
@@ -60,15 +61,25 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 	if requireInBandAuthorization {
 		transport = "direct"
 	}
+	routerID := ""
+	if authenticated, ok := raw.(interface{ AuthenticatedRouterID() string }); ok {
+		routerID = authenticated.AuthenticatedRouterID()
+	}
 	tlsConn := tls.Server(raw, identity.ServerTLS(s.Identity))
 	if handshakeTimeout > 0 {
-		_ = tlsConn.SetDeadline(time.Now().Add(handshakeTimeout))
+		if err := tlsConn.SetDeadline(time.Now().Add(handshakeTimeout)); err != nil {
+			s.log().Warn("TLS handshake deadline could not be set", "remote", raw.RemoteAddr(), "error", err)
+			return
+		}
 	}
 	if err := tlsConn.Handshake(); err != nil {
 		s.log().Warn("TLS handshake failed", "remote", raw.RemoteAddr(), "error", err)
 		return
 	}
-	_ = tlsConn.SetDeadline(time.Time{})
+	if err := tlsConn.SetDeadline(time.Time{}); err != nil {
+		s.log().Warn("TLS handshake deadline could not be cleared", "remote", raw.RemoteAddr(), "error", err)
+		return
+	}
 	first, err := protocol.ReadFrame(tlsConn)
 	if err != nil {
 		return
@@ -89,7 +100,7 @@ func (s *Server) serveConn(raw net.Conn, handshakeTimeout time.Duration, require
 			_ = sendError(tlsConn, "unexpected_message", "authorized session requests are not valid on this transport")
 			return
 		}
-		s.handleAuthorizedTerminal(tlsConn, first, transport)
+		s.handleAuthorizedTerminalWithRouter(tlsConn, first, transport, routerID)
 	default:
 		_ = sendError(tlsConn, "unexpected_message", "expected pairing or session request")
 	}
@@ -149,6 +160,10 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 }
 
 func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+	s.handleAuthorizedTerminalWithRouter(conn, first, transport, "")
+}
+
+func (s *Server) handleAuthorizedTerminalWithRouter(conn *tls.Conn, first protocol.Frame, transport, routerID string) {
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
@@ -202,10 +217,14 @@ func (s *Server) handleAuthorizedTerminal(conn *tls.Conn, first protocol.Frame, 
 	s.recordAudit(audit.Event{Type: "terminal.authorization", Outcome: "success", PeerID: clientID, Transport: transport})
 
 	payload, _ := protocol.JSON(protocol.OpenSession{Cols: req.Cols, Rows: req.Rows, Term: req.Term, Capabilities: req.Capabilities})
-	s.handleTerminal(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport)
+	s.handleTerminalWithRouter(conn, protocol.Frame{Type: protocol.TypeOpenSession, Payload: payload}, transport, routerID)
 }
 
 func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport string) {
+	s.handleTerminalWithRouter(conn, first, transport, "")
+}
+
+func (s *Server) handleTerminalWithRouter(conn *tls.Conn, first protocol.Frame, transport, routerID string) {
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())
 	if err != nil {
 		s.recordAudit(audit.Event{Type: "terminal.session_opened", Outcome: "denied", Transport: transport, Reason: "client_certificate_required"})
@@ -238,9 +257,10 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		return
 	}
 	fileReady := s.FileTransfer != nil && s.FileTransfer.Ready()
-	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady)
+	portForwardReady := s.PortForwarding != nil && s.PortForwarding.Ready()
+	capabilities := negotiateSessionCapabilitiesForRuntime(open.Capabilities, true, fileReady, portForwardReady)
 	if hasSessionCapability(capabilities, protocol.CapabilityTypedStreamsV1) {
-		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities)
+		s.handleTypedTerminalSession(conn, peer.ID, peer.Name, transport, capabilities, routerID)
 		return
 	}
 	if open.Cols == 0 {
@@ -326,8 +346,12 @@ func (s *Server) handleTerminal(conn *tls.Conn, first protocol.Frame, transport 
 		// Bound terminal-output drain before the final close frame. Setting a
 		// write deadline first unblocks a PTY forwarding goroutine stuck on a
 		// peer that stopped reading.
-		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_ = pty.Close()
+		if err := conn.SetWriteDeadline(time.Now().Add(2 * time.Second)); err != nil {
+			s.log().Warn("terminal close deadline could not be set", "peer_id", peer.ID, "error", err)
+			_ = conn.Close()
+			return
+		}
 		if ptyReadDone != nil {
 			drainTimer := time.NewTimer(500 * time.Millisecond)
 			select {
