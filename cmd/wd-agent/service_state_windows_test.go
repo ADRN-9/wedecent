@@ -263,20 +263,13 @@ func TestServiceRuntimeGuardDetectsStateAndAncestorSubstitution(t *testing.T) {
 	}
 
 	swappedRoot := root + "-renamed"
-	if err := os.Rename(root, swappedRoot); err != nil {
-		t.Fatalf("same-owner ancestor rename fixture: %v", err)
-	}
-	if err := verifyWindowsServiceState(state); err == nil {
-		t.Fatal("renamed ancestor path remained trusted")
-	}
-	if _, err := openServiceLog(state); err == nil {
-		t.Fatal("service log opened through the substituted ancestor pathname")
-	}
-	if err := os.Rename(swappedRoot, root); err != nil {
-		t.Fatalf("restore renamed ancestor fixture: %v", err)
+	if err := os.Rename(root, swappedRoot); err == nil {
+		t.Fatal("guarded ancestor directory was renamed while its parent handle was held")
+	} else if !os.IsPermission(err) {
+		t.Fatalf("ancestor rename failed for an unexpected reason: %v", err)
 	}
 	if err := verifyWindowsServiceState(state); err != nil {
-		t.Fatalf("restored state unexpectedly invalid: %v", err)
+		t.Fatalf("protected ancestor path unexpectedly changed: %v", err)
 	}
 }
 
