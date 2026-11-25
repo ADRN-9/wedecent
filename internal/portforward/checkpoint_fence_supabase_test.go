@@ -244,6 +244,11 @@ func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *
 	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, proof, digest); err != nil {
 		t.Fatalf("valid operation-bound proof rejected: %v", err)
 	}
+	staleEndpoint := endpoint
+	staleEndpoint.RevocationEpoch++
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, []CheckpointEndpoint{staleEndpoint}, proof, digest); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("proof for an old revocation epoch accepted: %v", err)
+	}
 	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID+"0", participants, proof, digest); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("proof replayed against another operation: %v", err)
 	}
