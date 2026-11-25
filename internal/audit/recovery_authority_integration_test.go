@@ -1,6 +1,7 @@
 package audit
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -393,5 +394,92 @@ func TestActivePairingLedgerRecoversInterruptedLocalPublication(t *testing.T) {
 	}
 	if _, err := os.Lstat(restarted.path + ".authority-pending"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("pending marker was not removed after verified recovery: %v", err)
+	}
+}
+
+
+func TestActivePairingLedgerMigrationRequiresProofAndPreservesSnapshot(t *testing.T) {
+	dir := recoveryTestDir(t)
+	legacy, err := OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "bcbcbcbcbcbcbcbcbcbcbcbcbcbcbcbc"
+	if err := legacy.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(legacy.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newTestIndependentRecoveryAuthority(t)
+	migration, err := OpenPairingRecoveryForMigration(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := migration.read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest, err := pairingSnapshotDigest(unsignedPairingSnapshot(snapshot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	proof, err := json.Marshal(struct {
+		StateDigest string `json:"state_digest"`
+	}{StateDigest: hex.EncodeToString(digest[:])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	migration.beforeReplace = func() error { return errors.New("simulated interruption after active-ledger authority commit") }
+	if err := migration.MigrateLegacyActiveLedger(context.Background(), proof); !errors.Is(err, ErrRecoveryCommitUncertain) {
+		t.Fatalf("expected interrupted migration publication, got %v", err)
+	}
+	after, err := os.ReadFile(migration.path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("interrupted migration changed legacy snapshot before finalization: %v", err)
+	}
+	restarted, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatalf("restart did not finalize proof-authenticated active ledger migration: %v", err)
+	}
+	records, err := restarted.Records()
+	if err != nil || len(records) != 1 || records[0].AttemptID != id {
+		t.Fatalf("migration did not preserve active recovery record: %+v %v", records, err)
+	}
+}
+
+func TestActivePairingLedgerMigrationRejectsForgedProofWithoutMutation(t *testing.T) {
+	dir := recoveryTestDir(t)
+	legacy, err := OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+	if err := legacy.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(legacy.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authority := newTestIndependentRecoveryAuthority(t)
+	migration, err := OpenPairingRecoveryForMigration(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	forgedDigest := sha256.Sum256([]byte("forged active ledger state"))
+	forged, err := json.Marshal(struct {
+		StateDigest string `json:"state_digest"`
+	}{StateDigest: hex.EncodeToString(forgedDigest[:])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migration.MigrateLegacyActiveLedger(context.Background(), forged); err == nil {
+		t.Fatal("forged active ledger migration proof accepted")
+	}
+	after, err := os.ReadFile(migration.path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("forged proof modified active ledger: %v", err)
 	}
 }
