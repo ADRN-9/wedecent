@@ -158,3 +158,77 @@ func TestLoadRecoveryAuthorityTrustRequiresPinnedUniqueEd25519Keys(t *testing.T)
 		t.Fatal("group/world writable trust file accepted")
 	}
 }
+
+
+func TestHTTPRecoveryAuthorityLoadsAndCommitsWitnessedCheckpoint(t *testing.T) {
+	trust, primaryPrivate, witnessPrivate := httpRecoveryAuthorityFixture(t)
+	const scope = "pairing-recovery/http-test/active-ledger"
+	var head = RecoveryCheckpoint{Scope: scope}
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer test-token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == recoveryAuthorityAPIPrefix+"/checkpoints":
+			if r.URL.Query().Get("scope") != scope {
+				http.Error(w, "scope mismatch", http.StatusBadRequest)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(head)
+		case r.Method == http.MethodPost && r.URL.Path == recoveryAuthorityAPIPrefix+"/checkpoints/commit":
+			var request RecoveryCheckpointRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			if request.Scope != scope || request.ExpectedGeneration != head.Generation || request.PreviousDigest != head.StateDigest {
+				http.Error(w, "stale", http.StatusConflict)
+				return
+			}
+			checkpoint := RecoveryCheckpoint{Scope: request.Scope, Generation: request.Generation,
+				StateDigest: request.StateDigest, PreviousDigest: request.PreviousDigest,
+				OperationID: request.OperationID, SignerKeyID: recoveryPrimaryKeyID(trust.PrimaryKey)}
+			message, err := RecoveryCheckpointSigningBytes(checkpoint)
+			if err != nil {
+				http.Error(w, "invalid checkpoint", http.StatusBadRequest)
+				return
+			}
+			checkpoint.Signature = ed25519.Sign(primaryPrivate, message)
+			for id, privateKey := range witnessPrivate {
+				checkpoint.Witnesses = append(checkpoint.Witnesses, RecoveryCheckpointWitness{ID: id,
+					Signature: ed25519.Sign(privateKey, message)})
+			}
+			head = checkpoint
+			_ = json.NewEncoder(w).Encode(checkpoint)
+		default:
+			http.Error(w, "not found", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+	pin := sha256.Sum256(server.Certificate().RawSubjectPublicKeyInfo)
+	authority, err := NewHTTPRecoveryAuthority(server.URL, hex.EncodeToString(pin[:]), "test-token", trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(server.Certificate())
+	authority.client.Transport.(*http.Transport).TLSClientConfig.RootCAs = pool
+	loaded, err := authority.LoadCheckpoint(context.Background(), scope)
+	if err != nil || loaded.Generation != 0 || loaded.Scope != scope {
+		t.Fatalf("genesis checkpoint load failed: %+v %v", loaded, err)
+	}
+	state := sha256.Sum256([]byte("active pairing ledger state"))
+	request, err := NewRecoveryCheckpointRequest(scope, 0, [sha256.Size]byte{}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	committed, err := authority.CommitCheckpoint(context.Background(), request)
+	if err != nil || committed.Generation != 1 || committed.StateDigest != state {
+		t.Fatalf("witnessed checkpoint commit failed: %+v %v", committed, err)
+	}
+	if err := authority.VerifyCheckpoint(context.Background(), committed); err != nil {
+		t.Fatalf("committed checkpoint failed local pinned verification: %v", err)
+	}
+}
