@@ -89,14 +89,133 @@ function Get-WeDecentMigrationManifestDigest {
     }
 }
 
+function ConvertTo-WeDecentMigrationSid {
+    param([Parameter(Mandatory = $true)][string]$Sid)
+
+    try { return [Security.Principal.SecurityIdentifier]::new($Sid) }
+    catch { throw "Migration SID is invalid: $Sid" }
+}
+
+function Set-WeDecentMigrationDirectoryAcl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceSid
+    )
+
+    $full = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $service = ConvertTo-WeDecentMigrationSid -Sid $ServiceSid
+    $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
+    $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($service)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($service, $system, $admins)) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid,
+            [Security.AccessControl.FileSystemRights]::FullControl,
+            $inheritance,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $full -AclObject $acl -ErrorAction Stop
+    Assert-WeDecentMigrationDirectoryAcl -Path $full -ServiceSid $ServiceSid
+}
+
+function Assert-WeDecentMigrationDirectoryAcl {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceSid
+    )
+
+    $full = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $service = ConvertTo-WeDecentMigrationSid -Sid $ServiceSid
+    $allowed = @(
+        $service.Value,
+        'S-1-5-18',
+        'S-1-5-32-544'
+    )
+    $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -cne $service.Value -or -not $acl.AreAccessRulesProtected) {
+        throw "Migration directory owner or protected DACL is invalid: $full"
+    }
+    $rules = $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])
+    $serviceFullControl = $false
+    foreach ($rule in $rules) {
+        $sid = $rule.IdentityReference.Value
+        if ($sid -notin $allowed -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw "Migration directory contains an unexpected access rule for SID $sid"
+        }
+        if ($sid -ceq $service.Value) { $serviceFullControl = $true }
+    }
+    if (-not $serviceFullControl) {
+        throw 'Migration directory does not grant full control to its service identity.'
+    }
+    return $true
+}
+
+function Assert-WeDecentMigrationIdentityContinuity {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $sourceFull = Assert-WeDecentMigrationRealDirectory -Path $Source
+    $destinationFull = Assert-WeDecentMigrationRealDirectory -Path $Destination
+    $identityFiles = @('identity.crt')
+    $protectedKey = Join-Path $sourceFull 'identity.key.dpapi'
+    $legacyKey = Join-Path $sourceFull 'identity.key'
+    if (Test-Path -LiteralPath $protectedKey -PathType Leaf) {
+        $identityFiles += 'identity.key.dpapi'
+    }
+    if (Test-Path -LiteralPath $legacyKey -PathType Leaf) {
+        $identityFiles += 'identity.key'
+    }
+    if ($identityFiles.Count -lt 2) {
+        throw 'Migration source does not contain both an identity certificate and a supported private-key file.'
+    }
+
+    $fingerprints = @{}
+    foreach ($name in $identityFiles) {
+        $sourcePath = Join-Path $sourceFull $name
+        $destinationPath = Join-Path $destinationFull $name
+        foreach ($candidate in @($sourcePath, $destinationPath)) {
+            $item = Get-Item -LiteralPath $candidate -Force -ErrorAction Stop
+            if ($item.PSIsContainer -or
+                ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Identity continuity refuses a non-regular identity file: $candidate"
+            }
+        }
+        $sourceHash = (Get-FileHash -LiteralPath $sourcePath -Algorithm SHA256).Hash
+        $destinationHash = (Get-FileHash -LiteralPath $destinationPath -Algorithm SHA256).Hash
+        if ($sourceHash -cne $destinationHash) {
+            throw "Identity continuity check failed for $name."
+        }
+        $fingerprints[$name] = $sourceHash.ToLowerInvariant()
+    }
+    return [pscustomobject]@{ SHA256 = $fingerprints }
+}
+
 function Copy-WeDecentMigrationTreeVerified {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$Source,
-        [Parameter(Mandatory = $true)][string]$Staging
+        [Parameter(Mandatory = $true)][string]$Staging,
+        [Parameter(Mandatory = $true)][string]$SourceServiceSid,
+        [Parameter(Mandatory = $true)][string]$DestinationServiceSid
     )
 
     $sourceFull = Assert-WeDecentMigrationRealDirectory -Path $Source
+    [void](Assert-WeDecentMigrationDirectoryAcl -Path $sourceFull -ServiceSid $SourceServiceSid)
     $sourceManifest = @(Get-WeDecentMigrationManifest -Root $sourceFull)
     $stagingFull = [IO.Path]::GetFullPath($Staging)
     if (Test-Path -LiteralPath $stagingFull) {
@@ -104,6 +223,7 @@ function Copy-WeDecentMigrationTreeVerified {
     }
 
     [IO.Directory]::CreateDirectory($stagingFull) | Out-Null
+    Set-WeDecentMigrationDirectoryAcl -Path $stagingFull -ServiceSid $DestinationServiceSid
     foreach ($entry in $sourceManifest) {
         $relative = $entry.path.Replace('/', '\')
         $destination = Join-Path $stagingFull $relative
@@ -116,6 +236,7 @@ function Copy-WeDecentMigrationTreeVerified {
         [IO.File]::Copy((Join-Path $sourceFull $relative), $destination, $false)
     }
 
+    [void](Assert-WeDecentMigrationDirectoryAcl -Path $stagingFull -ServiceSid $DestinationServiceSid)
     $copiedManifest = @(Get-WeDecentMigrationManifest -Root $stagingFull)
     $sourceDigest = Get-WeDecentMigrationManifestDigest -Manifest $sourceManifest
     $copiedDigest = Get-WeDecentMigrationManifestDigest -Manifest $copiedManifest
@@ -126,6 +247,7 @@ function Copy-WeDecentMigrationTreeVerified {
         SourceManifestSHA256 = $sourceDigest
         FileCount = @($sourceManifest | Where-Object kind -eq 'file').Count
         DirectoryCount = @($sourceManifest | Where-Object kind -eq 'directory').Count
+        Identity = Assert-WeDecentMigrationIdentityContinuity -Source $sourceFull -Destination $stagingFull
     }
 }
 
@@ -219,6 +341,9 @@ Export-ModuleMember -Function @(
     'Get-WeDecentMigrationManifest',
     'Get-WeDecentMigrationManifestDigest',
     'Copy-WeDecentMigrationTreeVerified',
+    'Set-WeDecentMigrationDirectoryAcl',
+    'Assert-WeDecentMigrationDirectoryAcl',
+    'Assert-WeDecentMigrationIdentityContinuity',
     'Write-WeDecentMigrationJournal',
     'Read-WeDecentMigrationJournal'
 )
