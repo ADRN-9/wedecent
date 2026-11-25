@@ -126,7 +126,7 @@ C:\Program Files\WeDecent
 C:\Program Files\WeDecent\data\agent
 ```
 
-`C:\ProgramData\WeDecent\agent` is the legacy state location used by older installations; it is not the current fresh-install default. Existing installations keep their authenticated recorded `state_dir` and must not be redirected to Program Files until the identity-preserving migration described below is implemented and accepted. The installer currently refuses a legacy ProgramData state directory on a fresh install rather than creating a replacement identity, and refuses an upgrade that changes the recorded state path. Automated migration, crash recovery, and privileged rollback acceptance remain unimplemented.
+`C:\ProgramData\WeDecent\agent` is the legacy state location used by older installations; it is not the current fresh-install default. Existing installations keep their authenticated recorded `state_dir` and must not be redirected to Program Files until the identity-preserving migration described below has passed privileged acceptance. The installer refuses a legacy ProgramData state directory on a fresh install rather than creating a replacement identity, and invokes the explicit migration coordinator only when an authenticated existing installation requests a different state path. The migration implementation has software-level rollback and fresh-process recovery coverage; actual dedicated-service-SID SCM and reboot acceptance remain outstanding.
 
 On an already-installed host, running `Install-WeDecent.ps1` again performs an in-place binary upgrade and preserves the existing SCM configuration and machine identity only when the authenticated recorded state path is unchanged.
 
