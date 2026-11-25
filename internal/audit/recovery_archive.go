@@ -26,27 +26,27 @@ const (
 )
 
 type pairingRecoveryArchiveUnsigned struct {
-	Version       int              `json:"version"`
-	FirstSequence uint64           `json:"first_sequence"`
-	LastSequence  uint64           `json:"last_sequence"`
-	Checkpoint    string           `json:"checkpoint"`
-	Records       []PairingOutcome `json:"records"`
-	AuthorityGeneration uint64 `json:"authority_generation,omitempty"``
-	AuthorityPreviousDigest string `json:"authority_previous_digest,omitempty"``
+	Version                int              `json:"version"`
+	FirstSequence          uint64           `json:"first_sequence"`
+	LastSequence           uint64           `json:"last_sequence"`
+	Checkpoint             string           `json:"checkpoint"`
+	Records                []PairingOutcome `json:"records"`
+	AuthorityGeneration    uint64           `json:"authority_generation,omitempty"`
+	AuthorityPreviousDigest string         `json:"authority_previous_digest,omitempty"`
 }
 
 type pairingRecoveryArchive struct {
-	Version       int              `json:"version"`
-	FirstSequence uint64           `json:"first_sequence"`
-	LastSequence  uint64           `json:"last_sequence"`
-	Checkpoint    string           `json:"checkpoint"`
-	Records       []PairingOutcome `json:"records"`
-	AuthorityGeneration uint64 `json:"authority_generation,omitempty"
-	AuthorityPreviousDigest string `json:"authority_previous_digest,omitempty"
-	AuthorityKeyID string `json:"authority_key_id,omitempty"`
-	AuthoritySignature string `json:"authority_signature,omitempty"`
-	AuthorityCheckpoint RecoveryCheckpoint `json:"authority_checkpoint,omitempty"`
-	MAC           string           `json:"mac"`
+	Version                int              `json:"version"`
+	FirstSequence          uint64           `json:"first_sequence"`
+	LastSequence           uint64           `json:"last_sequence"`
+	Checkpoint             string           `json:"checkpoint"`
+	Records                []PairingOutcome `json:"records"`
+	AuthorityGeneration    uint64           `json:"authority_generation,omitempty"`
+	AuthorityPreviousDigest string          `json:"authority_previous_digest,omitempty"`
+	AuthorityKeyID         string           `json:"authority_key_id,omitempty"`
+	AuthoritySignature     string           `json:"authority_signature,omitempty"`
+	AuthorityCheckpoint    RecoveryCheckpoint `json:"authority_checkpoint,omitempty"`
+	MAC                    string           `json:"mac"`
 }
 
 func (r *PairingRecovery) loadArchiveKey() error {
