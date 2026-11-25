@@ -60,11 +60,17 @@ func NewHTTPRecoveryAuthorityForDevice(endpoint, spkiSHA256, token string, devic
 			return nil, errors.New("recovery authority device certificate is invalid")
 		}
 	}
-	if _, ok := leaf.PublicKey.(ed25519.PublicKey); !ok {
-		return nil, errors.New("recovery authority client certificate must use Ed25519")
+	publicKey, ok := leaf.PublicKey.(ed25519.PublicKey)
+	if !ok || time.Now().Before(leaf.NotBefore) || time.Now().After(leaf.NotAfter) {
+		return nil, errors.New("recovery authority client certificate must be a currently valid Ed25519 certificate")
 	}
-	if _, ok := deviceCertificate.PrivateKey.(crypto.Signer); !ok {
+	signer, ok := deviceCertificate.PrivateKey.(crypto.Signer)
+	if !ok {
 		return nil, errors.New("recovery authority client identity is not a crypto.Signer")
+	}
+	signerPublic, ok := signer.Public().(ed25519.PublicKey)
+	if !ok || !bytes.Equal(signerPublic, publicKey) {
+		return nil, errors.New("recovery authority client certificate and private key do not match")
 	}
 	return newHTTPRecoveryAuthority(endpoint, spkiSHA256, token, &deviceCertificate, trust)
 }
