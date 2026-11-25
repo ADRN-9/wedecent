@@ -166,3 +166,24 @@ func TestPairingRecoveryArchiveAuthenticationAndSequenceFailClosed(t *testing.T)
 		}
 	})
 }
+
+func TestPairingRecoveryArchiveSurvivesActiveCompactionFailure(t *testing.T) {
+	dir := recoveryTestDir(t)
+	recovery, err := OpenPairingRecovery(dir)
+	if err != nil { t.Fatal(err) }
+	id := strings.Repeat("7",32)
+	if err := recovery.Begin(testRecoveryRecord(id)); err != nil { t.Fatal(err) }
+	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
+	recovery.beforeReplace = func() error { return os.ErrPermission }
+	if err := recovery.CompactResolved(); err == nil { t.Fatal("active-ledger compaction failure was ignored") }
+	restarted, err := OpenPairingRecovery(dir)
+	if err != nil { t.Fatal(err) }
+	all, err := restarted.Records()
+	if err != nil || len(all) != 1 || all[0].AttemptID != id {
+		t.Fatalf("verified archive did not preserve outcome after compaction failure: %+v %v", all, err)
+	}
+	snapshot, err := restarted.read()
+	if err != nil || len(snapshot.Records) != 0 || snapshot.ArchivedThrough != 1 {
+		t.Fatalf("startup did not finish interrupted compaction: %+v %v", snapshot, err)
+	}
+}
