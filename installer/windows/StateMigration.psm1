@@ -610,7 +610,8 @@ function Invoke-WeDecentMigrationStatePathCheck {
         [Parameter(Mandatory = $true)][string]$AgentPath,
         [Parameter(Mandatory = $true)][string]$StatePath,
         [string]$ServiceSid,
-        [switch]$PrepareParent
+        [switch]$PrepareParent,
+        [switch]$MigrationSource
     )
 
     $agent = Get-Item -LiteralPath $AgentPath -Force -ErrorAction Stop
@@ -624,11 +625,20 @@ function Invoke-WeDecentMigrationStatePathCheck {
     $psi.RedirectStandardError = $true
     [void]$psi.ArgumentList.Add('state-path-check')
     [void]$psi.ArgumentList.Add("--state=$StatePath")
+    if ($PrepareParent -and $MigrationSource) {
+        throw 'Prepare-parent and migration-source validation are mutually exclusive.'
+    }
     if ($PrepareParent) {
         [void]$psi.ArgumentList.Add('--prepare-parent')
     }
     if (-not [string]::IsNullOrWhiteSpace($ServiceSid)) {
         [void]$psi.ArgumentList.Add("--service-sid=$ServiceSid")
+    }
+    if ($MigrationSource) {
+        if ([string]::IsNullOrWhiteSpace($ServiceSid)) {
+            throw 'Migration-source validation requires the dedicated service SID.'
+        }
+        [void]$psi.ArgumentList.Add('--migration-source')
     }
     $process = [Diagnostics.Process]::Start($psi)
     try {
@@ -992,7 +1002,7 @@ function Invoke-WeDecentStateMigration {
     if (Test-Path -LiteralPath $destinationFull) {
         throw 'Migration destination already exists; refusing to merge or overwrite existing state.'
     }
-    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $sourceFull -ServiceSid $ServiceSid)
+    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $sourceFull -ServiceSid $ServiceSid -MigrationSource)
     $destinationParent = Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $destinationFull)
     [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
