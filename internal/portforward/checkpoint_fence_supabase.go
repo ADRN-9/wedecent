@@ -562,10 +562,8 @@ func (p *SupabaseCheckpointFencePrimary) verifyRevocationAuthorization(
 	if endpoint.RevocationEpoch == ^uint64(0) {
 		return ErrCheckpointStale
 	}
-	fingerprint := checkpointRevocationFingerprint(endpoint, endpoint.RevocationEpoch+1)
-	expectedOperationID := checkpointFenceOperationID(CheckpointFenceRevoke,
-		hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
-	if operationID != expectedOperationID {
+	expectedOperationID, operationErr := CheckpointRevocationOperationID(endpoint, endpoint.RevocationEpoch+1)
+	if operationErr != nil || operationID != expectedOperationID {
 		return ErrCheckpointIntegrity
 	}
 	message, err := CheckpointRevocationAuthorizationMessage(CheckpointRevocationAuthorizationRequest{
