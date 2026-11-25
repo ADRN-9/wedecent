@@ -512,7 +512,7 @@ func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
 		parentACE  string
 		wantAccept bool
 	}{
-		{name: "ProgramData-style create-child permission", parentACE: "(A;OICI;0x00000004;;;BU)", wantAccept: true},
+		{name: "ProgramData-style create-child permission", parentACE: "(A;OICI;CC;;;BU)", wantAccept: true},
 		{name: "untrusted delete-child permission", parentACE: "(A;OICI;DC;;;BU)", wantAccept: false},
 		{name: "untrusted full control", parentACE: "(A;OICI;FA;;;BU)", wantAccept: false},
 	} {
