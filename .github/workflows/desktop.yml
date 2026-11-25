@@ -4,9 +4,11 @@ on:
   push:
     branches:
       - main
+      - security/c227-windows-preflight-service-recovery
   pull_request:
     branches:
       - main
+      - security/c225-relay-lifecycle-verification
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
