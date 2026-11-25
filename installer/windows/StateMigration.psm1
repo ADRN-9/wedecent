@@ -1299,9 +1299,7 @@ function Restore-WeDecentMigrationMetadata {
 function Set-WeDecentMigrationServicePath {
     param(
         [Parameter(Mandatory = $true)][string]$ServiceName,
-        [Parameter(Mandatory = $true)][string]$BinaryPath,
-        [Parameter(Mandatory = $true)][string]$ServiceSid,
-        [Parameter(Mandatory = $true)][string]$StartMode
+        [Parameter(Mandatory = $true)][string]$BinaryPath
     )
 
     $output = & sc.exe config $ServiceName "binPath= $BinaryPath" 2>&1
@@ -1311,10 +1309,6 @@ function Set-WeDecentMigrationServicePath {
     $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
     if (-not $service -or [string]$service.PathName -cne $BinaryPath) {
         throw 'SCM service path did not persist exactly as requested.'
-    }
-    $actualSid = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
-    if ($actualSid -cne $ServiceSid -or [string]$service.StartMode -cne $StartMode) {
-        throw 'SCM service account or start mode changed during the state migration transition.'
     }
 }
 
