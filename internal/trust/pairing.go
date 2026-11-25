@@ -259,8 +259,10 @@ func loadPairingCredential(dir, hash string, now time.Time) (pairingCredentialRe
 	if errors.Is(err, os.ErrNotExist) {
 		if hash == "" || hash == consumedPairingHash { return record, ErrPairingSecretInvalid }
 		if !now.Before(pairingLegacyMigrationDeadline) { return record, ErrPairingSecretInvalid }
-		info, statErr := os.Stat(filepath.Join(dir, pairingSecretFile))
-		if statErr != nil { return record, fmt.Errorf("%w: inspect legacy credential: %v", ErrPairingStateUnsafe, statErr) }
+		info, statErr := os.Lstat(filepath.Join(dir, pairingSecretFile))
+		if statErr != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || !pairingOwnedByCurrentUser(info) {
+			return record, fmt.Errorf("%w: inspect legacy credential: %v", ErrPairingStateUnsafe, statErr)
+		}
 		if info.ModTime().After(now.Add(30*time.Second)) { return record, fmt.Errorf("%w: legacy credential is future-dated", ErrPairingStateUnsafe) }
 		expires := now.Add(pairingCredentialLifetime); if expires.After(pairingLegacyMigrationDeadline) { expires = pairingLegacyMigrationDeadline }
 		record = pairingCredentialRecord{Version: pairingCredentialVersion, Generation: 1, SecretSHA256: hash, IssuedAt: now, ExpiresAt: expires}
@@ -274,8 +276,9 @@ func loadPairingCredential(dir, hash string, now time.Time) (pairingCredentialRe
 	return record, nil
 }
 
-// CheckPairingSecret is read-only; callers must never authorize pairing using
-// this check. PairClientWithSecret performs the locked consume+trust transaction.
+// CheckPairingSecret validates the credential under the pairing lock. A legacy
+// V1 hash may be durably migrated here; callers must never authorize pairing
+// from this preflight alone. PairClientWithSecretAdmission revalidates and consumes.
 func CheckPairingSecret(dir, secret string) (bool, error) {
 	if !validPairingSecret(secret) {
 		return false, nil
