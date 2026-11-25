@@ -100,6 +100,10 @@ func NewPairingAttemptID() (string, error) {
 // filesystem protections do not provide independent rollback resistance. Production
 // pairing must use OpenPairingRecoveryWithAuthority.
 func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
+	return openPairingRecovery(stateDir, nil, "", RecoveryAuthorityTrust{})
+}
+
+func openPairingRecovery(stateDir string, authority RecoveryAuthority, scope string, authorityTrust RecoveryAuthorityTrust) (*PairingRecovery, error) {
 	if stateDir == "" {
 		return nil, errors.New("pairing recovery state directory is required")
 	}
@@ -110,7 +114,8 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	if err := syncAuditDirectory(dir); err != nil {
 		return nil, fmt.Errorf("pairing recovery durability unavailable: %w", err)
 	}
-	r := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName)}
+	r := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName), authority: authority,
+		authorityScope: scope, authorityTrust: authorityTrust}
 	// Initialization is serialized with mutation. A second opener must not
 	// confuse an in-progress first creation with a deleted durable ledger.
 	unlock, err := lockFile(r.path)
@@ -212,18 +217,9 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 			return nil, ErrRecoveryMigrationUntrusted
 		}
 	}
-	recovery, err := OpenPairingRecovery(stateDir)
+	recovery, err := openPairingRecovery(stateDir, authority, scope, authorityTrust)
 	if err != nil {
-		return nil, err
-	}
-	recovery.authority = authority
-	recovery.authorityScope = scope
-	recovery.authorityTrust = authorityTrust
-	if err := recovery.reconcileActiveLedger(); err != nil {
-		return nil, fmt.Errorf("independent active pairing ledger reconciliation: %w", err)
-	}
-	if _, err := recovery.readArchive(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("independent pairing recovery startup reconciliation: %w", err)
 	}
 	return recovery, nil
 }
