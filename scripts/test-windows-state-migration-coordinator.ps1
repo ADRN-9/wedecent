@@ -438,6 +438,54 @@ try {
     Remove-Item -LiteralPath $aclMutatedSource.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+$nestedFileAcl = New-MigrationFixture
+try {
+    $nestedFile = Join-Path $nestedFileAcl.Source 'nested/policy.json'
+    $fileAcl = Get-Acl -LiteralPath $nestedFile
+    $users = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+    $broadRule = [Security.AccessControl.FileSystemAccessRule]::new(
+        $users, [Security.AccessControl.FileSystemRights]::FullControl,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$fileAcl.AddAccessRule($broadRule)
+    Set-Acl -LiteralPath $nestedFile -AclObject $fileAcl -ErrorAction Stop
+    $rejectedNestedFileAcl = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileAcl.Journal -AgentPath $agentPath -MetadataPath $nestedFileAcl.MetadataPath -ServiceName $nestedFileAcl.ServiceName)
+    } catch {
+        $rejectedNestedFileAcl = $_.Exception.Message -like '*unexpected access rule*'
+        if (-not $rejectedNestedFileAcl) { throw }
+    }
+    if (-not $rejectedNestedFileAcl) { throw 'Recovery accepted a broadened nested file DACL.' }
+    if ($global:WeDecentMigrationMockService.PathName -cne $nestedFileAcl.OriginalServicePath) { throw 'Nested file ACL rejection changed SCM configuration.' }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') { throw 'Nested file ACL rejection did not leave the service stopped.' }
+    Write-Host 'Migration coordinator nested file ACL recovery rejection PASS'
+} finally {
+    Remove-Item -LiteralPath $nestedFileAcl.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$nestedDirectoryOwner = New-MigrationFixture
+try {
+    $nestedDirectory = Join-Path $nestedDirectoryOwner.Source 'nested'
+    $output = & icacls.exe $nestedDirectory '/setowner' '*S-1-5-32-545' 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not mutate nested directory owner for regression: $($output -join ' ')" }
+    $nestedOwner = (Get-Acl -LiteralPath $nestedDirectory).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($nestedOwner -cne 'S-1-5-32-545') { throw "Nested directory owner mutation did not take effect: $nestedOwner" }
+    $rejectedNestedOwner = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryOwner.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryOwner.MetadataPath -ServiceName $nestedDirectoryOwner.ServiceName)
+    } catch {
+        $rejectedNestedOwner = $_.Exception.Message -like '*unexpected owner SID*'
+        if (-not $rejectedNestedOwner) { throw }
+    }
+    if (-not $rejectedNestedOwner) { throw 'Recovery accepted a nested directory owner substitution.' }
+    if ($global:WeDecentMigrationMockService.PathName -cne $nestedDirectoryOwner.OriginalServicePath) { throw 'Nested directory owner rejection changed SCM configuration.' }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') { throw 'Nested directory owner rejection did not leave the service stopped.' }
+    Write-Host 'Migration coordinator nested directory owner recovery rejection PASS'
+} finally {
+    Remove-Item -LiteralPath $nestedDirectoryOwner.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 } finally {
     Remove-Item -LiteralPath $recovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
