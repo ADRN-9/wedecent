@@ -309,9 +309,9 @@ func TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoa
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
-		name string
-		path string
-		owner *windows.SID
+		name      string
+		path      string
+		owner     *windows.SID
 		lookupErr error
 	}{
 		{name: "unauthorized ancestor owner", path: "root", owner: foreign},
