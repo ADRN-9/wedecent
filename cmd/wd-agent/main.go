@@ -196,8 +196,15 @@ func runStatePathCheck(args []string) error {
 	stateDir := fs.String("state", state, "agent state directory")
 	serviceSID := fs.String("service-sid", "", "expected dedicated Windows service SID")
 	prepareParent := fs.Bool("prepare-parent", false, "validate trusted ancestors and parent ownership before applying a protected DACL")
+	migrationSource := fs.Bool("migration-source", false, "validate an existing legacy source using the migration-only ancestor policy")
 	if err := fs.Parse(args); err != nil {
 		return err
+	}
+	if *migrationSource {
+		if *prepareParent || strings.TrimSpace(*serviceSID) == "" {
+			return errors.New("--migration-source requires --service-sid and cannot be combined with --prepare-parent")
+		}
+		return verifyMigrationSourceForSID(*stateDir, strings.TrimSpace(*serviceSID))
 	}
 	if *prepareParent {
 		if strings.TrimSpace(*serviceSID) != "" {
