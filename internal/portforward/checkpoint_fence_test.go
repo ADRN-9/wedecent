@@ -116,6 +116,18 @@ func TestCheckpointFenceTokenRequiresMonotonicActionEpoch(t *testing.T) {
 	}
 }
 
+func TestCheckpointFenceRevocationTokenCannotOutliveAuthorizationProof(t *testing.T) {
+	token, privateKey := validFenceToken(t, CheckpointFenceRevoke)
+	token.ExpiresAtUnixMS = token.AuthorizationProofExpiresAtUnixMS + 1
+	if _, err := SignCheckpointFenceToken(token, privateKey); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("revocation token outlived its signed authorization proof: %v", err)
+	}
+	token.ExpiresAtUnixMS = token.AuthorizationProofExpiresAtUnixMS
+	if _, err := SignCheckpointFenceToken(token, privateKey); err != nil {
+		t.Fatalf("token bounded by proof expiry was rejected: %v", err)
+	}
+}
+
 func TestCheckpointFenceTokenRejectsAmbiguousWitnessSet(t *testing.T) {
 	token, privateKey := validFenceToken(t, CheckpointFenceFinalize)
 	token.WitnessIDs = []string{"witness-a", "witness-a", "witness-b"}
