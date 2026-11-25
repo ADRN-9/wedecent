@@ -1017,8 +1017,22 @@ using System.Text;
 public static class WeDecentMigrationPathApi {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern uint GetLongPathName(string shortPath, StringBuilder longPath, uint bufferLength);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferLength);
 }
 '@ -ErrorAction Stop
+    }
+
+    $walk = $root
+    $relativeParts = $full.Substring($root.Length).Split([char]'\\', [StringSplitOptions]::RemoveEmptyEntries)
+    foreach ($part in $relativeParts) {
+        $walk = Join-Path $walk $part
+        if (Test-Path -LiteralPath $walk) {
+            $component = Get-Item -LiteralPath $walk -Force -ErrorAction Stop
+            if (($component.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Migration path traverses a reparse point: $walk"
+            }
+        }
     }
 
     $probe = $full
