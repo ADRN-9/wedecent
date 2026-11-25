@@ -263,17 +263,13 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 		(len(token.AuthorizationProof) != 0 || token.ResultingRevocationEpoch != token.ExpectedRevocationEpoch) {
 		return nil, ErrCheckpointStale
 	}
-	if token.Action == CheckpointFenceRevoke && len(token.AuthorizationProof) != ed25519.SignatureSize {
-		return nil, ErrCheckpointIntegrity
-	}
-	if token.Action == CheckpointFenceFinalize &&
-		token.ResultingRevocationEpoch != token.ExpectedRevocationEpoch {
-		return nil, ErrCheckpointStale
-	}
 	if token.Action == CheckpointFenceRevoke &&
 		(token.ExpectedRevocationEpoch == ^uint64(0) ||
 			token.ResultingRevocationEpoch != token.ExpectedRevocationEpoch+1) {
 		return nil, ErrCheckpointStale
+	}
+	if token.Action == CheckpointFenceRevoke && len(token.AuthorizationProof) != ed25519.SignatureSize {
+		return nil, ErrCheckpointIntegrity
 	}
 	ids := append([]string(nil), token.WitnessIDs...)
 	sort.Strings(ids)
@@ -346,8 +342,9 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 	}
 	b.Write(token.RequestSHA256[:])
 	b.Write(token.AuthorizationSHA256[:])
-	binary.Write(&b, binary.BigEndian, uint32(len(token.AuthorizationProof)))
-	b.Write(token.AuthorizationProof)
+	if token.Action == CheckpointFenceRevoke {
+		b.Write(token.AuthorizationProof)
+	}
 	b.Write(token.PrimaryHeadSHA256[:])
 	b.Write(token.PreviousFenceSHA256[:])
 	for _, id := range ids {
