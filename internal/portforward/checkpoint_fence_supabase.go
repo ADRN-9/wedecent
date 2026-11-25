@@ -339,7 +339,7 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 	}
 	var recorded json.RawMessage
 	recordArgs := map[string]any{
-		"p_operation_id":            request.OperationID,
+		"p_operation_id": request.OperationID,
 		"p_fingerprint":  "\\x" + hex.EncodeToString(fingerprintBytes[:]),
 		"p_token_sha256": "\\x" + hex.EncodeToString(tokenDigest[:]),
 		"p_token":        tokenWire,
