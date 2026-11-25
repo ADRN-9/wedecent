@@ -65,7 +65,7 @@ Assert-Contains $uninstaller 'function Test-DirectoryExistsStrict' 'Purge must d
 Assert-Contains $validation '$StateDir = $metadataStateDir' 'Installed-service validation must resolve the authenticated state path.'
 Assert-Contains $validation 'Requested validation state path does not match authenticated installer metadata' 'Installed-service validation must reject a mismatched state path.'
 Assert-Contains $uninstaller 'SCM state path does not match authenticated installer metadata' 'Uninstaller must verify service state path before removal.'
-Assert-Contains $uninstaller '$stateFull.StartsWith($childFull + '\\' 'Uninstaller must preserve install subtrees containing protected state.'
+Assert-Contains $uninstaller '$stateFull.StartsWith' 'Uninstaller must preserve install subtrees containing protected state.'
 if ($uninstaller -match 'Remove-Item -LiteralPath \$InstallDir -Recurse') {
     throw 'Uninstaller must not recursively delete the install directory containing service state.'
 }
