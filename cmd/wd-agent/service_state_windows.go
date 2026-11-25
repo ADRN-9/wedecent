@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
