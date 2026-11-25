@@ -181,7 +181,6 @@ func TestBrokerConcurrentParkAndTake(t *testing.T) {
 	}
 }
 
-
 func TestBrokerDisconnectBeforeActivationCannotPublishReservation(t *testing.T) {
 	broker := NewBroker(1, time.Minute)
 	server, client := net.Pipe()
@@ -209,10 +208,9 @@ func TestBrokerDisconnectBeforeActivationCannotPublishReservation(t *testing.T) 
 	}
 }
 
-
 type concurrentWriteConn struct {
 	net.Conn
-	active atomic.Int32
+	active  atomic.Int32
 	maximum atomic.Int32
 }
 
