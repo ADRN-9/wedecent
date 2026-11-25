@@ -214,8 +214,20 @@ begin
        or p_token -> 'scope' ->> 'kind' is distinct from 'organization'
        or p_token -> 'scope' ->> 'organization_id' is distinct from v_operation.organization_id::text
        or p_token ->> 'request_sha256' is distinct from pg_catalog.encode(v_operation.request_sha256, 'hex')
-       or p_token ->> 'version' is distinct from '1'
-       or coalesce(p_token ->> 'authorization_sha256', '') !~ '^[0-9a-f]{64}
+       or (v_operation.action = 'finalize' and p_token ->> 'version' is distinct from '1')
+       or (v_operation.action = 'revoke' and p_token ->> 'version' is distinct from '2')
+       or p_token ->> 'authorization_proof' is null
+       or (v_operation.action = 'finalize' and p_token ->> 'authorization_proof' <> '')
+       or (v_operation.action = 'revoke' and
+            coalesce(p_token ->> 'authorization_proof', '') !~ '^[A-Za-z0-9+/]{86}==$')
+       or (v_operation.action = 'revoke' and
+            pg_catalog.octet_length(pg_catalog.decode(p_token ->> 'authorization_proof', 'base64')) <> 64)
+       or (v_operation.action = 'revoke' and
+            pg_catalog.encode(extensions.digest(
+                pg_catalog.decode(p_token ->> 'authorization_proof', 'base64'), 'sha256'
+            ), 'hex') is distinct from p_token ->> 'authorization_sha256')
+       or coalesce(p_token ->> 'authorization_sha256', '') !~ '^[0-9a-f]{64}$'
+       or coalesce(p_token ->> 'witness_set_version', '') = ''
        or coalesce(p_token ->> 'primary_key_id', '') = ''
        or coalesce(p_token ->> 'signature', '') !~ '^[A-Za-z0-9+/]{86}==$'
        or coalesce(p_token ->> 'request_sha256', '') !~ '^[0-9a-f]{64}$'
