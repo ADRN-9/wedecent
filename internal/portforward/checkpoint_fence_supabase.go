@@ -488,6 +488,7 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 	}
 	token, err := checkpointFenceTokenFromWire(response.Token)
 	if err != nil || token.Scope != scope || token.OperationID != operationID ||
+		token.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(token.WitnessIDs, p.witnessIDs) ||
 		verifyCheckpointFenceTokenSignature(token, p.primaryKey) != nil {
 		return CheckpointFenceOperation{}, false, ErrCheckpointIntegrity
 	}
@@ -532,6 +533,13 @@ func (p *SupabaseCheckpointFencePrimary) verifyAcknowledgements(
 	if p == nil || len(acknowledgements) < p.quorum || len(acknowledgements) > len(p.witnesses) {
 		return ErrCheckpointQuorum
 	}
+	if token.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(token.WitnessIDs, p.witnessIDs) {
+		return ErrCheckpointIntegrity
+	}
+	tokenWitnesses := make(map[string]bool, len(token.WitnessIDs))
+	for _, witnessID := range token.WitnessIDs {
+		tokenWitnesses[witnessID] = true
+	}
 	digest, err := CheckpointFenceTokenDigest(token)
 	if err != nil {
 		return err
@@ -539,7 +547,7 @@ func (p *SupabaseCheckpointFencePrimary) verifyAcknowledgements(
 	seen := make(map[string]bool, len(acknowledgements))
 	for _, ack := range acknowledgements {
 		key, ok := p.witnesses[ack.WitnessID]
-		if !ok || seen[ack.WitnessID] ||
+		if !ok || !tokenWitnesses[ack.WitnessID] || seen[ack.WitnessID] ||
 			VerifyCheckpointFenceAcknowledgement(ack, ack.WitnessID, key) != nil ||
 			ack.TokenSHA256 != digest || ack.Generation != token.Generation ||
 			ack.Action != token.Action || ack.OperationID != token.OperationID ||
