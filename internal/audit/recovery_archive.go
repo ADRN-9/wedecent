@@ -111,6 +111,28 @@ func (r *PairingRecovery) loadArchiveKey() error {
 	return nil
 }
 
+func (r *PairingRecovery) verifyArchiveKey() error {
+	if r == nil || len(r.archiveKey) != 32 { return errors.New("pairing recovery archive authority unavailable") }
+	path := filepath.Join(filepath.Dir(r.path), pairingArchiveKeyName)
+	info, err := os.Lstat(path)
+	if err != nil { return err }
+	if err := trust.VerifyPairingStatePath(path); err != nil { return err }
+	if !info.Mode().IsRegular() || info.Size() != 32 { return errors.New("pairing recovery archive key has invalid type or size") }
+	f, err := os.Open(path)
+	if err != nil { return err }
+	defer f.Close()
+	opened, err := f.Stat()
+	after, statErr := os.Lstat(path)
+	if err != nil || statErr != nil || !os.SameFile(info, opened) || !os.SameFile(opened, after) {
+		return errors.New("pairing recovery archive key changed during verification")
+	}
+	key, err := io.ReadAll(io.LimitReader(f, 33))
+	if err != nil || len(key) != 32 || !hmac.Equal(key, r.archiveKey) {
+		return errors.New("pairing recovery archive key changed after initialization")
+	}
+	return nil
+}
+
 func pairingArchiveCheckpoint(records []PairingOutcome) (string, error) {
 	checkpoint := make([]byte, sha256.Size)
 	for i, record := range records {
@@ -131,9 +153,7 @@ func pairingArchiveCheckpoint(records []PairingOutcome) (string, error) {
 
 func (r *PairingRecovery) readArchive() (pairingRecoveryArchive, error) {
 	archive := pairingRecoveryArchive{Version: 1}
-	if r == nil || len(r.archiveKey) != 32 {
-		return archive, errors.New("pairing recovery archive authority unavailable")
-	}
+	if err := r.verifyArchiveKey(); err != nil { return archive, err }
 	path := filepath.Join(filepath.Dir(r.path), pairingArchiveFileName)
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -207,9 +227,8 @@ func (r *PairingRecovery) readArchive() (pairingRecoveryArchive, error) {
 
 func (r *PairingRecovery) writeArchive(records []PairingOutcome) (pairingRecoveryArchive, error) {
 	var empty pairingRecoveryArchive
-	if len(records) == 0 || len(r.archiveKey) != 32 {
-		return empty, errors.New("pairing recovery archive input or key invalid")
-	}
+	if len(records) == 0 { return empty, errors.New("pairing recovery archive input invalid") }
+	if err := r.verifyArchiveKey(); err != nil { return empty, err }
 	checkpoint, err := pairingArchiveCheckpoint(records)
 	if err != nil {
 		return empty, err
