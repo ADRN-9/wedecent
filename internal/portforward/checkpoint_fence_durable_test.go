@@ -430,6 +430,7 @@ func TestCheckpointFenceCoordinatorExecutesStrictMajority(t *testing.T) {
 	coordinator := CheckpointFenceCoordinator{
 		Primary: primary, PrimaryKey: primaryKey.Public().(ed25519.PublicKey),
 		WitnessSetVersion: request.WitnessSetVersion, Witnesses: clients, Quorum: 2,
+		Now: primary.now,
 	}
 	operation, err := coordinator.Execute(context.Background(), request)
 	if err != nil {
