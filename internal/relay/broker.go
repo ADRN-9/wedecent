@@ -32,6 +32,8 @@ type slot struct {
 	watchStop  chan struct{}
 	watchDone  chan struct{}
 	watchOnce  sync.Once
+	disconnected chan struct{}
+	disconnectOnce sync.Once
 }
 
 func (s *slot) finish() {
@@ -69,7 +71,7 @@ func (b *Broker) Reserve(deviceID string, conn net.Conn) (*slot, error) {
 	if len(b.slots[deviceID]) >= b.maxSlotsPerDevice {
 		return nil, ErrTooManySlots
 	}
-	s := &slot{conn: conn, createdAt: time.Now(), done: make(chan struct{}), state: slotReserved}
+	s := &slot{conn: conn, createdAt: time.Now(), done: make(chan struct{}), state: slotReserved, disconnected: make(chan struct{})}
 	b.slots[deviceID] = append(b.slots[deviceID], s)
 	return s, nil
 }
@@ -84,6 +86,12 @@ func (b *Broker) Activate(deviceID string, target *slot) error {
 		}
 		if s.state != slotReserved {
 			return ErrSlotNotReserved
+		}
+		select {
+		case <-s.disconnected:
+			b.removeLocked(deviceID, s)
+			return ErrNoAgent
+		default:
 		}
 		if s.createdAt.Before(time.Now().Add(-b.slotTTL)) {
 			b.removeLocked(deviceID, s)
@@ -111,6 +119,13 @@ func (b *Broker) Park(deviceID string, conn net.Conn) (*slot, error) {
 func (b *Broker) Take(deviceID string) (*slot, error) {
 	b.mu.Lock()
 	b.pruneLocked(deviceID)
+	for _, candidate := range append([]*slot(nil), b.slots[deviceID]...) {
+		select {
+		case <-candidate.disconnected:
+			b.removeLocked(deviceID, candidate)
+		default:
+		}
+	}
 	q := b.slots[deviceID]
 	for i, s := range q {
 		if s.state != slotActive {
@@ -142,6 +157,7 @@ func (b *Broker) WatchDisconnect(deviceID string, target *slot) {
 		case <-target.watchStop:
 			return
 		default:
+			target.disconnectOnce.Do(func() { close(target.disconnected) })
 			b.Remove(deviceID, target)
 		}
 	}()
