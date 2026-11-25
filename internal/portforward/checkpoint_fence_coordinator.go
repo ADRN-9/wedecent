@@ -240,6 +240,7 @@ func checkpointFenceTokenMatchesRequest(token CheckpointFenceToken, request Chec
 	return token.Scope == request.Scope && token.Action == request.Action &&
 		token.OperationID == request.OperationID && token.RequestSHA256 == request.RequestSHA256 &&
 		token.AuthorizationSHA256 == request.AuthorizationSHA256 &&
+		bytes.Equal(token.AuthorizationProof, request.AuthorizationProof) &&
 		token.ExpectedRevocationEpoch == request.ExpectedRevocationEpoch &&
 		token.ResultingRevocationEpoch == request.ExpectedRevocationEpoch+boolUint64(request.Action == CheckpointFenceRevoke) &&
 		token.WitnessSetVersion == request.WitnessSetVersion &&
