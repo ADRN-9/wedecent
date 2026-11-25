@@ -9,9 +9,9 @@ begin
 end
 $$;
 grant wedecent_checkpoint_authority to authenticator;
-grant usage on schema public, auth, wedecent_private, extensions to wedecent_checkpoint_authority;
+grant usage on schema public, auth, pgsodium to wedecent_checkpoint_authority;
 
-create extension if not exists pgsodium with schema extensions;
+create extension if not exists pgsodium;
 
 create table public.checkpoint_fence_primary_trust (
     key_id text primary key check (key_id ~ '^ed25519-[A-Za-z0-9_-]{43}$'),
@@ -34,24 +34,6 @@ alter table public.checkpoint_fence_primary_trust enable row level security;
 alter table public.checkpoint_fence_witness_trust enable row level security;
 revoke all on public.checkpoint_fence_primary_trust, public.checkpoint_fence_witness_trust
     from public, anon, authenticated, service_role, wedecent_checkpoint_authority;
-
-create or replace function wedecent_private.checkpoint_fence_ack_message(p_ack jsonb)
-returns bytea
-language plpgsql
-immutable
-security definer
-set search_path = ''
-as $$
-declare
-    v_message text;
-begin
-    v_message :=
-        'wedecent-checkpoint-fence-ack-v1' || E'\n' ||
-        pg_catalog.to_json(p_ack ->> 'witness_id')::text || E'\n' ||
-        pg_catalog.encode(pg_catalog.decode(p_ack ->> 'token_sha256', 'hex'), 'escape') || '';
-    return pg_catalog.convert_to(v_message, 'UTF8');
-end;
-$$;
 
 -- The byte-oriented message builder mirrors checkpointFenceAcknowledgementMessage.
 create or replace function wedecent_private.checkpoint_fence_ack_signing_bytes(p_ack jsonb)
@@ -291,7 +273,7 @@ begin
 
         v_signature := pg_catalog.decode(v_ack ->> 'signature', 'base64');
         v_message := wedecent_private.checkpoint_fence_ack_signing_bytes(v_ack);
-        if not extensions.crypto_sign_verify_detached(v_signature, v_message, v_key) then
+        if not pgsodium.crypto_sign_verify_detached(v_signature, v_message, v_key) then
             raise exception 'checkpoint witness signature verification failed'
                 using errcode = '42501';
         end if;
