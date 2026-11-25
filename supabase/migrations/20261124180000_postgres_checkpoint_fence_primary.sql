@@ -217,6 +217,8 @@ begin
        or (v_operation.action = 'finalize' and p_token ->> 'version' is distinct from '1')
        or (v_operation.action = 'revoke' and p_token ->> 'version' is distinct from '2')
        or p_token ->> 'authorization_proof' is null
+       or p_token ->> 'authorization_proof_issued_at_unix_ms' is null
+       or p_token ->> 'authorization_proof_expires_at_unix_ms' is null
        or (v_operation.action = 'finalize' and p_token ->> 'authorization_proof' <> '')
        or (v_operation.action = 'finalize' and
             ((p_token ->> 'authorization_proof_issued_at_unix_ms')::bigint <> 0
