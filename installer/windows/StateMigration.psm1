@@ -881,56 +881,82 @@ function Assert-WeDecentMigrationPartialTreeSafe {
 function Restore-WeDecentMigrationTransaction {
     param(
         [Parameter(Mandatory = $true)][pscustomobject]$Journal,
-        [string]$FaultAt
+        [string]$FaultAt,
+        $MutationLease
     )
-
-    $service = Get-Service -Name $Journal.service_name -ErrorAction Stop
-    if ($service.Status -ne 'Stopped') {
-        Stop-Service -Name $Journal.service_name -Force -ErrorAction Stop
-        (Get-Service -Name $Journal.service_name).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    $paths = @([string]$Journal.source,[string]$Journal.destination,[string]$Journal.staging,[string]$Journal.journal_path,[string]$Journal.metadata_path)
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $paths)
+    $ownsLease = $false
+    if ($null -eq $MutationLease) {
+        $directories = @((Split-Path -Parent $Journal.source),(Split-Path -Parent $Journal.destination),
+            (Split-Path -Parent $Journal.journal_path),(Split-Path -Parent $Journal.metadata_path))
+        if (Test-Path -LiteralPath $Journal.source -PathType Container) { $directories += [string]$Journal.source }
+        $MutationLease = New-WeDecentMigrationMutationLease -Directories $directories
+        $ownsLease = $true
     }
-    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceStopped' -FaultAt $FaultAt
-    Assert-WeDecentMigrationRecoverySource -Journal $Journal
-    $Journal.phase = 'RollingBack'
-    Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
-    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStarted' -FaultAt $FaultAt
-    Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path -ServiceSid $Journal.service_sid -StartMode $Journal.service_start_mode
-    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt $FaultAt
-    Restore-WeDecentMigrationMetadata -Path $Journal.metadata_path -OriginalJson $Journal.original_metadata_json
-    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackMetadataRestored' -FaultAt $FaultAt
-    if ([bool]$Journal.service_was_running) {
+    try {
+        Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
         Assert-WeDecentMigrationRecoverySource -Journal $Journal
-        Start-Service -Name $Journal.service_name -ErrorAction Stop
-        (Get-Service -Name $Journal.service_name).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-    }
-    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceRestarted' -FaultAt $FaultAt
-    foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
-        if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
-        $partialStaging = $candidate -ceq [string]$Journal.staging -and
-            -not [bool]$Journal.staging_complete
-        if (-not $partialStaging) {
-            [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
+        $service = Get-Service -Name $Journal.service_name -ErrorAction Stop
+        if ($service.Status -ne 'Stopped') {
+            Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
+            Assert-WeDecentMigrationRecoverySource -Journal $Journal
+            Stop-Service -Name $Journal.service_name -Force -ErrorAction Stop
+            (Get-Service -Name $Journal.service_name).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
-        if ($partialStaging) {
-            $installerSid = $null
-            if ($null -ne $Journal.PSObject.Properties['installer_sid']) {
-                $installerSid = [string]$Journal.installer_sid
-            }
-            [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid -InstallerSid $installerSid)
-        } else {
-            $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
-            $digest = Get-WeDecentMigrationStableManifestDigest -Manifest $manifest
-            if ($digest -cne [string]$Journal.source_stable_manifest_sha256) {
-                throw "Rollback refuses to remove changed migration copy: $candidate"
-            }
-            [void](Assert-WeDecentMigrationRollbackIdentityContinuity -Source $Journal.source -Candidate $candidate -AgentPath $Journal.agent_path)
+        Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceStopped' -FaultAt $FaultAt
+        Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
+        Assert-WeDecentMigrationRecoverySource -Journal $Journal
+        $Journal.phase = 'RollingBack'
+        Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStarted' -FaultAt $FaultAt
+        Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
+        Assert-WeDecentMigrationRecoverySource -Journal $Journal
+        Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path -ServiceSid $Journal.service_sid -StartMode $Journal.service_start_mode
+        Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt $FaultAt
+        Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
+        Assert-WeDecentMigrationRecoverySource -Journal $Journal
+        Restore-WeDecentMigrationMetadata -Path $Journal.metadata_path -OriginalJson $Journal.original_metadata_json
+        Invoke-WeDecentMigrationFaultPoint -Name 'RollbackMetadataRestored' -FaultAt $FaultAt
+        if ([bool]$Journal.service_was_running) {
+            Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
+            Assert-WeDecentMigrationRecoverySource -Journal $Journal
+            Start-Service -Name $Journal.service_name -ErrorAction Stop
+            (Get-Service -Name $Journal.service_name).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         }
-        Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStagingValidated' -FaultAt $FaultAt
-        Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
+        Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceRestarted' -FaultAt $FaultAt
+        foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
+            if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
+            $candidateIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($candidate)
+            $partialStaging = $candidate -ceq [string]$Journal.staging -and -not [bool]$Journal.staging_complete
+            if (-not $partialStaging) {
+                [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
+            }
+            if ($partialStaging) {
+                $installerSid = $null
+                if ($null -ne $Journal.PSObject.Properties['installer_sid']) { $installerSid = [string]$Journal.installer_sid }
+                [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid -InstallerSid $installerSid)
+            } else {
+                $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
+                $digest = Get-WeDecentMigrationStableManifestDigest -Manifest $manifest
+                if ($digest -cne [string]$Journal.source_stable_manifest_sha256) {
+                    throw "Rollback refuses to remove changed migration copy: $candidate"
+                }
+                [void](Assert-WeDecentMigrationRollbackIdentityContinuity -Source $Journal.source -Candidate $candidate -AgentPath $Journal.agent_path)
+            }
+            Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStagingValidated' -FaultAt $FaultAt
+            Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
+            if ([WeDecentMigrationFileIdentityApi]::GetIdentity($candidate) -cne $candidateIdentity) {
+                throw "Rollback candidate object changed before removal: $candidate"
+            }
+            Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
+        }
+        $Journal.phase = 'RolledBack'
+        Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'RolledBack' -FaultAt $FaultAt
+    } finally {
+        if ($ownsLease) { $MutationLease.Dispose() }
     }
-    $Journal.phase = 'RolledBack'
-    Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
-    Invoke-WeDecentMigrationFaultPoint -Name 'RolledBack' -FaultAt $FaultAt
 }
 
 function Recover-WeDecentStateMigration {
@@ -941,18 +967,29 @@ function Recover-WeDecentStateMigration {
         [Parameter(Mandatory = $true)][string]$ServiceName,
         [string]$FaultAt
     )
-
     if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $false }
     $journal = Read-WeDecentMigrationJournal -Path $JournalPath
-    if (-not [string]::Equals([string]$journal.metadata_path, [IO.Path]::GetFullPath($MetadataPath), [StringComparison]::OrdinalIgnoreCase) -or
+    if (-not [string]::Equals([string]$journal.metadata_path,[IO.Path]::GetFullPath($MetadataPath),[StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$journal.journal_path,[IO.Path]::GetFullPath($JournalPath),[StringComparison]::OrdinalIgnoreCase) -or
         [string]$journal.service_name -cne $ServiceName) {
-        throw 'Migration recovery journal does not match this installer metadata path and service.'
+        throw 'Migration recovery journal does not match this installer metadata path, journal path and service.'
     }
-    if ($journal.phase -in @('Committed', 'RolledBack')) { return $false }
+    if ($journal.phase -in @('Committed','RolledBack')) { return $false }
     $journal | Add-Member -NotePropertyName journal_path -NotePropertyValue ([IO.Path]::GetFullPath($JournalPath)) -Force
     $journal | Add-Member -NotePropertyName agent_path -NotePropertyValue ([IO.Path]::GetFullPath($AgentPath)) -Force
-    Restore-WeDecentMigrationTransaction -Journal $journal -FaultAt $FaultAt
-    return $true
+    $recoveryPaths = @([string]$journal.source,[string]$journal.destination,[string]$journal.staging,[IO.Path]::GetFullPath($JournalPath),[IO.Path]::GetFullPath($MetadataPath))
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $recoveryPaths)
+    $recoveryDirectories = @((Split-Path -Parent $journal.source),(Split-Path -Parent $journal.destination),
+        (Split-Path -Parent $JournalPath),(Split-Path -Parent $MetadataPath))
+    if (Test-Path -LiteralPath $journal.source -PathType Container) { $recoveryDirectories += [string]$journal.source }
+    $recoveryLease = New-WeDecentMigrationMutationLease -Directories $recoveryDirectories
+    try {
+        Assert-WeDecentMigrationMutationLease -Lease $recoveryLease -Paths $recoveryPaths
+        [void](Assert-WeDecentMigrationRecoverySource -Journal $journal)
+        Restore-WeDecentMigrationTransaction -Journal $journal -FaultAt $FaultAt -MutationLease $recoveryLease
+    } finally {
+        $recoveryLease.Dispose()
+    }
 }
 
 function Get-WeDecentMigrationUpdatedServicePath {
