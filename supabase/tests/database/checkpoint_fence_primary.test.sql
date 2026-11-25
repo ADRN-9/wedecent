@@ -2,6 +2,11 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select plan(28);
 
+-- Temporary fixture-only grants are rolled back with this test transaction.
+grant usage on schema pgsodium to public;
+grant execute on function pgsodium.crypto_sign_new_keypair() to public;
+grant execute on function pgsodium.crypto_sign_detached(bytea,bytea) to public;
+
 insert into auth.users(id,aud,role,email)
 values ('11000000-0000-4000-8000-000000000197','authenticated','authenticated','c197-primary@example.test');
 select set_config('request.jwt.claim.sub','11000000-0000-4000-8000-000000000197',true);
