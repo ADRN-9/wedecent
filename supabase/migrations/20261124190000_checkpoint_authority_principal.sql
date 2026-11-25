@@ -121,10 +121,24 @@ returns jsonb
 language plpgsql
 security definer
 set search_path = ''
-as $$
+as $
+declare
+    v_pending_operation_id text;
+    v_pending_expires_at timestamptz;
 begin
     if auth.uid() is null or auth.uid() is distinct from p_actor_id then
         raise exception 'checkpoint actor authentication failed' using errcode = '42501';
+    end if;
+    select pending_operation_id, pending_expires_at
+      into v_pending_operation_id, v_pending_expires_at
+      from public.checkpoint_fence_authority
+     where organization_id = p_organization_id
+     for update;
+    if v_pending_operation_id is not null
+       and v_pending_operation_id <> p_operation_id
+       and (v_pending_expires_at is null or v_pending_expires_at <= pg_catalog.clock_timestamp()) then
+        raise exception 'expired checkpoint operation requires exact-operation quorum recovery'
+            using errcode = '55P03';
     end if;
     return public.reserve_checkpoint_fence_operation_internal(
         p_operation_id, p_action, p_organization_id, p_actor_id, p_request_sha256,
@@ -146,11 +160,22 @@ set search_path = ''
 as $$
 declare
     v_actor_id uuid;
+    v_existing public.checkpoint_operation_events%rowtype;
 begin
     select actor_id into v_actor_id from public.checkpoint_operations
      where operation_id = p_operation_id;
     if auth.uid() is null or v_actor_id is null or auth.uid() is distinct from v_actor_id then
         raise exception 'checkpoint actor authentication failed' using errcode = '42501';
+    end if;
+    select * into v_existing from public.checkpoint_operation_events
+     where operation_id = p_operation_id and event_type = 'fence_reserved'
+     order by event_id desc limit 1;
+    if found and (
+        v_existing.event_payload ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex')
+        or v_existing.event_payload -> 'token' is distinct from p_token
+    ) then
+        raise exception 'a persisted checkpoint reservation token cannot be replaced'
+            using errcode = '23505';
     end if;
     return public.record_checkpoint_fence_token_internal(
         p_operation_id, p_fingerprint, p_token_sha256, p_token
@@ -295,6 +320,27 @@ begin
         raise exception 'checkpoint primary commit attestation is invalid'
             using errcode = '42501';
     end if;
+
+    if exists (
+        select 1 from public.checkpoint_operation_events
+         where operation_id = p_operation_id and event_type = 'fence_committed'
+    ) then
+        return public.commit_checkpoint_fence_operation_internal(
+            p_operation_id, p_fingerprint, p_token_sha256, p_witness_acknowledgements
+        );
+    end if;
+
+    update public.checkpoint_fence_authority
+       set pending_expires_at = pg_catalog.clock_timestamp() + interval '30 seconds',
+           updated_at = pg_catalog.clock_timestamp()
+     where organization_id = v_operation.organization_id
+       and pending_operation_id = p_operation_id
+       and pending_fingerprint = p_fingerprint;
+    if not found then
+        raise exception 'exact checkpoint operation is no longer pending'
+            using errcode = '40001';
+    end if;
+    perform pg_catalog.set_config('wedecent.checkpoint_fence_verified', p_operation_id, true);
 
     return public.commit_checkpoint_fence_operation_internal(
         p_operation_id, p_fingerprint, p_token_sha256, p_witness_acknowledgements
