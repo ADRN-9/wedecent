@@ -1240,7 +1240,9 @@ public static class WeDecentMigrationFileIdentityApi {
             if (source!=IntPtr.Zero) CloseHandle(source);
             if (parent!=IntPtr.Zero) CloseHandle(parent);
         }
-    }}
+    }
+}
+'@
 
 function Assert-WeDecentMigrationPathsDisjoint {
     param([Parameter(Mandatory = $true)][string[]]$Paths)
