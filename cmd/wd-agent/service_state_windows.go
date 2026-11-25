@@ -304,30 +304,30 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 		return uint32(mask), err
 	}
 	codes := map[string]uint32{
-		"FA": 0x001F01FF,
-		"GA": windows.GENERIC_ALL,
-		"GW": windows.GENERIC_WRITE,
-		"FW": 0x00000002,
-		"AD": 0x00000004,
-		"CC": 0x00000002,
-		"DC": 0x00000040,
-		"DE": windows.DELETE,
-		"SD": windows.DELETE,
-		"WD": windows.WRITE_DAC,
-		"WO": windows.WRITE_OWNER,
-		"FR": 0,
-		"FX": 0,
-		"GR": 0,
-		"GX": 0,
-		"RC": 0,
-		"RD": 0,
-		"RE":  0,
-		"RA": 0,
+		"FA":  0x001F01FF,
+		"GA":  windows.GENERIC_ALL,
+		"GW":  windows.GENERIC_WRITE,
+		"FW":  0x00000002,
+		"AD":  0x00000004,
+		"CC":  0x00000002,
+		"DC":  0x00000040,
+		"DE":  windows.DELETE,
+		"SD":  windows.DELETE,
+		"WD":  windows.WRITE_DAC,
+		"WO":  windows.WRITE_OWNER,
+		"FR":  0,
+		"FX":  0,
+		"GR":  0,
+		"GX":  0,
+		"RC":  0,
+		"RD":  0,
+		"RE":   0,
+		"RA":  0,
 		"X": 0,
-		"LC": 0,
-		"LO": 0,
-		"WA": 0x00000100,
-		"WE": 0x00000010,
+		"LC":  0,
+		"LO":  0,
+		"WA":  0x00000100,
+		"WE":  0x00000010,
 	}
 	var mask uint32
 	if len(rights)%2 != 0 {
@@ -343,7 +343,6 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 	}
 	return mask, nil
 }
-
 
 func verifyWindowsStateAncestorOwners(root string, components []string, installer *windows.SID) error {
 	allowed := map[string]bool{installer.String(): true}
