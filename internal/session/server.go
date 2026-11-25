@@ -160,11 +160,11 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 	}
 	var recovery *audit.PairingRecovery
 	if s.RecoveryAuthority != nil {
-		scope := s.RecoveryAuthorityScope
-		if scope == "" && s.Identity != nil && s.Identity.ID != "" {
+		scope := ""
+		if s.Identity != nil && s.Identity.ID != "" {
 			scope = "pairing-recovery/" + s.Identity.ID
 		}
-		if scope == "" {
+		if scope == "" || (s.RecoveryAuthorityScope != "" && s.RecoveryAuthorityScope != scope) {
 			err = audit.ErrRecoveryAuthorityUnavailable
 		} else {
 			recovery, err = audit.OpenPairingRecoveryWithAuthority(s.StateDir, scope, s.RecoveryAuthority, s.RecoveryAuthorityTrust)
