@@ -57,14 +57,14 @@ type PairingAuditProof struct {
 }
 
 type pairingOutcomeSnapshot struct {
-	Version           int              `json:"version"`
-	Records           []PairingOutcome `json:"records"`
-	ArchivedThrough   uint64           `json:"archived_through,omitempty"`
-	ArchiveCheckpoint string           `json:"archive_checkpoint,omitempty"`
+	Version         int              `json:"version"`
+	Records         []PairingOutcome `json:"records"`
+	ArchivedThrough uint64           `json:"archived_through,omitempty"`
+	ArchiveCheckpoint string          `json:"archive_checkpoint,omitempty"`
 }
 
-// PairingRecovery is independent of rotating audit files. Entries never
-// expire or disappear automatically, including when capacity is reached.
+// PairingRecovery is independent of rotating audit files. Unresolved evidence
+// is retained; acknowledged resolved evidence is authenticated before archival.
 type PairingRecovery struct {
 	mu                      sync.Mutex
 	path                    string
