@@ -116,7 +116,6 @@ func TestBrokerRemoveReservedSlotSignalsAndCloses(t *testing.T) {
 	}
 }
 
-
 func TestBrokerConcurrentParkAndTake(t *testing.T) {
 	broker := NewBroker(32, time.Minute)
 	const workers = 32
