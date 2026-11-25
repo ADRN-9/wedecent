@@ -38,6 +38,10 @@ type Server struct {
 	Shell                  string
 	Logger                 *slog.Logger
 	DirectAuthorizer       DirectAuthorizer
+	RecoveryAuthority      audit.RecoveryAuthority
+	RecoveryAuthorityTrust audit.RecoveryAuthorityTrust
+	RecoveryAuthorityScope string
+	LegacyPairingRecoveryForTests bool
 	FileTransfer           *FileTransferRuntime
 	PortForwarding         *PortForwardRuntime
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
@@ -154,10 +158,18 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 		_ = sendError(conn, "server_error", "pairing audit is unavailable")
 		return
 	}
-	recovery, err := audit.OpenPairingRecovery(s.StateDir)
+	var recovery *audit.PairingRecovery
+	if s.RecoveryAuthority != nil && s.RecoveryAuthorityScope != "" {
+		recovery, err = audit.OpenPairingRecoveryWithAuthority(s.StateDir, s.RecoveryAuthorityScope, s.RecoveryAuthority, s.RecoveryAuthorityTrust)
+	} else if s.LegacyPairingRecoveryForTests {
+		// Explicit test-only compatibility; production never treats local HMAC as independent authority.
+		recovery, err = audit.OpenPairingRecovery(s.StateDir)
+	} else {
+		err = audit.ErrRecoveryAuthorityUnavailable
+	}
 	if err != nil {
-		s.log().Error("pairing recovery unavailable", "peer_id", clientID, "error", err)
-		_ = sendError(conn, "server_error", "pairing recovery is unavailable")
+		s.log().Error("independent pairing recovery authority unavailable", "peer_id", clientID, "error", err)
+		_ = sendError(conn, "recovery_authority_unavailable", "independent pairing recovery authority is unavailable")
 		return
 	}
 	pairingAudit, err := audit.Open(s.StateDir)
