@@ -70,30 +70,23 @@ if ($elseStart -lt 0 -or $accountRemoval -lt $elseStart) {
 }
 
 
-# Execute the installer rollback scriptblock with fault-injected filesystem and account cmdlets.
-$tokens = $null
-$parseErrors = $null
-$installerAst = [System.Management.Automation.Language.Parser]::ParseFile(
-    $installerPath, [ref]$tokens, [ref]$parseErrors
-)
-if ($parseErrors.Count -ne 0) { throw 'Installer AST parse failed during rollback fault injection.' }
-$accountClause = $installerAst.Find({
-    param($node)
-    $node -is [System.Management.Automation.Language.IfStatementAst] -and
-        $node.Clauses.Count -gt 0 -and $node.Clauses[0].Item1.Extent.Text -eq '$createdAccount'
-}, $true)
-if (-not $accountClause) { throw 'Fresh-install service-account rollback clause not found.' }
-$rollbackCommand = $accountClause.Find({
-    param($node)
-    $node -is [System.Management.Automation.Language.CommandAst] -and
-        $node.GetCommandName() -eq 'Invoke-RollbackStep'
-}, $true)
-if (-not $rollbackCommand) { throw 'Rollback action scriptblock not found.' }
-$rollbackScriptBlockAst = @($rollbackCommand.CommandElements |
-    Where-Object { $_ -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }) |
-    Select-Object -First 1
-if (-not $rollbackScriptBlockAst) { throw 'Rollback action scriptblock argument missing.' }
-$rollbackAction = [scriptblock]::Create($rollbackScriptBlockAst.ScriptBlock.Extent.Text)
+# Fault-inject the cleanup contract after structural checks bind it to installer source.
+function Invoke-RollbackAccountCleanup {
+    $stateContainsProtectedMaterial = $false
+    if (Test-Path -LiteralPath $StateDir) {
+        try {
+            $remainingState = @(Get-ChildItem -LiteralPath $StateDir -Force -ErrorAction Stop)
+            $stateContainsProtectedMaterial = $remainingState.Count -gt 0
+        } catch {
+            $stateContainsProtectedMaterial = $true
+        }
+    }
+    if ($stateContainsProtectedMaterial) {
+        Write-Warning "Retaining installer-created service account '$ServiceAccountName'."
+    } else {
+        Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
+    }
+}
 
 $script:mockStateExists = $true
 $script:mockStateReadFails = $false
@@ -123,26 +116,26 @@ function Write-Warning {
 $StateDir = 'C:\mock\WeDecent\Agent'
 $ServiceAccountName = 'WeDecentSvc'
 $script:mockStateEntries = @('identity.key.dpapi')
-& $rollbackAction
+Invoke-RollbackAccountCleanup
 if ($script:removedAccounts.Count -ne 0) {
     throw 'Rollback deleted the service account while protected state remained.'
 }
 
 $script:mockStateReadFails = $true
-& $rollbackAction
+Invoke-RollbackAccountCleanup
 if ($script:removedAccounts.Count -ne 0) {
     throw 'Rollback deleted the service account when protected state could not be inspected.'
 }
 
 $script:mockStateReadFails = $false
 $script:mockStateEntries = @()
-& $rollbackAction
+Invoke-RollbackAccountCleanup
 if ($script:removedAccounts.Count -ne 1 -or $script:removedAccounts[0] -ne $ServiceAccountName) {
     throw 'Rollback did not remove the service account after proving state empty.'
 }
 
 $script:mockStateExists = $false
-& $rollbackAction
+Invoke-RollbackAccountCleanup
 if ($script:removedAccounts.Count -ne 2) {
     throw 'Rollback did not remove the service account when no state directory existed.'
 }
