@@ -30,7 +30,7 @@ const (
 // CheckpointAuthorityTokenSource mints short-lived actor-bound JWTs for the dedicated
 // database role. Its signing key must exist only on the trusted authority host.
 type CheckpointAuthorityTokenSource interface {
-	Token(context.Context, string) (string, error)
+	Token(context.Context) (string, error)
 }
 
 // SupabaseCheckpointFenceConfig is restricted to the checkpoint authority host.
@@ -40,7 +40,6 @@ type SupabaseCheckpointFenceConfig struct {
 	SPKISHA256Pins             string
 	AnonAPIKey                 string
 	AuthorityTokenSource       CheckpointAuthorityTokenSource
-	ActorID                    string
 	PrimarySigner              crypto.Signer
 	CheckpointHeadKey          ed25519.PublicKey
 	RevocationAuthorizationKey ed25519.PublicKey
@@ -126,14 +125,15 @@ type checkpointFenceAckWire struct {
 func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*SupabaseCheckpointFencePrimary, error) {
 	if !validCheckpointAuditAuthority(config.Hostname, config.Port) ||
 		strings.TrimSpace(config.AnonAPIKey) == "" || strings.TrimSpace(config.AnonAPIKey) != config.AnonAPIKey ||
-		config.AuthorityTokenSource == nil || !canonicalUUID(config.ActorID) || config.PrimarySigner == nil ||
+		config.AuthorityTokenSource == nil || config.PrimarySigner == nil ||
 		config.WitnessSetVersion == "" || len(config.WitnessSetVersion) > 128 ||
 		len(config.CheckpointHeadKey) != ed25519.PublicKeySize ||
 		len(config.RevocationAuthorizationKey) != ed25519.PublicKeySize {
 		return nil, ErrCheckpointUnavailable
 	}
-	initialAuthorityJWT, tokenErr := config.AuthorityTokenSource.Token(context.Background(), config.ActorID)
-	if tokenErr != nil || !validCheckpointAuthorityJWT(initialAuthorityJWT, config.ActorID, config.Now) {
+	initialAuthorityJWT, tokenErr := config.AuthorityTokenSource.Token(context.Background())
+	initialClaims, claimsOK := checkpointAuthorityJWTClaimsFromToken(initialAuthorityJWT, config.Now)
+	if tokenErr != nil || !claimsOK || !canonicalUUID(initialClaims.Sub) {
 		return nil, ErrCheckpointUnavailable
 	}
 	publicKey, ok := config.PrimarySigner.Public().(ed25519.PublicKey)
@@ -197,7 +197,7 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 		now = time.Now
 	}
 	return &SupabaseCheckpointFencePrimary{
-		endpoint: endpoint, anonAPIKey: config.AnonAPIKey, actorID: config.ActorID, authorityTokenSource: config.AuthorityTokenSource,
+		endpoint: endpoint, anonAPIKey: config.AnonAPIKey, actorID: initialClaims.Sub, authorityTokenSource: config.AuthorityTokenSource,
 		primarySigner: config.PrimarySigner, primaryKey: append(ed25519.PublicKey(nil), publicKey...),
 		checkpointHeadKey:          append(ed25519.PublicKey(nil), config.CheckpointHeadKey...),
 		revocationAuthorizationKey: append(ed25519.PublicKey(nil), config.RevocationAuthorizationKey...),
@@ -213,38 +213,45 @@ type checkpointAuthorityJWTClaims struct {
 	Iat  int64  `json:"iat"`
 }
 
-func validCheckpointAuthorityJWT(token, actorID string, now func() time.Time) bool {
+func checkpointAuthorityJWTClaimsFromToken(token string, now func() time.Time) (checkpointAuthorityJWTClaims, bool) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
-		return false
+		return checkpointAuthorityJWTClaims{}, false
 	}
 	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return false
+		return checkpointAuthorityJWTClaims{}, false
 	}
 	var header struct {
 		Alg string `json:"alg"`
 	}
 	if json.Unmarshal(headerBytes, &header) != nil || header.Alg == "" || header.Alg == "none" {
-		return false
+		return checkpointAuthorityJWTClaims{}, false
 	}
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return false
+		return checkpointAuthorityJWTClaims{}, false
 	}
 	var claims checkpointAuthorityJWTClaims
 	if json.Unmarshal(payload, &claims) != nil {
-		return false
+		return checkpointAuthorityJWTClaims{}, false
 	}
 	clock := time.Now
 	if now != nil {
 		clock = now
 	}
 	current := clock()
-	return claims.Role == "wedecent_checkpoint_authority" &&
-		claims.Sub == actorID && canonicalUUID(claims.Sub) &&
-		claims.Exp > current.Unix()+30 && claims.Iat > 0 &&
-		claims.Iat <= current.Unix()+30 && claims.Exp-claims.Iat <= 300
+	if claims.Role != "wedecent_checkpoint_authority" || !canonicalUUID(claims.Sub) ||
+		claims.Exp <= current.Unix()+30 || claims.Iat <= 0 ||
+		claims.Iat > current.Unix()+30 || claims.Exp-claims.Iat > 300 {
+		return checkpointAuthorityJWTClaims{}, false
+	}
+	return claims, true
+}
+
+func validCheckpointAuthorityJWT(token, actorID string, now func() time.Time) bool {
+	claims, ok := checkpointAuthorityJWTClaimsFromToken(token, now)
+	return ok && claims.Sub == actorID
 }
 
 func (p *SupabaseCheckpointFencePrimary) CheckpointAuthorityKeyID() string {
@@ -815,7 +822,7 @@ func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, a
 	if err != nil {
 		return ErrCheckpointUnavailable
 	}
-	authorityJWT, tokenErr := p.authorityTokenSource.Token(ctx, p.actorID)
+	authorityJWT, tokenErr := p.authorityTokenSource.Token(ctx)
 	if tokenErr != nil || !validCheckpointAuthorityJWT(authorityJWT, p.actorID, p.now) {
 		return ErrCheckpointUnavailable
 	}
