@@ -746,4 +746,37 @@ try {
     Remove-Item -LiteralPath $journalRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+
+$recoverySeparationFixture = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $recoverySeparationFixture.Source -Destination $recoverySeparationFixture.Destination -AgentPath $agentPath -ServiceName $recoverySeparationFixture.ServiceName -ServiceSid $recoverySeparationFixture.ServiceSid -MetadataPath $recoverySeparationFixture.MetadataPath -JournalPath $recoverySeparationFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Recovery path-separation fixture did not reach the pending rollback boundary.' }
+    $journal = Read-WeDecentMigrationJournal -Path $recoverySeparationFixture.Journal
+    $journal.staging = Join-Path $recoverySeparationFixture.Source 'nested'
+    Write-WeDecentMigrationJournal -Path $recoverySeparationFixture.Journal -Journal $journal
+    $rejected = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $recoverySeparationFixture.Journal -AgentPath $agentPath -MetadataPath $recoverySeparationFixture.MetadataPath -ServiceName $recoverySeparationFixture.ServiceName)
+    } catch {
+        $rejected = $_.Exception.Message -like '*overlap or alias*'
+        if (-not $rejected) { throw }
+    }
+    if (-not $rejected) { throw 'Recovery accepted an overlapping source/staging path.' }
+    if ($global:WeDecentMigrationMockService.PathName -cne $recoverySeparationFixture.OriginalServicePath) {
+        throw 'Recovery path-separation rejection changed SCM configuration.'
+    }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') {
+        throw 'Recovery path-separation rejection restarted or otherwise changed the stopped service.'
+    }
+    Write-Host 'Migration recovery full path-separation rejection before SCM/service mutation PASS'
+} finally {
+    Remove-Item -LiteralPath $recoverySeparationFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 Write-Host 'Windows state migration coordinator integration PASS'
