@@ -9,6 +9,8 @@ $installerPath = Join-Path $root 'installer/windows/Install-WeDecent.ps1'
 $validationPath = Join-Path $root 'installer/windows/Test-WeDecentInstall.ps1'
 $installer = Get-Content -LiteralPath $installerPath -Raw
 $validation = Get-Content -LiteralPath $validationPath -Raw
+$uninstallerPath = Join-Path $root 'installer/windows/Uninstall-WeDecent.ps1'
+$uninstaller = Get-Content -LiteralPath $uninstallerPath -Raw
 
 function Assert-Contains([string]$Text, [string]$Needle, [string]$Message) {
     if (-not $Text.Contains($Needle)) { throw $Message }
@@ -57,6 +59,13 @@ Assert-Contains $installer 'Legacy ProgramData service state exists; refusing to
 Assert-Contains $installer 'Existing service state location is not authenticated by protected installer metadata' 'Upgrade must fail closed when existing state location metadata is unavailable.'
 Assert-Contains $installer 'Refusing to redirect or overwrite identity state' 'Upgrade must not silently redirect existing cryptographic state.'
 Assert-Contains $installer 'Existing SCM command line does not match the authenticated state_dir metadata' 'Upgrade must verify the SCM state path matches authenticated metadata.'
+Assert-Contains $uninstaller "[string]`$StateDir = (Join-Path `$InstallDir 'data\\agent')" 'Uninstaller default must match the fresh-install state location.'
+Assert-Contains $uninstaller '$StateDir = $metadataStateDir' 'Uninstaller must resolve existing state from authenticated metadata.'
+Assert-Contains $uninstaller 'SCM state path does not match authenticated installer metadata' 'Uninstaller must verify service state path before removal.'
+Assert-Contains $uninstaller '$stateFull.StartsWith($childFull + '\\' 'Uninstaller must preserve install subtrees containing protected state.'
+if ($uninstaller -match 'Remove-Item -LiteralPath \$InstallDir -Recurse') {
+    throw 'Uninstaller must not recursively delete the install directory containing service state.'
+}
 Assert-Contains $installer 'function Test-DirectoryExistsStrict' 'Installer must distinguish a missing state path from an inaccessible or ambiguous path.'
 Assert-Contains $installer 'function Test-ServiceStateSafeForAccountRemoval' 'Installer must centralize fail-closed account-removal checks.'
 Assert-Contains $installer '$stateExisted = Test-DirectoryExistsStrict -Path $StateDir' 'Installer state existence must fail on ambiguous paths.'
