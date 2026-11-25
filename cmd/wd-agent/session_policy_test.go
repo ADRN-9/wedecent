@@ -9,7 +9,7 @@ import (
 )
 
 func TestParseServeConfigSessionPolicyDefaults(t *testing.T) {
-	cfg, err := parseServeConfig(nil)
+	cfg, err := parseServeConfigForTest(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -25,7 +25,7 @@ func TestParseServeConfigSessionPolicyDefaults(t *testing.T) {
 }
 
 func TestParseServeConfigSessionPolicyCanDisableLimits(t *testing.T) {
-	cfg, err := parseServeConfig([]string{"--session-idle-timeout=0", "--session-max-duration=0"})
+	cfg, err := parseServeConfigForTest(t, []string{"--session-idle-timeout=0", "--session-max-duration=0"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,7 +47,7 @@ func TestParseServeConfigRejectsInvalidSessionPolicy(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseServeConfig(tc.args)
+			_, err := parseServeConfigForTest(t, tc.args)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -59,7 +59,7 @@ func TestParseServeConfigRejectsInvalidSessionPolicy(t *testing.T) {
 }
 
 func TestSessionPolicyFlagAcceptsIndependentDisable(t *testing.T) {
-	cfg, err := parseServeConfig([]string{"--session-idle-timeout=0", "--session-max-duration=45m"})
+	cfg, err := parseServeConfigForTest(t, []string{"--session-idle-timeout=0", "--session-max-duration=45m"})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,9 +21,7 @@ import (
 func TestParseServeConfigRoutingDisabledByDefault(
 	t *testing.T,
 ) {
-	t.Parallel()
-
-	cfg, err := parseServeConfig(nil)
+	cfg, err := parseServeConfigForTest(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,9 +46,7 @@ func TestParseServeConfigRoutingDisabledByDefault(
 func TestParseServeConfigAllowsRouteControlOnly(
 	t *testing.T,
 ) {
-	t.Parallel()
-
-	cfg, err := parseServeConfig([]string{
+	cfg, err := parseServeConfigForTest(t, []string{
 		"--listen=",
 		"--route-control-listen=127.0.0.1:0",
 		"--route-control-transport=LAN",
@@ -81,9 +77,7 @@ func TestParseServeConfigAllowsRouteControlOnly(
 func TestParseServeConfigAllowsRouteTunnelOnly(
 	t *testing.T,
 ) {
-	t.Parallel()
-
-	cfg, err := parseServeConfig([]string{
+	cfg, err := parseServeConfigForTest(t, []string{
 		"--listen=",
 		"--route-tunnel-listen=127.0.0.1:0",
 		"--route-tunnel-transport=internet",
@@ -107,9 +101,7 @@ func TestParseServeConfigAllowsRouteTunnelOnly(
 func TestParseServeConfigRejectsUnsupportedRoutingTransport(
 	t *testing.T,
 ) {
-	t.Parallel()
-
-	_, err := parseServeConfig([]string{
+	_, err := parseServeConfigForTest(t, []string{
 		"--route-control-transport=bluetooth",
 	})
 	if err == nil {
@@ -120,9 +112,7 @@ func TestParseServeConfigRejectsUnsupportedRoutingTransport(
 func TestParseServeConfigRejectsRouteConnectionLimit(
 	t *testing.T,
 ) {
-	t.Parallel()
-
-	_, err := parseServeConfig([]string{
+	_, err := parseServeConfigForTest(t, []string{
 		"--route-max-connections=0",
 	})
 	if err == nil {
@@ -133,8 +123,6 @@ func TestParseServeConfigRejectsRouteConnectionLimit(
 func TestOpenAgentRoutingRuntimeDoesNotLoadStateWhenDisabled(
 	t *testing.T,
 ) {
-	t.Parallel()
-
 	runtime, err := openAgentRoutingRuntime(
 		serveConfig{StateDir: t.TempDir()},
 		nil,
@@ -151,8 +139,6 @@ func TestOpenAgentRoutingRuntimeDoesNotLoadStateWhenDisabled(
 func TestOpenAgentRoutingRuntimeFailsClosedWithoutAuthority(
 	t *testing.T,
 ) {
-	t.Parallel()
-
 	stateDir := t.TempDir()
 
 	id, err := identity.Ensure(stateDir, "router")
@@ -185,8 +171,6 @@ func TestOpenAgentRoutingRuntimeFailsClosedWithoutAuthority(
 func TestOpenAgentListenersBindsSeparateRoutingSockets(
 	t *testing.T,
 ) {
-	t.Parallel()
-
 	stateDir := t.TempDir()
 
 	id, err := identity.Ensure(stateDir, "hybrid")
@@ -278,8 +262,6 @@ func TestOpenAgentListenersBindsSeparateRoutingSockets(
 func TestAgentListenerSetStopsOnCancellation(
 	t *testing.T,
 ) {
-	t.Parallel()
-
 	cfg := serveConfig{
 		ListenAddr:     "127.0.0.1:0",
 		MaxConnections: 1,
@@ -351,8 +333,6 @@ var _ interface {
 func TestOpenAgentRoutingRuntimeTunnelOnlyKeepsRouterDisabled(
 	t *testing.T,
 ) {
-	t.Parallel()
-
 	stateDir := t.TempDir()
 
 	id, err := identity.Ensure(
@@ -400,8 +380,6 @@ func TestOpenAgentRoutingRuntimeTunnelOnlyKeepsRouterDisabled(
 func TestOpenAgentRoutingRuntimeControlEnablesTrustedRouter(
 	t *testing.T,
 ) {
-	t.Parallel()
-
 	stateDir := t.TempDir()
 
 	id, err := identity.Ensure(
