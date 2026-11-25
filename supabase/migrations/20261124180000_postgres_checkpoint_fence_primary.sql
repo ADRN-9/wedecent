@@ -238,19 +238,22 @@ begin
       from public.checkpoint_fence_authority as authority
      where authority.organization_id = v_operation.organization_id
      for update;
-    if not found or v_fence.pending_operation_id <> p_operation_id
-       or v_fence.pending_fingerprint <> p_fingerprint
+    if not found or v_fence.pending_operation_id is distinct from p_operation_id
+       or v_fence.pending_fingerprint is distinct from p_fingerprint
+       or v_fence.pending_expires_at is null
        or v_fence.pending_expires_at <= pg_catalog.clock_timestamp()
-       or (p_token ->> 'expected_fence_generation')::bigint <> v_fence.generation
-       or (p_token ->> 'generation')::bigint <> v_fence.generation + 1
-       or p_token ->> 'previous_fence_sha256' <> pg_catalog.encode(v_fence.fence_hash, 'hex')
-       or (p_token ->> 'expected_revocation_epoch')::bigint <> v_fence.revocation_epoch
-       or (p_token ->> 'resulting_revocation_epoch')::bigint
-            <> v_fence.revocation_epoch + (case when v_operation.action = 'revoke' then 1 else 0 end)
-       or (p_token ->> 'primary_head_generation')::bigint <> v_fence.pending_primary_head_generation
-       or p_token ->> 'primary_head_sha256' <> pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex')
-       or (p_token ->> 'expires_at_unix_ms')::bigint > (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
-       or (p_token ->> 'expires_at_unix_ms')::bigint <= (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint then
+       or (p_token ->> 'expected_fence_generation')::bigint is distinct from v_fence.generation
+       or (p_token ->> 'generation')::bigint is distinct from v_fence.generation + 1
+       or p_token ->> 'previous_fence_sha256' is distinct from pg_catalog.encode(v_fence.fence_hash, 'hex')
+       or (p_token ->> 'expected_revocation_epoch')::bigint is distinct from v_fence.revocation_epoch
+       or (p_token ->> 'resulting_revocation_epoch')::bigint is distinct from
+            v_fence.revocation_epoch + (case when v_operation.action = 'revoke' then 1 else 0 end)
+       or (p_token ->> 'primary_head_generation')::bigint is distinct from v_fence.pending_primary_head_generation
+       or p_token ->> 'primary_head_sha256' is distinct from pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex')
+       or coalesce((p_token ->> 'expires_at_unix_ms')::bigint, 0) >
+            (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
+       or coalesce((p_token ->> 'expires_at_unix_ms')::bigint, 0) <=
+            (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint then
         raise exception 'checkpoint fence token is stale or expired'
             using errcode = '40001';
     end if;
@@ -338,7 +341,7 @@ begin
       from public.checkpoint_operations as operation_row
      where operation_row.operation_id = p_operation_id
      for update;
-    if not found or v_operation.fingerprint <> p_fingerprint then
+    if not found or v_operation.fingerprint is distinct from p_fingerprint then
         raise exception 'checkpoint operation fingerprint conflict'
             using errcode = '23505';
     end if;
@@ -348,7 +351,7 @@ begin
      where event_row.operation_id = p_operation_id
        and event_row.event_type = 'fence_committed';
     if found then
-        if v_commit_event.event_payload ->> 'token_sha256' <> pg_catalog.encode(p_token_sha256, 'hex') then
+        if v_commit_event.event_payload ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex') then
             raise exception 'checkpoint committed token digest conflicts'
                 using errcode = '23505';
         end if;
@@ -361,7 +364,7 @@ begin
        and event_row.event_type = 'fence_reserved'
      order by event_row.event_id desc
      limit 1;
-    if not found or v_token_event.event_payload ->> 'token_sha256' <> pg_catalog.encode(p_token_sha256, 'hex') then
+    if not found or v_token_event.event_payload ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex') then
         raise exception 'checkpoint signed reservation token is unavailable'
             using errcode = '55000';
     end if;
@@ -378,10 +381,11 @@ begin
     v_ack_count := pg_catalog.jsonb_array_length(p_witness_acknowledgements);
     if exists (
         select 1 from pg_catalog.jsonb_array_elements(p_witness_acknowledgements) as item(value)
-        where item.value ->> 'token_sha256' <> pg_catalog.encode(p_token_sha256, 'hex')
-           or (item.value ->> 'generation')::bigint <> (v_token ->> 'generation')::bigint
-           or item.value ->> 'operation_id' <> p_operation_id
-           or item.value ->> 'action' <> v_operation.action
+        where pg_catalog.jsonb_typeof(item.value) is distinct from 'object'
+           or item.value ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex')
+           or (item.value ->> 'generation')::bigint is distinct from (v_token ->> 'generation')::bigint
+           or item.value ->> 'operation_id' is distinct from p_operation_id
+           or item.value ->> 'action' is distinct from v_operation.action
     ) or (
         select pg_catalog.count(distinct item.value ->> 'witness_id')
           from pg_catalog.jsonb_array_elements(p_witness_acknowledgements) as item(value)
@@ -394,15 +398,18 @@ begin
       from public.checkpoint_fence_authority as authority
      where authority.organization_id = v_operation.organization_id
      for update;
-    if not found or v_fence.pending_operation_id <> p_operation_id
-       or v_fence.pending_fingerprint <> p_fingerprint
+    if not found or v_fence.pending_operation_id is distinct from p_operation_id
+       or v_fence.pending_fingerprint is distinct from p_fingerprint
+       or v_fence.pending_expires_at is null
        or v_fence.pending_expires_at <= pg_catalog.clock_timestamp()
-       or (v_token ->> 'expected_fence_generation')::bigint <> v_fence.generation
-       or (v_token ->> 'generation')::bigint <> v_fence.generation + 1
-       or v_token ->> 'previous_fence_sha256' <> pg_catalog.encode(v_fence.fence_hash, 'hex')
-       or (v_token ->> 'expected_revocation_epoch')::bigint <> v_fence.revocation_epoch
-       or (v_token ->> 'resulting_revocation_epoch')::bigint
-            <> v_fence.revocation_epoch + case when v_operation.action = 'revoke' then 1 else 0 end then
+       or (v_token ->> 'expected_fence_generation')::bigint is distinct from v_fence.generation
+       or (v_token ->> 'generation')::bigint is distinct from v_fence.generation + 1
+       or v_token ->> 'previous_fence_sha256' is distinct from pg_catalog.encode(v_fence.fence_hash, 'hex')
+       or (v_token ->> 'expected_revocation_epoch')::bigint is distinct from v_fence.revocation_epoch
+       or (v_token ->> 'resulting_revocation_epoch')::bigint is distinct from
+            v_fence.revocation_epoch + (case when v_operation.action = 'revoke' then 1 else 0 end)
+       or (v_token ->> 'primary_head_generation')::bigint is distinct from v_fence.pending_primary_head_generation
+       or v_token ->> 'primary_head_sha256' is distinct from pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex') then
         raise exception 'checkpoint fence reservation is stale or expired'
             using errcode = '40001';
     end if;
