@@ -131,12 +131,15 @@ func (a *testAtomicCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx contex
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
 	if request.Action == CheckpointFenceRevoke {
+		if len(request.Participants) != 1 {
+			return CheckpointFenceToken{}, ErrCheckpointIntegrity
+		}
 		proofRequest := CheckpointRevocationAuthorizationRequest{
 			Endpoint: request.Participants[0], NextEpoch: request.Participants[0].RevocationEpoch + 1,
 			OperationID: request.OperationID, Participants: request.Participants,
 		}
 		message, messageErr := CheckpointRevocationAuthorizationMessage(proofRequest)
-		if len(request.Participants) != 1 || len(request.AuthorizationProof) != ed25519.SignatureSize ||
+		if len(request.AuthorizationProof) != ed25519.SignatureSize ||
 			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 || messageErr != nil ||
 			!ed25519.Verify(a.revocationPublicKey, message, request.AuthorizationProof) {
 			return CheckpointFenceToken{}, ErrCheckpointIntegrity
