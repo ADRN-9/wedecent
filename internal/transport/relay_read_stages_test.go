@@ -216,6 +216,7 @@ func TestRelayTLSHandshakeCancellationClosesPendingConnection(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	defer listener.Close()
 	accepted := make(chan net.Conn, 1)
+	helloSeen := make(chan struct{})
 	serverDone := make(chan struct{})
 	go func() {
 		defer close(serverDone)
@@ -223,7 +224,12 @@ func TestRelayTLSHandshakeCancellationClosesPendingConnection(t *testing.T) {
 		if err != nil { return }
 		accepted <- conn
 		var first [1]byte
-		_, _ = conn.Read(first[:])
+		if _, err := conn.Read(first[:]); err != nil { _ = conn.Close(); return }
+		close(helloSeen)
+		var rest [256]byte
+		for {
+			if _, err := conn.Read(rest[:]); err != nil { break }
+		}
 		_ = conn.Close()
 	}()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -241,10 +247,11 @@ func TestRelayTLSHandshakeCancellationClosesPendingConnection(t *testing.T) {
 	// Wait until the peer has received ClientHello, then cancel while the
 	// client is waiting for the server handshake flight.
 	select {
-	case <-serverDone:
+	case <-helloSeen:
 		cancel()
 	case <-time.After(2 * time.Second):
 		cancel()
+		t.Fatal("TLS ClientHello did not reach the stalled peer")
 	}
 	select {
 	case err := <-result:
