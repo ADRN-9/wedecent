@@ -77,9 +77,6 @@ func provisionWindowsServiceState(dir, account string) (result error) {
 	if err := preflightAgentState(dir); err != nil {
 		return err
 	}
-	if err := verifyWindowsServiceStateParent(dir); err != nil {
-		return fmt.Errorf("refuse service state under an unprotected parent: %w", err)
-	}
 	if fresh {
 		// Never remove an unrelated directory: clean up only this exact new
 		// empty inode on an unsuccessful provisioning attempt. Preexisting
@@ -97,6 +94,9 @@ func provisionWindowsServiceState(dir, account string) (result error) {
 				_ = os.Remove(dir) // only succeeds when still empty
 			}
 		}()
+	}
+	if err := verifyWindowsServiceStateParent(dir); err != nil {
+		return fmt.Errorf("refuse service state under an unprotected parent: %w", err)
 	}
 	guard, err := guardWindowsServiceState(dir)
 	if err != nil {
