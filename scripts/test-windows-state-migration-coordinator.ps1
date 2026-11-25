@@ -222,7 +222,7 @@ try {
     if (-not [string]::IsNullOrWhiteSpace([string]$pending.source_manifest_sha256)) {
         throw 'Partial staging test unexpectedly recorded a complete source manifest.'
     }
-    [void](Assert-WeDecentMigrationPartialTreeSafe -Path $pending.staging -ServiceSid $partialStagingRecovery.ServiceSid)
+    [void](Assert-WeDecentMigrationPartialTreeSafe -Path $pending.staging -ServiceSid $partialStagingRecovery.ServiceSid -InstallerSid $pending.installer_sid)
     $global:WeDecentMigrationMockService.State = 'Stopped'
     $global:WeDecentMigrationMockStatus = 'Stopped'
     $childScript = Join-Path $partialStagingRecovery.Root 'recover-in-new-process.ps1'
