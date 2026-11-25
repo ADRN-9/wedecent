@@ -64,7 +64,7 @@ type pairingOutcomeSnapshot struct {
 // PairingRecovery is independent of rotating audit files. Entries never
 // expire or disappear automatically, including when capacity is reached.
 type PairingRecovery struct {
-	mu sync.Mutex
+	mu                      sync.Mutex
 	path                    string
 	syncDirectory           func(string) error
 	beforeReplace           func() error
