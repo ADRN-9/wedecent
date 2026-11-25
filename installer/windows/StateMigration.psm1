@@ -595,7 +595,8 @@ function Read-WeDecentMigrationJournal {
         -not [string]::IsNullOrWhiteSpace([string]$journal.identity.Fingerprint)
     if (-not $hasStagingMarker -or $journal.staging_complete -isnot [bool] -or -not $hasIdentity) {
         $identityJson = if ($null -eq $journal.identity) { '<null>' } else { ConvertTo-Json -InputObject $journal.identity -Compress -Depth 3 }
-        throw "Migration journal lacks its source identity snapshot or staging completion marker (marker=$hasStagingMarker; markerType=$($journal.staging_complete.GetType().FullName); identity=$identityJson)."
+        $markerType = if ($null -eq $journal.staging_complete) { '<null>' } else { $journal.staging_complete.GetType().FullName }
+        throw "Migration journal lacks its source identity snapshot or staging completion marker (marker=$hasStagingMarker; markerType=$markerType; identity=$identityJson)."
     }
     [void](Assert-WeDecentMigrationPathsDisjoint -Paths @(
         [string]$journal.source, [string]$journal.destination, [string]$journal.staging,
