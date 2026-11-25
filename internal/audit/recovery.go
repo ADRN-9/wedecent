@@ -32,17 +32,17 @@ var pairingFingerprintPattern = regexp.MustCompile(`^SHA256:[0-9A-Fa-f]{64}$`)
 var pairingAttemptPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 type PairingOutcome struct {
-	AttemptID      string             `json:"attempt_id"`
-	ActorID        string             `json:"actor_id"`
-	PeerID         string             `json:"peer_id"`
-	Fingerprint    string             `json:"fingerprint"`
-	CredentialGeneration uint64 `json:"credential_generation,omitempty"`
-	Sequence uint64 `json:"sequence,omitempty"`
-	Outcome        string             `json:"outcome"`
-	CreatedAt      time.Time          `json:"created_at"`
-	UpdatedAt      time.Time          `json:"updated_at"`
-	AuditProof     *PairingAuditProof `json:"audit_proof,omitempty"`
-	AcknowledgedAt *time.Time         `json:"acknowledged_at,omitempty"`
+	AttemptID            string             `json:"attempt_id"`
+	ActorID              string             `json:"actor_id"`
+	PeerID               string             `json:"peer_id"`
+	Fingerprint          string             `json:"fingerprint"`
+	CredentialGeneration uint64             `json:"credential_generation,omitempty"`
+	Sequence             uint64             `json:"sequence,omitempty"`
+	Outcome              string             `json:"outcome"`
+	CreatedAt            time.Time          `json:"created_at"`
+	UpdatedAt            time.Time          `json:"updated_at"`
+	AuditProof           *PairingAuditProof `json:"audit_proof,omitempty"`
+	AcknowledgedAt       *time.Time         `json:"acknowledged_at,omitempty"`
 }
 
 // PairingAuditProof is a durable, nonrotating copy of an independently
@@ -55,22 +55,22 @@ type PairingAuditProof struct {
 }
 
 type pairingOutcomeSnapshot struct {
-	Version int `json:"version"`
-	Records []PairingOutcome `json:"records"`
-	ArchivedThrough uint64 `json:"archived_through,omitempty"`
+	Version         int              `json:"version"`
+	Records         []PairingOutcome `json:"records"`
+	ArchivedThrough uint64           `json:"archived_through,omitempty"`
 }
 
 // PairingRecovery is independent of rotating audit files. Entries never
 // expire or disappear automatically, including when capacity is reached.
 type PairingRecovery struct {
-	path          string
-	syncDirectory func(string) error
-	beforeReplace func() error
-	afterReplace  func() error
-	beforeRead    func() error
-	allowEmpty    bool
-	operatorCheck func() error // test-only authorization fault seam
-	archiveKey []byte
+	path             string
+	syncDirectory    func(string) error
+	beforeReplace    func() error
+	afterReplace     func() error
+	beforeRead       func() error
+	allowEmpty       bool
+	operatorCheck    func() error // test-only authorization fault seam
+	archiveKey       []byte
 	archiveAfterSync func() error
 }
 
@@ -101,7 +101,9 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 		return nil, err
 	}
 	defer unlock()
-	if err := r.loadArchiveKey(); err != nil { return nil, err }
+	if err := r.loadArchiveKey(); err != nil {
+		return nil, err
+	}
 	if err := trust.VerifyPairingStatePath(r.path + ".lock"); err != nil {
 		return nil, err
 	}
@@ -123,15 +125,25 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 		return nil, stateErr
 	}
 	snapshot, err := r.read()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	archive, err := r.readArchive()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	changed, err := r.reconcileArchive(&snapshot, archive)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	assigned, err := r.assignSequences(&snapshot, archive.LastSequence)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	if changed || assigned {
-		if err := r.write(snapshot); err != nil { return nil, fmt.Errorf("pairing recovery archive reconciliation: %w", err) }
+		if err := r.write(snapshot); err != nil {
+			return nil, fmt.Errorf("pairing recovery archive reconciliation: %w", err)
+		}
 	}
 	if !initialized {
 		if err := r.markInitialized(); err != nil {
@@ -328,19 +340,35 @@ func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) e
 		return fmt.Errorf("unsafe pairing recovery lock: %w", err)
 	}
 	snapshot, err := r.read()
-	if err != nil { return err }
-	archive, err := r.readArchive()
-	if err != nil { return err }
-	changed, err := r.reconcileArchive(&snapshot, archive)
-	if err != nil { return err }
-	assigned, err := r.assignSequences(&snapshot, archive.LastSequence)
-	if err != nil { return err }
-	if changed || assigned {
-		if err := r.write(snapshot); err != nil { return fmt.Errorf("pairing archive recovery reconciliation: %w", err) }
+	if err != nil {
+		return err
 	}
-	if err := change(&snapshot); err != nil { return err }
-	if _, err := r.assignSequences(&snapshot, archive.LastSequence); err != nil { return err }
-	if err := validatePairingSnapshot(snapshot); err != nil { return err }
+	archive, err := r.readArchive()
+	if err != nil {
+		return err
+	}
+	changed, err := r.reconcileArchive(&snapshot, archive)
+	if err != nil {
+		return err
+	}
+	assigned, err := r.assignSequences(&snapshot, archive.LastSequence)
+	if err != nil {
+		return err
+	}
+	if changed || assigned {
+		if err := r.write(snapshot); err != nil {
+			return fmt.Errorf("pairing archive recovery reconciliation: %w", err)
+		}
+	}
+	if err := change(&snapshot); err != nil {
+		return err
+	}
+	if _, err := r.assignSequences(&snapshot, archive.LastSequence); err != nil {
+		return err
+	}
+	if err := validatePairingSnapshot(snapshot); err != nil {
+		return err
+	}
 	if err := r.write(snapshot); err != nil {
 		if _, statErr := os.Lstat(r.path); statErr == nil {
 			r.allowEmpty = false
@@ -439,15 +467,21 @@ func (r *PairingRecovery) Begin(record PairingOutcome) error {
 // for interrupted-operation recovery; a different identity or resolved attempt
 // cannot reuse the same generation.
 func (r *PairingRecovery) Reserve(record PairingOutcome) (PairingOutcome, error) {
-	if record.CredentialGeneration == 0 { return PairingOutcome{}, errors.New("pairing credential generation is required") }
+	if record.CredentialGeneration == 0 {
+		return PairingOutcome{}, errors.New("pairing credential generation is required")
+	}
 	record.Outcome = PairingOutcomePending
 	now := time.Now().UTC()
 	record.CreatedAt, record.UpdatedAt = now, now
-	if err := validatePairingOutcome(record); err != nil { return PairingOutcome{}, err }
+	if err := validatePairingOutcome(record); err != nil {
+		return PairingOutcome{}, err
+	}
 	var reserved PairingOutcome
 	err := r.withLock(func(snapshot *pairingOutcomeSnapshot) error {
 		for _, existing := range snapshot.Records {
-			if existing.CredentialGeneration != record.CredentialGeneration { continue }
+			if existing.CredentialGeneration != record.CredentialGeneration {
+				continue
+			}
 			if existing.ActorID != record.ActorID || existing.PeerID != record.PeerID || existing.Fingerprint != record.Fingerprint {
 				return errors.New("pairing credential generation is reserved for a different device identity")
 			}
@@ -457,7 +491,9 @@ func (r *PairingRecovery) Reserve(record PairingOutcome) (PairingOutcome, error)
 			reserved = existing
 			return nil
 		}
-		if len(snapshot.Records) >= maxPairingOutcomes { return errors.New("pairing recovery capacity reached: operator review required") }
+		if len(snapshot.Records) >= maxPairingOutcomes {
+			return errors.New("pairing recovery capacity reached: operator review required")
+		}
 		snapshot.Records = append(snapshot.Records, record)
 		reserved = record
 		return nil
@@ -500,15 +536,25 @@ func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 		return nil, err
 	}
 	snapshot, err := r.read()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	archive, err := r.readArchive()
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	changed, err := r.reconcileArchive(&snapshot, archive)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	assigned, err := r.assignSequences(&snapshot, archive.LastSequence)
-	if err != nil { return nil, err }
+	if err != nil {
+		return nil, err
+	}
 	if changed || assigned {
-		if err := r.write(snapshot); err != nil { return nil, fmt.Errorf("pairing archive reconciliation: %w", err) }
+		if err := r.write(snapshot); err != nil {
+			return nil, fmt.Errorf("pairing archive reconciliation: %w", err)
+		}
 	}
 	all := make([]PairingOutcome, 0, len(archive.Records)+len(snapshot.Records))
 	all = append(all, archive.Records...)

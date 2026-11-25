@@ -11,36 +11,64 @@ import (
 func TestPairingCredentialVersionExpiryAndGeneration(t *testing.T) {
 	dir := t.TempDir()
 	first, err := RotatePairingSecret(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	record, err := readPairingCredentialRecord(dir)
-	if err != nil { t.Fatal(err) }
-	if record.Version != pairingCredentialVersion || record.Generation != 1 { t.Fatalf("unexpected credential: %+v", record) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Version != pairingCredentialVersion || record.Generation != 1 {
+		t.Fatalf("unexpected credential: %+v", record)
+	}
 	if record.SecretSHA256 != HashSecret(first) || !record.ExpiresAt.After(record.IssuedAt) ||
-		record.ExpiresAt.Sub(record.IssuedAt) > pairingCredentialLifetime { t.Fatalf("invalid credential lifetime: %+v", record) }
+		record.ExpiresAt.Sub(record.IssuedAt) > pairingCredentialLifetime {
+		t.Fatalf("invalid credential lifetime: %+v", record)
+	}
 	second, err := RotatePairingSecret(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	record, err = readPairingCredentialRecord(dir)
-	if err != nil { t.Fatal(err) }
-	if record.Generation != 2 || record.SecretSHA256 != HashSecret(second) { t.Fatalf("generation did not advance: %+v", record) }
-	if ok, err := CheckPairingSecret(dir, first); err != nil || ok { t.Fatalf("old credential accepted: ok=%v err=%v", ok, err) }
-	if ok, err := CheckPairingSecret(dir, second); err != nil || !ok { t.Fatalf("new credential rejected: ok=%v err=%v", ok, err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if record.Generation != 2 || record.SecretSHA256 != HashSecret(second) {
+		t.Fatalf("generation did not advance: %+v", record)
+	}
+	if ok, err := CheckPairingSecret(dir, first); err != nil || ok {
+		t.Fatalf("old credential accepted: ok=%v err=%v", ok, err)
+	}
+	if ok, err := CheckPairingSecret(dir, second); err != nil || !ok {
+		t.Fatalf("new credential rejected: ok=%v err=%v", ok, err)
+	}
 }
 
 func TestPairingCredentialRejectsExpiredAndFutureRecords(t *testing.T) {
 	now := time.Now().UTC()
-	for _, tc := range []struct{name string; issued, expires time.Time; want error}{
-		{name:"expired", issued:now.Add(-30*time.Minute), expires:now.Add(-15*time.Minute), want:ErrPairingSecretInvalid},
-		{name:"future-issued", issued:now.Add(time.Minute), expires:now.Add(16*time.Minute), want:ErrPairingStateUnsafe},
+	for _, tc := range []struct {
+		name            string
+		issued, expires time.Time
+		want            error
+	}{
+		{name: "expired", issued: now.Add(-30 * time.Minute), expires: now.Add(-15 * time.Minute), want: ErrPairingSecretInvalid},
+		{name: "future-issued", issued: now.Add(time.Minute), expires: now.Add(16 * time.Minute), want: ErrPairingStateUnsafe},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			secret := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 			hash := HashSecret(secret)
-			if err := os.WriteFile(filepath.Join(dir, pairingSecretFile), []byte(hash+"\n"), 0o600); err != nil { t.Fatal(err) }
-			record := pairingCredentialRecord{Version:pairingCredentialVersion, Generation:3, SecretSHA256:hash, IssuedAt:tc.issued, ExpiresAt:tc.expires}
-			if err := writePairingCredential(dir, record); err != nil { t.Fatal(err) }
+			if err := os.WriteFile(filepath.Join(dir, pairingSecretFile), []byte(hash+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			record := pairingCredentialRecord{Version: pairingCredentialVersion, Generation: 3, SecretSHA256: hash, IssuedAt: tc.issued, ExpiresAt: tc.expires}
+			if err := writePairingCredential(dir, record); err != nil {
+				t.Fatal(err)
+			}
 			_, err := loadPairingCredential(dir, hash, now)
-			if !errors.Is(err, tc.want) { t.Fatalf("got %v, want %v", err, tc.want) }
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("got %v, want %v", err, tc.want)
+			}
 		})
 	}
 }
@@ -52,8 +80,12 @@ func TestPairingCredentialRejectsMalformedAndUnknownVersion(t *testing.T) {
 		`{"version":2,"generation":1,"secret_sha256":"BAD","issued_at":"2026-11-24T00:00:00Z","expires_at":"2026-11-24T00:15:00Z","unexpected":true}`,
 	} {
 		dir := t.TempDir()
-		if err := os.WriteFile(filepath.Join(dir, pairingCredentialFile), []byte(data), 0o600); err != nil { t.Fatal(err) }
-		if _, err := readPairingCredentialRecord(dir); !errors.Is(err, ErrPairingStateUnsafe) { t.Fatalf("malformed credential accepted: %v", err) }
+		if err := os.WriteFile(filepath.Join(dir, pairingCredentialFile), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := readPairingCredentialRecord(dir); !errors.Is(err, ErrPairingStateUnsafe) {
+			t.Fatalf("malformed credential accepted: %v", err)
+		}
 	}
 }
 
@@ -62,57 +94,97 @@ func TestLegacyPairingCredentialMigratesDurablyWithShortExpiry(t *testing.T) {
 	secret := "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
 	hash := HashSecret(secret)
 	path := filepath.Join(dir, pairingSecretFile)
-	if err := os.WriteFile(path, []byte(hash+"\n"), 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(path, []byte(hash+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	now := time.Now().UTC()
 	record, err := loadPairingCredential(dir, hash, now)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if record.Generation != 1 || record.SecretSHA256 != hash || record.IssuedAt != now ||
-		record.ExpiresAt.Sub(now) > pairingCredentialLifetime { t.Fatalf("legacy migration not bounded: %+v", record) }
+		record.ExpiresAt.Sub(now) > pairingCredentialLifetime {
+		t.Fatalf("legacy migration not bounded: %+v", record)
+	}
 	persisted, err := readPairingCredentialRecord(dir)
-	if err != nil || persisted != record { t.Fatalf("migration not durable: %+v %v", persisted, err) }
+	if err != nil || persisted != record {
+		t.Fatalf("migration not durable: %+v %v", persisted, err)
+	}
 }
 
 func TestLegacyPairingCredentialMigrationDeadlineIsEnforced(t *testing.T) {
 	dir := t.TempDir()
 	secret := "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"
 	hash := HashSecret(secret)
-	if err := os.WriteFile(filepath.Join(dir, pairingSecretFile), []byte(hash+"\n"), 0o600); err != nil { t.Fatal(err) }
+	if err := os.WriteFile(filepath.Join(dir, pairingSecretFile), []byte(hash+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	_, err := loadPairingCredential(dir, hash, pairingLegacyMigrationDeadline.Add(time.Second))
-	if !errors.Is(err, ErrPairingSecretInvalid) { t.Fatalf("legacy credential survived migration deadline: %v", err) }
+	if !errors.Is(err, ErrPairingSecretInvalid) {
+		t.Fatalf("legacy credential survived migration deadline: %v", err)
+	}
 }
 
 func TestPairingCredentialAdmissionReceivesGenerationBeforeConsumption(t *testing.T) {
 	dir := t.TempDir()
 	secret, err := RotatePairingSecret(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	store, err := Open(filepath.Join(dir, "trusted-clients.json"))
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	called := false
 	err = PairClientWithSecretAdmission(dir, secret, store, pairingTestPeer("wd_cccccccccccccccc"), func(generation uint64) error {
 		called = true
-		if generation != 1 { t.Fatalf("credential generation=%d, want 1", generation) }
-		if hash, checkErr := readPairingHash(filepath.Join(dir, pairingSecretFile)); checkErr != nil || hash != HashSecret(secret) { t.Fatalf("secret consumed before admission: %q %v", hash, checkErr) }
+		if generation != 1 {
+			t.Fatalf("credential generation=%d, want 1", generation)
+		}
+		if hash, checkErr := readPairingHash(filepath.Join(dir, pairingSecretFile)); checkErr != nil || hash != HashSecret(secret) {
+			t.Fatalf("secret consumed before admission: %q %v", hash, checkErr)
+		}
 		return nil
 	})
-	if err != nil { t.Fatal(err) }
-	if !called { t.Fatal("generation admission callback was not invoked") }
-	if ok, err := CheckPairingSecret(dir, secret); err != nil || ok { t.Fatalf("consumed secret remained valid: %v %v", ok, err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("generation admission callback was not invoked")
+	}
+	if ok, err := CheckPairingSecret(dir, secret); err != nil || ok {
+		t.Fatalf("consumed secret remained valid: %v %v", ok, err)
+	}
 	consumed, err := readPairingCredentialRecord(dir)
-	if err != nil || !consumed.Consumed { t.Fatalf("credential metadata not marked consumed: %+v %v", consumed, err) }
+	if err != nil || !consumed.Consumed {
+		t.Fatalf("credential metadata not marked consumed: %+v %v", consumed, err)
+	}
 }
 
 func TestPairingCredentialRotationRecoversInterruptedConsumptionMetadata(t *testing.T) {
 	dir := t.TempDir()
 	secret, err := RotatePairingSecret(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	record, err := readPairingCredentialRecord(dir)
-	if err != nil { t.Fatal(err) }
-	if err := os.WriteFile(filepath.Join(dir, pairingSecretFile), []byte(consumedPairingHash+"\n"), 0o600); err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, pairingSecretFile), []byte(consumedPairingHash+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	rotated, err := RotatePairingSecret(dir)
-	if err != nil { t.Fatalf("rotation did not reconcile durable tombstone: %v", err) }
-	if rotated == secret { t.Fatal("rotation reused the consumed secret") }
+	if err != nil {
+		t.Fatalf("rotation did not reconcile durable tombstone: %v", err)
+	}
+	if rotated == secret {
+		t.Fatal("rotation reused the consumed secret")
+	}
 	next, err := readPairingCredentialRecord(dir)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if next.Generation != record.Generation+1 || next.SecretSHA256 != HashSecret(rotated) || next.Consumed {
 		t.Fatalf("interrupted consumption recovery produced invalid generation: %+v", next)
 	}

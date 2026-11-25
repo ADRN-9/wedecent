@@ -90,7 +90,6 @@ func (s *Store) IsTrusted(ctx context.Context, id string) (bool, error) {
 	return ok, nil
 }
 
-
 func (s *Store) FindByFingerprint(fp string) (Peer, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

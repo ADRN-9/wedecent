@@ -71,7 +71,9 @@ func open(path string, maxBytes int64) (*Log, error) {
 func (l *Log) Path() string { return l.path }
 
 func (l *Log) syncDirectory(dir string) error {
-	if l.syncDir != nil { return l.syncDir(dir) }
+	if l.syncDir != nil {
+		return l.syncDir(dir)
+	}
 	return syncAuditDirectory(dir)
 }
 
@@ -132,7 +134,9 @@ func validateEvent(event *Event) error {
 	event.Outcome = strings.TrimSpace(event.Outcome)
 	event.ActorID = strings.TrimSpace(event.ActorID)
 	event.PeerID = strings.TrimSpace(event.PeerID)
-	if event.AttemptID != "" && !pairingAttemptPattern.MatchString(event.AttemptID) { return errors.New("audit pairing attempt ID is invalid") }
+	if event.AttemptID != "" && !pairingAttemptPattern.MatchString(event.AttemptID) {
+		return errors.New("audit pairing attempt ID is invalid")
+	}
 	event.Transport = strings.TrimSpace(event.Transport)
 	event.Reason = strings.TrimSpace(event.Reason)
 	event.ForwardingID = strings.TrimSpace(event.ForwardingID)

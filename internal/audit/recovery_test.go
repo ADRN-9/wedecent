@@ -295,31 +295,47 @@ func TestPairingRecoveryRemovedFileRequiresOperatorRepair(t *testing.T) {
 
 func TestPairingRecoveryReservesOneAttemptPerCredentialGeneration(t *testing.T) {
 	recovery, err := OpenPairingRecovery(t.TempDir())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	base := PairingOutcome{
 		AttemptID: strings.Repeat("1", 32), ActorID: "wd_aaaaaaaaaaaaaaaa",
-		PeerID: "wd_bbbbbbbbbbbbbbbb", Fingerprint: "SHA256:"+strings.Repeat("a",64),
+		PeerID: "wd_bbbbbbbbbbbbbbbb", Fingerprint: "SHA256:" + strings.Repeat("a", 64),
 		CredentialGeneration: 7,
 	}
 	first, err := recovery.Reserve(base)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	retry := base
-	retry.AttemptID = strings.Repeat("2",32)
+	retry.AttemptID = strings.Repeat("2", 32)
 	reused, err := recovery.Reserve(retry)
-	if err != nil { t.Fatal(err) }
-	if reused.AttemptID != first.AttemptID { t.Fatalf("retry allocated a second attempt: %s != %s", reused.AttemptID, first.AttemptID) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reused.AttemptID != first.AttemptID {
+		t.Fatalf("retry allocated a second attempt: %s != %s", reused.AttemptID, first.AttemptID)
+	}
 	other := retry
 	other.PeerID = "wd_cccccccccccccccc"
-	other.Fingerprint = "SHA256:"+strings.Repeat("c",64)
-	if _, err := recovery.Reserve(other); err == nil { t.Fatal("different device identity reused a reserved credential generation") }
+	other.Fingerprint = "SHA256:" + strings.Repeat("c", 64)
+	if _, err := recovery.Reserve(other); err == nil {
+		t.Fatal("different device identity reused a reserved credential generation")
+	}
 	records, err := recovery.Records()
-	if err != nil { t.Fatal(err) }
-	if len(records) != 1 || records[0].CredentialGeneration != 7 { t.Fatalf("unexpected generation reservations: %+v", records) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].CredentialGeneration != 7 {
+		t.Fatalf("unexpected generation reservations: %+v", records)
+	}
 }
 
 func TestPairingRecoveryConcurrentGenerationReservationHasOneWinner(t *testing.T) {
 	recovery, err := OpenPairingRecovery(t.TempDir())
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	const contenders = 12
 	start := make(chan struct{})
 	results := make(chan error, contenders)
@@ -328,7 +344,7 @@ func TestPairingRecoveryConcurrentGenerationReservationHasOneWinner(t *testing.T
 			<-start
 			record := PairingOutcome{
 				AttemptID: fmt.Sprintf("%032x", i+1), ActorID: "wd_aaaaaaaaaaaaaaaa",
-				PeerID: "wd_bbbbbbbbbbbbbbbb", Fingerprint: "SHA256:"+strings.Repeat("b",64),
+				PeerID: "wd_bbbbbbbbbbbbbbbb", Fingerprint: "SHA256:" + strings.Repeat("b", 64),
 				CredentialGeneration: 9,
 			}
 			_, reserveErr := recovery.Reserve(record)
@@ -336,8 +352,16 @@ func TestPairingRecoveryConcurrentGenerationReservationHasOneWinner(t *testing.T
 		}(i)
 	}
 	close(start)
-	for i := 0; i < contenders; i++ { if err := <-results; err != nil { t.Fatalf("matching retry should reuse reservation: %v", err) } }
+	for i := 0; i < contenders; i++ {
+		if err := <-results; err != nil {
+			t.Fatalf("matching retry should reuse reservation: %v", err)
+		}
+	}
 	records, err := recovery.Records()
-	if err != nil { t.Fatal(err) }
-	if len(records) != 1 { t.Fatalf("concurrent admission created %d records, want one", len(records)) }
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 {
+		t.Fatalf("concurrent admission created %d records, want one", len(records))
+	}
 }

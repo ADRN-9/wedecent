@@ -32,16 +32,16 @@ type DirectAuthorizer interface {
 }
 
 type Server struct {
-	Identity         *identity.Identity
-	Trust            *trust.Store
-	StateDir         string
-	Shell            string
-	Logger           *slog.Logger
-	DirectAuthorizer DirectAuthorizer
-	FileTransfer     *FileTransferRuntime
-	PortForwarding   *PortForwardRuntime
+	Identity               *identity.Identity
+	Trust                  *trust.Store
+	StateDir               string
+	Shell                  string
+	Logger                 *slog.Logger
+	DirectAuthorizer       DirectAuthorizer
+	FileTransfer           *FileTransferRuntime
+	PortForwarding         *PortForwardRuntime
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
-	Policy           SessionPolicy
+	Policy                 SessionPolicy
 }
 
 func (s *Server) ServeConn(raw net.Conn) {
@@ -174,13 +174,17 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 			AttemptID: attemptID, ActorID: s.Identity.ID, PeerID: clientID,
 			Fingerprint: fp, CredentialGeneration: generation,
 		})
-		if reserveErr != nil { return reserveErr }
+		if reserveErr != nil {
+			return reserveErr
+		}
 		admitted = true
 		attemptID = reserved.AttemptID
 		if appendErr := pairingAudit.Append(audit.Event{
 			Type: "pairing.request", Outcome: "pending", ActorID: s.Identity.ID,
 			PeerID: clientID, Transport: transport, AttemptID: attemptID,
-		}); appendErr != nil { return appendErr }
+		}); appendErr != nil {
+			return appendErr
+		}
 		auditReady = true
 		return nil
 	})
@@ -274,7 +278,6 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 	}
 	s.log().Info("paired client", "client_id", clientID, "client_name", name)
 }
-
 
 func (s *Server) handleAuthorizedTerminalWithRouter(conn *tls.Conn, first protocol.Frame, transport, routerID string) {
 	peerCert, err := identity.PeerCertificate(conn.ConnectionState())

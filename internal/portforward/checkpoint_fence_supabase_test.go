@@ -26,38 +26,38 @@ func c203AuthorityJWT(actorID string) string {
 	now := time.Now().Unix()
 	claims, _ := json.Marshal(map[string]any{
 		"role": "wedecent_checkpoint_authority",
-		"sub": actorID,
-		"iat": now,
-		"exp": now + 240,
+		"sub":  actorID,
+		"iat":  now,
+		"exp":  now + 240,
 	})
 	return header + "." + encode(claims) + ".test-signature"
 }
 
 func TestCheckpointAuthorityJWTBindsRoleActorAndLifetime(t *testing.T) {
- now := time.Unix(1_800_000_000, 0)
- encode := base64.RawURLEncoding.EncodeToString
- makeToken := func(role, sub string, iat, exp int64) string {
-  header := encode([]byte(`{"alg":"HS256","typ":"JWT"}`))
-  payload, _ := json.Marshal(map[string]any{"role": role, "sub": sub, "iat": iat, "exp": exp})
-  return header + "." + encode(payload) + ".signature"
- }
- actor := "11111111-1111-4111-8111-111111111111"
- clock := func() time.Time { return now }
- if !validCheckpointAuthorityJWT(makeToken("wedecent_checkpoint_authority", actor, now.Unix(), now.Unix()+240), actor, clock) {
-  t.Fatal("valid dedicated authority JWT rejected")
- }
- if validCheckpointAuthorityJWT(makeToken("service_role", actor, now.Unix(), now.Unix()+240), actor, clock) {
-  t.Fatal("shared service role accepted")
- }
- if validCheckpointAuthorityJWT(makeToken("wedecent_checkpoint_authority", "22222222-2222-4222-8222-222222222222", now.Unix(), now.Unix()+240), actor, clock) {
-  t.Fatal("JWT for a different actor accepted")
- }
- if validCheckpointAuthorityJWT(makeToken("wedecent_checkpoint_authority", actor, now.Unix(), now.Unix()+301), actor, clock) {
-  t.Fatal("long-lived authority JWT accepted")
- }
- if validCheckpointAuthorityJWT("eyJhbGciOiJub25lIn0.e30.", actor, clock) {
-  t.Fatal("unsigned JWT accepted")
- }
+	now := time.Unix(1_800_000_000, 0)
+	encode := base64.RawURLEncoding.EncodeToString
+	makeToken := func(role, sub string, iat, exp int64) string {
+		header := encode([]byte(`{"alg":"HS256","typ":"JWT"}`))
+		payload, _ := json.Marshal(map[string]any{"role": role, "sub": sub, "iat": iat, "exp": exp})
+		return header + "." + encode(payload) + ".signature"
+	}
+	actor := "11111111-1111-4111-8111-111111111111"
+	clock := func() time.Time { return now }
+	if !validCheckpointAuthorityJWT(makeToken("wedecent_checkpoint_authority", actor, now.Unix(), now.Unix()+240), actor, clock) {
+		t.Fatal("valid dedicated authority JWT rejected")
+	}
+	if validCheckpointAuthorityJWT(makeToken("service_role", actor, now.Unix(), now.Unix()+240), actor, clock) {
+		t.Fatal("shared service role accepted")
+	}
+	if validCheckpointAuthorityJWT(makeToken("wedecent_checkpoint_authority", "22222222-2222-4222-8222-222222222222", now.Unix(), now.Unix()+240), actor, clock) {
+		t.Fatal("JWT for a different actor accepted")
+	}
+	if validCheckpointAuthorityJWT(makeToken("wedecent_checkpoint_authority", actor, now.Unix(), now.Unix()+301), actor, clock) {
+		t.Fatal("long-lived authority JWT accepted")
+	}
+	if validCheckpointAuthorityJWT("eyJhbGciOiJub25lIn0.e30.", actor, clock) {
+		t.Fatal("unsigned JWT accepted")
+	}
 }
 
 func c197Key(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
@@ -97,7 +97,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 	config := SupabaseCheckpointFenceConfig{
 		Hostname: "localhost", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64), AnonAPIKey: "test-anon-api-key",
 		AuthorityTokenSource: c203StaticAuthorityTokenSource(c203AuthorityJWT("11111111-1111-4111-8111-111111111111")),
-		PrimarySigner: primaryPrivate, CheckpointHeadKey: headPublic,
+		PrimarySigner:        primaryPrivate, CheckpointHeadKey: headPublic,
 		RevocationAuthorizationKey: revocationPublic,
 		WitnessSetVersion:          "c197-test", Witnesses: witnesses,
 	}
