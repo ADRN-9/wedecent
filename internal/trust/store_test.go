@@ -138,7 +138,9 @@ func TestDeletePeerDistinguishesPreCommitAndUncertainDurability(t *testing.T) {
 					t.Fatalf("post-replacement result deleted=%v err=%v", deleted, err)
 				}
 				reopened, openErr := Open(path)
-				if openErr != nil { t.Fatal(openErr) }
+				if openErr != nil {
+					t.Fatal(openErr)
+				}
 				if _, ok := reopened.Get(peer.ID); ok {
 					t.Fatal("replacement was not visible after injected post-replacement failure")
 				}
