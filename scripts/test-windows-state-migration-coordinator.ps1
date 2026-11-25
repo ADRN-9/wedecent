@@ -108,8 +108,9 @@ function Assert-MigrationRolledBack {
     if ($global:WeDecentMigrationMockStatus -cne 'Running') { throw "Service not restarted after $Fault." }
     $journal = Read-WeDecentMigrationJournal -Path $Fixture.Journal
     if ($journal.phase -cne 'RolledBack') { throw "Rollback journal phase is $($journal.phase), not RolledBack." }
+    if (Test-Path -LiteralPath $journal.staging) { throw "Terminal rollback retained staging after $Fault." }
 }
-$forwardFaults = @('Prepared','ServiceStopped','Copying','Copied','IdentityProtected','Verified','StatePublished','ServiceReconfigured','MetadataUpdated','ServiceRestarted')
+$forwardFaults = @('Prepared','ServiceStopped','Copying','Copied','IdentityVerification','IdentityProtected','Verified','StatePublished','SCMTransition','ServiceReconfigured','MetadataUpdated','ServiceRestarted')
 foreach ($fault in $forwardFaults) {
     $fixture = New-MigrationFixture
     try {
@@ -132,6 +133,7 @@ try {
     $result = Invoke-WeDecentStateMigration -Source $success.Source -Destination $success.Destination -AgentPath $agentPath -ServiceName $success.ServiceName -ServiceSid $success.ServiceSid -MetadataPath $success.MetadataPath -JournalPath $success.Journal
     if ($result.phase -cne 'Committed') { throw 'Successful migration did not commit its journal.' }
     if (-not (Test-Path -LiteralPath $success.Source -PathType Container) -or -not (Test-Path -LiteralPath $success.Destination -PathType Container)) { throw 'Migration did not preserve source and publish destination.' }
+    if (Test-Path -LiteralPath $result.staging) { throw 'Committed migration retained its staging directory.' }
     $metadata = Get-Content -LiteralPath $success.MetadataPath -Raw | ConvertFrom-Json
     if ([IO.Path]::GetFullPath([string]$metadata.state_dir) -ine [IO.Path]::GetFullPath($success.Destination)) { throw 'Metadata did not commit destination path.' }
     if ($global:WeDecentMigrationMockService.PathName -notlike "*$($success.Destination)*" -or $global:WeDecentMigrationMockStatus -cne 'Running') { throw 'SCM path or service state incorrect after migration.' }
@@ -300,7 +302,10 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
         $process.Dispose()
     }
     Assert-MigrationRolledBack -Fixture $partialStagingRecovery -Fault 'partial staging recovery'
-    Write-Host 'Migration coordinator partial-copy rollback recovery PASS'
+    if (Recover-WeDecentStateMigration -JournalPath $partialStagingRecovery.Journal -AgentPath $agentPath -MetadataPath $partialStagingRecovery.MetadataPath -ServiceName $partialStagingRecovery.ServiceName) {
+        throw 'Recovery after fresh-process completion was not idempotent.'
+    }
+    Write-Host 'Migration coordinator partial-copy rollback recovery in fresh process PASS'
 } finally {
     Remove-Item -LiteralPath $partialStagingRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
