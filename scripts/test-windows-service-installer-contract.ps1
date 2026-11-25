@@ -50,94 +50,86 @@ Assert-Contains $validation 'recovery-authority.token' 'Installed-service valida
 Assert-Contains $validation 'recovery-authority-trust.json' 'Installed-service validation does not inspect the protected trust copy.'
 
 
-$rollbackAccountStart = $installer.IndexOf('if ($createdAccount)')
-$rollbackFailureEnd = $installer.IndexOf('throw "Fresh installation failed;', $rollbackAccountStart)
-if ($rollbackAccountStart -lt 0 -or $rollbackFailureEnd -le $rollbackAccountStart) {
-    throw 'Cannot locate fresh-install rollback account cleanup block.'
-}
-$rollbackAccountBlock = $installer.Substring($rollbackAccountStart, $rollbackFailureEnd - $rollbackAccountStart)
-$stateGuard = $rollbackAccountBlock.IndexOf('if ($stateContainsProtectedMaterial)')
-$accountRemoval = $rollbackAccountBlock.IndexOf('Remove-LocalUser -Name $ServiceAccountName')
-if ($stateGuard -lt 0 -or $accountRemoval -le $stateGuard) {
-    throw 'Rollback can remove the service account before checking surviving protected state.'
-}
-Assert-Contains $rollbackAccountBlock '$remainingState.Count -gt 0' 'Rollback does not detect non-empty protected state.'
-Assert-Contains $rollbackAccountBlock '$stateContainsProtectedMaterial = $true' 'Rollback must fail closed when state enumeration fails.'
-Assert-Contains $rollbackAccountBlock 'Retaining installer-created service account' 'Rollback must retain the service account when state survives.'
-$elseStart = $rollbackAccountBlock.IndexOf('} else {', $stateGuard)
-if ($elseStart -lt 0 -or $accountRemoval -lt $elseStart) {
-    throw 'Service account removal is not confined to the empty-state branch.'
+Assert-Contains $installer 'function Test-DirectoryExistsStrict' 'Installer must distinguish a missing state path from an inaccessible or ambiguous path.'
+Assert-Contains $installer 'function Test-ServiceStateSafeForAccountRemoval' 'Installer must centralize fail-closed account-removal checks.'
+Assert-Contains $installer '$stateExisted = Test-DirectoryExistsStrict -Path $StateDir' 'Installer state existence must fail on ambiguous paths.'
+Assert-Contains $installer 'Test-ServiceStateSafeForAccountRemoval -Path $StateDir' 'Account cleanup does not use the fail-closed state inspection helper.'
+
+# Execute the actual helper function definitions extracted from installer source.
+$installerAst = [System.Management.Automation.Language.Parser]::ParseInput($installer, [ref]$null, [ref]$null)
+foreach ($functionName in @('Test-DirectoryExistsStrict', 'Test-ServiceStateSafeForAccountRemoval')) {
+    $functionAst = $installerAst.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $functionName
+    }, $true)
+    if (-not $functionAst) { throw "Installer helper not found: $functionName" }
+    . ([scriptblock]::Create($functionAst.Extent.Text))
 }
 
-
-# Fault-inject the cleanup contract after structural checks bind it to installer source.
-function Invoke-RollbackAccountCleanup {
-    $stateContainsProtectedMaterial = $false
-    if (Test-Path -LiteralPath $StateDir) {
-        try {
-            $remainingState = @(Get-ChildItem -LiteralPath $StateDir -Force -ErrorAction Stop)
-            $stateContainsProtectedMaterial = $remainingState.Count -gt 0
-        } catch {
-            $stateContainsProtectedMaterial = $true
-        }
-    }
-    if ($stateContainsProtectedMaterial) {
-        Write-Warning "Retaining installer-created service account '$ServiceAccountName'."
-    } else {
-        Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
-    }
-}
-
-$script:mockStateExists = $true
-$script:mockStateReadFails = $false
-$script:mockStateEntries = @()
-$script:removedAccounts = @()
-function Test-Path {
+$script:mockItemMode = 'directory'
+$script:mockEntries = @()
+$script:mockEnumerationFails = $false
+function Get-Item {
     [CmdletBinding()]
-    param([string]$LiteralPath)
-    return $script:mockStateExists
+    param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)
+    switch ($script:mockItemMode) {
+        'missing' {
+            $exception = [System.Management.Automation.ItemNotFoundException]::new('injected missing path')
+            $record = [System.Management.Automation.ErrorRecord]::new(
+                $exception, 'PathNotFound', [System.Management.Automation.ErrorCategory]::ObjectNotFound, $LiteralPath
+            )
+            $PSCmdlet.ThrowTerminatingError($record)
+        }
+        'ambiguous' { throw [System.UnauthorizedAccessException]::new('injected ambiguous state-path access') }
+        'file' { return [pscustomobject]@{ PSIsContainer = $false } }
+        default { return [pscustomobject]@{ PSIsContainer = $true } }
+    }
 }
 function Get-ChildItem {
     [CmdletBinding()]
-    param([string]$LiteralPath, [switch]$Force)
-    if ($script:mockStateReadFails) { throw 'injected state enumeration failure' }
-    return $script:mockStateEntries
-}
-function Remove-LocalUser {
-    [CmdletBinding()]
-    param([string]$Name)
-    $script:removedAccounts += $Name
-}
-function Write-Warning {
-    [CmdletBinding()]
-    param([string]$Message)
+    param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)
+    if ($script:mockEnumerationFails) { throw 'injected state enumeration failure' }
+    return $script:mockEntries
 }
 
-$StateDir = 'C:\mock\WeDecent\Agent'
-$ServiceAccountName = 'WeDecentSvc'
-$script:mockStateEntries = @('identity.key.dpapi')
-Invoke-RollbackAccountCleanup
-if ($script:removedAccounts.Count -ne 0) {
-    throw 'Rollback deleted the service account while protected state remained.'
+$script:mockItemMode = 'directory'
+if (-not (Test-DirectoryExistsStrict -Path 'C:\mock\WeDecent\Agent')) {
+    throw 'Existing state directory was reported absent.'
 }
-
-$script:mockStateReadFails = $true
-Invoke-RollbackAccountCleanup
-if ($script:removedAccounts.Count -ne 0) {
-    throw 'Rollback deleted the service account when protected state could not be inspected.'
+$script:mockItemMode = 'missing'
+if (Test-DirectoryExistsStrict -Path 'C:\mock\WeDecent\Agent') {
+    throw 'Missing state directory was reported present.'
 }
+$script:mockItemMode = 'ambiguous'
+$ambiguousRejected = $false
+try { [void](Test-DirectoryExistsStrict -Path 'C:\mock\WeDecent\Agent') } catch { $ambiguousRejected = $true }
+if (-not $ambiguousRejected) { throw 'Ambiguous state-path existence was treated as absence.' }
 
-$script:mockStateReadFails = $false
-$script:mockStateEntries = @()
-Invoke-RollbackAccountCleanup
-if ($script:removedAccounts.Count -ne 1 -or $script:removedAccounts[0] -ne $ServiceAccountName) {
-    throw 'Rollback did not remove the service account after proving state empty.'
+$script:mockItemMode = 'directory'
+$script:mockEntries = @('identity.key.dpapi')
+if (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent') {
+    throw 'Non-empty protected state was considered safe for account removal.'
 }
-
-$script:mockStateExists = $false
-Invoke-RollbackAccountCleanup
-if ($script:removedAccounts.Count -ne 2) {
-    throw 'Rollback did not remove the service account when no state directory existed.'
+$script:mockEntries = @()
+if (-not (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent')) {
+    throw 'Confirmed empty state directory was not considered safe for account removal.'
+}
+$script:mockEnumerationFails = $true
+if (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent') {
+    throw 'State enumeration failure was considered safe for account removal.'
+}
+$script:mockEnumerationFails = $false
+$script:mockItemMode = 'ambiguous'
+if (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent') {
+    throw 'Ambiguous state-path existence was considered safe for account removal.'
+}
+$script:mockItemMode = 'file'
+if (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent') {
+    throw 'Non-directory state path was considered safe for account removal.'
+}
+$script:mockItemMode = 'missing'
+if (-not (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent')) {
+    throw 'Confirmed absent state path was not considered safe for account removal.'
 }
 
 Write-Host 'Windows service installer contract PASS'
