@@ -163,9 +163,6 @@ func runIdentityCheck(args []string) error {
 }
 
 func loadIdentityForCheck(stateDir string) (*identity.Identity, error) {
-	if err := preflightAgentState(stateDir); err != nil {
-		return nil, err
-	}
 	return identity.Load(stateDir)
 }
 
