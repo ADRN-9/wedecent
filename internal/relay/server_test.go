@@ -166,6 +166,10 @@ func TestServerRemovesParkedSlotAfterPeerDisconnect(t *testing.T) {
 		close(serverDone)
 	}()
 	deviceID, _ := registerRelayTestAgent(t, clientSide)
+	waiting, err := relayproto.Read(clientSide)
+	if err != nil || waiting.Type != relayproto.TypeWaiting {
+		t.Fatalf("waiting acknowledgement = %#v, %v", waiting, err)
+	}
 	select {
 	case <-handler.activated:
 	case <-time.After(time.Second):
