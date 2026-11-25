@@ -749,7 +749,7 @@ $version = Assert-ReleaseBundle
 $metadataPath = Get-WeDecentMetadataPath
 $migrationModule = Join-Path $PSScriptRoot 'StateMigration.psm1'
 Import-Module $migrationModule -Force -ErrorAction Stop
-$migrationJournalPath = Join-Path (Split-Path -Parent $metadataPath) 'state-migration.json'
+$migrationJournalPath = Join-Path $InstallDir 'migration\state-migration.json'
 $migrationAgentPath = Join-Path $BundlePath 'wd-agent.exe'
 $metadata = Read-WeDecentMetadata
 $metadataTrusted = $false
@@ -814,6 +814,11 @@ if ($service) {
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Upgrade WeDecent to $version")) { return }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     if ($needsStateMigration) {
+        $journalParent = Split-Path -Parent $migrationJournalPath
+        if (-not (Test-Path -LiteralPath $journalParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $journalParent -Force | Out-Null
+        }
+        [void](Set-WeDecentMigrationAdminDirectory -Path $journalParent -AgentPath $migrationAgentPath)
         $destinationParent = Split-Path -Parent $requestedStateDir
         if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
             New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
