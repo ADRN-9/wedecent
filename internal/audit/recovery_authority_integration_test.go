@@ -20,10 +20,10 @@ type testIndependentRecoveryAuthority struct {
 	migrationProofPublic  ed25519.PublicKey
 	migrationProofPrivate ed25519.PrivateKey
 	trust                 RecoveryAuthorityTrust
-	witnessPrivate map[string]ed25519.PrivateKey
-	head           RecoveryCheckpoint
-	heads          map[string]RecoveryCheckpoint
-	loseNextCommit bool
+	witnessPrivate        map[string]ed25519.PrivateKey
+	head                  RecoveryCheckpoint
+	heads                 map[string]RecoveryCheckpoint
+	loseNextCommit        bool
 }
 
 func newTestIndependentRecoveryAuthority(t *testing.T) *testIndependentRecoveryAuthority {
