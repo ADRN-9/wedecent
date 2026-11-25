@@ -92,6 +92,7 @@ type checkpointFenceTokenWire struct {
 	OperationID              string                        `json:"operation_id"`
 	RequestSHA256            string                        `json:"request_sha256"`
 	AuthorizationSHA256      string                        `json:"authorization_sha256"`
+	AuthorizationProof        string                        `json:"authorization_proof"`
 	AuthorizationProof       string                        `json:"authorization_proof"`
 	PrimaryHeadGeneration    uint64                        `json:"primary_head_generation"`
 	PrimaryHeadSHA256        string                        `json:"primary_head_sha256"`
@@ -742,6 +743,7 @@ func checkpointFenceTokenToWire(token CheckpointFenceToken) (checkpointFenceToke
 		Action:                   token.Action, OperationID: token.OperationID,
 		RequestSHA256:         hex.EncodeToString(token.RequestSHA256[:]),
 		AuthorizationSHA256:   hex.EncodeToString(token.AuthorizationSHA256[:]),
+		AuthorizationProof:    base64.StdEncoding.EncodeToString(token.AuthorizationProof),
 		AuthorizationProof:    hex.EncodeToString(token.AuthorizationProof),
 		PrimaryHeadGeneration: token.PrimaryHeadGeneration,
 		PrimaryHeadSHA256:     hex.EncodeToString(token.PrimaryHeadSHA256[:]),
@@ -772,6 +774,10 @@ func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, er
 	if err != nil {
 		return CheckpointFenceToken{}, err
 	}
+	authorizationProof, err := base64.StdEncoding.Strict().DecodeString(wire.AuthorizationProof)
+	if err != nil {
+		return CheckpointFenceToken{}, ErrCheckpointIntegrity
+	}
 	primaryHash, err := decodeSHA256Hex(wire.PrimaryHeadSHA256)
 	if err != nil {
 		return CheckpointFenceToken{}, err
@@ -799,6 +805,7 @@ func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, er
 		ResultingRevocationEpoch: wire.ResultingRevocationEpoch,
 		Action:                   wire.Action, OperationID: wire.OperationID,
 		RequestSHA256: requestHash, AuthorizationSHA256: authHash,
+		AuthorizationProof: authorizationProof,
 		AuthorizationProof: authorizationProof,
 		PrimaryHeadGeneration: wire.PrimaryHeadGeneration, PrimaryHeadSHA256: primaryHash,
 		PreviousFenceSHA256: previousHash,
