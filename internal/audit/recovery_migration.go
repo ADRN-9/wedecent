@@ -168,6 +168,9 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 			return ErrRecoveryCheckpointConflict
 		}
 	}
+	if err := verifyLegacyMigrationProofStateDigest(authenticatedCheckpoint, stateDigest); err != nil {
+		return err
+	}
 	request, err := NewRecoveryCheckpointRequest(r.authorityScope, checkpoint.Generation-1, checkpoint.PreviousDigest, checkpoint.StateDigest)
 	if err != nil || checkpoint.StateDigest != stateDigest || checkpoint.OperationID != request.OperationID {
 		return ErrRecoveryCheckpointConflict
