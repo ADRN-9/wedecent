@@ -130,7 +130,7 @@ function Set-WeDecentMigrationDirectoryAcl {
         [void]$acl.AddAccessRule($rule)
     }
     Set-Acl -LiteralPath $full -AclObject $acl -ErrorAction Stop
-    Assert-WeDecentMigrationDirectoryAcl -Path $full -ServiceSid $ServiceSid
+    [void](Assert-WeDecentMigrationDirectoryAcl -Path $full -ServiceSid $ServiceSid)
 }
 
 function Assert-WeDecentMigrationDirectoryAcl {
@@ -657,7 +657,7 @@ function Set-WeDecentMigrationAdminDirectory {
         [void]$acl.AddAccessRule($rule)
     }
     Set-Acl -LiteralPath $full -AclObject $acl -ErrorAction Stop
-    Assert-WeDecentMigrationAdminDirectory -Path $full
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $full)
 }
 
 function Assert-WeDecentMigrationAdminDirectory {
