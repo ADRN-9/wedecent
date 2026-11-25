@@ -25,7 +25,7 @@ function global:Get-CimInstance {
 }
 function global:Get-Service {
     [CmdletBinding()]
-    param([string]$Name, [switch]$ErrorAction)
+    param([string]$Name)
     if ($Name -cne $global:WeDecentMigrationMockService.Name) { throw "Unexpected service lookup: $Name" }
     $result = [pscustomobject]@{ Status = $global:WeDecentMigrationMockStatus }
     $result | Add-Member -MemberType ScriptMethod -Name WaitForStatus -Value {
@@ -36,14 +36,14 @@ function global:Get-Service {
 }
 function global:Stop-Service {
     [CmdletBinding()]
-    param([string]$Name, [switch]$Force, [string]$ErrorAction)
+    param([string]$Name, [switch]$Force)
     if ($Name -cne $global:WeDecentMigrationMockService.Name) { throw "Unexpected service stop: $Name" }
     $global:WeDecentMigrationMockStatus = 'Stopped'
     $global:WeDecentMigrationMockService.State = 'Stopped'
 }
 function global:Start-Service {
     [CmdletBinding()]
-    param([string]$Name, [string]$ErrorAction)
+    param([string]$Name)
     if ($Name -cne $global:WeDecentMigrationMockService.Name) { throw "Unexpected service start: $Name" }
     $global:WeDecentMigrationMockStatus = 'Running'
     $global:WeDecentMigrationMockService.State = 'Running'
