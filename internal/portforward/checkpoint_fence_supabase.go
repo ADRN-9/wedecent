@@ -254,7 +254,13 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 	}
 	var response map[string]json.RawMessage
 	if err := p.rpc(ctx, "reserve_checkpoint_fence_operation", args, &response); err != nil {
-		return CheckpointFenceToken{}, err
+		if operation, found, loadErr := p.LoadFence(ctx, request.Scope, request.OperationID); loadErr == nil && found {
+			return operation.Token, nil
+		}
+		// The reservation RPC is idempotent for the exact operation fingerprint.
+		if retryErr := p.rpc(ctx, "reserve_checkpoint_fence_operation", args, &response); retryErr != nil {
+			return CheckpointFenceToken{}, errors.Join(ErrCheckpointAmbiguous, err, retryErr)
+		}
 	}
 	var status string
 	_ = json.Unmarshal(response["status"], &status)
@@ -333,17 +339,21 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 		return CheckpointFenceToken{}, err
 	}
 	var recorded json.RawMessage
-	if err := p.rpc(ctx, "record_checkpoint_fence_token", map[string]any{
+	recordArgs := map[string]any{
 		"p_operation_id": request.OperationID,
 		"p_fingerprint": "\\x" + hex.EncodeToString(fingerprintBytes[:]),
 		"p_token_sha256": "\\x" + hex.EncodeToString(tokenDigest[:]),
 		"p_token": tokenWire,
-	}, &recorded); err != nil {
+	}
+	if err := p.rpc(ctx, "record_checkpoint_fence_token", recordArgs, &recorded); err != nil {
 		operation, found, loadErr := p.LoadFence(ctx, request.Scope, request.OperationID)
 		if loadErr == nil && found && sameCheckpointFenceToken(operation.Token, token) {
 			return operation.Token, nil
 		}
-		return CheckpointFenceToken{}, errors.Join(ErrCheckpointAmbiguous, err, loadErr)
+		// Token insertion is append-only and exact retries return the same event.
+		if retryErr := p.rpc(ctx, "record_checkpoint_fence_token", recordArgs, &recorded); retryErr != nil {
+			return CheckpointFenceToken{}, errors.Join(ErrCheckpointAmbiguous, err, loadErr, retryErr)
+		}
 	}
 	return token, nil
 }
@@ -421,6 +431,7 @@ func (p *SupabaseCheckpointFencePrimary) FenceHead(ctx context.Context, scope Ch
 		PrimaryHeadGeneration uint64 `json:"primary_head_generation"`
 		PrimaryHeadSHA256 string `json:"primary_head_sha256"`
 		PendingOperationID string `json:"pending_operation_id"`
+		PendingExpiresAt *time.Time `json:"pending_expires_at"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return CheckpointFenceHead{}, ErrCheckpointIntegrity
@@ -433,10 +444,14 @@ func (p *SupabaseCheckpointFencePrimary) FenceHead(ctx context.Context, scope Ch
 	if err != nil {
 		return CheckpointFenceHead{}, err
 	}
+	pendingOperationID := response.PendingOperationID
+	if response.PendingExpiresAt != nil && !response.PendingExpiresAt.After(p.now()) {
+		pendingOperationID = ""
+	}
 	return CheckpointFenceHead{
 		Generation: response.Generation, RevocationEpoch: response.RevocationEpoch,
 		FenceDigest: fenceHash, PrimaryHeadGeneration: response.PrimaryHeadGeneration,
-		PrimaryHeadSHA256: primaryHash, PendingOperationID: response.PendingOperationID,
+		PrimaryHeadSHA256: primaryHash, PendingOperationID: pendingOperationID,
 	}, nil
 }
 
