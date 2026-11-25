@@ -55,6 +55,20 @@ func activeLedgerMigrationOperationID(scope string, digest [sha256.Size]byte, ge
 	return hex.EncodeToString(operation[:]), nil
 }
 
+func verifyLegacyMigrationProofStateDigest(proof []byte, expected [sha256.Size]byte) error {
+	var attestation struct {
+		StateDigest string `json:"state_digest"`
+	}
+	if len(proof) == 0 || json.Unmarshal(proof, &attestation) != nil {
+		return ErrRecoveryMigrationUntrusted
+	}
+	decoded, err := hex.DecodeString(attestation.StateDigest)
+	if err != nil || len(decoded) != sha256.Size || !bytes.Equal(decoded, expected[:]) {
+		return ErrRecoveryMigrationUntrusted
+	}
+	return nil
+}
+
 func pairingSnapshotDigest(snapshot pairingOutcomeSnapshotUnsigned) ([sha256.Size]byte, error) {
 	encoded, err := json.Marshal(snapshot)
 	if err != nil {
@@ -459,6 +473,9 @@ func (r *PairingRecovery) MigrateLegacyActiveLedger(ctx context.Context, authent
 	archiveDigest := sha256.Sum256(raw)
 	operationID, err := activeLedgerMigrationOperationID(scope, archiveDigest, head.Generation)
 	if err != nil {
+		return err
+	}
+	if err := verifyLegacyMigrationProofStateDigest(authenticatedCheckpoint, stateDigest); err != nil {
 		return err
 	}
 	request, err := NewRecoveryCheckpointRequest(scope, head.Generation, head.StateDigest, stateDigest)
