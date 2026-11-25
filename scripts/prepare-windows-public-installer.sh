@@ -6,6 +6,9 @@ fail() {
   exit 1
 }
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$ROOT/scripts/lib/release-trust.sh"
+
 VERSION=""
 SIGNED_RELEASE_DIR=""
 SIGNED_INSTALLER_DIR=""
@@ -87,6 +90,8 @@ resolve_source_dir() {
 SIGNED_RELEASE_DIR="$(resolve_source_dir "$SIGNED_RELEASE_DIR" 'signed release')"
 SIGNED_INSTALLER_DIR="$(resolve_source_dir "$SIGNED_INSTALLER_DIR" 'signed installer')"
 [[ "$SIGNED_RELEASE_DIR" != "$SIGNED_INSTALLER_DIR" ]] || fail 'signed release and installer directories must differ'
+wedecent_verify_release_metadata "$SIGNED_RELEASE_DIR"
+wedecent_verify_release_metadata "$SIGNED_INSTALLER_DIR"
 
 OUT_DIR="$(realpath -m -- "$OUT_DIR")"
 [[ ! -e "$OUT_DIR" && ! -L "$OUT_DIR" ]] || fail "output directory already exists: $OUT_DIR"

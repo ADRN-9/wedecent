@@ -10,6 +10,7 @@ DRY_RUN=0
 CREATE_ONLY_UPLOADER="${WEDECENT_R2_CREATE_ONLY_UPLOADER:-}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-trust.sh"
 PREPARE_RELEASE="$ROOT/scripts/prepare-windows-public-download.sh"
 PREPARE_INSTALLER="$ROOT/scripts/prepare-windows-public-installer.sh"
 CACHE_CONTROL='public, max-age=31536000, immutable'
@@ -136,6 +137,8 @@ upload_if_missing() {
   local content_disposition="$5"
   local label="$6"
   if [[ "$state" == 'missing' ]]; then
+    "$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+      die 'live release tag changed before immutable object publication'
     "$UPLOADER" "$BUCKET" "$key" "$path" "$content_type" "$content_disposition" "$CACHE_CONTROL" ||
       die "create-only $label upload failed"
   else
@@ -214,6 +217,8 @@ done
 [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z][0-9A-Za-z.-]*)?$ ]] ||
   die 'version must look like v0.3.0 or v0.3.0-rc.3'
 [[ "$BASE_URL" == https://* ]] || die '--base-url must use https://'
+wedecent_verify_release_metadata "$SIGNED_RELEASE_DIR"
+wedecent_verify_release_metadata "$SIGNED_INSTALLER_DIR"
 [[ -x "$PREPARE_RELEASE" && ! -L "$PREPARE_RELEASE" ]] || die "signed-release preparer is missing or invalid: $PREPARE_RELEASE"
 [[ -x "$PREPARE_INSTALLER" && ! -L "$PREPARE_INSTALLER" ]] || die "signed-installer preparer is missing or invalid: $PREPARE_INSTALLER"
 

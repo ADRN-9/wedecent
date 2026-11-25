@@ -36,6 +36,7 @@ const (
 	TypeStreamResize
 	TypeStreamClose
 	TypeStreamError
+	TypeStreamHalfClose
 )
 
 type Frame struct {
