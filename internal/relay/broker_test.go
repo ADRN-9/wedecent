@@ -175,3 +175,31 @@ func TestBrokerConcurrentParkAndTake(t *testing.T) {
 		}
 	}
 }
+
+
+func TestBrokerDisconnectBeforeActivationCannotPublishReservation(t *testing.T) {
+	broker := NewBroker(1, time.Minute)
+	server, client := net.Pipe()
+	slot, err := broker.Reserve("device", server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.WatchDisconnect("device", slot)
+	_ = client.Close()
+	select {
+	case <-slot.disconnected:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect watcher did not publish disconnect state")
+	}
+	if err := broker.Activate("device", slot); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("Activate disconnected reservation = %v, want ErrNoAgent", err)
+	}
+	if _, err := broker.Take("device"); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("Take disconnected reservation = %v, want ErrNoAgent", err)
+	}
+	select {
+	case <-slot.done:
+	default:
+		t.Fatal("disconnected reservation was not finished")
+	}
+}
