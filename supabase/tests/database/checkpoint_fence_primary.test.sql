@@ -175,7 +175,7 @@ select throws_ok($q$select public.commit_checkpoint_fence_operation(
 select throws_ok($q$select public.commit_checkpoint_fence_operation(
  repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
  decode(repeat('b',64),'hex'),
- pg_catalog.jsonb_set((select acknowledgements from c197_commit_material),'{0,signature}',to_jsonb(repeat('A',88))),
+ pg_catalog.jsonb_set((select acknowledgements from c197_commit_material),'{0,signature}',to_jsonb(repeat('A',86)||'==')),
  pg_temp.c197_authority_signature(repeat('9',64),
    (select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
    decode(repeat('b',64),'hex'),
