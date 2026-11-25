@@ -1002,6 +1002,7 @@ function Initialize-WeDecentMigrationFileIdentityApi {
 using System;
 using System.Runtime.InteropServices;
 public static class WeDecentMigrationFileIdentityApi {
+    // Volume serial plus the 64-bit file index is the filesystem object identity.
     [StructLayout(LayoutKind.Sequential)]
     public struct BY_HANDLE_FILE_INFORMATION {
         public uint FileAttributes;
