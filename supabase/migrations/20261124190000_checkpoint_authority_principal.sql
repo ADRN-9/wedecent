@@ -16,7 +16,10 @@ create extension if not exists pgsodium;
 create table public.checkpoint_fence_primary_trust (
     key_id text primary key check (key_id ~ '^ed25519-[A-Za-z0-9_-]{43}$'),
     public_key bytea not null check (pg_catalog.octet_length(public_key) = 32),
-    created_at timestamptz not null default pg_catalog.clock_timestamp()
+    created_at timestamptz not null default pg_catalog.clock_timestamp(),
+    check (key_id = 'ed25519-' || pg_catalog.translate(
+        pg_catalog.replace(pg_catalog.replace(pg_catalog.encode(extensions.digest(public_key,'sha256'),'base64'),'=',''),E'\\n',''),'+/','-_'
+    ))
 );
 
 create table public.checkpoint_fence_witness_trust (
@@ -25,6 +28,9 @@ create table public.checkpoint_fence_witness_trust (
     key_id text not null check (key_id ~ '^ed25519-[A-Za-z0-9_-]{43}$'),
     public_key bytea not null check (pg_catalog.octet_length(public_key) = 32),
     created_at timestamptz not null default pg_catalog.clock_timestamp(),
+    check (key_id = 'ed25519-' || pg_catalog.translate(
+        pg_catalog.replace(pg_catalog.replace(pg_catalog.encode(extensions.digest(public_key,'sha256'),'base64'),'=',''),E'\\n',''),'+/','-_'
+    )),
     primary key (witness_set_version, witness_id),
     unique (witness_set_version, key_id),
     unique (witness_set_version, public_key)
