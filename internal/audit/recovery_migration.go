@@ -113,23 +113,22 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	if err != nil || localCheckpoint != legacyArchive.Checkpoint {
 		return ErrRecoveryMigrationUntrusted
 	}
-	build := func(generation uint64, previous [sha256.Size]byte) (pairingRecoveryArchiveUnsigned, []byte, [sha256.Size]byte, error) {
+	build := func(generation uint64, previous [sha256.Size]byte) ([]byte, [sha256.Size]byte, error) {
 		unsigned := pairingRecoveryArchiveUnsigned{Version: legacyArchive.Version, FirstSequence: legacyArchive.FirstSequence,
 			LastSequence: legacyArchive.LastSequence, Checkpoint: legacyArchive.Checkpoint, Records: legacyArchive.Records,
 			AuthorityGeneration: generation, AuthorityPreviousDigest: hex.EncodeToString(previous[:])}
 		payload, marshalErr := json.Marshal(unsigned)
 		if marshalErr != nil {
-			return unsigned, nil, [sha256.Size]byte{}, marshalErr
+			return nil, [sha256.Size]byte{}, marshalErr
 		}
-		return unsigned, payload, sha256.Sum256(payload), nil
+		return payload, sha256.Sum256(payload), nil
 	}
-	var unsigned pairingRecoveryArchiveUnsigned
 	var payload []byte
 	var stateDigest [sha256.Size]byte
 	var checkpoint RecoveryCheckpoint
 	alreadyCommitted := false
 	if head.Generation > 0 {
-		unsigned, payload, stateDigest, err = build(head.Generation, head.PreviousDigest)
+		payload, stateDigest, err = build(head.Generation, head.PreviousDigest)
 		if err != nil {
 			return err
 		}
@@ -142,7 +141,7 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 		if head.Generation == ^uint64(0) {
 			return ErrRecoveryCheckpointStale
 		}
-		unsigned, payload, stateDigest, err = build(head.Generation+1, head.StateDigest)
+		payload, stateDigest, err = build(head.Generation+1, head.StateDigest)
 		if err != nil {
 			return err
 		}
