@@ -177,7 +177,7 @@ $newStatePath = 'D:\Program Files\WeDecent\data\agent'
 $quotedWholeArgument = Get-WeDecentMigrationUpdatedServicePath -ServicePath ('"C:\Program Files\WeDecent\wd-agent.exe" serve "--state=' + $oldStatePath + '"') -Source $oldStatePath -Destination $newStatePath
 if ($quotedWholeArgument -notlike ('*"--state=' + $newStatePath + '"*')) { throw 'SCM migration did not rewrite a whole-argument quoted state path.' }
 $quotedValueArgument = Get-WeDecentMigrationUpdatedServicePath -ServicePath ('wd-agent.exe serve --state="' + $oldStatePath + '"') -Source $oldStatePath -Destination $newStatePath
-if ($quotedValueArgument -notlike ('*--state="' + $newStatePath + '"*')) { throw 'SCM migration did not rewrite a value-quoted state path.' }
+if ($quotedValueArgument -notlike ('*"--state=' + $newStatePath + '"*')) { throw 'SCM migration did not rewrite a value-quoted state path.' }
 $unquotedArgument = Get-WeDecentMigrationUpdatedServicePath -ServicePath 'wd-agent.exe serve --state=C:\old\agent' -Source 'C:\old\agent' -Destination 'D:\new\agent'
 if ($unquotedArgument -notlike '*"--state=D:\new\agent"*') { throw 'SCM migration did not rewrite an unquoted state path.' }
 $ambiguousStateRejected = $false
