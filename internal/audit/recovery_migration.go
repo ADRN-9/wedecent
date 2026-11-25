@@ -70,8 +70,7 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	if readErr != nil || closeErr != nil || len(legacyBytes) == 0 || len(legacyBytes) > maxPairingArchiveBytes {
 		return ErrRecoveryMigrationUntrusted
 	}
-	legacyReader := *r
-	legacyReader.authority = nil
+	legacyReader := &PairingRecovery{path: r.path, archiveKey: r.archiveKey}
 	legacyArchive, err := legacyReader.readArchive()
 	if err != nil {
 		return fmt.Errorf("%w: legacy archive authentication failed: %v", ErrRecoveryMigrationUntrusted, err)
