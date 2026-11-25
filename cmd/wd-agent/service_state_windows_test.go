@@ -578,7 +578,6 @@ func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
 	}
 }
 
-
 func TestWindowsMigrationSourceRejectsUntrustedAncestorOwnerAndReparsePoint(t *testing.T) {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil || user == nil || user.User.Sid == nil {
@@ -611,4 +610,3 @@ func TestWindowsMigrationSourceRejectsUntrustedAncestorOwnerAndReparsePoint(t *t
 		t.Fatal("migration source accepted a reparse-point ancestor")
 	}
 }
-
