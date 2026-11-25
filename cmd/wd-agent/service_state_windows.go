@@ -416,12 +416,15 @@ func verifyMigrationSourceForSID(dir, serviceSID string) error {
 	if err != nil {
 		return err
 	}
-	trusted := map[string]bool{
-		active.String(): true,
-		required.String(): true,
-		"S-1-5-18": true,
-		"S-1-5-32-544": true,
-		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": true,
+	trusted := map[string]bool{}
+	for _, sid := range []string{
+		active.String(),
+		required.String(),
+		"S-1-5-18",
+		"S-1-5-32-544",
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+	} {
+		trusted[sid] = true
 	}
 	path := root
 	for i := 0; i < len(components); i++ {
