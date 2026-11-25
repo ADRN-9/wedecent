@@ -617,22 +617,45 @@ function Set-WeDecentMigrationServicePath {
     }
 }
 
+function Invoke-WeDecentMigrationFaultPoint {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$FaultAt
+    )
+
+    $selected = $FaultAt
+    if ([string]::IsNullOrWhiteSpace($selected)) {
+        $selected = [Environment]::GetEnvironmentVariable('WEDECENT_MIGRATION_FAULT_AT')
+    }
+    if ($selected -ceq $Name) {
+        throw "Injected WeDecent migration interruption at $Name."
+    }
+}
+
 function Restore-WeDecentMigrationTransaction {
-    param([Parameter(Mandatory = $true)][pscustomobject]$Journal)
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$Journal,
+        [string]$FaultAt
+    )
 
     $Journal.phase = 'RollingBack'
     Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStarted' -FaultAt $FaultAt
     $service = Get-Service -Name $Journal.service_name -ErrorAction Stop
     if ($service.Status -ne 'Stopped') {
         Stop-Service -Name $Journal.service_name -Force -ErrorAction Stop
         (Get-Service -Name $Journal.service_name).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceStopped' -FaultAt $FaultAt
     Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt $FaultAt
     Restore-WeDecentMigrationMetadata -Path $Journal.metadata_path -OriginalJson $Journal.original_metadata_json
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackMetadataRestored' -FaultAt $FaultAt
     if ([bool]$Journal.service_was_running) {
         Start-Service -Name $Journal.service_name -ErrorAction Stop
         (Get-Service -Name $Journal.service_name).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
     }
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceRestarted' -FaultAt $FaultAt
     foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
@@ -650,6 +673,7 @@ function Restore-WeDecentMigrationTransaction {
     }
     $Journal.phase = 'RolledBack'
     Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
+    Invoke-WeDecentMigrationFaultPoint -Name 'RolledBack' -FaultAt $FaultAt
 }
 
 function Recover-WeDecentStateMigration {
@@ -676,7 +700,8 @@ function Invoke-WeDecentStateMigration {
         [Parameter(Mandatory = $true)][string]$ServiceName,
         [Parameter(Mandatory = $true)][string]$ServiceSid,
         [Parameter(Mandatory = $true)][string]$MetadataPath,
-        [Parameter(Mandatory = $true)][string]$JournalPath
+        [Parameter(Mandatory = $true)][string]$JournalPath,
+        [string]$FaultAt
     )
 
     $sourceFull = [IO.Path]::GetFullPath($Source)
@@ -743,34 +768,43 @@ function Invoke-WeDecentStateMigration {
     }
     Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
     try {
+        Invoke-WeDecentMigrationFaultPoint -Name 'Prepared' -FaultAt $FaultAt
         if ($journal.service_was_running) {
             Stop-Service -Name $ServiceName -Force -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
+        Invoke-WeDecentMigrationFaultPoint -Name 'ServiceStopped' -FaultAt $FaultAt
         $journal.phase = 'Copying'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'Copying' -FaultAt $FaultAt
         $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath
         $journal.source_manifest_sha256 = $copy.SourceManifestSHA256
         $journal.identity = $copy.Identity
         $journal.phase = 'Copied'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'Copied' -FaultAt $FaultAt
         [void](Assert-WeDecentMigrationIdentityContinuity -Source $sourceFull -Destination $staging -AgentPath $AgentPath)
         $journal.phase = 'Verified'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'Verified' -FaultAt $FaultAt
 
         [IO.Directory]::Move($staging, $destinationFull)
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull -ServiceSid $ServiceSid)
         $journal.phase = 'StatePublished'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'StatePublished' -FaultAt $FaultAt
 
         Set-WeDecentMigrationServicePath -ServiceName $ServiceName -BinaryPath $updatedPath
         $journal.phase = 'ServiceReconfigured'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'ServiceReconfigured' -FaultAt $FaultAt
         Write-WeDecentMigrationMetadata -Path $MetadataPath -StatePath $destinationFull
+        Invoke-WeDecentMigrationFaultPoint -Name 'MetadataUpdated' -FaultAt $FaultAt
         if ($journal.service_was_running) {
             Start-Service -Name $ServiceName -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         }
+        Invoke-WeDecentMigrationFaultPoint -Name 'ServiceRestarted' -FaultAt $FaultAt
         $destinationIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $destinationFull
         if ($destinationIdentity.DeviceId -cne $copy.Identity.DeviceId -or
             $destinationIdentity.Fingerprint -cne $copy.Identity.Fingerprint) {
@@ -783,7 +817,7 @@ function Invoke-WeDecentStateMigration {
         $failure = $_
         try {
             $journal | Add-Member -NotePropertyName journal_path -NotePropertyValue ([IO.Path]::GetFullPath($JournalPath)) -Force
-            Restore-WeDecentMigrationTransaction -Journal $journal
+            Restore-WeDecentMigrationTransaction -Journal $journal -FaultAt $FaultAt
         } catch {
             throw "Migration failed ($($failure.Exception.Message)); durable rollback is pending and original state was preserved: $($_.Exception.Message)"
         }
@@ -812,5 +846,6 @@ Export-ModuleMember -Function @(
     'Assert-WeDecentMigrationAdminDirectory',
     'Set-WeDecentMigrationAdminFileAcl',
     'Recover-WeDecentStateMigration',
+    'Invoke-WeDecentMigrationFaultPoint',
     'Invoke-WeDecentStateMigration'
 )
