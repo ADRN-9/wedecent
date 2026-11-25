@@ -93,6 +93,7 @@ type checkpointFenceTokenWire struct {
 	RequestSHA256            string                        `json:"request_sha256"`
 	AuthorizationSHA256      string                        `json:"authorization_sha256"`
 	AuthorizationProof        string                        `json:"authorization_proof"`
+	AuthorizationProof        string                        `json:"authorization_proof"`
 	AuthorizationProof       string                        `json:"authorization_proof"`
 	PrimaryHeadGeneration    uint64                        `json:"primary_head_generation"`
 	PrimaryHeadSHA256        string                        `json:"primary_head_sha256"`
@@ -337,7 +338,6 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 		ResultingRevocationEpoch: revocationEpoch + boolUint64(request.Action == CheckpointFenceRevoke),
 		Action:                   request.Action, OperationID: request.OperationID,
 		RequestSHA256: request.RequestSHA256, AuthorizationSHA256: request.AuthorizationSHA256,
-		AuthorizationProof: append([]byte(nil), request.AuthorizationProof...),
 		AuthorizationProof: append([]byte(nil), request.AuthorizationProof...),
 		PrimaryHeadGeneration: primaryGeneration, PrimaryHeadSHA256: request.PrimaryHeadSHA256,
 		PreviousFenceSHA256: fenceHashBytes,
@@ -744,6 +744,7 @@ func checkpointFenceTokenToWire(token CheckpointFenceToken) (checkpointFenceToke
 		RequestSHA256:         hex.EncodeToString(token.RequestSHA256[:]),
 		AuthorizationSHA256:   hex.EncodeToString(token.AuthorizationSHA256[:]),
 		AuthorizationProof:    base64.StdEncoding.EncodeToString(token.AuthorizationProof),
+		AuthorizationProof:    base64.StdEncoding.EncodeToString(token.AuthorizationProof),
 		AuthorizationProof:    hex.EncodeToString(token.AuthorizationProof),
 		PrimaryHeadGeneration: token.PrimaryHeadGeneration,
 		PrimaryHeadSHA256:     hex.EncodeToString(token.PrimaryHeadSHA256[:]),
@@ -778,6 +779,10 @@ func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, er
 	if err != nil {
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
+	authorizationProof, err := base64.StdEncoding.Strict().DecodeString(wire.AuthorizationProof)
+	if err != nil {
+		return CheckpointFenceToken{}, ErrCheckpointIntegrity
+	}
 	primaryHash, err := decodeSHA256Hex(wire.PrimaryHeadSHA256)
 	if err != nil {
 		return CheckpointFenceToken{}, err
@@ -805,6 +810,7 @@ func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, er
 		ResultingRevocationEpoch: wire.ResultingRevocationEpoch,
 		Action:                   wire.Action, OperationID: wire.OperationID,
 		RequestSHA256: requestHash, AuthorizationSHA256: authHash,
+		AuthorizationProof: authorizationProof,
 		AuthorizationProof: authorizationProof,
 		AuthorizationProof: authorizationProof,
 		PrimaryHeadGeneration: wire.PrimaryHeadGeneration, PrimaryHeadSHA256: primaryHash,
