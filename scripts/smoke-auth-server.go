@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"regexp"
 	"strings"
@@ -57,5 +58,10 @@ func main() {
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	log.Fatal(http.ListenAndServe(*listen, mux))
+	listener, err := net.Listen("tcp", *listen)
+	if err != nil {
+		log.Fatalf("listen for smoke authorization server: %v", err)
+	}
+	log.Printf("smoke authorization server listening on %s", listener.Addr())
+	log.Fatal(http.Serve(listener, mux))
 }
