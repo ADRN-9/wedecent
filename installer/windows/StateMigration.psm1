@@ -1003,6 +1003,9 @@ function Get-WeDecentMigrationCanonicalPath {
     if ([string]::IsNullOrWhiteSpace($Path) -or $Path.StartsWith('\\?\') -or $Path.StartsWith('\\.\')) {
         throw 'Migration paths must be ordinary, absolute local filesystem paths.'
     }
+    if ($Path -match '(?i)(?:^|\\)[^\\]*~[0-9](?:\\|$)') {
+        throw 'Migration paths using ambiguous 8.3 short-name components are not accepted.'
+    }
     $full = [IO.Path]::GetFullPath($Path)
     $root = [IO.Path]::GetPathRoot($full)
     if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\') -or $full -match '^[A-Za-z]:[^\\]') {
