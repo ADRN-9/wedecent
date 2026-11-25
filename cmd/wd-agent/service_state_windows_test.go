@@ -142,11 +142,11 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	}
 	// A service state parent must itself have a protected DACL; broad
 	// ancestors are rejected rather than relying on open-handle rename behavior.
-	programData := strings.TrimSpace(os.Getenv("ProgramData"))
-	if programData == "" {
-		t.Fatal("ProgramData is required for a machine-wide service-state fixture")
+	programFiles := strings.TrimSpace(os.Getenv("ProgramFiles"))
+	if programFiles == "" {
+		t.Fatal("ProgramFiles is required for a machine-wide service-state fixture")
 	}
-	parent := filepath.Join(programData, "WeDecent-C232-" + strconv.Itoa(os.Getpid()))
+	parent := filepath.Join(programFiles, "WeDecent-C232-" + strconv.Itoa(os.Getpid()))
 	if _, err := os.Lstat(parent); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("service-state fixture path already exists: %v", err)
 	}
