@@ -246,7 +246,7 @@ begin
        or p_token ->> 'previous_fence_sha256' <> pg_catalog.encode(v_fence.fence_hash, 'hex')
        or (p_token ->> 'expected_revocation_epoch')::bigint <> v_fence.revocation_epoch
        or (p_token ->> 'resulting_revocation_epoch')::bigint
-            <> v_fence.revocation_epoch + case when v_operation.action = 'revoke' then 1 else 0 end
+            <> v_fence.revocation_epoch + (case when v_operation.action = 'revoke' then 1 else 0 end)
        or (p_token ->> 'primary_head_generation')::bigint <> v_fence.pending_primary_head_generation
        or p_token ->> 'primary_head_sha256' <> pg_catalog.encode(v_fence.pending_primary_head_hash, 'hex')
        or (p_token ->> 'expires_at_unix_ms')::bigint > (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
