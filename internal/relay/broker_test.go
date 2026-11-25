@@ -468,3 +468,114 @@ func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
 		claimed.Wait()
 	}
 }
+
+func TestBrokerSimultaneousRegistrationActivationAndClaimStress(t *testing.T) {
+	const workers = 48
+	broker := NewBroker(workers, time.Minute)
+	type registration struct {
+		peer net.Conn
+		slot *slot
+	}
+	registered := make(chan registration, workers)
+	activated := make(chan struct{}, workers)
+	claims := make(chan *slot, workers)
+	claimErrors := make(chan error, workers)
+	start := make(chan struct{})
+	var registrations sync.WaitGroup
+	var claimers sync.WaitGroup
+
+	for i := 0; i < workers; i++ {
+		registrations.Add(1)
+		go func() {
+			defer registrations.Done()
+			peer, agent := net.Pipe()
+			<-start
+			s, err := broker.Reserve("stress-device", agent)
+			if err != nil {
+				_ = peer.Close()
+				_ = agent.Close()
+				t.Errorf("Reserve: %v", err)
+				return
+			}
+			broker.WatchDisconnect("stress-device", s)
+			if err := broker.Activate("stress-device", s); err != nil {
+				broker.Remove("stress-device", s)
+				_ = peer.Close()
+				t.Errorf("Activate: %v", err)
+				return
+			}
+			registered <- registration{peer: peer, slot: s}
+			activated <- struct{}{}
+		}()
+	}
+
+	for i := 0; i < workers; i++ {
+		claimers.Add(1)
+		go func() {
+			defer claimers.Done()
+			for {
+				s, err := broker.Take("stress-device")
+				if err == nil {
+					claims <- s
+					return
+				}
+				if !errors.Is(err, ErrNoAgent) {
+					claimErrors <- err
+					return
+				}
+				select {
+				case <-activated:
+					// A registration was activated; retry the claim.
+				case <-time.After(5 * time.Second):
+					claimErrors <- errors.New("timed out waiting for an active registration")
+					return
+				}
+			}
+		}()
+	}
+
+	close(start)
+	registrations.Wait()
+	close(registered)
+	entries := make([]registration, 0, workers)
+	for entry := range registered {
+		entries = append(entries, entry)
+	}
+	claimed := make(map[*slot]bool, workers)
+	t.Cleanup(func() {
+		for _, entry := range entries {
+			_ = entry.peer.Close()
+		}
+		for s := range claimed {
+			s.finish()
+			_ = s.conn.Close()
+		}
+		for _, entry := range entries {
+			select {
+			case <-entry.slot.done:
+			case <-time.After(time.Second):
+			}
+		}
+	})
+	claimers.Wait()
+	close(claims)
+	close(claimErrors)
+	for err := range claimErrors {
+		t.Errorf("simultaneous claim failed: %v", err)
+	}
+	for s := range claims {
+		if claimed[s] {
+			t.Fatal("one registration was claimed more than once")
+		}
+		claimed[s] = true
+	}
+	if len(entries) != workers {
+		t.Fatalf("active registrations = %d, want %d", len(entries), workers)
+	}
+	if len(claimed) != workers {
+		t.Fatalf("unique simultaneous claims = %d, want %d", len(claimed), workers)
+	}
+	if _, err := broker.Take("stress-device"); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("extra claim = %v, want ErrNoAgent", err)
+	}
+}

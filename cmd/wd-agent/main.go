@@ -79,6 +79,9 @@ func runInit(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	id, err := identity.Ensure(*stateDir, *name)
 	if err != nil {
 		return err
@@ -106,6 +109,9 @@ func runPairingSecret(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	secret, err := trust.RotatePairingSecret(*stateDir)
 	if err != nil {
 		return err
@@ -120,6 +126,9 @@ func runIdentity(args []string) error {
 	stateDir := fs.String("state", state, "agent state directory")
 	name := fs.String("name", hostname(), "device display name")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := preflightAgentState(*stateDir); err != nil {
 		return err
 	}
 	id, err := identity.Ensure(*stateDir, *name)
@@ -145,6 +154,9 @@ func runEnrollmentProof(args []string) error {
 	userID := fs.String("user-id", "", "Supabase Auth user UUID returned by the enrollment service")
 	expiresUnixMS := fs.Int64("expires-unix-ms", 0, "challenge expiry in Unix milliseconds")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := preflightAgentState(*stateDir); err != nil {
 		return err
 	}
 	if fs.NArg() != 0 {
@@ -295,6 +307,8 @@ type serveConfig struct {
 	PairingRecoveryAuthorityURL           string
 	PairingRecoveryAuthoritySPKISHA256    string
 	PairingRecoveryTrustFile              string
+	PairingRecoveryAuthorityTokenFile     string
+	PairingRecoveryAuthorityToken         string
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
@@ -485,6 +499,12 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"",
 		"path to independently provisioned primary/witness Ed25519 public trust JSON",
 	)
+	fs.StringVar(
+		&cfg.PairingRecoveryAuthorityTokenFile,
+		"pairing-recovery-authority-token-file",
+		"",
+		"path to protected short-lived recovery authority bearer credential",
+	)
 
 	fs.StringVar(
 		&cfg.PortForwardReplayURL,
@@ -641,9 +661,18 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	cfg.PairingRecoveryAuthorityURL = strings.TrimSpace(cfg.PairingRecoveryAuthorityURL)
 	cfg.PairingRecoveryAuthoritySPKISHA256 = strings.TrimSpace(cfg.PairingRecoveryAuthoritySPKISHA256)
 	cfg.PairingRecoveryTrustFile = strings.TrimSpace(cfg.PairingRecoveryTrustFile)
+	cfg.PairingRecoveryAuthorityTokenFile = strings.TrimSpace(cfg.PairingRecoveryAuthorityTokenFile)
+	cfg.PairingRecoveryAuthorityToken = strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN"))
+	if cfg.PairingRecoveryAuthorityTokenFile != "" {
+		token, err := loadRecoveryAuthorityToken(cfg.PairingRecoveryAuthorityTokenFile)
+		if err != nil {
+			return serveConfig{}, fmt.Errorf("load recovery bearer credential: %w", err)
+		}
+		cfg.PairingRecoveryAuthorityToken = token
+	}
 	if cfg.PairingRecoveryAuthorityURL == "" || cfg.PairingRecoveryAuthoritySPKISHA256 == "" ||
-		cfg.PairingRecoveryTrustFile == "" || strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN")) == "" {
-		return serveConfig{}, errors.New("pairing recovery requires --pairing-recovery-authority-url, --pairing-recovery-authority-spki-sha256, --pairing-recovery-trust, and WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN")
+		cfg.PairingRecoveryTrustFile == "" || cfg.PairingRecoveryAuthorityToken == "" {
+		return serveConfig{}, errors.New("pairing recovery requires authority URL, SPKI pin, pinned trust file, and bearer credential")
 	}
 
 	return cfg, nil
@@ -660,6 +689,10 @@ func runServe(args []string) error {
 }
 
 func runAgent(ctx context.Context, cfg serveConfig) error {
+	if err := preflightAgentState(cfg.StateDir); err != nil {
+		return err
+	}
+
 	id, err := identity.Ensure(
 		cfg.StateDir,
 		cfg.Name,
@@ -675,7 +708,7 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	recoveryAuthority, err := audit.NewHTTPRecoveryAuthorityForDevice(
 		cfg.PairingRecoveryAuthorityURL,
 		cfg.PairingRecoveryAuthoritySPKISHA256,
-		os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN"),
+		cfg.PairingRecoveryAuthorityToken,
 		id.Certificate,
 		authorityTrust,
 	)

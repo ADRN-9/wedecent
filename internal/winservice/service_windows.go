@@ -529,6 +529,17 @@ func accountSIDPrincipal(account string) (string, error) {
 // RestrictDirectory removes inherited ACL entries and grants full control only
 // to the configured service account, LocalSystem, and local Administrators.
 // The caller must be elevated and the directory must already exist.
+func ResolveServiceAccountSID(account string) (*windows.SID, error) {
+	principal, err := accountSIDPrincipal(account)
+	if err != nil {
+		return nil, err
+	}
+	return windows.StringToSid(strings.TrimPrefix(principal, "*"))
+}
+
+// RestrictDirectory removes inherited ACL entries and grants full control only
+// to the configured service account, LocalSystem, and local Administrators.
+// The caller must be elevated and the directory must already exist.
 func RestrictDirectory(path, account string) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("state directory is required")

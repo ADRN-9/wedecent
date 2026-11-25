@@ -209,3 +209,84 @@ func startRelayReadStageServer(t *testing.T, stage relayReadStage) (string, stri
 	}()
 	return listener.Addr().String(), caFile, reached, release, done
 }
+
+func TestRelayTLSHandshakeCancellationClosesPendingConnection(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	accepted := make(chan net.Conn, 1)
+	helloSeen := make(chan struct{})
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+		var first [1]byte
+		if _, err := conn.Read(first[:]); err != nil {
+			_ = conn.Close()
+			return
+		}
+		close(helloSeen)
+		var rest [256]byte
+		for {
+			if _, err := conn.Read(rest[:]); err != nil {
+				break
+			}
+		}
+		_ = conn.Close()
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	go func() {
+		conn, err := dialRelayTLS(ctx, listener.Addr().String(), RelayOptions{ServerName: "localhost", Timeout: 30 * time.Second})
+		if conn != nil {
+			_ = conn.Close()
+		}
+		result <- err
+	}()
+	var peer net.Conn
+	defer func() {
+		if peer != nil {
+			_ = peer.Close()
+		}
+	}()
+	select {
+	case peer = <-accepted:
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("TLS client did not connect")
+	}
+	// Wait until the peer has received ClientHello, then cancel while the
+	// client is waiting for the server handshake flight.
+	select {
+	case <-helloSeen:
+		cancel()
+	case <-time.After(2 * time.Second):
+		cancel()
+		t.Fatal("TLS ClientHello did not reach the stalled peer")
+	}
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("TLS handshake error = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		if peer != nil {
+			_ = peer.Close()
+		}
+		t.Fatal("TLS handshake did not stop after context cancellation")
+	}
+	if peer != nil {
+		_ = peer.Close()
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stalled TLS peer was not reaped after client cancellation")
+	}
+}

@@ -36,6 +36,9 @@ func runClientsList(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	if err := preflightAgentState(*stateDir); err != nil {
+		return err
+	}
 	if fs.NArg() != 0 {
 		return errors.New("usage: wd-agent clients list [--state directory]")
 	}
@@ -59,6 +62,9 @@ func runClientsRevoke(args []string) error {
 	fs := flag.NewFlagSet("clients revoke", flag.ContinueOnError)
 	stateDir := fs.String("state", state, "agent state directory")
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if err := preflightAgentState(*stateDir); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
