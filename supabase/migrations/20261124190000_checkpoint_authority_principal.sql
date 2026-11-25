@@ -55,7 +55,7 @@ create table public.checkpoint_fence_witness_trust (
 
 alter table public.checkpoint_fence_primary_trust enable row level security;
 alter table public.checkpoint_fence_witness_trust enable row level security;
-revoke all on public.checkpoint_fence_primary_trust, public.checkpoint_fence_witness_trust
+revoke all privileges on table public.checkpoint_fence_primary_trust, public.checkpoint_fence_witness_trust
     from public, anon, authenticated, service_role, wedecent_checkpoint_authority;
 
 -- The byte-oriented message builder mirrors checkpointFenceAcknowledgementMessage.
