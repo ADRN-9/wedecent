@@ -15,12 +15,12 @@ import (
 )
 
 type testIndependentRecoveryAuthority struct {
-	primaryPublic  ed25519.PublicKey
-	primaryPrivate ed25519.PrivateKey
-	trust          RecoveryAuthorityTrust
-	witnessPrivate map[string]ed25519.PrivateKey
-	head           RecoveryCheckpoint
-	heads          map[string]RecoveryCheckpoint
+	primaryPublic        ed25519.PublicKey
+	primaryPrivate       ed25519.PrivateKey
+	trust                RecoveryAuthorityTrust
+	witnessPrivate       map[string]ed25519.PrivateKey
+	head                 RecoveryCheckpoint
+	heads                map[string]RecoveryCheckpoint
 	loseNextCommit       bool
 	rejectMigrationProof bool
 }
