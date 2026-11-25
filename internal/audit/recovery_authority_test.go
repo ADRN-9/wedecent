@@ -102,7 +102,6 @@ func TestValidateRecoveryCheckpointRejectsWitnessDisagreement(t *testing.T) {
 	}
 }
 
-
 func TestRecoveryAuthorityTrustRequiresUniqueKeysAndPrimarySignature(t *testing.T) {
 	previous := sha256.Sum256([]byte("authority-previous"))
 	state := sha256.Sum256([]byte("authority-state"))
