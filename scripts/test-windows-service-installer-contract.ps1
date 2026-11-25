@@ -56,7 +56,10 @@ Assert-Contains $installer '$stateExisted = Test-DirectoryExistsStrict -Path $St
 Assert-Contains $installer 'Test-ServiceStateSafeForAccountRemoval -Path $StateDir' 'Account cleanup does not use the fail-closed state inspection helper.'
 
 # Execute the actual helper function definitions extracted from installer source.
-$installerAst = [System.Management.Automation.Language.Parser]::ParseInput($installer, [ref]$null, [ref]$null)
+$parseTokens = $null
+$parseErrors = $null
+$installerAst = [System.Management.Automation.Language.Parser]::ParseInput($installer, [ref]$parseTokens, [ref]$parseErrors)
+if ($parseErrors.Count -ne 0) { throw 'Installer AST parse failed during state-path helper tests.' }
 foreach ($functionName in @('Test-DirectoryExistsStrict', 'Test-ServiceStateSafeForAccountRemoval')) {
     $functionAst = $installerAst.Find({
         param($node)
@@ -71,7 +74,7 @@ $script:mockEntries = @()
 $script:mockEnumerationFails = $false
 function Get-Item {
     [CmdletBinding()]
-    param([string]$LiteralPath, [switch]$Force, [string]$ErrorAction)
+    param([string]$LiteralPath, [switch]$Force)
     switch ($script:mockItemMode) {
         'missing' {
             $exception = [System.Management.Automation.ItemNotFoundException]::new('injected missing path')
