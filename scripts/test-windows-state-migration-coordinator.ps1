@@ -718,7 +718,7 @@ try {
 
 $journalRaceFixture = New-MigrationFixture
 try {
-        # Match the production journal schema before the strict-mode writer refreshes its timestamp.
+    # Match the production journal schema before the strict-mode writer refreshes its timestamp.
     $raceJournal = [pscustomobject]@{ schema=1; product='WeDecent'; phase='Prepared'; transaction_id=[Guid]::NewGuid().ToString('D'); updated_utc=[DateTime]::UtcNow.ToString('o') }
     Write-WeDecentMigrationJournal -Path $journalRaceFixture.Journal -Journal $raceJournal
     $global:WeDecentMigrationRaceTarget = $journalRaceFixture.Journal
@@ -748,6 +748,65 @@ try {
 }
 
 
+foreach ($nativeRaceKind in @('metadata', 'journal')) {
+    $nativeRaceFixture = New-MigrationFixture
+    try {
+        if ($nativeRaceKind -ceq 'metadata') {
+            $nativeTarget = $nativeRaceFixture.MetadataPath
+            $nativePayload = '{"attacker":"native-metadata-substitution"}'
+        } else {
+            $nativeTarget = $nativeRaceFixture.Journal
+            $nativePayload = '{"attacker":"native-journal-substitution"}'
+            $nativeJournal = [pscustomobject]@{
+                schema = 1
+                product = 'WeDecent'
+                phase = 'Prepared'
+                transaction_id = [Guid]::NewGuid().ToString('D')
+                updated_utc = [DateTime]::UtcNow.ToString('o')
+            }
+            Write-WeDecentMigrationJournal -Path $nativeTarget -Journal $nativeJournal
+        }
+        $global:WeDecentMigrationNativeRaceTarget = $nativeTarget
+        $global:WeDecentMigrationNativeRaceBackup = $nativeTarget + '.native-race-original'
+        $global:WeDecentMigrationNativeRacePayload = $nativePayload
+        [WeDecentMigrationFileIdentityApi]::PublicationHook = [System.Action[string]] {
+            param($targetPath)
+            if ([string]::Equals($targetPath, $global:WeDecentMigrationNativeRaceTarget, [StringComparison]::OrdinalIgnoreCase)) {
+                [IO.File]::Move($global:WeDecentMigrationNativeRaceTarget, $global:WeDecentMigrationNativeRaceBackup)
+                [IO.File]::WriteAllText($global:WeDecentMigrationNativeRaceTarget, $global:WeDecentMigrationNativeRacePayload)
+            }
+        }
+        $nativeRejected = $false
+        try {
+            if ($nativeRaceKind -ceq 'metadata') {
+                Write-WeDecentMigrationMetadata -Path $nativeTarget -StatePath $nativeRaceFixture.Destination
+            } else {
+                $nativeJournal.phase = 'Copying'
+                Write-WeDecentMigrationJournal -Path $nativeTarget -Journal $nativeJournal
+            }
+        } catch {
+            $nativeRejected = $_.Exception.Message -like '*changed at the native publication boundary*'
+            if (-not $nativeRejected) { throw }
+        } finally {
+            [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
+        }
+        if (-not $nativeRejected) {
+            throw "Native $nativeRaceKind publication did not reject a target substituted after final validation."
+        }
+        if ((Get-Content -LiteralPath $nativeTarget -Raw) -cne $nativePayload) {
+            throw "Native $nativeRaceKind publication overwrote the substituted target."
+        }
+        Write-Host "Migration native-boundary $nativeRaceKind replacement substitution rejection PASS"
+    } finally {
+        [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
+        $global:WeDecentMigrationNativeRaceTarget = $null
+        $global:WeDecentMigrationNativeRaceBackup = $null
+        $global:WeDecentMigrationNativeRacePayload = $null
+        Remove-Item -LiteralPath $nativeRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+
 $recoverySeparationFixture = New-MigrationFixture
 try {
     $interrupted = $false
@@ -765,7 +824,7 @@ try {
     try {
         [void](Recover-WeDecentStateMigration -JournalPath $recoverySeparationFixture.Journal -AgentPath $agentPath -MetadataPath $recoverySeparationFixture.MetadataPath -ServiceName $recoverySeparationFixture.ServiceName)
     } catch {
-        $rejected = $_.Exception.Message -like '*overlap or alias*'
+        $rejected = $_.Exception.Message -like '*overlap or alias*' -or $_.Exception.Message -like '*unsafe or inconsistent source, destination, or staging paths*'
         if (-not $rejected) { throw }
     }
     if (-not $rejected) { throw 'Recovery accepted an overlapping source/staging path.' }
