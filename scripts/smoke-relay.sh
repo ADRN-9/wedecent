@@ -3,6 +3,22 @@ set -eu
 
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 TMP=$(mktemp -d)
+stop_child() {
+  pid=$1
+  [ -n "$pid" ] || return 0
+  kill "$pid" 2>/dev/null || true
+  attempts=0
+  while kill -0 "$pid" 2>/dev/null; do
+    attempts=$((attempts + 1))
+    if [ "$attempts" -ge 20 ]; then
+      kill -KILL "$pid" 2>/dev/null || true
+      break
+    fi
+    sleep 0.1
+  done
+  wait "$pid" 2>/dev/null || true
+}
+
 cleanup() {
   result=$?
   trap - EXIT INT TERM
@@ -14,10 +30,10 @@ cleanup() {
       fi
     done
   fi
-  if [ -n "${AGENT_PID:-}" ]; then kill "$AGENT_PID" 2>/dev/null || true; fi
-  if [ -n "${RELAY_PID:-}" ]; then kill "$RELAY_PID" 2>/dev/null || true; fi
-  if [ -n "${AUTHORITY_PID:-}" ]; then kill "$AUTHORITY_PID" 2>/dev/null || true; fi
-  if [ -n "${AUTH_PID:-}" ]; then kill "$AUTH_PID" 2>/dev/null || true; fi
+  stop_child "${AGENT_PID:-}"
+  stop_child "${RELAY_PID:-}"
+  stop_child "${AUTHORITY_PID:-}"
+  stop_child "${AUTH_PID:-}"
   rm -rf "$TMP"
   exit "$result"
 }
