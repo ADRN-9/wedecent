@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - security/c227-windows-preflight-service-recovery
+      - security/c228-windows-service-e2e-hardening
   pull_request:
     branches:
       - main
       - security/c225-relay-lifecycle-verification
+      - security/c227-windows-preflight-service-recovery
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -129,6 +131,7 @@ jobs:
             'installer/windows/Uninstall-WeDecent.ps1',
             'installer/windows/Test-WeDecentInstall.ps1',
             'scripts/test-windows-upgrade-preflight.ps1',
+            'scripts/test-windows-service-installer-contract.ps1',
             'scripts/test-windows-rfcomm-hardware.ps1'
           )
           foreach ($file in $files) {
@@ -147,6 +150,9 @@ jobs:
       - name: Verify Windows upgrade user-process preflight
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
+      - name: Verify Windows service installer recovery credential contract
+        shell: pwsh
+        run: .\scripts\test-windows-service-installer-contract.ps1
       - name: Test Windows replay-store security regressions
         run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterRepeatedProcessCrashes|TestWindowsReplayRepairsBootstrapLockOwnerAfterInterruptedCreation|TestWindowsReplayRejectsUnauthorizedOrphanStagingACL|TestWindowsReplayRejectsInsecurePreexistingBootstrapLock|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
       - name: Test native Windows agent
