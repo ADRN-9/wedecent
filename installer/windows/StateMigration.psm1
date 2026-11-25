@@ -512,7 +512,10 @@ function Read-WeDecentMigrationJournal {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    [void](Assert-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $Path))
+    $parentLease = New-WeDecentMigrationMutationLease -Directories @((Split-Path -Parent $Path))
+    try {
+    [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($parentLease)
+    $journalIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($Path)
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
     $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
     $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
@@ -531,7 +534,11 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal is not a regular file.'
     }
 
-    $journal = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+    $journalJson = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop
+    if ([WeDecentMigrationFileIdentityApi]::GetIdentity($Path) -cne $journalIdentity) {
+        throw 'Migration journal object changed while it was being read.'
+    }
+    $journal = $journalJson | ConvertFrom-Json
     if ([int]$journal.schema -ne 1 -or
         [string]$journal.product -cne 'WeDecent' -or
         [string]$journal.phase -notin $script:WeDecentMigrationPhases) {
@@ -601,6 +608,9 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal original metadata does not authenticate its source state.'
     }
     return $journal
+    } finally {
+        $parentLease.Dispose()
+    }
 }
 
 function Invoke-WeDecentMigrationStatePathCheck {
@@ -762,13 +772,13 @@ function Restore-WeDecentMigrationMetadata {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$OriginalJson
     )
-
     $parent = Split-Path -Parent $Path
     $parentLease = New-WeDecentMigrationMutationLease -Directories @($parent)
-    $targetIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($Path)
-    $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
     $temp = Join-Path $parent ('.installer-restore-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
+        [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($parentLease)
+        $targetIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($Path)
+        $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes($OriginalJson)
         $stream = [IO.FileStream]::new($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
         try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
