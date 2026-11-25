@@ -187,3 +187,18 @@ func TestPairingRecoveryArchiveSurvivesActiveCompactionFailure(t *testing.T) {
 		t.Fatalf("startup did not finish interrupted compaction: %+v %v", snapshot, err)
 	}
 }
+
+func TestArchivedCredentialGenerationCannotBeReservedAgain(t *testing.T) {
+	dir := recoveryTestDir(t)
+	recovery, err := OpenPairingRecovery(dir)
+	if err != nil { t.Fatal(err) }
+	id := strings.Repeat("8",32)
+	record := PairingOutcome{AttemptID:id, ActorID:testPairingActor, PeerID:testPairingPeer,
+		Fingerprint:testPairingFingerprint, CredentialGeneration:77}
+	if _, err := recovery.Reserve(record); err != nil { t.Fatal(err) }
+	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
+	if err := recovery.CompactResolved(); err != nil { t.Fatal(err) }
+	retry := record
+	retry.AttemptID = strings.Repeat("9",32)
+	if _, err := recovery.Reserve(retry); err == nil { t.Fatal("archived credential generation was reused") }
+}
