@@ -8,6 +8,7 @@ begin
     end if;
 end
 $$;
+revoke wedecent_checkpoint_authority from service_role, anon, authenticated;
 grant wedecent_checkpoint_authority to authenticator;
 
 create schema if not exists pgsodium;
