@@ -168,6 +168,212 @@ jobs:
           "WEDECENT_C228_ACCOUNT_CREATED=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Test native Windows agent
         run: go test ./...
+      - name: Verify distinct service SID state provisioning explicitly
+        run: go test ./cmd/wd-agent -run '^TestServiceProvisionDistinctConfiguredSIDNativeIntegration        shell: pwsh
+        run: |
+          $name = 'WeDecentC228Svc'
+          if ($env:WEDECENT_C228_ACCOUNT_CREATED -eq '1' -and (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) {
+            Remove-LocalUser -Name $name
+          }
+      - name: Build native Windows binaries
+        run: |
+          go build -trimpath -buildvcs=false -o wd.exe ./cmd/wd
+          go build -trimpath -buildvcs=false -o wd-agent.exe ./cmd/wd-agent
+          go build -trimpath -buildvcs=false -o wd-routerctl.exe ./cmd/wd-routerctl
+          go build -trimpath -buildvcs=false -o wd-core.exe ./cmd/wd-core
+          go build -trimpath -buildvcs=false -o wd-ui.exe ./cmd/wd-ui
+      - name: Verify native version and UI autostart status commands
+        shell: pwsh
+        run: |
+          .\wd.exe version
+          .\wd-agent.exe version
+          .\wd-routerctl.exe version
+          .\wd-core.exe version
+          .\wd-ui.exe version
+          .\wd-ui.exe autostart status
+
+  macos-agent:
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Build diagnostic macOS release bundle
+        run: WEDECENT_BUILD_MODE=diagnostic GOARCH=arm64 ./scripts/build-macos-release.sh
+      - name: Test Unix service packaging
+        run: sh ./scripts/test-unix-service-packaging.sh
+      - name: Test native macOS code
+        run: go test ./...
+      - name: Build native macOS binaries
+        run: |
+          go build -trimpath -buildvcs=false -o wd ./cmd/wd
+          go build -trimpath -buildvcs=false -o wd-agent ./cmd/wd-agent
+          go build -trimpath -buildvcs=false -o wd-routerctl ./cmd/wd-routerctl
+          go build -trimpath -buildvcs=false -o wd-core ./cmd/wd-core
+      - name: Verify native versions
+        run: |
+          ./wd version
+          ./wd-agent version
+          ./wd-routerctl version
+          ./wd-core version
+
+  windows-release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Test stable signed update publication boundary
+        run: bash ./scripts/test-windows-stable-update-publication.sh
+      - name: Test Windows signing finalizer
+        run: ./scripts/test-windows-signing-finalizer.sh
+      - name: Test signed Windows public-download preparation
+        run: ./scripts/test-windows-public-download-preparation.sh
+      - name: Test signed Windows publication boundary
+        run: ./scripts/test-windows-signed-publication.sh
+      - name: Test public Windows archive verifier
+        run: ./scripts/test-windows-public-verifier.sh
+      - name: Test public Windows installer package
+        run: ./scripts/test-windows-public-installer.sh
+      - name: Verify reproducible Windows release bundle
+        run: ./scripts/verify-windows-release-repro.sh
+      - name: Build diagnostic Windows release bundle
+        run: WEDECENT_BUILD_MODE=diagnostic ./scripts/build-windows-release.sh
+      - name: Verify release checksums
+        run: |
+          cd dist/wedecent-windows-amd64
+          sha256sum -c SHA256SUMS.txt
+      - name: Build complete Windows installer package payload
+        run: ./scripts/build-windows-installer-package.sh
+      - name: Verify installer package checksums
+        run: |
+          cd dist/wedecent-windows-installer
+          sha256sum -c SHA256SUMS.txt
+          sha256sum -c PACKAGE_SHA256SUMS.txt
+
+  relay-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+      - name: Install pinned Worker tooling
+        working-directory: cloudflare/relay-worker
+        run: npm install --ignore-scripts --no-audit --no-fund
+      - name: Check Worker syntax
+        working-directory: cloudflare/relay-worker
+        run: |
+          node --check src/index.js
+          node --check src/relay-auth.js
+          node --check src/rate-limit.js
+      - name: Test relay authentication and admission
+        working-directory: cloudflare/relay-worker
+        run: npm test
+      - name: Validate Worker bundle and configuration
+        working-directory: cloudflare/relay-worker
+        run: npx --no-install wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wedecent-relay-worker-dry-run"
+
+  control-plane:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+      - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
+        with:
+          deno-version: v2.x
+      - name: Check authorization and replay authority JavaScript syntax
+        run: |
+          node --check supabase/functions/_shared/route-authorization.mjs
+          node --check supabase/functions/_shared/port-forward-replay.mjs
+          node --check supabase/functions/_shared/route-authorization-signer.mjs
+      - name: Test Go-compatible route authorization signing
+        run: node --test supabase/functions/_shared/route-authorization.test.mjs
+      - name: Test non-extractable route authorization signer
+        run: node --test supabase/functions/_shared/route-authorization-signer.test.mjs
+      - name: Test Go-compatible remote replay authority encoding
+        run: node --test supabase/functions/_shared/port-forward-replay.test.mjs
+      - name: Type-check route authorization Edge Function
+        run: deno check supabase/functions/route-authorization/index.ts
+      - name: Type-check independent replay authority Edge Function
+        run: deno check supabase/functions/port-forward-replay/index.ts
+      - name: Type-check authenticated checkpoint finalization audit Edge Function
+        run: deno check supabase/functions/port-forward-finalization-audit/index.ts
+      - name: Test checkpoint finalization audit trust-anchor enforcement
+        run: deno test --check --allow-env --allow-read=supabase/tests/fixtures/checkpoint-audit-canonical-vectors.json,testdata/portforward/checkpoint_crypto_vectors.json supabase/functions/port-forward-finalization-audit/index_test.ts
+
+  supabase-db:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: supabase/setup-cli@1dedf2c611547ede7232d26866dd3c56ab903bbb # v1
+        with:
+          version: 2.117.0
+      - name: Test registry fallback and throttle retry policy
+        run: ./scripts/test-start-supabase-db-ci.sh
+      - name: Select an available isolated Supabase database port
+        run: |
+          python3 - <<'PY'
+          import socket
+          from pathlib import Path
+
+          config = Path("supabase/config.toml")
+          text = config.read_text()
+          if "[db]" in text:
+              raise SystemExit("CI port selection expects no committed [db] override")
+          with socket.socket() as probe:
+              probe.bind(("0.0.0.0", 0))
+              port = probe.getsockname()[1]
+          config.write_text(text.rstrip() + f"\n\n[db]\nport = {port}\n")
+          print(f"Selected disposable Supabase database port: {port}")
+          PY
+      - name: Start disposable local Supabase database
+        run: ./scripts/start-supabase-db-ci.sh
+      - name: Grant pgsodium keymaker to the disposable test role
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_container="$(docker ps --filter 'name=supabase_db_wedecent-local' --format '{{.Names}}' | head -n 1)"
+          if [[ -z "$db_container" ]]; then
+            echo "disposable Supabase database container not found" >&2
+            exit 1
+          fi
+          docker exec "$db_container" psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+            -c 'GRANT pgsodium_keymaker TO postgres WITH ADMIN OPTION'
+      - name: Run database pgTAP tests
+        run: env -u SUPABASE_INTERNAL_IMAGE_REGISTRY supabase test db
+      - name: Install PostgreSQL client for independent-session tests
+        run: |
+          if ! command -v psql >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y postgresql-client
+          fi
+      - name: Test port-forward authorization transaction races
+        run: bash ./scripts/test-port-forward-db-concurrency.sh
+      - name: Test atomic checkpoint reservation and recovery across independent sessions
+        run: bash ./scripts/test-checkpoint-reservation-concurrency.sh
+ -count=1 -v
       - name: Remove distinct Windows service test account
         if: always()
         shell: pwsh
