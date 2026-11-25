@@ -320,7 +320,7 @@ function Copy-WeDecentMigrationTreeVerified {
         throw "Migration staging path already exists: $stagingFull"
     }
     $stagingParent = Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $stagingFull)
-    [void](Assert-WeDecentMigrationDirectoryAcl -Path $stagingParent -ServiceSid $DestinationServiceSid)
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $stagingParent)
 
     [IO.Directory]::CreateDirectory($stagingFull) | Out-Null
     Set-WeDecentMigrationDirectoryAcl -Path $stagingFull -ServiceSid $DestinationServiceSid
@@ -475,6 +475,27 @@ function Invoke-WeDecentMigrationStatePathCheck {
     }
 }
 
+function Set-WeDecentMigrationAdminDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
+    $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($admins)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($admins, $system)) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance,
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $full -AclObject $acl -ErrorAction Stop
+    Assert-WeDecentMigrationAdminDirectory -Path $full
+}
+
 function Assert-WeDecentMigrationAdminDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -580,6 +601,16 @@ function Restore-WeDecentMigrationTransaction {
         Start-Service -Name $Journal.service_name -ErrorAction Stop
         (Get-Service -Name $Journal.service_name).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
     }
+    foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
+        [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
+        $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
+        $digest = Get-WeDecentMigrationManifestDigest -Manifest $manifest
+        if ($digest -cne [string]$Journal.source_manifest_sha256) {
+            throw "Rollback refuses to remove changed migration copy: $candidate"
+        }
+        Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
+    }
     $Journal.phase = 'RolledBack'
     Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
 }
@@ -636,6 +667,7 @@ function Invoke-WeDecentStateMigration {
     )
     if ($updatedPath -ceq [string]$service.PathName) { throw 'Could not construct an unambiguous destination SCM command line.' }
 
+    [void](Assert-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $JournalPath))
     $metadataItem = Get-Item -LiteralPath $MetadataPath -Force -ErrorAction Stop
     if ($metadataItem.PSIsContainer -or ($metadataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Installer metadata is not a regular file.'
@@ -658,6 +690,7 @@ function Invoke-WeDecentStateMigration {
         staging = $staging
         service_name = $ServiceName
         service_sid = $ServiceSid
+        agent_path = [IO.Path]::GetFullPath($AgentPath)
         service_was_running = ([string]$service.State -eq 'Running')
         original_service_path = [string]$service.PathName
         updated_service_path = $updatedPath
@@ -734,6 +767,7 @@ Export-ModuleMember -Function @(
     'Write-WeDecentMigrationJournal',
     'Read-WeDecentMigrationJournal',
     'Invoke-WeDecentMigrationStatePathCheck',
+    'Set-WeDecentMigrationAdminDirectory',
     'Assert-WeDecentMigrationAdminDirectory',
     'Recover-WeDecentStateMigration',
     'Invoke-WeDecentStateMigration'
