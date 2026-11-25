@@ -258,12 +258,8 @@ function Assert-WeDecentMigrationIdentityContinuity {
 
     $sourceFull = Assert-WeDecentMigrationRealDirectory -Path $Source
     $destinationFull = Assert-WeDecentMigrationRealDirectory -Path $Destination
-    $certificatePath = Join-Path $sourceFull 'identity.crt'
-    $certificate = [Security.Cryptography.X509Certificates.X509Certificate2]::CreateFromPemFile($certificatePath)
-    if ($certificate.PublicKey.Oid.Value -cne '1.3.101.112') {
-        throw 'Migration identity certificate is not Ed25519.'
-    }
-
+    # Go's identity.Load is the authoritative Ed25519 certificate, key-pair,
+    # device-ID and fingerprint verifier. Never parse Ed25519 via .NET X509.
     $identityFiles = @('identity.crt')
     foreach ($name in @('identity.key.dpapi', 'identity.key')) {
         if (Test-Path -LiteralPath (Join-Path $sourceFull $name) -PathType Leaf) {
@@ -274,7 +270,7 @@ function Assert-WeDecentMigrationIdentityContinuity {
         throw 'Migration source does not contain both an identity certificate and a supported private-key file.'
     }
 
-    $fingerprints = @{ 'identity.crt.public_key_algorithm' = $certificate.PublicKey.Oid.Value }
+    $fingerprints = @{}
     foreach ($name in $identityFiles) {
         $sourcePath = Join-Path $sourceFull $name
         $destinationPath = Join-Path $destinationFull $name
