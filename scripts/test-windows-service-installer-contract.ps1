@@ -50,7 +50,7 @@ Assert-Contains $validation 'recovery-authority.token' 'Installed-service valida
 Assert-Contains $validation 'recovery-authority-trust.json' 'Installed-service validation does not inspect the protected trust copy.'
 
 
-Assert-Contains $installer "[string]`$StateDir = (Join-Path `$InstallDir 'data\\agent')" 'Fresh service state must default beneath the protected Program Files install root.'
+Assert-Contains $installer "[string]`$StateDir = (Join-Path `$InstallDir 'data\agent')" 'Fresh service state must default beneath the protected Program Files install root.'
 Assert-Contains $installer "-Root `$InstallDir -Label 'StateDir'" 'Installer must reject service state outside the selected protected install root.'
 Assert-Contains $installer 'Existing service state location is not authenticated by protected installer metadata' 'Upgrade must fail closed when existing state location metadata is unavailable.'
 Assert-Contains $installer 'Refusing to redirect or overwrite identity state' 'Upgrade must not silently redirect existing cryptographic state.'
