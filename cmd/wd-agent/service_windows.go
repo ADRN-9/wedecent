@@ -264,7 +264,7 @@ shell := fs.String(
 	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
 		return fmt.Errorf("provision dedicated service state: %w", err)
 	}
-	tokenText, err := readServicePassword(stdinReader)
+	tokenText, err := readServiceCredential(stdinReader)
 	if err != nil { return fmt.Errorf("read recovery bearer token from stdin: %w", err) }
 	token := []byte(strings.TrimSpace(tokenText))
 	tokenText = ""
