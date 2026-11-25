@@ -65,13 +65,13 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr: *listen,
+		Addr:    *listen,
 		Handler: authority.handler(),
 		TLSConfig: &tls.Config{
-			MinVersion: tls.VersionTLS13,
-			MaxVersion: tls.VersionTLS13,
+			MinVersion:   tls.VersionTLS13,
+			MaxVersion:   tls.VersionTLS13,
 			Certificates: []tls.Certificate{certificate},
-			ClientAuth: tls.RequireAnyClientCert,
+			ClientAuth:   tls.RequireAnyClientCert,
 		},
 		ReadHeaderTimeout: 5 * time.Second,
 	}
@@ -106,8 +106,8 @@ func newRecoveryAuthority(token string) (*recoveryAuthority, []byte, error) {
 		Quorum     int               `json:"quorum"`
 	}{
 		PrimaryKey: base64.StdEncoding.EncodeToString(primaryPublic),
-		Witnesses: witnessPublic,
-		Quorum: 2,
+		Witnesses:  witnessPublic,
+		Quorum:     2,
 	})
 	if err != nil {
 		return nil, nil, err
@@ -126,8 +126,8 @@ func newServerCertificate() (tls.Certificate, []byte, string, error) {
 	now := time.Now().UTC()
 	caTemplate := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
-		Subject: pkix.Name{CommonName: "WeDecent smoke test CA"},
-		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
+		Subject:      pkix.Name{CommonName: "WeDecent smoke test CA"},
+		NotBefore:    now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
 		IsCA: true, BasicConstraintsValid: true,
 		KeyUsage: x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature,
 	}
@@ -145,9 +145,9 @@ func newServerCertificate() (tls.Certificate, []byte, string, error) {
 	}
 	serverTemplate := &x509.Certificate{
 		SerialNumber: big.NewInt(2),
-		Subject: pkix.Name{CommonName: "127.0.0.1"},
-		NotBefore: now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
-		KeyUsage: x509.KeyUsageDigitalSignature,
+		Subject:      pkix.Name{CommonName: "127.0.0.1"},
+		NotBefore:    now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 	}
@@ -162,8 +162,8 @@ func newServerCertificate() (tls.Certificate, []byte, string, error) {
 	pin := sha256.Sum256(serverCert.RawSubjectPublicKeyInfo)
 	pair := tls.Certificate{
 		Certificate: [][]byte{serverDER, caDER},
-		PrivateKey: serverPrivate,
-		Leaf: serverCert,
+		PrivateKey:  serverPrivate,
+		Leaf:        serverCert,
 	}
 	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
 	return pair, caPEM, hex.EncodeToString(pin[:]), nil
@@ -249,7 +249,7 @@ func (a *recoveryAuthority) signArchive(w http.ResponseWriter, r *http.Request) 
 	digest := sha256.Sum256(a.primaryPublic)
 	keyID := "ed25519:" + hex.EncodeToString(digest[:])
 	_ = json.NewEncoder(w).Encode(struct {
-		KeyID string `json:"key_id"`
+		KeyID     string `json:"key_id"`
 		Signature []byte `json:"signature"`
 	}{KeyID: keyID, Signature: ed25519.Sign(a.primaryPrivate, request.Payload)})
 }
@@ -314,4 +314,3 @@ func (a *recoveryAuthority) commit(w http.ResponseWriter, r *http.Request) {
 	a.heads[request.Scope] = checkpoint
 	_ = json.NewEncoder(w).Encode(checkpoint)
 }
-
