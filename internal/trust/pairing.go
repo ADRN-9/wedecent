@@ -227,13 +227,17 @@ func RotatePairingSecret(dir string) (string, error) {
 	now := time.Now().UTC()
 	if recordErr == nil {
 		lastObserved := oldRecord.LastObservedAt
-		if lastObserved.IsZero() { lastObserved = oldRecord.IssuedAt }
+		if lastObserved.IsZero() {
+			lastObserved = oldRecord.IssuedAt
+		}
 		if now.Add(30 * time.Second).Before(lastObserved) {
 			return "", fmt.Errorf("%w: system clock moved backwards", ErrPairingStateUnsafe)
 		}
 		if now.After(lastObserved) {
 			oldRecord.LastObservedAt = now
-			if err := writePairingCredential(dir, oldRecord); err != nil { return "", fmt.Errorf("%w: persist trusted clock observation: %v", ErrPairingStateUnsafe, err) }
+			if err := writePairingCredential(dir, oldRecord); err != nil {
+				return "", fmt.Errorf("%w: persist trusted clock observation: %v", ErrPairingStateUnsafe, err)
+			}
 		}
 	}
 	record := pairingCredentialRecord{Version: pairingCredentialVersion, Generation: previousGeneration + 1,
@@ -406,7 +410,9 @@ func loadPairingCredential(dir, hash string, now time.Time) (pairingCredentialRe
 		return record, fmt.Errorf("%w: credential issue time is in the future", ErrPairingStateUnsafe)
 	}
 	lastObserved := record.LastObservedAt
-	if lastObserved.IsZero() { lastObserved = record.IssuedAt }
+	if lastObserved.IsZero() {
+		lastObserved = record.IssuedAt
+	}
 	if now.Add(30 * time.Second).Before(lastObserved) {
 		return record, fmt.Errorf("%w: system clock moved backwards", ErrPairingStateUnsafe)
 	}
