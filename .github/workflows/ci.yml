@@ -155,8 +155,26 @@ jobs:
         run: .\scripts\test-windows-service-installer-contract.ps1
       - name: Test Windows replay-store security regressions
         run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterRepeatedProcessCrashes|TestWindowsReplayRepairsBootstrapLockOwnerAfterInterruptedCreation|TestWindowsReplayRejectsUnauthorizedOrphanStagingACL|TestWindowsReplayRejectsInsecurePreexistingBootstrapLock|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
+      - name: Provision distinct Windows service account for native state test
+        shell: pwsh
+        run: |
+          $name = 'WeDecentC228Svc'
+          if (Get-LocalUser -Name $name -ErrorAction SilentlyContinue) {
+            throw "Unexpected pre-existing test account: $name"
+          }
+          $password = ConvertTo-SecureString ("C228!" + [guid]::NewGuid().ToString('N') + "aA1") -AsPlainText -Force
+          New-LocalUser -Name $name -Password $password -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
+          "WEDECENT_TEST_SERVICE_ACCOUNT=.\$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Test native Windows agent
         run: go test ./...
+      - name: Remove distinct Windows service test account
+        if: always()
+        shell: pwsh
+        run: |
+          $name = 'WeDecentC228Svc'
+          if (Get-LocalUser -Name $name -ErrorAction SilentlyContinue) {
+            Remove-LocalUser -Name $name
+          }
       - name: Build native Windows binaries
         run: |
           go build -trimpath -buildvcs=false -o wd.exe ./cmd/wd
