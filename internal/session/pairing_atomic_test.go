@@ -407,7 +407,6 @@ func TestInspectPairingRecoveryDoesNotEquateVisibilityWithCommit(t *testing.T) {
 	}
 }
 
-
 func TestServerPairingFailsClosedWithoutIndependentRecoveryAuthority(t *testing.T) {
 	serverIdentity, err := identity.Ensure(t.TempDir(), "server")
 	if err != nil {
