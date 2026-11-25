@@ -189,3 +189,19 @@ func TestPairingCredentialRotationRecoversInterruptedConsumptionMetadata(t *test
 		t.Fatalf("interrupted consumption recovery produced invalid generation: %+v", next)
 	}
 }
+
+func TestWrongSecretCannotTriggerLegacyCredentialMigration(t *testing.T) {
+	dir := t.TempDir()
+	secret := "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"
+	if err := os.WriteFile(filepath.Join(dir, pairingSecretFile), []byte(HashSecret(secret)+"\n"), 0o600); err != nil { t.Fatal(err) }
+	if ok, err := CheckPairingSecret(dir, "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"); err != nil || ok {
+		t.Fatalf("wrong legacy secret accepted: %v %v", ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, pairingCredentialFile)); !os.IsNotExist(err) {
+		t.Fatalf("wrong secret triggered legacy migration: %v", err)
+	}
+	if ok, err := CheckPairingSecret(dir, secret); err != nil || !ok {
+		t.Fatalf("valid legacy secret failed migration: %v %v", ok, err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, pairingCredentialFile)); err != nil { t.Fatalf("valid secret did not persist migration: %v", err) }
+}
