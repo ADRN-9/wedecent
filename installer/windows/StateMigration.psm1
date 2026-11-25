@@ -878,6 +878,7 @@ function Restore-WeDecentMigrationTransaction {
         [string]$FaultAt
     )
 
+    Assert-WeDecentMigrationRecoverySource -Journal $Journal
     $Journal.phase = 'RollingBack'
     Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStarted' -FaultAt $FaultAt
@@ -887,11 +888,13 @@ function Restore-WeDecentMigrationTransaction {
         (Get-Service -Name $Journal.service_name).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceStopped' -FaultAt $FaultAt
+    Assert-WeDecentMigrationRecoverySource -Journal $Journal
     Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path -ServiceSid $Journal.service_sid -StartMode $Journal.service_start_mode
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt $FaultAt
     Restore-WeDecentMigrationMetadata -Path $Journal.metadata_path -OriginalJson $Journal.original_metadata_json
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackMetadataRestored' -FaultAt $FaultAt
     if ([bool]$Journal.service_was_running) {
+        Assert-WeDecentMigrationRecoverySource -Journal $Journal
         Start-Service -Name $Journal.service_name -ErrorAction Stop
         (Get-Service -Name $Journal.service_name).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
     }
@@ -981,6 +984,65 @@ function Get-WeDecentMigrationUpdatedServicePath {
     )
 }
 
+function Get-WeDecentMigrationCanonicalPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path.StartsWith('\\?\') -or $Path.StartsWith('\\.\')) {
+        throw 'Migration paths must be ordinary, absolute local filesystem paths.'
+    }
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\') -or $full -match '^[A-Za-z]:[^\\]') {
+        throw 'Migration paths must use an absolute local drive path.'
+    }
+    $trimmed = $full.TrimEnd('\')
+    if ($trimmed.Length -lt $root.TrimEnd('\').Length) { return $root }
+    return $trimmed
+}
+
+function Assert-WeDecentMigrationPathsDisjoint {
+    param([Parameter(Mandatory = $true)][string[]]$Paths)
+
+    $canonical = @()
+    foreach ($path in $Paths) {
+        $value = Get-WeDecentMigrationCanonicalPath -Path $path
+        foreach ($existing in $canonical) {
+            $leftPrefix = $existing.TrimEnd('\') + '\'
+            $rightPrefix = $value.TrimEnd('\') + '\'
+            if ([string]::Equals($existing, $value, [StringComparison]::OrdinalIgnoreCase) -or
+                $existing.StartsWith($rightPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+                $value.StartsWith($leftPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Migration paths overlap or alias one another: '$existing' and '$value'."
+            }
+        }
+        $canonical += $value
+    }
+    return $canonical
+}
+
+function Assert-WeDecentMigrationRecoverySource {
+    param([Parameter(Mandatory = $true)][pscustomobject]$Journal)
+
+    if ([string]::IsNullOrWhiteSpace([string]$Journal.source_manifest_sha256) -or
+        [string]::IsNullOrWhiteSpace([string]$Journal.source_stable_manifest_sha256) -or
+        $null -eq $Journal.identity -or
+        [string]::IsNullOrWhiteSpace([string]$Journal.identity.DeviceId) -or
+        [string]::IsNullOrWhiteSpace([string]$Journal.identity.Fingerprint)) {
+        throw 'Migration journal lacks an authenticated original-source snapshot; refusing recovery.'
+    }
+    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $Journal.source -ServiceSid $Journal.service_sid -MigrationSource)
+    $manifest = @(Get-WeDecentMigrationManifest -Root $Journal.source)
+    if ((Get-WeDecentMigrationManifestDigest -Manifest $manifest) -cne [string]$Journal.source_manifest_sha256 -or
+        (Get-WeDecentMigrationStableManifestDigest -Manifest $manifest) -cne [string]$Journal.source_stable_manifest_sha256) {
+        throw 'Original migration source manifest changed; refusing SCM restoration or service restart.'
+    }
+    $identity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $Journal.agent_path -StatePath $Journal.source
+    if ($identity.DeviceId -cne [string]$Journal.identity.DeviceId -or
+        $identity.Fingerprint -cne [string]$Journal.identity.Fingerprint) {
+        throw 'Original migration source identity changed; refusing SCM restoration or service restart.'
+    }
+}
+
 function Invoke-WeDecentStateMigration {
     [CmdletBinding()]
     param(
@@ -994,16 +1056,19 @@ function Invoke-WeDecentStateMigration {
         [string]$FaultAt
     )
 
-    $sourceFull = [IO.Path]::GetFullPath($Source)
-    $destinationFull = [IO.Path]::GetFullPath($Destination)
-    if ([string]::Equals($sourceFull.TrimEnd('\'), $destinationFull.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Migration source and destination are identical.'
-    }
+    $sourceFull = Get-WeDecentMigrationCanonicalPath -Path $Source
+    $destinationFull = Get-WeDecentMigrationCanonicalPath -Path $Destination
     if (Test-Path -LiteralPath $destinationFull) {
         throw 'Migration destination already exists; refusing to merge or overwrite existing state.'
     }
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $sourceFull -ServiceSid $ServiceSid -MigrationSource)
     $destinationParent = Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $destinationFull)
+    $transactionId = [Guid]::NewGuid().ToString('D')
+    $staging = Join-Path $destinationParent ('.wedecent-migration-' + $transactionId.Replace('-', ''))
+    $staging = Get-WeDecentMigrationCanonicalPath -Path $staging
+    $journalFull = Get-WeDecentMigrationCanonicalPath -Path $JournalPath
+    $metadataFull = Get-WeDecentMigrationCanonicalPath -Path $MetadataPath
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths @($sourceFull, $destinationFull, $staging, $journalFull, $metadataFull))
     [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
 
@@ -1025,8 +1090,8 @@ function Invoke-WeDecentStateMigration {
         throw 'Authenticated installer metadata does not match the migration source.'
     }
 
-    $transactionId = [Guid]::NewGuid().ToString('D')
-    $staging = Join-Path $destinationParent ('.wedecent-migration-' + $transactionId.Replace('-', ''))
+    $sourceManifest = @(Get-WeDecentMigrationManifest -Root $sourceFull)
+    $sourceIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $sourceFull
     $journal = [pscustomobject]@{
         schema = 1
         product = 'WeDecent'
@@ -1046,9 +1111,9 @@ function Invoke-WeDecentStateMigration {
         updated_service_path = $updatedPath
         metadata_path = [IO.Path]::GetFullPath($MetadataPath)
         original_metadata_json = $originalMetadataJson
-        identity = $null
-        source_manifest_sha256 = ''
-        source_stable_manifest_sha256 = ''
+        identity = $sourceIdentity
+        source_manifest_sha256 = Get-WeDecentMigrationManifestDigest -Manifest $sourceManifest
+        source_stable_manifest_sha256 = Get-WeDecentMigrationStableManifestDigest -Manifest $sourceManifest
         destination_manifest_sha256 = ''
         journal_path = [IO.Path]::GetFullPath($JournalPath)
         updated_utc = ''
