@@ -29,6 +29,9 @@ type slot struct {
 	finishOnce sync.Once
 	writeMu    sync.Mutex
 	state      slotState
+	watchStop  chan struct{}
+	watchDone  chan struct{}
+	watchOnce  sync.Once
 }
 
 func (s *slot) finish() {
@@ -107,7 +110,6 @@ func (b *Broker) Park(deviceID string, conn net.Conn) (*slot, error) {
 
 func (b *Broker) Take(deviceID string) (*slot, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
 	b.pruneLocked(deviceID)
 	q := b.slots[deviceID]
 	for i, s := range q {
@@ -121,9 +123,40 @@ func (b *Broker) Take(deviceID string) (*slot, error) {
 		} else {
 			b.slots[deviceID] = q
 		}
+		b.mu.Unlock()
+		s.stopDisconnectWatch()
 		return s, nil
 	}
+	b.mu.Unlock()
 	return nil, ErrNoAgent
+}
+
+func (b *Broker) WatchDisconnect(deviceID string, target *slot) {
+	target.watchStop = make(chan struct{})
+	target.watchDone = make(chan struct{})
+	go func() {
+		defer close(target.watchDone)
+		var one [1]byte
+		_, _ = target.conn.Read(one[:])
+		select {
+		case <-target.watchStop:
+			return
+		default:
+			b.Remove(deviceID, target)
+		}
+	}()
+}
+
+func (s *slot) stopDisconnectWatch() {
+	if s.watchStop == nil {
+		return
+	}
+	s.watchOnce.Do(func() {
+		close(s.watchStop)
+		_ = s.conn.SetReadDeadline(time.Now())
+		<-s.watchDone
+		_ = s.conn.SetReadDeadline(time.Time{})
+	})
 }
 
 func (b *Broker) Remove(deviceID string, target *slot) {
