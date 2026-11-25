@@ -40,14 +40,13 @@ func unsignedPairingSnapshot(snapshot pairingOutcomeSnapshot) pairingOutcomeSnap
 		ArchivedThrough: snapshot.ArchivedThrough, ArchiveCheckpoint: snapshot.ArchiveCheckpoint}
 }
 
-func activeLedgerMigrationOperationID(scope string, digest [sha256.Size]byte, generation uint64) (string, error) {
+func activeLedgerMigrationOperationID(scope string, digest [sha256.Size]byte) (string, error) {
 	material, err := json.Marshal(struct {
 		Domain     string `json:"domain"`
 		Scope      string `json:"scope"`
 		Snapshot   string `json:"snapshot"`
-		Generation uint64 `json:"generation"`
 	}{Domain: "wedecent-pairing-active-ledger-migration-v1", Scope: scope,
-		Snapshot: hex.EncodeToString(digest[:]), Generation: generation})
+		Snapshot: hex.EncodeToString(digest[:])})
 	if err != nil {
 		return "", err
 	}
@@ -91,7 +90,8 @@ func (r *PairingRecovery) verifyActiveLedgerSnapshot(ctx context.Context, snapsh
 	}
 	if snapshot.AuthorityGeneration == 0 {
 		if len(snapshot.Records) != 0 || snapshot.ArchivedThrough != 0 || snapshot.ArchiveCheckpoint != "" ||
-			!emptyRecoveryCheckpoint(head) {
+			snapshot.AuthorityPreviousDigest != "" || snapshot.AuthorityStateDigest != "" ||
+			!emptyRecoveryCheckpoint(snapshot.AuthorityCheckpoint) || !emptyRecoveryCheckpoint(head) {
 			return ErrRecoveryMigrationUntrusted
 		}
 		return nil
@@ -331,7 +331,7 @@ func (r *PairingRecovery) reconcileActiveLedger() error {
 		if readErr != nil || sha256.Sum256(raw) != migration.LegacyArchiveSHA256 {
 			return ErrRecoveryMigrationUntrusted
 		}
-		expectedMigrationID, idErr := activeLedgerMigrationOperationID(migration.Scope, migration.LegacyArchiveSHA256, migration.ExpectedGeneration)
+		expectedMigrationID, idErr := activeLedgerMigrationOperationID(migration.Scope, migration.LegacyArchiveSHA256)
 		if idErr != nil || expectedMigrationID != migration.MigrationOperationID {
 			return ErrRecoveryCheckpointConflict
 		}
@@ -471,7 +471,7 @@ func (r *PairingRecovery) MigrateLegacyActiveLedger(ctx context.Context, authent
 		return err
 	}
 	archiveDigest := sha256.Sum256(raw)
-	operationID, err := activeLedgerMigrationOperationID(scope, archiveDigest, head.Generation)
+	operationID, err := activeLedgerMigrationOperationID(scope, archiveDigest)
 	if err != nil {
 		return err
 	}
