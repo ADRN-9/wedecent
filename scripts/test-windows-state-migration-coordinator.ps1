@@ -748,15 +748,14 @@ try {
 }
 
 
+
 foreach ($nativeRaceKind in @('metadata', 'journal')) {
     $nativeRaceFixture = New-MigrationFixture
     try {
         if ($nativeRaceKind -ceq 'metadata') {
             $nativeTarget = $nativeRaceFixture.MetadataPath
-            $nativePayload = '{"attacker":"native-metadata-substitution"}'
         } else {
             $nativeTarget = $nativeRaceFixture.Journal
-            $nativePayload = '{"attacker":"native-journal-substitution"}'
             $nativeJournal = [pscustomobject]@{
                 schema = 1
                 product = 'WeDecent'
@@ -768,41 +767,108 @@ foreach ($nativeRaceKind in @('metadata', 'journal')) {
         }
         $global:WeDecentMigrationNativeRaceTarget = $nativeTarget
         $global:WeDecentMigrationNativeRaceBackup = $nativeTarget + '.native-race-original'
-        $global:WeDecentMigrationNativeRacePayload = $nativePayload
+        $global:WeDecentMigrationNativeRaceBlocked = $false
+        $global:WeDecentMigrationNativeRaceHookInvoked = $false
+        $global:WeDecentMigrationNativeRaceError = $null
         [WeDecentMigrationFileIdentityApi]::PublicationHook = [System.Action[string]] {
             param($targetPath)
             if ([string]::Equals($targetPath, $global:WeDecentMigrationNativeRaceTarget, [StringComparison]::OrdinalIgnoreCase)) {
-                [IO.File]::Move($global:WeDecentMigrationNativeRaceTarget, $global:WeDecentMigrationNativeRaceBackup)
-                [IO.File]::WriteAllText($global:WeDecentMigrationNativeRaceTarget, $global:WeDecentMigrationNativeRacePayload)
+                $global:WeDecentMigrationNativeRaceHookInvoked = $true
+                try {
+                    [IO.File]::Move($global:WeDecentMigrationNativeRaceTarget, $global:WeDecentMigrationNativeRaceBackup)
+                    [IO.File]::WriteAllText($global:WeDecentMigrationNativeRaceTarget, '{"attacker":"native-boundary-substitution"}')
+                } catch {
+                    $global:WeDecentMigrationNativeRaceError = $_.Exception.HResult
+                    $global:WeDecentMigrationNativeRaceBlocked = $_.Exception.HResult -in @(-2147024864, -2147024891)
+                    if (-not $global:WeDecentMigrationNativeRaceBlocked) { throw }
+                }
             }
         }
-        $nativeRejected = $false
-        try {
-            if ($nativeRaceKind -ceq 'metadata') {
-                Write-WeDecentMigrationMetadata -Path $nativeTarget -StatePath $nativeRaceFixture.Destination
-            } else {
-                $nativeJournal.phase = 'Copying'
-                Write-WeDecentMigrationJournal -Path $nativeTarget -Journal $nativeJournal
+        if ($nativeRaceKind -ceq 'metadata') {
+            Write-WeDecentMigrationMetadata -Path $nativeTarget -StatePath $nativeRaceFixture.Destination
+        } else {
+            $nativeJournal.phase = 'Copying'
+            Write-WeDecentMigrationJournal -Path $nativeTarget -Journal $nativeJournal
+        }
+        if (-not $global:WeDecentMigrationNativeRaceHookInvoked) {
+            throw "Native $nativeRaceKind publication did not execute the final-boundary substitution hook."
+        }
+        if (-not $global:WeDecentMigrationNativeRaceBlocked) {
+            throw "Native $nativeRaceKind publication did not prevent a delete/rename substitution at the syscall boundary (HRESULT=$global:WeDecentMigrationNativeRaceError)."
+        }
+        if (Test-Path -LiteralPath $global:WeDecentMigrationNativeRaceBackup) {
+            throw "Native $nativeRaceKind publication allowed the original target to be renamed during its publication guard."
+        }
+        if ((Get-Content -LiteralPath $nativeTarget -Raw | ConvertFrom-Json).attacker) {
+            throw "Native $nativeRaceKind publication exposed attacker-controlled replacement content."
+        }
+        if ($nativeRaceKind -ceq 'metadata') {
+            $published = Get-Content -LiteralPath $nativeTarget -Raw | ConvertFrom-Json
+            if ([IO.Path]::GetFullPath([string]$published.state_dir) -ine [IO.Path]::GetFullPath($nativeRaceFixture.Destination)) {
+                throw 'Native metadata publication did not publish the intended state directory.'
             }
-        } catch {
-            $nativeRejected = $_.Exception.Message -like '*changed at the native publication boundary*'
-            if (-not $nativeRejected) { throw }
-        } finally {
-            [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
+        } else {
+            $published = Get-Content -LiteralPath $nativeTarget -Raw | ConvertFrom-Json
+            if ([string]$published.phase -cne 'Copying') {
+                throw 'Native journal publication did not publish the intended journal phase.'
+            }
         }
-        if (-not $nativeRejected) {
-            throw "Native $nativeRaceKind publication did not reject a target substituted after final validation."
-        }
-        if ((Get-Content -LiteralPath $nativeTarget -Raw) -cne $nativePayload) {
-            throw "Native $nativeRaceKind publication overwrote the substituted target."
-        }
-        Write-Host "Migration native-boundary $nativeRaceKind replacement substitution rejection PASS"
+        Write-Host "Migration native-boundary $nativeRaceKind substitution blocked by held target guard PASS"
     } finally {
         [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
         $global:WeDecentMigrationNativeRaceTarget = $null
         $global:WeDecentMigrationNativeRaceBackup = $null
-        $global:WeDecentMigrationNativeRacePayload = $null
+        $global:WeDecentMigrationNativeRaceBlocked = $false
+        $global:WeDecentMigrationNativeRaceHookInvoked = $false
+        $global:WeDecentMigrationNativeRaceError = $null
         Remove-Item -LiteralPath $nativeRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+foreach ($fallbackRaceKind in @('metadata', 'journal')) {
+    $fallbackRaceFixture = New-MigrationFixture
+    try {
+        if ($fallbackRaceKind -ceq 'metadata') {
+            $fallbackTarget = $fallbackRaceFixture.MetadataPath
+        } else {
+            $fallbackTarget = $fallbackRaceFixture.Journal
+            $fallbackJournal = [pscustomobject]@{
+                schema = 1
+                product = 'WeDecent'
+                phase = 'Prepared'
+                transaction_id = [Guid]::NewGuid().ToString('D')
+                updated_utc = [DateTime]::UtcNow.ToString('o')
+            }
+            Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
+        }
+        $beforeIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($fallbackTarget)
+        $beforeContent = Get-Content -LiteralPath $fallbackTarget -Raw
+        $env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED = '1'
+        $fallbackRejected = $false
+        try {
+            if ($fallbackRaceKind -ceq 'metadata') {
+                Write-WeDecentMigrationMetadata -Path $fallbackTarget -StatePath $fallbackRaceFixture.Destination
+            } else {
+                $fallbackJournal.phase = 'Copying'
+                Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
+            }
+        } catch {
+            $fallbackRejected = $_.Exception.Message -like '*absolute-path fallback is disabled*'
+            if (-not $fallbackRejected) { throw }
+        } finally {
+            Remove-Item Env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED -ErrorAction SilentlyContinue
+        }
+        if (-not $fallbackRejected) {
+            throw "Native $fallbackRaceKind publication did not fail closed when handle-relative rename was unavailable."
+        }
+        if ([WeDecentMigrationFileIdentityApi]::GetIdentity($fallbackTarget) -cne $beforeIdentity -or
+            (Get-Content -LiteralPath $fallbackTarget -Raw) -cne $beforeContent) {
+            throw "Native $fallbackRaceKind publication changed its destination when handle-relative rename was unavailable."
+        }
+        Write-Host "Migration $fallbackRaceKind absolute-path fallback disabled and destination preserved PASS"
+    } finally {
+        Remove-Item Env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $fallbackRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
 
