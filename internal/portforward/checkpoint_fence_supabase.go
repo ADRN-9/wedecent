@@ -24,58 +24,58 @@ import (
 
 const (
 	checkpointFenceRPCMaxBody = 1 << 20
-	checkpointFenceLeaseSecs   = 60
+	checkpointFenceLeaseSecs  = 60
 )
 
 // SupabaseCheckpointFenceConfig is server-only configuration. Never embed the service-role
 // key or primary signing key in Local Core, a desktop renderer, or an installer.
 type SupabaseCheckpointFenceConfig struct {
-	Hostname       string
-	Port           uint16
-	SPKISHA256Pins string
-	ServiceRoleKey string
-	ActorID        string
-	PrimarySigner  crypto.Signer
+	Hostname          string
+	Port              uint16
+	SPKISHA256Pins    string
+	ServiceRoleKey    string
+	ActorID           string
+	PrimarySigner     crypto.Signer
 	CheckpointHeadKey ed25519.PublicKey
 	WitnessSetVersion string
-	Witnesses      []CheckpointFenceWitnessTrust
-	Now            func() time.Time
+	Witnesses         []CheckpointFenceWitnessTrust
+	Now               func() time.Time
 }
 
 type SupabaseCheckpointFencePrimary struct {
-	endpoint string
-	actorID string
-	serviceRoleKey string
-	primarySigner crypto.Signer
-	primaryKey ed25519.PublicKey
+	endpoint          string
+	actorID           string
+	serviceRoleKey    string
+	primarySigner     crypto.Signer
+	primaryKey        ed25519.PublicKey
 	checkpointHeadKey ed25519.PublicKey
 	witnessSetVersion string
-	witnesses map[string]ed25519.PublicKey
-	witnessIDs []string
-	quorum int
-	http *http.Client
-	now func() time.Time
+	witnesses         map[string]ed25519.PublicKey
+	witnessIDs        []string
+	quorum            int
+	http              *http.Client
+	now               func() time.Time
 }
 
 var (
-	_ CheckpointFencingPrimary = (*SupabaseCheckpointFencePrimary)(nil)
+	_ CheckpointFencingPrimary     = (*SupabaseCheckpointFencePrimary)(nil)
 	_ CheckpointFenceAtomicPrimary = (*SupabaseCheckpointFencePrimary)(nil)
-	_ CheckpointFenceHeadReader = (*SupabaseCheckpointFencePrimary)(nil)
-	_ CheckpointAuthorityBinding = (*SupabaseCheckpointFencePrimary)(nil)
+	_ CheckpointFenceHeadReader    = (*SupabaseCheckpointFencePrimary)(nil)
+	_ CheckpointAuthorityBinding   = (*SupabaseCheckpointFencePrimary)(nil)
 )
 
 type checkpointFenceEndpointWire struct {
-	DeviceID string `json:"device_id"`
-	AccountID string `json:"account_id"`
-	OrganizationID string `json:"organization_id"`
-	RevocationEpoch uint64 `json:"revocation_epoch"`
+	DeviceID        string `json:"device_id"`
+	AccountID       string `json:"account_id"`
+	OrganizationID  string `json:"organization_id"`
+	RevocationEpoch       uint64     `json:"revocation_epoch"`
 }
 
 type checkpointFenceScopeWire struct {
-	Kind string `json:"kind"`
-	DeviceID string `json:"device_id,omitempty"`
-	AccountID string `json:"account_id,omitempty"`
-	OrganizationID string `json:"organization_id"`
+	Kind           string `json:"kind"`
+	DeviceID       string `json:"device_id,omitempty"`
+	AccountID      string `json:"account_id,omitempty"`
+	OrganizationID  string `json:"organization_id"`
 }
 
 type checkpointFenceTokenWire struct {
@@ -83,15 +83,15 @@ type checkpointFenceTokenWire struct {
 	Scope checkpointFenceScopeWire `json:"scope"`
 	Participants []checkpointFenceEndpointWire `json:"participants"`
 	ExpectedFenceGeneration uint64 `json:"expected_fence_generation"`
-	Generation uint64 `json:"generation"`
+	Generation            uint64     `json:"generation"`
 	ExpectedRevocationEpoch uint64 `json:"expected_revocation_epoch"`
 	ResultingRevocationEpoch uint64 `json:"resulting_revocation_epoch"`
 	Action CheckpointFenceAction `json:"action"`
 	OperationID string `json:"operation_id"`
 	RequestSHA256 string `json:"request_sha256"`
 	AuthorizationSHA256 string `json:"authorization_sha256"`
-	PrimaryHeadGeneration uint64 `json:"primary_head_generation"`
-	PrimaryHeadSHA256 string `json:"primary_head_sha256"`
+	PrimaryHeadGeneration uint64     `json:"primary_head_generation"`
+	PrimaryHeadSHA256     string     `json:"primary_head_sha256"`
 	PreviousFenceSHA256 string `json:"previous_fence_sha256"`
 	WitnessSetVersion string `json:"witness_set_version"`
 	WitnessIDs []string `json:"witness_ids"`
@@ -103,7 +103,7 @@ type checkpointFenceTokenWire struct {
 type checkpointFenceAckWire struct {
 	WitnessID string `json:"witness_id"`
 	TokenSHA256 string `json:"token_sha256"`
-	Generation uint64 `json:"generation"`
+	Generation            uint64     `json:"generation"`
 	Action CheckpointFenceAction `json:"action"`
 	OperationID string `json:"operation_id"`
 	WitnessKeyID string `json:"witness_key_id"`
@@ -168,8 +168,8 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 		Hostname: config.Hostname, Port: config.Port, SPKISHA256Pins: config.SPKISHA256Pins,
 	}, pins)
 	httpClient := &http.Client{
-		Timeout: 12 * time.Second,
-		Transport: transport,
+		Timeout:       12 * time.Second,
+		Transport:     transport,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	now := config.Now
@@ -232,24 +232,24 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 			return CheckpointFenceToken{}, err
 		}
 		participants = append(participants, map[string]any{
-			"device_id": item.Endpoint.DeviceID,
-			"account_id": item.Endpoint.AccountID,
-			"organization_id": item.Endpoint.OrganizationID,
+			"device_id":        item.Endpoint.DeviceID,
+			"account_id":       item.Endpoint.AccountID,
+			"organization_id":  item.Endpoint.OrganizationID,
 			"revocation_epoch": item.Endpoint.RevocationEpoch,
-			"head_generation": item.Head.Generation,
-			"head_hash": hex.EncodeToString(item.Head.RecordHash[:]),
+			"head_generation":  item.Head.Generation,
+			"head_hash":        hex.EncodeToString(item.Head.RecordHash[:]),
 		})
 	}
 	args := map[string]any{
-		"p_operation_id": request.OperationID,
-		"p_action": string(request.Action),
-		"p_organization_id": request.Scope.OrganizationID,
-		"p_actor_id": p.actorID,
-		"p_request_sha256": "\\x" + hex.EncodeToString(request.RequestSHA256[:]),
-		"p_participants": participants,
+		"p_operation_id":            request.OperationID,
+		"p_action":                  string(request.Action),
+		"p_organization_id":         request.Scope.OrganizationID,
+		"p_actor_id":                p.actorID,
+		"p_request_sha256":          "\\x" + hex.EncodeToString(request.RequestSHA256[:]),
+		"p_participants":            participants,
 		"p_primary_head_generation": request.PrimaryHeadGeneration,
-		"p_primary_head_sha256": "\\x" + hex.EncodeToString(request.PrimaryHeadSHA256[:]),
-		"p_lease_seconds": checkpointFenceLeaseSecs,
+		"p_primary_head_sha256":     "\\x" + hex.EncodeToString(request.PrimaryHeadSHA256[:]),
+		"p_lease_seconds":           checkpointFenceLeaseSecs,
 	}
 	var response map[string]json.RawMessage
 	if err := p.rpc(ctx, "reserve_checkpoint_fence_operation", args, &response); err != nil {
@@ -311,18 +311,18 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 	canonicalParticipants := cloneCheckpointEndpoints(request.Participants)
 	sort.Slice(canonicalParticipants, func(i, j int) bool { return canonicalParticipants[i].DeviceID < canonicalParticipants[j].DeviceID })
 	token := CheckpointFenceToken{
-		Version: checkpointFenceVersion,
-		Scope: request.Scope,
-		Participants: canonicalParticipants,
-		ExpectedFenceGeneration: fenceGeneration,
-		Generation: fenceGeneration + 1,
-		ExpectedRevocationEpoch: revocationEpoch,
+		Version:                  checkpointFenceVersion,
+		Scope:                    request.Scope,
+		Participants:             canonicalParticipants,
+		ExpectedFenceGeneration:  fenceGeneration,
+		Generation:               fenceGeneration + 1,
+		ExpectedRevocationEpoch:  revocationEpoch,
 		ResultingRevocationEpoch: revocationEpoch + boolUint64(request.Action == CheckpointFenceRevoke),
-		Action: request.Action, OperationID: request.OperationID,
+		Action:                   request.Action, OperationID: request.OperationID,
 		RequestSHA256: request.RequestSHA256, AuthorizationSHA256: request.AuthorizationSHA256,
 		PrimaryHeadGeneration: primaryGeneration, PrimaryHeadSHA256: request.PrimaryHeadSHA256,
 		PreviousFenceSHA256: fenceHashBytes,
-		WitnessSetVersion: p.witnessSetVersion, WitnessIDs: append([]string(nil), p.witnessIDs...),
+		WitnessSetVersion:   p.witnessSetVersion, WitnessIDs: append([]string(nil), p.witnessIDs...),
 		ExpiresAtUnixMS: tokenExpiry,
 	}
 	token, err = p.signToken(token)
@@ -339,10 +339,10 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 	}
 	var recorded json.RawMessage
 	recordArgs := map[string]any{
-		"p_operation_id": request.OperationID,
-		"p_fingerprint": "\\x" + hex.EncodeToString(fingerprintBytes[:]),
-		"p_token_sha256": "\\x" + hex.EncodeToString(tokenDigest[:]),
-		"p_token": tokenWire,
+		"p_operation_id":            request.OperationID,
+		"p_fingerprint":  "\\x" + hex.EncodeToString(fingerprintBytes[:]),
+		"p_token_sha256":             "\\x" + hex.EncodeToString(tokenDigest[:]),
+		"p_token":        tokenWire,
 	}
 	if err := p.rpc(ctx, "record_checkpoint_fence_token", recordArgs, &recorded); err != nil {
 		operation, found, loadErr := p.LoadFence(ctx, request.Scope, request.OperationID)
@@ -399,8 +399,8 @@ func (p *SupabaseCheckpointFencePrimary) CommitFenceWithCheckpointHeads(
 	var result json.RawMessage
 	err = p.rpc(ctx, "commit_checkpoint_fence_operation", map[string]any{
 		"p_operation_id": token.OperationID,
-		"p_fingerprint": "\\x" + hex.EncodeToString(fingerprint[:]),
-		"p_token_sha256": "\\x" + hex.EncodeToString(tokenDigest[:]),
+		"p_fingerprint":              "\\x" + hex.EncodeToString(fingerprint[:]),
+		"p_token_sha256":             "\\x" + hex.EncodeToString(tokenDigest[:]),
 		"p_witness_acknowledgements": acks,
 	}, &result)
 	if err != nil {
@@ -429,13 +429,13 @@ func (p *SupabaseCheckpointFencePrimary) FenceHead(ctx context.Context, scope Ch
 		return CheckpointFenceHead{}, nil
 	}
 	var response struct {
-		Generation uint64 `json:"generation"`
-		RevocationEpoch uint64 `json:"revocation_epoch"`
-		FenceHash string `json:"fence_hash"`
-		PrimaryHeadGeneration uint64 `json:"primary_head_generation"`
-		PrimaryHeadSHA256 string `json:"primary_head_sha256"`
-		PendingOperationID string `json:"pending_operation_id"`
-		PendingExpiresAt *time.Time `json:"pending_expires_at"`
+		Generation            uint64     `json:"generation"`
+		RevocationEpoch       uint64     `json:"revocation_epoch"`
+		FenceHash             string     `json:"fence_hash"`
+		PrimaryHeadGeneration uint64     `json:"primary_head_generation"`
+		PrimaryHeadSHA256     string     `json:"primary_head_sha256"`
+		PendingOperationID    string     `json:"pending_operation_id"`
+		PendingExpiresAt      *time.Time `json:"pending_expires_at"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return CheckpointFenceHead{}, ErrCheckpointIntegrity
@@ -473,10 +473,10 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 		return CheckpointFenceOperation{}, false, err
 	}
 	var response struct {
-		Found bool `json:"found"`
-		Token json.RawMessage `json:"token"`
-		Fingerprint string `json:"fingerprint"`
-		Committed bool `json:"committed"`
+		Found            bool                     `json:"found"`
+		Token            json.RawMessage          `json:"token"`
+		Fingerprint      string                   `json:"fingerprint"`
+		Committed        bool                     `json:"committed"`
 		Acknowledgements []checkpointFenceAckWire `json:"acknowledgements"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil {
@@ -564,8 +564,8 @@ func (p *SupabaseCheckpointFencePrimary) loadOperationFingerprint(
 		return [sha256.Size]byte{}, err
 	}
 	var response struct {
-		Found bool `json:"found"`
-		Fingerprint string `json:"fingerprint"`
+		Found            bool                     `json:"found"`
+		Fingerprint      string                   `json:"fingerprint"`
 	}
 	if err := json.Unmarshal(raw, &response); err != nil || !response.Found {
 		return [sha256.Size]byte{}, ErrCheckpointHistorical
@@ -646,14 +646,14 @@ func checkpointFenceTokenToWire(token CheckpointFenceToken) (checkpointFenceToke
 			AccountID: token.Scope.AccountID, OrganizationID: token.Scope.OrganizationID,
 		},
 		ExpectedFenceGeneration: token.ExpectedFenceGeneration, Generation: token.Generation,
-		ExpectedRevocationEpoch: token.ExpectedRevocationEpoch,
+		ExpectedRevocationEpoch:  token.ExpectedRevocationEpoch,
 		ResultingRevocationEpoch: token.ResultingRevocationEpoch,
-		Action: token.Action, OperationID: token.OperationID,
-		RequestSHA256: hex.EncodeToString(token.RequestSHA256[:]),
-		AuthorizationSHA256: hex.EncodeToString(token.AuthorizationSHA256[:]),
+		Action:                   token.Action, OperationID: token.OperationID,
+		RequestSHA256:         hex.EncodeToString(token.RequestSHA256[:]),
+		AuthorizationSHA256:   hex.EncodeToString(token.AuthorizationSHA256[:]),
 		PrimaryHeadGeneration: token.PrimaryHeadGeneration,
-		PrimaryHeadSHA256: hex.EncodeToString(token.PrimaryHeadSHA256[:]),
-		PreviousFenceSHA256: hex.EncodeToString(token.PreviousFenceSHA256[:]),
+		PrimaryHeadSHA256:     hex.EncodeToString(token.PrimaryHeadSHA256[:]),
+		PreviousFenceSHA256:   hex.EncodeToString(token.PreviousFenceSHA256[:]),
 		WitnessSetVersion: token.WitnessSetVersion, WitnessIDs: append([]string(nil), token.WitnessIDs...),
 		ExpiresAtUnixMS: token.ExpiresAtUnixMS, PrimaryKeyID: token.PrimaryKeyID,
 		Signature: base64.StdEncoding.EncodeToString(token.Signature),
@@ -673,7 +673,9 @@ func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, er
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
 	requestHash, err := decodeSHA256Hex(wire.RequestSHA256)
-	if err != nil { return CheckpointFenceToken{}, err }
+	if err != nil {
+		return CheckpointFenceToken{}, err
+	}
 	authHash, err := decodeSHA256Hex(wire.AuthorizationSHA256)
 	if err != nil { return CheckpointFenceToken{}, err }
 	primaryHash, err := decodeSHA256Hex(wire.PrimaryHeadSHA256)
@@ -721,7 +723,9 @@ func checkpointFenceAckToWire(ack CheckpointFenceAcknowledgement) checkpointFenc
 
 func checkpointFenceAckFromWire(wire checkpointFenceAckWire) (CheckpointFenceAcknowledgement, error) {
 	digest, err := decodeSHA256Hex(wire.TokenSHA256)
-	if err != nil { return CheckpointFenceAcknowledgement{}, err }
+	if err != nil {
+		return CheckpointFenceAcknowledgement{}, err
+	}
 	signature, err := base64.StdEncoding.Strict().DecodeString(wire.Signature)
 	if err != nil || len(signature) != ed25519.SignatureSize {
 		return CheckpointFenceAcknowledgement{}, ErrCheckpointIntegrity
