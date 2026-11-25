@@ -102,7 +102,7 @@ func TestLegacyPairingCredentialMigratesDurablyWithShortExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if record.Generation != 1 || record.SecretSHA256 != hash || record.IssuedAt != now ||
+	if record.Generation != 1 || record.SecretSHA256 != hash || record.IssuedAt != now || record.LastObservedAt != now ||
 		record.ExpiresAt.Sub(now) > pairingCredentialLifetime {
 		t.Fatalf("legacy migration not bounded: %+v", record)
 	}
@@ -204,4 +204,37 @@ func TestWrongSecretCannotTriggerLegacyCredentialMigration(t *testing.T) {
 		t.Fatalf("valid legacy secret failed migration: %v %v", ok, err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, pairingCredentialFile)); err != nil { t.Fatalf("valid secret did not persist migration: %v", err) }
+}
+
+
+func TestPairingCredentialRejectsClockRollbackAndPersistsHighWaterMark(t *testing.T) {
+	dir := t.TempDir()
+	secret, err := RotatePairingSecret(dir)
+	if err != nil { t.Fatal(err) }
+	hash := HashSecret(secret)
+	record, err := readPairingCredentialRecord(dir)
+	if err != nil { t.Fatal(err) }
+	advanced := record.IssuedAt.Add(2 * time.Minute)
+	record.LastObservedAt = advanced
+	if err := writePairingCredential(dir, record); err != nil { t.Fatal(err) }
+
+	_, err = loadPairingCredential(dir, hash, advanced.Add(-time.Minute))
+	if !errors.Is(err, ErrPairingStateUnsafe) {
+		t.Fatalf("clock rollback was not rejected: %v", err)
+	}
+	accepted, err := loadPairingCredential(dir, hash, advanced.Add(10*time.Second))
+	if err != nil { t.Fatalf("small clock skew within tolerance rejected: %v", err) }
+	if !accepted.LastObservedAt.Equal(advanced) {
+		t.Fatalf("clock high-water mark moved backwards: %s", accepted.LastObservedAt)
+	}
+	accepted, err = loadPairingCredential(dir, hash, advanced.Add(time.Minute))
+	if err != nil { t.Fatal(err) }
+	if !accepted.LastObservedAt.Equal(advanced.Add(time.Minute)) {
+		t.Fatalf("new clock high-water mark not persisted: %s", accepted.LastObservedAt)
+	}
+	persisted, err := readPairingCredentialRecord(dir)
+	if err != nil { t.Fatal(err) }
+	if !persisted.LastObservedAt.Equal(advanced.Add(time.Minute)) {
+		t.Fatalf("persisted clock high-water mark mismatch: %s", persisted.LastObservedAt)
+	}
 }
