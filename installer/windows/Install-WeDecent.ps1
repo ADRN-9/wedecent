@@ -751,15 +751,16 @@ $migrationModule = Join-Path $PSScriptRoot 'StateMigration.psm1'
 Import-Module $migrationModule -Force -ErrorAction Stop
 $migrationJournalPath = Join-Path (Split-Path -Parent $metadataPath) 'state-migration.json'
 $migrationAgentPath = Join-Path $BundlePath 'wd-agent.exe'
-[void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath)
 $metadata = Read-WeDecentMetadata
 $metadataTrusted = $false
 if ($metadata) {
     $metadataTrusted = Test-WeDecentMetadataTrusted $metadataPath
     if (-not $metadataTrusted) {
-        Write-Warning 'Existing installer metadata is not ACL-trusted; installer ownership claims will not be preserved.'
+        throw 'Existing installer metadata is not ACL-trusted; refusing migration recovery or installer state changes.'
     }
 }
+[void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath)
+$metadata = Read-WeDecentMetadata
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
 if (-not $service) {
     if ($metadata) {
