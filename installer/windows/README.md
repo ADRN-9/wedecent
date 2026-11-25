@@ -123,10 +123,12 @@ The default paths are:
 
 ```text
 C:\Program Files\WeDecent
-C:\ProgramData\WeDecent\agent
+C:\Program Files\WeDecent\data\agent
 ```
 
-On an already-installed host, running `Install-WeDecent.ps1` again performs an in-place binary upgrade and preserves the existing SCM configuration and machine identity.
+`C:\ProgramData\WeDecent\agent` is the legacy state location used by older installations; it is not the current fresh-install default. Existing installations keep their authenticated recorded `state_dir` and must not be redirected to Program Files until the identity-preserving migration described below is implemented and accepted. The installer currently refuses a legacy ProgramData state directory on a fresh install rather than creating a replacement identity, and refuses an upgrade that changes the recorded state path. Automated migration, crash recovery, and privileged rollback acceptance remain unimplemented.
+
+On an already-installed host, running `Install-WeDecent.ps1` again performs an in-place binary upgrade and preserves the existing SCM configuration and machine identity only when the authenticated recorded state path is unchanged.
 
 If a local account named `WeDecentSvc` already exists but was not created by this installer, the installer refuses to take it over by default. Explicit adoption requires an in-memory `PSCredential`:
 
