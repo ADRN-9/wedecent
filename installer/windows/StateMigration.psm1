@@ -1140,9 +1140,12 @@ function Invoke-WeDecentStateMigration {
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Copying' -FaultAt $FaultAt
         $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath -FaultAt $FaultAt
-        $journal.source_manifest_sha256 = $copy.SourceManifestSHA256
-        $journal.source_stable_manifest_sha256 = $copy.SourceStableManifestSHA256
-        $journal.identity = $copy.Identity
+        if ($copy.SourceManifestSHA256 -cne [string]$journal.source_manifest_sha256 -or
+            $copy.SourceStableManifestSHA256 -cne [string]$journal.source_stable_manifest_sha256 -or
+            $copy.Identity.DeviceId -cne [string]$journal.identity.DeviceId -or
+            $copy.Identity.Fingerprint -cne [string]$journal.identity.Fingerprint) {
+            throw 'Original source changed after the authenticated migration snapshot; refusing to continue.'
+        }
         $journal.phase = 'Copied'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Copied' -FaultAt $FaultAt
@@ -1167,6 +1170,7 @@ function Invoke-WeDecentStateMigration {
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'StatePublished' -FaultAt $FaultAt
 
+        Assert-WeDecentMigrationRecoverySource -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'SCMTransition' -FaultAt $FaultAt
         Set-WeDecentMigrationServicePath -ServiceName $ServiceName -BinaryPath $updatedPath -ServiceSid $ServiceSid -StartMode ([string]$service.StartMode)
         $journal.phase = 'ServiceReconfigured'
@@ -1175,6 +1179,7 @@ function Invoke-WeDecentStateMigration {
         Write-WeDecentMigrationMetadata -Path $MetadataPath -StatePath $destinationFull
         Invoke-WeDecentMigrationFaultPoint -Name 'MetadataUpdated' -FaultAt $FaultAt
         if ($journal.service_was_running) {
+            Assert-WeDecentMigrationRecoverySource -Journal $journal
             Start-Service -Name $ServiceName -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         }
