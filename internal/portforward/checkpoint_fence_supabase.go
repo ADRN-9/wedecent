@@ -30,33 +30,33 @@ const (
 // SupabaseCheckpointFenceConfig is server-only configuration. Never embed the service-role
 // key or primary signing key in Local Core, a desktop renderer, or an installer.
 type SupabaseCheckpointFenceConfig struct {
-	Hostname          string
-	Port              uint16
-	SPKISHA256Pins    string
-	ServiceRoleKey    string
-	ActorID           string
-	PrimarySigner     crypto.Signer
-	CheckpointHeadKey ed25519.PublicKey
+	Hostname                   string
+	Port                       uint16
+	SPKISHA256Pins             string
+	ServiceRoleKey             string
+	ActorID                    string
+	PrimarySigner              crypto.Signer
+	CheckpointHeadKey          ed25519.PublicKey
 	RevocationAuthorizationKey ed25519.PublicKey
-	WitnessSetVersion string
-	Witnesses         []CheckpointFenceWitnessTrust
-	Now               func() time.Time
+	WitnessSetVersion          string
+	Witnesses                  []CheckpointFenceWitnessTrust
+	Now                        func() time.Time
 }
 
 type SupabaseCheckpointFencePrimary struct {
-	endpoint          string
-	actorID           string
-	serviceRoleKey    string
-	primarySigner     crypto.Signer
-	primaryKey        ed25519.PublicKey
-	checkpointHeadKey ed25519.PublicKey
+	endpoint                   string
+	actorID                    string
+	serviceRoleKey             string
+	primarySigner              crypto.Signer
+	primaryKey                 ed25519.PublicKey
+	checkpointHeadKey          ed25519.PublicKey
 	revocationAuthorizationKey ed25519.PublicKey
-	witnessSetVersion string
-	witnesses         map[string]ed25519.PublicKey
-	witnessIDs        []string
-	quorum            int
-	http              *http.Client
-	now               func() time.Time
+	witnessSetVersion          string
+	witnesses                  map[string]ed25519.PublicKey
+	witnessIDs                 []string
+	quorum                     int
+	http                       *http.Client
+	now                        func() time.Time
 }
 
 var (
@@ -81,28 +81,28 @@ type checkpointFenceScopeWire struct {
 }
 
 type checkpointFenceTokenWire struct {
-	Version                  uint32                        `json:"version"`
-	Scope                    checkpointFenceScopeWire      `json:"scope"`
-	Participants             []checkpointFenceEndpointWire `json:"participants"`
-	ExpectedFenceGeneration  uint64                        `json:"expected_fence_generation"`
-	Generation               uint64                        `json:"generation"`
-	ExpectedRevocationEpoch  uint64                        `json:"expected_revocation_epoch"`
-	ResultingRevocationEpoch uint64                        `json:"resulting_revocation_epoch"`
-	Action                   CheckpointFenceAction         `json:"action"`
-	OperationID              string                        `json:"operation_id"`
-	RequestSHA256            string                        `json:"request_sha256"`
-	AuthorizationSHA256      string                        `json:"authorization_sha256"`
-	AuthorizationProof       string                        `json:"authorization_proof"`
-	AuthorizationProofIssuedAtUnixMS int64                 `json:"authorization_proof_issued_at_unix_ms"`
-	AuthorizationProofExpiresAtUnixMS int64                `json:"authorization_proof_expires_at_unix_ms"`
-	PrimaryHeadGeneration    uint64                        `json:"primary_head_generation"`
-	PrimaryHeadSHA256        string                        `json:"primary_head_sha256"`
-	PreviousFenceSHA256      string                        `json:"previous_fence_sha256"`
-	WitnessSetVersion        string                        `json:"witness_set_version"`
-	WitnessIDs               []string                      `json:"witness_ids"`
-	ExpiresAtUnixMS          int64                         `json:"expires_at_unix_ms"`
-	PrimaryKeyID             string                        `json:"primary_key_id"`
-	Signature                string                        `json:"signature"`
+	Version                           uint32                        `json:"version"`
+	Scope                             checkpointFenceScopeWire      `json:"scope"`
+	Participants                      []checkpointFenceEndpointWire `json:"participants"`
+	ExpectedFenceGeneration           uint64                        `json:"expected_fence_generation"`
+	Generation                        uint64                        `json:"generation"`
+	ExpectedRevocationEpoch           uint64                        `json:"expected_revocation_epoch"`
+	ResultingRevocationEpoch          uint64                        `json:"resulting_revocation_epoch"`
+	Action                            CheckpointFenceAction         `json:"action"`
+	OperationID                       string                        `json:"operation_id"`
+	RequestSHA256                     string                        `json:"request_sha256"`
+	AuthorizationSHA256               string                        `json:"authorization_sha256"`
+	AuthorizationProof                string                        `json:"authorization_proof"`
+	AuthorizationProofIssuedAtUnixMS  int64                         `json:"authorization_proof_issued_at_unix_ms"`
+	AuthorizationProofExpiresAtUnixMS int64                         `json:"authorization_proof_expires_at_unix_ms"`
+	PrimaryHeadGeneration             uint64                        `json:"primary_head_generation"`
+	PrimaryHeadSHA256                 string                        `json:"primary_head_sha256"`
+	PreviousFenceSHA256               string                        `json:"previous_fence_sha256"`
+	WitnessSetVersion                 string                        `json:"witness_set_version"`
+	WitnessIDs                        []string                      `json:"witness_ids"`
+	ExpiresAtUnixMS                   int64                         `json:"expires_at_unix_ms"`
+	PrimaryKeyID                      string                        `json:"primary_key_id"`
+	Signature                         string                        `json:"signature"`
 }
 
 type checkpointFenceAckWire struct {
@@ -188,9 +188,9 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 	return &SupabaseCheckpointFencePrimary{
 		endpoint: endpoint, actorID: config.ActorID, serviceRoleKey: config.ServiceRoleKey,
 		primarySigner: config.PrimarySigner, primaryKey: append(ed25519.PublicKey(nil), publicKey...),
-		checkpointHeadKey: append(ed25519.PublicKey(nil), config.CheckpointHeadKey...),
+		checkpointHeadKey:          append(ed25519.PublicKey(nil), config.CheckpointHeadKey...),
 		revocationAuthorizationKey: append(ed25519.PublicKey(nil), config.RevocationAuthorizationKey...),
-		witnessSetVersion: config.WitnessSetVersion, witnesses: trusted, witnessIDs: ids,
+		witnessSetVersion:          config.WitnessSetVersion, witnesses: trusted, witnessIDs: ids,
 		quorum: quorum, http: httpClient, now: now,
 	}, nil
 }
@@ -352,10 +352,10 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 		ResultingRevocationEpoch: revocationEpoch + boolUint64(request.Action == CheckpointFenceRevoke),
 		Action:                   request.Action, OperationID: request.OperationID,
 		RequestSHA256: request.RequestSHA256, AuthorizationSHA256: request.AuthorizationSHA256,
-		AuthorizationProof: append([]byte(nil), request.AuthorizationProof...),
-		AuthorizationProofIssuedAtUnixMS: proofIssuedAt,
+		AuthorizationProof:                append([]byte(nil), request.AuthorizationProof...),
+		AuthorizationProofIssuedAtUnixMS:  proofIssuedAt,
 		AuthorizationProofExpiresAtUnixMS: proofExpiresAt,
-		PrimaryHeadGeneration: primaryGeneration, PrimaryHeadSHA256: request.PrimaryHeadSHA256,
+		PrimaryHeadGeneration:             primaryGeneration, PrimaryHeadSHA256: request.PrimaryHeadSHA256,
 		PreviousFenceSHA256: fenceHashBytes,
 		WitnessSetVersion:   p.witnessSetVersion, WitnessIDs: append([]string(nil), p.witnessIDs...),
 		ExpiresAtUnixMS: tokenExpiry,
@@ -558,7 +558,6 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 	}
 	return operation, true, nil
 }
-
 
 func (p *SupabaseCheckpointFencePrimary) verifyRevocationAuthorization(
 	action CheckpointFenceAction, operationID string, participants []CheckpointEndpoint,
@@ -782,15 +781,15 @@ func checkpointFenceTokenToWire(token CheckpointFenceToken) (checkpointFenceToke
 		ExpectedRevocationEpoch:  token.ExpectedRevocationEpoch,
 		ResultingRevocationEpoch: token.ResultingRevocationEpoch,
 		Action:                   token.Action, OperationID: token.OperationID,
-		RequestSHA256:         hex.EncodeToString(token.RequestSHA256[:]),
-		AuthorizationSHA256:   hex.EncodeToString(token.AuthorizationSHA256[:]),
-		AuthorizationProof:    base64.StdEncoding.EncodeToString(token.AuthorizationProof),
-		AuthorizationProofIssuedAtUnixMS: token.AuthorizationProofIssuedAtUnixMS,
+		RequestSHA256:                     hex.EncodeToString(token.RequestSHA256[:]),
+		AuthorizationSHA256:               hex.EncodeToString(token.AuthorizationSHA256[:]),
+		AuthorizationProof:                base64.StdEncoding.EncodeToString(token.AuthorizationProof),
+		AuthorizationProofIssuedAtUnixMS:  token.AuthorizationProofIssuedAtUnixMS,
 		AuthorizationProofExpiresAtUnixMS: token.AuthorizationProofExpiresAtUnixMS,
-		PrimaryHeadGeneration: token.PrimaryHeadGeneration,
-		PrimaryHeadSHA256:     hex.EncodeToString(token.PrimaryHeadSHA256[:]),
-		PreviousFenceSHA256:   hex.EncodeToString(token.PreviousFenceSHA256[:]),
-		WitnessSetVersion:     token.WitnessSetVersion, WitnessIDs: append([]string(nil), token.WitnessIDs...),
+		PrimaryHeadGeneration:             token.PrimaryHeadGeneration,
+		PrimaryHeadSHA256:                 hex.EncodeToString(token.PrimaryHeadSHA256[:]),
+		PreviousFenceSHA256:               hex.EncodeToString(token.PreviousFenceSHA256[:]),
+		WitnessSetVersion:                 token.WitnessSetVersion, WitnessIDs: append([]string(nil), token.WitnessIDs...),
 		ExpiresAtUnixMS: token.ExpiresAtUnixMS, PrimaryKeyID: token.PrimaryKeyID,
 		Signature: base64.StdEncoding.EncodeToString(token.Signature),
 	}
@@ -843,10 +842,10 @@ func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, er
 		ResultingRevocationEpoch: wire.ResultingRevocationEpoch,
 		Action:                   wire.Action, OperationID: wire.OperationID,
 		RequestSHA256: requestHash, AuthorizationSHA256: authHash,
-		AuthorizationProof: authorizationProof,
-		AuthorizationProofIssuedAtUnixMS: wire.AuthorizationProofIssuedAtUnixMS,
+		AuthorizationProof:                authorizationProof,
+		AuthorizationProofIssuedAtUnixMS:  wire.AuthorizationProofIssuedAtUnixMS,
 		AuthorizationProofExpiresAtUnixMS: wire.AuthorizationProofExpiresAtUnixMS,
-		PrimaryHeadGeneration: wire.PrimaryHeadGeneration, PrimaryHeadSHA256: primaryHash,
+		PrimaryHeadGeneration:             wire.PrimaryHeadGeneration, PrimaryHeadSHA256: primaryHash,
 		PreviousFenceSHA256: previousHash,
 		WitnessSetVersion:   wire.WitnessSetVersion, WitnessIDs: append([]string(nil), wire.WitnessIDs...),
 		ExpiresAtUnixMS: wire.ExpiresAtUnixMS, PrimaryKeyID: wire.PrimaryKeyID,
