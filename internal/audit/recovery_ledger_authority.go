@@ -283,6 +283,12 @@ func (r *PairingRecovery) readActiveLedgerPending() (pairingOutcomeSnapshotPendi
 	return pending, true, nil
 }
 
+func isDefinitiveRecoveryMigrationError(err error) bool {
+	return errors.Is(err, ErrRecoveryMigrationUntrusted) ||
+		errors.Is(err, ErrRecoveryCheckpointStale) ||
+		errors.Is(err, ErrRecoveryCheckpointConflict)
+}
+
 func (r *PairingRecovery) removeActiveLedgerPending() error {
 	pendingPath := r.path + ".authority-pending"
 	if err := os.Remove(pendingPath); err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -365,6 +371,12 @@ func (r *PairingRecovery) reconcileActiveLedger() error {
 			receipt, err = r.authority.CommitCheckpoint(ctx, pending.Request)
 		}
 		if err != nil {
+			if pending.Migration != nil && isDefinitiveRecoveryMigrationError(err) {
+				if cleanupErr := r.removeActiveLedgerPending(); cleanupErr != nil {
+					return fmt.Errorf("%w: rejected migration pending cleanup uncertain: %v", ErrRecoveryCommitUncertain, cleanupErr)
+				}
+				return err
+			}
 			observed, loadErr := r.authority.LoadCheckpoint(ctx, r.activeLedgerScope())
 			if loadErr != nil || observed.Generation != pending.Request.Generation ||
 				observed.StateDigest != pending.Request.StateDigest || observed.OperationID != pending.Request.OperationID ||
@@ -491,6 +503,12 @@ func (r *PairingRecovery) MigrateLegacyActiveLedger(ctx context.Context, authent
 	}
 	checkpoint, commitErr := r.authority.MigrateLegacyArchive(ctx, migration)
 	if commitErr != nil {
+		if isDefinitiveRecoveryMigrationError(commitErr) {
+			if cleanupErr := r.removeActiveLedgerPending(); cleanupErr != nil {
+				return fmt.Errorf("%w: rejected migration pending cleanup uncertain: %v", ErrRecoveryCommitUncertain, cleanupErr)
+			}
+			return commitErr
+		}
 		observed, loadErr := r.authority.LoadCheckpoint(ctx, scope)
 		if loadErr != nil || observed.Scope != scope || observed.Generation != request.Generation ||
 			observed.PreviousDigest != request.PreviousDigest || observed.StateDigest != request.StateDigest ||
