@@ -72,3 +72,37 @@ func TestLoadIdentityForCheckDoesNotCreateMissingState(t *testing.T) {
 		t.Fatalf("identity-check created missing state: %v", err)
 	}
 }
+
+func TestLoadIdentityForCheckRejectsMissingCertificateWithoutMutation(t *testing.T) {
+	stateDir := t.TempDir()
+	if _, err := identity.Ensure(stateDir, "missing-certificate"); err != nil {
+		t.Fatal(err)
+	}
+
+	keyPath := filepath.Join(stateDir, "identity.key")
+	if _, err := os.Stat(filepath.Join(stateDir, "identity.key.dpapi")); err == nil {
+		keyPath = filepath.Join(stateDir, "identity.key.dpapi")
+	}
+	keyBefore, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	certPath := filepath.Join(stateDir, "identity.crt")
+	if err := os.Remove(certPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadIdentityForCheck(stateDir); err == nil {
+		t.Fatal("identity-check accepted an identity with a missing certificate")
+	}
+	if _, err := os.Lstat(certPath); !os.IsNotExist(err) {
+		t.Fatalf("identity-check recreated the missing certificate: %v", err)
+	}
+	keyAfter, err := os.ReadFile(keyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(keyBefore) != string(keyAfter) {
+		t.Fatal("identity-check modified existing private key material")
+	}
+}
