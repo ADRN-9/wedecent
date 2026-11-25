@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - security/c227-windows-preflight-service-recovery
+      - security/c228-windows-service-e2e-hardening
   pull_request:
     branches:
       - main
       - security/c225-relay-lifecycle-verification
+      - security/c227-windows-preflight-service-recovery
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -129,6 +131,7 @@ jobs:
             'installer/windows/Uninstall-WeDecent.ps1',
             'installer/windows/Test-WeDecentInstall.ps1',
             'scripts/test-windows-upgrade-preflight.ps1',
+            'scripts/test-windows-service-installer-contract.ps1',
             'scripts/test-windows-rfcomm-hardware.ps1'
           )
           foreach ($file in $files) {
@@ -147,10 +150,34 @@ jobs:
       - name: Verify Windows upgrade user-process preflight
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
+      - name: Verify Windows service installer recovery credential contract
+        shell: pwsh
+        run: .\scripts\test-windows-service-installer-contract.ps1
       - name: Test Windows replay-store security regressions
         run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterRepeatedProcessCrashes|TestWindowsReplayRepairsBootstrapLockOwnerAfterInterruptedCreation|TestWindowsReplayRejectsUnauthorizedOrphanStagingACL|TestWindowsReplayRejectsInsecurePreexistingBootstrapLock|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
+      - name: Provision distinct Windows service account for native state test
+        shell: pwsh
+        run: |
+          $name = 'WeDecentC228Svc'
+          if (Get-LocalUser -Name $name -ErrorAction SilentlyContinue) {
+            throw "Unexpected pre-existing test account: $name"
+          }
+          $password = ConvertTo-SecureString ("C228!" + [guid]::NewGuid().ToString('N') + "aA1") -AsPlainText -Force
+          New-LocalUser -Name $name -Password $password -PasswordNeverExpires -UserMayNotChangePassword | Out-Null
+          "WEDECENT_TEST_SERVICE_ACCOUNT=.\$name" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "WEDECENT_C228_ACCOUNT_CREATED=1" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Test native Windows agent
         run: go test ./...
+      - name: Verify distinct service SID state provisioning explicitly
+        run: go test ./cmd/wd-agent -run '^TestServiceProvisionDistinctConfiguredSIDNativeIntegration$' -count=1 -v
+      - name: Remove distinct Windows service test account
+        if: always()
+        shell: pwsh
+        run: |
+          $name = 'WeDecentC228Svc'
+          if ($env:WEDECENT_C228_ACCOUNT_CREATED -eq '1' -and (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) {
+            Remove-LocalUser -Name $name
+          }
       - name: Build native Windows binaries
         run: |
           go build -trimpath -buildvcs=false -o wd.exe ./cmd/wd
