@@ -51,6 +51,8 @@ func main() {
 		err = runIdentity(os.Args[2:])
 	case "identity-check":
 		err = runIdentityCheck(os.Args[2:])
+	case "identity-protect":
+		err = runIdentityProtect(os.Args[2:])
 	case "state-path-check":
 		err = runStatePathCheck(os.Args[2:])
 	case "version":
@@ -166,6 +168,26 @@ func runIdentityCheck(args []string) error {
 
 func loadIdentityForCheck(stateDir string) (*identity.Identity, error) {
 	return identity.Load(stateDir)
+}
+
+// runIdentityProtect migrates existing key storage without issuing a new certificate.
+func runIdentityProtect(args []string) error {
+	state, _ := appdirs.Agent()
+	fs := flag.NewFlagSet("identity-protect", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "agent state directory")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	id, err := identity.ProtectExisting(*stateDir)
+	if err != nil {
+		return err
+	}
+	fp, err := identity.FingerprintPublicKey(id.PublicKey)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("%s\t%s\t%s\n", id.ID, id.Name, fp)
+	return nil
 }
 
 func runStatePathCheck(args []string) error {
@@ -1043,6 +1065,7 @@ Commands:
   init             Create identity and one-time pairing secret
   identity         Print device ID and fingerprint
   identity-check   Verify an existing identity without modifying state
+  identity-protect Migrate existing key storage without renewing its certificate
   state-path-check Validate protected Windows state ancestors and ownership
   version          Print build and release metadata
   enrollment-proof Print or sign a cryptographic device-enrollment request
