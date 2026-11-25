@@ -31,8 +31,8 @@ type pairingRecoveryArchiveUnsigned struct {
 	LastSequence  uint64           `json:"last_sequence"`
 	Checkpoint    string           `json:"checkpoint"`
 	Records       []PairingOutcome `json:"records"`
-	AuthorityGeneration uint64 `json:"authority_generation,omitempty"`
-	AuthorityPreviousDigest string `json:"authority_previous_digest,omitempty"`
+	AuthorityGeneration uint64 `json:"authority_generation,omitempty"``
+	AuthorityPreviousDigest string `json:"authority_previous_digest,omitempty"``
 }
 
 type pairingRecoveryArchive struct {
@@ -43,9 +43,9 @@ type pairingRecoveryArchive struct {
 	Records       []PairingOutcome `json:"records"`
 	AuthorityGeneration uint64 `json:"authority_generation,omitempty"
 	AuthorityPreviousDigest string `json:"authority_previous_digest,omitempty"
-	AuthorityKeyID string `json:"authority_key_id,omitempty"
-	AuthoritySignature string `json:"authority_signature,omitempty"
-	AuthorityCheckpoint RecoveryCheckpoint `json:"authority_checkpoint,omitempty"
+	AuthorityKeyID string `json:"authority_key_id,omitempty"`
+	AuthoritySignature string `json:"authority_signature,omitempty"`
+	AuthorityCheckpoint RecoveryCheckpoint `json:"authority_checkpoint,omitempty"`
 	MAC           string           `json:"mac"`
 }
 
