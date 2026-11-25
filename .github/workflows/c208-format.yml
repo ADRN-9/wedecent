@@ -1,0 +1,33 @@
+name: C208 Go formatting
+
+on:
+  push:
+    branches:
+      - security/c208-pairing-durable-revocation
+
+permissions:
+  contents: write
+
+jobs:
+  gofmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.ref_name }}
+      - uses: actions/setup-go@v7
+        with:
+          go-version: '1.27.0'
+      - name: Format Go sources
+        shell: bash
+        run: |
+          files="$(gofmt -l cmd internal)"
+          if [ -z "$files" ]; then
+            exit 0
+          fi
+          printf '%s\n' "$files" | xargs gofmt -w
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          printf '%s\n' "$files" | xargs git add --
+          git commit -m "style: format C208 Go changes"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
