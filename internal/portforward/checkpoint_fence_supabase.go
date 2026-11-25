@@ -442,7 +442,12 @@ func (p *SupabaseCheckpointFencePrimary) CommitFenceWithCheckpointHeads(
 		token.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(token.WitnessIDs, p.witnessIDs) {
 		return ErrCheckpointIntegrity
 	}
-	if err := p.verifyRevocationAuthorization(token.Action, token.OperationID, token.Participants,
+	if token.ExpiresAtUnixMS <= p.now().UnixMilli() {
+		if err := p.verifyRevocationAuthorizationForRecovery(token.Action, token.OperationID,
+			token.Participants, token.AuthorizationProof, token.AuthorizationSHA256, true); err != nil {
+			return err
+		}
+	} else if err := p.verifyRevocationAuthorization(token.Action, token.OperationID, token.Participants,
 		token.AuthorizationProof, token.AuthorizationSHA256); err != nil {
 		return err
 	}
