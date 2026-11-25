@@ -205,8 +205,10 @@ func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *
 		OrganizationID: "22222222-2222-4222-8222-222222222222", RevocationEpoch: 8,
 	}
 	next := endpoint.RevocationEpoch + 1
-	fingerprint := checkpointRevocationFingerprint(endpoint, next)
-	operationID := checkpointFenceOperationID(CheckpointFenceRevoke, hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID)
+	operationID, err := CheckpointRevocationOperationID(endpoint, next)
+	if err != nil {
+		t.Fatal(err)
+	}
 	participants := []CheckpointEndpoint{endpoint}
 	message, err := CheckpointRevocationAuthorizationMessage(CheckpointRevocationAuthorizationRequest{
 		Endpoint: endpoint, NextEpoch: next, OperationID: operationID, Participants: participants,
