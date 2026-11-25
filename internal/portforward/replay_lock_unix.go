@@ -111,6 +111,34 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 		return nil, false, errors.New("persistent replay lock anchor is missing after initialization")
 	}
 
+	// An existing anchor can be visible just before its lock and marker hard
+	// links are published by the process that created it. Re-read both aliases
+	// before classifying an absent lock as deletion; never recreate an alias on
+	// an already initialized store. A missing marker after the bounded window
+	// remains a hard failure.
+	if anchorExists && (!lockExists || !markerExists) {
+		for attempt := 0; attempt < replayInitializationRetryLimit; attempt++ {
+			lockExists, err = replayPathExistsForLock(lockPath)
+			if err != nil {
+				return nil, false, err
+			}
+			markerExists, err = replayPathExistsForLock(markerPath)
+			if err != nil {
+				return nil, false, err
+			}
+			if markerExists && !lockExists {
+				return nil, false, errors.New("persistent replay lock path is missing while its marker remains")
+			}
+			if lockExists && markerExists {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !lockExists || !markerExists {
+			return nil, false, errors.New("persistent replay lock aliases were not completely published")
+		}
+	}
+
 	var file *os.File
 	created := false
 	linked := false
