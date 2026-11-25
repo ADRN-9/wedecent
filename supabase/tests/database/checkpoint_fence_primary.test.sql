@@ -2,13 +2,7 @@ begin;
 create extension if not exists pgtap with schema extensions;
 select plan(28);
 
--- The fixture needs pgsodium's keymaker capability only inside this rolled-back test transaction.
-do $fn$
-begin
-    execute pg_catalog.format('grant pgsodium_keymaker to %I', current_user);
-end
-$fn$;
-
+-- The disposable CI database grants this capability to postgres before pgTAP runs.
 insert into auth.users(id,aud,role,email)
 values ('11000000-0000-4000-8000-000000000197','authenticated','authenticated','c197-primary@example.test');
 select set_config('request.jwt.claim.sub','11000000-0000-4000-8000-000000000197',true);
