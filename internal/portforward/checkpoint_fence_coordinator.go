@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"sort"
+	"time"
 )
 
 type CheckpointFenceWitnessClient struct {
@@ -115,6 +116,9 @@ func (c *CheckpointFenceCoordinator) execute(
 			return CheckpointFenceOperation{}, err
 		}
 		return existing, nil
+	}
+	if err := VerifyCheckpointFenceToken(token, c.PrimaryKey, time.Now().UnixMilli()); err != nil {
+		return CheckpointFenceOperation{}, err
 	}
 
 	byID := make(map[string]CheckpointFenceWitnessClient, len(c.Witnesses))
