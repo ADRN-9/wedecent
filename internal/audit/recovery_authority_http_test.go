@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -150,6 +151,9 @@ func TestLoadRecoveryAuthorityTrustRequiresPinnedUniqueEd25519Keys(t *testing.T)
 	loaded, err := LoadRecoveryAuthorityTrust(file)
 	if err != nil || loaded.Validate() != nil {
 		t.Fatalf("valid trust file rejected: %v", err)
+	}
+	if runtime.GOOS == "windows" {
+		return // Windows ACL enforcement is covered by trust package DACL tests.
 	}
 	if err := os.Chmod(file, 0o666); err != nil {
 		t.Fatal(err)
