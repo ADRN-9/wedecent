@@ -64,6 +64,7 @@ type pairingOutcomeSnapshot struct {
 // PairingRecovery is independent of rotating audit files. Entries never
 // expire or disappear automatically, including when capacity is reached.
 type PairingRecovery struct {
+	mu sync.Mutex
 	path                    string
 	syncDirectory           func(string) error
 	beforeReplace           func() error
@@ -334,6 +335,8 @@ func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) e
 }
 
 func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, pairingRecoveryArchive) error) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
 		return fmt.Errorf("unsafe pairing recovery root: %w", err)
 	}
