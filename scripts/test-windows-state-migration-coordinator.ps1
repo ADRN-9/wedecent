@@ -718,7 +718,7 @@ try {
 
 $journalRaceFixture = New-MigrationFixture
 try {
-    $raceJournal = [pscustomobject]@{ schema=1; product='WeDecent'; phase='Prepared'; transaction_id=[Guid]::NewGuid().ToString('D') }
+    $raceJournal = [pscustomobject]@{ schema=1; product='WeDecent'; phase='Prepared'; transaction_id=[Guid]::NewGuid().ToString('D'); updated_utc=[DateTime]::UtcNow.ToString('o') }
     Write-WeDecentMigrationJournal -Path $journalRaceFixture.Journal -Journal $raceJournal
     $global:WeDecentMigrationRaceTarget = $journalRaceFixture.Journal
     $global:WeDecentMigrationRaceBackup = $journalRaceFixture.Journal + '.race-original'
