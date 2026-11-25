@@ -358,7 +358,19 @@ if ($shortLength -eq 0 -or $shortLength -ge $shortBuffer.Capacity) {
 }
 $shortAlias = $shortBuffer.ToString()
 $shortLeaf = [IO.Path]::GetFileName($shortAlias)
-if ($shortLeaf -notmatch '(?i)~[0-9]+\.[^\\]+
+if ($shortLeaf -notmatch '(?i)~[0-9]+\.[^\\]+$') {
+    throw "Windows test volume did not produce the required extension-bearing 8.3 alias: $shortAlias"
+}
+$longCanonical = Get-WeDecentMigrationCanonicalPath -Path $aliasRoot
+$shortCanonical = Get-WeDecentMigrationCanonicalPath -Path $shortAlias
+if (-not [string]::Equals($longCanonical, $shortCanonical, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "8.3 alias did not resolve to the actual long filesystem path: '$shortAlias' => '$shortCanonical' (expected '$longCanonical')."
+}
+$aliasCollisionRejected = $false
+try { [void](Assert-WeDecentMigrationPathsDisjoint -Paths @($shortAlias, $aliasRoot)) }
+catch { $aliasCollisionRejected = $_.Exception.Message -like '*overlap or alias*'; if (-not $aliasCollisionRejected) { throw } }
+if (-not $aliasCollisionRejected) { throw 'Migration accepted a short-name alias as a distinct path.' }
+Remove-Item -LiteralPath $aliasRoot -Force -ErrorAction Stop
 Write-Host 'Migration coordinator Windows path normalization and overlap validators PASS'
 
 $pathFixture = New-MigrationFixture
@@ -510,102 +522,6 @@ try {
     Write-Host 'Migration coordinator nested directory owner recovery rejection PASS'
 } finally {
     Remove-Item -LiteralPath $nestedDirectoryOwner.Root -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-} finally {
-    Remove-Item -LiteralPath $recovery.Root -Recurse -Force -ErrorAction SilentlyContinue
-}
-Write-Host 'Windows state migration coordinator integration PASS'
-) {
-    throw "Windows test volume did not produce the required extension-bearing 8.3 alias: $shortAlias"
-}
-$longCanonical = Get-WeDecentMigrationCanonicalPath -Path $aliasRoot
-$shortCanonical = Get-WeDecentMigrationCanonicalPath -Path $shortAlias
-if (-not [string]::Equals($longCanonical, $shortCanonical, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "8.3 alias did not resolve to the actual long filesystem path: '$shortAlias' => '$shortCanonical' (expected '$longCanonical')."
-}
-$aliasCollisionRejected = $false
-try { [void](Assert-WeDecentMigrationPathsDisjoint -Paths @($shortAlias, $aliasRoot)) }
-catch { $aliasCollisionRejected = $_.Exception.Message -like '*overlap or alias*'; if (-not $aliasCollisionRejected) { throw } }
-if (-not $aliasCollisionRejected) { throw 'Migration accepted a short-name alias as a distinct path.' }
-Remove-Item -LiteralPath $aliasRoot -Force -ErrorAction Stop
-Write-Host 'Migration coordinator Windows path normalization and overlap validators PASS'
-
-$pathFixture = New-MigrationFixture
-try {
-    $overlapDestination = Join-Path $pathFixture.Source 'nested/destination'
-    $rejectedOverlap = $false
-    try {
-        Invoke-WeDecentStateMigration -Source $pathFixture.Source -Destination $overlapDestination -AgentPath $agentPath -ServiceName $pathFixture.ServiceName -ServiceSid $pathFixture.ServiceSid -MetadataPath $pathFixture.MetadataPath -JournalPath $pathFixture.Journal | Out-Null
-    } catch {
-        $rejectedOverlap = $_.Exception.Message -like '*overlap or alias*'
-        if (-not $rejectedOverlap) { throw }
-    }
-    if (-not $rejectedOverlap) { throw 'Migration accepted a destination nested beneath its source.' }
-    if (Test-Path -LiteralPath $pathFixture.Journal) { throw 'Path-overlap rejection created a migration journal.' }
-    Write-Host 'Migration coordinator source/destination overlap rejection PASS'
-} finally {
-    Remove-Item -LiteralPath $pathFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$mutatedSource = New-MigrationFixture
-try {
-    $interrupted = $false
-    try {
-        Invoke-WeDecentStateMigration -Source $mutatedSource.Source -Destination $mutatedSource.Destination -AgentPath $agentPath -ServiceName $mutatedSource.ServiceName -ServiceSid $mutatedSource.ServiceSid -MetadataPath $mutatedSource.MetadataPath -JournalPath $mutatedSource.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
-    } catch {
-        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
-        if (-not $interrupted) { throw }
-    }
-    if (-not $interrupted) { throw 'Source mutation fixture did not stop at the pending rollback boundary.' }
-    [IO.File]::WriteAllText((Join-Path $mutatedSource.Source 'nested/policy.json'), '{"schema":1,"policy":"attacker-mutated"}')
-    $rejectedMutation = $false
-    try {
-        [void](Recover-WeDecentStateMigration -JournalPath $mutatedSource.Journal -AgentPath $agentPath -MetadataPath $mutatedSource.MetadataPath -ServiceName $mutatedSource.ServiceName)
-    } catch {
-        $rejectedMutation = $_.Exception.Message -like '*source manifest changed*'
-        if (-not $rejectedMutation) { throw }
-    }
-    if (-not $rejectedMutation) { throw 'Recovery accepted a mutated original source tree.' }
-    if ($global:WeDecentMigrationMockService.PathName -cne $mutatedSource.OriginalServicePath) { throw 'Recovery changed SCM before authenticating the original source.' }
-    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') { throw 'Recovery restarted the service after source integrity failure.' }
-    Write-Host 'Migration coordinator mutated-source recovery fail-closed PASS'
-} finally {
-    Remove-Item -LiteralPath $mutatedSource.Root -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-$aclMutatedSource = New-MigrationFixture
-try {
-    $interrupted = $false
-    try {
-        Invoke-WeDecentStateMigration -Source $aclMutatedSource.Source -Destination $aclMutatedSource.Destination -AgentPath $agentPath -ServiceName $aclMutatedSource.ServiceName -ServiceSid $aclMutatedSource.ServiceSid -MetadataPath $aclMutatedSource.MetadataPath -JournalPath $aclMutatedSource.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
-    } catch {
-        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
-        if (-not $interrupted) { throw }
-    }
-    if (-not $interrupted) { throw 'ACL mutation fixture did not stop at the pending rollback boundary.' }
-    $acl = Get-Acl -LiteralPath $aclMutatedSource.Source
-    $users = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
-    $rule = [Security.AccessControl.FileSystemAccessRule]::new(
-        $users, [Security.AccessControl.FileSystemRights]::FullControl,
-        [Security.AccessControl.AccessControlType]::Allow
-    )
-    [void]$acl.AddAccessRule($rule)
-    Set-Acl -LiteralPath $aclMutatedSource.Source -AclObject $acl -ErrorAction Stop
-    $rejectedAcl = $false
-    try {
-        [void](Recover-WeDecentStateMigration -JournalPath $aclMutatedSource.Journal -AgentPath $agentPath -MetadataPath $aclMutatedSource.MetadataPath -ServiceName $aclMutatedSource.ServiceName)
-    } catch {
-        $rejectedAcl = $_.Exception.Message -like '*Protected state path verification failed*' -or
-            $_.Exception.Message -like '*DACL*'
-        if (-not $rejectedAcl) { throw }
-    }
-    if (-not $rejectedAcl) { throw 'Recovery accepted an original source with a broadened DACL.' }
-    if ($global:WeDecentMigrationMockService.PathName -cne $aclMutatedSource.OriginalServicePath) { throw 'Recovery changed SCM before authenticating the source ACL.' }
-    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') { throw 'Recovery restarted the service after source ACL failure.' }
-    Write-Host 'Migration coordinator mutated-source ACL recovery fail-closed PASS'
-} finally {
-    Remove-Item -LiteralPath $aclMutatedSource.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 } finally {
