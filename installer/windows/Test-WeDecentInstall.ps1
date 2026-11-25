@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'WeDecent'),
-    [string]$StateDir = (Join-Path $env:ProgramData 'WeDecent\agent'),
+    [string]$StateDir = (Join-Path $env:ProgramFiles 'WeDecentData\agent'),
     [ValidatePattern('^[A-Za-z0-9_.-]{1,128}$')]
     [string]$ServiceName = 'WeDecentAgent',
     [string]$WebRelay = 'https://relay.wedecent.com',
