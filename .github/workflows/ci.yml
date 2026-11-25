@@ -169,7 +169,10 @@ jobs:
       - name: Test native Windows agent
         run: go test ./...
       - name: Verify distinct service SID state provisioning explicitly
-        run: go test ./cmd/wd-agent -run '^TestServiceProvisionDistinctConfiguredSIDNativeIntegration        shell: pwsh
+        run: go test ./cmd/wd-agent -run '^TestServiceProvisionDistinctConfiguredSIDNativeIntegration$' -count=1 -v
+      - name: Remove distinct Windows service test account
+        if: always()
+        shell: pwsh
         run: |
           $name = 'WeDecentC228Svc'
           if ($env:WEDECENT_C228_ACCOUNT_CREATED -eq '1' -and (Get-LocalUser -Name $name -ErrorAction SilentlyContinue)) {
