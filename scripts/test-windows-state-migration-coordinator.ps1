@@ -151,6 +151,48 @@ try {
     $global:WeDecentMigrationMockStatus = 'Stopped'
     if (-not (Recover-WeDecentStateMigration -JournalPath $recovery.Journal -AgentPath $agentPath -MetadataPath $recovery.MetadataPath -ServiceName $recovery.ServiceName)) { throw 'Installer recovery did not resume rollback.' }
     Assert-MigrationRolledBack -Fixture $recovery -Fault 'recovery'
+
+$stagingRecovery = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $stagingRecovery.Source -Destination $stagingRecovery.Destination -AgentPath $agentPath -ServiceName $stagingRecovery.ServiceName -ServiceSid $stagingRecovery.ServiceSid -MetadataPath $stagingRecovery.MetadataPath -JournalPath $stagingRecovery.Journal -FaultAt 'Verified,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Interrupted staging rollback did not leave a recoverable journal.' }
+    $pending = Read-WeDecentMigrationJournal -Path $stagingRecovery.Journal
+    if ($pending.phase -cne 'RollingBack' -or -not (Test-Path -LiteralPath $pending.staging -PathType Container)) {
+        throw 'Interrupted rollback did not preserve the staging tree and journal.'
+    }
+    [void](Assert-WeDecentMigrationPartialTreeSafe -Path $pending.staging -ServiceSid $stagingRecovery.ServiceSid)
+    $global:WeDecentMigrationMockService.State = 'Stopped'
+    $global:WeDecentMigrationMockStatus = 'Stopped'
+    $recoveryInterrupted = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -FaultAt 'RollbackStagingValidated')
+    } catch {
+        $recoveryInterrupted = $_.Exception.Message -like '*RollbackStagingValidated*'
+        if (-not $recoveryInterrupted) { throw }
+    }
+    if (-not $recoveryInterrupted) { throw 'Fault injection did not interrupt rollback while staging existed.' }
+    $pending = Read-WeDecentMigrationJournal -Path $stagingRecovery.Journal
+    if ($pending.phase -cne 'RollingBack' -or -not (Test-Path -LiteralPath $pending.staging -PathType Container)) {
+        throw 'Finally cleanup deleted staging after interrupted rollback.'
+    }
+    if (-not (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName)) {
+        throw 'Repeated recovery did not resume pending staging rollback.'
+    }
+    Assert-MigrationRolledBack -Fixture $stagingRecovery -Fault 'staging recovery'
+    if (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName) {
+        throw 'Repeated recovery was not idempotent after terminal rollback.'
+    }
+    if (Test-Path -LiteralPath $pending.staging) { throw 'Validated terminal rollback left staging behind.' }
+    Write-Host 'Migration coordinator interrupted staging rollback and repeated recovery PASS'
+} finally {
+    Remove-Item -LiteralPath $stagingRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
     Write-Host 'Migration coordinator durable recovery PASS'
 } finally {
     Remove-Item -LiteralPath $recovery.Root -Recurse -Force -ErrorAction SilentlyContinue
