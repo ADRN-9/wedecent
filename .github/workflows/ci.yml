@@ -376,7 +376,6 @@ jobs:
         run: bash ./scripts/test-port-forward-db-concurrency.sh
       - name: Test atomic checkpoint reservation and recovery across independent sessions
         run: bash ./scripts/test-checkpoint-reservation-concurrency.sh
- -count=1 -v
       - name: Remove distinct Windows service test account
         if: always()
         shell: pwsh
