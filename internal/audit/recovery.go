@@ -20,6 +20,7 @@ const (
 	PairingOutcomeFileName  = "pairing-outcomes.json"
 	maxPairingOutcomes      = 64
 	maxPairingOutcomeBytes  = 64 << 10
+	pairingOutcomeVersion   = 2
 	PairingOutcomePending   = "pending"
 	PairingOutcomeSuccess   = "success"
 	PairingOutcomeDenied    = "denied"
@@ -117,7 +118,7 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 			return nil, errors.New("pairing recovery file missing after initialization: operator repair required")
 		}
 		r.allowEmpty = true
-		if err := r.write(pairingOutcomeSnapshot{Version: 1}); err != nil {
+		if err := r.write(pairingOutcomeSnapshot{Version: pairingOutcomeVersion}); err != nil {
 			return nil, err
 		}
 		r.allowEmpty = false
@@ -249,7 +250,7 @@ func validatePairingOutcome(record PairingOutcome) error {
 }
 
 func validatePairingSnapshot(s pairingOutcomeSnapshot) error {
-	if s.Version != 1 || len(s.Records) > maxPairingOutcomes {
+	if (s.Version != 1 && s.Version != pairingOutcomeVersion) || len(s.Records) > maxPairingOutcomes {
 		return errors.New("invalid pairing recovery version or capacity")
 	}
 	seen := make(map[string]bool, len(s.Records))
@@ -266,7 +267,7 @@ func validatePairingSnapshot(s pairingOutcomeSnapshot) error {
 }
 
 func (r *PairingRecovery) read() (pairingOutcomeSnapshot, error) {
-	empty := pairingOutcomeSnapshot{Version: 1}
+	empty := pairingOutcomeSnapshot{Version: pairingOutcomeVersion}
 	if r == nil {
 		return empty, errors.New("pairing recovery unavailable")
 	}
