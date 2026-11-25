@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"time"
 
 	"wedecent.com/wedecent/internal/trust"
@@ -56,9 +57,10 @@ type PairingAuditProof struct {
 }
 
 type pairingOutcomeSnapshot struct {
-	Version         int              `json:"version"`
-	Records         []PairingOutcome `json:"records"`
-	ArchivedThrough uint64           `json:"archived_through,omitempty"`
+	Version           int              `json:"version"`
+	Records           []PairingOutcome `json:"records"`
+	ArchivedThrough   uint64           `json:"archived_through,omitempty"`
+	ArchiveCheckpoint string           `json:"archive_checkpoint,omitempty"`
 }
 
 // PairingRecovery is independent of rotating audit files. Entries never
