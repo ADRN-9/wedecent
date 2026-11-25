@@ -2,6 +2,7 @@ package trust
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
@@ -15,6 +16,10 @@ import (
 
 const (
 	pairingSecretFile   = "pairing-secret.sha256"
+	pairingCredentialFile = "pairing-credential.json"
+	pairingCredentialVersion = 2
+	pairingCredentialLifetime = 15 * time.Minute
+	pairingLegacyMigrationDeadline = time.Date(2026, 12, 1, 0, 0, 0, 0, time.UTC)
 	pairingHashBytes    = 65 // 64 lowercase SHA-256 hex characters and LF.
 	consumedPairingHash = "0000000000000000000000000000000000000000000000000000000000000000"
 )
@@ -32,8 +37,24 @@ func PairClientWithSecret(dir, secret string, clients *Store, peer Peer) error {
 	return pairClientWithHooks(dir, secret, clients, peer, pairingHooks{})
 }
 
+// PairClientWithSecretAdmission reserves the credential generation while the
+// cross-process credential lock is held, before the one-time marker is synced.
+func PairClientWithSecretAdmission(dir, secret string, clients *Store, peer Peer, admit func(uint64) error) error {
+	return pairClientWithHooks(dir, secret, clients, peer, pairingHooks{admit: admit})
+}
+
 // Test-only hooks are passed per transaction, never stored in shared globals.
+type pairingCredentialRecord struct {
+	Version int `json:"version"`
+	Generation uint64 `json:"generation"`
+	SecretSHA256 string `json:"secret_sha256"`
+	IssuedAt time.Time `json:"issued_at"`
+	ExpiresAt time.Time `json:"expires_at"`
+	Consumed bool `json:"consumed,omitempty"`
+}
+
 type pairingHooks struct {
+	admit func(uint64) error
 	beforeAcquire  func()
 	beforeConsume  func()
 	afterConsume   func() error
@@ -61,17 +82,20 @@ func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pa
 	defer unlock()
 
 	hash, err := readPairingHash(path)
-	if err != nil {
-		return err
-	}
-	if !SecretMatches(hash, secret) {
-		return ErrPairingSecretInvalid
+	if err != nil { return err }
+	credential, err := loadPairingCredential(dir, hash, time.Now().UTC())
+	if err != nil { return err }
+	if !SecretMatches(credential.SecretSHA256, secret) { return ErrPairingSecretInvalid }
+	if hooks.admit != nil {
+		if err := hooks.admit(credential.Generation); err != nil { return err }
 	}
 	if hooks.beforeConsume != nil {
 		hooks.beforeConsume()
 	}
-	if err := consumePairingSecretFile(path, hash); err != nil {
-		return err
+	if err := consumePairingSecretFile(path, hash); err != nil { return err }
+	credential.Consumed = true
+	if err := writePairingCredential(dir, credential); err != nil {
+		return fmt.Errorf("%w: consumed credential metadata: %v", ErrPairingStateUnsafe, err)
 	}
 	if hooks.afterConsume != nil {
 		if err := hooks.afterConsume(); err != nil {
@@ -138,59 +162,116 @@ func VerifyPairingStatePath(path string) error {
 // is never persisted. Unsafe existing state is not silently overwritten.
 func RotatePairingSecret(dir string) (string, error) {
 	var buf [24]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", err
-	}
+	if _, err := rand.Read(buf[:]); err != nil { return "", err }
 	secret := base64.RawURLEncoding.EncodeToString(buf[:])
 	path, unlock, err := lockPairing(dir)
-	if err != nil {
-		return "", err
-	}
+	if err != nil { return "", err }
 	defer unlock()
 
-	if _, err := readPairingHash(path); err != nil && !errors.Is(err, ErrPairingSecretInvalid) {
-		return "", err
+	oldHash, hashErr := readPairingHash(path)
+	if hashErr != nil && !errors.Is(hashErr, ErrPairingSecretInvalid) { return "", hashErr }
+	previousGeneration := uint64(0)
+	oldRecord, recordErr := readPairingCredentialRecord(dir)
+	if recordErr != nil && !errors.Is(recordErr, os.ErrNotExist) { return "", recordErr }
+	if recordErr == nil {
+		if oldHash != "" && oldRecord.SecretSHA256 != oldHash { return "", fmt.Errorf("%w: credential hash and metadata disagree", ErrPairingStateUnsafe) }
+		if oldHash == "" && !oldRecord.Consumed { return "", fmt.Errorf("%w: active credential metadata has no active hash", ErrPairingStateUnsafe) }
+		previousGeneration = oldRecord.Generation
+	} else if hashErr == nil || errors.Is(hashErr, ErrPairingSecretInvalid) {
+		if _, statErr := os.Lstat(path); statErr == nil { previousGeneration = 1 }
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".pairing-secret-*")
-	if err != nil {
-		return "", fmt.Errorf("%w: create replacement: %v", ErrPairingStateUnsafe, err)
-	}
-	tmpPath := tmp.Name()
-	defer os.Remove(tmpPath)
-	closeWithError := func(err error) (string, error) {
-		_ = tmp.Close()
-		return "", fmt.Errorf("%w: %v", ErrPairingStateUnsafe, err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		return closeWithError(err)
-	}
-	if err := pairingWindowsStateSecure(tmpPath); err != nil {
-		return closeWithError(err)
-	}
-	if _, err := io.WriteString(tmp, HashSecret(secret)+"\n"); err != nil {
-		return closeWithError(err)
-	}
-	if err := tmp.Sync(); err != nil {
-		return closeWithError(err)
-	}
-	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("%w: close replacement: %v", ErrPairingStateUnsafe, err)
-	}
-	// Defend against substitution between inspection and replacement.
-	if _, err := readPairingHash(path); err != nil && !errors.Is(err, ErrPairingSecretInvalid) {
-		return "", err
-	}
-	if err := replacePairingSecretFile(tmpPath, path); err != nil {
-		return "", fmt.Errorf("%w: replace secret: %v", ErrPairingStateUnsafe, err)
-	}
-	if err := syncPairingDirectory(filepath.Dir(path)); err != nil {
-		return "", fmt.Errorf("%w: synchronize rotated hash directory: %v", ErrPairingStateUnsafe, err)
-	}
-	hash, err := readPairingHash(path)
-	if err != nil || !SecretMatches(hash, secret) {
-		return "", fmt.Errorf("%w: verify rotated secret", ErrPairingStateUnsafe)
+	if previousGeneration == ^uint64(0) { return "", fmt.Errorf("%w: credential generation exhausted", ErrPairingStateUnsafe) }
+	now := time.Now().UTC()
+	record := pairingCredentialRecord{Version: pairingCredentialVersion, Generation: previousGeneration+1,
+		SecretSHA256: HashSecret(secret), IssuedAt: now, ExpiresAt: now.Add(pairingCredentialLifetime)}
+
+	if err := writePairingHash(path, record.SecretSHA256); err != nil { return "", err }
+	if err := writePairingCredential(dir, record); err != nil {
+		return "", fmt.Errorf("%w: credential metadata rotation uncertain: %v", ErrPairingStateUnsafe, err)
 	}
 	return secret, nil
+}
+
+func writePairingHash(path, hash string) error {
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".pairing-secret-*")
+	if err != nil { return fmt.Errorf("%w: create replacement: %v", ErrPairingStateUnsafe, err) }
+	name := tmp.Name()
+	defer os.Remove(name)
+	fail := func(err error) error { _ = tmp.Close(); return fmt.Errorf("%w: %v", ErrPairingStateUnsafe, err) }
+	if err := tmp.Chmod(0o600); err != nil { return fail(err) }
+	if err := pairingWindowsStateSecure(name); err != nil { return fail(err) }
+	if _, err := io.WriteString(tmp, hash+"\n"); err != nil { return fail(err) }
+	if err := tmp.Sync(); err != nil { return fail(err) }
+	if err := tmp.Close(); err != nil { return fmt.Errorf("%w: close replacement: %v", ErrPairingStateUnsafe, err) }
+	if err := replaceStoreFile(name, path); err != nil { return fmt.Errorf("%w: replace secret: %v", ErrPairingStateUnsafe, err) }
+	if err := syncPairingDirectory(filepath.Dir(path)); err != nil { return fmt.Errorf("%w: synchronize rotated hash directory: %v", ErrPairingStateUnsafe, err) }
+	return nil
+}
+
+func readPairingCredentialRecord(dir string) (pairingCredentialRecord, error) {
+	var record pairingCredentialRecord
+	path := filepath.Join(dir, pairingCredentialFile)
+	info, err := os.Lstat(path)
+	if err != nil { return record, err }
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > 4096 {
+		return record, fmt.Errorf("%w: credential metadata type or size invalid", ErrPairingStateUnsafe)
+	}
+	if err := pairingWindowsStateSecure(path); err != nil { return record, fmt.Errorf("%w: credential metadata ACL: %v", ErrPairingStateUnsafe, err) }
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 { return record, fmt.Errorf("%w: credential metadata permissions unsafe", ErrPairingStateUnsafe) }
+	f, err := os.Open(path); if err != nil { return record, err }; defer f.Close()
+	opened, err := f.Stat(); after, statErr := os.Lstat(path)
+	if err != nil || statErr != nil || !os.SameFile(info, opened) || !os.SameFile(opened, after) { return record, fmt.Errorf("%w: credential metadata changed during read", ErrPairingStateUnsafe) }
+	decoder := json.NewDecoder(io.LimitReader(f, 4097)); decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&record); err != nil { return record, fmt.Errorf("%w: malformed credential metadata: %v", ErrPairingStateUnsafe, err) }
+	var extra any; if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) { return record, fmt.Errorf("%w: credential metadata trailing data", ErrPairingStateUnsafe) }
+	if record.Version != pairingCredentialVersion || record.Generation == 0 || len(record.SecretSHA256) != 64 ||
+		record.IssuedAt.IsZero() || record.ExpiresAt.IsZero() || !record.ExpiresAt.After(record.IssuedAt) ||
+		record.ExpiresAt.Sub(record.IssuedAt) > pairingCredentialLifetime {
+		return record, fmt.Errorf("%w: invalid credential metadata fields", ErrPairingStateUnsafe)
+	}
+	digest, decodeErr := hex.DecodeString(record.SecretSHA256)
+	if decodeErr != nil || len(digest) != 32 || strings.ToLower(record.SecretSHA256) != record.SecretSHA256 {
+		return record, fmt.Errorf("%w: invalid credential digest", ErrPairingStateUnsafe)
+	}
+	if record.IssuedAt.After(time.Now().UTC().Add(30*time.Second)) { return record, fmt.Errorf("%w: credential issue time is in the future", ErrPairingStateUnsafe) }
+	return record, nil
+}
+
+func writePairingCredential(dir string, record pairingCredentialRecord) error {
+	data, err := json.Marshal(record); if err != nil { return err }
+	if len(data) == 0 || len(data) > 4096 { return errors.New("credential metadata size invalid") }
+	path := filepath.Join(dir, pairingCredentialFile)
+	tmp, err := os.CreateTemp(dir, ".pairing-credential-*"); if err != nil { return err }
+	name := tmp.Name(); defer os.Remove(name)
+	fail := func(err error) error { _ = tmp.Close(); return err }
+	if err := tmp.Chmod(0o600); err != nil { return fail(err) }
+	if err := pairingWindowsStateSecure(name); err != nil { return fail(err) }
+	if _, err := tmp.Write(data); err != nil { return fail(err) }
+	if err := tmp.Sync(); err != nil { return fail(err) }
+	if err := tmp.Close(); err != nil { return err }
+	if err := replaceStoreFile(name, path); err != nil { return err }
+	if err := syncPairingDirectory(dir); err != nil { return err }
+	return nil
+}
+
+func loadPairingCredential(dir, hash string, now time.Time) (pairingCredentialRecord, error) {
+	record, err := readPairingCredentialRecord(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		if hash == "" || hash == consumedPairingHash { return record, ErrPairingSecretInvalid }
+		if !now.Before(pairingLegacyMigrationDeadline) { return record, ErrPairingSecretInvalid }
+		info, statErr := os.Stat(filepath.Join(dir, pairingSecretFile))
+		if statErr != nil { return record, fmt.Errorf("%w: inspect legacy credential: %v", ErrPairingStateUnsafe, statErr) }
+		if info.ModTime().After(now.Add(30*time.Second)) { return record, fmt.Errorf("%w: legacy credential is future-dated", ErrPairingStateUnsafe) }
+		expires := now.Add(pairingCredentialLifetime); if expires.After(pairingLegacyMigrationDeadline) { expires = pairingLegacyMigrationDeadline }
+		record = pairingCredentialRecord{Version: pairingCredentialVersion, Generation: 1, SecretSHA256: hash, IssuedAt: now, ExpiresAt: expires}
+		if err := writePairingCredential(dir, record); err != nil { return record, fmt.Errorf("%w: migrate legacy credential: %v", ErrPairingStateUnsafe, err) }
+		return record, nil
+	}
+	if err != nil { return record, err }
+	if record.Consumed || record.SecretSHA256 != hash { return record, ErrPairingSecretInvalid }
+	if record.IssuedAt.After(now.Add(30*time.Second)) { return record, fmt.Errorf("%w: credential issue time is in the future", ErrPairingStateUnsafe) }
+	if !now.Before(record.ExpiresAt) { return record, ErrPairingSecretInvalid }
+	return record, nil
 }
 
 // CheckPairingSecret is read-only; callers must never authorize pairing using
@@ -205,13 +286,12 @@ func CheckPairingSecret(dir, secret string) (bool, error) {
 	}
 	defer unlock()
 	hash, err := readPairingHash(path)
-	if errors.Is(err, ErrPairingSecretInvalid) {
-		return false, nil
-	}
-	if err != nil {
-		return false, err
-	}
-	return SecretMatches(hash, secret), nil
+	if errors.Is(err, ErrPairingSecretInvalid) { return false, nil }
+	if err != nil { return false, err }
+	credential, err := loadPairingCredential(dir, hash, time.Now().UTC())
+	if errors.Is(err, ErrPairingSecretInvalid) { return false, nil }
+	if err != nil { return false, err }
+	return SecretMatches(credential.SecretSHA256, secret), nil
 }
 
 func validPairingSecret(secret string) bool {
