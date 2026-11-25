@@ -153,6 +153,11 @@ func loadServeConfigArgs(path string) ([]string, error) {
 		return nil, fmt.Errorf("open %q: %w", path, err)
 	}
 	defer f.Close()
+	opened, err := f.Stat()
+	current, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || !os.SameFile(info, opened) || !os.SameFile(opened, current) {
+		return nil, fmt.Errorf("%q changed during secure open", path)
+	}
 
 	dec := json.NewDecoder(io.LimitReader(f, maxServeConfigBytes+1))
 	dec.DisallowUnknownFields()
