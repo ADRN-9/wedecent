@@ -902,7 +902,7 @@ function Restore-WeDecentMigrationTransaction {
     foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
         $partialStaging = $candidate -ceq [string]$Journal.staging -and
-            [string]::IsNullOrWhiteSpace([string]$Journal.source_manifest_sha256)
+            -not [bool]$Journal.staging_complete
         if (-not $partialStaging) {
             [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
         }
@@ -995,9 +995,8 @@ function Get-WeDecentMigrationCanonicalPath {
     if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\') -or $full -match '^[A-Za-z]:[^\\]') {
         throw 'Migration paths must use an absolute local drive path.'
     }
-    $trimmed = $full.TrimEnd('\')
-    if ($trimmed.Length -lt $root.TrimEnd('\').Length) { return $root }
-    return $trimmed
+    if ([string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)) { return $root }
+    return $full.TrimEnd('\')
 }
 
 function Assert-WeDecentMigrationPathsDisjoint {
@@ -1112,6 +1111,7 @@ function Invoke-WeDecentStateMigration {
         metadata_path = [IO.Path]::GetFullPath($MetadataPath)
         original_metadata_json = $originalMetadataJson
         identity = $sourceIdentity
+        staging_complete = $false
         source_manifest_sha256 = Get-WeDecentMigrationManifestDigest -Manifest $sourceManifest
         source_stable_manifest_sha256 = Get-WeDecentMigrationStableManifestDigest -Manifest $sourceManifest
         destination_manifest_sha256 = ''
@@ -1144,6 +1144,7 @@ function Invoke-WeDecentStateMigration {
             throw 'Protected identity result differs from the verified migration identity.'
         }
         $journal.destination_manifest_sha256 = Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $staging)
+        $journal.staging_complete = $true
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'IdentityProtected' -FaultAt $FaultAt
         $journal.phase = 'Verified'
