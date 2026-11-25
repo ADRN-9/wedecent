@@ -371,6 +371,27 @@ try { [void](Assert-WeDecentMigrationPathsDisjoint -Paths @($shortAlias, $aliasR
 catch { $aliasCollisionRejected = $_.Exception.Message -like '*overlap or alias*'; if (-not $aliasCollisionRejected) { throw } }
 if (-not $aliasCollisionRejected) { throw 'Migration accepted a short-name alias as a distinct path.' }
 Remove-Item -LiteralPath $aliasRoot -Force -ErrorAction Stop
+
+$substitutionRoot = Join-Path $env:TEMP ('WeDecent Migration Object Substitution-' + [Guid]::NewGuid().ToString('N'))
+$substitutionPath = Join-Path $substitutionRoot 'anchor'
+$renamedPath = Join-Path $substitutionRoot 'original-object'
+try {
+    New-Item -ItemType Directory -Path $substitutionPath -Force | Out-Null
+    $substitutionSnapshot = Get-WeDecentMigrationIdentitySnapshot -Paths @($substitutionPath)
+    [IO.Directory]::Move($substitutionPath, $renamedPath)
+    [IO.Directory]::CreateDirectory($substitutionPath) | Out-Null
+    $substitutionRejected = $false
+    try {
+        Assert-WeDecentMigrationIdentitySnapshot -Snapshot $substitutionSnapshot -Paths @($substitutionPath)
+    } catch {
+        $substitutionRejected = $_.Exception.Message -like '*filesystem object changed*'
+        if (-not $substitutionRejected) { throw }
+    }
+    if (-not $substitutionRejected) { throw 'Migration identity snapshot accepted a substituted directory at the same pathname.' }
+    Write-Host 'Migration coordinator native volume/file-ID substitution rejection PASS'
+} finally {
+    Remove-Item -LiteralPath $substitutionRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Host 'Migration coordinator Windows path normalization and overlap validators PASS'
 
 $pathFixture = New-MigrationFixture
