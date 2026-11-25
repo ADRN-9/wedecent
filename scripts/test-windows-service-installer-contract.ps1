@@ -175,7 +175,7 @@ if ($migrationModule -and (Get-Content -LiteralPath $migrationModule -Raw) -matc
     throw 'Windows migration must use the Go Ed25519 identity verifier, not .NET X509 parsing.'
 }
 foreach ($faultPoint in @(
-    'Prepared', 'ServiceStopped', 'Copying', 'Copied', 'Verified',
+    'Prepared', 'ServiceStopped', 'Copying', 'Copied', 'IdentityProtected', 'Verified',
     'StatePublished', 'ServiceReconfigured', 'MetadataUpdated', 'ServiceRestarted',
     'RollbackStarted', 'RollbackServiceStopped', 'RollbackSCMRestored',
     'RollbackMetadataRestored', 'RollbackServiceRestarted', 'RolledBack'
@@ -206,6 +206,14 @@ try {
         [string]::IsNullOrWhiteSpace($copy.SourceManifestSHA256)) {
         throw 'Verified state-tree copy returned an invalid manifest.'
     }
+    $protectedIdentity = Invoke-WeDecentMigrationIdentityProtect -AgentPath $agentPath -StatePath $stageState
+    $protectedContinuity = Assert-WeDecentMigrationProtectedIdentityContinuity -Source $sourceState -Destination $stageState -AgentPath $agentPath
+    if ($protectedIdentity.DeviceId -cne $copy.Identity.DeviceId -or
+        $protectedIdentity.Fingerprint -cne $copy.Identity.Fingerprint -or
+        $protectedContinuity.CertificateSHA256 -eq '') {
+        throw 'Protected identity migration changed device identity or certificate continuity.'
+    }
+    $destinationManifest = Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $stageState)
 
     $journal = [pscustomobject]@{
         schema = 1
@@ -225,6 +233,7 @@ try {
         original_service_path = 'synthetic-original-service-command'
         updated_service_path = 'synthetic-updated-service-command'
         source_manifest_sha256 = $copy.SourceManifestSHA256
+        destination_manifest_sha256 = $destinationManifest
         updated_utc = ''
     }
     foreach ($phase in @(
