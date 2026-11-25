@@ -15,7 +15,9 @@ import (
 func c197Key(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	return publicKey, privateKey
 }
 
@@ -36,125 +38,133 @@ func c197Ack(t *testing.T, token CheckpointFenceToken, id string, privateKey ed2
 func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T) {
 	primaryPublic, primaryPrivate := c197Key(t)
 	headPublic, _ := c197Key(t)
-	witnesses:=make([]CheckpointFenceWitnessTrust,3)
-	for i,id:=range []string{"witness-a","witness-b","witness-c"} {
-		publicKey,_:=c197Key(t)
-		witnesses[i]=CheckpointFenceWitnessTrust{ID:id,PublicKey:publicKey}
+	witnesses := make([]CheckpointFenceWitnessTrust, 3)
+	for i, id := range []string{"witness-a", "witness-b", "witness-c"} {
+		publicKey, _ := c197Key(t)
+		witnesses[i] = CheckpointFenceWitnessTrust{ID: id, PublicKey: publicKey}
 	}
-	config:=SupabaseCheckpointFenceConfig{
-		Hostname:"localhost",Port:443,SPKISHA256Pins:strings.Repeat("a",64),
-		ServiceRoleKey:"test-service-role-key",ActorID:"11111111-1111-4111-8111-111111111111",
-		PrimarySigner:primaryPrivate,CheckpointHeadKey:headPublic,
-		WitnessSetVersion:"c197-test",Witnesses:witnesses,
+	config := SupabaseCheckpointFenceConfig{
+		Hostname: "localhost", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64),
+		ServiceRoleKey: "test-service-role-key", ActorID: "11111111-1111-4111-8111-111111111111",
+		PrimarySigner: primaryPrivate, CheckpointHeadKey: headPublic,
+		WitnessSetVersion: "c197-test", Witnesses: witnesses,
 	}
-	primary,err:=NewSupabaseCheckpointFencePrimary(config)
-	if err!=nil { t.Fatalf("valid pinned primary config rejected: %v",err) }
+	primary, err := NewSupabaseCheckpointFencePrimary(config)
+	if err != nil {
+		t.Fatalf("valid pinned primary config rejected: %v", err)
+	}
 	if primary.CheckpointAuthorityKeyID()!=checkpointProviderKeyID(headPublic) {
 		t.Fatal("primary authority key ID mismatch")
 	}
-	config.CheckpointHeadKey=primaryPublic
-	if _,err:=NewSupabaseCheckpointFencePrimary(config);!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("primary/checkpoint-head key reuse accepted: %v",err)
+	config.CheckpointHeadKey = primaryPublic
+	if _, err := NewSupabaseCheckpointFencePrimary(config); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("primary/checkpoint-head key reuse accepted: %v", err)
 	}
-	config.CheckpointHeadKey=headPublic
-	config.Witnesses[0].PublicKey=primaryPublic
+	config.CheckpointHeadKey = headPublic
+	config.Witnesses[0].PublicKey = primaryPublic
 	if _,err:=NewSupabaseCheckpointFencePrimary(config);!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("witness reused primary signing key: %v",err)
+		t.Fatalf("witness reused primary signing key: %v", err)
 	}
-	config.Witnesses[0].PublicKey=headPublic
+	config.Witnesses[0].PublicKey = headPublic
 	if _,err:=NewSupabaseCheckpointFencePrimary(config);!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("witness reused checkpoint-head signing key: %v",err)
+		t.Fatalf("witness reused checkpoint-head signing key: %v", err)
 	}
-	config.Witnesses[0].PublicKey=witnesses[1].PublicKey
+	config.Witnesses[0].PublicKey = witnesses[1].PublicKey
 	if _,err:=NewSupabaseCheckpointFencePrimary(config);!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("duplicate witness key accepted: %v",err)
+		t.Fatalf("duplicate witness key accepted: %v", err)
 	}
 }
 
 func TestSupabaseCheckpointFencePrimaryVerifiesStrictWitnessQuorum(t *testing.T) {
-	token,primaryPrivate:=validFenceToken(t,CheckpointFenceFinalize)
-	primary:=&SupabaseCheckpointFencePrimary{
-		primaryKey:primaryPrivate.Public().(ed25519.PublicKey),
-		witnesses:make(map[string]ed25519.PublicKey),
-		quorum:2,now:func()time.Time{return time.UnixMilli(1000)},
+	token, primaryPrivate := validFenceToken(t, CheckpointFenceFinalize)
+	primary := &SupabaseCheckpointFencePrimary{
+		primaryKey: primaryPrivate.Public().(ed25519.PublicKey),
+		witnesses: make(map[string]ed25519.PublicKey),
+		quorum: 2, now: func() time.Time { return time.UnixMilli(1000) },
 	}
-	private:=make(map[string]ed25519.PrivateKey)
+	private := make(map[string]ed25519.PrivateKey)
 	for _,id:=range token.WitnessIDs {
-		publicKey,privateKey:=c197Key(t)
-		primary.witnesses[id]=publicKey
-		private[id]=privateKey
+		publicKey, privateKey := c197Key(t)
+		primary.witnesses[id] = publicKey
+		private[id] = privateKey
 	}
-	first:=c197Ack(t,token,token.WitnessIDs[0],private[token.WitnessIDs[0]])
-	second:=c197Ack(t,token,token.WitnessIDs[1],private[token.WitnessIDs[1]])
-	if err:=primary.verifyAcknowledgements(token,[]CheckpointFenceAcknowledgement{first,second});err!=nil {
-		t.Fatalf("valid quorum rejected: %v",err)
+	first := c197Ack(t, token, token.WitnessIDs[0], private[token.WitnessIDs[0]])
+	second := c197Ack(t, token, token.WitnessIDs[1], private[token.WitnessIDs[1]])
+	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first, second}); err != nil {
+		t.Fatalf("valid quorum rejected: %v", err)
 	}
-	if err:=primary.verifyAcknowledgements(token,[]CheckpointFenceAcknowledgement{first});!errors.Is(err,ErrCheckpointQuorum) {
-		t.Fatalf("insufficient quorum accepted: %v",err)
+	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first}); !errors.Is(err, ErrCheckpointQuorum) {
+		t.Fatalf("insufficient quorum accepted: %v", err)
 	}
-	duplicate:=second
-	duplicate.WitnessID=first.WitnessID
-	duplicate.WitnessKeyID=first.WitnessKeyID
-	duplicate.Signature=ed25519.Sign(private[first.WitnessID],checkpointFenceAcknowledgementMessage(duplicate))
-	if err:=primary.verifyAcknowledgements(token,[]CheckpointFenceAcknowledgement{first,duplicate});!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("duplicate witness accepted: %v",err)
+	duplicate := second
+	duplicate.WitnessID = first.WitnessID
+	duplicate.WitnessKeyID = first.WitnessKeyID
+	duplicate.Signature = ed25519.Sign(private[first.WitnessID], checkpointFenceAcknowledgementMessage(duplicate))
+	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first, duplicate}); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("duplicate witness accepted: %v", err)
 	}
-	forged:=second
-	forged.OperationID="different-operation"
-	if err:=primary.verifyAcknowledgements(token,[]CheckpointFenceAcknowledgement{first,forged});!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("forged operation binding accepted: %v",err)
+	forged := second
+	forged.OperationID = "different-operation"
+	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first, forged}); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("forged operation binding accepted: %v", err)
 	}
-	stale:=second
-	stale.TokenSHA256=sha256.Sum256([]byte("stale-token"))
-	stale.Signature=ed25519.Sign(private[stale.WitnessID],checkpointFenceAcknowledgementMessage(stale))
-	if err:=primary.verifyAcknowledgements(token,[]CheckpointFenceAcknowledgement{first,stale});!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("stale token acknowledgement accepted: %v",err)
+	stale := second
+	stale.TokenSHA256 = sha256.Sum256([]byte("stale-token"))
+	stale.Signature = ed25519.Sign(private[stale.WitnessID], checkpointFenceAcknowledgementMessage(stale))
+	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first, stale}); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("stale token acknowledgement accepted: %v", err)
 	}
-	expired:=second
-	expired.CommittedAtUnixMS=token.ExpiresAtUnixMS+1
-	expired.Signature=ed25519.Sign(private[expired.WitnessID],checkpointFenceAcknowledgementMessage(expired))
-	if err:=primary.verifyAcknowledgements(token,[]CheckpointFenceAcknowledgement{first,expired});!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("expired acknowledgement accepted: %v",err)
+	expired := second
+	expired.CommittedAtUnixMS = token.ExpiresAtUnixMS + 1
+	expired.Signature = ed25519.Sign(private[expired.WitnessID], checkpointFenceAcknowledgementMessage(expired))
+	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first, expired}); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("expired acknowledgement accepted: %v", err)
 	}
-	unknown:=second
-	unknown.WitnessID="unconfigured-witness"
-	unknown.Signature=ed25519.Sign(private[second.WitnessID],checkpointFenceAcknowledgementMessage(unknown))
-	if err:=primary.verifyAcknowledgements(token,[]CheckpointFenceAcknowledgement{first,unknown});!errors.Is(err,ErrCheckpointIntegrity) {
-		t.Fatalf("unknown witness accepted: %v",err)
+	unknown := second
+	unknown.WitnessID = "unconfigured-witness"
+	unknown.Signature = ed25519.Sign(private[second.WitnessID], checkpointFenceAcknowledgementMessage(unknown))
+	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first, unknown}); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("unknown witness accepted: %v", err)
 	}
 }
 
 func TestSupabaseCheckpointFenceWireRoundTripPreservesSignedFields(t *testing.T) {
-	token,_:=validFenceToken(t,CheckpointFenceFinalize)
-	wire,err:=checkpointFenceTokenToWire(token)
+	token, _ := validFenceToken(t, CheckpointFenceFinalize)
+	wire, err := checkpointFenceTokenToWire(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(wire)
 	if err!=nil { t.Fatal(err) }
-	encoded,err:=json.Marshal(wire)
+	decoded, err := checkpointFenceTokenFromWire(encoded)
 	if err!=nil { t.Fatal(err) }
-	decoded,err:=checkpointFenceTokenFromWire(encoded)
-	if err!=nil { t.Fatal(err) }
-	if !sameCheckpointFenceToken(token,decoded) { t.Fatal("token wire round trip changed signed fields") }
-	_,witnessPrivate:=c197Key(t)
-	ack:=c197Ack(t,token,token.WitnessIDs[0],witnessPrivate)
-	ackBytes,err:=json.Marshal(checkpointFenceAckToWire(ack))
+	if !sameCheckpointFenceToken(token, decoded) {
+		t.Fatal("token wire round trip changed signed fields")
+	}
+	_, witnessPrivate := c197Key(t)
+	ack := c197Ack(t, token, token.WitnessIDs[0], witnessPrivate)
+	ackBytes, err := json.Marshal(checkpointFenceAckToWire(ack))
 	if err!=nil { t.Fatal(err) }
 	var ackWire checkpointFenceAckWire
-	if err:=json.Unmarshal(ackBytes,&ackWire);err!=nil { t.Fatal(err) }
-	decodedAck,err:=checkpointFenceAckFromWire(ackWire)
+	if err := json.Unmarshal(ackBytes, &ackWire); err != nil {
+		t.Fatal(err)
+	}
+	decodedAck, err := checkpointFenceAckFromWire(ackWire)
 	if err!=nil { t.Fatal(err) }
-	if decodedAck.WitnessID!=ack.WitnessID || decodedAck.TokenSHA256!=ack.TokenSHA256 ||
-		decodedAck.Generation!=ack.Generation || decodedAck.Action!=ack.Action ||
-		decodedAck.OperationID!=ack.OperationID || decodedAck.WitnessKeyID!=ack.WitnessKeyID ||
-		decodedAck.CommittedAtUnixMS!=ack.CommittedAtUnixMS || !bytes.Equal(decodedAck.Signature,ack.Signature) {
+	if decodedAck.WitnessID != ack.WitnessID || decodedAck.TokenSHA256 != ack.TokenSHA256 ||
+		decodedAck.Generation != ack.Generation || decodedAck.Action != ack.Action ||
+		decodedAck.OperationID != ack.OperationID || decodedAck.WitnessKeyID != ack.WitnessKeyID ||
+		decodedAck.CommittedAtUnixMS != ack.CommittedAtUnixMS || !bytes.Equal(decodedAck.Signature, ack.Signature) {
 		t.Fatal("acknowledgement wire round trip changed signed fields")
 	}
 }
 
 func TestSupabaseCheckpointFencePrimaryLegacyMethodsFailClosed(t *testing.T) {
 	var primary SupabaseCheckpointFencePrimary
-	if _,err:=primary.ReserveFence(t.Context(),CheckpointFenceRequest{});!errors.Is(err,ErrCheckpointUnavailable) {
-		t.Fatalf("non-atomic reserve unexpectedly available: %v",err)
+	if _, err := primary.ReserveFence(t.Context(), CheckpointFenceRequest{}); !errors.Is(err, ErrCheckpointUnavailable) {
+		t.Fatalf("non-atomic reserve unexpectedly available: %v", err)
 	}
-	if err:=primary.CommitFence(t.Context(),CheckpointFenceToken{},nil);!errors.Is(err,ErrCheckpointUnavailable) {
-		t.Fatalf("non-atomic commit unexpectedly available: %v",err)
+	if err := primary.CommitFence(t.Context(), CheckpointFenceToken{}, nil); !errors.Is(err, ErrCheckpointUnavailable) {
+		t.Fatalf("non-atomic commit unexpectedly available: %v", err)
 	}
 }
