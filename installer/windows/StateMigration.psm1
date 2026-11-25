@@ -567,7 +567,7 @@ function Read-WeDecentMigrationJournal {
         if (-not [IO.Path]::IsPathRooted([string]$journal.$field)) {
             throw "Migration journal path '$field' is not absolute."
         }
-        $journal.$field = [IO.Path]::GetFullPath([string]$journal.$field)
+        $journal.$field = Get-WeDecentMigrationCanonicalPath -Path ([string]$journal.$field)
     }
     if ([string]::Equals([string]$journal.source, [string]$journal.destination, [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals((Split-Path -Parent ([string]$journal.destination)), (Split-Path -Parent ([string]$journal.staging)), [StringComparison]::OrdinalIgnoreCase) -or
