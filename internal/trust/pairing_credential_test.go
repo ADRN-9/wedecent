@@ -202,6 +202,14 @@ func TestWrongSecretCannotTriggerLegacyCredentialMigration(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(dir, pairingCredentialFile)); !os.IsNotExist(err) {
 		t.Fatalf("wrong secret triggered legacy migration: %v", err)
 	}
+	store, err := Open(filepath.Join(dir, "trusted-clients.json"))
+	if err != nil { t.Fatal(err) }
+	if err := PairClientWithSecret(dir, "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD", store, pairingTestPeer("wd_dddddddddddddddd")); !errors.Is(err, ErrPairingSecretInvalid) {
+		t.Fatalf("pairing transaction accepted wrong legacy secret: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, pairingCredentialFile)); !os.IsNotExist(err) {
+		t.Fatalf("wrong transaction secret triggered legacy migration: %v", err)
+	}
 	if ok, err := CheckPairingSecret(dir, secret); err != nil || !ok {
 		t.Fatalf("valid legacy secret failed migration: %v %v", ok, err)
 	}
