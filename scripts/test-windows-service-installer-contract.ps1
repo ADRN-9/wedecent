@@ -237,6 +237,9 @@ try {
         (Get-WeDecentMigrationManifestDigest -Manifest $tamperedManifest)) {
         throw 'Migration manifest failed to detect changed identity bytes.'
     }
+    $identityMismatchRejected = $false
+    try { [void](Assert-WeDecentMigrationIdentityContinuity -Source $sourceState -Destination $stageState) } catch { $identityMismatchRejected = $true }
+    if (-not $identityMismatchRejected) { throw 'Migration identity continuity accepted changed private-key bytes.' }
 
     $junctionRejected = $false
     $junction = Join-Path $sourceState 'junction'
