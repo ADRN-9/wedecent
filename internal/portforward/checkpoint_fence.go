@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/binary"
 	"sort"
 )
@@ -149,6 +150,18 @@ type CheckpointFenceRequest struct {
 	ExpiresAtUnixMS         int64
 }
 
+
+// CheckpointRevocationOperationID returns the stable operation identity used by
+// both the proof issuer and the PostgreSQL fence adapter.
+func CheckpointRevocationOperationID(endpoint CheckpointEndpoint, next uint64) (string, error) {
+	if !validCheckpointEndpoint(endpoint) || endpoint.RevocationEpoch == ^uint64(0) ||
+		next != endpoint.RevocationEpoch+1 {
+		return "", ErrCheckpointStale
+	}
+	fingerprint := checkpointRevocationFingerprint(endpoint, next)
+	return checkpointFenceOperationID(CheckpointFenceRevoke,
+		hex.EncodeToString(fingerprint[:]), endpoint.OrganizationID), nil
+}
 
 type CheckpointRevocationAuthorizationRequest struct {
 	Endpoint        CheckpointEndpoint
