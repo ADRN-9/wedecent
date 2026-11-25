@@ -560,6 +560,36 @@ try {
     Remove-Item -LiteralPath $nestedDirectoryOwner.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+$nestedFileOwner = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $nestedFileOwner.Source -Destination $nestedFileOwner.Destination -AgentPath $agentPath -ServiceName $nestedFileOwner.ServiceName -ServiceSid $nestedFileOwner.ServiceSid -MetadataPath $nestedFileOwner.MetadataPath -JournalPath $nestedFileOwner.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Nested file owner fixture did not stop at the pending rollback boundary.' }
+    $nestedFile = Join-Path $nestedFileOwner.Source 'nested/policy.json'
+    $output = & icacls.exe $nestedFile '/setowner' '*S-1-5-32-545' 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "Could not substitute nested file owner for regression: $($output -join ' ')" }
+    $nestedOwner = (Get-Acl -LiteralPath $nestedFile).GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($nestedOwner -cne 'S-1-5-32-545') { throw "Nested file owner substitution did not take effect: $nestedOwner" }
+    $rejectedNestedFileOwner = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileOwner.Journal -AgentPath $agentPath -MetadataPath $nestedFileOwner.MetadataPath -ServiceName $nestedFileOwner.ServiceName)
+    } catch {
+        $rejectedNestedFileOwner = $_.Exception.Message -like '*unexpected owner SID*'
+        if (-not $rejectedNestedFileOwner) { throw }
+    }
+    if (-not $rejectedNestedFileOwner) { throw 'Recovery accepted a nested file owner substitution.' }
+    if ($global:WeDecentMigrationMockService.PathName -cne $nestedFileOwner.OriginalServicePath) { throw 'Nested file owner rejection changed SCM configuration.' }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') { throw 'Nested file owner rejection did not leave the service stopped.' }
+    Write-Host 'Migration coordinator nested file owner recovery rejection PASS'
+} finally {
+    Remove-Item -LiteralPath $nestedFileOwner.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 } finally {
     Remove-Item -LiteralPath $recovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
