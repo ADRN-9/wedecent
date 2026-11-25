@@ -10,7 +10,7 @@ import (
 )
 
 func TestParseServeConfigFileTransferDisabledByDefault(t *testing.T) {
-	cfg, err := parseServeConfig(nil)
+	cfg, err := parseServeConfigForTest(t, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestParseServeConfigRejectsPartialFileTransfer(t *testing.T) {
 		{name: "oversized limit", args: []string{"--file-root=" + root, "--file-download", "--file-max-bytes=" + tooLarge}, want: "file-max-bytes"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := parseServeConfig(tc.args)
+			_, err := parseServeConfigForTest(t, tc.args)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("err = %v, want substring %q", err, tc.want)
 			}
