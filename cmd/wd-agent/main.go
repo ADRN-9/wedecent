@@ -307,8 +307,8 @@ type serveConfig struct {
 	PairingRecoveryAuthorityURL           string
 	PairingRecoveryAuthoritySPKISHA256    string
 	PairingRecoveryTrustFile              string
-	PairingRecoveryAuthorityTokenFile      string
-	PairingRecoveryAuthorityToken          string
+	PairingRecoveryAuthorityTokenFile     string
+	PairingRecoveryAuthorityToken         string
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
@@ -665,7 +665,9 @@ func parseServeConfig(args []string) (serveConfig, error) {
 	cfg.PairingRecoveryAuthorityToken = strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN"))
 	if cfg.PairingRecoveryAuthorityTokenFile != "" {
 		token, err := loadRecoveryAuthorityToken(cfg.PairingRecoveryAuthorityTokenFile)
-		if err != nil { return serveConfig{}, fmt.Errorf("load recovery bearer credential: %w", err) }
+		if err != nil {
+			return serveConfig{}, fmt.Errorf("load recovery bearer credential: %w", err)
+		}
 		cfg.PairingRecoveryAuthorityToken = token
 	}
 	if cfg.PairingRecoveryAuthorityURL == "" || cfg.PairingRecoveryAuthoritySPKISHA256 == "" ||
