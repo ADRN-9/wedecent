@@ -899,13 +899,14 @@ function Invoke-WeDecentStateMigration {
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Copied' -FaultAt $FaultAt
         $protectedIdentity = Invoke-WeDecentMigrationIdentityProtect -AgentPath $AgentPath -StatePath $staging
-        Invoke-WeDecentMigrationFaultPoint -Name 'IdentityProtected' -FaultAt $FaultAt
         $journal.identity = Assert-WeDecentMigrationProtectedIdentityContinuity -Source $sourceFull -Destination $staging -AgentPath $AgentPath
         if ($journal.identity.DeviceId -cne $protectedIdentity.DeviceId -or
             $journal.identity.Fingerprint -cne $protectedIdentity.Fingerprint) {
             throw 'Protected identity result differs from the verified migration identity.'
         }
         $journal.destination_manifest_sha256 = Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $staging)
+        Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'IdentityProtected' -FaultAt $FaultAt
         $journal.phase = 'Verified'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Verified' -FaultAt $FaultAt
