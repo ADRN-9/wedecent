@@ -1,10 +1,10 @@
 package relay
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
-	"context"
 	"encoding/base64"
 	"io"
 	"log/slog"
