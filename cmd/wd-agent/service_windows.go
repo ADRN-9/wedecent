@@ -238,7 +238,7 @@ func runServiceInstall(args []string) error {
 	if err != nil { return fmt.Errorf("resolve wd-agent executable: %w", err) }
 
 	password := ""
-	stdinReader := bufio.NewReader(os.Stdin)
+	stdinReader := bufio.NewReaderSize(os.Stdin, maxServicePasswordBytes+2)
 
 	if !strings.HasSuffix(
 		strings.TrimSpace(*account),
