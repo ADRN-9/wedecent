@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"wedecent.com/wedecent/internal/relayproto"
@@ -34,6 +35,7 @@ type slot struct {
 	watchOnce      sync.Once
 	disconnected   chan struct{}
 	disconnectOnce sync.Once
+	watchViolation atomic.Bool
 }
 
 func (s *slot) finish() {
@@ -139,40 +141,64 @@ func (b *Broker) Take(deviceID string) (*slot, error) {
 			b.slots[deviceID] = q
 		}
 		b.mu.Unlock()
-		s.stopDisconnectWatch()
+		if s.stopDisconnectWatch() {
+			b.Remove(deviceID, s)
+			s.finish()
+			_ = s.conn.Close()
+			return nil, ErrNoAgent
+		}
 		return s, nil
 	}
 	b.mu.Unlock()
 	return nil, ErrNoAgent
 }
 
+// WatchDisconnect owns the parked connection's read side until Take stops it.
+// The agent MUST remain silent after TypeWaiting until it receives TypeReady;
+// any earlier byte is a protocol violation and closes the reservation.
 func (b *Broker) WatchDisconnect(deviceID string, target *slot) {
 	target.watchStop = make(chan struct{})
 	target.watchDone = make(chan struct{})
 	go func() {
 		defer close(target.watchDone)
 		var one [1]byte
-		_, _ = target.conn.Read(one[:])
+		n, err := target.conn.Read(one[:])
+		if n > 0 || (err != nil && !isReadDeadlineTimeout(err)) || (n == 0 && err == nil) {
+			target.watchViolation.Store(true)
+			target.disconnectOnce.Do(func() { close(target.disconnected) })
+			b.Remove(deviceID, target)
+			return
+		}
 		select {
 		case <-target.watchStop:
 			return
 		default:
+			target.watchViolation.Store(true)
 			target.disconnectOnce.Do(func() { close(target.disconnected) })
 			b.Remove(deviceID, target)
 		}
 	}()
 }
 
-func (s *slot) stopDisconnectWatch() {
+func (s *slot) stopDisconnectWatch() bool {
 	if s.watchStop == nil {
-		return
+		return s.watchViolation.Load()
 	}
 	s.watchOnce.Do(func() {
 		close(s.watchStop)
-		_ = s.conn.SetReadDeadline(time.Now())
+		if err := s.conn.SetReadDeadline(time.Now()); err != nil {
+			// A watcher that cannot be interrupted cannot safely hand off a stream.
+			_ = s.conn.Close()
+		}
 		<-s.watchDone
 		_ = s.conn.SetReadDeadline(time.Time{})
 	})
+	return s.watchViolation.Load()
+}
+
+func isReadDeadlineTimeout(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func (b *Broker) Remove(deviceID string, target *slot) {

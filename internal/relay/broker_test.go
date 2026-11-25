@@ -277,3 +277,194 @@ func TestSlotSerializesCompleteProtocolWrites(t *testing.T) {
 		t.Fatalf("maximum concurrent connection writes = %d, want 1", maximum)
 	}
 }
+
+type gatedReadConn struct {
+	net.Conn
+	entered      chan struct{}
+	release      chan struct{}
+	deadlineSet  chan struct{}
+	deadlineOnce sync.Once
+	readOnce     sync.Once
+}
+
+func (c *gatedReadConn) Read(p []byte) (int, error) {
+	c.readOnce.Do(func() { close(c.entered) })
+	<-c.release
+	p[0] = 'x'
+	return 1, nil
+}
+
+func (c *gatedReadConn) SetReadDeadline(time.Time) error {
+	c.deadlineOnce.Do(func() { close(c.deadlineSet) })
+	return nil
+}
+
+func TestDisconnectWatcherRejectsBytesRacingWithHandoff(t *testing.T) {
+	server, peer := net.Pipe()
+	defer peer.Close()
+	conn := &gatedReadConn{
+		Conn: server, entered: make(chan struct{}), release: make(chan struct{}),
+		deadlineSet: make(chan struct{}),
+	}
+	broker := NewBroker(1, time.Minute)
+	slot, err := broker.Reserve("device", conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.WatchDisconnect("device", slot)
+	select {
+	case <-conn.entered:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect watcher did not enter Read")
+	}
+	stopped := make(chan bool, 1)
+	go func() { stopped <- slot.stopDisconnectWatch() }()
+	select {
+	case <-conn.deadlineSet:
+	case <-time.After(time.Second):
+		t.Fatal("handoff did not interrupt watcher read")
+	}
+	close(conn.release)
+	select {
+	case violation := <-stopped:
+		if !violation {
+			t.Fatal("handoff accepted a byte consumed by the disconnect watcher")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("disconnect watcher did not terminate")
+	}
+}
+
+func TestDisconnectImmediatelyBeforeActivationIsRejected(t *testing.T) {
+	broker := NewBroker(1, time.Minute)
+	server, peer := net.Pipe()
+	slot, err := broker.Reserve("device", server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.WatchDisconnect("device", slot)
+	_ = peer.Close()
+	select {
+	case <-slot.done:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect before activation did not remove reservation")
+	}
+	if err := broker.Activate("device", slot); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("activation after disconnect = %v, want ErrNoAgent", err)
+	}
+	if _, err := broker.Take("device"); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("claim after disconnect = %v, want ErrNoAgent", err)
+	}
+}
+
+func TestDisconnectImmediatelyAfterActivationIsRejected(t *testing.T) {
+	broker := NewBroker(1, time.Minute)
+	server, peer := net.Pipe()
+	slot, err := broker.Reserve("device", server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.WatchDisconnect("device", slot)
+	select {
+	case <-slot.watchDone:
+		t.Fatal("watcher exited before disconnect")
+	default:
+	}
+	if err := broker.Activate("device", slot); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.Close()
+	select {
+	case <-slot.done:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect after activation did not remove slot")
+	}
+	if _, err := broker.Take("device"); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("claim after activated disconnect = %v, want ErrNoAgent", err)
+	}
+}
+
+func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
+	const workers = 16
+	const rounds = 12
+	broker := NewBroker(workers, time.Minute)
+	var peersMu sync.Mutex
+	peers := make(map[net.Conn]net.Conn)
+	for round := 0; round < rounds; round++ {
+		start := make(chan struct{})
+		var registered sync.WaitGroup
+		registered.Add(workers)
+		for range workers {
+			go func() {
+				defer registered.Done()
+				<-start
+				server, peer := net.Pipe()
+				slot, err := broker.Reserve("shared-device", server)
+				if err != nil {
+					t.Errorf("reserve round %d: %v", round, err)
+					_ = peer.Close()
+					return
+				}
+				broker.WatchDisconnect("shared-device", slot)
+				if err := broker.Activate("shared-device", slot); err != nil {
+					t.Errorf("activate round %d: %v", round, err)
+					broker.Remove("shared-device", slot)
+					_ = peer.Close()
+					return
+				}
+				// The peer remains open until a concurrent Take stops its watcher.
+				peersMu.Lock()
+				peers[server] = peer
+				peersMu.Unlock()
+			}()
+		}
+		close(start)
+		registered.Wait()
+
+		startClaims := make(chan struct{})
+		var claimed sync.WaitGroup
+		claimed.Add(workers)
+		for range workers {
+			go func() {
+				defer claimed.Done()
+				<-startClaims
+				slot, err := broker.Take("shared-device")
+				if err != nil {
+					t.Errorf("take round %d: %v", round, err)
+					return
+				}
+				peersMu.Lock()
+				peer := peers[slot.conn]
+				peersMu.Unlock()
+				if peer == nil {
+					t.Errorf("round %d: claimed slot has no peer", round)
+					broker.Remove("shared-device", slot)
+					_ = slot.conn.Close()
+					return
+				}
+				readDone := make(chan error, 1)
+				go func() {
+					msg, err := relayproto.Read(peer)
+					if err == nil && msg.Type != relayproto.TypeReady {
+						err = fmt.Errorf("unexpected ready message %q", msg.Type)
+					}
+					readDone <- err
+				}()
+				if err := slot.write(relayproto.Message{Type: relayproto.TypeReady}); err != nil {
+					t.Errorf("ready round %d: %v", round, err)
+				}
+				if err := <-readDone; err != nil {
+					t.Errorf("read ready round %d: %v", round, err)
+				}
+				slot.finish()
+				_ = slot.conn.Close()
+				_ = peer.Close()
+				peersMu.Lock()
+				delete(peers, slot.conn)
+				peersMu.Unlock()
+			}()
+		}
+		close(startClaims)
+		claimed.Wait()
+	}
+}

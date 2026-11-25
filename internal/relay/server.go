@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/tls"
@@ -17,8 +18,10 @@ import (
 )
 
 type Server struct {
-	Broker *Broker
-	Logger *slog.Logger
+	Broker           *Broker
+	Logger           *slog.Logger
+	HandshakeTimeout time.Duration
+	ReadTimeout      time.Duration
 }
 
 func TLSConfig(cert tls.Certificate) *tls.Config {
@@ -26,9 +29,22 @@ func TLSConfig(cert tls.Certificate) *tls.Config {
 }
 
 func (s *Server) ServeConn(conn net.Conn) {
+	s.ServeConnContext(context.Background(), conn)
+}
+
+// ServeConnContext bounds the initial protocol read and lets the caller cancel
+// TLS setup or an incomplete registration/connect frame.
+func (s *Server) ServeConnContext(ctx context.Context, conn net.Conn) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	handshakeTimeout := s.HandshakeTimeout
+	if handshakeTimeout <= 0 {
+		handshakeTimeout = 15 * time.Second
+	}
 	if tlsConn, ok := conn.(*tls.Conn); ok {
-		_ = tlsConn.SetDeadline(time.Now().Add(15 * time.Second))
-		if err := tlsConn.Handshake(); err != nil {
+		_ = tlsConn.SetDeadline(time.Now().Add(handshakeTimeout))
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			_ = conn.Close()
 			return
 		}
@@ -43,17 +59,21 @@ func (s *Server) ServeConn(conn net.Conn) {
 		return
 	}
 	challenge := base64.RawURLEncoding.EncodeToString(challengeBytes)
-	_ = conn.SetDeadline(time.Now().Add(15 * time.Second))
+	_ = conn.SetWriteDeadline(time.Now().Add(handshakeTimeout))
 	if err := relayproto.Write(conn, relayproto.Message{Type: relayproto.TypeChallenge, Challenge: challenge}); err != nil {
 		_ = conn.Close()
 		return
 	}
-	msg, err := relayproto.Read(conn)
+	_ = conn.SetWriteDeadline(time.Time{})
+	readTimeout := s.ReadTimeout
+	if readTimeout <= 0 {
+		readTimeout = 15 * time.Second
+	}
+	msg, err := readRelayControlMessage(ctx, conn, readTimeout)
 	if err != nil {
 		_ = conn.Close()
 		return
 	}
-	_ = conn.SetDeadline(time.Time{})
 
 	switch msg.Type {
 	case relayproto.TypeRegister:
@@ -61,9 +81,41 @@ func (s *Server) ServeConn(conn net.Conn) {
 	case relayproto.TypeConnect:
 		s.handleConnect(conn, msg)
 	default:
-		_ = relayproto.Write(conn, relayproto.Message{Type: relayproto.TypeError, Code: "bad_request", Error: "expected register or connect"})
-		_ = conn.Close()
+		s.reject(conn, "bad_request", "expected register or connect")
 	}
+}
+
+func readRelayControlMessage(ctx context.Context, conn net.Conn, timeout time.Duration) (relayproto.Message, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return relayproto.Message{}, err
+	}
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	deadline := time.Now().Add(timeout)
+	if contextDeadline, ok := ctx.Deadline(); ok && contextDeadline.Before(deadline) {
+		deadline = contextDeadline
+	}
+	if err := conn.SetReadDeadline(deadline); err != nil {
+		return relayproto.Message{}, err
+	}
+	interruptDone := make(chan struct{})
+	stop := context.AfterFunc(ctx, func() {
+		defer close(interruptDone)
+		_ = conn.SetReadDeadline(time.Now())
+	})
+	msg, err := relayproto.Read(conn)
+	if !stop() {
+		<-interruptDone
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return relayproto.Message{}, ctxErr
+	}
+	return msg, err
 }
 
 func (s *Server) handleRegister(conn net.Conn, challenge string, msg relayproto.Message) {

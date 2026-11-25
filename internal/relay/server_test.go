@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -197,5 +198,249 @@ func TestServerRemovesParkedSlotAfterPeerDisconnect(t *testing.T) {
 	case <-serverDone:
 	case <-time.After(time.Second):
 		t.Fatal("server did not stop after peer disconnect")
+	}
+}
+
+func TestRelayRegistrationToSessionHandoffPreservesApplicationBytes(t *testing.T) {
+	broker := NewBroker(2, time.Minute)
+	handler := &relayTestHandler{activated: make(chan struct{})}
+	server := &Server{Broker: broker, Logger: slog.New(handler)}
+
+	agentServer, agentPeer := net.Pipe()
+	agentDone := make(chan struct{})
+	go func() {
+		server.ServeConn(agentServer)
+		close(agentDone)
+	}()
+	deviceID, _ := registerRelayTestAgent(t, agentPeer)
+	waiting, err := relayproto.Read(agentPeer)
+	if err != nil || waiting.Type != relayproto.TypeWaiting {
+		t.Fatalf("registration acknowledgement = %#v, %v", waiting, err)
+	}
+	select {
+	case <-handler.activated:
+	case <-time.After(time.Second):
+		t.Fatal("registered agent was not activated")
+	}
+
+	clientServer, clientPeer := net.Pipe()
+	clientDone := make(chan struct{})
+	go func() {
+		server.ServeConn(clientServer)
+		close(clientDone)
+	}()
+	challenge, err := relayproto.Read(clientPeer)
+	if err != nil || challenge.Type != relayproto.TypeChallenge {
+		t.Fatalf("client challenge = %#v, %v", challenge, err)
+	}
+	if err := relayproto.Write(clientPeer, relayproto.Message{Type: relayproto.TypeConnect, DeviceID: deviceID}); err != nil {
+		t.Fatal(err)
+	}
+
+	agentReady, err := relayproto.Read(agentPeer)
+	if err != nil || agentReady.Type != relayproto.TypeReady {
+		t.Fatalf("agent ready = %#v, %v", agentReady, err)
+	}
+	clientReady, err := relayproto.Read(clientPeer)
+	if err != nil || clientReady.Type != relayproto.TypeReady {
+		t.Fatalf("client ready = %#v, %v", clientReady, err)
+	}
+
+	payload := []byte("valid-session-application-frame\x00\xff")
+	writeDone := make(chan error, 1)
+	go func() {
+		_, err := agentPeer.Write(payload)
+		writeDone <- err
+	}()
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(clientPeer, got); err != nil {
+		t.Fatalf("read application payload: %v", err)
+	}
+	if !bytes.Equal(got, payload) {
+		t.Fatalf("bridged application bytes = %x, want %x", got, payload)
+	}
+	if err := <-writeDone; err != nil {
+		t.Fatalf("write application payload: %v", err)
+	}
+
+	_ = agentPeer.Close()
+	_ = clientPeer.Close()
+	for name, done := range map[string]<-chan struct{}{"agent": agentDone, "client": clientDone} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s relay handler did not terminate", name)
+		}
+	}
+}
+
+func TestPrematureAgentApplicationBytesFailClosedBeforeConnect(t *testing.T) {
+	broker := NewBroker(1, time.Minute)
+	handler := &relayTestHandler{activated: make(chan struct{})}
+	server := &Server{Broker: broker, Logger: slog.New(handler)}
+
+	agentServer, agentPeer := net.Pipe()
+	agentDone := make(chan struct{})
+	go func() {
+		server.ServeConn(agentServer)
+		close(agentDone)
+	}()
+	deviceID, _ := registerRelayTestAgent(t, agentPeer)
+	waiting, err := relayproto.Read(agentPeer)
+	if err != nil || waiting.Type != relayproto.TypeWaiting {
+		t.Fatalf("registration acknowledgement = %#v, %v", waiting, err)
+	}
+	select {
+	case <-handler.activated:
+	case <-time.After(time.Second):
+		t.Fatal("registered agent was not activated")
+	}
+	broker.mu.Lock()
+	var parked *slot
+	for _, candidate := range broker.slots[deviceID] {
+		parked = candidate
+	}
+	broker.mu.Unlock()
+	if parked == nil {
+		t.Fatal("active relay slot missing")
+	}
+
+	// The agent protocol forbids application data until TypeReady.
+	if _, err := agentPeer.Write([]byte("premature")); err != nil && !errors.Is(err, io.ErrClosedPipe) {
+		t.Fatalf("premature probe write failed unexpectedly: %v", err)
+	}
+	select {
+	case <-parked.done:
+	case <-time.After(time.Second):
+		t.Fatal("premature application bytes did not close the parked slot")
+	}
+
+	clientServer, clientPeer := net.Pipe()
+	clientDone := make(chan struct{})
+	go func() {
+		server.ServeConn(clientServer)
+		close(clientDone)
+	}()
+	challenge, err := relayproto.Read(clientPeer)
+	if err != nil || challenge.Type != relayproto.TypeChallenge {
+		t.Fatalf("client challenge = %#v, %v", challenge, err)
+	}
+	if err := relayproto.Write(clientPeer, relayproto.Message{Type: relayproto.TypeConnect, DeviceID: deviceID}); err != nil {
+		t.Fatal(err)
+	}
+	rejected, err := relayproto.Read(clientPeer)
+	if err != nil || rejected.Type != relayproto.TypeError || rejected.Code != "unavailable" {
+		t.Fatalf("premature-data session result = %#v, %v; want unavailable error", rejected, err)
+	}
+	_ = clientPeer.Close()
+	_ = agentPeer.Close()
+	for name, done := range map[string]<-chan struct{}{"agent": agentDone, "client": clientDone} {
+		select {
+		case <-done:
+		case <-time.After(time.Second):
+			t.Fatalf("%s relay handler did not terminate", name)
+		}
+	}
+}
+
+func TestServeConnContextCancelsInitialProtocolRead(t *testing.T) {
+	server := &Server{Broker: NewBroker(1, time.Minute)}
+	serverSide, peer := net.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		server.ServeConnContext(ctx, serverSide)
+		close(done)
+	}()
+	challenge, err := relayproto.Read(peer)
+	if err != nil || challenge.Type != relayproto.TypeChallenge {
+		t.Fatalf("challenge = %#v, %v", challenge, err)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not interrupt initial relay protocol read")
+	}
+	_ = peer.Close()
+}
+
+func TestServeConnContextTimesOutInitialProtocolRead(t *testing.T) {
+	server := &Server{Broker: NewBroker(1, time.Minute), ReadTimeout: 25 * time.Millisecond}
+	serverSide, peer := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		server.ServeConnContext(context.Background(), serverSide)
+		close(done)
+	}()
+	challenge, err := relayproto.Read(peer)
+	if err != nil || challenge.Type != relayproto.TypeChallenge {
+		t.Fatalf("challenge = %#v, %v", challenge, err)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("initial relay protocol read did not time out")
+	}
+	_ = peer.Close()
+}
+
+func TestReadRelayControlMessageTimeoutsAtHeaderAndPayload(t *testing.T) {
+	for _, stage := range []string{"header", "payload"} {
+		t.Run(stage, func(t *testing.T) {
+			server, peer := net.Pipe()
+			defer server.Close()
+			defer peer.Close()
+			result := make(chan error, 1)
+			go func() {
+				_, err := readRelayControlMessage(context.Background(), server, 25*time.Millisecond)
+				result <- err
+			}()
+			if stage == "payload" {
+				if _, err := peer.Write([]byte{0, 0, 0, 8}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case err := <-result:
+				var netErr net.Error
+				if !errors.As(err, &netErr) || !netErr.Timeout() {
+					t.Fatalf("read error = %v, want timeout", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("relay control read did not time out")
+			}
+		})
+	}
+}
+
+func TestReadRelayControlMessageCancellationAtHeaderAndPayload(t *testing.T) {
+	for _, stage := range []string{"header", "payload"} {
+		t.Run(stage, func(t *testing.T) {
+			server, peer := net.Pipe()
+			defer server.Close()
+			defer peer.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				_, err := readRelayControlMessage(ctx, server, time.Hour)
+				result <- err
+			}()
+			if stage == "payload" {
+				if _, err := peer.Write([]byte{0, 0, 0, 8}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cancel()
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("read error = %v, want context.Canceled", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancellation did not interrupt relay control read")
+			}
+		})
 	}
 }
