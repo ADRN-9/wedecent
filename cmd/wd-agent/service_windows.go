@@ -233,6 +233,11 @@ func runServiceInstall(args []string) error {
 	if err != nil || !trustInfo.Mode().IsRegular() || trustInfo.Mode()&os.ModeSymlink != 0 || trustInfo.Size() <= 0 || trustInfo.Size() > 64*1024 {
 		return errors.New("recovery trust file must be an existing bounded regular file")
 	}
+	authorityTrustSource, err := audit.LoadRecoveryAuthorityTrust(*recoveryTrustFile)
+	if err != nil { return fmt.Errorf("validate supplied recovery trust: %w", err) }
+	if _, err := audit.NewHTTPRecoveryAuthority(*recoveryAuthorityURL, *recoveryAuthorityPin, "validation-only", authorityTrustSource); err != nil {
+		return fmt.Errorf("validate recovery authority URL and SPKI pin: %w", err)
+	}
 
 	executable, err := os.Executable()
 	if err != nil { return fmt.Errorf("resolve wd-agent executable: %w", err) }
@@ -267,9 +272,9 @@ func runServiceInstall(args []string) error {
 
 	tokenText, err := readServiceCredential(stdinReader)
 	if err != nil { return fmt.Errorf("read recovery bearer token from stdin: %w", err) }
-	token := []byte(strings.TrimSpace(tokenText))
+	token := []byte(tokenText)
 	tokenText = ""
-	if len(token) < 32 || len(token) > 4096 || strings.ContainsAny(string(token), "\r\n") {
+	if len(token) < 32 || len(token) > 4096 || strings.TrimSpace(string(token)) != string(token) || strings.ContainsAny(string(token), "\r\n") {
 		for i := range token { token[i] = 0 }
 		return errors.New("recovery bearer token must contain 32 to 4096 non-newline bytes")
 	}
