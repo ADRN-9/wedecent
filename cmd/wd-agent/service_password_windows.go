@@ -12,7 +12,10 @@ import (
 const maxServicePasswordBytes = 4096
 
 func readServicePassword(r io.Reader) (string, error) {
-	br := bufio.NewReader(io.LimitReader(r, maxServicePasswordBytes+1))
+	br, ok := r.(*bufio.Reader)
+	if !ok {
+		br = bufio.NewReader(io.LimitReader(r, maxServicePasswordBytes+1))
+	}
 	password, err := br.ReadString('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
