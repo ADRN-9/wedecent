@@ -59,7 +59,6 @@ function global:sc.exe {
     return 'SUCCESS'
 }
 function New-MigrationFixture {
-    param([string]$ServiceSid)
     $root = Join-Path $env:ProgramFiles ('WeDecentMigrationCoordinator-' + [Guid]::NewGuid().ToString('N'))
     $source = Join-Path $root 'source-state'
     $destination = Join-Path $root 'destination-state'
@@ -67,14 +66,8 @@ function New-MigrationFixture {
     $metadataPath = Join-Path $root 'installer.json'
     $serviceName = 'WeDecentMigrationTest'
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    if ([string]::IsNullOrWhiteSpace($ServiceSid)) {
-        $serviceSid = $identity.User.Value
-        $serviceAccount = $identity.Name
-    } else {
-        $serviceIdentity = [Security.Principal.SecurityIdentifier]::new($ServiceSid)
-        $serviceSid = $serviceIdentity.Value
-        $serviceAccount = $serviceIdentity.Translate([Security.Principal.NTAccount]).Value
-    }
+    $serviceSid = $identity.User.Value
+    $serviceAccount = $identity.Name
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     Set-WeDecentMigrationAdminDirectory -Path $root -AgentPath $agentPath
     New-Item -ItemType Directory -Path $source | Out-Null
@@ -203,9 +196,36 @@ try {
     Remove-Item -LiteralPath $stagingRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
-# Use a distinct service SID to prove partial entries owned by the installer
-# are accepted only through the transaction's authenticated installer_sid.
-$partialStagingRecovery = New-MigrationFixture -ServiceSid 'S-1-5-19'
+$partialOwnerRoot = Join-Path $env:ProgramFiles ('WeDecentPartialOwner-' + [Guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path $partialOwnerRoot -Force | Out-Null
+    Set-WeDecentMigrationAdminDirectory -Path $partialOwnerRoot -AgentPath $agentPath
+    $partialOwnerTree = Join-Path $partialOwnerRoot '.wedecent-migration-owner-test'
+    New-Item -ItemType Directory -Path $partialOwnerTree | Out-Null
+    Set-WeDecentMigrationDirectoryAcl -Path $partialOwnerTree -ServiceSid 'S-1-5-19'
+    $childDirectory = Join-Path $partialOwnerTree 'partial-child'
+    New-Item -ItemType Directory -Path $childDirectory | Out-Null
+    $installerSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    $childAcl = Get-Acl -LiteralPath $childDirectory
+    $childAcl.SetOwner([Security.Principal.SecurityIdentifier]::new($installerSid))
+    Set-Acl -LiteralPath $childDirectory -AclObject $childAcl
+    [IO.File]::WriteAllText((Join-Path $childDirectory 'partial.bin'), 'partial')
+    $fileAcl = Get-Acl -LiteralPath (Join-Path $childDirectory 'partial.bin')
+    $fileAcl.SetOwner([Security.Principal.SecurityIdentifier]::new($installerSid))
+    Set-Acl -LiteralPath (Join-Path $childDirectory 'partial.bin') -AclObject $fileAcl
+    [void](Assert-WeDecentMigrationPartialTreeSafe -Path $partialOwnerTree -ServiceSid 'S-1-5-19' -InstallerSid $installerSid)
+    $rejectedUnrecordedOwner = $false
+    try {
+        [void](Assert-WeDecentMigrationPartialTreeSafe -Path $partialOwnerTree -ServiceSid 'S-1-5-19')
+    } catch {
+        $rejectedUnrecordedOwner = $true
+    }
+    if (-not $rejectedUnrecordedOwner) { throw 'Partial-tree validator accepted an installer owner absent from its trusted owner set.' }
+    Write-Host 'Migration coordinator authenticated installer-owner partial-tree validation PASS'
+} finally {
+    Remove-Item -LiteralPath $partialOwnerRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+$partialStagingRecovery = New-MigrationFixture
 try {
     $interrupted = $false
     try {
