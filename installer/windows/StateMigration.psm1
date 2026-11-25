@@ -476,7 +476,8 @@ function Invoke-WeDecentMigrationStatePathCheck {
     param(
         [Parameter(Mandatory = $true)][string]$AgentPath,
         [Parameter(Mandatory = $true)][string]$StatePath,
-        [string]$ServiceSid
+        [string]$ServiceSid,
+        [switch]$PrepareParent
     )
 
     $agent = Get-Item -LiteralPath $AgentPath -Force -ErrorAction Stop
@@ -490,6 +491,9 @@ function Invoke-WeDecentMigrationStatePathCheck {
     $psi.RedirectStandardError = $true
     [void]$psi.ArgumentList.Add('state-path-check')
     [void]$psi.ArgumentList.Add("--state=$StatePath")
+    if ($PrepareParent) {
+        [void]$psi.ArgumentList.Add('--prepare-parent')
+    }
     if (-not [string]::IsNullOrWhiteSpace($ServiceSid)) {
         [void]$psi.ArgumentList.Add("--service-sid=$ServiceSid")
     }
@@ -508,9 +512,14 @@ function Invoke-WeDecentMigrationStatePathCheck {
 }
 
 function Set-WeDecentMigrationAdminDirectory {
-    param([Parameter(Mandatory = $true)][string]$Path)
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$AgentPath
+    )
 
     $full = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $parentProbe = Join-Path $full '.wedecent-migration-parent-probe'
+    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $parentProbe -PrepareParent)
     $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
     $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
     $acl = [Security.AccessControl.DirectorySecurity]::new()
@@ -714,7 +723,7 @@ function Invoke-WeDecentStateMigration {
     }
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $sourceFull -ServiceSid $ServiceSid)
     $destinationParent = Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $destinationFull)
-    [void](Assert-WeDecentMigrationAdminDirectory -Path $destinationParent)
+    [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
 
     $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
@@ -733,7 +742,7 @@ function Invoke-WeDecentStateMigration {
     )
     if ($updatedPath -ceq [string]$service.PathName) { throw 'Could not construct an unambiguous destination SCM command line.' }
 
-    [void](Assert-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $JournalPath))
+    [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $JournalPath) -AgentPath $AgentPath)
     $metadataItem = Get-Item -LiteralPath $MetadataPath -Force -ErrorAction Stop
     if ($metadataItem.PSIsContainer -or ($metadataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Installer metadata is not a regular file.'
