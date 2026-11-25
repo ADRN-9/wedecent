@@ -1186,7 +1186,7 @@ public static class WeDecentMigrationFileIdentityApi {
                 throw new InvalidOperationException("Publication parent identity changed before atomic publication.");
             int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
             byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
-            int relativeSize=nameOffset+relativeName.Length;
+            int relativeSize=nameOffset+relativeName.Length+2;
             IntPtr relativeBuffer=Marshal.AllocHGlobal(relativeSize);
             int renameError=0;
             try {
@@ -1194,6 +1194,7 @@ public static class WeDecentMigrationFileIdentityApi {
                 Marshal.WriteIntPtr(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),parent);
                 Marshal.WriteInt32(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),relativeName.Length);
                 Marshal.Copy(relativeName,0,IntPtr.Add(relativeBuffer,nameOffset),relativeName.Length);
+                Marshal.WriteInt16(relativeBuffer,nameOffset+relativeName.Length,0);
                 if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED")=="1") {
                     renameError=87;
                 } else {
