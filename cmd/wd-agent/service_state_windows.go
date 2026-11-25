@@ -223,6 +223,21 @@ func verifyWindowsStateAncestors(root string, components []string, required *win
 }
 
 func verifyWindowsStateAncestorDirectory(path string, trusted map[string]bool) error {
+	return verifyWindowsStateAncestorDirectoryWithRights(path, trusted, windowsAncestorMutationRights)
+}
+
+const windowsMigrationAncestorMutationRights uint32 = windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER |
+	0x00000040 | // FILE_DELETE_CHILD
+	windows.GENERIC_ALL
+
+// Legacy state may live below ProgramData, whose inherited DACL commonly
+// permits creating new children. Migration only needs to reject rights that
+// can replace or retake control of an existing protected descendant.
+func verifyWindowsMigrationAncestorDirectory(path string, trusted map[string]bool) error {
+	return verifyWindowsStateAncestorDirectoryWithRights(path, trusted, windowsMigrationAncestorMutationRights)
+}
+
+func verifyWindowsStateAncestorDirectoryWithRights(path string, trusted map[string]bool, mutationRights uint32) error {
 	if _, err := inspectWindowsStateDirectory(path); err != nil {
 		return err
 	}
@@ -282,7 +297,7 @@ func verifyWindowsStateAncestorDirectory(path string, trusted map[string]bool) e
 			if err != nil {
 				return fmt.Errorf("parse ancestor DACL rights: %w", err)
 			}
-			if mask&windowsAncestorMutationRights != 0 {
+			if mask&mutationRights != 0 {
 				return fmt.Errorf("ancestor grants pathname mutation rights %s to untrusted SID %s", parts[2], trustee)
 			}
 		}
@@ -374,6 +389,60 @@ func verifyWindowsStateAncestorOwners(root string, components []string, installe
 			return fmt.Errorf("state ancestor %q is owned by untrusted SID %s", path, owner)
 		}
 		path = filepath.Join(path, components[i])
+	}
+	return nil
+}
+
+// verifyMigrationSourceForSID is deliberately narrower than normal service
+// startup validation. It accepts legacy ancestors with benign inherited
+// create-child permissions, but rejects any untrusted ability to delete,
+// replace, take ownership of, or rewrite the DACL of an ancestor.
+func verifyMigrationSourceForSID(dir, serviceSID string) error {
+	required, err := windows.StringToSid(serviceSID)
+	if err != nil || required == nil || !required.IsValid() {
+		return errors.New("migration service SID is invalid")
+	}
+	root, components, err := windowsStatePathComponents(dir)
+	if err != nil {
+		return err
+	}
+	if len(components) == 0 {
+		return errors.New("migration source cannot be a volume root")
+	}
+	if err := requireLocalNTFS(root); err != nil {
+		return err
+	}
+	active, err := activeWindowsSID()
+	if err != nil {
+		return err
+	}
+	trusted := map[string]bool{
+		active.String(): true,
+		required.String(): true,
+		"S-1-5-18": true,
+		"S-1-5-32-544": true,
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": true,
+	}
+	path := root
+	for i := 0; i < len(components); i++ {
+		if err := verifyWindowsMigrationAncestorDirectory(path, trusted); err != nil {
+			return fmt.Errorf("untrusted legacy migration ancestor %q: %w", path, err)
+		}
+		owner, err := windowsServiceOwner(path)
+		if err != nil || owner == nil || !trusted[owner.String()] {
+			return fmt.Errorf("legacy migration ancestor %q has an untrusted owner: %v", path, err)
+		}
+		path = filepath.Join(path, components[i])
+	}
+	if _, err := inspectWindowsStateDirectory(path); err != nil {
+		return fmt.Errorf("inspect legacy migration source: %w", err)
+	}
+	if err := trust.VerifyPairingStatePath(path); err != nil {
+		return fmt.Errorf("legacy migration source DACL is not protected: %w", err)
+	}
+	owner, err := windowsServiceOwner(path)
+	if err != nil || !owner.Equals(required) {
+		return fmt.Errorf("legacy migration source owner does not match dedicated service SID: %v", err)
 	}
 	return nil
 }
