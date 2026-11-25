@@ -67,7 +67,7 @@ var (
 type checkpointFenceEndpointWire struct {
 	DeviceID        string `json:"device_id"`
 	AccountID       string `json:"account_id"`
-	OrganizationID string `json:"organization_id"`
+	OrganizationID  string `json:"organization_id"`
 	RevocationEpoch uint64 `json:"revocation_epoch"`
 }
 
@@ -75,7 +75,7 @@ type checkpointFenceScopeWire struct {
 	Kind           string `json:"kind"`
 	DeviceID       string `json:"device_id,omitempty"`
 	AccountID      string `json:"account_id,omitempty"`
-	OrganizationID  string `json:"organization_id"`
+	OrganizationID string `json:"organization_id"`
 }
 
 type checkpointFenceTokenWire struct {
@@ -241,7 +241,7 @@ func (p *SupabaseCheckpointFencePrimary) ReserveFenceWithCheckpointHeads(
 		})
 	}
 	args := map[string]any{
-		"p_operation_id": request.OperationID,
+		"p_operation_id":            request.OperationID,
 		"p_action":                  string(request.Action),
 		"p_organization_id":         request.Scope.OrganizationID,
 		"p_actor_id":                p.actorID,
@@ -628,7 +628,6 @@ func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, a
 	}
 	return nil
 }
-
 
 func decodeCheckpointFenceJSON(raw []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(raw))
