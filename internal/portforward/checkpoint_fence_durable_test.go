@@ -350,7 +350,6 @@ func sameFenceToken(a, b CheckpointFenceToken) bool {
 	return true
 }
 
-
 func testRevocationFenceRequest(request CheckpointFenceRequest) CheckpointFenceRequest {
 	request.AuthorizationProof = make([]byte, ed25519.SignatureSize)
 	for i := range request.AuthorizationProof {
