@@ -570,8 +570,15 @@ func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
 				t.Fatal("migration-only policy accepted ancestor with pathname replacement rights")
 			}
 			if tc.wantAccept {
-				if err := verifyWindowsStateForSID(source, user.User.Sid); err == nil {
-					t.Fatal("normal service startup accepted legacy ancestor permissions")
+				trusted := map[string]bool{
+					user.User.Sid.String(): true,
+					"S-1-5-18": true,
+					"S-1-5-32-544": true,
+				}
+				strictErr := verifyWindowsStateAncestorDirectory(parent, trusted)
+				if strictErr == nil || !strings.Contains(strictErr.Error(), "ancestor grants pathname mutation rights") {
+					sd, _ := windows.GetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+					t.Fatalf("normal service startup ancestor policy did not reject the benign-create-child ACE: err=%v DACL=%v", strictErr, sd)
 				}
 			}
 		})
