@@ -489,7 +489,7 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 		verifyCheckpointFenceTokenSignature(token, p.primaryKey) != nil {
 		return CheckpointFenceOperation{}, false, ErrCheckpointIntegrity
 	}
-	if !response.Committed && token.ExpiresAtUnixMS <= p.now().UnixMilli() {
+	if !response.Committed {
 		head, headErr := p.FenceHead(ctx, scope)
 		if headErr != nil {
 			return CheckpointFenceOperation{}, false, headErr
