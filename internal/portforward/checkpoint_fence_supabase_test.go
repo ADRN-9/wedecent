@@ -185,6 +185,15 @@ func TestSupabaseCheckpointFenceWireRoundTripPreservesSignedFields(t *testing.T)
 		!bytes.Equal(revokeToken.AuthorizationProof, revokeDecoded.AuthorizationProof) {
 		t.Fatalf("revocation proof wire round trip changed signed fields: %v", err)
 	}
+	legacySignatureWire := revokeWire
+	legacySignatureWire.AuthorizationProof = strings.Repeat("A", 86) + "=="
+	legacySignatureJSON, err := json.Marshal(legacySignatureWire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := checkpointFenceTokenFromWire(legacySignatureJSON); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("signature-only legacy proof accepted without its validity envelope: %v", err)
+	}
 	unknownFields := append(bytes.TrimSuffix(encoded, []byte("}")), []byte(`,"untrusted":true}`)...)
 	if _, err := checkpointFenceTokenFromWire(unknownFields); err == nil {
 		t.Fatal("token with an unsigned unknown field was accepted")
