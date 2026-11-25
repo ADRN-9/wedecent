@@ -105,7 +105,6 @@ func TestParseServeConfigRejectsNoTransport(t *testing.T) {
 	}
 }
 
-
 func parseServeConfigForTest(t *testing.T, args []string) (serveConfig, error) {
 	t.Helper()
 	t.Setenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN", "test-only-token")
