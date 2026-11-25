@@ -342,3 +342,56 @@ func TestPairingRecoveryAuthorityRejectsCompleteLocalSnapshotRollback(t *testing
 		t.Fatalf("restored complete local snapshot overrode newer independent head: %v", err)
 	}
 }
+
+
+func TestActivePairingLedgerRejectsRestoredOlderSnapshot(t *testing.T) {
+	dir := recoveryTestDir(t)
+	authority := newTestIndependentRecoveryAuthority(t)
+	recovery, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "abababababababababababababababab"
+	if err := recovery.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, PairingOutcomeFileName)
+	oldSnapshot, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovery.Complete(id, PairingOutcomeSuccess); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, oldSnapshot, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust); !errors.Is(err, ErrRecoveryCheckpointStale) {
+		t.Fatalf("restored older active ledger snapshot accepted: %v", err)
+	}
+}
+
+func TestActivePairingLedgerRecoversInterruptedLocalPublication(t *testing.T) {
+	dir := recoveryTestDir(t)
+	authority := newTestIndependentRecoveryAuthority(t)
+	recovery, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovery.beforeReplace = func() error { return errors.New("simulated process interruption after authority commit") }
+	id := "acacacacacacacacacacacacacacacac"
+	if err := recovery.Begin(testRecoveryRecord(id)); !errors.Is(err, ErrRecoveryCommitUncertain) {
+		t.Fatalf("expected uncertain local publication, got %v", err)
+	}
+	restarted, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatalf("restart did not reconcile exact committed pending ledger operation: %v", err)
+	}
+	records, err := restarted.Records()
+	if err != nil || len(records) != 1 || records[0].AttemptID != id {
+		t.Fatalf("pending ledger mutation was not recovered: %+v %v", records, err)
+	}
+	if _, err := os.Lstat(restarted.path + ".authority-pending"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("pending marker was not removed after verified recovery: %v", err)
+	}
+}
