@@ -14,3 +14,7 @@ func verifyMigrationStateParent(string) error {
 func verifyMigrationStateForSID(string, string) error {
 	return errors.New("Windows migration state verification is unsupported on this platform")
 }
+
+func verifyMigrationParentForProvisioning(string) error {
+	return errors.New("Windows migration parent verification is unsupported on this platform")
+}
