@@ -468,32 +468,31 @@ function Write-WeDecentMigrationJournal {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][pscustomobject]$Journal
     )
-
-    if ([int]$Journal.schema -ne 1 -or
-        [string]$Journal.product -cne 'WeDecent' -or
+    if ([int]$Journal.schema -ne 1 -or [string]$Journal.product -cne 'WeDecent' -or
         [string]$Journal.phase -notin $script:WeDecentMigrationPhases) {
         throw 'Migration journal schema, product, or phase is invalid.'
     }
     $fullPath = [IO.Path]::GetFullPath($Path)
     $directory = Split-Path -Parent $fullPath
-    [void](Assert-WeDecentMigrationRealDirectory -Path $directory)
-    if (Test-Path -LiteralPath $fullPath) {
-        $existing = Get-Item -LiteralPath $fullPath -Force
-        if (($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-            $existing.PSIsContainer) {
-            throw 'Migration journal path is not a regular file.'
-        }
-    }
-
     $parentLease = New-WeDecentMigrationMutationLease -Directories @($directory)
-    $targetExists = Test-Path -LiteralPath $fullPath -PathType Leaf
-    $targetIdentity = if ($targetExists) { [WeDecentMigrationFileIdentityApi]::GetIdentity($fullPath) } else { '' }
-    $Journal.updated_utc = [DateTime]::UtcNow.ToString('o')
-    $json = ConvertTo-Json -InputObject $Journal -Depth 10
-    $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + [Environment]::NewLine)
     $temporary = Join-Path $directory ('.migration-journal-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     $stream = $null
     try {
+        [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($parentLease)
+        $targetExists = Test-Path -LiteralPath $fullPath -PathType Leaf
+        $targetIdentity = ''
+        if ($targetExists) {
+            $existing = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+            if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Migration journal path is not a regular file.'
+            }
+            $targetIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($fullPath)
+        } elseif (Test-Path -LiteralPath $fullPath) {
+            throw 'Migration journal destination exists but is not a regular file.'
+        }
+        $Journal.updated_utc = [DateTime]::UtcNow.ToString('o')
+        $json = ConvertTo-Json -InputObject $Journal -Depth 10
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + [Environment]::NewLine)
         $stream = [IO.FileStream]::new($temporary,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
         $stream.Write($bytes,0,$bytes.Length)
         $stream.Flush($true)
@@ -727,21 +726,20 @@ function Write-WeDecentMigrationMetadata {
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$StatePath
     )
-
     $parent = Split-Path -Parent $Path
     $parentLease = New-WeDecentMigrationMutationLease -Directories @($parent)
-    $targetIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($Path)
-    $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
-    $metadata = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
-    if ([int]$metadata.schema -ne 1 -or [string]$metadata.product -cne 'WeDecent') {
-        $parentLease.Dispose()
-        throw 'Cannot migrate unauthenticated or unsupported installer metadata.'
-    }
-    $metadata.state_dir = [IO.Path]::GetFullPath($StatePath)
-    $metadata.updated_at = [DateTime]::UtcNow.ToString('o')
-    $json = ConvertTo-Json -InputObject $metadata -Depth 10
     $temp = Join-Path $parent ('.installer-migration-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
+        [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($parentLease)
+        $targetIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($Path)
+        $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
+        $metadata = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ([int]$metadata.schema -ne 1 -or [string]$metadata.product -cne 'WeDecent') {
+            throw 'Cannot migrate unauthenticated or unsupported installer metadata.'
+        }
+        $metadata.state_dir = [IO.Path]::GetFullPath($StatePath)
+        $metadata.updated_at = [DateTime]::UtcNow.ToString('o')
+        $json = ConvertTo-Json -InputObject $metadata -Depth 10
         $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + [Environment]::NewLine)
         $stream = [IO.FileStream]::new($temp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None,4096,[IO.FileOptions]::WriteThrough)
         try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
@@ -1104,12 +1102,12 @@ public static class WeDecentMigrationFileIdentityApi {
         try {
             foreach (string path in paths) {
                 IntPtr h=Open(path, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY, SHARE_READ_WRITE, BACKUP_SEMANTICS);
-                BY_HANDLE_FILE_INFORMATION i=Info(h);
-                if ((i.FileAttributes & 0x10)==0 || (i.FileAttributes & 0x400)!=0) {
-                    CloseHandle(h);
-                    throw new InvalidOperationException("Mutation lease requires a real directory: " + path);
-                }
-                lease.Add(path, Id(i), h);
+                try {
+                    BY_HANDLE_FILE_INFORMATION i=Info(h);
+                    if ((i.FileAttributes & 0x10)==0 || (i.FileAttributes & 0x400)!=0)
+                        throw new InvalidOperationException("Mutation lease requires a real directory: " + path);
+                    lease.Add(path, Id(i), h);
+                } catch { CloseHandle(h); throw; }
             }
             return lease;
         } catch { lease.Dispose(); throw; }
@@ -1178,7 +1176,9 @@ public static class WeDecentMigrationFileIdentityApi {
                 IntPtr target=Open(targetPath, FILE_READ_ATTRIBUTES, 7, BACKUP_SEMANTICS);
                 try {
                     BY_HANDLE_FILE_INFORMATION targetInfo=Info(target);
-                    if ((targetInfo.FileAttributes & (0x400|0x10))!=0 || Id(targetInfo)!=expectedTargetIdentity)
+                    if ((targetInfo.FileAttributes & 0x400)!=0 ||
+                        (sourceInfo.FileAttributes & 0x10)!=(targetInfo.FileAttributes & 0x10) ||
+                        Id(targetInfo)!=expectedTargetIdentity)
                         throw new InvalidOperationException("Publication target object changed immediately before atomic publication.");
                 } finally { CloseHandle(target); }
             } else {
