@@ -17,6 +17,7 @@ import (
 
 type windowsStateProvisionHooks struct {
 	afterCreate func(string) error
+	ownerSID    *windows.SID
 }
 
 type windowsStateComponent struct {
@@ -42,7 +43,11 @@ func preflightWindowsAgentState(dir string, hooks windowsStateProvisionHooks) (r
 	if err != nil || current == nil || current.User.Sid == nil {
 		return fmt.Errorf("agent state security preflight: resolve active Windows SID: %v", err)
 	}
-	sid := current.User.Sid.String()
+	ownerSID := current.User.Sid
+	if hooks.ownerSID != nil {
+		ownerSID = hooks.ownerSID
+	}
+	sid := ownerSID.String()
 	sd, err := windows.SecurityDescriptorFromString(
 		"O:" + sid + "D:P(A;OICI;FA;;;" + sid + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 	if err != nil {
@@ -118,7 +123,7 @@ func preflightWindowsAgentState(dir string, hooks windowsStateProvisionHooks) (r
 	// Dedicated service identities are accepted when actually executing under
 	// that SID. Elevated installers use winservice.RestrictDirectory to
 	// provision a different account, never an arbitrary foreign state owner.
-	if err := verifyWindowsAgentStateOwner(at, current.User.Sid); err != nil {
+	if err := verifyWindowsAgentStateOwner(at, ownerSID); err != nil {
 		return fmt.Errorf("agent state security preflight: %w", err)
 	}
 	for _, item := range seen {
