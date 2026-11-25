@@ -1,12 +1,12 @@
 # Windows release hardening
 
-The Windows release bundle is produced by `scripts/build-windows-release.sh` and is intentionally built without embedded VCS metadata from the Go toolchain. Release identity is injected through `internal/buildinfo` from controlled inputs instead.
+The Windows release bundle is produced by `scripts/build-windows-release.sh`. Production builds require the protected replay-authority configuration and exact GitHub tag provenance described in [Production release trust](PRODUCTION_RELEASE_TRUST.md). Local and ordinary CI builds must explicitly select diagnostic mode; diagnostic artifacts cannot be signed or published. Release identity and the approved replay-authority hostname/SPKI pins are injected through `internal/buildinfo`, not read from runtime service configuration.
 
 ## Version metadata
 
 `VERSION` is the product version source. The Windows binaries expose the product version, Git commit, reproducible build timestamp, Go toolchain version, and target platform through their existing `version` commands.
 
-The release builder derives `built_at` from `SOURCE_DATE_EPOCH`. When that variable is unset, it uses the Git commit timestamp. A clean checkout of the same commit with the same Go toolchain therefore receives the same metadata. The builder uses `-trimpath`, `-buildvcs=false`, `CGO_ENABLED=0`, and an empty Go linker build ID.
+The production release builder derives `built_at` from the checked-out commit timestamp and rejects caller overrides. Diagnostic builds may use an explicit `SOURCE_DATE_EPOCH`. A clean checkout of the same commit with the same Go toolchain therefore receives the same metadata. The builder uses `-trimpath`, `-buildvcs=false`, `CGO_ENABLED=0`, and an empty Go linker build ID.
 
 Release builds refuse a dirty working tree. `WEDECENT_ALLOW_DIRTY=1` exists only for local diagnostic builds and marks the embedded commit with `-dirty`; dirty builds must not be published.
 
@@ -24,7 +24,7 @@ The default unsigned output directory is `dist/wedecent-windows-amd64/` and cont
 
 `SHA256SUMS.txt` covers all five executable files. `scripts/refresh-windows-release-checksums.sh` also refreshes all five entries and fails if any expected binary is missing or not a regular non-symlink file.
 
-Run `scripts/verify-windows-release-repro.sh` before signing. It builds the unsigned bundle twice with the same `SOURCE_DATE_EPOCH` and requires byte-identical executables, version metadata, and checksum manifests. Reproducibility assumes the same Go toolchain version and target architecture; CI pins Go 1.27.0.
+Run `scripts/verify-windows-release-repro.sh` as a diagnostic reproducibility gate. It builds the unsigned diagnostic bundle twice with the same `SOURCE_DATE_EPOCH` and requires byte-identical executables, version metadata, and checksum manifests. Diagnostic outputs are deliberately not eligible for signing or publication. Production signing must start from the exact-SHA artifacts uploaded by the protected production tag workflow. Reproducibility assumes the same Go toolchain version and target architecture; CI pins Go 1.27.0.
 
 Build the installer payload from that same unsigned release with `scripts/build-windows-installer-package.sh` (or `make installer-windows`). The installer package contains the same five executable bytes plus the PowerShell installer scripts and its outer `PACKAGE_SHA256SUMS.txt`.
 
@@ -35,6 +35,10 @@ The repository does not contain a code-signing private key, certificate secret, 
 After the unsigned reproducibility check and installer-package build pass, finalize signed artifacts with:
 
 ```bash
+WEDECENT_EXPECTED_SOURCE_SHA="$GITHUB_SHA" \
+WEDECENT_REPLAY_AUTHORITY_HOSTNAME="$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" \
+WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256="$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" \
+WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256="$WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256" \
 WEDECENT_WINDOWS_AUTHENTICODE_SIGNER=/absolute/path/to/signer \
 WEDECENT_WINDOWS_AUTHENTICODE_VERIFIER=/absolute/path/to/verifier \
 make finalize-windows-signed
@@ -86,3 +90,10 @@ The public verifier has two modes. Release mode validates the seven-file release
 See `docs/PUBLIC_DOWNLOADS.md` for the object layout, uploader contract, operator commands, and public verification procedure.
 
 Checksums provide integrity for the exact signed bytes, but a checksum served from the same download origin is not an independent authenticity proof. Consumers with an authenticity requirement should also verify the Authenticode signatures against the expected WeDecent publisher policy.
+
+
+## Production trust verification
+
+Production Windows builds are produced by the protected tag workflow in `.github/workflows/production-release-build.yml`. The workflow requires the `wedecent-production-release` GitHub Environment, its independent reviewer gate, the explicit `WEDECENT_PRODUCTION_RELEASE_APPROVED=true` marker, and the approved replay-authority hostname/SPKI configuration. It uploads exact-SHA build artifacts but does not sign, deploy, or publish them.
+
+The Windows production workflow runs on a native Windows runner, independently checks the embedded trust anchors in both `wd-core.exe` and `wd-agent.exe`, and executes each binary's `release-trust` command. Diagnostic PR cross-builds use byte-level inspection only. Signing finalization, installer preparation, and public publication require the protected tag context; GITHUB_SHA is authoritative and any supplied expected SHA must match it. They reject diagnostic metadata, mismatched source SHAs, unapproved trust configuration, and binaries missing either anchor.

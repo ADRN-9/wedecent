@@ -245,6 +245,16 @@ func runServiceInstall(args []string) error {
 		return err
 	}
 
+	// The elevated installer first applies the dedicated service account's
+	// restrictive inheritable DACL and owner to existing identity state.
+	// Rotate only after the state-root access boundary is established.
+	if err := winservice.RestrictDirectory(
+		*stateDir,
+		*account,
+	); err != nil {
+		return err
+	}
+
 	pairSecret, err := trust.RotatePairingSecret(
 		*stateDir,
 	)
@@ -252,11 +262,14 @@ func runServiceInstall(args []string) error {
 		return err
 	}
 
+	// The installer created the replacement hash with its own token.
+	// Transfer ownership to the service account before service startup so
+	// the agent can validate the entire pairing state on its first run.
 	if err := winservice.RestrictDirectory(
 		*stateDir,
 		*account,
 	); err != nil {
-		return err
+		return fmt.Errorf("finalize service-owned pairing state: %w", err)
 	}
 
 	password := ""

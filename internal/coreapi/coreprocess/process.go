@@ -1,13 +1,17 @@
 package coreprocess
 
 import (
+	"bytes"
 	"context"
+	"crypto"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
 
 	"wedecent.com/wedecent/internal/account"
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/coreapi"
 	"wedecent.com/wedecent/internal/coreapi/ipc"
 	"wedecent.com/wedecent/internal/coreapi/localipc"
@@ -15,39 +19,129 @@ import (
 	v1 "wedecent.com/wedecent/internal/coreapi/v1"
 	"wedecent.com/wedecent/internal/coreconnect"
 	"wedecent.com/wedecent/internal/identity"
+	"wedecent.com/wedecent/internal/mesh"
+	"wedecent.com/wedecent/internal/meshnet"
+	"wedecent.com/wedecent/internal/portforward"
 	"wedecent.com/wedecent/internal/trust"
 )
 
 var ErrServerRequired = errors.New("core process: IPC server is required")
 
 type Config struct {
-	ClientStateDir    string
-	SupabaseURL       string
-	PublishableKey    string
-	AccountClient     coreapi.AccountClient
-	ConnectionBackend coreapi.ConnectionBackend
-	RouteSource       coreconnect.RouteRequestSource
-	RouterService     v1.RouterService
+	ClientStateDir               string
+	SupabaseURL                  string
+	PublishableKey               string
+	AccountClient                coreapi.AccountClient
+	ConnectionBackend            coreapi.ConnectionBackend
+	RouteSource                  coreconnect.RouteRequestSource
+	RouterService                v1.RouterService
+	Forwarding                   *portforward.ManagerConfig
+	ForwardingReplayEndpoint     string // Deprecated: single-provider replay is rejected.
+	ForwardingReplayAPIKey       string // Deprecated: single-provider replay is rejected.
+	ForwardingCheckpointProvider *portforward.WitnessedReplayCheckpointProvider
+	ForwardingMembershipResolver portforward.CheckpointMembershipResolver
+	ForwardingRouteVerifier      portforward.CheckpointRouteAuthorizationVerifier
+	ForwardingAuditTrust         portforward.CheckpointAuditTrust
 }
 
 // Runtime owns the Local Core IPC server plus process-scoped connection
 // lifecycle. Closing it cancels in-flight opens and tears down active sessions.
 type Runtime struct {
-	Server      *ipc.Server
-	Connections *coreapi.ConnectionService
+	Server         *ipc.Server
+	Connections    *coreapi.ConnectionService
+	Forwarding     *portforward.Manager
+	PortForwarding *coreapi.PortForwardService
 }
 
 func (r *Runtime) Close() error {
-	if r == nil || r.Connections == nil {
+	if r == nil {
 		return nil
 	}
-	return r.Connections.Close()
+	var errs []error
+	if r.Forwarding != nil {
+		errs = append(errs, r.Forwarding.Close())
+	}
+	if r.Connections != nil {
+		errs = append(errs, r.Connections.Close())
+	}
+	return errors.Join(errs...)
+}
+
+func newLocalCoreForwardingVerifier(
+	stateDir string,
+	deviceID mesh.DeviceID,
+	signer crypto.Signer,
+	publicKey ed25519.PublicKey,
+	provider *portforward.WitnessedReplayCheckpointProvider,
+	memberships portforward.CheckpointMembershipResolver,
+	routeVerifier portforward.CheckpointRouteAuthorizationVerifier,
+	auditTrust portforward.CheckpointAuditTrust,
+	legacyEndpoint string,
+	legacyAPIKey string,
+) (*portforward.AuthorizationVerifier, error) {
+	if strings.TrimSpace(legacyEndpoint) != "" || strings.TrimSpace(legacyAPIKey) != "" {
+		return nil, errors.New("Local Core rejects the legacy single-provider replay path; configure an independently witnessed checkpoint provider")
+	}
+	if len(publicKey) != ed25519.PublicKeySize || signer == nil || provider == nil || memberships == nil {
+		return nil, errors.New("production forwarding requires a witnessed checkpoint provider and independently authenticated endpoint membership resolver")
+	}
+	if provider.Fencing != nil {
+		if _, serverSide := provider.Fencing.Primary.(*portforward.SupabaseCheckpointFencePrimary); serverSide {
+			return nil, errors.New("Local Core cannot host the PostgreSQL service-role checkpoint primary; use a remote authority client with endpoint-safe credentials")
+		}
+	}
+	devicePublicKey, ok := signer.Public().(ed25519.PublicKey)
+	if !ok || len(devicePublicKey) != ed25519.PublicKeySize ||
+		identity.DeviceID(devicePublicKey) != string(deviceID) ||
+		bytes.Equal(devicePublicKey, publicKey) ||
+		bytes.Equal(provider.PrimaryKey, publicKey) ||
+		bytes.Equal(provider.PrimaryKey, devicePublicKey) {
+		return nil, portforward.ErrCheckpointIntegrity
+	}
+	for _, witness := range provider.Witnesses {
+		if bytes.Equal(witness.PublicKey, publicKey) || bytes.Equal(witness.PublicKey, devicePublicKey) {
+			return nil, portforward.ErrCheckpointIntegrity
+		}
+	}
+	pendingPath, err := filepath.Abs(filepath.Join(stateDir, "portforward-checkpoint", "pending.json"))
+	if err != nil {
+		return nil, fmt.Errorf("core process: resolve witnessed pending journal: %w", err)
+	}
+	pending, err := portforward.NewFileCheckpointPendingStore(pendingPath)
+	if err != nil {
+		return nil, fmt.Errorf("core process: open witnessed pending journal: %w", err)
+	}
+	auditor, err := portforward.NewSupabaseCheckpointFinalizationAuditor(account.Client{}, account.SessionPath(stateDir), auditTrust)
+	if err != nil {
+		return nil, fmt.Errorf("core process: configure authenticated durable checkpoint finalization audit: %w", err)
+	}
+	checkpointProvider := *provider
+	checkpointProvider.Pending = pending
+	if err := checkpointProvider.ValidateConfiguration(); err != nil {
+		return nil, fmt.Errorf("core process: invalid witnessed checkpoint provider: %w", err)
+	}
+	replay := &portforward.CheckpointAuthorizationReplay{
+		Provider:            &checkpointProvider,
+		ControlPlaneKey:     append(ed25519.PublicKey(nil), publicKey...),
+		LocalDeviceID:       deviceID,
+		DeviceSigner:        signer,
+		Memberships:         memberships,
+		RouteVerifier:       routeVerifier,
+		FinalizationAuditor: auditor,
+	}
+	return &portforward.AuthorizationVerifier{
+		PublicKey: append(ed25519.PublicKey(nil), publicKey...),
+		Replay:    replay,
+	}, nil
 }
 
 // Open composes the Local Core API from existing client state. Identity state is
 // never created or renewed. Account credentials are accepted only by the account
 // service and returned auth tokens remain inside the core/session store.
 func Open(cfg Config) (*ipc.Server, error) {
+	if cfg.Forwarding != nil {
+		return nil, errors.New("core process: forwarding requires OpenRuntime lifecycle ownership")
+	}
 	runtime, err := OpenRuntime(cfg)
 	if err != nil {
 		return nil, err
@@ -70,6 +164,35 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	id, err := identity.Load(stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("core process: load identity: %w", err)
+	}
+
+	var forwardingVerifier *portforward.AuthorizationVerifier
+	if cfg.Forwarding != nil {
+		if cfg.Forwarding.Verifier != nil || cfg.Forwarding.ReplayPath != "" || cfg.Forwarding.AllowFileReplay {
+			return nil, errors.New("core process: Local Core forwarding forbids custom and file-backed replay verifiers")
+		}
+		replayPath, pathErr := filepath.Abs(filepath.Join(stateDir, "portforward-replay.json"))
+		if pathErr != nil {
+			return nil, fmt.Errorf("core process: resolve legacy replay path: %w", pathErr)
+		}
+		if replayErr := portforward.RejectExistingFileReplayState(replayPath); replayErr != nil {
+			return nil, fmt.Errorf("core process: legacy file replay state requires offline preservation, capability revocation and endpoint identity recovery; see docs/PORT_FORWARDING_SECURITY.md: %w", replayErr)
+		}
+		forwardingVerifier, err = newLocalCoreForwardingVerifier(
+			stateDir,
+			mesh.DeviceID(id.ID),
+			id.PrivateKey,
+			cfg.Forwarding.AuthorizationPublicKey,
+			cfg.ForwardingCheckpointProvider,
+			cfg.ForwardingMembershipResolver,
+			cfg.ForwardingRouteVerifier,
+			cfg.ForwardingAuditTrust,
+			cfg.ForwardingReplayEndpoint,
+			cfg.ForwardingReplayAPIKey,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("core process: configure independent source-side replay authority: %w", err)
+		}
 	}
 
 	sessionPath := account.SessionPath(stateDir)
@@ -140,40 +263,110 @@ func OpenRuntime(cfg Config) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("core process: compose connection service: %w", err)
 	}
+	var forwardingManager *portforward.Manager
+	if cfg.Forwarding != nil {
+		forwardingConfig := *cfg.Forwarding
+		forwardingConfig.LocalDeviceID = mesh.DeviceID(id.ID)
+		if forwardingConfig.Connector == nil {
+			forwardingBackend, ok := connectionBackend.(coreconnect.ForwardingBackend)
+			if !ok {
+				_ = connectionService.Close()
+				return nil, errors.New("core process: configured connection backend does not support authenticated forwarding")
+			}
+			forwardingConfig.Connector = coreconnect.ForwardingConnector{Backend: forwardingBackend}
+		}
+		if forwardingConfig.PermissionAuthorizer == nil {
+			forwardingConfig.PermissionAuthorizer = portforward.CapabilityPermissionAuthorizer{}
+		}
+		if forwardingConfig.Limits == (portforward.ManagerLimits{}) {
+			forwardingConfig.Limits = portforward.DefaultManagerLimits()
+		}
+		if forwardingConfig.TrustChecker == nil {
+			forwardingConfig.TrustChecker = devices
+		}
+		if forwardingConfig.RouterTrustChecker == nil {
+			routerTrust, trustErr := meshnet.OpenRouteSourceRoutersTrust(stateDir)
+			if trustErr != nil {
+				_ = connectionService.Close()
+				return nil, fmt.Errorf("core process: open route-router trust for forwarding: %w", trustErr)
+			}
+			forwardingConfig.RouterTrustChecker = routerTrust
+		}
+		forwardingConfig.Verifier = forwardingVerifier
+		forwardingConfig.ReplayPath = ""
+		forwardingConfig.AllowFileReplay = false
+		if forwardingConfig.Audit == nil {
+			forwardingAudit, auditErr := audit.Open(stateDir)
+			if auditErr != nil {
+				_ = connectionService.Close()
+				return nil, fmt.Errorf("core process: open forwarding audit log: %w", auditErr)
+			}
+			forwardingConfig.Audit = forwardingAudit
+		}
+		forwardingManager, err = portforward.NewManager(forwardingConfig)
+		if err != nil {
+			_ = connectionService.Close()
+			return nil, fmt.Errorf("core process: compose port forwarding manager: %w", err)
+		}
+	}
+
+	var forwardingService *coreapi.PortForwardService
+	if forwardingManager != nil {
+		forwardingService, err = coreapi.NewPortForwardService(forwardingManager)
+		if err != nil {
+			_ = forwardingManager.Close()
+			_ = connectionService.Close()
+			return nil, fmt.Errorf("core process: compose port forwarding service: %w", err)
+		}
+	}
+
 	fileTransferService, err := coreapi.NewFileTransferService(coreapi.FileTransferServiceConfig{
 		Connections: connectionService,
 	})
 	if err != nil {
+		if forwardingManager != nil {
+			_ = forwardingManager.Close()
+		}
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose file transfer service: %w", err)
 	}
 	idempotentConnections, err := coreapi.NewConnectIdempotencyService(connectionService)
 	if err != nil {
+		if forwardingManager != nil {
+			_ = forwardingManager.Close()
+		}
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose connect idempotency service: %w", err)
 	}
 	idempotentTerminal, err := coreapi.NewTerminalWriteIdempotencyService(connectionService)
 	if err != nil {
+		if forwardingManager != nil {
+			_ = forwardingManager.Close()
+		}
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose terminal write idempotency service: %w", err)
 	}
 
 	server, err := ipc.NewServerWithServices(ipc.Services{
-		Status:       readService,
-		Devices:      readService,
-		Account:      accountService,
-		Connections:  idempotentConnections,
-		Terminal:     idempotentTerminal,
-		FileTransfer: fileTransferService,
-		Transports:   networkService,
-		Routes:       networkService,
-		Router:       cfg.RouterService,
+		Status:         readService,
+		Devices:        readService,
+		Account:        accountService,
+		Connections:    idempotentConnections,
+		Terminal:       idempotentTerminal,
+		FileTransfer:   fileTransferService,
+		Transports:     networkService,
+		Routes:         networkService,
+		Router:         cfg.RouterService,
+		PortForwarding: forwardingService,
 	})
 	if err != nil {
+		if forwardingManager != nil {
+			_ = forwardingManager.Close()
+		}
 		_ = connectionService.Close()
 		return nil, fmt.Errorf("core process: compose IPC server: %w", err)
 	}
-	return &Runtime{Server: server, Connections: connectionService}, nil
+	return &Runtime{Server: server, Connections: connectionService, Forwarding: forwardingManager, PortForwarding: forwardingService}, nil
 }
 
 // OpenReadOnly preserves a credential-free composition for callers that do not

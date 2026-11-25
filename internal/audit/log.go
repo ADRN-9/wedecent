@@ -27,14 +27,18 @@ var eventNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,95}$`)
 // arbitrary payload field. Terminal data, pairing secrets, grants,
 // credentials, and private keys must never be written to the audit log.
 type Event struct {
-	Time      time.Time `json:"time"`
-	Type      string    `json:"type"`
-	Outcome   string    `json:"outcome"`
-	ActorID   string    `json:"actor_id,omitempty"`
-	PeerID    string    `json:"peer_id,omitempty"`
-	Transport string    `json:"transport,omitempty"`
-	StreamID  uint32    `json:"stream_id,omitempty"`
-	Reason    string    `json:"reason,omitempty"`
+	Time         time.Time `json:"time"`
+	Type         string    `json:"type"`
+	Outcome      string    `json:"outcome"`
+	ActorID      string    `json:"actor_id,omitempty"`
+	PeerID       string    `json:"peer_id,omitempty"`
+	AttemptID    string    `json:"attempt_id,omitempty"`
+	Transport    string    `json:"transport,omitempty"`
+	StreamID     uint32    `json:"stream_id,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	ForwardingID string    `json:"forwarding_id,omitempty"`
+	Direction    string    `json:"direction,omitempty"`
+	Destination  string    `json:"destination,omitempty"`
 }
 
 type Log struct {
@@ -42,6 +46,7 @@ type Log struct {
 	path     string
 	maxBytes int64
 	now      func() time.Time
+	syncDir  func(string) error
 }
 
 func Open(stateDir string) (*Log, error) {
@@ -64,6 +69,13 @@ func open(path string, maxBytes int64) (*Log, error) {
 }
 
 func (l *Log) Path() string { return l.path }
+
+func (l *Log) syncDirectory(dir string) error {
+	if l.syncDir != nil {
+		return l.syncDir(dir)
+	}
+	return syncAuditDirectory(dir)
+}
 
 func (l *Log) Append(event Event) error {
 	if l == nil {
@@ -111,6 +123,9 @@ func (l *Log) Append(event Event) error {
 	if err := f.Sync(); err != nil {
 		return fmt.Errorf("sync audit event: %w", err)
 	}
+	if err := l.syncDirectory(filepath.Dir(l.path)); err != nil {
+		return fmt.Errorf("sync audit directory: %w", err)
+	}
 	return nil
 }
 
@@ -119,8 +134,14 @@ func validateEvent(event *Event) error {
 	event.Outcome = strings.TrimSpace(event.Outcome)
 	event.ActorID = strings.TrimSpace(event.ActorID)
 	event.PeerID = strings.TrimSpace(event.PeerID)
+	if event.AttemptID != "" && !pairingAttemptPattern.MatchString(event.AttemptID) {
+		return errors.New("audit pairing attempt ID is invalid")
+	}
 	event.Transport = strings.TrimSpace(event.Transport)
 	event.Reason = strings.TrimSpace(event.Reason)
+	event.ForwardingID = strings.TrimSpace(event.ForwardingID)
+	event.Direction = strings.TrimSpace(event.Direction)
+	event.Destination = strings.TrimSpace(event.Destination)
 	if !eventNamePattern.MatchString(event.Type) {
 		return errors.New("audit event type is invalid")
 	}
@@ -130,6 +151,8 @@ func validateEvent(event *Event) error {
 	for name, value := range map[string]string{
 		"actor_id": event.ActorID, "peer_id": event.PeerID,
 		"transport": event.Transport, "reason": event.Reason,
+		"forwarding_id": event.ForwardingID, "direction": event.Direction,
+		"destination": event.Destination,
 	} {
 		if len(value) > maxFieldLength {
 			return fmt.Errorf("audit field %s exceeds size limit", name)
@@ -182,14 +205,14 @@ func (l *Log) ensureCapacity(additional int64) error {
 		if archiveInfo.Mode()&os.ModeSymlink != 0 || !archiveInfo.Mode().IsRegular() {
 			return errors.New("audit archive must be a regular file, not a symbolic link")
 		}
-		if err := os.Remove(archive); err != nil {
-			return fmt.Errorf("remove previous audit archive: %w", err)
-		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("stat audit archive: %w", err)
 	}
-	if err := os.Rename(l.path, archive); err != nil {
+	if err := replaceAuditArchive(l.path, archive); err != nil {
 		return fmt.Errorf("rotate audit log: %w", err)
+	}
+	if err := l.syncDirectory(dir); err != nil {
+		return fmt.Errorf("sync rotated audit directory: %w", err)
 	}
 	if err := os.Chmod(archive, 0o600); err != nil {
 		return fmt.Errorf("secure audit archive permissions: %w", err)

@@ -8,9 +8,13 @@ import (
 )
 
 var (
-	Version = "dev"
-	Commit  = "unknown"
-	BuiltAt = "unknown"
+	Version                   = "dev"
+	Commit                    = "unknown"
+	BuiltAt                   = "unknown"
+	ReplayAuthorityHostname   string
+	ReplayAuthoritySPKISHA256 string
+	CheckpointAuditHostname   string
+	CheckpointAuditSPKISHA256 string
 )
 
 type Info struct {
@@ -44,6 +48,16 @@ func Write(w io.Writer, product string) error {
 		"%s %s\ncommit: %s\nbuilt: %s\ngo: %s\nplatform: %s\n",
 		product, info.Version, info.Commit, info.BuiltAt, info.Go, info.Platform,
 	)
+	return err
+}
+
+// WriteReleaseTrust exposes only public release trust anchors for independent
+// inspection of wd-core and wd-agent release binaries.
+func WriteReleaseTrust(w io.Writer) error {
+	if w == nil {
+		return fmt.Errorf("release trust output writer is nil")
+	}
+	_, err := fmt.Fprintf(w, "hostname=%s\nspki_sha256=%s\ncheckpoint_audit_hostname=%s\ncheckpoint_audit_spki_sha256=%s\n", ReplayAuthorityHostname, ReplayAuthoritySPKISHA256, CheckpointAuditHostname, CheckpointAuditSPKISHA256)
 	return err
 }
 

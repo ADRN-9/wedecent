@@ -37,6 +37,7 @@ type TLSLink struct {
 	local     mesh.DeviceID
 	remote    mesh.DeviceID
 	transport mesh.TransportName
+	role      string
 }
 
 func (l *TLSLink) Read(p []byte) (int, error) {
@@ -61,6 +62,15 @@ func (l *TLSLink) Remote() mesh.DeviceID {
 
 func (l *TLSLink) Transport() mesh.TransportName {
 	return l.transport
+}
+
+// AuthenticatedRouterID is populated only for the separately authenticated
+// B -> C route-tunnel TLS role. The inner endpoint TLS identity remains distinct.
+func (l *TLSLink) AuthenticatedRouterID() string {
+	if l == nil || l.role != MeshRouteTunnelALPN {
+		return ""
+	}
+	return string(l.remote)
 }
 
 func (l *TLSLink) LocalAddr() net.Addr {
@@ -193,6 +203,7 @@ func dialTrustedLink(
 		local:     mesh.DeviceID(localIdentity.ID),
 		remote:    remoteID,
 		transport: peer.Transport,
+		role:      alpn,
 	}, nil
 }
 
@@ -324,6 +335,7 @@ func acceptTrustedLink(
 		local:     mesh.DeviceID(localIdentity.ID),
 		remote:    authenticatedRemote,
 		transport: transportName,
+		role:      alpn,
 	}, nil
 }
 

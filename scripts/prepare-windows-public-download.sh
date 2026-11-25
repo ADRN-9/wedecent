@@ -6,6 +6,9 @@ fail() {
   exit 1
 }
 
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$ROOT/scripts/lib/release-trust.sh"
+
 VERSION=""
 SIGNED_RELEASE_DIR=""
 OUT_DIR=""
@@ -70,6 +73,7 @@ VERIFIER="$(realpath -e -- "$VERIFIER")" || fail 'cannot resolve Authenticode ve
 [[ ! -L "$SIGNED_RELEASE_DIR" ]] || fail 'signed release directory must not be a symlink'
 SIGNED_RELEASE_DIR="$(realpath -e -- "$SIGNED_RELEASE_DIR")" || fail 'cannot resolve signed release directory'
 [[ -d "$SIGNED_RELEASE_DIR" && ! -L "$SIGNED_RELEASE_DIR" ]] || fail 'signed release must be a regular directory'
+wedecent_verify_release_metadata "$SIGNED_RELEASE_DIR"
 
 OUT_DIR="$(realpath -m -- "$OUT_DIR")"
 [[ ! -e "$OUT_DIR" && ! -L "$OUT_DIR" ]] || fail "output directory already exists: $OUT_DIR"
