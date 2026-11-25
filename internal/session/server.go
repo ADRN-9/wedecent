@@ -177,7 +177,11 @@ func (s *Server) handlePair(conn *tls.Conn, first protocol.Frame, transport stri
 	}
 	if err != nil {
 		s.log().Error("independent pairing recovery authority unavailable", "peer_id", clientID, "error", err)
-		_ = sendError(conn, "recovery_authority_unavailable", "independent pairing recovery authority is unavailable")
+		if s.LegacyPairingRecoveryForTests && s.RecoveryAuthority == nil {
+			_ = sendError(conn, "server_error", "pairing recovery is unavailable")
+		} else {
+			_ = sendError(conn, "recovery_authority_unavailable", "independent pairing recovery authority is unavailable")
+		}
 		return
 	}
 	pairingAudit, err := audit.Open(s.StateDir)
