@@ -57,7 +57,11 @@ Assert-Contains $installer "-Root `$InstallDir -Label 'StateDir'" 'Installer mus
 Assert-Contains $installer 'Authenticated installer metadata exists but the service is absent' 'Fresh install must not regenerate identity when a previously managed service is missing.'
 Assert-Contains $installer 'Legacy ProgramData service state exists; refusing to create a replacement identity' 'Fresh install must fail closed when legacy ProgramData state remains, regardless of metadata state.'
 Assert-Contains $installer 'Existing service state location is not authenticated by protected installer metadata' 'Upgrade must fail closed when existing state location metadata is unavailable.'
-Assert-Contains $installer 'Refusing to redirect or overwrite identity state' 'Upgrade must not silently redirect existing cryptographic state.'
+Assert-Contains $installer 'Invoke-WeDecentStateMigration' 'Upgrade must use the authenticated journaled state migration coordinator.'
+Assert-Contains $installer 'Recover-WeDecentStateMigration' 'Installer must recover interrupted migration transactions before proceeding.'
+Assert-Contains $installer 'Existing SCM command line does not match the authenticated state_dir metadata' 'Upgrade must verify the SCM state path matches authenticated metadata.'
+Assert-Contains $installer 'original_metadata_json' 'Migration rollback must retain authenticated original installer metadata.'
+Assert-Contains $installer 'source_manifest_sha256' 'Migration journal must retain source integrity evidence.'
 Assert-Contains $installer 'Existing SCM command line does not match the authenticated state_dir metadata' 'Upgrade must verify the SCM state path matches authenticated metadata.'
 Assert-Contains $uninstaller "[string]`$StateDir = (Join-Path `$InstallDir 'data\agent')" 'Uninstaller default must match the fresh-install state location.'
 Assert-Contains $uninstaller '$StateDir = $metadataStateDir' 'Uninstaller must resolve existing state from authenticated metadata.'
@@ -167,6 +171,9 @@ if (-not (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent')
 # Exercise durable migration journal and complete-tree SHA-256 copy primitives.
 $migrationModule = Join-Path (Split-Path -Parent $installerPath) 'StateMigration.psm1'
 Import-Module $migrationModule -Force
+if ($migrationModule -and (Get-Content -LiteralPath $migrationModule -Raw) -match 'X509Certificate2|CreateFromPemFile') {
+    throw 'Windows migration must use the Go Ed25519 identity verifier, not .NET X509 parsing.'
+}
 foreach ($faultPoint in @(
     'Prepared', 'ServiceStopped', 'Copying', 'Copied', 'Verified',
     'StatePublished', 'ServiceReconfigured', 'MetadataUpdated', 'ServiceRestarted',
