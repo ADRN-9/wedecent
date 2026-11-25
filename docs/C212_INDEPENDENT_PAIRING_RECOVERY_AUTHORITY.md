@@ -55,6 +55,12 @@ A failed or ambiguous migration does not rewrite the legacy archive. Retry with 
 - Legacy migration with lost response recovery.
 - Forged migration state-digest rejection.
 
+## Session pairing enforcement
+
+`internal/session.Server.handlePair` now requires an injected `RecoveryAuthority` and derives the checkpoint scope as `pairing-recovery/<local-device-id>`. A configured scope override must match that exact device-bound scope. If the provider or pinned trust is unavailable, pairing returns `recovery_authority_unavailable` before trust admission. The local-only opener is reachable from the server only through an explicitly named test-fixture flag; production construction does not enable it.
+
+The current `cmd/wd-agent` composition does not yet provide a production `RecoveryAuthority` implementation. Therefore new pairing attempts intentionally fail closed until the independent service/provider is provisioned and injected. Existing trusted-device sessions are not downgraded or re-paired through the local HMAC path.
+
 ## Production acceptance still blocked
 
 This implementation is an integration contract and provider seam, not a deployed authority. Before production use, operators must provide and independently review:
