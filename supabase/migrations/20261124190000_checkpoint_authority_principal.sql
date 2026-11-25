@@ -291,7 +291,7 @@ begin
         p_operation_id, p_fingerprint, p_token_sha256, v_token,
         p_witness_acknowledgements, v_operation.actor_id
     );
-    if not extensions.crypto_sign_verify_detached(p_authority_signature, v_message, v_primary_key) then
+    if not pgsodium.crypto_sign_verify_detached(p_authority_signature, v_message, v_primary_key) then
         raise exception 'checkpoint primary commit attestation is invalid'
             using errcode = '42501';
     end if;
