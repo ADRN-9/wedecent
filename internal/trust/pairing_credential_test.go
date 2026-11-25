@@ -63,7 +63,7 @@ func TestLegacyPairingCredentialMigratesDurablyWithShortExpiry(t *testing.T) {
 	hash := HashSecret(secret)
 	path := filepath.Join(dir, pairingSecretFile)
 	if err := os.WriteFile(path, []byte(hash+"\n"), 0o600); err != nil { t.Fatal(err) }
-	now := time.Date(2026, 11, 25, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC()
 	record, err := loadPairingCredential(dir, hash, now)
 	if err != nil { t.Fatal(err) }
 	if record.Generation != 1 || record.SecretSHA256 != hash || record.IssuedAt != now ||
