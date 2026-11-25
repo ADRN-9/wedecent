@@ -179,6 +179,84 @@ func verifyWindowsServiceStateParent(dir string) error {
 	return nil
 }
 
+
+const windowsAncestorMutationRights = uint32(
+	windows.DELETE | windows.WRITE_DAC | windows.WRITE_OWNER |
+	0x00000040 | // FILE_DELETE_CHILD
+	0x00000002 | // FILE_ADD_FILE / FILE_WRITE_DATA
+	0x00000004 | // FILE_ADD_SUBDIRECTORY / FILE_APPEND_DATA
+	windows.GENERIC_WRITE | windows.GENERIC_ALL,
+)
+
+// Every directory traversed to reach protected state must reject mutation
+// rights for untrusted principals. This is deliberately stricter than
+// checking only the final state directory: FILE_DELETE_CHILD on any parent
+// permits replacement of a descendant pathname.
+func verifyWindowsStateAncestors(root string, components []string, required *windows.SID) error {
+	active, err := activeWindowsSID()
+	if err != nil {
+		return err
+	}
+	trusted := map[string]bool{
+		active.String(): true,
+		"S-1-5-18": true,
+		"S-1-5-32-544": true,
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": true,
+	}
+	if required != nil {
+		trusted[required.String()] = true
+	}
+	path := root
+	for i := 0; i < len(components); i++ {
+		if err := verifyWindowsStateAncestorDirectory(path, trusted); err != nil {
+			return fmt.Errorf("untrusted state ancestor %q: %w", path, err)
+		}
+		path = filepath.Join(path, components[i])
+	}
+	return nil
+}
+
+func verifyWindowsStateAncestorDirectory(path string, trusted map[string]bool) error {
+	if _, err := inspectWindowsStateDirectory(path); err != nil {
+		return err
+	}
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil || sd == nil {
+		return fmt.Errorf("read ancestor DACL: %v", err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return errors.New("ancestor requires an explicit non-null DACL")
+	}
+	for i := uint32(0); i < uint32(dacl.AceCount); i++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(dacl, i, &ace); err != nil || ace == nil {
+			return fmt.Errorf("read ancestor DACL ACE %d: %v", i, err)
+		}
+		switch ace.Header.AceType {
+		case windows.ACCESS_DENIED_ACE_TYPE:
+			continue
+		case windows.ACCESS_ALLOWED_ACE_TYPE:
+		default:
+			return fmt.Errorf("unsupported ancestor DACL ACE type %d", ace.Header.AceType)
+		}
+		if ace.Header.AceFlags&windows.INHERIT_ONLY_ACE != 0 {
+			continue
+		}
+		sid := (*windows.SID)(unsafe.Pointer(&ace.SidStart))
+		if !sid.IsValid() {
+			return errors.New("ancestor DACL contains an invalid trustee SID")
+		}
+		if trusted[sid.String()] {
+			continue
+		}
+		if uint32(ace.Mask)&windowsAncestorMutationRights != 0 {
+			return fmt.Errorf("ancestor grants pathname mutation rights 0x%08x to untrusted SID %s", uint32(ace.Mask), sid)
+		}
+	}
+	return nil
+}
+
 func verifyWindowsStateForSID(dir string, required *windows.SID) error {
 	root, components, err := windowsStatePathComponents(dir)
 	if err != nil {
@@ -186,6 +264,9 @@ func verifyWindowsStateForSID(dir string, required *windows.SID) error {
 	}
 	if err := requireLocalNTFS(root); err != nil {
 		return err
+	}
+	if err := verifyWindowsStateAncestors(root, components, required); err != nil {
+		return fmt.Errorf("verify protected state ancestors: %w", err)
 	}
 	at := root
 	if _, err := inspectWindowsStateDirectory(at); err != nil {
