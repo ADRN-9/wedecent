@@ -142,7 +142,11 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	// A service state parent must itself have a protected DACL; broad
 	// ancestors are rejected rather than relying on open-handle rename behavior.
 	parent := filepath.Join(t.TempDir(), "protected-parent")
-	if err := preflightAgentState(parent); err != nil {
+	admins, err := windows.StringToSid("S-1-5-32-544")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := preflightWindowsAgentState(parent, windowsStateProvisionHooks{ownerSID: admins}); err != nil {
 		t.Fatal(err)
 	}
 	state := filepath.Join(parent, "dedicated-service-state")
