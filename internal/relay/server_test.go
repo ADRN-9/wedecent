@@ -386,3 +386,64 @@ func TestServeConnContextTimesOutInitialProtocolRead(t *testing.T) {
 	}
 	_ = peer.Close()
 }
+
+
+func TestReadRelayControlMessageTimeoutsAtHeaderAndPayload(t *testing.T) {
+	for _, stage := range []string{"header", "payload"} {
+		t.Run(stage, func(t *testing.T) {
+			server, peer := net.Pipe()
+			defer server.Close()
+			defer peer.Close()
+			result := make(chan error, 1)
+			go func() {
+				_, err := readRelayControlMessage(context.Background(), server, 25*time.Millisecond)
+				result <- err
+			}()
+			if stage == "payload" {
+				if _, err := peer.Write([]byte{0, 0, 0, 8}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			select {
+			case err := <-result:
+				var netErr net.Error
+				if !errors.As(err, &netErr) || !netErr.Timeout() {
+					t.Fatalf("read error = %v, want timeout", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("relay control read did not time out")
+			}
+		})
+	}
+}
+
+func TestReadRelayControlMessageCancellationAtHeaderAndPayload(t *testing.T) {
+	for _, stage := range []string{"header", "payload"} {
+		t.Run(stage, func(t *testing.T) {
+			server, peer := net.Pipe()
+			defer server.Close()
+			defer peer.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			result := make(chan error, 1)
+			go func() {
+				_, err := readRelayControlMessage(ctx, server, time.Hour)
+				result <- err
+			}()
+			if stage == "payload" {
+				if _, err := peer.Write([]byte{0, 0, 0, 8}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cancel()
+			select {
+			case err := <-result:
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("read error = %v, want context.Canceled", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("cancellation did not interrupt relay control read")
+			}
+		})
+	}
+}
