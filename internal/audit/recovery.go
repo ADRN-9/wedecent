@@ -36,6 +36,7 @@ type PairingOutcome struct {
 	ActorID        string             `json:"actor_id"`
 	PeerID         string             `json:"peer_id"`
 	Fingerprint    string             `json:"fingerprint"`
+	CredentialGeneration uint64 `json:"credential_generation,omitempty"`
 	Outcome        string             `json:"outcome"`
 	CreatedAt      time.Time          `json:"created_at"`
 	UpdatedAt      time.Time          `json:"updated_at"`
@@ -414,6 +415,37 @@ func (r *PairingRecovery) Begin(record PairingOutcome) error {
 		snapshot.Records = append(snapshot.Records, record)
 		return nil
 	})
+}
+
+// Reserve binds one durable admission attempt to a credential generation and
+// the authenticated peer identity. A matching pending reservation is returned
+// for interrupted-operation recovery; a different identity or resolved attempt
+// cannot reuse the same generation.
+func (r *PairingRecovery) Reserve(record PairingOutcome) (PairingOutcome, error) {
+	if record.CredentialGeneration == 0 { return PairingOutcome{}, errors.New("pairing credential generation is required") }
+	record.Outcome = PairingOutcomePending
+	now := time.Now().UTC()
+	record.CreatedAt, record.UpdatedAt = now, now
+	if err := validatePairingOutcome(record); err != nil { return PairingOutcome{}, err }
+	var reserved PairingOutcome
+	err := r.withLock(func(snapshot *pairingOutcomeSnapshot) error {
+		for _, existing := range snapshot.Records {
+			if existing.CredentialGeneration != record.CredentialGeneration { continue }
+			if existing.ActorID != record.ActorID || existing.PeerID != record.PeerID || existing.Fingerprint != record.Fingerprint {
+				return errors.New("pairing credential generation is reserved for a different device identity")
+			}
+			if existing.Outcome != PairingOutcomePending {
+				return errors.New("pairing credential generation already has a resolved attempt")
+			}
+			reserved = existing
+			return nil
+		}
+		if len(snapshot.Records) >= maxPairingOutcomes { return errors.New("pairing recovery capacity reached: operator review required") }
+		snapshot.Records = append(snapshot.Records, record)
+		reserved = record
+		return nil
+	})
+	return reserved, err
 }
 
 func (r *PairingRecovery) Complete(attemptID, outcome string) error {
