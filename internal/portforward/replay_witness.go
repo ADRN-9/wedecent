@@ -1395,6 +1395,7 @@ func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.C
 		authorizationHash == ([sha256.Size]byte{}) || len(authorizationProof) != ed25519.SignatureSize {
 		return ErrCheckpointIntegrity
 	}
+	fingerprint := checkpointRevocationFingerprint(endpoint, next)
 	scope := organizationCheckpointFenceScope(endpoint.OrganizationID)
 	existing, found, err := p.Fencing.Primary.LoadFence(ctx, scope, operationID)
 	if err != nil {
