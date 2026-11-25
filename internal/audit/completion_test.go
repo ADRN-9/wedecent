@@ -282,12 +282,19 @@ func TestPairingRecoveryProofCapacityRemainsBoundedAfterAcknowledgment(t *testin
 			t.Fatal(err)
 		}
 	}
-	if err := r.Begin(testRecoveryRecord(strings.Repeat("f", 32))); err == nil {
-		t.Fatal("acknowledgment silently evicted the durable audit record")
+	if err := r.Begin(testRecoveryRecord(strings.Repeat("f", 32))); err != nil {
+		t.Fatalf("archived acknowledgment should free one active slot: %v", err)
+	}
+	if err := r.Begin(testRecoveryRecord(strings.Repeat("e", 32))); err == nil {
+		t.Fatal("active recovery capacity exceeded")
 	}
 	rows, err := r.Records()
-	if err != nil || len(rows) != maxPairingOutcomes {
-		t.Fatalf("capacity did not retain all evidence: %d %v", len(rows), err)
+	if err != nil || len(rows) != maxPairingOutcomes+1 {
+		t.Fatalf("archive plus bounded active evidence missing: %d %v", len(rows), err)
+	}
+	snapshot, err := r.read()
+	if err != nil || len(snapshot.Records) != maxPairingOutcomes {
+		t.Fatalf("active recovery capacity not bounded: %d %v", len(snapshot.Records), err)
 	}
 }
 
