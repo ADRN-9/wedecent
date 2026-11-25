@@ -130,7 +130,11 @@ func runServiceInstall(args []string) error {
 		4,
 		"number of parked outbound relay connections",
 	)
-	shell := fs.String(
+		recoveryAuthorityURL := fs.String("pairing-recovery-authority-url", strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL")), "HTTPS origin for the independent pairing recovery authority")
+	recoveryAuthorityPin := fs.String("pairing-recovery-authority-spki-sha256", strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256")), "SHA-256 hex pin of the recovery authority TLS leaf SPKI")
+	recoveryTrustFile := fs.String("pairing-recovery-trust", "", "path to independently provisioned primary/witness Ed25519 public trust JSON")
+	recoveryTokenStdin := fs.Bool("pairing-recovery-authority-token-stdin", false, "read the short-lived recovery bearer token from standard input")
+shell := fs.String(
 		"shell",
 		defaultShell(),
 		"absolute shell path",
@@ -218,58 +222,15 @@ func runServiceInstall(args []string) error {
 		)
 	}
 
-	if err := os.MkdirAll(
-		*stateDir,
-		0o700,
-	); err != nil {
-		return fmt.Errorf(
-			"create state directory: %w",
-			err,
-		)
+	if strings.TrimSpace(*recoveryAuthorityURL) == "" || strings.TrimSpace(*recoveryAuthorityPin) == "" || strings.TrimSpace(*recoveryTrustFile) == "" || !*recoveryTokenStdin {
+		return errors.New("service install requires recovery authority URL, SPKI pin, trust file, and --pairing-recovery-authority-token-stdin")
 	}
-
-	id, err := identity.Ensure(
-		*stateDir,
-		*deviceName,
-	)
-	if err != nil {
-		return err
+	if err := trust.VerifyPairingStatePath(*recoveryTrustFile); err != nil {
+		return fmt.Errorf("recovery trust file ACL: %w", err)
 	}
-
-	if _, err := trust.Open(
-		filepath.Join(
-			*stateDir,
-			"trusted-clients.json",
-		),
-	); err != nil {
-		return err
-	}
-
-	// The elevated installer first applies the dedicated service account's
-	// restrictive inheritable DACL and owner to existing identity state.
-	// Rotate only after the state-root access boundary is established.
-	if err := winservice.RestrictDirectory(
-		*stateDir,
-		*account,
-	); err != nil {
-		return err
-	}
-
-	pairSecret, err := trust.RotatePairingSecret(
-		*stateDir,
-	)
-	if err != nil {
-		return err
-	}
-
-	// The installer created the replacement hash with its own token.
-	// Transfer ownership to the service account before service startup so
-	// the agent can validate the entire pairing state on its first run.
-	if err := winservice.RestrictDirectory(
-		*stateDir,
-		*account,
-	); err != nil {
-		return fmt.Errorf("finalize service-owned pairing state: %w", err)
+	trustInfo, err := os.Lstat(*recoveryTrustFile)
+	if err != nil || !trustInfo.Mode().IsRegular() || trustInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("recovery trust file must be an existing regular file")
 	}
 
 	password := ""
@@ -297,6 +258,36 @@ func runServiceInstall(args []string) error {
 				"service account password cannot be empty",
 			)
 		}
+	}
+
+	// Provision only new, empty state; existing trust material is never repaired.
+	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
+		return fmt.Errorf("provision dedicated service state: %w", err)
+	}
+	tokenText, err := readServicePassword(os.Stdin)
+	if err != nil { return fmt.Errorf("read recovery bearer token from stdin: %w", err) }
+	token := []byte(strings.TrimSpace(tokenText))
+	tokenText = ""
+	if len(token) < 32 || len(token) > 4096 || strings.ContainsAny(string(token), "\r\n") {
+		for i := range token { token[i] = 0 }
+		return errors.New("recovery bearer token must contain 32 to 4096 non-newline bytes")
+	}
+	tokenPath := filepath.Join(*stateDir, "recovery-authority.token")
+	tokenFile, err := os.OpenFile(tokenPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		for i := range token { token[i] = 0 }
+		return fmt.Errorf("create recovery bearer credential: %w", err)
+	}
+	_, writeErr := tokenFile.Write(token)
+	closeErr := tokenFile.Close()
+	for i := range token { token[i] = 0 }
+	if writeErr != nil { return fmt.Errorf("write recovery bearer credential: %w", writeErr) }
+	if closeErr != nil { return fmt.Errorf("close recovery bearer credential: %w", closeErr) }
+	if err := winservice.RestrictDirectory(*stateDir, *account); err != nil {
+		return fmt.Errorf("protect recovery bearer credential: %w", err)
+	}
+	if err := trust.VerifyPairingStatePath(tokenPath); err != nil {
+		return fmt.Errorf("verify recovery bearer credential ACL: %w", err)
 	}
 
 	executable, err := os.Executable()
@@ -334,6 +325,10 @@ func runServiceInstall(args []string) error {
 			*relaySlots,
 		),
 		"--shell=" + *shell,
+		"--pairing-recovery-authority-url=" + strings.TrimSpace(*recoveryAuthorityURL),
+		"--pairing-recovery-authority-spki-sha256=" + strings.TrimSpace(*recoveryAuthorityPin),
+		"--pairing-recovery-trust=" + filepath.Clean(*recoveryTrustFile),
+		"--pairing-recovery-authority-token-file=" + tokenPath,
 	}
 
 	if err := winservice.Install(
@@ -351,38 +346,11 @@ func runServiceInstall(args []string) error {
 		return err
 	}
 
-	fp, _ := identity.FingerprintPublicKey(
-		id.PublicKey,
-	)
-
-	fmt.Printf(
-		"Service installed: %s\n",
-		*serviceName,
-	)
-	fmt.Printf(
-		"Service account:   %s\n",
-		*account,
-	)
-	fmt.Printf(
-		"State directory:   %s\n",
-		*stateDir,
-	)
-	fmt.Printf(
-		"Device ID:         %s\n",
-		id.ID,
-	)
-	fmt.Printf(
-		"Fingerprint:       %s\n",
-		fp,
-	)
-	fmt.Printf(
-		"Pair secret:       %s\n",
-		pairSecret,
-	)
-
-	fmt.Println(
-		"\nThe pair secret is single-use. Keep it private.",
-	)
+	fmt.Printf("Service installed: %s\n", *serviceName)
+	fmt.Printf("Service account:   %s\n", *account)
+	fmt.Printf("State directory:   %s\n", *stateDir)
+	fmt.Println("Identity is created only after startup under the dedicated service account.")
+	fmt.Println("Recovery bearer credential is stored in protected service state.")
 
 	if *startNow {
 		if err := winservice.Start(
@@ -413,6 +381,13 @@ func runServiceRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := verifyWindowsServiceState(cfg.StateDir); err != nil {
+		return fmt.Errorf("verify service state before startup: %w", err)
+	}
+	stateGuard, err := guardWindowsServiceState(cfg.StateDir)
+	if err != nil { return err }
+	defer stateGuard()
+
 	logFile, err := openServiceLog(cfg.StateDir)
 	if err != nil {
 		return err
@@ -512,13 +487,18 @@ func defaultServiceStateDir() string {
 }
 
 func openServiceLog(stateDir string) (*os.File, error) {
-	if err := os.MkdirAll(stateDir, 0o700); err != nil {
-		return nil, fmt.Errorf("create service state directory: %w", err)
+	if err := verifyWindowsServiceState(stateDir); err != nil {
+		return nil, fmt.Errorf("verify service state before log open: %w", err)
 	}
-	f, err := os.OpenFile(filepath.Join(stateDir, "service.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("open service log: %w", err)
-	}
+	path := filepath.Join(stateDir, "service.log")
+	if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+		f, createErr := createWindowsServiceLog(path)
+		if createErr != nil { return nil, fmt.Errorf("create protected service log: %w", createErr) }
+		return f, nil
+	} else if err != nil { return nil, err }
+	if err := verifyWindowsServiceFile(path); err != nil { return nil, err }
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil { return nil, fmt.Errorf("open service log: %w", err) }
 	return f, nil
 }
 
