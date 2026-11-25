@@ -1,6 +1,7 @@
 package identity
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -159,7 +160,7 @@ func TestProtectExistingDoesNotRenewOrReplaceIdentityCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if protected.ID != created.ID || !stringEqual(certificateBefore, certificateAfter) {
+	if protected.ID != created.ID || !bytes.Equal(certificateBefore, certificateAfter) {
 		t.Fatal("ProtectExisting changed the identity or certificate")
 	}
 }
