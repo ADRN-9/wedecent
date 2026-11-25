@@ -87,6 +87,9 @@ func pairClientWithHooks(dir, secret string, clients *Store, peer Peer, hooks pa
 	if err != nil {
 		return err
 	}
+	if !SecretMatches(hash, secret) {
+		return ErrPairingSecretInvalid
+	}
 	credential, err := loadPairingCredential(dir, hash, time.Now().UTC())
 	if err != nil {
 		return err
@@ -414,6 +417,9 @@ func CheckPairingSecret(dir, secret string) (bool, error) {
 	}
 	if err != nil {
 		return false, err
+	}
+	if !SecretMatches(hash, secret) {
+		return false, nil
 	}
 	credential, err := loadPairingCredential(dir, hash, time.Now().UTC())
 	if errors.Is(err, ErrPairingSecretInvalid) {
