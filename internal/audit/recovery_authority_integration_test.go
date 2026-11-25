@@ -21,7 +21,7 @@ type testIndependentRecoveryAuthority struct {
 	witnessPrivate map[string]ed25519.PrivateKey
 	head           RecoveryCheckpoint
 	heads          map[string]RecoveryCheckpoint
-	loseNextCommit bool
+	loseNextCommit       bool
 	rejectMigrationProof bool
 }
 
@@ -532,5 +532,68 @@ func TestActivePairingLedgerRejectsUnauthenticatedMatchingDigestProofWithoutMuta
 	}
 	if authority.head.Generation != 0 {
 		t.Fatalf("rejected migration advanced authority generation: %d", authority.head.Generation)
+	}
+}
+
+func TestActivePairingLedgerRejectsCompetingCheckpointGeneration(t *testing.T) {
+	dir := recoveryTestDir(t)
+	authority := newTestIndependentRecoveryAuthority(t)
+	recovery, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "efefefefefefefefefefefefefefefef"
+	if err := recovery.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(recovery.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := recovery.activeLedgerScope()
+	head, err := authority.LoadCheckpoint(context.Background(), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	competingDigest := sha256.Sum256([]byte("independent competing state"))
+	request, err := NewRecoveryCheckpointRequest(scope, head.Generation, head.StateDigest, competingDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := authority.CommitCheckpoint(context.Background(), request); err != nil {
+		t.Fatal(err)
+	}
+	if err := recovery.Complete(id, PairingOutcomeSuccess); !errors.Is(err, ErrRecoveryCheckpointStale) {
+		t.Fatalf("stale active-ledger generation was accepted: %v", err)
+	}
+	after, err := os.ReadFile(recovery.path)
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("stale mutation changed local active ledger: %v", err)
+	}
+}
+
+func TestRecoveryCheckpointCommitIsIdempotentAndRejectsConflictingReplay(t *testing.T) {
+	authority := newTestIndependentRecoveryAuthority(t)
+	state := sha256.Sum256([]byte("committed pairing recovery state"))
+	request, err := NewRecoveryCheckpointRequest(authority.head.Scope, 0, [sha256.Size]byte{}, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := authority.CommitCheckpoint(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	replayed, err := authority.CommitCheckpoint(context.Background(), request)
+	if err != nil || !sameRecoveryCheckpoint(first, replayed) {
+		t.Fatalf("exact checkpoint replay was not idempotent: %v", err)
+	}
+	conflictingState := sha256.Sum256([]byte("conflicting replay state"))
+	conflict, err := NewRecoveryCheckpointRequest(authority.head.Scope, 0, [sha256.Size]byte{}, conflictingState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conflict.OperationID = request.OperationID
+	if _, err := authority.CommitCheckpoint(context.Background(), conflict); !errors.Is(err, ErrRecoveryCheckpointStale) {
+		t.Fatalf("conflicting replay was not rejected: %v", err)
 	}
 }
