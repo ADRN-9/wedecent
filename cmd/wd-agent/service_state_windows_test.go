@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -566,6 +567,40 @@ func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+
+func TestWindowsMigrationSourceRejectsUntrustedAncestorOwnerAndReparsePoint(t *testing.T) {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil {
+		t.Fatalf("resolve test SID: %v", err)
+	}
+	source := prepareWindowsPreflightTestDir(t, false)
+	originalLookup := windowsStateAncestorOwnerLookup
+	defer func() { windowsStateAncestorOwnerLookup = originalLookup }()
+	untrusted, err := windows.StringToSid("S-1-5-19")
+	if err != nil {
+		t.Fatal(err)
+	}
+	windowsStateAncestorOwnerLookup = func(string) (*windows.SID, error) { return untrusted, nil }
+	if err := verifyMigrationSourceForSID(source, user.User.Sid.String()); err == nil {
+		t.Fatal("migration source accepted an ancestor with an untrusted owner")
+	}
+	windowsStateAncestorOwnerLookup = originalLookup
+
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	junction := filepath.Join(root, "legacy-redirect")
+	cmd := exec.Command("cmd", "/c", "mklink", "/J", junction, target)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("junction provisioning unavailable: %v (%s)", err, output)
+	}
+	if err := verifyMigrationSourceForSID(filepath.Join(junction, "agent"), user.User.Sid.String()); err == nil {
+		t.Fatal("migration source accepted a reparse-point ancestor")
 	}
 }
 
