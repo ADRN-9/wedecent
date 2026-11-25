@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(25);
+select plan(26);
 
 insert into auth.users(id,aud,role,email)
 values ('11000000-0000-4000-8000-000000000197','authenticated','authenticated','c197-primary@example.test');
@@ -64,7 +64,7 @@ as $$
    'witness_set_version','c197-set',
    'witness_ids',pg_catalog.jsonb_build_array('witness-a','witness-b','witness-c'),
    'expires_at_unix_ms',(
-      select (extract(epoch from pending_expires_at)*1000)::bigint-1000
+      select (extract(epoch from pg_catalog.clock_timestamp())*1000)::bigint+5000
       from public.checkpoint_fence_authority
       where organization_id='22000000-0000-4000-8000-000000000197'
    ),
@@ -159,6 +159,29 @@ select is(public.record_checkpoint_fence_token(
 )->>'token_sha256',repeat('b',64),'signed reservation token receipt is persisted');
 create temporary table c197_commit_material as
 select pg_temp.c197_acks(repeat('9',64)) as acknowledgements;
+
+update public.checkpoint_active_reservations
+   set reserved_at = pg_catalog.clock_timestamp(),
+       expires_at = pg_catalog.clock_timestamp() + interval '4 seconds'
+ where operation_id = repeat('9',64);
+update public.checkpoint_fence_authority
+   set pending_expires_at = pg_catalog.clock_timestamp() + interval '6 seconds'
+ where organization_id = '22000000-0000-4000-8000-000000000197';
+
+select pg_catalog.pg_sleep(7);
+select ok(
+ (select (event_payload->'token'->>'expires_at_unix_ms')::bigint <=
+     (extract(epoch from pg_catalog.clock_timestamp())*1000)::bigint
+    from public.checkpoint_operation_events
+   where operation_id=repeat('9',64) and event_type='fence_reserved'
+   order by event_id desc limit 1)
+ and (select pg_catalog.bool_and(expires_at <= pg_catalog.clock_timestamp())
+        from public.checkpoint_active_reservations where operation_id=repeat('9',64))
+ and (select pending_expires_at <= pg_catalog.clock_timestamp()
+        from public.checkpoint_fence_authority
+       where organization_id='22000000-0000-4000-8000-000000000197'),
+ 'original signed token and participant lease are expired before recovery commit'
+);
 
 select throws_ok($q$select public.commit_checkpoint_fence_operation(
  repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
