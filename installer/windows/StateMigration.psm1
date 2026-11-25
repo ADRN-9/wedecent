@@ -1053,6 +1053,7 @@ public sealed class WeDecentMigrationDirectoryLease : IDisposable {
     public void Dispose() { if (Disposed) return; foreach(IntPtr h in handles) WeDecentMigrationFileIdentityApi.CloseHandle(h); handles.Clear(); Disposed=true; }
 }
 public static class WeDecentMigrationFileIdentityApi {
+    public static Action<string> PublicationHook;
     // Volume serial plus the 64-bit file index is the filesystem object identity.
     [StructLayout(LayoutKind.Sequential)]
     public struct BY_HANDLE_FILE_INFORMATION {
@@ -1199,6 +1200,23 @@ public static class WeDecentMigrationFileIdentityApi {
                 int error=Marshal.GetLastWin32Error();
                 if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
             }
+            // Test-only native-boundary injection runs after pathname validation and before the rename syscall.
+            if (PublicationHook!=null) PublicationHook(targetPath);
+            if (replaceExisting) {
+                IntPtr target=Open(targetPath,FILE_READ_ATTRIBUTES,7,BACKUP_SEMANTICS);
+                try {
+                    BY_HANDLE_FILE_INFORMATION targetInfo=Info(target);
+                    if ((targetInfo.FileAttributes&0x400)!=0 || Id(targetInfo)!=expectedTargetIdentity)
+                        throw new InvalidOperationException("Publication target object changed at the native publication boundary.");
+                } finally { CloseHandle(target); }
+            } else {
+                IntPtr target=CreateFile(targetPath,FILE_READ_ATTRIBUTES,7,IntPtr.Zero,OPEN_EXISTING,BACKUP_SEMANTICS|OPEN_REPARSE_POINT,IntPtr.Zero);
+                if (target!=new IntPtr(-1)) { CloseHandle(target); throw new System.IO.IOException("Publication destination appeared at the native publication boundary."); }
+                int error=Marshal.GetLastWin32Error();
+                if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
+            }
+            if (GetIdentity(parentPath)!=Id(parentInfo))
+                throw new InvalidOperationException("Publication parent identity changed at the native publication boundary.");
             // Prefer a handle-relative rename; use the documented absolute form only if the filesystem rejects RootDirectory.
             int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
             byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
