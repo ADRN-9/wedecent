@@ -334,7 +334,7 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 		"RE": 0,
 		"RA": 0,
 		"X":  0,
-		"LC": 0x00000004, // FILE_ADD_SUBDIRECTORY / FILE_APPEND_DATA in a filesystem DACL
+		"LC": 0,
 		"LO": 0,
 		"WP": windows.WRITE_DAC,
 		"SW": windows.WRITE_DAC,
