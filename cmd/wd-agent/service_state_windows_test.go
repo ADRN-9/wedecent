@@ -304,57 +304,80 @@ func TestServiceProvisionRejectsBroadExistingParentDACL(t *testing.T) {
 	}
 }
 func TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoad(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "protected-root")
-	state := filepath.Join(root, "agent")
-	if err := preflightAgentState(state); err != nil {
-		t.Fatal(err)
-	}
-	tokenPath := filepath.Join(state, "recovery-authority.token")
-	trustPath := filepath.Join(state, "recovery-authority-trust.json")
-	tokenSentinel := []byte("sentinel-token-must-not-be-loaded")
-	trustSentinel := []byte("sentinel-trust-must-not-be-loaded")
-	if err := os.WriteFile(tokenPath, tokenSentinel, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(trustPath, trustSentinel, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	foreign, err := windows.StringToSid("S-1-5-20")
 	if err != nil {
 		t.Fatal(err)
 	}
-	previousOwnerLookup := windowsStateAncestorOwnerLookup
-	windowsStateAncestorOwnerLookup = func(path string) (*windows.SID, error) {
-		if strings.EqualFold(filepath.Clean(path), filepath.Clean(root)) {
-			return foreign, nil
-		}
-		return previousOwnerLookup(path)
-	}
-	t.Cleanup(func() { windowsStateAncestorOwnerLookup = previousOwnerLookup })
+	for _, tc := range []struct {
+		name string
+		path string
+		owner *windows.SID
+	}{
+		{name: "unauthorized ancestor owner", path: "root", owner: foreign},
+		{name: "unauthorized intermediate directory owner", path: "middle", owner: foreign},
+		{name: "missing ancestor owner", path: "middle", owner: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "protected-root")
+			middle := filepath.Join(root, "middle")
+			state := filepath.Join(middle, "agent")
+			if err := preflightAgentState(state); err != nil {
+				t.Fatal(err)
+			}
+			tokenPath := filepath.Join(state, "recovery-authority.token")
+			trustPath := filepath.Join(state, "recovery-authority-trust.json")
+			tokenSentinel := []byte("sentinel-token-must-not-be-loaded")
+			trustSentinel := []byte("sentinel-trust-must-not-be-loaded")
+			if err := os.WriteFile(tokenPath, tokenSentinel, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(trustPath, trustSentinel, 0o600); err != nil {
+				t.Fatal(err)
+			}
 
-	// Exercise the real service startup entry point with an injected hostile
-	// owner observation; this avoids requiring SeRestorePrivilege on CI hosts.
-	err = runServiceRun([]string{
-		"--state=" + state,
-		"--name=hostile-owner-startup",
-		"--listen=",
-		"--web-relay=",
-	})
-	if err == nil || !strings.Contains(err.Error(), "verify guarded service state before loading recovery credentials") {
-		t.Fatalf("service startup did not reject hostile ancestor owner before recovery loading: %v", err)
-	}
-	for _, name := range []string{"service.log", "identity.key.dpapi", "identity.crt"} {
-		if _, statErr := os.Lstat(filepath.Join(state, name)); !errors.Is(statErr, os.ErrNotExist) {
-			t.Fatalf("service created %s before rejecting hostile ancestor owner: %v", name, statErr)
-		}
-	}
-	gotToken, err := os.ReadFile(tokenPath)
-	if err != nil || string(gotToken) != string(tokenSentinel) {
-		t.Fatalf("recovery bearer was changed or consumed before owner rejection: %q: %v", gotToken, err)
-	}
-	gotTrust, err := os.ReadFile(trustPath)
-	if err != nil || string(gotTrust) != string(trustSentinel) {
-		t.Fatalf("recovery trust was changed before owner rejection: %q: %v", gotTrust, err)
+			var rejectedPath string
+			switch tc.path {
+			case "root":
+				rejectedPath = root
+			case "middle":
+				rejectedPath = middle
+			default:
+				t.Fatalf("unknown hostile path fixture %q", tc.path)
+			}
+			previousOwnerLookup := windowsStateAncestorOwnerLookup
+			windowsStateAncestorOwnerLookup = func(path string) (*windows.SID, error) {
+				if strings.EqualFold(filepath.Clean(path), filepath.Clean(rejectedPath)) {
+					return tc.owner, nil
+				}
+				return previousOwnerLookup(path)
+			}
+			t.Cleanup(func() { windowsStateAncestorOwnerLookup = previousOwnerLookup })
+
+			// Exercise the real startup path while substituting only the OS owner
+			// observation; hosted Windows runners cannot assign arbitrary owners.
+			err := runServiceRun([]string{
+				"--state=" + state,
+				"--name=hostile-owner-startup",
+				"--listen=",
+				"--web-relay=",
+			})
+			if err == nil || !strings.Contains(err.Error(), "verify guarded service state before loading recovery credentials") {
+				t.Fatalf("service startup did not reject hostile/missing ancestor owner before recovery loading: %v", err)
+			}
+			for _, name := range []string{"service.log", "identity.key.dpapi", "identity.crt"} {
+				if _, statErr := os.Lstat(filepath.Join(state, name)); !errors.Is(statErr, os.ErrNotExist) {
+					t.Fatalf("service created %s before rejecting hostile ancestor owner: %v", name, statErr)
+				}
+			}
+			gotToken, err := os.ReadFile(tokenPath)
+			if err != nil || string(gotToken) != string(tokenSentinel) {
+				t.Fatalf("recovery bearer was changed or consumed before owner rejection: %q: %v", gotToken, err)
+			}
+			gotTrust, err := os.ReadFile(trustPath)
+			if err != nil || string(gotTrust) != string(trustSentinel) {
+				t.Fatalf("recovery trust was changed before owner rejection: %q: %v", gotTrust, err)
+			}
+		})
 	}
 }
 
