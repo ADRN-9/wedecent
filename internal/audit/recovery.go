@@ -79,6 +79,7 @@ type PairingRecovery struct {
 	authority               RecoveryAuthority
 	authorityScope          string
 	authorityTrust          RecoveryAuthorityTrust
+	migrationPending        bool
 	archiveAfterSync        func() error
 	compactionBeforeReplace func() error
 }
@@ -194,6 +195,34 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 			return nil, ErrRecoveryMigrationUntrusted
 		}
 	}
+	return recovery, nil
+}
+
+// OpenPairingRecoveryForMigration permits only the explicit migration operation
+// on a legacy archive. Ordinary reads and mutations still fail until migration
+// publishes a verified independent checkpoint.
+func OpenPairingRecoveryForMigration(stateDir, scope string, authority RecoveryAuthority, trust RecoveryAuthorityTrust) (*PairingRecovery, error) {
+	if authority == nil || scope == "" || len(scope) > 256 {
+		return nil, ErrRecoveryAuthorityUnavailable
+	}
+	if err := trust.Validate(); err != nil {
+		return nil, err
+	}
+	recovery, err := OpenPairingRecovery(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	recovery.authority = authority
+	recovery.authorityScope = scope
+	recovery.authorityTrust = trust
+	archive, err := recovery.readArchive()
+	if err == nil {
+		return recovery, nil
+	}
+	if !errors.Is(err, ErrRecoveryMigrationUntrusted) {
+		return nil, err
+	}
+	recovery.migrationPending = true
 	return recovery, nil
 }
 
