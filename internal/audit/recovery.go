@@ -190,7 +190,7 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 		if err != nil {
 			return nil, fmt.Errorf("independent pairing recovery checkpoint unavailable: %w", err)
 		}
-		if head.Generation != 0 || head.StateDigest != ([32]byte{}) || len(head.Signature) != 0 || len(head.Witnesses) != 0 {
+		if head.Scope != scope || !emptyRecoveryCheckpoint(head) {
 			return nil, ErrRecoveryMigrationUntrusted
 		}
 	}
