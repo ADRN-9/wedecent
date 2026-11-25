@@ -5,12 +5,12 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"net/http"
-	"crypto/tls"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -158,7 +158,6 @@ func TestLoadRecoveryAuthorityTrustRequiresPinnedUniqueEd25519Keys(t *testing.T)
 		t.Fatal("group/world writable trust file accepted")
 	}
 }
-
 
 func TestHTTPRecoveryAuthorityLoadsAndCommitsWitnessedCheckpoint(t *testing.T) {
 	trust, primaryPrivate, witnessPrivate := httpRecoveryAuthorityFixture(t)
