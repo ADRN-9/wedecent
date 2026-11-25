@@ -99,13 +99,26 @@ $script:mockStateExists = $true
 $script:mockStateReadFails = $false
 $script:mockStateEntries = @()
 $script:removedAccounts = @()
-function Test-Path { return $script:mockStateExists }
+function Test-Path {
+    [CmdletBinding()]
+    param([string]$LiteralPath)
+    return $script:mockStateExists
+}
 function Get-ChildItem {
+    [CmdletBinding()]
+    param([string]$LiteralPath, [switch]$Force)
     if ($script:mockStateReadFails) { throw 'injected state enumeration failure' }
     return $script:mockStateEntries
 }
-function Remove-LocalUser { $script:removedAccounts += $Name }
-function Write-Warning { }
+function Remove-LocalUser {
+    [CmdletBinding()]
+    param([string]$Name)
+    $script:removedAccounts += $Name
+}
+function Write-Warning {
+    [CmdletBinding()]
+    param([string]$Message)
+}
 
 $StateDir = 'C:\mock\WeDecent\Agent'
 $ServiceAccountName = 'WeDecentSvc'
