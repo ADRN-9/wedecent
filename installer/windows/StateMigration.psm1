@@ -1231,5 +1231,8 @@ Export-ModuleMember -Function @(
     'Recover-WeDecentStateMigration',
     'Invoke-WeDecentMigrationFaultPoint',
     'Get-WeDecentMigrationUpdatedServicePath',
+    'Get-WeDecentMigrationCanonicalPath',
+    'Assert-WeDecentMigrationPathsDisjoint',
+    'Assert-WeDecentMigrationRecoverySource',
     'Invoke-WeDecentStateMigration'
 )
