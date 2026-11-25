@@ -240,7 +240,7 @@ begin
             (p_token ->> 'authorization_proof_expires_at_unix_ms')::bigint -
                 (p_token ->> 'authorization_proof_issued_at_unix_ms')::bigint > 120000)
        or (v_operation.action = 'revoke' and
-            (p_token ->> 'authorization_proof_expires_at_unix_ms')::bigint >
+            (p_token ->> 'authorization_proof_expires_at_unix_ms')::bigint <
                 (p_token ->> 'expires_at_unix_ms')::bigint)
        or (v_operation.action = 'revoke' and
             (p_token ->> 'authorization_proof_issued_at_unix_ms')::bigint >
@@ -429,7 +429,7 @@ begin
             (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint -
                 (v_token ->> 'authorization_proof_issued_at_unix_ms')::bigint > 120000)
        or (v_operation.action = 'revoke' and
-            (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint >
+            (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint <
                 (v_token ->> 'expires_at_unix_ms')::bigint)
        or (v_operation.action = 'revoke' and
             (v_token ->> 'authorization_proof_expires_at_unix_ms')::bigint <=
