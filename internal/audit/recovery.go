@@ -145,6 +145,14 @@ func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	if err != nil {
 		return nil, err
 	}
+	if r.authority != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = r.verifyActiveLedgerSnapshot(ctx, snapshot)
+		cancel()
+		if err != nil {
+			return nil, err
+		}
+	}
 	archive, err := r.readArchive()
 	if err != nil {
 		return nil, err
@@ -457,6 +465,14 @@ func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, p
 	snapshot, err := r.read()
 	if err != nil {
 		return err
+	}
+	if r.authority != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		err = r.verifyActiveLedgerSnapshot(ctx, snapshot)
+		cancel()
+		if err != nil {
+			return err
+		}
 	}
 	archive, err := r.readArchive()
 	if err != nil {
