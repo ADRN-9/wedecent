@@ -473,8 +473,6 @@ begin
        or v_fence.pending_fingerprint is distinct from p_fingerprint
        or v_fence.pending_expires_at is null
        or v_fence.pending_expires_at <= pg_catalog.clock_timestamp()
-       or (v_token ->> 'expires_at_unix_ms')::bigint <=
-            (extract(epoch from pg_catalog.clock_timestamp()) * 1000)::bigint
        or (v_token ->> 'expires_at_unix_ms')::bigint >
             (extract(epoch from v_fence.pending_expires_at) * 1000)::bigint
        or (v_token ->> 'expected_fence_generation')::bigint is distinct from v_fence.generation
