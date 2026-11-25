@@ -1274,7 +1274,7 @@ func TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging(t *testing.T)
 	var activePath string
 	for {
 		data, readErr := os.ReadFile(readyPath)
-		if readErr == nil {
+		if readErr == nil && len(data) > 0 {
 			activePath = string(data)
 			break
 		}
