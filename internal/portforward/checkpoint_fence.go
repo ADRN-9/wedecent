@@ -362,7 +362,7 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 		if proofErr != nil || sha256.Sum256(token.AuthorizationProof) != token.AuthorizationSHA256 ||
 			proof.IssuedAtUnixMS != token.AuthorizationProofIssuedAtUnixMS ||
 			proof.ExpiresAtUnixMS != token.AuthorizationProofExpiresAtUnixMS ||
-			proof.ExpiresAtUnixMS > token.ExpiresAtUnixMS {
+			proof.ExpiresAtUnixMS < token.ExpiresAtUnixMS {
 			return nil, ErrCheckpointIntegrity
 		}
 	}
