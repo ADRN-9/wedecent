@@ -1053,6 +1053,7 @@ public sealed class WeDecentMigrationDirectoryLease : IDisposable {
     public void Dispose() { if (Disposed) return; foreach(IntPtr h in handles) WeDecentMigrationFileIdentityApi.CloseHandle(h); handles.Clear(); Disposed=true; }
 }
 public static class WeDecentMigrationFileIdentityApi {
+    public static Action<string> PublicationHook;
     // Volume serial plus the 64-bit file index is the filesystem object identity.
     [StructLayout(LayoutKind.Sequential)]
     public struct BY_HANDLE_FILE_INFORMATION {
@@ -1147,7 +1148,7 @@ public static class WeDecentMigrationFileIdentityApi {
         if (String.IsNullOrWhiteSpace(targetName) || targetName.IndexOfAny(new char[]{'\\','/'})>=0 ||
             targetName=="." || targetName=="..")
             throw new ArgumentException("Publication target must be a single path component.");
-        IntPtr parent=IntPtr.Zero, source=IntPtr.Zero;
+        IntPtr parent=IntPtr.Zero, source=IntPtr.Zero, targetHandle=IntPtr.Zero;
         try {
             parent=Open(parentPath, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY|FILE_ADD_FILE|FILE_ADD_SUBDIRECTORY|FILE_TRAVERSE, SHARE_READ_WRITE, BACKUP_SEMANTICS);
             BY_HANDLE_FILE_INFORMATION parentInfo=Info(parent);
@@ -1164,12 +1165,10 @@ public static class WeDecentMigrationFileIdentityApi {
             if (replaceExisting) {
                 if (String.IsNullOrEmpty(expectedTargetIdentity))
                     throw new InvalidOperationException("Replacing an existing object requires its verified identity.");
-                IntPtr target=Open(targetPath, FILE_READ_ATTRIBUTES, 7, BACKUP_SEMANTICS);
-                try {
-                    BY_HANDLE_FILE_INFORMATION targetInfo=Info(target);
-                    if ((targetInfo.FileAttributes & 0x400)!=0 || Id(targetInfo)!=expectedTargetIdentity)
-                        throw new InvalidOperationException("Publication target object changed after verification.");
-                } finally { CloseHandle(target); }
+                targetHandle=Open(targetPath, FILE_READ_ATTRIBUTES, 3, BACKUP_SEMANTICS);
+                BY_HANDLE_FILE_INFORMATION targetInfo=Info(targetHandle);
+                if ((targetInfo.FileAttributes & 0x400)!=0 || Id(targetInfo)!=expectedTargetIdentity)
+                    throw new InvalidOperationException("Publication target object changed after verification.");
             } else {
                 IntPtr target=CreateFile(targetPath, FILE_READ_ATTRIBUTES, 7, IntPtr.Zero, OPEN_EXISTING,
                     BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
@@ -1184,14 +1183,11 @@ public static class WeDecentMigrationFileIdentityApi {
                 throw new InvalidOperationException("Publication parent identity changed before atomic publication.");
             // Recheck the target after all other validation and immediately before publication.
             if (replaceExisting) {
-                IntPtr target=Open(targetPath, FILE_READ_ATTRIBUTES, 7, BACKUP_SEMANTICS);
-                try {
-                    BY_HANDLE_FILE_INFORMATION targetInfo=Info(target);
-                    if ((targetInfo.FileAttributes & 0x400)!=0 ||
-                        (sourceInfo.FileAttributes & 0x10)!=(targetInfo.FileAttributes & 0x10) ||
-                        Id(targetInfo)!=expectedTargetIdentity)
-                        throw new InvalidOperationException("Publication target object changed immediately before atomic publication.");
-                } finally { CloseHandle(target); }
+                BY_HANDLE_FILE_INFORMATION targetInfo=Info(targetHandle);
+                if ((targetInfo.FileAttributes & 0x400)!=0 ||
+                    (sourceInfo.FileAttributes & 0x10)!=(targetInfo.FileAttributes & 0x10) ||
+                    Id(targetInfo)!=expectedTargetIdentity || GetIdentity(targetPath)!=expectedTargetIdentity)
+                    throw new InvalidOperationException("Publication target object changed immediately before atomic publication.");
             } else {
                 IntPtr target=CreateFile(targetPath, FILE_READ_ATTRIBUTES, 7, IntPtr.Zero, OPEN_EXISTING,
                     BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
@@ -1199,6 +1195,7 @@ public static class WeDecentMigrationFileIdentityApi {
                 int error=Marshal.GetLastWin32Error();
                 if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
             }
+            if (PublicationHook!=null) PublicationHook(targetPath);
             // Prefer a handle-relative rename; use the documented absolute form only if the filesystem rejects RootDirectory.
             int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
             byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
@@ -1218,12 +1215,10 @@ public static class WeDecentMigrationFileIdentityApi {
                 if (GetIdentity(parentPath)!=Id(parentInfo))
                     throw new InvalidOperationException("Publication parent identity changed before absolute fallback.");
                 if (replaceExisting) {
-                    IntPtr target=Open(targetPath,FILE_READ_ATTRIBUTES,7,BACKUP_SEMANTICS);
-                    try {
-                        BY_HANDLE_FILE_INFORMATION targetInfo=Info(target);
-                        if (Id(targetInfo)!=expectedTargetIdentity || (targetInfo.FileAttributes&0x400)!=0)
-                            throw new InvalidOperationException("Publication target changed before absolute fallback.");
-                    } finally { CloseHandle(target); }
+                    BY_HANDLE_FILE_INFORMATION targetInfo=Info(targetHandle);
+                    if (Id(targetInfo)!=expectedTargetIdentity || (targetInfo.FileAttributes&0x400)!=0 ||
+                        GetIdentity(targetPath)!=expectedTargetIdentity)
+                        throw new InvalidOperationException("Publication target changed before absolute fallback.");
                 } else {
                     IntPtr target=CreateFile(targetPath,FILE_READ_ATTRIBUTES,7,IntPtr.Zero,OPEN_EXISTING,BACKUP_SEMANTICS|OPEN_REPARSE_POINT,IntPtr.Zero);
                     if (target!=new IntPtr(-1)) { CloseHandle(target); throw new System.IO.IOException("Publication destination appeared before absolute fallback."); }
@@ -1248,6 +1243,7 @@ public static class WeDecentMigrationFileIdentityApi {
             return published;
         } finally {
             if (source!=IntPtr.Zero) CloseHandle(source);
+            if (targetHandle!=IntPtr.Zero) CloseHandle(targetHandle);
             if (parent!=IntPtr.Zero) CloseHandle(parent);
         }
     }
