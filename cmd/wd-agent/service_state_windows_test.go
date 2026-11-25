@@ -532,9 +532,13 @@ func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
 				t.Fatalf("parse parent DACL: %v", err)
 			}
 			if err := windows.SetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT,
-				windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-				nil, nil, dacl, nil); err != nil {
+				windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+				user.User.Sid, nil, dacl, nil); err != nil {
 				t.Fatal(err)
+			}
+			parentOwner, err := windowsServiceOwner(parent)
+			if err != nil || parentOwner == nil || !parentOwner.Equals(user.User.Sid) {
+				t.Fatalf("parent owner was not set to the expected test SID: owner=%v err=%v", parentOwner, err)
 			}
 			source := filepath.Join(parent, "agent")
 			if err := os.Mkdir(source, 0o700); err != nil {
@@ -550,9 +554,13 @@ func TestWindowsMigrationSourceUsesScopedLegacyAncestorPolicy(t *testing.T) {
 				t.Fatalf("parse source DACL: %v", err)
 			}
 			if err := windows.SetNamedSecurityInfo(source, windows.SE_FILE_OBJECT,
-				windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
-				nil, nil, privateDACL, nil); err != nil {
+				windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION,
+				user.User.Sid, nil, privateDACL, nil); err != nil {
 				t.Fatal(err)
+			}
+			sourceOwner, err := windowsServiceOwner(source)
+			if err != nil || sourceOwner == nil || !sourceOwner.Equals(user.User.Sid) {
+				t.Fatalf("source owner was not set to the expected test SID: owner=%v err=%v", sourceOwner, err)
 			}
 			got := verifyMigrationSourceForSID(source, user.User.Sid.String())
 			if tc.wantAccept && got != nil {
