@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(26);
+select plan(28);
 
 insert into auth.users(id,aud,role,email)
 values ('11000000-0000-4000-8000-000000000197','authenticated','authenticated','c197-primary@example.test');
@@ -157,6 +157,15 @@ select is(public.record_checkpoint_fence_token(
  repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
  decode(repeat('b',64),'hex'),pg_temp.c197_token(repeat('9',64))
 )->>'token_sha256',repeat('b',64),'signed reservation token receipt is persisted');
+select throws_ok($q$select public.record_checkpoint_fence_token(
+ repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
+ decode(repeat('c',64),'hex'),
+ (select event_payload->'token' from public.checkpoint_operation_events
+   where operation_id=repeat('9',64) and event_type='fence_reserved' order by event_id desc limit 1)
+)$q$,
+ '23505','a persisted checkpoint reservation token cannot be replaced',
+ 'a different signed token cannot replace the original reservation at the same generation');
+
 create temporary table c197_commit_material as
 select pg_temp.c197_acks(repeat('9',64)) as acknowledgements;
 
@@ -182,6 +191,12 @@ select ok(
        where organization_id='22000000-0000-4000-8000-000000000197'),
  'original signed token and participant lease are expired before recovery commit'
 );
+select throws_ok($q$select public.reserve_checkpoint_fence_operation(
+ repeat('8',64),'finalize','22000000-0000-4000-8000-000000000197',
+ '11000000-0000-4000-8000-000000000197',decode(repeat('8',64),'hex'),
+ pg_temp.c197_participants('wd_hhhhhhhhhhhhhhhh'),1,decode(repeat('f',64),'hex'),60)$q$,
+ '55P03','expired checkpoint operation requires exact-operation quorum recovery',
+ 'a new operation cannot replace an expired pending operation before exact recovery');
 
 select throws_ok($q$select public.commit_checkpoint_fence_operation(
  repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
