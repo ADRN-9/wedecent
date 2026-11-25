@@ -32,6 +32,8 @@ This current-user setting is owned by `wd-ui`, not by the elevated installer. On
 - Every installed binary is checksum-verified after copy and before the installation transaction is committed.
 - Fresh installs create a dedicated standard local account named `WeDecentSvc` by default.
 - The service-account password is cryptographically random and is never written to disk, an environment variable, or a process command line. It is sent to `wd-agent.exe service install --account-password-stdin` through an inherited anonymous pipe.
+- Fresh service installation requires an origin-only HTTPS recovery-authority URL, its exact 64-hex SPKI pin, a protected public trust file, and a short-lived bearer. URL/pin may be supplied as non-secret parameters or environment configuration; the trust file is passed by path. The bearer is prompted as a `SecureString` (or supplied as one) and streamed after the account password through stdin; it is never placed in argv or environment variables. SecureString characters are copied through a zeroed character buffer and zeroed unmanaged allocation.
+- The service installer copies the trust anchors and bearer into create-exclusive files in the protected service state directory, then validates their ACLs. The bearer file is plaintext at rest protected by the NTFS DACL; Local Administrators and LocalSystem remain trusted.
 - The installer rejects service accounts that are members of the local Administrators group and grants `SeServiceLogonRight` when needed.
 - `wd-agent.exe` performs the existing identity initialization, state-directory ACL restriction, SCM registration, and service startup.
 - Before any install/upgrade mutation, the installer checks for running installed `wd-ui.exe` and `wd-core.exe` images. If either is active, it fails before stopping the agent service or replacing files and instructs the operator to close the user processes. It never terminates those interactive processes itself.
@@ -150,7 +152,7 @@ Never use the purge form for a normal upgrade or temporary uninstall. Deleting t
 
 ## Silent use
 
-A default fresh install is non-interactive: the installer generates the dedicated account password internally. An upgrade is also non-interactive when no installed UI/Core process is active. A running installed user-side process is an intentional fail-fast condition rather than something a silent installer kills automatically. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
+A default fresh install prompts securely for the short-lived recovery bearer unless a `SecureString` is supplied programmatically; the installer generates the dedicated account password internally. An upgrade is non-interactive when no installed UI/Core process is active. A running installed user-side process is an intentional fail-fast condition rather than something a silent installer kills automatically. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
 
 The installer does not silently opt an interactive user into UI autostart. That choice must be made from the target user's context with `wd-ui.exe autostart enable`.
 
@@ -161,3 +163,6 @@ pairing can obtain a connection grant. Use the challenge/proof bridge documented
 `docs/WINDOWS_INSTALLER.md`: the authenticated `wd` client requests/completes the
 challenge, while `wd-agent enrollment-proof` signs it on the agent machine. The account
 session stays on the client and the agent private key stays on the agent.
+
+
+If a fresh installation is interrupted after the service installer has created recovery files or identity state, rollback removes only an empty newly created state directory. It preserves non-empty protected state and reports that explicit offline recovery/re-enrollment is required; it never recursively deletes newly created identity, trust, audit or pairing material.
