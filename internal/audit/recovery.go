@@ -173,16 +173,18 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 	if err := trust.Validate(); err != nil {
 		return nil, err
 	}
-	recovery, err := OpenPairingRecovery(stateDir)
-	if err != nil {
+	dir := filepath.Clean(stateDir)
+	if err := trust.VerifyPairingStatePath(dir); err != nil {
+		return nil, fmt.Errorf("unsafe pairing recovery directory: %w", err)
+	}
+	preflight := &PairingRecovery{path: filepath.Join(dir, PairingOutcomeFileName),
+		authority: authority, authorityScope: scope, authorityTrust: trust}
+	if err := preflight.loadArchiveKey(); err != nil {
 		return nil, err
 	}
-	recovery.authority = authority
-	recovery.authorityScope = scope
-	recovery.authorityTrust = trust
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	archive, err := recovery.readArchive()
+	archive, err := preflight.readArchive()
 	if err != nil {
 		return nil, err
 	}
@@ -194,6 +196,16 @@ func OpenPairingRecoveryWithAuthority(stateDir, scope string, authority Recovery
 		if head.Scope != scope || !emptyRecoveryCheckpoint(head) {
 			return nil, ErrRecoveryMigrationUntrusted
 		}
+	}
+	recovery, err := OpenPairingRecovery(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	recovery.authority = authority
+	recovery.authorityScope = scope
+	recovery.authorityTrust = trust
+	if _, err := recovery.readArchive(); err != nil {
+		return nil, err
 	}
 	return recovery, nil
 }
