@@ -22,6 +22,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"wedecent.com/wedecent/internal/trust"
 )
 
 const (
@@ -299,8 +301,11 @@ type recoveryAuthorityTrustFile struct {
 func LoadRecoveryAuthorityTrust(file string) (RecoveryAuthorityTrust, error) {
 	var empty RecoveryAuthorityTrust
 	info, err := os.Lstat(file)
-	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o022 != 0 {
-		return empty, errors.New("recovery authority trust file is missing, unsafe, or group/world writable")
+	if err != nil || !info.Mode().IsRegular() {
+		return empty, errors.New("recovery authority trust file is missing or unsafe")
+	}
+	if err := trust.VerifyPairingStatePath(file); err != nil {
+		return empty, fmt.Errorf("recovery authority trust file permissions: %w", err)
 	}
 	opened, err := os.Open(file)
 	if err != nil {
