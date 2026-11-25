@@ -1,6 +1,9 @@
 package audit
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -221,5 +224,53 @@ func TestArchivedCredentialGenerationCannotBeReservedAgain(t *testing.T) {
 	retry.AttemptID = strings.Repeat("9", 32)
 	if _, err := recovery.Reserve(retry); err == nil {
 		t.Fatal("archived credential generation was reused")
+	}
+}
+
+func TestPairingRecoveryActiveCheckpointRejectsValidReauthenticatedArchiveSubstitution(t *testing.T) {
+	dir := recoveryTestDir(t)
+	recovery, err := OpenPairingRecovery(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := strings.Repeat("a", 32)
+	if err := recovery.Begin(testRecoveryRecord(id)); err != nil {
+		t.Fatal(err)
+	}
+	resolveAndAcknowledgePairing(t, dir, recovery, id, PairingOutcomeSuccess)
+	path := filepath.Join(dir, pairingArchiveFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var archive pairingRecoveryArchive
+	if err := json.Unmarshal(data, &archive); err != nil {
+		t.Fatal(err)
+	}
+	changedTime := archive.Records[0].UpdatedAt.Add(time.Second)
+	archive.Records[0].UpdatedAt = changedTime
+	archive.Records[0].AcknowledgedAt = &changedTime
+	archive.Checkpoint, err = pairingArchiveCheckpoint(archive.Records)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unsigned := pairingRecoveryArchiveUnsigned{Version: archive.Version, FirstSequence: archive.FirstSequence,
+		LastSequence: archive.LastSequence, Checkpoint: archive.Checkpoint, Records: archive.Records}
+	payload, err := json.Marshal(unsigned)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mac := hmac.New(sha256.New, recovery.archiveKey)
+	_, _ = mac.Write(payload)
+	archive.MAC = hex.EncodeToString(mac.Sum(nil))
+	data, err = json.Marshal(archive)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenPairingRecovery(dir); err == nil {
+		t.Fatal("validly re-authenticated archive substitution bypassed active checkpoint")
 	}
 }

@@ -217,6 +217,8 @@ func RotatePairingSecret(dir string) (string, error) {
 	} else if hashErr == nil || errors.Is(hashErr, ErrPairingSecretInvalid) {
 		if _, statErr := os.Lstat(path); statErr == nil {
 			previousGeneration = 1
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return "", fmt.Errorf("%w: inspect previous pairing hash: %v", ErrPairingStateUnsafe, statErr)
 		}
 	}
 	if previousGeneration == ^uint64(0) {
