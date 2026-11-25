@@ -225,8 +225,10 @@ func TestServiceStartupLocksPathBeforeRejectingBroadACL(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "verify guarded service state") {
 		t.Fatalf("service startup did not reject broad ACL under path guard: %v", err)
 	}
-	if _, err := os.Lstat(filepath.Join(dir, "service.log")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("service logged before guarded ACL verification: %v", err)
+	for _, name := range []string{"service.log", "identity.key.dpapi", "identity.crt"} {
+		if _, err := os.Lstat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("service created %s before guarded ACL verification: %v", name, err)
+		}
 	}
 }
 
