@@ -244,6 +244,25 @@ if ($serviceInfo) {
     }
 }
 
+function Test-DirectoryExistsStrict {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or
+            ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Expected a real, non-reparse directory at '$Path'."
+        }
+        return $true
+    } catch {
+        if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -and
+            $_.FullyQualifiedErrorId -match 'PathNotFound|ItemNotFound') {
+            return $false
+        }
+        throw
+    }
+}
+
 function Remove-EmptyDirectory {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -287,7 +306,7 @@ if (Test-Path -LiteralPath $InstallDir -PathType Container) {
 }
 if ($RemoveFromMachinePath) { Remove-MachinePathEntry $InstallDir }
 
-if ($Purge -and (Test-Path -LiteralPath $StateDir)) {
+if ($Purge -and (Test-DirectoryExistsStrict -Path $StateDir))
     Remove-Item -LiteralPath $StateDir -Recurse -Force -ErrorAction Stop
     Remove-EmptyDirectory -Path (Split-Path -Parent $StateDir)
 }
