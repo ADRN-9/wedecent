@@ -1065,7 +1065,7 @@ public static class WeDecentMigrationFileIdentityApi {
     public static extern bool GetFileInformationByHandle(IntPtr handle, out BY_HANDLE_FILE_INFORMATION info);
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool CloseHandle(IntPtr handle);
-    private const uint FILE_READ_ATTRIBUTES=0x80, FILE_LIST_DIRECTORY=0x1, DELETE_ACCESS=0x10000;
+    private const uint FILE_READ_ATTRIBUTES=0x80, FILE_LIST_DIRECTORY=0x1, FILE_ADD_FILE=0x2, FILE_ADD_SUBDIRECTORY=0x4, DELETE_ACCESS=0x10000;
     private const uint SHARE_READ_WRITE=3, OPEN_EXISTING=3;
     private const uint BACKUP_SEMANTICS=0x02000000, OPEN_REPARSE_POINT=0x00200000;
     private static void Inject(string name) {
@@ -1140,7 +1140,7 @@ public static class WeDecentMigrationFileIdentityApi {
             throw new ArgumentException("Publication target must be a single path component.");
         IntPtr parent=IntPtr.Zero, source=IntPtr.Zero;
         try {
-            parent=Open(parentPath, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY, SHARE_READ_WRITE, BACKUP_SEMANTICS);
+            parent=Open(parentPath, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY|FILE_ADD_FILE|FILE_ADD_SUBDIRECTORY, SHARE_READ_WRITE, BACKUP_SEMANTICS);
             BY_HANDLE_FILE_INFORMATION parentInfo=Info(parent);
             if ((parentInfo.FileAttributes & 0x410)!=0x10)
                 throw new InvalidOperationException("Publication parent is not a real directory.");
@@ -1173,6 +1173,21 @@ public static class WeDecentMigrationFileIdentityApi {
             }
             if (GetIdentity(parentPath)!=Id(parentInfo))
                 throw new InvalidOperationException("Publication parent identity changed before atomic publication.");
+            // Recheck the target after all other validation and immediately before the handle-relative rename.
+            if (replaceExisting) {
+                IntPtr target=Open(targetPath, FILE_READ_ATTRIBUTES, 7, BACKUP_SEMANTICS);
+                try {
+                    BY_HANDLE_FILE_INFORMATION targetInfo=Info(target);
+                    if ((targetInfo.FileAttributes & (0x400|0x10))!=0 || Id(targetInfo)!=expectedTargetIdentity)
+                        throw new InvalidOperationException("Publication target object changed immediately before atomic publication.");
+                } finally { CloseHandle(target); }
+            } else {
+                IntPtr target=CreateFile(targetPath, FILE_READ_ATTRIBUTES, 7, IntPtr.Zero, OPEN_EXISTING,
+                    BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
+                if (target!=new IntPtr(-1)) { CloseHandle(target); throw new IOException("Publication destination appeared before atomic publication."); }
+                int error=Marshal.GetLastWin32Error();
+                if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
+            }
             // The rename is relative to the retained parent handle, not a re-resolved absolute destination.
             byte[] nameBytes=System.Text.Encoding.Unicode.GetBytes(targetName);
             int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
@@ -1641,6 +1656,10 @@ Export-ModuleMember -Function @(
     'Get-WeDecentMigrationCanonicalPath',
     'Get-WeDecentMigrationIdentitySnapshot',
     'Assert-WeDecentMigrationIdentitySnapshot',
+    'New-WeDecentMigrationMutationLease',
+    'Assert-WeDecentMigrationMutationLease',
+    'Publish-WeDecentMigrationObject',
+    'Invoke-WeDecentMigrationRacePoint',
     'Assert-WeDecentMigrationPathsDisjoint',
     'Assert-WeDecentMigrationRecoverySource',
     'Invoke-WeDecentStateMigration'
