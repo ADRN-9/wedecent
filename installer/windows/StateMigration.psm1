@@ -604,10 +604,15 @@ function Restore-WeDecentMigrationTransaction {
     foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
-        $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
-        $digest = Get-WeDecentMigrationManifestDigest -Manifest $manifest
-        if ($digest -cne [string]$Journal.source_manifest_sha256) {
-            throw "Rollback refuses to remove changed migration copy: $candidate"
+        if ($candidate -ceq [string]$Journal.staging -and
+            [string]::IsNullOrWhiteSpace([string]$Journal.source_manifest_sha256)) {
+            [void](Assert-WeDecentMigrationTreeAcl -Path $candidate -ServiceSid $Journal.service_sid)
+        } else {
+            $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
+            $digest = Get-WeDecentMigrationManifestDigest -Manifest $manifest
+            if ($digest -cne [string]$Journal.source_manifest_sha256) {
+                throw "Rollback refuses to remove changed migration copy: $candidate"
+            }
         }
         Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
     }
