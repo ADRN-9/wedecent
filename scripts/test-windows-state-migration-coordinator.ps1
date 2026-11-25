@@ -464,6 +464,32 @@ try {
     Remove-Item -LiteralPath $nestedFileAcl.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+$nestedDirectoryAcl = New-MigrationFixture
+try {
+    $nestedDirectory = Join-Path $nestedDirectoryAcl.Source 'nested'
+    $directoryAcl = Get-Acl -LiteralPath $nestedDirectory
+    $users = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+    $broadRule = [Security.AccessControl.FileSystemAccessRule]::new(
+        $users, [Security.AccessControl.FileSystemRights]::FullControl,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$directoryAcl.AddAccessRule($broadRule)
+    Set-Acl -LiteralPath $nestedDirectory -AclObject $directoryAcl -ErrorAction Stop
+    $rejectedNestedDirectoryAcl = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryAcl.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryAcl.MetadataPath -ServiceName $nestedDirectoryAcl.ServiceName)
+    } catch {
+        $rejectedNestedDirectoryAcl = $_.Exception.Message -like '*unexpected access rule*'
+        if (-not $rejectedNestedDirectoryAcl) { throw }
+    }
+    if (-not $rejectedNestedDirectoryAcl) { throw 'Recovery accepted a broadened nested directory DACL.' }
+    if ($global:WeDecentMigrationMockService.PathName -cne $nestedDirectoryAcl.OriginalServicePath) { throw 'Nested directory ACL rejection changed SCM configuration.' }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') { throw 'Nested directory ACL rejection did not leave the service stopped.' }
+    Write-Host 'Migration coordinator nested directory ACL recovery rejection PASS'
+} finally {
+    Remove-Item -LiteralPath $nestedDirectoryAcl.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $nestedDirectoryOwner = New-MigrationFixture
 try {
     $nestedDirectory = Join-Path $nestedDirectoryOwner.Source 'nested'
