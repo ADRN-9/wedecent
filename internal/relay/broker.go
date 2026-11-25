@@ -63,7 +63,7 @@ func NewBroker(maxSlotsPerDevice int, slotTTL time.Duration) *Broker {
 	return &Broker{slots: make(map[string][]*slot), maxSlotsPerDevice: maxSlotsPerDevice, slotTTL: slotTTL}
 }
 
-// Reserve accounts for capacity without making the connection claimable.
+// Reserve accounts for capacity without making the connection claimable; Activate publishes it only after registration acknowledgement.
 func (b *Broker) Reserve(deviceID string, conn net.Conn) (*slot, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
