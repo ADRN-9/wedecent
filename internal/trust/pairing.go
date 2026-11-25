@@ -47,13 +47,13 @@ func PairClientWithSecretAdmission(dir, secret string, clients *Store, peer Peer
 
 // Test-only hooks are passed per transaction, never stored in shared globals.
 type pairingCredentialRecord struct {
-	Version      int       `json:"version"`
-	Generation   uint64    `json:"generation"`
-	SecretSHA256 string    `json:"secret_sha256"`
-	IssuedAt     time.Time `json:"issued_at"`
-	ExpiresAt    time.Time `json:"expires_at"`
+	Version        int       `json:"version"`
+	Generation     uint64    `json:"generation"`
+	SecretSHA256   string    `json:"secret_sha256"`
+	IssuedAt       time.Time `json:"issued_at"`
+	ExpiresAt      time.Time `json:"expires_at"`
 	LastObservedAt time.Time `json:"last_observed_at,omitempty"`
-	Consumed     bool      `json:"consumed,omitempty"`
+	Consumed       bool      `json:"consumed,omitempty"`
 }
 
 type pairingHooks struct {
