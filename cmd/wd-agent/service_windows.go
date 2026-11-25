@@ -131,7 +131,7 @@ func runServiceInstall(args []string) error {
 		4,
 		"number of parked outbound relay connections",
 	)
-		recoveryAuthorityURL := fs.String("pairing-recovery-authority-url", strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL")), "HTTPS origin for the independent pairing recovery authority")
+	recoveryAuthorityURL := fs.String("pairing-recovery-authority-url", strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL")), "HTTPS origin for the independent pairing recovery authority")
 	recoveryAuthorityPin := fs.String("pairing-recovery-authority-spki-sha256", strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256")), "SHA-256 hex pin of the recovery authority TLS leaf SPKI")
 	recoveryTrustFile := fs.String("pairing-recovery-trust", "", "path to independently provisioned primary/witness Ed25519 public trust JSON")
 	recoveryTokenStdin := fs.Bool("pairing-recovery-authority-token-stdin", false, "read the short-lived recovery bearer token from standard input")
