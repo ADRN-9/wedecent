@@ -123,3 +123,29 @@ func TestParseServeConfigRequiresIndependentRecoveryAuthority(t *testing.T) {
 		t.Fatalf("missing recovery authority was not rejected: %v", err)
 	}
 }
+
+func TestParseServeConfigRejectsEachMissingRecoveryTrustInput(t *testing.T) {
+	valid := []string{
+		"--listen=127.0.0.1:7443",
+		"--pairing-recovery-authority-url=https://recovery.example",
+		"--pairing-recovery-authority-spki-sha256=" + strings.Repeat("0", 64),
+		"--pairing-recovery-trust=/tmp/recovery-trust.json",
+	}
+	for _, tc := range []struct {
+		name string
+		args []string
+		token string
+	}{
+		{name: "authority URL", args: []string{"--listen=127.0.0.1:7443", valid[2], valid[3]}, token: "test-token"},
+		{name: "SPKI pin", args: []string{"--listen=127.0.0.1:7443", valid[1], valid[3]}, token: "test-token"},
+		{name: "pinned trust file", args: []string{"--listen=127.0.0.1:7443", valid[1], valid[2]}, token: "test-token"},
+		{name: "bearer token", args: valid, token: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN", tc.token)
+			if _, err := parseServeConfig(tc.args); err == nil || !strings.Contains(err.Error(), "pairing recovery requires") {
+				t.Fatalf("missing %s was not rejected: %v", tc.name, err)
+			}
+		})
+	}
+}
