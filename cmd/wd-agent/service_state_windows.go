@@ -367,6 +367,9 @@ func verifyWindowsStateAncestorOwners(root string, components []string, installe
 		if err != nil {
 			return fmt.Errorf("read state ancestor owner %q: %w", path, err)
 		}
+		if owner == nil || !owner.IsValid() {
+			return fmt.Errorf("read state ancestor owner %q: missing or invalid owner SID", path)
+		}
 		if !allowed[owner.String()] {
 			return fmt.Errorf("state ancestor %q is owned by untrusted SID %s", path, owner)
 		}
