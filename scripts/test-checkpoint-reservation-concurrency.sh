@@ -101,16 +101,20 @@ $$;
 create or replace function public.wd_c195_reserve_fence(
  p_operation_id text,p_request_hex text,p_device text,p_primary_head_hex text
 ) returns jsonb
-language sql security definer set search_path=''
-as $$
- select public.reserve_checkpoint_fence_operation(
+language plpgsql security definer set search_path=''
+as $
+begin
+ perform pg_catalog.set_config('request.jwt.claim.sub',
+  '11000000-0000-4000-8000-000000000195',true);
+ return public.reserve_checkpoint_fence_operation(
   p_operation_id,'finalize','22000000-0000-4000-8000-000000000195',
   '11000000-0000-4000-8000-000000000195',
   pg_catalog.decode(p_request_hex,'hex'),
   public.wd_c195_participants(array[p_device]),
   1,pg_catalog.decode(p_primary_head_hex,'hex'),60
  );
-$$;
+end;
+$;
 SQL
 
 start() {
