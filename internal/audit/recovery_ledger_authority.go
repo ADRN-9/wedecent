@@ -40,6 +40,21 @@ func unsignedPairingSnapshot(snapshot pairingOutcomeSnapshot) pairingOutcomeSnap
 		ArchivedThrough: snapshot.ArchivedThrough, ArchiveCheckpoint: snapshot.ArchiveCheckpoint}
 }
 
+func activeLedgerMigrationOperationID(scope string, digest [sha256.Size]byte, generation uint64) (string, error) {
+	material, err := json.Marshal(struct {
+		Domain     string `json:"domain"`
+		Scope      string `json:"scope"`
+		Snapshot   string `json:"snapshot"`
+		Generation uint64 `json:"generation"`
+	}{Domain: "wedecent-pairing-active-ledger-migration-v1", Scope: scope,
+		Snapshot: hex.EncodeToString(digest[:]), Generation: generation})
+	if err != nil {
+		return "", err
+	}
+	operation := sha256.Sum256(material)
+	return hex.EncodeToString(operation[:]), nil
+}
+
 func pairingSnapshotDigest(snapshot pairingOutcomeSnapshotUnsigned) ([sha256.Size]byte, error) {
 	encoded, err := json.Marshal(snapshot)
 	if err != nil {
@@ -247,6 +262,10 @@ func (r *PairingRecovery) readActiveLedgerPending() (pairingOutcomeSnapshotPendi
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return pending, false, ErrRecoveryCheckpointConflict
 	}
+	after, err := os.Lstat(pendingPath)
+	if err != nil || !os.SameFile(opened, after) {
+		return pending, false, ErrRecoveryCheckpointConflict
+	}
 	return pending, true, nil
 }
 
@@ -287,6 +306,21 @@ func (r *PairingRecovery) reconcileActiveLedger() error {
 	}
 	if pending.Request.Scope != r.activeLedgerScope() || pending.Request.Generation != pending.Request.ExpectedGeneration+1 {
 		return ErrRecoveryCheckpointConflict
+	}
+	if pending.Migration != nil {
+		migration := pending.Migration
+		if migration.Scope != pending.Request.Scope || migration.ExpectedGeneration != pending.Request.ExpectedGeneration ||
+			len(migration.AuthenticatedCheckpoint) == 0 || migration.MigrationOperationID == "" {
+			return ErrRecoveryCheckpointConflict
+		}
+		raw, readErr := os.ReadFile(r.path)
+		if readErr != nil || sha256.Sum256(raw) != migration.LegacyArchiveSHA256 {
+			return ErrRecoveryMigrationUntrusted
+		}
+		expectedMigrationID, idErr := activeLedgerMigrationOperationID(migration.Scope, migration.LegacyArchiveSHA256, migration.ExpectedGeneration)
+		if idErr != nil || expectedMigrationID != migration.MigrationOperationID {
+			return ErrRecoveryCheckpointConflict
+		}
 	}
 	expectedRequest, requestErr := NewRecoveryCheckpointRequest(pending.Request.Scope, pending.Request.ExpectedGeneration,
 		pending.Request.PreviousDigest, pending.Request.StateDigest)
@@ -423,24 +457,17 @@ func (r *PairingRecovery) MigrateLegacyActiveLedger(ctx context.Context, authent
 		return err
 	}
 	archiveDigest := sha256.Sum256(raw)
-	operationMaterial, err := json.Marshal(struct {
-		Domain     string `json:"domain"`
-		Scope      string `json:"scope"`
-		Snapshot   string `json:"snapshot"`
-		Generation uint64 `json:"generation"`
-	}{Domain: "wedecent-pairing-active-ledger-migration-v1", Scope: scope,
-		Snapshot: hex.EncodeToString(archiveDigest[:]), Generation: head.Generation})
+	operationID, err := activeLedgerMigrationOperationID(scope, archiveDigest, head.Generation)
 	if err != nil {
 		return err
 	}
-	operationDigest := sha256.Sum256(operationMaterial)
 	request, err := NewRecoveryCheckpointRequest(scope, head.Generation, head.StateDigest, stateDigest)
 	if err != nil {
 		return err
 	}
 	migration := LegacyRecoveryMigrationRequest{Scope: scope, LegacyArchiveSHA256: archiveDigest,
 		ExpectedGeneration: head.Generation, AuthenticatedCheckpoint: append([]byte(nil), authenticatedCheckpoint...),
-		MigrationOperationID: hex.EncodeToString(operationDigest[:])}
+		MigrationOperationID: operationID}
 	if err := r.writeActiveLedgerPending(pairingOutcomeSnapshotPending{
 		Unsigned: unsigned, Request: request, Migration: &migration,
 	}); err != nil {
