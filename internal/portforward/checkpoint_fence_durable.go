@@ -726,6 +726,7 @@ func newCheckpointFenceWitnessScope() *checkpointFenceWitnessScopeState {
 }
 
 func cloneCheckpointFenceToken(token CheckpointFenceToken) CheckpointFenceToken {
+	token.AuthorizationProof = append([]byte(nil), token.AuthorizationProof...)
 	token.Participants = cloneCheckpointEndpoints(token.Participants)
 	token.WitnessIDs = append([]string(nil), token.WitnessIDs...)
 	token.Signature = append([]byte(nil), token.Signature...)
