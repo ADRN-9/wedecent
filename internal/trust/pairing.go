@@ -175,7 +175,18 @@ func RotatePairingSecret(dir string) (string, error) {
 	if recordErr != nil && !errors.Is(recordErr, os.ErrNotExist) { return "", recordErr }
 	if recordErr == nil {
 		if oldHash != "" && oldRecord.SecretSHA256 != oldHash { return "", fmt.Errorf("%w: credential hash and metadata disagree", ErrPairingStateUnsafe) }
-		if oldHash == "" && !oldRecord.Consumed { return "", fmt.Errorf("%w: active credential metadata has no active hash", ErrPairingStateUnsafe) }
+		if oldHash == "" && !oldRecord.Consumed {
+			legacyTombstone, readErr := os.ReadFile(path)
+			if readErr != nil || string(legacyTombstone) != consumedPairingHash+"\n" {
+				return "", fmt.Errorf("%w: active credential metadata has no matching hash", ErrPairingStateUnsafe)
+			}
+			// Recover a crash after the durable hash tombstone but before the
+			// credential metadata's consumed marker was synchronized.
+			oldRecord.Consumed = true
+			if err := writePairingCredential(dir, oldRecord); err != nil {
+				return "", fmt.Errorf("%w: reconcile interrupted credential consumption: %v", ErrPairingStateUnsafe, err)
+			}
+		}
 		previousGeneration = oldRecord.Generation
 	} else if hashErr == nil || errors.Is(hashErr, ErrPairingSecretInvalid) {
 		if _, statErr := os.Lstat(path); statErr == nil { previousGeneration = 1 }
