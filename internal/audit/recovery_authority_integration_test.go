@@ -19,6 +19,7 @@ type testIndependentRecoveryAuthority struct {
 	trust          RecoveryAuthorityTrust
 	witnessPrivate map[string]ed25519.PrivateKey
 	head           RecoveryCheckpoint
+	heads          map[string]RecoveryCheckpoint
 	loseNextCommit bool
 }
 
@@ -29,7 +30,9 @@ func newTestIndependentRecoveryAuthority(t *testing.T) *testIndependentRecoveryA
 		t.Fatal(err)
 	}
 	a := &testIndependentRecoveryAuthority{primaryPublic: primaryPublic, primaryPrivate: primaryPrivate,
-		witnessPrivate: make(map[string]ed25519.PrivateKey), head: RecoveryCheckpoint{Scope: "pairing-recovery/test-installation"}}
+		witnessPrivate: make(map[string]ed25519.PrivateKey), head: RecoveryCheckpoint{Scope: "pairing-recovery/test-installation"},
+		heads: make(map[string]RecoveryCheckpoint)}
+	a.heads[a.head.Scope] = a.head
 	a.trust = RecoveryAuthorityTrust{PrimaryKey: primaryPublic, WitnessKeys: make(map[string]ed25519.PublicKey), Quorum: 2}
 	for _, id := range []string{"witness-a", "witness-b", "witness-c"} {
 		publicKey, privateKey, keyErr := ed25519.GenerateKey(rand.Reader)
@@ -56,20 +59,21 @@ func (a *testIndependentRecoveryAuthority) VerifyArchive(_ context.Context, keyI
 }
 
 func (a *testIndependentRecoveryAuthority) LoadCheckpoint(_ context.Context, scope string) (RecoveryCheckpoint, error) {
-	if a.head.Scope != scope {
-		return RecoveryCheckpoint{}, ErrRecoveryCheckpointStale
+	if checkpoint, ok := a.heads[scope]; ok {
+		return checkpoint, nil
 	}
-	return a.head, nil
+	return RecoveryCheckpoint{Scope: scope}, nil
 }
 
 func (a *testIndependentRecoveryAuthority) CommitCheckpoint(_ context.Context, request RecoveryCheckpointRequest) (RecoveryCheckpoint, error) {
-	if request.Scope != a.head.Scope {
-		return RecoveryCheckpoint{}, ErrRecoveryCheckpointConflict
+	head, err := a.LoadCheckpoint(context.Background(), request.Scope)
+	if err != nil {
+		return RecoveryCheckpoint{}, err
 	}
-	if request.OperationID == a.head.OperationID && request.StateDigest == a.head.StateDigest {
-		return a.head, nil
+	if request.OperationID == head.OperationID && request.StateDigest == head.StateDigest {
+		return head, nil
 	}
-	if request.ExpectedGeneration != a.head.Generation || request.PreviousDigest != a.head.StateDigest {
+	if request.ExpectedGeneration != head.Generation || request.PreviousDigest != head.StateDigest {
 		return RecoveryCheckpoint{}, ErrRecoveryCheckpointStale
 	}
 	checkpoint := RecoveryCheckpoint{Scope: request.Scope, Generation: request.Generation,
@@ -84,8 +88,11 @@ func (a *testIndependentRecoveryAuthority) CommitCheckpoint(_ context.Context, r
 	for id, privateKey := range a.witnessPrivate {
 		checkpoint.Witnesses = append(checkpoint.Witnesses, RecoveryCheckpointWitness{ID: id, Signature: ed25519.Sign(privateKey, message)})
 	}
-	a.head = checkpoint
-	if a.loseNextCommit {
+	a.heads[request.Scope] = checkpoint
+	if request.Scope == a.head.Scope {
+		a.head = checkpoint
+	}
+	if request.Scope == a.head.Scope && a.loseNextCommit {
 		a.loseNextCommit = false
 		return RecoveryCheckpoint{}, errors.New("simulated lost commit response")
 	}
@@ -104,7 +111,8 @@ func (a *testIndependentRecoveryAuthority) MigrateLegacyArchive(_ context.Contex
 	var proof struct {
 		StateDigest string `json:"state_digest"`
 	}
-	if migration.Scope != a.head.Scope || migration.MigrationOperationID == "" ||
+	head, _ := a.LoadCheckpoint(context.Background(), migration.Scope)
+	if migration.MigrationOperationID == "" ||
 		len(migration.AuthenticatedCheckpoint) == 0 || json.Unmarshal(migration.AuthenticatedCheckpoint, &proof) != nil {
 		return RecoveryCheckpoint{}, ErrRecoveryMigrationUntrusted
 	}
@@ -114,13 +122,13 @@ func (a *testIndependentRecoveryAuthority) MigrateLegacyArchive(_ context.Contex
 	}
 	var stateDigest [sha256.Size]byte
 	copy(stateDigest[:], digestBytes)
-	if a.head.Generation == migration.ExpectedGeneration+1 && a.head.StateDigest == stateDigest {
-		return a.head, nil
+	if head.Generation == migration.ExpectedGeneration+1 && head.StateDigest == stateDigest {
+		return head, nil
 	}
-	if a.head.Generation != migration.ExpectedGeneration {
+	if head.Generation != migration.ExpectedGeneration {
 		return RecoveryCheckpoint{}, ErrRecoveryCheckpointStale
 	}
-	request, err := NewRecoveryCheckpointRequest(migration.Scope, migration.ExpectedGeneration, a.head.StateDigest, stateDigest)
+	request, err := NewRecoveryCheckpointRequest(migration.Scope, migration.ExpectedGeneration, head.StateDigest, stateDigest)
 	if err != nil {
 		return RecoveryCheckpoint{}, err
 	}
