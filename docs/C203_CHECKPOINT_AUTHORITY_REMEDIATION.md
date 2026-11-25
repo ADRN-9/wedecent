@@ -16,7 +16,7 @@ The wrappers require `auth.uid() = checkpoint_operations.actor_id` (or the actor
 - `sub = <authenticated actor UUID>`
 - `exp - iat <= 300 seconds`
 
-The Go adapter validates the role, actor, algorithm marker, and short lifetime. Supabase/PostgREST validates the JWT signature before setting the role and claims. The token source is called for every RPC so credentials can rotate. The JWT signing key must exist only on the dedicated trusted authority host; it must not be present in general Edge Functions, Local Core, desktop binaries, or installers. Reusing the shared service-role JWT is explicitly unsupported.
+The token source derives `sub` from its authenticated session; it receives no actor-ID parameter. The adapter binds that subject as the operation actor and validates the role, subject, algorithm marker, and short lifetime. Supabase/PostgREST validates the JWT signature before setting the role and claims. The token source is called for every RPC so credentials can rotate. The JWT signing key must exist only on the dedicated trusted authority host; it must not be present in general Edge Functions, Local Core, desktop binaries, or installers. Reusing the shared service-role JWT is explicitly unsupported.
 
 ## Database cryptographic boundary
 
