@@ -757,19 +757,14 @@ if ($metadata) {
 }
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
 if (-not $service) {
-    if ($metadata -and -not $metadataTrusted) {
-        throw 'Installer metadata exists but is not ACL-authenticated; refusing a fresh identity over potentially existing state.'
-    }
-    if ($metadataTrusted -and -not [string]::IsNullOrWhiteSpace([string]$metadata.state_dir)) {
-        $recordedStateDir = [IO.Path]::GetFullPath([string]$metadata.state_dir)
-        if (-not [string]::Equals($recordedStateDir.TrimEnd('\'), ([IO.Path]::GetFullPath($StateDir)).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase) -and
-            (Test-DirectoryExistsStrict -Path $recordedStateDir)) {
-            throw "Recorded service state exists at '$recordedStateDir'; refusing to create a replacement identity at '$StateDir'. Complete an identity-preserving migration first."
+    if ($metadata) {
+        if (-not $metadataTrusted) {
+            throw 'Installer metadata exists but is not ACL-authenticated; refusing a fresh identity over potentially existing state.'
         }
+        throw 'Authenticated installer metadata exists but the service is absent; refusing fresh identity creation until the existing installation state is recovered or explicitly retired.'
     }
     $legacyDefaultStateDir = Join-Path $env:ProgramData 'WeDecent\agent'
-    if (-not [string]::Equals(([IO.Path]::GetFullPath($legacyDefaultStateDir)).TrimEnd('\'), ([IO.Path]::GetFullPath($StateDir)).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase) -and
-        (Test-DirectoryExistsStrict -Path $legacyDefaultStateDir)) {
+    if (Test-DirectoryExistsStrict -Path $legacyDefaultStateDir) {
         throw 'Legacy ProgramData service state exists; refusing to create a replacement identity at the Program Files location.'
     }
 }
