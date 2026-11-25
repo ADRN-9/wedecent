@@ -186,7 +186,7 @@ foreach ($faultPoint in @(
 }
 $migrationRoot = Join-Path $env:ProgramData ('WeDecentMigrationTest-' + [Guid]::NewGuid().ToString('N'))
 $sourceState = Join-Path $migrationRoot 'source'
-$stageState = Join-Path $migrationRoot 'stage'
+$stageState = Join-Path $migrationRoot '.wedecent-migration-test'
 $journalPath = Join-Path $migrationRoot 'migration.json'
 New-Item -ItemType Directory -Path $migrationRoot -Force | Out-Null
 $serviceSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
@@ -215,6 +215,13 @@ try {
         source = $sourceState
         destination = (Join-Path $migrationRoot 'destination')
         staging = $stageState
+        service_name = 'WeDecentMigrationTest'
+        service_sid = $serviceSid
+        service_was_running = $false
+        agent_path = $agentPath
+        metadata_path = (Join-Path $migrationRoot 'installer.json')
+        journal_path = $journalPath
+        original_metadata_json = (ConvertTo-Json -InputObject ([ordered]@{ schema = 1; product = 'WeDecent'; state_dir = $sourceState }))
         original_service_path = 'synthetic-original-service-command'
         updated_service_path = 'synthetic-updated-service-command'
         source_manifest_sha256 = $copy.SourceManifestSHA256
