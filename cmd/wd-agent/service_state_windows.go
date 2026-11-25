@@ -312,6 +312,7 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 		"DC": 0x00000040,
 		"DE": windows.DELETE,
 		"SD": windows.DELETE,
+		"DT": windows.DELETE,
 		"WD": windows.WRITE_DAC,
 		"WO": windows.WRITE_OWNER,
 		"FR": 0,
