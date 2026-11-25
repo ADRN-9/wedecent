@@ -427,6 +427,14 @@ func (p *FileCheckpointFencePrimary) tokenForRequest(request CheckpointFenceRequ
 	if err != nil {
 		return CheckpointFenceToken{}, err
 	}
+	var proofIssuedAt, proofExpiresAt int64
+	if request.Action == CheckpointFenceRevoke {
+		envelope, decodeErr := decodeCheckpointRevocationAuthorizationProof(request.AuthorizationProof)
+		if decodeErr != nil || sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 {
+			return CheckpointFenceToken{}, ErrCheckpointIntegrity
+		}
+		proofIssuedAt, proofExpiresAt = envelope.IssuedAtUnixMS, envelope.ExpiresAtUnixMS
+	}
 	token := CheckpointFenceToken{
 		Version: version, Scope: request.Scope,
 		Participants:            cloneCheckpointEndpoints(request.Participants),
@@ -435,6 +443,8 @@ func (p *FileCheckpointFencePrimary) tokenForRequest(request CheckpointFenceRequ
 		Action: request.Action, OperationID: request.OperationID,
 		RequestSHA256: request.RequestSHA256, AuthorizationSHA256: request.AuthorizationSHA256,
 		AuthorizationProof: append([]byte(nil), request.AuthorizationProof...),
+		AuthorizationProofIssuedAtUnixMS: proofIssuedAt,
+		AuthorizationProofExpiresAtUnixMS: proofExpiresAt,
 		PrimaryHeadGeneration: request.PrimaryHeadGeneration, PrimaryHeadSHA256: request.PrimaryHeadSHA256,
 		PreviousFenceSHA256: request.PreviousFenceSHA256,
 		WitnessSetVersion:   p.witnessSetVersion, WitnessIDs: append([]string(nil), p.witnessIDs...),
