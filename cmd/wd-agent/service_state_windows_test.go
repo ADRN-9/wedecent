@@ -4,6 +4,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -460,6 +461,10 @@ func TestWindowsServiceStateDefaultLocationUsesProtectedProgramFilesAncestors(t 
 	programData := strings.TrimSpace(os.Getenv("ProgramData"))
 	if programData == "" {
 		programData = `C:\ProgramData`
+	}
+	expectedDefault := filepath.Join(programFiles, "WeDecent", "data", "agent")
+	if filepath.Clean(defaultServiceStateDir()) != filepath.Clean(expectedDefault) {
+		t.Fatalf("default service state path = %q, want %q", defaultServiceStateDir(), expectedDefault)
 	}
 	active, err := activeWindowsSID()
 	if err != nil {
