@@ -277,3 +277,110 @@ func TestSlotSerializesCompleteProtocolWrites(t *testing.T) {
 		t.Fatalf("maximum concurrent connection writes = %d, want 1", maximum)
 	}
 }
+
+
+type gatedReadConn struct {
+	net.Conn
+	entered       chan struct{}
+	release       chan struct{}
+	deadlineSet   chan struct{}
+	deadlineOnce  sync.Once
+	readOnce      sync.Once
+}
+
+func (c *gatedReadConn) Read(p []byte) (int, error) {
+	c.readOnce.Do(func() { close(c.entered) })
+	<-c.release
+	p[0] = 'x'
+	return 1, nil
+}
+
+func (c *gatedReadConn) SetReadDeadline(time.Time) error {
+	c.deadlineOnce.Do(func() { close(c.deadlineSet) })
+	return nil
+}
+
+func TestDisconnectWatcherRejectsBytesRacingWithHandoff(t *testing.T) {
+	server, peer := net.Pipe()
+	defer peer.Close()
+	conn := &gatedReadConn{
+		Conn: server, entered: make(chan struct{}), release: make(chan struct{}),
+		deadlineSet: make(chan struct{}),
+	}
+	broker := NewBroker(1, time.Minute)
+	slot, err := broker.Reserve("device", conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.WatchDisconnect("device", slot)
+	select {
+	case <-conn.entered:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect watcher did not enter Read")
+	}
+	stopped := make(chan bool, 1)
+	go func() { stopped <- slot.stopDisconnectWatch() }()
+	select {
+	case <-conn.deadlineSet:
+	case <-time.After(time.Second):
+		t.Fatal("handoff did not interrupt watcher read")
+	}
+	close(conn.release)
+	select {
+	case violation := <-stopped:
+		if !violation {
+			t.Fatal("handoff accepted a byte consumed by the disconnect watcher")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("disconnect watcher did not terminate")
+	}
+}
+
+func TestDisconnectImmediatelyBeforeActivationIsRejected(t *testing.T) {
+	broker := NewBroker(1, time.Minute)
+	server, peer := net.Pipe()
+	slot, err := broker.Reserve("device", server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.WatchDisconnect("device", slot)
+	_ = peer.Close()
+	select {
+	case <-slot.done:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect before activation did not remove reservation")
+	}
+	if err := broker.Activate("device", slot); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("activation after disconnect = %v, want ErrNoAgent", err)
+	}
+	if _, err := broker.Take("device"); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("claim after disconnect = %v, want ErrNoAgent", err)
+	}
+}
+
+func TestDisconnectImmediatelyAfterActivationIsRejected(t *testing.T) {
+	broker := NewBroker(1, time.Minute)
+	server, peer := net.Pipe()
+	slot, err := broker.Reserve("device", server)
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.WatchDisconnect("device", slot)
+	select {
+	case <-slot.watchDone:
+		t.Fatal("watcher exited before disconnect")
+	default:
+	}
+	if err := broker.Activate("device", slot); err != nil {
+		t.Fatal(err)
+	}
+	_ = peer.Close()
+	select {
+	case <-slot.done:
+	case <-time.After(time.Second):
+		t.Fatal("disconnect after activation did not remove slot")
+	}
+	if _, err := broker.Take("device"); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("claim after activated disconnect = %v, want ErrNoAgent", err)
+	}
+}
