@@ -147,7 +147,7 @@ func newServerCertificate() (tls.Certificate, []byte, string, error) {
 		SerialNumber: big.NewInt(2),
 		Subject:      pkix.Name{CommonName: "127.0.0.1"},
 		NotBefore:    now.Add(-time.Minute), NotAfter: now.Add(24 * time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
+		KeyUsage:    x509.KeyUsageDigitalSignature,
 		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		IPAddresses: []net.IP{net.ParseIP("127.0.0.1")},
 	}
