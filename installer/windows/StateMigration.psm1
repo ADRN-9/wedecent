@@ -1053,6 +1053,7 @@ function Invoke-WeDecentStateMigration {
         $journal.phase = 'Copied'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Copied' -FaultAt $FaultAt
+        Invoke-WeDecentMigrationFaultPoint -Name 'IdentityVerification' -FaultAt $FaultAt
         $protectedIdentity = Invoke-WeDecentMigrationIdentityProtect -AgentPath $AgentPath -StatePath $staging
         $journal.identity = Assert-WeDecentMigrationProtectedIdentityContinuity -Source $sourceFull -Destination $staging -AgentPath $AgentPath
         if ($journal.identity.DeviceId -cne $protectedIdentity.DeviceId -or
@@ -1072,6 +1073,7 @@ function Invoke-WeDecentStateMigration {
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'StatePublished' -FaultAt $FaultAt
 
+        Invoke-WeDecentMigrationFaultPoint -Name 'SCMTransition' -FaultAt $FaultAt
         Set-WeDecentMigrationServicePath -ServiceName $ServiceName -BinaryPath $updatedPath -ServiceSid $ServiceSid -StartMode ([string]$service.StartMode)
         $journal.phase = 'ServiceReconfigured'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
