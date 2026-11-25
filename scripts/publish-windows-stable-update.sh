@@ -12,6 +12,7 @@ PUBLIC_KEY=''
 DRY_RUN=0
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/scripts/lib/release-trust.sh"
 SIGNER="${WEDECENT_UPDATE_MANIFEST_SIGNER:-}"
 PAIR_PUBLISHER="${WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER:-}"
 
@@ -70,13 +71,27 @@ resolve_hook() {
 
 probe() {
   local url="$1"
-  local status
-  status="$(curl -sS -I --retry 2 -o /dev/null -w '%{http_code}' "$url")" ||
-    die "failed to determine remote object state: $url"
-  case "$status" in
-    200|404) printf '%s\n' "$status" ;;
-    *) die "refusing ambiguous remote object state: HTTP $status for $url" ;;
-  esac
+  local status attempt
+  for attempt in 1 2 3; do
+    if status="$(curl -sS -I --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "$url")"; then
+      case "$status" in
+        200|404)
+          printf '%s\n' "$status"
+          return 0
+          ;;
+        408|425|429|500|502|503|504)
+          ;;
+        *)
+          die "refusing ambiguous remote object state: HTTP $status for $url"
+          ;;
+      esac
+    fi
+    if ((attempt == 3)); then
+      die "failed to determine remote object state after three attempts: $url"
+    fi
+    sleep "$attempt"
+  done
+  die "failed to determine remote object state: $url"
 }
 
 fetch_file() {
@@ -138,12 +153,14 @@ done
 
 [[ "$VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] ||
   die '--version must be canonical stable vMAJOR.MINOR.PATCH'
+wedecent_require_approved_replay_trust || die 'approved replay-authority configuration is required'
+wedecent_require_production_release_context "${VERSION#v}" || die 'stable update publication is not bound to the immutable production tag context'
 [[ "$SEQUENCE" =~ ^[1-9][0-9]*$ ]] || die '--sequence must be a positive integer'
 [[ -n "$PUBLISHED_AT" ]] || die '--published-at is required'
 [[ -n "$PUBLIC_KEY" ]] || die '--public-key is required'
 [[ -f "$PUBLIC_KEY" && ! -L "$PUBLIC_KEY" ]] || die '--public-key must be a regular non-symlink file'
 
-for command in curl sha256sum awk mktemp cmp realpath rm go; do
+for command in curl sha256sum awk mktemp cmp realpath rm sleep go; do
   command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
 done
 
@@ -177,6 +194,8 @@ SIGNATURE="$tmpdir/manifest-v1.sig"
     --out "$MANIFEST" >/dev/null
 )
 
+"$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+  die 'live release tag changed before stable manifest signing'
 "$SIGNER" "$MANIFEST" "$SIGNATURE" || die 'manifest signer failed'
 [[ -f "$SIGNATURE" && ! -L "$SIGNATURE" ]] || die 'signer did not create a regular signature file'
 (
@@ -231,6 +250,8 @@ if ((DRY_RUN == 1)); then
   exit 0
 fi
 
+"$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
+  die 'live release tag changed before stable pair publication'
 "$PAIR_PUBLISHER" \
   "$BUCKET" "$MANIFEST_KEY" "$SIGNATURE_KEY" \
   "$MANIFEST" "$SIGNATURE" \

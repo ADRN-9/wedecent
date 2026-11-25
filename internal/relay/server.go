@@ -96,6 +96,7 @@ func (s *Server) handleRegister(conn net.Conn, challenge string, msg relayproto.
 		_ = conn.Close()
 		return
 	}
+	s.log().Info("relay slot parked", "device_id", msg.DeviceID)
 	select {
 	case <-slot.done:
 		return

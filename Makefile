@@ -1,7 +1,7 @@
 GO ?= go
 BIN_DIR ?= bin
 
-.PHONY: all build test vet smoke smoke-direct smoke-relay release-windows verify-release-windows installer-windows finalize-windows-signed clean
+.PHONY: all build test vet smoke smoke-direct smoke-relay release-windows release-linux release-macos verify-release-windows installer-windows finalize-windows-signed clean
 
 all: test build
 
@@ -27,6 +27,12 @@ smoke-relay:
 
 release-windows:
 	./scripts/build-windows-release.sh
+
+release-linux:
+	./scripts/build-linux-release.sh
+
+release-macos:
+	./scripts/build-macos-release.sh
 
 verify-release-windows:
 	./scripts/verify-windows-release-repro.sh

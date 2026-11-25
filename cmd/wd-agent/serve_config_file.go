@@ -10,32 +10,42 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+
+	"wedecent.com/wedecent/internal/trust"
 )
 
 const maxServeConfigBytes = 64 * 1024
 
 type serveFileConfig struct {
-	StateDir               *string `json:"state"`
-	Name                   *string `json:"name"`
-	ListenAddr             *string `json:"listen"`
-	RFCOMMChannel          *int    `json:"rfcomm_channel"`
-	SerialDevice           *string `json:"serial"`
-	Shell                  *string `json:"shell"`
-	Discover               *bool   `json:"discover"`
-	MaxConnections         *int    `json:"max_connections"`
-	SessionIdleTimeout     *string `json:"session_idle_timeout"`
-	SessionMaxDuration     *string `json:"session_max_duration"`
-	RelayAddr              *string `json:"relay"`
-	WebRelay               *string `json:"web_relay"`
-	RelaySlots             *int    `json:"relay_slots"`
-	RelayCA                *string `json:"relay_ca"`
-	RelayServerName        *string `json:"relay_server_name"`
-	AuthorizationURL       *string `json:"authorization_url"`
-	RouteControlListenAddr *string `json:"route_control_listen"`
-	RouteControlTransport  *string `json:"route_control_transport"`
-	RouteTunnelListenAddr  *string `json:"route_tunnel_listen"`
-	RouteTunnelTransport   *string `json:"route_tunnel_transport"`
-	RouteMaxConnections    *int    `json:"route_max_connections"`
+	StateDir                              *string `json:"state"`
+	Name                                  *string `json:"name"`
+	ListenAddr                            *string `json:"listen"`
+	RFCOMMChannel                         *int    `json:"rfcomm_channel"`
+	SerialDevice                          *string `json:"serial"`
+	Shell                                 *string `json:"shell"`
+	Discover                              *bool   `json:"discover"`
+	MaxConnections                        *int    `json:"max_connections"`
+	SessionIdleTimeout                    *string `json:"session_idle_timeout"`
+	SessionMaxDuration                    *string `json:"session_max_duration"`
+	RelayAddr                             *string `json:"relay"`
+	WebRelay                              *string `json:"web_relay"`
+	RelaySlots                            *int    `json:"relay_slots"`
+	RelayCA                               *string `json:"relay_ca"`
+	RelayServerName                       *string `json:"relay_server_name"`
+	AuthorizationURL                      *string `json:"authorization_url"`
+	RouteControlListenAddr                *string `json:"route_control_listen"`
+	RouteControlTransport                 *string `json:"route_control_transport"`
+	RouteTunnelListenAddr                 *string `json:"route_tunnel_listen"`
+	RouteTunnelTransport                  *string `json:"route_tunnel_transport"`
+	RouteMaxConnections                   *int    `json:"route_max_connections"`
+	PortForwardAuthorizationPublicKey     *string `json:"port_forward_authorization_public_key"`
+	PortForwardReplayURL                  *string `json:"port_forward_replay_url"`
+	PortForwardReplayAPIKey               *string `json:"port_forward_replay_api_key"`
+	PortForwardAllowedPorts               *string `json:"port_forward_allowed_ports"`
+	PortForwardAllowedPrivateCIDRs        *string `json:"port_forward_allowed_private_cidrs"`
+	PortForwardAllowPublic                *bool   `json:"port_forward_allow_public"`
+	PortForwardMaxConnections             *int    `json:"port_forward_max_connections"`
+	PortForwardAllowLegacyReplayMigration *bool   `json:"port_forward_allow_legacy_replay_migration"`
 }
 
 func init() {
@@ -130,7 +140,11 @@ func loadServeConfigArgs(path string) ([]string, error) {
 	if info.Size() <= 0 || info.Size() > maxServeConfigBytes {
 		return nil, fmt.Errorf("%q must contain between 1 byte and %d bytes", path, maxServeConfigBytes)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm()&0o022 != 0 {
+	if runtime.GOOS == "windows" {
+		if err := trust.VerifyPairingStatePath(path); err != nil {
+			return nil, fmt.Errorf("%q has unsafe Windows owner or ACL: %w", path, err)
+		}
+	} else if info.Mode().Perm()&0o022 != 0 {
 		return nil, fmt.Errorf("%q must not be group- or world-writable", path)
 	}
 
@@ -139,6 +153,11 @@ func loadServeConfigArgs(path string) ([]string, error) {
 		return nil, fmt.Errorf("open %q: %w", path, err)
 	}
 	defer f.Close()
+	opened, err := f.Stat()
+	current, pathErr := os.Lstat(path)
+	if err != nil || pathErr != nil || !os.SameFile(info, opened) || !os.SameFile(opened, current) {
+		return nil, fmt.Errorf("%q changed during secure open", path)
+	}
 
 	dec := json.NewDecoder(io.LimitReader(f, maxServeConfigBytes+1))
 	dec.DisallowUnknownFields()
@@ -157,7 +176,7 @@ func loadServeConfigArgs(path string) ([]string, error) {
 }
 
 func (cfg serveFileConfig) flagArgs() []string {
-	args := make([]string, 0, 21)
+	args := make([]string, 0, 26)
 	addString := func(name string, value *string) {
 		if value != nil {
 			args = append(args, "--"+name+"="+*value)
@@ -195,5 +214,13 @@ func (cfg serveFileConfig) flagArgs() []string {
 	addString("route-tunnel-listen", cfg.RouteTunnelListenAddr)
 	addString("route-tunnel-transport", cfg.RouteTunnelTransport)
 	addInt("route-max-connections", cfg.RouteMaxConnections)
+	addString("port-forward-authorization-public-key", cfg.PortForwardAuthorizationPublicKey)
+	addString("port-forward-replay-url", cfg.PortForwardReplayURL)
+	addString("port-forward-replay-api-key", cfg.PortForwardReplayAPIKey)
+	addString("port-forward-allowed-ports", cfg.PortForwardAllowedPorts)
+	addString("port-forward-allowed-private-cidrs", cfg.PortForwardAllowedPrivateCIDRs)
+	addBool("port-forward-allow-public", cfg.PortForwardAllowPublic)
+	addInt("port-forward-max-connections", cfg.PortForwardMaxConnections)
+	addBool("port-forward-allow-legacy-replay-migration", cfg.PortForwardAllowLegacyReplayMigration)
 	return args
 }

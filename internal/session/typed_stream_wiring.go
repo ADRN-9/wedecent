@@ -58,7 +58,8 @@ func isTypedTerminalFrame(frameType protocol.Type) bool {
 		protocol.TypeStreamWindowUpdate,
 		protocol.TypeStreamResize,
 		protocol.TypeStreamClose,
-		protocol.TypeStreamError:
+		protocol.TypeStreamError,
+		protocol.TypeStreamHalfClose:
 		return true
 	default:
 		return false

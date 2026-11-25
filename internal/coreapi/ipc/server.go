@@ -32,31 +32,37 @@ const (
 	ErrorAccountFailed                = "account_operation_failed"
 	ErrorRouterUnavailable            = "router_unavailable"
 	ErrorRouterFailed                 = "router_operation_failed"
+	ErrorPortForwardUnavailable       = "port_forward_unavailable"
+	ErrorPortForwardLimit             = "port_forward_limit"
+	ErrorPortForwardNotFound          = "port_forward_not_found"
+	ErrorPortForwardFailed            = "port_forward_failed"
 	ErrorInternal                     = "internal_error"
 )
 
 type Services struct {
-	Status       v1.StatusService
-	Devices      v1.DeviceService
-	Account      v1.AccountService
-	Connections  v1.ConnectionService
-	Terminal     v1.TerminalService
-	FileTransfer v1.FileTransferService
-	Transports   v1.TransportService
-	Routes       v1.RouteService
-	Router       v1.RouterService
+	Status         v1.StatusService
+	Devices        v1.DeviceService
+	Account        v1.AccountService
+	Connections    v1.ConnectionService
+	Terminal       v1.TerminalService
+	FileTransfer   v1.FileTransferService
+	Transports     v1.TransportService
+	Routes         v1.RouteService
+	Router         v1.RouterService
+	PortForwarding v1.PortForwardService
 }
 
 type Server struct {
-	status      v1.StatusService
-	devices     v1.DeviceService
-	account     v1.AccountService
-	connections v1.ConnectionService
-	terminal    v1.TerminalService
-	files       v1.FileTransferService
-	transports  v1.TransportService
-	routes      v1.RouteService
-	router      v1.RouterService
+	status         v1.StatusService
+	devices        v1.DeviceService
+	account        v1.AccountService
+	connections    v1.ConnectionService
+	terminal       v1.TerminalService
+	files          v1.FileTransferService
+	transports     v1.TransportService
+	routes         v1.RouteService
+	router         v1.RouterService
+	portForwarding v1.PortForwardService
 }
 
 func NewServer(status v1.StatusService, devices v1.DeviceService) (*Server, error) {
@@ -72,15 +78,16 @@ func NewServerWithServices(services Services) (*Server, error) {
 		return nil, errors.New("coreapi ipc: status and device services are required")
 	}
 	return &Server{
-		status:      services.Status,
-		devices:     services.Devices,
-		account:     services.Account,
-		connections: services.Connections,
-		terminal:    services.Terminal,
-		files:       services.FileTransfer,
-		transports:  services.Transports,
-		routes:      services.Routes,
-		router:      services.Router,
+		status:         services.Status,
+		devices:        services.Devices,
+		account:        services.Account,
+		connections:    services.Connections,
+		terminal:       services.Terminal,
+		files:          services.FileTransfer,
+		transports:     services.Transports,
+		routes:         services.Routes,
+		router:         services.Router,
+		portForwarding: services.PortForwarding,
 	}, nil
 }
 
@@ -121,6 +128,9 @@ func (s *Server) handle(ctx context.Context, req Request) Response {
 	}
 	if fileResponse, handled := s.handleFileTransfer(ctx, req, response); handled {
 		return fileResponse
+	}
+	if forwardResponse, handled := s.handlePortForward(ctx, req, response); handled {
+		return forwardResponse
 	}
 
 	var result any
@@ -321,6 +331,16 @@ func (s *Server) finish(response Response, result any, err error) Response {
 			return errorResponse(response, ErrorRouterUnavailable, "router service is unavailable")
 		case errors.Is(err, coreapi.ErrRouterOperation):
 			return errorResponse(response, ErrorRouterFailed, "router operation failed")
+		case errors.Is(err, coreapi.ErrInvalidPortForwardRequest):
+			return errorResponse(response, ErrorInvalidParams, "invalid port forwarding request")
+		case errors.Is(err, coreapi.ErrPortForwardUnavailable):
+			return errorResponse(response, ErrorPortForwardUnavailable, "port forwarding is unavailable")
+		case errors.Is(err, coreapi.ErrPortForwardLimit):
+			return errorResponse(response, ErrorPortForwardLimit, "port forwarding limit reached")
+		case errors.Is(err, coreapi.ErrPortForwardNotFound):
+			return errorResponse(response, ErrorPortForwardNotFound, "port forwarding not found")
+		case errors.Is(err, coreapi.ErrPortForwardOperation):
+			return errorResponse(response, ErrorPortForwardFailed, "port forwarding operation failed")
 		default:
 			return errorResponse(response, ErrorInternal, "internal error")
 		}
