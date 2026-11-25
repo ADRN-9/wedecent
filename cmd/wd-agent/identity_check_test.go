@@ -115,7 +115,6 @@ func TestLoadIdentityForCheckRejectsMissingCertificateWithoutMutation(t *testing
 	}
 }
 
-
 func TestLoadIdentityForCheckRejectsInvalidMaterialWithoutMutation(t *testing.T) {
 	tests := []struct {
 		name   string
