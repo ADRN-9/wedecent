@@ -295,3 +295,45 @@ func TestPairingRecoveryMigrationRejectsForgedStateDigestProof(t *testing.T) {
 		t.Fatalf("forged migration proof changed the local archive: %+v %v", stillLegacy, err)
 	}
 }
+
+
+func TestPairingRecoveryAuthorityRejectsCompleteLocalSnapshotRollback(t *testing.T) {
+	dir := recoveryTestDir(t)
+	authority := newTestIndependentRecoveryAuthority(t)
+	recovery, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := "ffffffffffffffffffffffffffffffff"
+	if err := recovery.Begin(testRecoveryRecord(first)); err != nil {
+		t.Fatal(err)
+	}
+	resolveAndAcknowledgePairing(t, dir, recovery, first, PairingOutcomeSuccess)
+	archivePath := filepath.Join(dir, pairingArchiveFileName)
+	snapshotPath := filepath.Join(dir, PairingOutcomeFileName)
+	oldArchive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldSnapshot, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second := "99999999999999999999999999999999"
+	if err := recovery.Begin(testRecoveryRecord(second)); err != nil {
+		t.Fatal(err)
+	}
+	resolveAndAcknowledgePairing(t, dir, recovery, second, PairingOutcomeSuccess)
+	if authority.head.Generation != 2 {
+		t.Fatalf("expected two independent checkpoints, got generation %d", authority.head.Generation)
+	}
+	if err := os.WriteFile(archivePath, oldArchive, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(snapshotPath, oldSnapshot, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenPairingRecoveryWithAuthority(dir, authority.head.Scope, authority, authority.trust); !errors.Is(err, ErrRecoveryCheckpointStale) {
+		t.Fatalf("restored complete local snapshot overrode newer independent head: %v", err)
+	}
+}
