@@ -334,6 +334,22 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
 }
     Write-Host 'Migration coordinator durable recovery PASS'
 
+$canonicalRoot = Get-WeDecentMigrationCanonicalPath -Path 'C:\\'
+if ($canonicalRoot -cne 'C:\\') { throw "Drive-root canonicalization changed: $canonicalRoot" }
+$normalized = Get-WeDecentMigrationCanonicalPath -Path 'C:\\ProgramData\\WeDecent\\legacy\\..\\agent\\'
+if ($normalized -cne 'C:\\ProgramData\\WeDecent\\agent') { throw "Windows dot-segment normalization failed: $normalized" }
+foreach ($pair in @(
+    @('C:\\ProgramData\\WeDecent', 'c:\\programdata\\wedecent\\agent'),
+    @('C:\\ProgramData\\WeDecent\\agent', 'C:\\ProgramData\\WeDecent')
+)) {
+    $rejected = $false
+    try { [void](Assert-WeDecentMigrationPathsDisjoint -Paths $pair) }
+    catch { $rejected = $_.Exception.Message -like '*overlap or alias*'; if (-not $rejected) { throw } }
+    if (-not $rejected) { throw "Migration path overlap was accepted: $($pair -join ' <> ')" }
+}
+[void](Assert-WeDecentMigrationPathsDisjoint -Paths @('C:\\ProgramData\\WeDecent\\agent', 'C:\\Program Files\\WeDecent\\data\\agent'))
+Write-Host 'Migration coordinator Windows path normalization and overlap validators PASS'
+
 $pathFixture = New-MigrationFixture
 try {
     $overlapDestination = Join-Path $pathFixture.Source 'nested/destination'
