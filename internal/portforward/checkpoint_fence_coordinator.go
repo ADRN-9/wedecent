@@ -7,7 +7,6 @@ import (
 	"crypto/sha256"
 	"errors"
 	"sort"
-	"time"
 )
 
 type CheckpointFenceWitnessClient struct {
