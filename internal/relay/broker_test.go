@@ -112,3 +112,48 @@ func TestBrokerRemoveReservedSlotSignalsAndCloses(t *testing.T) {
 		t.Fatal("removed reservation left peer connection open")
 	}
 }
+
+
+func TestBrokerConcurrentParkAndTake(t *testing.T) {
+	broker := NewBroker(32, time.Minute)
+	const workers = 32
+	peers := make([]net.Conn, workers)
+	for i := range workers {
+		server, client := net.Pipe()
+		peers[i] = client
+		defer client.Close()
+		slot, err := broker.Reserve("device", server)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := broker.Activate("device", slot); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	claims := 0
+	wg.Add(workers)
+	start := make(chan struct{})
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := broker.Take("device"); err == nil {
+				mu.Lock()
+				claims++
+				mu.Unlock()
+			} else {
+				t.Errorf("Take after concurrent Park = %v", err)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if claims != workers {
+		t.Fatalf("successful claims = %d, want %d", claims, workers)
+	}
+	for _, peer := range peers {
+		_ = peer.Close()
+	}
+}
