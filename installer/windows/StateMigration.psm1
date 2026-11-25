@@ -996,6 +996,77 @@ function Get-WeDecentMigrationUpdatedServicePath {
     )
 }
 
+function Initialize-WeDecentMigrationFileIdentityApi {
+    if ('WeDecentMigrationFileIdentityApi' -as [type]) { return }
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class WeDecentMigrationFileIdentityApi {
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BY_HANDLE_FILE_INFORMATION {
+        public uint FileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME CreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME LastWriteTime;
+        public uint VolumeSerialNumber;
+        public uint FileSizeHigh;
+        public uint FileSizeLow;
+        public uint NumberOfLinks;
+        public uint FileIndexHigh;
+        public uint FileIndexLow;
+    }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    public static extern IntPtr CreateFile(string name, uint access, uint share, IntPtr security,
+        uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool GetFileInformationByHandle(IntPtr handle, out BY_HANDLE_FILE_INFORMATION info);
+    [DllImport("kernel32.dll", SetLastError=true)]
+    public static extern bool CloseHandle(IntPtr handle);
+    public static string GetIdentity(string path) {
+        const uint FILE_READ_ATTRIBUTES=0x80, SHARE_ALL=7, OPEN_EXISTING=3;
+        const uint BACKUP_SEMANTICS=0x02000000, OPEN_REPARSE_POINT=0x00200000;
+        IntPtr h=CreateFile(path, FILE_READ_ATTRIBUTES, SHARE_ALL, IntPtr.Zero, OPEN_EXISTING,
+            BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
+        if (h == new IntPtr(-1)) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        try {
+            BY_HANDLE_FILE_INFORMATION i;
+            if (!GetFileInformationByHandle(h, out i))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+            if ((i.FileAttributes & 0x400) != 0)
+                throw new InvalidOperationException("Migration path contains a reparse point: " + path);
+            return i.VolumeSerialNumber.ToString("X8") + ":" +
+                i.FileIndexHigh.ToString("X8") + i.FileIndexLow.ToString("X8");
+        } finally { CloseHandle(h); }
+    }
+}
+'@ -ErrorAction Stop
+}
+
+function Get-WeDecentMigrationPathObjectChain {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    Initialize-WeDecentMigrationFileIdentityApi
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\')) {
+        throw 'Filesystem identity requires a local drive path.'
+    }
+    $parts = @($full.Substring($root.Length).Split([char[]]@([char]92), [StringSplitOptions]::RemoveEmptyEntries))
+    $chain = [Collections.Generic.List[string]]::new()
+    $walk = $root
+    $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
+    $missing = $false
+    foreach ($part in $parts) {
+        $walk = Join-Path $walk $part
+        if (-not $missing -and (Test-Path -LiteralPath $walk)) {
+            $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
+        } else {
+            $missing = $true
+            $chain.Add('PATH:' + $part.ToUpperInvariant())
+        }
+    }
+    return ,@($chain.ToArray())
+}
+
 function Get-WeDecentMigrationCanonicalPath {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -1067,18 +1138,26 @@ function Assert-WeDecentMigrationPathsDisjoint {
     param([Parameter(Mandatory = $true)][string[]]$Paths)
 
     $canonical = @()
+    $chains = @()
     foreach ($path in $Paths) {
         $value = Get-WeDecentMigrationCanonicalPath -Path $path
-        foreach ($existing in $canonical) {
-            $leftPrefix = $existing.TrimEnd('\') + '\'
-            $rightPrefix = $value.TrimEnd('\') + '\'
-            if ([string]::Equals($existing, $value, [StringComparison]::OrdinalIgnoreCase) -or
-                $existing.StartsWith($rightPrefix, [StringComparison]::OrdinalIgnoreCase) -or
-                $value.StartsWith($leftPrefix, [StringComparison]::OrdinalIgnoreCase)) {
-                throw "Migration paths overlap or alias one another: '$existing' and '$value'."
+        $chain = @(Get-WeDecentMigrationPathObjectChain -Path $value)
+        for ($i = 0; $i -lt $chains.Count; $i++) {
+            $other = $chains[$i]
+            $common = [Math]::Min($chain.Count, $other.Count)
+            $samePrefix = $true
+            for ($j = 0; $j -lt $common; $j++) {
+                if ($chain[$j] -cne $other[$j]) { $samePrefix = $false; break }
+            }
+            $lexicalOverlap = [string]::Equals($canonical[$i], $value, [StringComparison]::OrdinalIgnoreCase) -or
+                $canonical[$i].StartsWith($value.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase) -or
+                $value.StartsWith($canonical[$i].TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)
+            if ($samePrefix -or $lexicalOverlap) {
+                throw "Migration paths overlap or alias one another by filesystem identity: '$($canonical[$i])' and '$value'."
             }
         }
         $canonical += $value
+        $chains += ,$chain
     }
     return $canonical
 }
