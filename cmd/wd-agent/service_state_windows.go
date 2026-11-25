@@ -136,7 +136,11 @@ func requireEmptyWindowsServiceState(dir string) error {
 }
 
 func verifyWindowsServiceStateParent(dir string) error {
-	root, _, err := windowsStatePathComponents(dir)
+	root, components, err := windowsStatePathComponents(dir)
+	if err != nil {
+		return err
+	}
+	current, err := activeWindowsSID()
 	if err != nil {
 		return err
 	}
@@ -153,10 +157,6 @@ func verifyWindowsServiceStateParent(dir string) error {
 	owner, err := windowsServiceOwner(parent)
 	if err != nil {
 		return fmt.Errorf("read service state parent owner: %w", err)
-	}
-	current, err := activeWindowsSID()
-	if err != nil {
-		return err
 	}
 	trustedOwners := []string{
 		"S-1-5-18",
@@ -339,6 +339,30 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 		mask |= value
 	}
 	return mask, nil
+}
+
+
+func verifyWindowsStateAncestorOwners(root string, components []string, installer *windows.SID) error {
+	allowed := map[string]bool{installer.String(): true}
+	for _, sidText := range []string{
+		"S-1-5-18",
+		"S-1-5-32-544",
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+	} {
+		allowed[sidText] = true
+	}
+	path := root
+	for i := 0; i < len(components); i++ {
+		owner, err := windowsServiceOwner(path)
+		if err != nil {
+			return fmt.Errorf("read state ancestor owner %q: %w", path, err)
+		}
+		if !allowed[owner.String()] {
+			return fmt.Errorf("state ancestor %q is owned by untrusted SID %s", path, owner)
+		}
+		path = filepath.Join(path, components[i])
+	}
+	return nil
 }
 
 func verifyWindowsStateForSID(dir string, required *windows.SID) error {
