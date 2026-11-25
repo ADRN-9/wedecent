@@ -1024,7 +1024,7 @@ public static class WeDecentMigrationPathApi {
     }
 
     $walk = $root
-    $relativeParts = $full.Substring($root.Length).Split([char]92, [System.StringSplitOptions]::RemoveEmptyEntries)
+    $relativeParts = $full.Substring($root.Length).Split([char[]]@([char]92), [System.StringSplitOptions]::RemoveEmptyEntries)
     foreach ($part in $relativeParts) {
         $walk = Join-Path $walk $part
         if (Test-Path -LiteralPath $walk) {
