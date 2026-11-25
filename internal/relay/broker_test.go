@@ -469,11 +469,13 @@ func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
 	}
 }
 
-
 func TestBrokerSimultaneousRegistrationActivationAndClaimStress(t *testing.T) {
 	const workers = 48
 	broker := NewBroker(workers, time.Minute)
-	type registration struct { peer net.Conn; slot *slot }
+	type registration struct {
+		peer net.Conn
+		slot *slot
+	}
 	registered := make(chan registration, workers)
 	start := make(chan struct{})
 	var wg sync.WaitGroup
@@ -484,7 +486,12 @@ func TestBrokerSimultaneousRegistrationActivationAndClaimStress(t *testing.T) {
 			peer, agent := net.Pipe()
 			<-start
 			s, err := broker.Reserve("stress-device", agent)
-			if err != nil { _ = peer.Close(); _ = agent.Close(); t.Errorf("Reserve: %v", err); return }
+			if err != nil {
+				_ = peer.Close()
+				_ = agent.Close()
+				t.Errorf("Reserve: %v", err)
+				return
+			}
 			broker.WatchDisconnect("stress-device", s)
 			if err := broker.Activate("stress-device", s); err != nil {
 				broker.Remove("stress-device", s)
@@ -499,8 +506,12 @@ func TestBrokerSimultaneousRegistrationActivationAndClaimStress(t *testing.T) {
 	wg.Wait()
 	close(registered)
 	entries := make([]registration, 0, workers)
-	for entry := range registered { entries = append(entries, entry) }
-	if len(entries) != workers { t.Fatalf("active registrations = %d, want %d", len(entries), workers) }
+	for entry := range registered {
+		entries = append(entries, entry)
+	}
+	if len(entries) != workers {
+		t.Fatalf("active registrations = %d, want %d", len(entries), workers)
+	}
 
 	claims := make(chan *slot, workers)
 	claimErrors := make(chan error, workers)
@@ -509,7 +520,10 @@ func TestBrokerSimultaneousRegistrationActivationAndClaimStress(t *testing.T) {
 		go func() {
 			<-claimStart
 			s, err := broker.Take("stress-device")
-			if err != nil { claimErrors <- err; return }
+			if err != nil {
+				claimErrors <- err
+				return
+			}
 			claims <- s
 		}()
 	}
@@ -518,7 +532,9 @@ func TestBrokerSimultaneousRegistrationActivationAndClaimStress(t *testing.T) {
 	for i := 0; i < workers; i++ {
 		select {
 		case s := <-claims:
-			if claimed[s] { t.Fatal("one registration was claimed more than once") }
+			if claimed[s] {
+				t.Fatal("one registration was claimed more than once")
+			}
 			claimed[s] = true
 		case err := <-claimErrors:
 			t.Fatalf("simultaneous Take failed: %v", err)
@@ -526,8 +542,17 @@ func TestBrokerSimultaneousRegistrationActivationAndClaimStress(t *testing.T) {
 			t.Fatal("simultaneous claims did not complete")
 		}
 	}
-	if len(claimed) != workers { t.Fatalf("unique claims = %d, want %d", len(claimed), workers) }
-	if _, err := broker.Take("stress-device"); !errors.Is(err, ErrNoAgent) { t.Fatalf("extra claim = %v, want ErrNoAgent", err) }
-	for _, entry := range entries { _ = entry.peer.Close() }
-	for s := range claimed { s.finish(); _ = s.conn.Close() }
+	if len(claimed) != workers {
+		t.Fatalf("unique claims = %d, want %d", len(claimed), workers)
+	}
+	if _, err := broker.Take("stress-device"); !errors.Is(err, ErrNoAgent) {
+		t.Fatalf("extra claim = %v, want ErrNoAgent", err)
+	}
+	for _, entry := range entries {
+		_ = entry.peer.Close()
+	}
+	for s := range claimed {
+		s.finish()
+		_ = s.conn.Close()
+	}
 }
