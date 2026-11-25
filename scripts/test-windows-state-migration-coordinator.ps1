@@ -239,8 +239,8 @@ try {
     if ($pending.phase -cne 'RollingBack' -or -not (Test-Path -LiteralPath $pending.staging -PathType Container)) {
         throw 'Partial staging tree was not preserved with its recovery journal.'
     }
-    if (-not [string]::IsNullOrWhiteSpace([string]$pending.source_manifest_sha256)) {
-        throw 'Partial staging test unexpectedly recorded a complete source manifest.'
+    if ([string]::IsNullOrWhiteSpace([string]$pending.source_manifest_sha256) -or [bool]$pending.staging_complete) {
+        throw 'Partial staging journal did not preserve the authenticated source snapshot and incomplete-staging marker.'
     }
     [void](Assert-WeDecentMigrationPartialTreeSafe -Path $pending.staging -ServiceSid $partialStagingRecovery.ServiceSid -InstallerSid $pending.installer_sid)
     $global:WeDecentMigrationMockService.State = 'Stopped'
@@ -333,6 +333,50 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
     Remove-Item -LiteralPath $partialStagingRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
     Write-Host 'Migration coordinator durable recovery PASS'
+
+$pathFixture = New-MigrationFixture
+try {
+    $overlapDestination = Join-Path $pathFixture.Source 'nested/destination'
+    $rejectedOverlap = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $pathFixture.Source -Destination $overlapDestination -AgentPath $agentPath -ServiceName $pathFixture.ServiceName -ServiceSid $pathFixture.ServiceSid -MetadataPath $pathFixture.MetadataPath -JournalPath $pathFixture.Journal | Out-Null
+    } catch {
+        $rejectedOverlap = $_.Exception.Message -like '*overlap or alias*'
+        if (-not $rejectedOverlap) { throw }
+    }
+    if (-not $rejectedOverlap) { throw 'Migration accepted a destination nested beneath its source.' }
+    if (Test-Path -LiteralPath $pathFixture.Journal) { throw 'Path-overlap rejection created a migration journal.' }
+    Write-Host 'Migration coordinator source/destination overlap rejection PASS'
+} finally {
+    Remove-Item -LiteralPath $pathFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$mutatedSource = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $mutatedSource.Source -Destination $mutatedSource.Destination -AgentPath $agentPath -ServiceName $mutatedSource.ServiceName -ServiceSid $mutatedSource.ServiceSid -MetadataPath $mutatedSource.MetadataPath -JournalPath $mutatedSource.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Source mutation fixture did not stop at the pending rollback boundary.' }
+    [IO.File]::WriteAllText((Join-Path $mutatedSource.Source 'nested/policy.json'), '{"schema":1,"policy":"attacker-mutated"}')
+    $rejectedMutation = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $mutatedSource.Journal -AgentPath $agentPath -MetadataPath $mutatedSource.MetadataPath -ServiceName $mutatedSource.ServiceName)
+    } catch {
+        $rejectedMutation = $_.Exception.Message -like '*source manifest changed*'
+        if (-not $rejectedMutation) { throw }
+    }
+    if (-not $rejectedMutation) { throw 'Recovery accepted a mutated original source tree.' }
+    if ($global:WeDecentMigrationMockService.PathName -cne $mutatedSource.OriginalServicePath) { throw 'Recovery changed SCM before authenticating the original source.' }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') { throw 'Recovery restarted the service after source integrity failure.' }
+    Write-Host 'Migration coordinator mutated-source recovery fail-closed PASS'
+} finally {
+    Remove-Item -LiteralPath $mutatedSource.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 } finally {
     Remove-Item -LiteralPath $recovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
