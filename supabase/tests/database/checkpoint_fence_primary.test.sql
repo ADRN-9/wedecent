@@ -15,7 +15,7 @@ create function pg_temp.c197_key_id(p_key bytea) returns text language sql immut
    pg_catalog.replace(pg_catalog.encode(extensions.digest(p_key,'sha256'),'base64'),E'\n',''),
    '+/','-_'
  );
-$;
+$fn$;
 insert into public.checkpoint_fence_primary_trust(key_id,public_key)
 select pg_temp.c197_key_id(public_key),public_key from c197_test_keys where name='primary';
 insert into public.checkpoint_fence_witness_trust(witness_set_version,witness_id,key_id,public_key)
@@ -75,7 +75,7 @@ $$;
 
 create function pg_temp.c197_acks(p_operation_id text) returns jsonb
 language plpgsql volatile
-as $
+as $fn$
 declare
  v_acks jsonb;
  v_ack jsonb;
@@ -102,7 +102,7 @@ begin
  end loop;
  return v_acks;
 end;
-$;
+$fn$;
 
 create function pg_temp.c197_authority_signature(
  p_operation_id text,p_fingerprint bytea,p_token_sha256 bytea,p_acks jsonb
@@ -116,7 +116,7 @@ create function pg_temp.c197_authority_signature(
    ),
    (select secret_key from c197_test_keys where name='primary')
  );
-$;
+$fn$;
 
 select ok(
  not pg_catalog.has_function_privilege('service_role','public.reserve_checkpoint_operation(text,text,uuid,uuid,bytea,jsonb,integer)','EXECUTE')
