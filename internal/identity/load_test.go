@@ -140,3 +140,26 @@ func TestLoadRejectsCertificateFromDifferentIdentityWithoutMutation(t *testing.T
 		t.Fatal("failed Load mutated identity material")
 	}
 }
+
+func TestProtectExistingDoesNotRenewOrReplaceIdentityCertificate(t *testing.T) {
+	dir := t.TempDir()
+	created, err := Ensure(dir, "protect-existing")
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateBefore, err := os.ReadFile(filepath.Join(dir, "identity.crt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	protected, err := ProtectExisting(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	certificateAfter, err := os.ReadFile(filepath.Join(dir, "identity.crt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if protected.ID != created.ID || !stringEqual(certificateBefore, certificateAfter) {
+		t.Fatal("ProtectExisting changed the identity or certificate")
+	}
+}
