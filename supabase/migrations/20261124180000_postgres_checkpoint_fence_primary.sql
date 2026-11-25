@@ -481,7 +481,8 @@ as $$
     'fence_hash', pg_catalog.encode(authority.fence_hash, 'hex'),
     'primary_head_generation', authority.primary_head_generation,
     'primary_head_sha256', pg_catalog.encode(authority.primary_head_hash, 'hex'),
-    'pending_operation_id', coalesce(authority.pending_operation_id, '')
+    'pending_operation_id', coalesce(authority.pending_operation_id, ''),
+    'pending_expires_at', authority.pending_expires_at
  )
  from public.checkpoint_fence_authority as authority
  where authority.organization_id = p_organization_id;
