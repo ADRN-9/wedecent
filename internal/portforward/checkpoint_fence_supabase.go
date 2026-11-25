@@ -373,6 +373,11 @@ func (p *SupabaseCheckpointFencePrimary) CommitFenceWithCheckpointHeads(
 	if err := validateFenceParticipantHeads(heads, token.Scope, token.Participants); err != nil {
 		return err
 	}
+	for _, item := range heads {
+		if err := VerifyCheckpointHead(item.Head, item.Endpoint, p.checkpointHeadKey); err != nil {
+			return err
+		}
+	}
 	headDigest, err := checkpointFenceParticipantHeadDigest(heads)
 	if err != nil || headDigest != token.PrimaryHeadSHA256 {
 		return ErrCheckpointStale
