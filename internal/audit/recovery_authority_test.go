@@ -101,3 +101,72 @@ func TestValidateRecoveryCheckpointRejectsWitnessDisagreement(t *testing.T) {
 		t.Fatalf("witness signature disagreement accepted: %v", err)
 	}
 }
+
+
+func TestRecoveryAuthorityTrustRequiresUniqueKeysAndPrimarySignature(t *testing.T) {
+	previous := sha256.Sum256([]byte("authority-previous"))
+	state := sha256.Sum256([]byte("authority-state"))
+	request, err := NewRecoveryCheckpointRequest("pairing-recovery/device-a", 3, previous, state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	primaryPublic, primaryPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := RecoveryCheckpoint{Scope: request.Scope, Generation: request.Generation,
+		PreviousDigest: request.PreviousDigest, StateDigest: request.StateDigest,
+		OperationID: request.OperationID}
+	primaryDigest := sha256.Sum256(primaryPublic)
+	checkpoint.SignerKeyID = "ed25519:" + hex.EncodeToString(primaryDigest[:])
+	message, err := RecoveryCheckpointSigningBytes(checkpoint)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint.Signature = ed25519.Sign(primaryPrivate, message)
+	trust := RecoveryAuthorityTrust{PrimaryKey: primaryPublic, WitnessKeys: make(map[string]ed25519.PublicKey), Quorum: 2}
+	for _, id := range []string{"witness-a", "witness-b", "witness-c"} {
+		publicKey, privateKey, keyErr := ed25519.GenerateKey(rand.Reader)
+		if keyErr != nil {
+			t.Fatal(keyErr)
+		}
+		trust.WitnessKeys[id] = publicKey
+		checkpoint.Witnesses = append(checkpoint.Witnesses, RecoveryCheckpointWitness{ID: id, Signature: ed25519.Sign(privateKey, message)})
+	}
+	if err := ValidateRecoveryCheckpointWithTrust(request, checkpoint, trust); err != nil {
+		t.Fatalf("valid fully authenticated checkpoint rejected: %v", err)
+	}
+	duplicate := RecoveryAuthorityTrust{PrimaryKey: primaryPublic, WitnessKeys: map[string]ed25519.PublicKey{
+		"witness-a": trust.WitnessKeys["witness-a"],
+		"witness-b": trust.WitnessKeys["witness-a"],
+		"witness-c": trust.WitnessKeys["witness-c"],
+	}, Quorum: 2}
+	if err := duplicate.Validate(); !errors.Is(err, ErrRecoveryCheckpointConflict) {
+		t.Fatalf("duplicate public key under distinct witness IDs accepted: %v", err)
+	}
+	checkpoint.Signature[0] ^= 0xff
+	if err := ValidateRecoveryCheckpointWithTrust(request, checkpoint, trust); !errors.Is(err, ErrRecoveryCheckpointConflict) {
+		t.Fatalf("invalid primary signature accepted by complete validation path: %v", err)
+	}
+}
+
+func TestRecoveryAuthorityTrustRejectsPrimaryWitnessKeyReuse(t *testing.T) {
+	primary, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherA, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherB, _, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trust := RecoveryAuthorityTrust{PrimaryKey: primary, WitnessKeys: map[string]ed25519.PublicKey{
+		"witness-a": primary, "witness-b": otherA, "witness-c": otherB,
+	}, Quorum: 2}
+	if err := trust.Validate(); !errors.Is(err, ErrRecoveryCheckpointConflict) {
+		t.Fatalf("primary key reused as witness key: %v", err)
+	}
+}
