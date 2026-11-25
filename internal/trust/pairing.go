@@ -52,6 +52,7 @@ type pairingCredentialRecord struct {
 	SecretSHA256 string    `json:"secret_sha256"`
 	IssuedAt     time.Time `json:"issued_at"`
 	ExpiresAt    time.Time `json:"expires_at"`
+	LastObservedAt time.Time `json:"last_observed_at,omitempty"`
 	Consumed     bool      `json:"consumed,omitempty"`
 }
 
@@ -219,8 +220,19 @@ func RotatePairingSecret(dir string) (string, error) {
 		return "", fmt.Errorf("%w: credential generation exhausted", ErrPairingStateUnsafe)
 	}
 	now := time.Now().UTC()
+	if recordErr == nil {
+		lastObserved := oldRecord.LastObservedAt
+		if lastObserved.IsZero() { lastObserved = oldRecord.IssuedAt }
+		if now.Add(30 * time.Second).Before(lastObserved) {
+			return "", fmt.Errorf("%w: system clock moved backwards", ErrPairingStateUnsafe)
+		}
+		if now.After(lastObserved) {
+			oldRecord.LastObservedAt = now
+			if err := writePairingCredential(dir, oldRecord); err != nil { return "", fmt.Errorf("%w: persist trusted clock observation: %v", ErrPairingStateUnsafe, err) }
+		}
+	}
 	record := pairingCredentialRecord{Version: pairingCredentialVersion, Generation: previousGeneration + 1,
-		SecretSHA256: HashSecret(secret), IssuedAt: now, ExpiresAt: now.Add(pairingCredentialLifetime)}
+		SecretSHA256: HashSecret(secret), IssuedAt: now, ExpiresAt: now.Add(pairingCredentialLifetime), LastObservedAt: now}
 
 	if err := writePairingHash(path, record.SecretSHA256); err != nil {
 		return "", err
@@ -373,7 +385,7 @@ func loadPairingCredential(dir, hash string, now time.Time) (pairingCredentialRe
 		if expires.After(pairingLegacyMigrationDeadline) {
 			expires = pairingLegacyMigrationDeadline
 		}
-		record = pairingCredentialRecord{Version: pairingCredentialVersion, Generation: 1, SecretSHA256: hash, IssuedAt: now, ExpiresAt: expires}
+		record = pairingCredentialRecord{Version: pairingCredentialVersion, Generation: 1, SecretSHA256: hash, IssuedAt: now, ExpiresAt: expires, LastObservedAt: now}
 		if err := writePairingCredential(dir, record); err != nil {
 			return record, fmt.Errorf("%w: migrate legacy credential: %v", ErrPairingStateUnsafe, err)
 		}
@@ -388,8 +400,19 @@ func loadPairingCredential(dir, hash string, now time.Time) (pairingCredentialRe
 	if record.IssuedAt.After(now.Add(30 * time.Second)) {
 		return record, fmt.Errorf("%w: credential issue time is in the future", ErrPairingStateUnsafe)
 	}
+	lastObserved := record.LastObservedAt
+	if lastObserved.IsZero() { lastObserved = record.IssuedAt }
+	if now.Add(30 * time.Second).Before(lastObserved) {
+		return record, fmt.Errorf("%w: system clock moved backwards", ErrPairingStateUnsafe)
+	}
 	if !now.Before(record.ExpiresAt) {
 		return record, ErrPairingSecretInvalid
+	}
+	if now.After(lastObserved) {
+		record.LastObservedAt = now
+		if err := writePairingCredential(dir, record); err != nil {
+			return record, fmt.Errorf("%w: persist trusted clock observation: %v", ErrPairingStateUnsafe, err)
+		}
 	}
 	return record, nil
 }
