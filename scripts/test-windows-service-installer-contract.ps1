@@ -240,6 +240,8 @@ try {
         staging = $stageState
         service_name = 'WeDecentMigrationTest'
         service_sid = $serviceSid
+        service_start_name = 'WeDecentMigrationTest'
+        service_start_mode = 'Manual'
         service_was_running = $false
         agent_path = $agentPath
         metadata_path = (Join-Path $migrationRoot 'installer.json')
