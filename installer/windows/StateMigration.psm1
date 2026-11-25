@@ -1240,9 +1240,11 @@ function Invoke-WeDecentStateMigration {
     $metadataFull = Get-WeDecentMigrationCanonicalPath -Path $MetadataPath
     $migrationPaths = @($sourceFull, $destinationFull, $staging, $journalFull, $metadataFull)
     [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
-    $identityAnchors = @($sourceFull, $destinationParent, (Split-Path -Parent $JournalPath),
-        (Split-Path -Parent $MetadataPath), $MetadataPath)
+    $directoryAnchors = @($sourceFull, $destinationParent, (Split-Path -Parent $JournalPath),
+        (Split-Path -Parent $MetadataPath))
+    $identityAnchors = @($directoryAnchors + @($MetadataPath))
     $identitySnapshot = Get-WeDecentMigrationIdentitySnapshot -Paths $identityAnchors
+    $directorySnapshot = Get-WeDecentMigrationIdentitySnapshot -Paths $directoryAnchors
     Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
     [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
@@ -1357,6 +1359,8 @@ function Invoke-WeDecentStateMigration {
         Write-WeDecentMigrationMetadata -Path $MetadataPath -StatePath $destinationFull
         Invoke-WeDecentMigrationFaultPoint -Name 'MetadataUpdated' -FaultAt $FaultAt
         if ($journal.service_was_running) {
+            Assert-WeDecentMigrationIdentitySnapshot -Snapshot $directorySnapshot -Paths $directoryAnchors
+            [void](Assert-WeDecentMigrationPathsDisjoint -Paths @($sourceFull, $destinationFull, $journalFull, $metadataFull))
             Assert-WeDecentMigrationRecoverySource -Journal $journal
             Start-Service -Name $ServiceName -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
