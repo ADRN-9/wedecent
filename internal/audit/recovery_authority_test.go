@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"testing"
 )
@@ -26,8 +27,10 @@ func recoveryAuthorityFixture(t *testing.T) (RecoveryCheckpointRequest, Recovery
 	checkpoint := RecoveryCheckpoint{
 		Scope: request.Scope, Generation: request.Generation,
 		PreviousDigest: request.PreviousDigest, StateDigest: request.StateDigest,
-		OperationID: request.OperationID, SignerKeyID: "independent-primary-v1",
+		OperationID: request.OperationID,
 	}
+	primaryDigest := sha256.Sum256(primaryPublic)
+	checkpoint.SignerKeyID = "ed25519:" + hex.EncodeToString(primaryDigest[:])
 	message, err := RecoveryCheckpointSigningBytes(checkpoint)
 	if err != nil {
 		t.Fatal(err)
@@ -44,8 +47,8 @@ func recoveryAuthorityFixture(t *testing.T) (RecoveryCheckpointRequest, Recovery
 			ID: id, Signature: ed25519.Sign(privateKey, message),
 		})
 	}
-	if !ed25519.Verify(primaryPublic, message, checkpoint.Signature) {
-		t.Fatal("fixture primary signature invalid")
+	if err := VerifyRecoveryCheckpointSignature(checkpoint, primaryPublic); err != nil {
+		t.Fatalf("valid pinned primary signature rejected: %v", err)
 	}
 	return request, checkpoint, keys
 }
