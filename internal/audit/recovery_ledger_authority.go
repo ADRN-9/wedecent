@@ -28,7 +28,7 @@ type pairingOutcomeSnapshotUnsigned struct {
 type pairingOutcomeSnapshotPending struct {
 	Unsigned  pairingOutcomeSnapshotUnsigned `json:"unsigned"`
 	Request   RecoveryCheckpointRequest       `json:"request"`
-	Migration *LegacyRecoveryMigrationRequest `json:"migration,omitempty"
+	Migration *LegacyRecoveryMigrationRequest `json:"migration,omitempty"`
 }
 
 func (r *PairingRecovery) activeLedgerScope() string {
