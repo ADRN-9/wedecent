@@ -434,6 +434,9 @@ func (p *FileCheckpointFencePrimary) tokenForRequest(request CheckpointFenceRequ
 			return CheckpointFenceToken{}, ErrCheckpointIntegrity
 		}
 		proofIssuedAt, proofExpiresAt = envelope.IssuedAtUnixMS, envelope.ExpiresAtUnixMS
+		if proofExpiresAt < tokenExpiry {
+			tokenExpiry = proofExpiresAt
+		}
 	}
 	token := CheckpointFenceToken{
 		Version: version, Scope: request.Scope,
