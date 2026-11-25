@@ -139,6 +139,9 @@ func verifyWindowsServiceStateParent(dir string) error {
 	if err != nil {
 		return err
 	}
+	if err := verifyWindowsStateAncestorOwners(root, components, current); err != nil {
+		return fmt.Errorf("verify state ancestor ownership: %w", err)
+	}
 	parent := filepath.Clean(filepath.Dir(dir))
 	if strings.EqualFold(parent, filepath.Clean(root)) {
 		return nil
@@ -208,8 +211,40 @@ func verifyWindowsStateAncestors(root string, components []string, required *win
 	}
 	path := root
 	for i := 0; i < len(components); i++ {
+		owner, err := windowsServiceOwner(path)
+		if err != nil {
+			return fmt.Errorf("read state ancestor owner %q: %w", path, err)
+		}
+		// Ancestor owners are accepted here only because provisioning validates
+		// every owner against the installer/system administrator allowlist.
+		// Replacing an owner later requires WRITE_OWNER, which is rejected below.
+		trusted[owner.String()] = true
 		if err := verifyWindowsStateAncestorDirectory(path, trusted); err != nil {
 			return fmt.Errorf("untrusted state ancestor %q: %w", path, err)
+		}
+		path = filepath.Join(path, components[i])
+	}
+	return nil
+}
+
+
+func verifyWindowsStateAncestorOwners(root string, components []string, installer *windows.SID) error {
+	allowed := map[string]bool{installer.String(): true}
+	for _, sidText := range []string{
+		"S-1-5-18",
+		"S-1-5-32-544",
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
+	} {
+		allowed[sidText] = true
+	}
+	path := root
+	for i := 0; i < len(components); i++ {
+		owner, err := windowsServiceOwner(path)
+		if err != nil {
+			return fmt.Errorf("read state ancestor owner %q: %w", path, err)
+		}
+		if !allowed[owner.String()] {
+			return fmt.Errorf("state ancestor %q is owned by untrusted SID %s", path, owner)
 		}
 		path = filepath.Join(path, components[i])
 	}
