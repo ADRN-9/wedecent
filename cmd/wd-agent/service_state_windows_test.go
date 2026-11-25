@@ -353,6 +353,21 @@ func TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoa
 	}
 }
 
+func TestWindowsSDDLRightsMaskHandlesDirectoryServiceRightsFailClosed(t *testing.T) {
+	if mask, err := windowsSDDLRightsMask("RP"); err != nil || mask != 0 {
+		t.Fatalf("read-property right should be recognized as non-mutating: mask=%#x err=%v", mask, err)
+	}
+	for _, rights := range []string{"CC", "DC", "WP", "SW", "CR", "AS", "MA"} {
+		mask, err := windowsSDDLRightsMask(rights)
+		if err != nil || mask&windowsAncestorMutationRights == 0 {
+			t.Fatalf("directory mutation right %q was not conservatively rejected: mask=%#x err=%v", rights, mask, err)
+		}
+	}
+	if _, err := windowsSDDLRightsMask("ZZ"); err == nil {
+		t.Fatal("unknown SDDL rights token was not rejected")
+	}
+}
+
 func TestServiceStartupRejectsUntrustedAncestorDeleteChild(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "protected-parent")
 	if err := preflightAgentState(parent); err != nil {
