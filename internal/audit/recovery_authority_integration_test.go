@@ -344,7 +344,6 @@ func TestPairingRecoveryAuthorityRejectsCompleteLocalSnapshotRollback(t *testing
 	}
 }
 
-
 func TestActivePairingLedgerRejectsRestoredOlderSnapshot(t *testing.T) {
 	dir := recoveryTestDir(t)
 	authority := newTestIndependentRecoveryAuthority(t)
@@ -396,7 +395,6 @@ func TestActivePairingLedgerRecoversInterruptedLocalPublication(t *testing.T) {
 		t.Fatalf("pending marker was not removed after verified recovery: %v", err)
 	}
 }
-
 
 func TestActivePairingLedgerMigrationRequiresProofAndPreservesSnapshot(t *testing.T) {
 	dir := recoveryTestDir(t)
