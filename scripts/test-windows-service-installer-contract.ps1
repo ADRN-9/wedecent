@@ -199,7 +199,7 @@ foreach ($faultPoint in @(
 $pairedRollbackFault = $false
 try { Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt 'StatePublished,RollbackSCMRestored' } catch { $pairedRollbackFault = $_.Exception.Message -like '*RollbackSCMRestored*' }
 if (-not $pairedRollbackFault) { throw 'Paired forward/rollback fault injection did not reach the interrupted rollback boundary.' }
-$migrationRoot = Join-Path $env:ProgramData ('WeDecentMigrationTest-' + [Guid]::NewGuid().ToString('N'))
+$migrationRoot = Join-Path $env:ProgramFiles ('WeDecentMigrationTest-' + [Guid]::NewGuid().ToString('N'))
 $sourceState = Join-Path $migrationRoot 'source'
 $stageState = Join-Path $migrationRoot '.wedecent-migration-test'
 $journalPath = Join-Path $migrationRoot 'migration.json'
