@@ -1008,7 +1008,7 @@ function Get-WeDecentMigrationCanonicalPath {
         throw 'Migration paths must use an absolute local drive path.'
     }
     if ([string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)) { return $root }
-    $full = $full.TrimEnd('\\')
+    $full = $full.TrimEnd('\')
 
     if (-not ('WeDecentMigrationPathApi' -as [type])) {
         Add-Type -TypeDefinition @'
