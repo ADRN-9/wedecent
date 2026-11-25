@@ -12,7 +12,7 @@ insert into c197_test_keys select 'witness-b',public,secret from pgsodium.crypto
 insert into c197_test_keys select 'witness-c',public,secret from pgsodium.crypto_sign_new_keypair();
 create function pg_temp.c197_key_id(p_key bytea) returns text language sql immutable as $
  select 'ed25519-' || pg_catalog.translate(
-   pg_catalog.replace(pg_catalog.encode(extensions.digest(p_key,'sha256'),'base64'),E'\n',''),
+   pg_catalog.replace(pg_catalog.replace(pg_catalog.encode(extensions.digest(p_key,'sha256'),'base64'),'=',''),E'\n',''),
    '+/','-_'
  );
 $fn$;
