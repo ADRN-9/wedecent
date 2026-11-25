@@ -38,12 +38,12 @@ type Server struct {
 	Shell                  string
 	Logger                 *slog.Logger
 	DirectAuthorizer       DirectAuthorizer
-	RecoveryAuthority      audit.RecoveryAuthority
-	RecoveryAuthorityTrust audit.RecoveryAuthorityTrust
-	RecoveryAuthorityScope string
+	RecoveryAuthority              audit.RecoveryAuthority
+	RecoveryAuthorityTrust         audit.RecoveryAuthorityTrust
+	RecoveryAuthorityScope         string
 	LegacyPairingRecoveryForTests bool
-	FileTransfer           *FileTransferRuntime
-	PortForwarding         *PortForwardRuntime
+	FileTransfer                   *FileTransferRuntime
+	PortForwarding                 *PortForwardRuntime
 	pairingCompletionAudit func(*audit.Log, audit.Event) error
 	Policy                 SessionPolicy
 }
