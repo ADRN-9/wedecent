@@ -24,7 +24,9 @@ func c197Key(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 func c197Ack(t *testing.T, token CheckpointFenceToken, id string, privateKey ed25519.PrivateKey) CheckpointFenceAcknowledgement {
 	t.Helper()
 	digest, err := CheckpointFenceTokenDigest(token)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	ack := CheckpointFenceAcknowledgement{
 		WitnessID:id, TokenSHA256:digest, Generation:token.Generation,
 		Action:token.Action, OperationID:token.OperationID,
@@ -53,7 +55,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 	if err != nil {
 		t.Fatalf("valid pinned primary config rejected: %v", err)
 	}
-	if primary.CheckpointAuthorityKeyID()!=checkpointProviderKeyID(headPublic) {
+	if primary.CheckpointAuthorityKeyID() != checkpointProviderKeyID(headPublic) {
 		t.Fatal("primary authority key ID mismatch")
 	}
 	config.CheckpointHeadKey = primaryPublic
@@ -62,7 +64,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 	}
 	config.CheckpointHeadKey = headPublic
 	config.Witnesses[0].PublicKey = primaryPublic
-	if _,err:=NewSupabaseCheckpointFencePrimary(config);!errors.Is(err,ErrCheckpointIntegrity) {
+	if _, err := NewSupabaseCheckpointFencePrimary(config); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("witness reused primary signing key: %v", err)
 	}
 	config.Witnesses[0].PublicKey = headPublic
@@ -79,11 +81,11 @@ func TestSupabaseCheckpointFencePrimaryVerifiesStrictWitnessQuorum(t *testing.T)
 	token, primaryPrivate := validFenceToken(t, CheckpointFenceFinalize)
 	primary := &SupabaseCheckpointFencePrimary{
 		primaryKey: primaryPrivate.Public().(ed25519.PublicKey),
-		witnesses: make(map[string]ed25519.PublicKey),
-		quorum: 2, now: func() time.Time { return time.UnixMilli(1000) },
+		witnesses:  make(map[string]ed25519.PublicKey),
+		quorum:     2, now: func() time.Time { return time.UnixMilli(1000) },
 	}
 	private := make(map[string]ed25519.PrivateKey)
-	for _,id:=range token.WitnessIDs {
+	for _, id := range token.WitnessIDs {
 		publicKey, privateKey := c197Key(t)
 		primary.witnesses[id] = publicKey
 		private[id] = privateKey
