@@ -468,4 +468,3 @@ func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
 		claimed.Wait()
 	}
 }
-
