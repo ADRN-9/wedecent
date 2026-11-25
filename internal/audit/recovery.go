@@ -92,6 +92,9 @@ func NewPairingAttemptID() (string, error) {
 	return hex.EncodeToString(id[:]), nil
 }
 
+// OpenPairingRecovery opens the local-only compatibility journal. Its HMAC and
+// filesystem protections do not provide independent rollback resistance. Production
+// pairing must use OpenPairingRecoveryWithAuthority.
 func OpenPairingRecovery(stateDir string) (*PairingRecovery, error) {
 	if stateDir == "" {
 		return nil, errors.New("pairing recovery state directory is required")
