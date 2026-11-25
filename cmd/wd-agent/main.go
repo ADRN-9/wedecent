@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"wedecent.com/wedecent/internal/account"
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/appdirs"
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/discovery"
@@ -291,6 +292,9 @@ type serveConfig struct {
 	PortForwardAllowPublic                bool
 	PortForwardMaxConnections             int
 	PortForwardAllowLegacyReplayMigration bool
+	PairingRecoveryAuthorityURL           string
+	PairingRecoveryAuthoritySPKISHA256    string
+	PairingRecoveryTrustFile              string
 }
 
 func (cfg serveConfig) sessionPolicy() session.SessionPolicy {
@@ -464,6 +468,25 @@ func parseServeConfig(args []string) (serveConfig, error) {
 		"path to the trusted Ed25519 public key used to verify forwarding capabilities",
 	)
 	fs.StringVar(
+		&cfg.PairingRecoveryAuthorityURL,
+		"pairing-recovery-authority-url",
+		strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL")),
+		"HTTPS origin for the independent pairing-recovery authority",
+	)
+	fs.StringVar(
+		&cfg.PairingRecoveryAuthoritySPKISHA256,
+		"pairing-recovery-authority-spki-sha256",
+		strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256")),
+		"SHA-256 hex pin of the recovery authority TLS leaf SPKI",
+	)
+	fs.StringVar(
+		&cfg.PairingRecoveryTrustFile,
+		"pairing-recovery-trust",
+		"",
+		"path to independently provisioned primary/witness Ed25519 public trust JSON",
+	)
+
+	fs.StringVar(
 		&cfg.PortForwardReplayURL,
 		"port-forward-replay-url",
 		strings.TrimSpace(os.Getenv("WEDECENT_PORT_FORWARD_REPLAY_URL")),
@@ -615,6 +638,13 @@ func parseServeConfig(args []string) (serveConfig, error) {
 			cfg.WebRelay,
 		)
 	}
+	cfg.PairingRecoveryAuthorityURL = strings.TrimSpace(cfg.PairingRecoveryAuthorityURL)
+	cfg.PairingRecoveryAuthoritySPKISHA256 = strings.TrimSpace(cfg.PairingRecoveryAuthoritySPKISHA256)
+	cfg.PairingRecoveryTrustFile = strings.TrimSpace(cfg.PairingRecoveryTrustFile)
+	if cfg.PairingRecoveryAuthorityURL == "" || cfg.PairingRecoveryAuthoritySPKISHA256 == "" ||
+		cfg.PairingRecoveryTrustFile == "" || strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN")) == "" {
+		return serveConfig{}, errors.New("pairing recovery requires --pairing-recovery-authority-url, --pairing-recovery-authority-spki-sha256, --pairing-recovery-trust, and WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN")
+	}
 
 	return cfg, nil
 }
@@ -636,6 +666,20 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	)
 	if err != nil {
 		return err
+	}
+
+	authorityTrust, err := audit.LoadRecoveryAuthorityTrust(cfg.PairingRecoveryTrustFile)
+	if err != nil {
+		return fmt.Errorf("load independent pairing recovery trust: %w", err)
+	}
+	recoveryAuthority, err := audit.NewHTTPRecoveryAuthority(
+		cfg.PairingRecoveryAuthorityURL,
+		cfg.PairingRecoveryAuthoritySPKISHA256,
+		os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN"),
+		authorityTrust,
+	)
+	if err != nil {
+		return fmt.Errorf("configure independent pairing recovery authority: %w", err)
 	}
 
 	store, err := trust.Open(
@@ -679,7 +723,9 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 		StateDir:         cfg.StateDir,
 		Shell:            cfg.Shell,
 		Logger:           slog.Default(),
-		DirectAuthorizer: directAuthorizer,
+		DirectAuthorizer:       directAuthorizer,
+		RecoveryAuthority:      recoveryAuthority,
+		RecoveryAuthorityTrust: authorityTrust,
 		FileTransfer:     fileTransferRuntime,
 		PortForwarding:   portForwardRuntime,
 		Policy:           cfg.sessionPolicy(),
