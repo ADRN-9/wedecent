@@ -10,13 +10,13 @@ Migration `20261124190000_checkpoint_authority_principal.sql` creates the non-lo
 
 The existing fence RPCs are renamed to internal callees. Public wrappers are executable only by the dedicated role. The shared `service_role`, `authenticated`, `anon`, and `PUBLIC` have no execute privilege on the privileged reservation, token-recording, commit, or recovery RPCs. The underlying C195 reservation/commit RPCs are also inaccessible to those roles.
 
-The wrappers require `auth.uid() = checkpoint_operations.actor_id` (or the actor supplied at reservation). The authority token source must mint short-lived JWTs with:
+The wrappers require `auth.uid() = checkpoint_operations.actor_id` (or the actor supplied at reservation). The authority token source must mint short-lived JWTs with each RPC. The adapter sends the project's non-privileged anon API key in the `apikey` header and the actor-bound authority JWT in `Authorization: Bearer`. The token source must mint short-lived JWTs with:
 
 - `role = wedecent_checkpoint_authority`
 - `sub = <authenticated actor UUID>`
 - `exp - iat <= 300 seconds`
 
-The Go adapter validates the role, actor, algorithm marker, and short lifetime. Supabase/PostgREST validates the JWT signature before setting the role and claims. The token source is called for every RPC so credentials can rotate. The JWT signing key must exist only on the dedicated trusted authority host; it must not be present in general Edge Functions, Local Core, desktop binaries, or installers. Reusing the shared service-role JWT is explicitly unsupported.
+The Go adapter validates the role, actor, algorithm marker, and short lifetime. Supabase/PostgREST validates the JWT signature before setting the role and claims. The token source is called for every RPC so credentials can rotate. The client validates the role, subject and lifetime claims; Supabase/PostgREST validates the JWT signature. The JWT signing key must exist only on the dedicated trusted authority host; it must not be present in general Edge Functions, Local Core, desktop binaries, or installers. Reusing the shared service-role JWT is explicitly unsupported.
 
 ## Database cryptographic boundary
 
