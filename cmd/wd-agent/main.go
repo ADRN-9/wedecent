@@ -207,7 +207,7 @@ func runStatePathCheck(args []string) error {
 	}
 	if strings.TrimSpace(*serviceSID) == "" {
 		return verifyMigrationStateParent(*stateDir)
-}
+	}
 	return verifyMigrationStateForSID(*stateDir, strings.TrimSpace(*serviceSID))
 }
 
