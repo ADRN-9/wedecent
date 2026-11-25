@@ -286,6 +286,56 @@ func TestServiceProvisionRejectsBroadExistingParentDACL(t *testing.T) {
 		t.Fatalf("service provisioning rejected a protected parent: %v", err)
 	}
 }
+func TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoad(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "protected-root")
+	state := filepath.Join(root, "agent")
+	if err := preflightAgentState(state); err != nil {
+		t.Fatal(err)
+	}
+	tokenPath := filepath.Join(state, "recovery-authority.token")
+	trustPath := filepath.Join(state, "recovery-authority-trust.json")
+	tokenSentinel := []byte("sentinel-token-must-not-be-loaded")
+	trustSentinel := []byte("sentinel-trust-must-not-be-loaded")
+	if err := os.WriteFile(tokenPath, tokenSentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(trustPath, trustSentinel, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	foreign, err := windows.StringToSid("S-1-5-20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := windows.SetNamedSecurityInfo(root, windows.SE_FILE_OBJECT,
+		windows.OWNER_SECURITY_INFORMATION, foreign, nil, nil, nil); err != nil {
+		t.Skipf("hostile ancestor owner fixture requires owner reassignment privilege: %v", err)
+	}
+
+	// Exercise the real service startup entry point, not only the helper.
+	err = runServiceRun([]string{
+		"--state=" + state,
+		"--name=hostile-owner-startup",
+		"--listen=",
+		"--web-relay=",
+	})
+	if err == nil || !strings.Contains(err.Error(), "verify guarded service state before loading recovery credentials") {
+		t.Fatalf("service startup did not reject hostile ancestor owner before recovery loading: %v", err)
+	}
+	for _, name := range []string{"service.log", "identity.key.dpapi", "identity.crt"} {
+		if _, statErr := os.Lstat(filepath.Join(state, name)); !errors.Is(statErr, os.ErrNotExist) {
+			t.Fatalf("service created %s before rejecting hostile ancestor owner: %v", name, statErr)
+		}
+	}
+	gotToken, err := os.ReadFile(tokenPath)
+	if err != nil || string(gotToken) != string(tokenSentinel) {
+		t.Fatalf("recovery bearer was changed or consumed before owner rejection: %q: %v", gotToken, err)
+	}
+	gotTrust, err := os.ReadFile(trustPath)
+	if err != nil || string(gotTrust) != string(trustSentinel) {
+		t.Fatalf("recovery trust was changed before owner rejection: %q: %v", gotTrust, err)
+	}
+}
+
 func TestServiceStartupRejectsUntrustedAncestorDeleteChild(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "protected-parent")
 	if err := preflightAgentState(parent); err != nil {
