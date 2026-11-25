@@ -6,7 +6,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -3915,8 +3914,8 @@ type tamperedRevocationProofProvider struct {
 	delegate CheckpointRevocationProofProvider
 }
 
-func (p tamperedRevocationProofProvider) CheckpointRevocationProof(ctx context.Context, endpoint CheckpointEndpoint, next uint64) ([]byte, error) {
-	proof, err := p.delegate.CheckpointRevocationProof(ctx, endpoint, next)
+func (p tamperedRevocationProofProvider) CheckpointRevocationProof(ctx context.Context, request CheckpointRevocationAuthorizationRequest) ([]byte, error) {
+	proof, err := p.delegate.CheckpointRevocationProof(ctx, request)
 	if err != nil {
 		return nil, err
 	}
