@@ -7,7 +7,7 @@ import (
 )
 
 func TestParseServeConfigOutboundOnly(t *testing.T) {
-	cfg, err := parseServeConfig([]string{
+	cfg, err := parseServeConfigForTest(t, []string{
 		"--listen=",
 		"--web-relay=https://relay.wedecent.com",
 		"--relay-slots=4",
@@ -27,7 +27,7 @@ func TestParseServeConfigOutboundOnly(t *testing.T) {
 }
 
 func TestParseServeConfigRFCOMMOnly(t *testing.T) {
-	cfg, err := parseServeConfig([]string{
+	cfg, err := parseServeConfigForTest(t, []string{
 		"--listen=",
 		"--rfcomm-channel=7",
 	})
@@ -43,7 +43,7 @@ func TestParseServeConfigRFCOMMOnly(t *testing.T) {
 }
 
 func TestParseServeConfigSerialOnly(t *testing.T) {
-	cfg, err := parseServeConfig([]string{
+	cfg, err := parseServeConfigForTest(t, []string{
 		"--listen=",
 		"--serial=/dev/ttyACM0",
 	})
@@ -73,7 +73,7 @@ func TestParseServeConfigRejectsUnsafeSerialPath(t *testing.T) {
 		"/dev/ttyACM0?baud=9600",
 	} {
 		t.Run(endpoint, func(t *testing.T) {
-			_, err := parseServeConfig([]string{
+			_, err := parseServeConfigForTest(t, []string{
 				"--listen=",
 				"--serial=" + endpoint,
 			})
@@ -87,7 +87,7 @@ func TestParseServeConfigRejectsUnsafeSerialPath(t *testing.T) {
 func TestParseServeConfigRejectsInvalidRFCOMMChannel(t *testing.T) {
 	for _, channel := range []string{"-1", "31"} {
 		t.Run(channel, func(t *testing.T) {
-			_, err := parseServeConfig([]string{
+			_, err := parseServeConfigForTest(t, []string{
 				"--listen=",
 				"--rfcomm-channel=" + channel,
 			})
@@ -99,8 +99,28 @@ func TestParseServeConfigRejectsInvalidRFCOMMChannel(t *testing.T) {
 }
 
 func TestParseServeConfigRejectsNoTransport(t *testing.T) {
-	_, err := parseServeConfig([]string{"--listen="})
+	_, err := parseServeConfigForTest(t, []string{"--listen="})
 	if err == nil {
 		t.Fatal("expected error")
+	}
+}
+
+
+func parseServeConfigForTest(t *testing.T, args []string) (serveConfig, error) {
+	t.Helper()
+	t.Setenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN", "test-only-token")
+	args = append(args,
+		"--pairing-recovery-authority-url=https://recovery.example",
+		"--pairing-recovery-authority-spki-sha256="+strings.Repeat("0", 64),
+		"--pairing-recovery-trust=/tmp/recovery-trust.json",
+	)
+	return parseServeConfig(args)
+}
+
+func TestParseServeConfigRequiresIndependentRecoveryAuthority(t *testing.T) {
+	t.Setenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN", "")
+	_, err := parseServeConfig([]string{"--listen="})
+	if err == nil || !strings.Contains(err.Error(), "pairing recovery requires") {
+		t.Fatalf("missing recovery authority was not rejected: %v", err)
 	}
 }
