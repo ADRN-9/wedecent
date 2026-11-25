@@ -2,7 +2,7 @@
 param(
     [string]$BundlePath,
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'WeDecent'),
-    [string]$StateDir = (Join-Path $env:ProgramFiles 'WeDecentData\agent'),
+    [string]$StateDir = (Join-Path $env:ProgramData 'WeDecent\agent'),
     [ValidatePattern('^[A-Za-z0-9_.-]{1,128}$')]
     [string]$ServiceName = 'WeDecentAgent',
     [string]$DisplayName = 'WeDecent Agent',
@@ -744,7 +744,7 @@ if ([string]::IsNullOrWhiteSpace($BundlePath)) { $BundlePath = $PSScriptRoot }
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { throw 'Cannot determine installer bundle path.' }
 $BundlePath = (Resolve-Path -LiteralPath $BundlePath).Path
 $InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -Label 'InstallDir'
-$StateDir = Assert-SafeChildPath -Path $StateDir -Root $env:ProgramFiles -Label 'StateDir'
+$StateDir = Assert-SafeChildPath -Path $StateDir -Root (Join-Path $env:ProgramData 'WeDecent') -Label 'StateDir'
 $version = Assert-ReleaseBundle
 $metadataPath = Get-WeDecentMetadataPath
 $metadata = Read-WeDecentMetadata
