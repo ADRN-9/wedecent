@@ -1055,12 +1055,27 @@ function Get-WeDecentMigrationPathObjectChain {
     $walk = $root
     $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
     $missing = $false
-    foreach ($part in $parts) {
+    for ($index = 0; $index -lt $parts.Count; $index++) {
+        $part = $parts[$index]
         $walk = Join-Path $walk $part
-        if (-not $missing -and (Test-Path -LiteralPath $walk)) {
-            $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
+        if (-not $missing) {
+            try {
+                $item = Get-Item -LiteralPath $walk -Force -ErrorAction Stop
+                if ($index -lt ($parts.Count - 1) -and -not $item.PSIsContainer) {
+                    throw "Migration path traverses a non-directory component: $walk"
+                }
+                $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
+            } catch {
+                if ($_.Exception -is [Microsoft.PowerShell.Commands.ItemNotFoundException] -or
+                    $_.Exception -is [IO.FileNotFoundException] -or
+                    $_.Exception -is [IO.DirectoryNotFoundException]) {
+                    $missing = $true
+                    $chain.Add('PATH:' + $part.ToUpperInvariant())
+                } else {
+                    throw
+                }
+            }
         } else {
-            $missing = $true
             $chain.Add('PATH:' + $part.ToUpperInvariant())
         }
     }
@@ -1256,6 +1271,8 @@ function Invoke-WeDecentStateMigration {
     $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath ([string]$service.PathName) -Source $sourceFull -Destination $destinationFull
     if ($updatedPath -ceq [string]$service.PathName) { throw 'Could not construct an unambiguous destination SCM command line.' }
 
+    Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
     [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $JournalPath) -AgentPath $AgentPath)
     $metadataItem = Get-Item -LiteralPath $MetadataPath -Force -ErrorAction Stop
     if ($metadataItem.PSIsContainer -or ($metadataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
