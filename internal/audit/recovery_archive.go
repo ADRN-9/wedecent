@@ -305,7 +305,8 @@ func (r *PairingRecovery) assignSequences(snapshot *pairingOutcomeSnapshot, arch
 		return false, errors.New("pairing recovery active/archive checkpoint mismatch")
 	}
 	expected := archiveLast + 1
-	changed := false
+	changed := snapshot.Version != pairingOutcomeVersion
+	snapshot.Version = pairingOutcomeVersion
 	for i := range snapshot.Records {
 		record := &snapshot.Records[i]
 		if record.Sequence == 0 {
