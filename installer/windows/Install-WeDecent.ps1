@@ -766,8 +766,11 @@ if (-not $service) {
             (Test-DirectoryExistsStrict -Path $recordedStateDir)) {
             throw "Recorded service state exists at '$recordedStateDir'; refusing to create a replacement identity at '$StateDir'. Complete an identity-preserving migration first."
         }
-    } elseif (-not $metadata -and (Test-DirectoryExistsStrict -Path (Join-Path $env:ProgramData 'WeDecent\agent'))) {
-        throw 'Legacy ProgramData service state exists without authenticated installer metadata; refusing to create a replacement identity.'
+    }
+    $legacyDefaultStateDir = Join-Path $env:ProgramData 'WeDecent\agent'
+    if (-not [string]::Equals(([IO.Path]::GetFullPath($legacyDefaultStateDir)).TrimEnd('\'), ([IO.Path]::GetFullPath($StateDir)).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase) -and
+        (Test-DirectoryExistsStrict -Path $legacyDefaultStateDir)) {
+        throw 'Legacy ProgramData service state exists; refusing to create a replacement identity at the Program Files location.'
     }
 }
 $binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
