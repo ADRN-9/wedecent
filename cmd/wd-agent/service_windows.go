@@ -234,6 +234,9 @@ func runServiceInstall(args []string) error {
 		return errors.New("recovery trust file must be an existing bounded regular file")
 	}
 
+	executable, err := os.Executable()
+	if err != nil { return fmt.Errorf("resolve wd-agent executable: %w", err) }
+
 	password := ""
 	stdinReader := bufio.NewReader(os.Stdin)
 
@@ -262,10 +265,6 @@ func runServiceInstall(args []string) error {
 		}
 	}
 
-	// Provision only new, empty state; existing trust material is never repaired.
-	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
-		return fmt.Errorf("provision dedicated service state: %w", err)
-	}
 	tokenText, err := readServiceCredential(stdinReader)
 	if err != nil { return fmt.Errorf("read recovery bearer token from stdin: %w", err) }
 	token := []byte(strings.TrimSpace(tokenText))
@@ -273,6 +272,11 @@ func runServiceInstall(args []string) error {
 	if len(token) < 32 || len(token) > 4096 || strings.ContainsAny(string(token), "\r\n") {
 		for i := range token { token[i] = 0 }
 		return errors.New("recovery bearer token must contain 32 to 4096 non-newline bytes")
+	}
+	// Provision only after all operator-supplied inputs are present and bounded.
+	if err := provisionWindowsServiceState(*stateDir, *account); err != nil {
+		for i := range token { token[i] = 0 }
+		return fmt.Errorf("provision dedicated service state: %w", err)
 	}
 	trustPath := filepath.Join(*stateDir, "recovery-authority-trust.json")
 	trustSource, err := os.Open(*recoveryTrustFile)
@@ -339,13 +343,6 @@ func runServiceInstall(args []string) error {
 	}
 	bearer = ""
 
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf(
-			"resolve wd-agent executable: %w",
-			err,
-		)
-	}
 
 	serviceArgs := []string{
 		"service",
