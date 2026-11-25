@@ -10,8 +10,10 @@ import (
 )
 
 const (
-	checkpointFenceVersion uint32 = 1
-	checkpointFenceDomain         = "wedecent-checkpoint-fence-token-v1"
+	checkpointFenceVersion           uint32 = 1
+	checkpointFenceRevocationVersion uint32 = 2
+	checkpointFenceDomain                   = "wedecent-checkpoint-fence-token-v1"
+	checkpointFenceRevocationDomain         = "wedecent-checkpoint-fence-token-v2"
 )
 
 type CheckpointFenceAction string
@@ -20,6 +22,17 @@ const (
 	CheckpointFenceFinalize CheckpointFenceAction = "finalize"
 	CheckpointFenceRevoke   CheckpointFenceAction = "revoke"
 )
+
+func checkpointFenceVersionForAction(action CheckpointFenceAction) (uint32, error) {
+	switch action {
+	case CheckpointFenceFinalize:
+		return checkpointFenceVersion, nil
+	case CheckpointFenceRevoke:
+		return checkpointFenceRevocationVersion, nil
+	default:
+		return 0, ErrCheckpointIntegrity
+	}
+}
 
 // CheckpointFenceToken is the primary-signed ordering reservation shared by
 // finalize and revoke. It is not authorization until its quorum commit is durable.
@@ -240,8 +253,10 @@ func SignCheckpointFenceToken(token CheckpointFenceToken, primaryKey ed25519.Pri
 }
 
 func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
-	if token.Version != checkpointFenceVersion || !validCheckpointFenceScope(token.Scope) ||
+	if !validCheckpointFenceScope(token.Scope) ||
 		(token.Action != CheckpointFenceFinalize && token.Action != CheckpointFenceRevoke) ||
+		(token.Action == CheckpointFenceFinalize && token.Version != checkpointFenceVersion) ||
+		(token.Action == CheckpointFenceRevoke && token.Version != checkpointFenceRevocationVersion) ||
 		token.OperationID == "" || len(token.OperationID) > 128 ||
 		token.RequestSHA256 == ([sha256.Size]byte{}) ||
 		token.AuthorizationSHA256 == ([sha256.Size]byte{}) ||
@@ -268,7 +283,9 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 			token.ResultingRevocationEpoch != token.ExpectedRevocationEpoch+1) {
 		return nil, ErrCheckpointStale
 	}
-	if token.Action == CheckpointFenceRevoke && len(token.AuthorizationProof) != ed25519.SignatureSize {
+	if token.Action == CheckpointFenceRevoke &&
+		(len(token.AuthorizationProof) != ed25519.SignatureSize ||
+			sha256.Sum256(token.AuthorizationProof) != token.AuthorizationSHA256) {
 		return nil, ErrCheckpointIntegrity
 	}
 	ids := append([]string(nil), token.WitnessIDs...)
@@ -297,8 +314,12 @@ func checkpointFenceTokenMessage(token CheckpointFenceToken) ([]byte, error) {
 			return nil, err
 		}
 	}
+	domain := checkpointFenceDomain
+	if token.Version == checkpointFenceRevocationVersion {
+		domain = checkpointFenceRevocationDomain
+	}
 	for _, value := range []string{
-		checkpointFenceDomain, token.Scope.DeviceID, token.Scope.AccountID,
+		domain, token.Scope.DeviceID, token.Scope.AccountID,
 		token.Scope.OrganizationID, string(token.Action), token.OperationID,
 		token.WitnessSetVersion, token.PrimaryKeyID,
 	} {
