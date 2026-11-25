@@ -144,7 +144,7 @@ func verifyWindowsServiceStateParent(dir string) error {
 	if err != nil {
 		return err
 	}
-	if err := verifyWindowsStateAncestorOwners(root, components, current); err != nil {
+	if err := verifyWindowsStateAncestorOwners(root, components, current, nil); err != nil {
 		return fmt.Errorf("verify state ancestor ownership: %w", err)
 	}
 	parent := filepath.Clean(filepath.Dir(dir))
@@ -202,6 +202,11 @@ func verifyWindowsStateAncestors(root string, components []string, required *win
 	if err != nil {
 		return err
 	}
+	// Owner trust is an explicit SID allowlist. Never derive trust from the
+	// owner of the path currently being inspected.
+	if err := verifyWindowsStateAncestorOwners(root, components, active, required); err != nil {
+		return err
+	}
 	trusted := map[string]bool{
 		active.String(): true,
 		"S-1-5-18":      true,
@@ -213,13 +218,6 @@ func verifyWindowsStateAncestors(root string, components []string, required *win
 	}
 	path := root
 	for i := 0; i < len(components); i++ {
-		owner, err := windowsServiceOwner(path)
-		if err != nil {
-			return fmt.Errorf("read state ancestor owner %q: %w", path, err)
-		}
-		// Provisioning validates ancestor owners against the installer/system
-		// allowlist. A later owner replacement requires WRITE_OWNER, rejected below.
-		trusted[owner.String()] = true
 		if err := verifyWindowsStateAncestorDirectory(path, trusted); err != nil {
 			return fmt.Errorf("untrusted state ancestor %q: %w", path, err)
 		}
@@ -344,8 +342,14 @@ func windowsSDDLRightsMask(rights string) (uint32, error) {
 	return mask, nil
 }
 
-func verifyWindowsStateAncestorOwners(root string, components []string, installer *windows.SID) error {
+func verifyWindowsStateAncestorOwners(root string, components []string, installer, required *windows.SID) error {
+	if installer == nil {
+		return errors.New("active Windows SID is required for ancestor owner validation")
+	}
 	allowed := map[string]bool{installer.String(): true}
+	if required != nil {
+		allowed[required.String()] = true
+	}
 	for _, sidText := range []string{
 		"S-1-5-18",
 		"S-1-5-32-544",
