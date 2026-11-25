@@ -143,11 +143,11 @@ func RecoveryCheckpointSigningBytes(checkpoint RecoveryCheckpoint) ([]byte, erro
 	if checkpoint.OperationID != hex.EncodeToString(expected[:]) || checkpoint.SignerKeyID == "" || len(checkpoint.SignerKeyID) > 128 {
 		return nil, ErrRecoveryCheckpointConflict
 	}
-	if err := binary.Write(&b, binary.BigEndian, uint32(len(checkpoint.SignerKeyID))); err != nil {
-		return nil, err
-	}
-	b.WriteString(checkpoint.SignerKeyID)
-	return b.Bytes(), nil
+	var keyIDLength [4]byte
+	binary.BigEndian.PutUint32(keyIDLength[:], uint32(len(checkpoint.SignerKeyID)))
+	message = append(message, keyIDLength[:]...)
+	message = append(message, checkpoint.SignerKeyID...)
+	return message, nil
 }
 
 // VerifyRecoveryCheckpointSignature binds the signer identity to the pinned
