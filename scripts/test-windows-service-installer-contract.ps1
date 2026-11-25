@@ -49,4 +49,24 @@ foreach ($argument in @(
 Assert-Contains $validation 'recovery-authority.token' 'Installed-service validation does not inspect the protected bearer file.'
 Assert-Contains $validation 'recovery-authority-trust.json' 'Installed-service validation does not inspect the protected trust copy.'
 
+
+$rollbackAccountStart = $installer.IndexOf("if ($createdAccount)")
+$rollbackFailureEnd = $installer.IndexOf('throw "Fresh installation failed;', $rollbackAccountStart)
+if ($rollbackAccountStart -lt 0 -or $rollbackFailureEnd -le $rollbackAccountStart) {
+    throw 'Cannot locate fresh-install rollback account cleanup block.'
+}
+$rollbackAccountBlock = $installer.Substring($rollbackAccountStart, $rollbackFailureEnd - $rollbackAccountStart)
+$stateGuard = $rollbackAccountBlock.IndexOf('if ($stateContainsProtectedMaterial)')
+$accountRemoval = $rollbackAccountBlock.IndexOf('Remove-LocalUser -Name $ServiceAccountName')
+if ($stateGuard -lt 0 -or $accountRemoval -le $stateGuard) {
+    throw 'Rollback can remove the service account before checking surviving protected state.'
+}
+Assert-Contains $rollbackAccountBlock '$remainingState.Count -gt 0' 'Rollback does not detect non-empty protected state.'
+Assert-Contains $rollbackAccountBlock '$stateContainsProtectedMaterial = $true' 'Rollback must fail closed when state enumeration fails.'
+Assert-Contains $rollbackAccountBlock 'Retaining installer-created service account' 'Rollback must retain the service account when state survives.'
+$elseStart = $rollbackAccountBlock.IndexOf('} else {', $stateGuard)
+if ($elseStart -lt 0 -or $accountRemoval -lt $elseStart) {
+    throw 'Service account removal is not confined to the empty-state branch.'
+}
+
 Write-Host 'Windows service installer contract PASS'
