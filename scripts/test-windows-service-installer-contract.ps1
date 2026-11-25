@@ -188,7 +188,7 @@ $serviceSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 Set-WeDecentMigrationDirectoryAcl -Path $sourceState -ServiceSid $serviceSid
 [IO.File]::WriteAllText((Join-Path $sourceState 'nested/recovery-authority.token'), 'synthetic-recovery-bytes')
 try {
-    $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceState -Staging $stageState -SourceServiceSid $serviceSid -DestinationServiceSid $serviceSid
+    $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceState -Staging $stageState -SourceServiceSid $serviceSid -DestinationServiceSid $serviceSid -AgentPath $agentPath
     if ($copy.FileCount -ne 3 -or $copy.DirectoryCount -ne 2 -or
         [string]::IsNullOrWhiteSpace($copy.SourceManifestSHA256)) {
         throw 'Verified state-tree copy returned an invalid manifest.'
@@ -238,7 +238,7 @@ try {
         throw 'Migration manifest failed to detect changed identity bytes.'
     }
     $identityMismatchRejected = $false
-    try { [void](Assert-WeDecentMigrationIdentityContinuity -Source $sourceState -Destination $stageState) } catch { $identityMismatchRejected = $true }
+    try { [void](Assert-WeDecentMigrationIdentityContinuity -Source $sourceState -Destination $stageState -AgentPath $agentPath) } catch { $identityMismatchRejected = $true }
     if (-not $identityMismatchRejected) { throw 'Migration identity continuity accepted changed private-key bytes.' }
 
     $junctionRejected = $false
