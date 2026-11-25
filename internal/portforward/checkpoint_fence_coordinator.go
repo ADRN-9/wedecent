@@ -22,6 +22,14 @@ type CheckpointFenceCoordinator struct {
 	WitnessSetVersion string
 	Witnesses         []CheckpointFenceWitnessClient
 	Quorum            int
+	Now               func() time.Time
+}
+
+func (c *CheckpointFenceCoordinator) now() time.Time {
+	if c != nil && c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 // Execute is retained for isolated fence-store tests and non-checkpoint use.
@@ -108,7 +116,7 @@ func (c *CheckpointFenceCoordinator) execute(
 			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 {
 			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
 		}
-		now := time.Now().UnixMilli()
+		now := c.now().UnixMilli()
 		if envelope.IssuedAtUnixMS > now+30000 ||
 			(envelope.ExpiresAtUnixMS <= now && recoveredToken == nil) {
 			return CheckpointFenceOperation{}, ErrCheckpointFenceExpired
@@ -135,7 +143,7 @@ func (c *CheckpointFenceCoordinator) execute(
 		!checkpointFenceTokenMatchesRequest(token, request) {
 		return CheckpointFenceOperation{}, ErrCheckpointIntegrity
 	}
-	recoverOnly := token.ExpiresAtUnixMS <= time.Now().UnixMilli()
+	recoverOnly := token.ExpiresAtUnixMS <= c.now().UnixMilli()
 	if existing, found, loadErr := c.Primary.LoadFence(ctx, token.Scope, token.OperationID); loadErr != nil {
 		return CheckpointFenceOperation{}, errors.Join(ErrCheckpointAmbiguous, loadErr)
 	} else if found && existing.Committed {
