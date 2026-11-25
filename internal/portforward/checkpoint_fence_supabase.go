@@ -473,12 +473,27 @@ func (p *SupabaseCheckpointFencePrimary) CommitFenceWithCheckpointHeads(
 	for _, ack := range acknowledgements {
 		acks = append(acks, checkpointFenceAckToWire(ack))
 	}
+	tokenWire, err := checkpointFenceTokenToWire(token)
+	if err != nil {
+		return err
+	}
+	attestationMessage, err := checkpointFenceCommitAttestationMessage(
+		token.OperationID, fingerprint, tokenDigest, tokenWire, acks, p.actorID,
+	)
+	if err != nil {
+		return err
+	}
+	authoritySignature, err := p.primarySigner.Sign(rand.Reader, attestationMessage, crypto.Hash(0))
+	if err != nil || len(authoritySignature) != ed25519.SignatureSize {
+		return errors.Join(ErrCheckpointIntegrity, err)
+	}
 	var result json.RawMessage
 	err = p.rpc(ctx, "commit_checkpoint_fence_operation", map[string]any{
 		"p_operation_id":             token.OperationID,
 		"p_fingerprint":              "\\x" + hex.EncodeToString(fingerprint[:]),
 		"p_token_sha256":             "\\x" + hex.EncodeToString(tokenDigest[:]),
 		"p_witness_acknowledgements": acks,
+		"p_authority_signature":      "\\x" + hex.EncodeToString(authoritySignature),
 	}, &result)
 	if err != nil {
 		operation, found, loadErr := p.LoadFence(ctx, token.Scope, token.OperationID)
