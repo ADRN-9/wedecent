@@ -37,8 +37,10 @@ func loadRecoveryAuthorityToken(path string) (string, error) {
 	data, err := io.ReadAll(io.LimitReader(f, maxRecoveryAuthorityTokenBytes+1))
 	if err != nil { return "", err }
 	if len(data) < 32 || len(data) > maxRecoveryAuthorityTokenBytes { return "", errors.New("credential size is outside the permitted bounds") }
-	token := strings.TrimSpace(string(data))
+	token := string(data)
 	for i := range data { data[i] = 0 }
-	if token == "" || strings.ContainsAny(token, "\r\n") { return "", errors.New("credential is empty or malformed") }
+	if token == "" || strings.TrimSpace(token) != token || strings.ContainsAny(token, "\r\n") {
+		return "", errors.New("credential is empty or malformed")
+	}
 	return token, nil
 }
