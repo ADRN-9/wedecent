@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	replayStoreVersion             = 2
-	legacyReplayStoreVersion       = 1
-	maxReplayStoreSize             = 16 << 20
-	defaultReplayLimit             = 100000
+	replayStoreVersion       = 2
+	legacyReplayStoreVersion = 1
+	maxReplayStoreSize       = 16 << 20
+	defaultReplayLimit       = 100000
 	// Concurrent process startup can be delayed by filesystem scheduling. Keep the
 	// retry bounded while allowing the lock publisher time to durably publish
 	// its initialization marker; missing metadata still fails closed.
