@@ -278,8 +278,20 @@ func TestPairingRecoveryMigrationRejectsForgedStateDigestProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	proof, _ := json.Marshal(struct {
+	forgedDigest := sha256.Sum256([]byte("forged archive state"))
+	proof, err := json.Marshal(struct {
 		StateDigest string `json:"state_digest"`
-	}{StateDigest: hex.EncodeToString(sha256.Sum256([]byte("forged"))[:])})
-	_ = proof
+	}{StateDigest: hex.EncodeToString(forgedDigest[:])})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := migration.MigrateLegacyArchive(context.Background(), proof); !errors.Is(err, ErrRecoveryCheckpointConflict) {
+		t.Fatalf("forged migration state digest accepted: %v", err)
+	}
+	legacyReader := *migration
+	legacyReader.authority = nil
+	stillLegacy, err := legacyReader.readArchive()
+	if err != nil || stillLegacy.AuthorityGeneration != 0 {
+		t.Fatalf("forged migration proof changed the local archive: %+v %v", stillLegacy, err)
+	}
 }
