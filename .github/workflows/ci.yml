@@ -133,6 +133,7 @@ jobs:
             'installer/windows/StateMigration.psm1',
             'scripts/test-windows-upgrade-preflight.ps1',
             'scripts/test-windows-service-installer-contract.ps1',
+            'scripts/test-windows-state-migration-coordinator.ps1',
             'scripts/test-windows-rfcomm-hardware.ps1'
           )
           foreach ($file in $files) {
@@ -154,6 +155,9 @@ jobs:
       - name: Verify Windows service installer recovery credential contract
         shell: pwsh
         run: .\scripts\test-windows-service-installer-contract.ps1
+      - name: Exercise Windows state migration transaction coordinator
+        shell: pwsh
+        run: .\\scripts\\test-windows-state-migration-coordinator.ps1
       - name: Test Windows replay-store security regressions
         run: go test ./internal/portforward -run "TestFileReplayConcurrentInitializationAcrossProcesses|TestFileReplayStagingCleanupWaitsForCrossProcessActiveStaging|TestFileReplayPairedSnapshotAnchorRollbackDocumentsSameAccountGap|TestFileReplayInitialMarkerAndLockHavePrivateOwnership|TestFileReplayStorageUsesPrivateDirectoryAndFilePermissions|TestRejectExistingFileReplayStateFailsClosed|TestReplayLockReleaseErrorIsObservable|TestRemoteReplay.*|TestWindowsReplayCleansOrphanLockStagingAndRepairsOwner|TestWindowsReplayCleansLockBootstrapOrphanAfterRepeatedProcessCrashes|TestWindowsReplayRepairsBootstrapLockOwnerAfterInterruptedCreation|TestWindowsReplayRejectsUnauthorizedOrphanStagingACL|TestWindowsReplayRejectsInsecurePreexistingBootstrapLock|TestWindowsReplayRejectsUnauthorizedDirectoryACL|TestWindowsReplayRejectsUnauthorizedFileACL|TestWindowsReplayRejectsInsecurePreexistingReplayState|TestWindowsReplayRejectsInsecurePreexistingLockFile" -count=1 -v
       - name: Provision distinct Windows service account for native state test
