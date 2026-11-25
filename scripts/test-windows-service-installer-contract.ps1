@@ -52,7 +52,7 @@ Assert-Contains $validation 'recovery-authority-trust.json' 'Installed-service v
 
 Assert-Contains $installer "[string]`$StateDir = (Join-Path `$InstallDir 'data\agent')" 'Fresh service state must default beneath the protected Program Files install root.'
 Assert-Contains $installer "-Root `$InstallDir -Label 'StateDir'" 'Installer must reject service state outside the selected protected install root.'
-Assert-Contains $installer 'Recorded service state exists' 'Fresh install must not silently create a replacement identity when recorded state remains.'
+Assert-Contains $installer 'Authenticated installer metadata exists but the service is absent' 'Fresh install must not regenerate identity when a previously managed service is missing.'
 Assert-Contains $installer 'Legacy ProgramData service state exists; refusing to create a replacement identity' 'Fresh install must fail closed when legacy ProgramData state remains, regardless of metadata state.'
 Assert-Contains $installer 'Existing service state location is not authenticated by protected installer metadata' 'Upgrade must fail closed when existing state location metadata is unavailable.'
 Assert-Contains $installer 'Refusing to redirect or overwrite identity state' 'Upgrade must not silently redirect existing cryptographic state.'
