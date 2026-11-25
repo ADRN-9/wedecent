@@ -32,20 +32,20 @@ type DirectAuthorizer interface {
 }
 
 type Server struct {
-	Identity               *identity.Identity
-	Trust                  *trust.Store
-	StateDir               string
-	Shell                  string
-	Logger                 *slog.Logger
-	DirectAuthorizer       DirectAuthorizer
-	RecoveryAuthority              audit.RecoveryAuthority
-	RecoveryAuthorityTrust         audit.RecoveryAuthorityTrust
-	RecoveryAuthorityScope         string
+	Identity                      *identity.Identity
+	Trust                         *trust.Store
+	StateDir                      string
+	Shell                         string
+	Logger                        *slog.Logger
+	DirectAuthorizer              DirectAuthorizer
+	RecoveryAuthority             audit.RecoveryAuthority
+	RecoveryAuthorityTrust        audit.RecoveryAuthorityTrust
+	RecoveryAuthorityScope        string
 	legacyPairingRecoveryForTests bool
-	FileTransfer                   *FileTransferRuntime
-	PortForwarding                 *PortForwardRuntime
-	pairingCompletionAudit func(*audit.Log, audit.Event) error
-	Policy                 SessionPolicy
+	FileTransfer                  *FileTransferRuntime
+	PortForwarding                *PortForwardRuntime
+	pairingCompletionAudit        func(*audit.Log, audit.Event) error
+	Policy                        SessionPolicy
 }
 
 func (s *Server) ServeConn(raw net.Conn) {
