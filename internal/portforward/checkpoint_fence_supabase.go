@@ -38,6 +38,7 @@ type SupabaseCheckpointFenceConfig struct {
 	Hostname                   string
 	Port                       uint16
 	SPKISHA256Pins             string
+	AnonAPIKey                 string
 	AuthorityTokenSource       CheckpointAuthorityTokenSource
 	ActorID                    string
 	PrimarySigner              crypto.Signer
@@ -50,6 +51,7 @@ type SupabaseCheckpointFenceConfig struct {
 
 type SupabaseCheckpointFencePrimary struct {
 	endpoint                   string
+	anonAPIKey                 string
 	actorID                    string
 	authorityTokenSource       CheckpointAuthorityTokenSource
 	primarySigner              crypto.Signer
@@ -123,6 +125,7 @@ type checkpointFenceAckWire struct {
 
 func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*SupabaseCheckpointFencePrimary, error) {
 	if !validCheckpointAuditAuthority(config.Hostname, config.Port) ||
+		strings.TrimSpace(config.AnonAPIKey) == "" || strings.TrimSpace(config.AnonAPIKey) != config.AnonAPIKey ||
 		config.AuthorityTokenSource == nil || !canonicalUUID(config.ActorID) || config.PrimarySigner == nil ||
 		config.WitnessSetVersion == "" || len(config.WitnessSetVersion) > 128 ||
 		len(config.CheckpointHeadKey) != ed25519.PublicKeySize ||
@@ -194,7 +197,7 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 		now = time.Now
 	}
 	return &SupabaseCheckpointFencePrimary{
-		endpoint: endpoint, actorID: config.ActorID, authorityTokenSource: config.AuthorityTokenSource,
+		endpoint: endpoint, anonAPIKey: config.AnonAPIKey, actorID: config.ActorID, authorityTokenSource: config.AuthorityTokenSource,
 		primarySigner: config.PrimarySigner, primaryKey: append(ed25519.PublicKey(nil), publicKey...),
 		checkpointHeadKey:          append(ed25519.PublicKey(nil), config.CheckpointHeadKey...),
 		revocationAuthorizationKey: append(ed25519.PublicKey(nil), config.RevocationAuthorizationKey...),
@@ -816,7 +819,7 @@ func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, a
 	if tokenErr != nil || !validCheckpointAuthorityJWT(authorityJWT, p.actorID, p.now) {
 		return ErrCheckpointUnavailable
 	}
-	request.Header.Set("apikey", authorityJWT)
+	request.Header.Set("apikey", p.anonAPIKey)
 	request.Header.Set("Authorization", "Bearer "+authorityJWT)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
