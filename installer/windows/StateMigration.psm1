@@ -1073,7 +1073,7 @@ public static class WeDecentMigrationFileIdentityApi {
     public static extern bool GetFileInformationByHandle(IntPtr handle, out BY_HANDLE_FILE_INFORMATION info);
     [DllImport("kernel32.dll", SetLastError=true)]
     public static extern bool CloseHandle(IntPtr handle);
-    private const uint FILE_READ_ATTRIBUTES=0x80, FILE_LIST_DIRECTORY=0x1, FILE_ADD_FILE=0x2, FILE_ADD_SUBDIRECTORY=0x4, DELETE_ACCESS=0x10000;
+    private const uint FILE_READ_ATTRIBUTES=0x80, FILE_LIST_DIRECTORY=0x1, FILE_ADD_FILE=0x2, FILE_ADD_SUBDIRECTORY=0x4, FILE_TRAVERSE=0x20, DELETE_ACCESS=0x10000;
     private const uint SHARE_READ_WRITE=3, OPEN_EXISTING=3;
     private const uint BACKUP_SEMANTICS=0x02000000, OPEN_REPARSE_POINT=0x00200000;
     private static void Inject(string name) {
@@ -1148,7 +1148,7 @@ public static class WeDecentMigrationFileIdentityApi {
             throw new ArgumentException("Publication target must be a single path component.");
         IntPtr parent=IntPtr.Zero, source=IntPtr.Zero;
         try {
-            parent=Open(parentPath, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY|FILE_ADD_FILE|FILE_ADD_SUBDIRECTORY, SHARE_READ_WRITE, BACKUP_SEMANTICS);
+            parent=Open(parentPath, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY|FILE_ADD_FILE|FILE_ADD_SUBDIRECTORY|FILE_TRAVERSE, SHARE_READ_WRITE, BACKUP_SEMANTICS);
             BY_HANDLE_FILE_INFORMATION parentInfo=Info(parent);
             if ((parentInfo.FileAttributes & 0x410)!=0x10)
                 throw new InvalidOperationException("Publication parent is not a real directory.");
