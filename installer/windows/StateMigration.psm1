@@ -555,7 +555,7 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal transaction identifier is invalid.'
     }
     foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path',
-        'service_name', 'service_sid', 'agent_path', 'original_service_path',
+        'service_name', 'service_sid', 'service_start_name', 'service_start_mode', 'agent_path', 'original_service_path',
         'updated_service_path', 'original_metadata_json')) {
         if ([string]::IsNullOrWhiteSpace([string]$journal.$field)) {
             throw "Migration journal field '$field' is missing."
@@ -576,8 +576,547 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal path does not match the protected journal file.'
     }
     [void](ConvertTo-WeDecentMigrationSid -Sid ([string]$journal.service_sid))
-    if ([string]$journal.service_name -notmatch '^[A-Za-z0-9_.-]{1,128}$') {
-        throw 'Migration journal contains an invalid SCM service name.'
+    if ([string]$journal.service_name -notmatch '^[A-Za-z0-9_.-]{1,128}
+    foreach ($digestField in @('source_manifest_sha256', 'source_stable_manifest_sha256', 'destination_manifest_sha256')) {
+        if (-not [string]::IsNullOrWhiteSpace([string]$journal.$digestField) -and
+            [string]$journal.$digestField -notmatch '^[a-f0-9]{64}$') {
+            throw "Migration journal digest '$digestField' is malformed."
+        }
+    }
+    $originalMetadata = [string]$journal.original_metadata_json | ConvertFrom-Json
+    if ([int]$originalMetadata.schema -ne 1 -or
+        [string]$originalMetadata.product -cne 'WeDecent' -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$originalMetadata.state_dir),
+            [string]$journal.source, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Migration journal original metadata does not authenticate its source state.'
+    }
+    return $journal
+}
+
+function Invoke-WeDecentMigrationStatePathCheck {
+    param(
+        [Parameter(Mandatory = $true)][string]$AgentPath,
+        [Parameter(Mandatory = $true)][string]$StatePath,
+        [string]$ServiceSid,
+        [switch]$PrepareParent
+    )
+
+    $agent = Get-Item -LiteralPath $AgentPath -Force -ErrorAction Stop
+    if ($agent.PSIsContainer -or ($agent.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'State path verifier must be a regular executable file.'
+    }
+    $psi = [Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = $agent.FullName
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    [void]$psi.ArgumentList.Add('state-path-check')
+    [void]$psi.ArgumentList.Add("--state=$StatePath")
+    if ($PrepareParent) {
+        [void]$psi.ArgumentList.Add('--prepare-parent')
+    }
+    if (-not [string]::IsNullOrWhiteSpace($ServiceSid)) {
+        [void]$psi.ArgumentList.Add("--service-sid=$ServiceSid")
+    }
+    $process = [Diagnostics.Process]::Start($psi)
+    try {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) {
+            throw "Protected state path verification failed: $($stderr.Trim())"
+        }
+        return $true
+    } finally {
+        $process.Dispose()
+    }
+}
+
+function Set-WeDecentMigrationAdminDirectory {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$AgentPath
+    )
+
+    $full = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $parentProbe = Join-Path $full '.wedecent-migration-parent-probe'
+    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $parentProbe -PrepareParent)
+    $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
+    $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($admins)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($admins, $system)) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance,
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $full -AclObject $acl -ErrorAction Stop
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $full)
+}
+
+function Assert-WeDecentMigrationAdminDirectory {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin @('S-1-5-18', 'S-1-5-32-544') -or -not $acl.AreAccessRulesProtected) {
+        throw "Migration parent is not protected by a trusted owner and DACL: $full"
+    }
+    $allowed = @('S-1-5-18', 'S-1-5-32-544')
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference.Value -notin $allowed -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw "Migration parent contains an unexpected access rule: $full"
+        }
+    }
+    return $true
+}
+
+function Assert-WeDecentMigrationMetadataAcl {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Installer metadata must be a regular non-reparse file.'
+    }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    $allowed = @('S-1-5-18', 'S-1-5-32-544')
+    if ($owner -notin $allowed -or -not $acl.AreAccessRulesProtected) {
+        throw 'Installer metadata owner or DACL is not trusted.'
+    }
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference.Value -notin $allowed -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw 'Installer metadata contains an unexpected access rule.'
+        }
+    }
+    return $acl
+}
+
+function Write-WeDecentMigrationMetadata {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$StatePath
+    )
+
+    $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
+    $metadata = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+    if ([int]$metadata.schema -ne 1 -or [string]$metadata.product -cne 'WeDecent') {
+        throw 'Cannot migrate unauthenticated or unsupported installer metadata.'
+    }
+    $metadata.state_dir = [IO.Path]::GetFullPath($StatePath)
+    $metadata.updated_at = [DateTime]::UtcNow.ToString('o')
+    $json = ConvertTo-Json -InputObject $metadata -Depth 10
+    $temp = Join-Path (Split-Path -Parent $Path) ('.installer-migration-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $backup = $Path + '.migration-previous'
+    try {
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($json + [Environment]::NewLine)
+        $stream = [IO.FileStream]::new($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        Set-Acl -LiteralPath $temp -AclObject $acl -ErrorAction Stop
+        [IO.File]::Replace($temp, $Path, $backup, $true)
+        Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+        $verified = Get-Content -LiteralPath $Path -Raw -ErrorAction Stop | ConvertFrom-Json
+        if ([IO.Path]::GetFullPath([string]$verified.state_dir) -ine [IO.Path]::GetFullPath($StatePath)) {
+            throw 'Authenticated installer metadata failed post-migration state-path verification.'
+        }
+        [void](Assert-WeDecentMigrationMetadataAcl -Path $Path)
+    } finally {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Restore-WeDecentMigrationMetadata {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$OriginalJson
+    )
+
+    $acl = Assert-WeDecentMigrationMetadataAcl -Path $Path
+    $temp = Join-Path (Split-Path -Parent $Path) ('.installer-restore-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $backup = $Path + '.migration-restore-previous'
+    try {
+        $bytes = [Text.UTF8Encoding]::new($false).GetBytes($OriginalJson)
+        $stream = [IO.FileStream]::new($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None, 4096, [IO.FileOptions]::WriteThrough)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        Set-Acl -LiteralPath $temp -AclObject $acl -ErrorAction Stop
+        [IO.File]::Replace($temp, $Path, $backup, $true)
+        Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+    } finally {
+        if (Test-Path -LiteralPath $temp) { Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+function Set-WeDecentMigrationServicePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$ServiceSid,
+        [Parameter(Mandatory = $true)][string]$StartMode
+    )
+
+    $output = & sc.exe config $ServiceName "binPath= $BinaryPath" 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "SCM rejected the migration service path: $($output -join [Environment]::NewLine)"
+    }
+    $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+    if (-not $service -or [string]$service.PathName -cne $BinaryPath) {
+        throw 'SCM service path did not persist exactly as requested.'
+    }
+    $actualSid = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($actualSid -cne $ServiceSid -or [string]$service.StartMode -cne $StartMode) {
+        throw 'SCM service account or start mode changed during the state migration transition.'
+    }
+}
+
+function Invoke-WeDecentMigrationFaultPoint {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [string]$FaultAt
+    )
+
+    $selected = $FaultAt
+    if ([string]::IsNullOrWhiteSpace($selected)) {
+        $selected = [Environment]::GetEnvironmentVariable('WEDECENT_MIGRATION_FAULT_AT')
+    }
+    $selectedPoints = @($selected -split '[,;]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    if ($selectedPoints -ccontains $Name) {
+        throw "Injected WeDecent migration interruption at $Name."
+    }
+}
+
+function Assert-WeDecentMigrationRollbackIdentityContinuity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Candidate,
+        [Parameter(Mandatory = $true)][string]$AgentPath
+    )
+
+    $sourceCertificate = (Get-FileHash -LiteralPath (Join-Path $Source 'identity.crt') -Algorithm SHA256).Hash
+    $candidateCertificate = (Get-FileHash -LiteralPath (Join-Path $Candidate 'identity.crt') -Algorithm SHA256).Hash
+    if ($sourceCertificate -cne $candidateCertificate) {
+        throw 'Rollback candidate certificate differs from the original device certificate.'
+    }
+    $sourceIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $Source
+    $candidateIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $Candidate
+    if ($sourceIdentity.DeviceId -cne $candidateIdentity.DeviceId -or
+        $sourceIdentity.Fingerprint -cne $candidateIdentity.Fingerprint) {
+        throw 'Rollback candidate does not preserve the original cryptographic device identity.'
+    }
+    return $true
+}
+
+function Assert-WeDecentMigrationPartialTreeSafe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceSid
+    )
+
+    $root = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $service = ConvertTo-WeDecentMigrationSid -Sid $ServiceSid
+    $allowed = @($service.Value, 'S-1-5-18', 'S-1-5-32-544')
+    $paths = @($root) + @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop | ForEach-Object FullName)
+    foreach ($entryPath in $paths) {
+        $item = Get-Item -LiteralPath $entryPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Interrupted migration staging contains a reparse point: $entryPath"
+        }
+        $acl = Get-Acl -LiteralPath $entryPath -ErrorAction Stop
+        $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($owner -notin $allowed) {
+            throw "Interrupted migration staging has an untrusted owner: $entryPath"
+        }
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            if ($rule.IdentityReference.Value -notin $allowed -or
+                $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+                throw "Interrupted migration staging has an unexpected access rule: $entryPath"
+            }
+        }
+    }
+    return $true
+}
+
+function Restore-WeDecentMigrationTransaction {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$Journal,
+        [string]$FaultAt
+    )
+
+    $Journal.phase = 'RollingBack'
+    Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStarted' -FaultAt $FaultAt
+    $service = Get-Service -Name $Journal.service_name -ErrorAction Stop
+    if ($service.Status -ne 'Stopped') {
+        Stop-Service -Name $Journal.service_name -Force -ErrorAction Stop
+        (Get-Service -Name $Journal.service_name).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    }
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceStopped' -FaultAt $FaultAt
+    Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path -ServiceSid $Journal.service_sid -StartMode $Journal.service_start_mode
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt $FaultAt
+    Restore-WeDecentMigrationMetadata -Path $Journal.metadata_path -OriginalJson $Journal.original_metadata_json
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackMetadataRestored' -FaultAt $FaultAt
+    if ([bool]$Journal.service_was_running) {
+        Start-Service -Name $Journal.service_name -ErrorAction Stop
+        (Get-Service -Name $Journal.service_name).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    }
+    Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceRestarted' -FaultAt $FaultAt
+    foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
+        [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
+        if ($candidate -ceq [string]$Journal.staging -and
+            [string]::IsNullOrWhiteSpace([string]$Journal.source_manifest_sha256)) {
+            [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid)
+        } else {
+            $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
+            $digest = Get-WeDecentMigrationStableManifestDigest -Manifest $manifest
+            if ($digest -cne [string]$Journal.source_stable_manifest_sha256) {
+                throw "Rollback refuses to remove changed migration copy: $candidate"
+            }
+            [void](Assert-WeDecentMigrationRollbackIdentityContinuity -Source $Journal.source -Candidate $candidate -AgentPath $Journal.agent_path)
+        }
+        Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
+    }
+    $Journal.phase = 'RolledBack'
+    Write-WeDecentMigrationJournal -Path $Journal.journal_path -Journal $Journal
+    Invoke-WeDecentMigrationFaultPoint -Name 'RolledBack' -FaultAt $FaultAt
+}
+
+function Recover-WeDecentStateMigration {
+    param(
+        [Parameter(Mandatory = $true)][string]$JournalPath,
+        [Parameter(Mandatory = $true)][string]$AgentPath,
+        [Parameter(Mandatory = $true)][string]$MetadataPath,
+        [Parameter(Mandatory = $true)][string]$ServiceName
+    )
+
+    if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $false }
+    $journal = Read-WeDecentMigrationJournal -Path $JournalPath
+    if (-not [string]::Equals([string]$journal.metadata_path, [IO.Path]::GetFullPath($MetadataPath), [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$journal.service_name -cne $ServiceName) {
+        throw 'Migration recovery journal does not match this installer metadata path and service.'
+    }
+    if ($journal.phase -in @('Committed', 'RolledBack')) { return $false }
+    $journal | Add-Member -NotePropertyName journal_path -NotePropertyValue ([IO.Path]::GetFullPath($JournalPath)) -Force
+    $journal | Add-Member -NotePropertyName agent_path -NotePropertyValue ([IO.Path]::GetFullPath($AgentPath)) -Force
+    Restore-WeDecentMigrationTransaction -Journal $journal
+    return $true
+}
+
+function Get-WeDecentMigrationUpdatedServicePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$ServicePath,
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    $statePattern = '(?i)(?<!\S)"--state=([^"]+)"|(?<!\S)--state="([^"]+)"|(?<!\S)--state=([^\s"]+)'
+    $matches = [regex]::Matches($ServicePath, $statePattern)
+    if ($matches.Count -ne 1) {
+        throw 'SCM command line must contain exactly one unambiguous --state argument.'
+    }
+    $match = $matches[0]
+    $matchedState = if ($match.Groups[1].Success) {
+        $match.Groups[1].Value
+    } elseif ($match.Groups[2].Success) {
+        $match.Groups[2].Value
+    } else {
+        $match.Groups[3].Value
+    }
+    if (-not [string]::Equals($matchedState, [IO.Path]::GetFullPath($Source), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SCM command line does not reference the authenticated migration source.'
+    }
+    return [regex]::Replace(
+        $ServicePath,
+        $statePattern,
+        [System.Text.RegularExpressions.MatchEvaluator]{
+            param($entry)
+            return '"--state=' + [IO.Path]::GetFullPath($Destination) + '"'
+        },
+        [Text.RegularExpressions.RegexOptions]::CultureInvariant
+    )
+}
+
+function Invoke-WeDecentStateMigration {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [Parameter(Mandatory = $true)][string]$AgentPath,
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][string]$ServiceSid,
+        [Parameter(Mandatory = $true)][string]$MetadataPath,
+        [Parameter(Mandatory = $true)][string]$JournalPath,
+        [string]$FaultAt
+    )
+
+    $sourceFull = [IO.Path]::GetFullPath($Source)
+    $destinationFull = [IO.Path]::GetFullPath($Destination)
+    if ([string]::Equals($sourceFull.TrimEnd('\'), $destinationFull.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Migration source and destination are identical.'
+    }
+    if (Test-Path -LiteralPath $destinationFull) {
+        throw 'Migration destination already exists; refusing to merge or overwrite existing state.'
+    }
+    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $sourceFull -ServiceSid $ServiceSid)
+    $destinationParent = Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $destinationFull)
+    [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
+    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
+
+    $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+    if (-not $service) { throw "Migration service '$ServiceName' does not exist." }
+    $account = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($account -cne $ServiceSid) { throw 'SCM service account SID differs from the migration target SID.' }
+    $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath ([string]$service.PathName) -Source $sourceFull -Destination $destinationFull
+    if ($updatedPath -ceq [string]$service.PathName) { throw 'Could not construct an unambiguous destination SCM command line.' }
+
+    [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $JournalPath) -AgentPath $AgentPath)
+    $metadataItem = Get-Item -LiteralPath $MetadataPath -Force -ErrorAction Stop
+    if ($metadataItem.PSIsContainer -or ($metadataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Installer metadata is not a regular file.'
+    }
+    $originalMetadataJson = Get-Content -LiteralPath $MetadataPath -Raw -ErrorAction Stop
+    $metadata = $originalMetadataJson | ConvertFrom-Json
+    if (-not [string]::Equals([IO.Path]::GetFullPath([string]$metadata.state_dir), $sourceFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Authenticated installer metadata does not match the migration source.'
+    }
+
+    $transactionId = [Guid]::NewGuid().ToString('D')
+    $staging = Join-Path $destinationParent ('.wedecent-migration-' + $transactionId.Replace('-', ''))
+    $journal = [pscustomobject]@{
+        schema = 1
+        product = 'WeDecent'
+        transaction_id = $transactionId
+        phase = 'Prepared'
+        source = $sourceFull
+        destination = $destinationFull
+        staging = $staging
+        service_name = $ServiceName
+        service_sid = $ServiceSid
+        service_start_name = [string]$service.StartName
+        service_start_mode = [string]$service.StartMode
+        agent_path = [IO.Path]::GetFullPath($AgentPath)
+        service_was_running = ([string]$service.State -eq 'Running')
+        original_service_path = [string]$service.PathName
+        updated_service_path = $updatedPath
+        metadata_path = [IO.Path]::GetFullPath($MetadataPath)
+        original_metadata_json = $originalMetadataJson
+        source_manifest_sha256 = ''
+        source_stable_manifest_sha256 = ''
+        destination_manifest_sha256 = ''
+        journal_path = [IO.Path]::GetFullPath($JournalPath)
+        updated_utc = ''
+    }
+    Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+    try {
+        Invoke-WeDecentMigrationFaultPoint -Name 'Prepared' -FaultAt $FaultAt
+        if ($journal.service_was_running) {
+            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+            (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        }
+        Invoke-WeDecentMigrationFaultPoint -Name 'ServiceStopped' -FaultAt $FaultAt
+        $journal.phase = 'Copying'
+        Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'Copying' -FaultAt $FaultAt
+        $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath
+        $journal.source_manifest_sha256 = $copy.SourceManifestSHA256
+        $journal.source_stable_manifest_sha256 = $copy.SourceStableManifestSHA256
+        $journal.identity = $copy.Identity
+        $journal.phase = 'Copied'
+        Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'Copied' -FaultAt $FaultAt
+        $protectedIdentity = Invoke-WeDecentMigrationIdentityProtect -AgentPath $AgentPath -StatePath $staging
+        $journal.identity = Assert-WeDecentMigrationProtectedIdentityContinuity -Source $sourceFull -Destination $staging -AgentPath $AgentPath
+        if ($journal.identity.DeviceId -cne $protectedIdentity.DeviceId -or
+            $journal.identity.Fingerprint -cne $protectedIdentity.Fingerprint) {
+            throw 'Protected identity result differs from the verified migration identity.'
+        }
+        $journal.destination_manifest_sha256 = Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $staging)
+        Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'IdentityProtected' -FaultAt $FaultAt
+        $journal.phase = 'Verified'
+        Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'Verified' -FaultAt $FaultAt
+
+        [IO.Directory]::Move($staging, $destinationFull)
+        [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull -ServiceSid $ServiceSid)
+        $journal.phase = 'StatePublished'
+        Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'StatePublished' -FaultAt $FaultAt
+
+        Set-WeDecentMigrationServicePath -ServiceName $ServiceName -BinaryPath $updatedPath -ServiceSid $ServiceSid -StartMode ([string]$service.StartMode)
+        $journal.phase = 'ServiceReconfigured'
+        Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        Invoke-WeDecentMigrationFaultPoint -Name 'ServiceReconfigured' -FaultAt $FaultAt
+        Write-WeDecentMigrationMetadata -Path $MetadataPath -StatePath $destinationFull
+        Invoke-WeDecentMigrationFaultPoint -Name 'MetadataUpdated' -FaultAt $FaultAt
+        if ($journal.service_was_running) {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+            (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        }
+        Invoke-WeDecentMigrationFaultPoint -Name 'ServiceRestarted' -FaultAt $FaultAt
+        $destinationIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $destinationFull
+        if ($destinationIdentity.DeviceId -cne $copy.Identity.DeviceId -or
+            $destinationIdentity.Fingerprint -cne $copy.Identity.Fingerprint) {
+            throw 'Post-restart identity verification failed after state migration.'
+        }
+        $journal.phase = 'Committed'
+        Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
+        return $journal
+    } catch {
+        $failure = $_
+        try {
+            $journal | Add-Member -NotePropertyName journal_path -NotePropertyValue ([IO.Path]::GetFullPath($JournalPath)) -Force
+            Restore-WeDecentMigrationTransaction -Journal $journal -FaultAt $FaultAt
+        } catch {
+            throw "Migration failed ($($failure.Exception.Message)); durable rollback is pending and original state was preserved: $($_.Exception.Message)"
+        }
+        throw "Migration failed and was rolled back; original state remains intact: $($failure.Exception.Message)"
+    } finally {
+        if (Test-Path -LiteralPath $staging -PathType Container) {
+            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+}
+
+Export-ModuleMember -Function @(
+    'Get-WeDecentMigrationManifest',
+    'Get-WeDecentMigrationManifestDigest',
+    'Get-WeDecentMigrationStableManifestDigest',
+    'Copy-WeDecentMigrationTreeVerified',
+    'Set-WeDecentMigrationDirectoryAcl',
+    'Assert-WeDecentMigrationDirectoryAcl',
+    'Set-WeDecentMigrationTreeOwner',
+    'Assert-WeDecentMigrationTreeAcl',
+    'Assert-WeDecentMigrationPartialTreeSafe',
+    'Assert-WeDecentMigrationRollbackIdentityContinuity',
+    'Assert-WeDecentMigrationIdentityContinuity',
+    'Assert-WeDecentMigrationProtectedIdentityContinuity',
+    'Invoke-WeDecentMigrationIdentityCheck',
+    'Invoke-WeDecentMigrationIdentityProtect',
+    'Write-WeDecentMigrationJournal',
+    'Read-WeDecentMigrationJournal',
+    'Invoke-WeDecentMigrationStatePathCheck',
+    'Set-WeDecentMigrationAdminDirectory',
+    'Assert-WeDecentMigrationAdminDirectory',
+    'Set-WeDecentMigrationAdminFileAcl',
+    'Assert-WeDecentMigrationMetadataAcl',
+    'Recover-WeDecentStateMigration',
+    'Invoke-WeDecentMigrationFaultPoint',
+    'Get-WeDecentMigrationUpdatedServicePath',
+    'Invoke-WeDecentStateMigration'
+)
+ -or
+        [string]$journal.service_start_mode -notin @('Boot', 'System', 'Auto', 'Manual', 'Disabled')) {
+        throw 'Migration journal contains an invalid SCM service configuration.'
     }
     foreach ($digestField in @('source_manifest_sha256', 'source_stable_manifest_sha256', 'destination_manifest_sha256')) {
         if (-not [string]::IsNullOrWhiteSpace([string]$journal.$digestField) -and
@@ -760,7 +1299,9 @@ function Restore-WeDecentMigrationMetadata {
 function Set-WeDecentMigrationServicePath {
     param(
         [Parameter(Mandatory = $true)][string]$ServiceName,
-        [Parameter(Mandatory = $true)][string]$BinaryPath
+        [Parameter(Mandatory = $true)][string]$BinaryPath,
+        [Parameter(Mandatory = $true)][string]$ServiceSid,
+        [Parameter(Mandatory = $true)][string]$StartMode
     )
 
     $output = & sc.exe config $ServiceName "binPath= $BinaryPath" 2>&1
@@ -770,6 +1311,10 @@ function Set-WeDecentMigrationServicePath {
     $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
     if (-not $service -or [string]$service.PathName -cne $BinaryPath) {
         throw 'SCM service path did not persist exactly as requested.'
+    }
+    $actualSid = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($actualSid -cne $ServiceSid -or [string]$service.StartMode -cne $StartMode) {
+        throw 'SCM service account or start mode changed during the state migration transition.'
     }
 }
 
@@ -856,7 +1401,7 @@ function Restore-WeDecentMigrationTransaction {
         (Get-Service -Name $Journal.service_name).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
     }
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceStopped' -FaultAt $FaultAt
-    Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path
+    Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path -ServiceSid $Journal.service_sid -StartMode $Journal.service_start_mode
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt $FaultAt
     Restore-WeDecentMigrationMetadata -Path $Journal.metadata_path -OriginalJson $Journal.original_metadata_json
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackMetadataRestored' -FaultAt $FaultAt
