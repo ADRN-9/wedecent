@@ -30,6 +30,7 @@ func TestBrokerReservationIsNotClaimableUntilActivated(t *testing.T) {
 		t.Fatalf("duplicate Take = %v, want ErrNoAgent", err)
 	}
 	claimed.finish()
+	_ = claimed.conn.Close()
 }
 
 func TestBrokerConcurrentTakeClaimsSlotExactlyOnce(t *testing.T) {
@@ -120,28 +121,42 @@ func TestBrokerConcurrentParkAndTake(t *testing.T) {
 	broker := NewBroker(32, time.Minute)
 	const workers = 32
 	peers := make([]net.Conn, workers)
+	var parkWG sync.WaitGroup
+	startPark := make(chan struct{})
+	parkWG.Add(workers)
 	for i := range workers {
-		server, client := net.Pipe()
-		peers[i] = client
-		defer client.Close()
-		slot, err := broker.Reserve("device", server)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := broker.Activate("device", slot); err != nil {
-			t.Fatal(err)
-		}
+		go func(i int) {
+			defer parkWG.Done()
+			<-startPark
+			server, client := net.Pipe()
+			peers[i] = client
+			slot, err := broker.Reserve("device", server)
+			if err != nil {
+				t.Errorf("Reserve: %v", err)
+				_ = client.Close()
+				return
+			}
+			if err := broker.Activate("device", slot); err != nil {
+				t.Errorf("Activate: %v", err)
+				_ = client.Close()
+			}
+		}(i)
 	}
-	var wg sync.WaitGroup
+	close(startPark)
+	parkWG.Wait()
+
+	var takeWG sync.WaitGroup
 	var mu sync.Mutex
 	claims := 0
-	wg.Add(workers)
-	start := make(chan struct{})
+	startTake := make(chan struct{})
+	takeWG.Add(workers)
 	for range workers {
 		go func() {
-			defer wg.Done()
-			<-start
-			if _, err := broker.Take("device"); err == nil {
+			defer takeWG.Done()
+			<-startTake
+			if claimed, err := broker.Take("device"); err == nil {
+				claimed.finish()
+				_ = claimed.conn.Close()
 				mu.Lock()
 				claims++
 				mu.Unlock()
@@ -150,12 +165,14 @@ func TestBrokerConcurrentParkAndTake(t *testing.T) {
 			}
 		}()
 	}
-	close(start)
-	wg.Wait()
+	close(startTake)
+	takeWG.Wait()
 	if claims != workers {
 		t.Fatalf("successful claims = %d, want %d", claims, workers)
 	}
 	for _, peer := range peers {
-		_ = peer.Close()
+		if peer != nil {
+			_ = peer.Close()
+		}
 	}
 }
