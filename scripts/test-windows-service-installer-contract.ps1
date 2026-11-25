@@ -247,6 +247,7 @@ try {
         original_service_path = 'synthetic-original-service-command'
         updated_service_path = 'synthetic-updated-service-command'
         source_manifest_sha256 = $copy.SourceManifestSHA256
+        source_stable_manifest_sha256 = $copy.SourceStableManifestSHA256
         destination_manifest_sha256 = $destinationManifest
         updated_utc = ''
     }
