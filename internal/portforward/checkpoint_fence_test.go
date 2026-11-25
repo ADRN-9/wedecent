@@ -78,7 +78,7 @@ func TestCheckpointFenceTokenAuthenticatesCommonOrdering(t *testing.T) {
 	}
 	changed := token
 	changed.Action = CheckpointFenceRevoke
-	if _, err := CheckpointFenceTokenDigest(changed); !errors.Is(err, ErrCheckpointStale) {
+	if _, err := CheckpointFenceTokenDigest(changed); !errors.Is(err, ErrCheckpointIntegrity) {
 		t.Fatalf("finalize token accepted a changed action/epoch: %v", err)
 	}
 	changed = token
