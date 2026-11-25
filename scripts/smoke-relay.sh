@@ -35,6 +35,7 @@ wait_for_log() {
     fi
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 100 ]; then
+      printf "timed out waiting for %s in %s after 10 seconds (pid %s)\\n" "$pattern" "$file" "$pid" >&2
       cat "$file" >&2 2>/dev/null || true
       return 1
     fi
@@ -51,8 +52,7 @@ go build -o "$TMP/bin/recovery-authority" "$ROOT/cmd/wd-smoke-recovery-authority
 
 "$TMP/bin/auth-server" --listen 127.0.0.1:18444 >"$TMP/auth.log" 2>&1 &
 AUTH_PID=$!
-sleep 1
-kill -0 "$AUTH_PID"
+wait_for_log "$TMP/auth.log" "smoke authorization server listening" "$AUTH_PID"
 
 "$TMP/bin/recovery-authority" --listen 127.0.0.1:18445 --trust-file "$TMP/recovery-trust.json" --ca-file "$TMP/recovery-ca.pem" --pin-file "$TMP/recovery-pin.txt" --token smoke-token >"$TMP/recovery-authority.log" 2>&1 &
 AUTHORITY_PID=$!
