@@ -250,8 +250,16 @@ begin
     select * into v_token_event from public.checkpoint_operation_events
      where operation_id = p_operation_id and event_type = 'fence_reserved'
      order by event_id desc limit 1;
-    if not found
-       or v_token_event.event_payload ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex') then
+    if not found then
+        raise exception 'exact signed checkpoint token is unavailable' using errcode = '55000';
+    end if;
+    if v_token_event.event_payload ->> 'token_sha256' is distinct from pg_catalog.encode(p_token_sha256, 'hex') then
+        if exists (
+            select 1 from public.checkpoint_operation_events
+             where operation_id = p_operation_id and event_type = 'fence_committed'
+        ) then
+            raise exception 'checkpoint committed token digest conflicts' using errcode = '23505';
+        end if;
         raise exception 'exact signed checkpoint token is unavailable' using errcode = '55000';
     end if;
     v_token := v_token_event.event_payload -> 'token';
