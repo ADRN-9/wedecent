@@ -51,6 +51,8 @@ func main() {
 		err = runIdentity(os.Args[2:])
 	case "identity-check":
 		err = runIdentityCheck(os.Args[2:])
+	case "state-path-check":
+		err = runStatePathCheck(os.Args[2:])
 	case "version":
 		err = buildinfo.Write(os.Stdout, "wd-agent")
 	case "release-trust":
@@ -164,6 +166,20 @@ func runIdentityCheck(args []string) error {
 
 func loadIdentityForCheck(stateDir string) (*identity.Identity, error) {
 	return identity.Load(stateDir)
+}
+
+func runStatePathCheck(args []string) error {
+	state, _ := appdirs.Agent()
+	fs := flag.NewFlagSet("state-path-check", flag.ContinueOnError)
+	stateDir := fs.String("state", state, "agent state directory")
+	serviceSID := fs.String("service-sid", "", "expected dedicated Windows service SID")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*serviceSID) == "" {
+		return verifyMigrationStateParent(*stateDir)
+	}
+	return verifyMigrationStateForSID(*stateDir, strings.TrimSpace(*serviceSID))
 }
 
 func runEnrollmentProof(args []string) error {
@@ -1020,6 +1036,7 @@ Commands:
   init             Create identity and one-time pairing secret
   identity         Print device ID and fingerprint
   identity-check   Verify an existing identity without modifying state
+  state-path-check Validate protected Windows state ancestors and ownership
   version          Print build and release metadata
   enrollment-proof Print or sign a cryptographic device-enrollment request
   pairing-secret   Rotate and print a one-time pairing secret
