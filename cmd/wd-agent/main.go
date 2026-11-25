@@ -20,8 +20,8 @@ import (
 	"time"
 
 	"wedecent.com/wedecent/internal/account"
-	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/appdirs"
+	"wedecent.com/wedecent/internal/audit"
 	"wedecent.com/wedecent/internal/buildinfo"
 	"wedecent.com/wedecent/internal/discovery"
 	"wedecent.com/wedecent/internal/enrollment"
@@ -719,17 +719,17 @@ func runAgent(ctx context.Context, cfg serveConfig) error {
 	}
 
 	server := &session.Server{
-		Identity:         id,
-		Trust:            store,
-		StateDir:         cfg.StateDir,
-		Shell:            cfg.Shell,
-		Logger:           slog.Default(),
+		Identity:               id,
+		Trust:                  store,
+		StateDir:               cfg.StateDir,
+		Shell:                  cfg.Shell,
+		Logger:                 slog.Default(),
 		DirectAuthorizer:       directAuthorizer,
 		RecoveryAuthority:      recoveryAuthority,
 		RecoveryAuthorityTrust: authorityTrust,
-		FileTransfer:     fileTransferRuntime,
-		PortForwarding:   portForwardRuntime,
-		Policy:           cfg.sessionPolicy(),
+		FileTransfer:           fileTransferRuntime,
+		PortForwarding:         portForwardRuntime,
+		Policy:                 cfg.sessionPolicy(),
 	}
 
 	// Routing authority/trust/replay state is not loaded unless an operator
