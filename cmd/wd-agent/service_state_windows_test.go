@@ -146,7 +146,7 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	if programFiles == "" {
 		t.Fatal("ProgramFiles is required for a machine-wide service-state fixture")
 	}
-	parent := filepath.Join(programFiles, "WeDecent-C232-" + strconv.Itoa(os.Getpid()))
+	parent := filepath.Join(programFiles, "WeDecent-C232-"+strconv.Itoa(os.Getpid()))
 	if _, err := os.Lstat(parent); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("service-state fixture path already exists: %v", err)
 	}
