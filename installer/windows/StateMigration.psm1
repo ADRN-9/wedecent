@@ -416,7 +416,20 @@ function Read-WeDecentMigrationJournal {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Path)
 
+    [void](Assert-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $Path))
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin @('S-1-5-18', 'S-1-5-32-544') -or -not $acl.AreAccessRulesProtected) {
+        throw 'Migration journal owner or DACL is not trusted.'
+    }
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference.Value -notin @('S-1-5-18', 'S-1-5-32-544') -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw 'Migration journal contains an unexpected access rule.'
+        }
+    }
     if ($item.PSIsContainer -or
         ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Migration journal is not a regular file.'
@@ -711,6 +724,10 @@ function Invoke-WeDecentStateMigration {
     }
     Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
     try {
+        if ($journal.service_was_running) {
+            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+            (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        }
         $journal.phase = 'Copying'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath
@@ -722,10 +739,6 @@ function Invoke-WeDecentStateMigration {
         $journal.phase = 'Verified'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
 
-        if ($journal.service_was_running) {
-            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
-            (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-        }
         [IO.Directory]::Move($staging, $destinationFull)
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull -ServiceSid $ServiceSid)
         $journal.phase = 'StatePublished'
