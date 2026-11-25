@@ -37,7 +37,7 @@ func TestServeConfigFilePrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := parseServeConfig(expanded)
+	cfg, err := parseServeConfigForTest(t, expanded)
 	if err != nil {
 		t.Fatal(err)
 	}
