@@ -140,10 +140,36 @@ func RecoveryCheckpointSigningBytes(checkpoint RecoveryCheckpoint) ([]byte, erro
 		return nil, err
 	}
 	expected := sha256.Sum256(message)
-	if checkpoint.OperationID != hex.EncodeToString(expected[:]) || checkpoint.SignerKeyID == "" {
+	if checkpoint.OperationID != hex.EncodeToString(expected[:]) || checkpoint.SignerKeyID == "" || len(checkpoint.SignerKeyID) > 128 {
 		return nil, ErrRecoveryCheckpointConflict
 	}
-	return message, nil
+	if err := binary.Write(&b, binary.BigEndian, uint32(len(checkpoint.SignerKeyID))); err != nil {
+		return nil, err
+	}
+	b.WriteString(checkpoint.SignerKeyID)
+	return b.Bytes(), nil
+}
+
+// VerifyRecoveryCheckpointSignature binds the signer identity to the pinned
+// non-exportable provider public key. The corresponding private key is never
+// exported by the provider.
+func VerifyRecoveryCheckpointSignature(checkpoint RecoveryCheckpoint, primaryKey ed25519.PublicKey) error {
+	if len(primaryKey) != ed25519.PublicKeySize {
+		return ErrRecoveryAuthorityUnavailable
+	}
+	keyDigest := sha256.Sum256(primaryKey)
+	expectedKeyID := "ed25519:" + hex.EncodeToString(keyDigest[:])
+	if checkpoint.SignerKeyID != expectedKeyID || len(checkpoint.Signature) != ed25519.SignatureSize {
+		return ErrRecoveryCheckpointConflict
+	}
+	message, err := RecoveryCheckpointSigningBytes(checkpoint)
+	if err != nil {
+		return err
+	}
+	if !ed25519.Verify(primaryKey, message, checkpoint.Signature) {
+		return ErrRecoveryCheckpointConflict
+	}
+	return nil
 }
 
 // ValidateRecoveryCheckpoint verifies the exact CAS transition and strict-majority
