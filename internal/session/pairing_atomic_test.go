@@ -30,7 +30,7 @@ func pairingWireRequestWithoutLegacyRecovery(t *testing.T, server *Server, clien
 func pairingWireRequestMode(t *testing.T, server *Server, client *identity.Identity, serverFingerprint, secret, claimedID string, allowLegacy bool) (protocol.Frame, error) {
 	t.Helper()
 	if allowLegacy {
-		server.LegacyPairingRecoveryForTests = true
+		server.legacyPairingRecoveryForTests = true
 	}
 	clientSide, serverSide := net.Pipe()
 	done := make(chan struct{})
