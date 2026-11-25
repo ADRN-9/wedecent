@@ -584,12 +584,18 @@ func readHiddenLine(prompt string) (string, error) {
 	}
 	defer procSetConsoleMode.Call(h, uintptr(mode))
 	fmt.Fprint(os.Stderr, prompt)
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
-	fmt.Fprintln(os.Stderr)
-	if err != nil && len(line) == 0 {
-		return "", err
+	reader := bufio.NewReaderSize(os.Stdin, maxServicePasswordBytes+2)
+	line, err := reader.ReadSlice('\n')
+	if errors.Is(err, bufio.ErrBufferFull) {
+		for errors.Is(err, bufio.ErrBufferFull) { _, err = reader.ReadSlice('\n') }
+		fmt.Fprintln(os.Stderr)
+		return "", errors.New("service credential is too long")
 	}
-	return strings.TrimRight(line, "\r\n"), nil
+	fmt.Fprintln(os.Stderr)
+	if err != nil && len(line) == 0 { return "", err }
+	line = []byte(strings.TrimRight(string(line), "\r\n"))
+	if len(line) > maxServicePasswordBytes { return "", errors.New("service credential is too long") }
+	return string(line), nil
 }
 
 func serviceUsage() {
