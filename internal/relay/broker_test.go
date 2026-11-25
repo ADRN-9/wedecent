@@ -384,3 +384,96 @@ func TestDisconnectImmediatelyAfterActivationIsRejected(t *testing.T) {
 		t.Fatalf("claim after activated disconnect = %v, want ErrNoAgent", err)
 	}
 }
+
+
+func TestBrokerConcurrentRegistrationConnectionAndReconnection(t *testing.T) {
+	const workers = 16
+	const rounds = 12
+	broker := NewBroker(workers, time.Minute)
+	for round := 0; round < rounds; round++ {
+		start := make(chan struct{})
+		var registered sync.WaitGroup
+		registered.Add(workers)
+		for range workers {
+			go func() {
+				defer registered.Done()
+				<-start
+				server, peer := net.Pipe()
+				slot, err := broker.Reserve("shared-device", server)
+				if err != nil {
+					t.Errorf("reserve round %d: %v", round, err)
+					_ = peer.Close()
+					return
+				}
+				broker.WatchDisconnect("shared-device", slot)
+				if err := broker.Activate("shared-device", slot); err != nil {
+					t.Errorf("activate round %d: %v", round, err)
+					broker.Remove("shared-device", slot)
+					_ = peer.Close()
+					return
+				}
+				// The peer remains open until a concurrent Take stops its watcher.
+				peersMu.Lock()
+				peers[server] = peer
+				peersMu.Unlock()
+			}()
+		}
+		close(start)
+		registered.Wait()
+
+		startClaims := make(chan struct{})
+		var claimed sync.WaitGroup
+		claimed.Add(workers)
+		for range workers {
+			go func() {
+				defer claimed.Done()
+				<-startClaims
+				slot, err := broker.Take("shared-device")
+				if err != nil {
+					t.Errorf("take round %d: %v", round, err)
+					return
+				}
+				peer := peersForSlot(slot)
+				if peer == nil {
+					t.Errorf("round %d: claimed slot has no peer", round)
+					broker.Remove("shared-device", slot)
+					_ = slot.conn.Close()
+					return
+				}
+				readDone := make(chan error, 1)
+				go func() {
+					msg, err := relayproto.Read(peer)
+					if err == nil && msg.Type != relayproto.TypeReady {
+						err = fmt.Errorf("unexpected ready message %q", msg.Type)
+					}
+					readDone <- err
+				}()
+				if err := slot.write(relayproto.Message{Type: relayproto.TypeReady}); err != nil {
+					t.Errorf("ready round %d: %v", round, err)
+				}
+				if err := <-readDone; err != nil {
+					t.Errorf("read ready round %d: %v", round, err)
+				}
+				slot.finish()
+				_ = slot.conn.Close()
+				_ = peer.Close()
+				peersMu.Lock()
+				delete(peers, slot.conn)
+				peersMu.Unlock()
+			}()
+		}
+		close(startClaims)
+		claimed.Wait()
+	}
+}
+
+var (
+	peersMu sync.Mutex
+	peers = make(map[net.Conn]net.Conn)
+)
+
+func peersForSlot(slot *slot) net.Conn {
+	peersMu.Lock()
+	defer peersMu.Unlock()
+	return peers[slot.conn]
+}
