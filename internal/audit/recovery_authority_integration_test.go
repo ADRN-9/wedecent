@@ -15,13 +15,13 @@ import (
 )
 
 type testIndependentRecoveryAuthority struct {
-	primaryPublic        ed25519.PublicKey
-	primaryPrivate       ed25519.PrivateKey
-	trust                RecoveryAuthorityTrust
-	witnessPrivate       map[string]ed25519.PrivateKey
-	head                 RecoveryCheckpoint
-	heads                map[string]RecoveryCheckpoint
-	loseNextCommit       bool
+	primaryPublic  ed25519.PublicKey
+	primaryPrivate ed25519.PrivateKey
+	trust          RecoveryAuthorityTrust
+	witnessPrivate map[string]ed25519.PrivateKey
+	head           RecoveryCheckpoint
+	heads          map[string]RecoveryCheckpoint
+	loseNextCommit bool
 }
 
 func newTestIndependentRecoveryAuthority(t *testing.T) *testIndependentRecoveryAuthority {
@@ -162,7 +162,7 @@ func testLegacyMigrationProofSigningBytes(scope, archiveSHA256, stateDigest stri
 		StateDigest   string `json:"state_digest"`
 	}{
 		Domain: "wedecent-test-authenticated-legacy-migration-v1",
-		Scope: scope, ArchiveSHA256: archiveSHA256, StateDigest: stateDigest,
+		Scope:  scope, ArchiveSHA256: archiveSHA256, StateDigest: stateDigest,
 	})
 }
 
@@ -175,9 +175,9 @@ func makeTestLegacyMigrationProof(t *testing.T, authority *testIndependentRecove
 		StateDigest   string `json:"state_digest"`
 		Signature     string `json:"signature"`
 	}{
-		Scope: scope,
+		Scope:         scope,
 		ArchiveSHA256: hex.EncodeToString(archiveDigest[:]),
-		StateDigest: hex.EncodeToString(stateDigest[:]),
+		StateDigest:   hex.EncodeToString(stateDigest[:]),
 	}
 	message, err := testLegacyMigrationProofSigningBytes(proof.Scope, proof.ArchiveSHA256, proof.StateDigest)
 	if err != nil {
