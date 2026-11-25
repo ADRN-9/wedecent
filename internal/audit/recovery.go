@@ -329,6 +329,10 @@ func (r *PairingRecovery) read() (pairingOutcomeSnapshot, error) {
 }
 
 func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) error {
+	return r.withArchiveLock(func(snapshot *pairingOutcomeSnapshot, _ pairingRecoveryArchive) error { return change(snapshot) })
+}
+
+func (r *PairingRecovery) withArchiveLock(change func(*pairingOutcomeSnapshot, pairingRecoveryArchive) error) error {
 	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
 		return fmt.Errorf("unsafe pairing recovery root: %w", err)
 	}
@@ -361,7 +365,7 @@ func (r *PairingRecovery) withLock(change func(*pairingOutcomeSnapshot) error) e
 			return fmt.Errorf("pairing archive recovery reconciliation: %w", err)
 		}
 	}
-	if err := change(&snapshot); err != nil {
+	if err := change(&snapshot, archive); err != nil {
 		return err
 	}
 	if _, err := r.assignSequences(&snapshot, archive.LastSequence); err != nil {
@@ -478,19 +482,23 @@ func (r *PairingRecovery) Reserve(record PairingOutcome) (PairingOutcome, error)
 		return PairingOutcome{}, err
 	}
 	var reserved PairingOutcome
-	err := r.withLock(func(snapshot *pairingOutcomeSnapshot) error {
-		for _, existing := range snapshot.Records {
-			if existing.CredentialGeneration != record.CredentialGeneration {
-				continue
-			}
+	err := r.withArchiveLock(func(snapshot *pairingOutcomeSnapshot, archive pairingRecoveryArchive) error {
+		checkExisting := func(existing PairingOutcome) (bool, error) {
+			if existing.CredentialGeneration != record.CredentialGeneration { return false, nil }
 			if existing.ActorID != record.ActorID || existing.PeerID != record.PeerID || existing.Fingerprint != record.Fingerprint {
-				return errors.New("pairing credential generation is reserved for a different device identity")
+				return true, errors.New("pairing credential generation is reserved for a different device identity")
 			}
 			if existing.Outcome != PairingOutcomePending {
-				return errors.New("pairing credential generation already has a resolved attempt")
+				return true, errors.New("pairing credential generation already has a resolved attempt")
 			}
 			reserved = existing
-			return nil
+			return true, nil
+		}
+		for _, existing := range archive.Records {
+			if found, err := checkExisting(existing); found { return err }
+		}
+		for _, existing := range snapshot.Records {
+			if found, err := checkExisting(existing); found { return err }
 		}
 		if len(snapshot.Records) >= maxPairingOutcomes {
 			return errors.New("pairing recovery capacity reached: operator review required")
