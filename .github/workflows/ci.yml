@@ -170,7 +170,9 @@ jobs:
         run: go test ./...
       - name: Verify hostile ancestor owner startup rejection explicitly
         run: |
-          go test ./cmd/wd-agent -run '^(TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoad|TestWindowsSDDLRightsMaskHandlesDirectoryServiceRightsFailClosed)        run: go test ./cmd/wd-agent -run '^TestServiceProvisionDistinctConfiguredSIDNativeIntegration$' -count=1 -v
+          go test ./cmd/wd-agent -run '^(TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoad|TestWindowsSDDLRightsMaskHandlesDirectoryServiceRightsFailClosed)$' -count=1 -v
+      - name: Verify distinct service SID state provisioning explicitly
+        run: go test ./cmd/wd-agent -run '^TestServiceProvisionDistinctConfiguredSIDNativeIntegration$' -count=1 -v
       - name: Remove distinct Windows service test account
         if: always()
         shell: pwsh
