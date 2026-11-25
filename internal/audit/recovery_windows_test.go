@@ -69,7 +69,6 @@ func TestPairingRecoveryRejectsWorldTrusteeOnWindows(t *testing.T) {
 	}
 }
 
-
 func setRecoveryAuthorityTrustTestACL(path, additionalACE string) error {
 	user, err := windows.GetCurrentProcessToken().GetTokenUser()
 	if err != nil {
