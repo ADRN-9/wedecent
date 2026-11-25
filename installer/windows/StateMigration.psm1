@@ -621,12 +621,16 @@ function Restore-WeDecentMigrationTransaction {
 }
 
 function Recover-WeDecentStateMigration {
-    param([Parameter(Mandatory = $true)][string]$JournalPath)
+    param(
+        [Parameter(Mandatory = $true)][string]$JournalPath,
+        [Parameter(Mandatory = $true)][string]$AgentPath
+    )
 
     if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $false }
     $journal = Read-WeDecentMigrationJournal -Path $JournalPath
     if ($journal.phase -in @('Committed', 'RolledBack')) { return $false }
     $journal | Add-Member -NotePropertyName journal_path -NotePropertyValue ([IO.Path]::GetFullPath($JournalPath)) -Force
+    $journal | Add-Member -NotePropertyName agent_path -NotePropertyValue ([IO.Path]::GetFullPath($AgentPath)) -Force
     Restore-WeDecentMigrationTransaction -Journal $journal
     return $true
 }
@@ -660,8 +664,8 @@ function Invoke-WeDecentStateMigration {
     if (-not $service) { throw "Migration service '$ServiceName' does not exist." }
     $account = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
     if ($account -cne $ServiceSid) { throw 'SCM service account SID differs from the migration target SID.' }
-    $stateArg = [regex]::Escape('--state=' + $sourceFull)
-    if ($service.PathName -notmatch ('(?i)(?:^|\s)"?' + $stateArg + '"?(?:\s|$)')) {
+    $stateArg = [regex]::Escape($sourceFull)
+    if ($service.PathName -notmatch ('(?i)(?:^|\s)--state=(?:"' + $stateArg + '"|' + $stateArg + ')(?:\s|$)')) {
         throw 'SCM command line does not reference the authenticated migration source.'
     }
     $updatedPath = [regex]::Replace(
