@@ -183,7 +183,7 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	if err != nil {
 		return fmt.Errorf("%w: sign migrated archive: %v", ErrRecoveryAuthorityUnavailable, err)
 	}
-	if keyID == "" || len(signature) != 64 {
+	if keyID != recoveryPrimaryKeyID(r.authorityTrust.PrimaryKey) || len(signature) != 64 {
 		return ErrRecoveryCheckpointConflict
 	}
 	if err := r.authority.VerifyArchive(ctx, keyID, payload, signature); err != nil {
