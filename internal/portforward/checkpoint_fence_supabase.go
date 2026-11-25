@@ -817,7 +817,7 @@ func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, er
 		return CheckpointFenceToken{}, err
 	}
 	authorizationProof, err := base64.StdEncoding.Strict().DecodeString(wire.AuthorizationProof)
-	if err != nil || (len(authorizationProof) != 0 && len(authorizationProof) != ed25519.SignatureSize) {
+	if err != nil || (len(authorizationProof) != 0 && len(authorizationProof) != checkpointRevocationProofEnvelopeSize) {
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
 	primaryHash, err := decodeSHA256Hex(wire.PrimaryHeadSHA256)
