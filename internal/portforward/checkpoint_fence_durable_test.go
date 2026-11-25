@@ -469,22 +469,58 @@ func TestFileCheckpointFencePrimaryRejectsStaleFenceAndPrimaryHeads(t *testing.T
 }
 
 func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *testing.T) {
-	primary, witnesses, primaryKey, request, _ := durableFenceFixture(t)
-	clients := make([]CheckpointFenceWitnessClient, len(witnesses))
-	for i, witness := range witnesses {
-		clients[i] = CheckpointFenceWitnessClient{ID: request.WitnessIDs[i], PublicKey: witness.publicKey, Witness: witness}
+	ctx := context.Background()
+	replay := newDeterministicCheckpointProvider(t)
+	_, _, _, endpoint, _ := makeCheckpointFixture(t, replay,
+		"11111111-1111-4111-8111-111111111111",
+		"22222222-2222-4222-8222-222222222222")
+	coordinator := newTestFenceCoordinator(t, replay)
+	primary := coordinator.Primary.(*testAtomicCheckpointPrimary)
+	head, err := replay.Head(ctx, endpoint)
+	if err != nil {
+		t.Fatal(err)
 	}
-	coordinator := &CheckpointFenceCoordinator{
-		Primary: primary, PrimaryKey: primaryKey.Public().(ed25519.PublicKey),
-		WitnessSetVersion: request.WitnessSetVersion, Witnesses: clients, Quorum: 2,
+	heads := []CheckpointFenceParticipantHead{{Endpoint: endpoint, Head: head}}
+	scope := organizationCheckpointFenceScope(endpoint.OrganizationID)
+	fenceHead, err := primary.FenceHead(ctx, scope)
+	if err != nil {
+		t.Fatal(err)
 	}
-	finalize := request
+	primaryHeadDigest, err := checkpointFenceParticipantHeadDigest(heads)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := CheckpointFenceRequest{
+		Scope: scope, Participants: []CheckpointEndpoint{endpoint},
+		ExpectedFenceGeneration: fenceHead.Generation, ExpectedRevocationEpoch: fenceHead.RevocationEpoch,
+		RequestSHA256: sha256.Sum256([]byte("concurrent-fence-request")),
+		AuthorizationSHA256: sha256.Sum256([]byte("concurrent-fence-authorization")),
+		PrimaryHeadGeneration: fenceHead.Generation + 1, PrimaryHeadSHA256: primaryHeadDigest,
+		PreviousFenceSHA256: fenceHead.FenceDigest,
+		WitnessSetVersion: coordinator.WitnessSetVersion,
+		WitnessIDs: checkpointFenceClientIDs(coordinator.Witnesses),
+		ExpiresAtUnixMS: time.Now().Add(time.Minute).UnixMilli(),
+	}
+	finalize := base
 	finalize.Action = CheckpointFenceFinalize
 	finalize.OperationID = "concurrent-finalize"
-	revoke := request
+	revoke := base
 	revoke.Action = CheckpointFenceRevoke
-	revoke = testRevocationFenceRequest(revoke)
-	revoke.OperationID = "concurrent-revoke"
+	revoke.OperationID, err = CheckpointRevocationOperationID(endpoint, endpoint.RevocationEpoch+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoke.AuthorizationProof, err = (testCheckpointRevocationProofProvider{
+		privateKey: append(ed25519.PrivateKey(nil), primary.revocationPrivateKey...),
+	}).CheckpointRevocationProof(ctx, CheckpointRevocationAuthorizationRequest{
+		Endpoint: endpoint, NextEpoch: endpoint.RevocationEpoch + 1,
+		OperationID: revoke.OperationID, Participants: []CheckpointEndpoint{endpoint},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	revoke.AuthorizationSHA256 = sha256.Sum256(revoke.AuthorizationProof)
+
 	start := make(chan struct{})
 	type outcome struct {
 		operation CheckpointFenceOperation
@@ -495,7 +531,7 @@ func TestCheckpointFenceCoordinatorSerializesConcurrentFinalizeAndRevoke(t *test
 		candidate := candidate
 		go func() {
 			<-start
-			operation, err := coordinator.Execute(context.Background(), candidate)
+			operation, err := coordinator.ExecuteWithCheckpointHeads(ctx, candidate, heads)
 			results <- outcome{operation: operation, err: err}
 		}()
 	}
