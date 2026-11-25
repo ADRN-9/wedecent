@@ -641,6 +641,37 @@ function Invoke-WeDecentMigrationFaultPoint {
     }
 }
 
+function Assert-WeDecentMigrationPartialTreeSafe {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ServiceSid
+    )
+
+    $root = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $service = ConvertTo-WeDecentMigrationSid -Sid $ServiceSid
+    $allowed = @($service.Value, 'S-1-5-18', 'S-1-5-32-544')
+    $paths = @($root) + @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop | ForEach-Object FullName)
+    foreach ($entryPath in $paths) {
+        $item = Get-Item -LiteralPath $entryPath -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Interrupted migration staging contains a reparse point: $entryPath"
+        }
+        $acl = Get-Acl -LiteralPath $entryPath -ErrorAction Stop
+        $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($owner -notin $allowed) {
+            throw "Interrupted migration staging has an untrusted owner: $entryPath"
+        }
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            if ($rule.IdentityReference.Value -notin $allowed -or
+                $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+                throw "Interrupted migration staging has an unexpected access rule: $entryPath"
+            }
+        }
+    }
+    return $true
+}
+
 function Restore-WeDecentMigrationTransaction {
     param(
         [Parameter(Mandatory = $true)][pscustomobject]$Journal,
@@ -670,7 +701,7 @@ function Restore-WeDecentMigrationTransaction {
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
         if ($candidate -ceq [string]$Journal.staging -and
             [string]::IsNullOrWhiteSpace([string]$Journal.source_manifest_sha256)) {
-            [void](Assert-WeDecentMigrationTreeAcl -Path $candidate -ServiceSid $Journal.service_sid)
+            [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid)
         } else {
             $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
             $digest = Get-WeDecentMigrationManifestDigest -Manifest $manifest
@@ -846,6 +877,7 @@ Export-ModuleMember -Function @(
     'Assert-WeDecentMigrationDirectoryAcl',
     'Set-WeDecentMigrationTreeOwner',
     'Assert-WeDecentMigrationTreeAcl',
+    'Assert-WeDecentMigrationPartialTreeSafe',
     'Assert-WeDecentMigrationIdentityContinuity',
     'Invoke-WeDecentMigrationIdentityCheck',
     'Write-WeDecentMigrationJournal',
