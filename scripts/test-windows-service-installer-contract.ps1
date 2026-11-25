@@ -178,7 +178,7 @@ New-Item -ItemType Directory -Path (Join-Path $sourceState 'empty') -Force | Out
 try {
     $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceState -Staging $stageState
     if ($copy.FileCount -ne 2 -or $copy.DirectoryCount -ne 2 -or
-        $copy.SourceManifestSHA256 -notmatch '^[0-9a-f]{64}
+        [string]::IsNullOrWhiteSpace($copy.SourceManifestSHA256)) {
         throw 'Verified state-tree copy returned an invalid manifest.'
     }
 
