@@ -35,7 +35,9 @@ insert into public.devices(device_id,public_key,kind,name,owner_user_id,organiza
 values
  ('wd_eeeeeeeeeeeeeeee',repeat('E',43),'client','C195 A','11000000-0000-4000-8000-000000000195','22000000-0000-4000-8000-000000000195'),
  ('wd_ffffffffffffffff',repeat('F',43),'agent','C195 B','11000000-0000-4000-8000-000000000195','22000000-0000-4000-8000-000000000195'),
- ('wd_gggggggggggggggg',repeat('G',43),'agent','C195 C','11000000-0000-4000-8000-000000000195','22000000-0000-4000-8000-000000000195')
+ ('wd_gggggggggggggggg',repeat('G',43),'agent','C195 C','11000000-0000-4000-8000-000000000195','22000000-0000-4000-8000-000000000195'),
+ ('wd_hhhhhhhhhhhhhhhh',repeat('H',43),'client','C195 H','11000000-0000-4000-8000-000000000195','22000000-0000-4000-8000-000000000195'),
+ ('wd_iiiiiiiiiiiiiiii',repeat('I',43),'agent','C195 I','11000000-0000-4000-8000-000000000195','22000000-0000-4000-8000-000000000195')
 on conflict (device_id) do nothing;
 
 create or replace function public.wd_c195_participants(p_devices text[]) returns jsonb
@@ -88,13 +90,27 @@ $$;
 
 create or replace function public.wd_c195_commit(p_operation_id text,p_action text) returns jsonb
 language sql security definer set search_path=''
-as $$
+as $
  select public.commit_checkpoint_operation(
   p_operation_id,
   (select fingerprint from public.checkpoint_operations where operation_id=p_operation_id),
   public.wd_c195_acks(p_operation_id,p_action)
  );
-$$;
+$;
+
+create or replace function public.wd_c195_reserve_fence(
+ p_operation_id text,p_request_hex text,p_device text,p_primary_head_hex text
+) returns jsonb
+language sql security definer set search_path=''
+as $
+ select public.reserve_checkpoint_fence_operation(
+  p_operation_id,'finalize','22000000-0000-4000-8000-000000000195',
+  '11000000-0000-4000-8000-000000000195',
+  pg_catalog.decode(p_request_hex,'hex'),
+  public.wd_c195_participants(array[p_device]),
+  1,pg_catalog.decode(p_primary_head_hex,'hex'),60
+ );
+$;
 SQL
 
 start() {
@@ -166,6 +182,8 @@ OP_D="$(printf 'd%.0s' {1..64})"
 OP_E="$(printf 'e%.0s' {1..64})"
 OP_F="$(printf 'f%.0s' {1..64})"
 OP_G="$(printf '1%.0s' {1..64})"
+OP_H="$(printf '8%.0s' {1..64})"
+OP_I="$(printf '9%.0s' {1..64})"
 
 # Independent sessions compete for the same two participant heads.
 start a wd-c195-same-a
@@ -250,6 +268,18 @@ finish_ok g
 wait_text h '"status": "reserved"'
 finish_ok h
 
+# Organization fence serialization also blocks disjoint participant sets.
+start fence_a wd-c197-fence-reserve-a
+send fence_a "begin; select public.wd_c195_reserve_fence('$OP_H','$(printf '8%.0s' {1..64})','wd_hhhhhhhhhhhhhhhh','$(printf 'a%.0s' {1..64})');"
+wait_text fence_a '"status": "reserved"'
+start fence_b wd-c197-fence-reserve-b
+send fence_b "begin; select public.wd_c195_reserve_fence('$OP_I','$(printf '9%.0s' {1..64})','wd_iiiiiiiiiiiiiiii','$(printf 'b%.0s' {1..64})');"
+wait_lock wd-c197-fence-reserve-b
+finish_ok fence_a
+finish_error fence_b 'organization checkpoint fence is reserved by another operation'
+assertq 1 "select count(*) from public.checkpoint_fence_authority where organization_id='22000000-0000-4000-8000-000000000195' and pending_operation_id='$OP_H'"
+assertq 0 "select count(*) from public.checkpoint_operations where operation_id='$OP_I'"
+
 # Lose the client connection after the database commit, then recover by exact retry.
 start lost wd-c195-lost-receipt
 send lost "begin; select public.wd_c195_commit('$OP_G','finalize');"
@@ -280,4 +310,4 @@ assertq 3 "select checkpoint_head_generation from public.port_forward_replay_aut
 assertq 1 "select count(*) from public.checkpoint_operation_events where operation_id='$OP_G' and event_type='committed'"
 
 psql "$DB_URL" -X -v ON_ERROR_STOP=1 -c 'drop function public.wd_c195_commit(text,text); drop function public.wd_c195_reserve(text,text,text,text[]); drop function public.wd_c195_acks(text,text); drop function public.wd_c195_participants(text[]);' >/dev/null
-printf 'Checkpoint reservation concurrency, concurrent commit, interruption, revocation ordering, lost-session recovery and database restart checks passed.\n'
+printf 'Checkpoint reservation and organization-fence concurrency, concurrent commit, interruption, revocation ordering, lost-session recovery and database restart checks passed.\n'
