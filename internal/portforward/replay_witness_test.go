@@ -29,11 +29,14 @@ func (p testCheckpointRevocationProofProvider) CheckpointRevocationProof(ctx con
 	if ctx == nil || ctx.Err() != nil || len(p.privateKey) != ed25519.PrivateKeySize {
 		return nil, ErrCheckpointIntegrity
 	}
+	request.IssuedAtUnixMS = time.Now().UnixMilli()
+	request.ExpiresAtUnixMS = request.IssuedAtUnixMS + 60000
 	message, err := CheckpointRevocationAuthorizationMessage(request)
 	if err != nil {
 		return nil, err
 	}
-	return ed25519.Sign(p.privateKey, message), nil
+	signature := ed25519.Sign(p.privateKey, message)
+	return EncodeCheckpointRevocationAuthorizationProof(request.IssuedAtUnixMS, request.ExpiresAtUnixMS, signature)
 }
 
 type testAtomicCheckpointPrimary struct {
@@ -137,10 +140,13 @@ func (a *testAtomicCheckpointPrimary) ReserveFenceWithCheckpointHeads(ctx contex
 			Endpoint: request.Participants[0], NextEpoch: request.Participants[0].RevocationEpoch + 1,
 			OperationID: request.OperationID, Participants: request.Participants,
 		}
+		envelope, proofErr := decodeCheckpointRevocationAuthorizationProof(request.AuthorizationProof)
+		proofRequest.IssuedAtUnixMS = envelope.IssuedAtUnixMS
+		proofRequest.ExpiresAtUnixMS = envelope.ExpiresAtUnixMS
 		message, messageErr := CheckpointRevocationAuthorizationMessage(proofRequest)
-		if len(request.AuthorizationProof) != ed25519.SignatureSize ||
+		if proofErr != nil || envelope.ExpiresAtUnixMS <= time.Now().UnixMilli() ||
 			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 || messageErr != nil ||
-			!ed25519.Verify(a.revocationPublicKey, message, request.AuthorizationProof) {
+			!ed25519.Verify(a.revocationPublicKey, message, envelope.Signature) {
 			return CheckpointFenceToken{}, ErrCheckpointIntegrity
 		}
 	}
@@ -169,15 +175,17 @@ func (a *testAtomicCheckpointPrimary) CommitFenceWithCheckpointHeads(ctx context
 	}
 	if token.Action == CheckpointFenceRevoke {
 		if len(heads) != 1 || heads[0].Endpoint.RevocationEpoch == ^uint64(0) ||
-			len(token.AuthorizationProof) != ed25519.SignatureSize ||
 			sha256.Sum256(token.AuthorizationProof) != token.AuthorizationSHA256 {
 			return ErrCheckpointIntegrity
 		}
+		envelope, proofErr := decodeCheckpointRevocationAuthorizationProof(token.AuthorizationProof)
 		message, messageErr := CheckpointRevocationAuthorizationMessage(CheckpointRevocationAuthorizationRequest{
 			Endpoint: heads[0].Endpoint, NextEpoch: heads[0].Endpoint.RevocationEpoch + 1,
 			OperationID: token.OperationID, Participants: token.Participants,
+			IssuedAtUnixMS: envelope.IssuedAtUnixMS, ExpiresAtUnixMS: envelope.ExpiresAtUnixMS,
 		})
-		if messageErr != nil || !ed25519.Verify(a.revocationPublicKey, message, token.AuthorizationProof) {
+		if proofErr != nil || envelope.ExpiresAtUnixMS <= time.Now().UnixMilli() ||
+			messageErr != nil || !ed25519.Verify(a.revocationPublicKey, message, envelope.Signature) {
 			return ErrCheckpointIntegrity
 		}
 		if err := a.replay.Revoke(ctx, heads[0].Endpoint, heads[0].Endpoint.RevocationEpoch+1); err != nil {
