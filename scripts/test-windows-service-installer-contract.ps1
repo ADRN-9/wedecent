@@ -174,10 +174,13 @@ $journalPath = Join-Path $migrationRoot 'migration.json'
 New-Item -ItemType Directory -Path (Join-Path $sourceState 'nested') -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $sourceState 'empty') -Force | Out-Null
 [IO.File]::WriteAllText((Join-Path $sourceState 'identity.key.dpapi'), 'synthetic-identity-bytes')
+[IO.File]::WriteAllText((Join-Path $sourceState 'identity.crt'), 'synthetic-ed25519-certificate-bytes')
+$serviceSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+Set-WeDecentMigrationDirectoryAcl -Path $sourceState -ServiceSid $serviceSid
 [IO.File]::WriteAllText((Join-Path $sourceState 'nested/recovery-authority.token'), 'synthetic-recovery-bytes')
 try {
-    $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceState -Staging $stageState
-    if ($copy.FileCount -ne 2 -or $copy.DirectoryCount -ne 2 -or
+    $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceState -Staging $stageState -SourceServiceSid $serviceSid -DestinationServiceSid $serviceSid
+    if ($copy.FileCount -ne 3 -or $copy.DirectoryCount -ne 2 -or
         [string]::IsNullOrWhiteSpace($copy.SourceManifestSHA256)) {
         throw 'Verified state-tree copy returned an invalid manifest.'
     }
