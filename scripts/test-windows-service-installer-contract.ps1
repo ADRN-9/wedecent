@@ -171,6 +171,17 @@ if (-not (Test-ServiceStateSafeForAccountRemoval -Path 'C:\mock\WeDecent\Agent')
 # Exercise durable migration journal and complete-tree SHA-256 copy primitives.
 $migrationModule = Join-Path (Split-Path -Parent $installerPath) 'StateMigration.psm1'
 Import-Module $migrationModule -Force
+$oldStatePath = 'C:\Program Files\WeDecent\data\agent'
+$newStatePath = 'D:\Program Files\WeDecent\data\agent'
+$quotedWholeArgument = Get-WeDecentMigrationUpdatedServicePath -ServicePath ('"C:\Program Files\WeDecent\wd-agent.exe" serve "--state=' + $oldStatePath + '"') -Source $oldStatePath -Destination $newStatePath
+if ($quotedWholeArgument -notlike ('*"--state=' + $newStatePath + '"*')) { throw 'SCM migration did not rewrite a whole-argument quoted state path.' }
+$quotedValueArgument = Get-WeDecentMigrationUpdatedServicePath -ServicePath ('wd-agent.exe serve --state="' + $oldStatePath + '"') -Source $oldStatePath -Destination $newStatePath
+if ($quotedValueArgument -notlike ('*--state="' + $newStatePath + '"*')) { throw 'SCM migration did not rewrite a value-quoted state path.' }
+$unquotedArgument = Get-WeDecentMigrationUpdatedServicePath -ServicePath 'wd-agent.exe serve --state=C:\old\agent' -Source 'C:\old\agent' -Destination 'D:\new\agent'
+if ($unquotedArgument -notlike '*"--state=D:\new\agent"*') { throw 'SCM migration did not rewrite an unquoted state path.' }
+$ambiguousStateRejected = $false
+try { [void](Get-WeDecentMigrationUpdatedServicePath -ServicePath 'wd-agent.exe --state=C:\old --state=D:\other' -Source 'C:\old' -Destination 'C:\new') } catch { $ambiguousStateRejected = $true }
+if (-not $ambiguousStateRejected) { throw 'SCM migration accepted duplicate state arguments.' }
 if ($migrationModule -and (Get-Content -LiteralPath $migrationModule -Raw) -match 'X509Certificate2|CreateFromPemFile') {
     throw 'Windows migration must use the Go Ed25519 identity verifier, not .NET X509 parsing.'
 }
