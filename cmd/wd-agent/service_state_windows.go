@@ -99,6 +99,11 @@ func provisionWindowsServiceState(dir, account string) (result error) {
 		return err
 	}
 	defer guard()
+	// Re-verify the exact directory after acquiring non-delete-sharing
+	// handles, before any owner/DACL mutation or sensitive file creation.
+	if err := verifyWindowsStateForSID(dir, installerSID); err != nil {
+		return fmt.Errorf("revalidate installer-owned service state under path guard: %w", err)
+	}
 	if err := requireEmptyWindowsServiceState(dir); err != nil {
 		return err
 	}
