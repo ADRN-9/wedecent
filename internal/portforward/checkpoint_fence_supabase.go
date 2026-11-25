@@ -27,13 +27,13 @@ const (
 	checkpointFenceLeaseSecs  = 60
 )
 
-// SupabaseCheckpointFenceConfig is server-only configuration. Never embed the service-role
-// key or primary signing key in Local Core, a desktop renderer, or an installer.
+// SupabaseCheckpointFenceConfig is restricted to the checkpoint authority host. The
+// authority JWT must be signed by the Supabase JWT issuer with the dedicated database role.
 type SupabaseCheckpointFenceConfig struct {
 	Hostname                   string
 	Port                       uint16
 	SPKISHA256Pins             string
-	ServiceRoleKey             string
+	AuthorityJWT               string
 	ActorID                    string
 	PrimarySigner              crypto.Signer
 	CheckpointHeadKey          ed25519.PublicKey
@@ -46,7 +46,7 @@ type SupabaseCheckpointFenceConfig struct {
 type SupabaseCheckpointFencePrimary struct {
 	endpoint                   string
 	actorID                    string
-	serviceRoleKey             string
+	authorityJWT               string
 	primarySigner              crypto.Signer
 	primaryKey                 ed25519.PublicKey
 	checkpointHeadKey          ed25519.PublicKey
@@ -118,7 +118,7 @@ type checkpointFenceAckWire struct {
 
 func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*SupabaseCheckpointFencePrimary, error) {
 	if !validCheckpointAuditAuthority(config.Hostname, config.Port) ||
-		strings.TrimSpace(config.ServiceRoleKey) == "" || strings.TrimSpace(config.ServiceRoleKey) != config.ServiceRoleKey ||
+		!validCheckpointAuthorityJWT(config.AuthorityJWT, config.ActorID, config.Now) ||
 		!canonicalUUID(config.ActorID) || config.PrimarySigner == nil ||
 		config.WitnessSetVersion == "" || len(config.WitnessSetVersion) > 128 ||
 		len(config.CheckpointHeadKey) != ed25519.PublicKeySize ||
@@ -186,13 +186,54 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 		now = time.Now
 	}
 	return &SupabaseCheckpointFencePrimary{
-		endpoint: endpoint, actorID: config.ActorID, serviceRoleKey: config.ServiceRoleKey,
+		endpoint: endpoint, actorID: config.ActorID, authorityJWT: config.AuthorityJWT,
 		primarySigner: config.PrimarySigner, primaryKey: append(ed25519.PublicKey(nil), publicKey...),
 		checkpointHeadKey:          append(ed25519.PublicKey(nil), config.CheckpointHeadKey...),
 		revocationAuthorizationKey: append(ed25519.PublicKey(nil), config.RevocationAuthorizationKey...),
 		witnessSetVersion:          config.WitnessSetVersion, witnesses: trusted, witnessIDs: ids,
 		quorum: quorum, http: httpClient, now: now,
 	}, nil
+}
+
+type checkpointAuthorityJWTClaims struct {
+	Role string `json:"role"`
+	Sub  string `json:"sub"`
+	Exp  int64  `json:"exp"`
+	Iat  int64  `json:"iat"`
+}
+
+func validCheckpointAuthorityJWT(token, actorID string, now func() time.Time) bool {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
+		return false
+	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	var header struct {
+		Alg string `json:"alg"`
+	}
+	if json.Unmarshal(headerBytes, &header) != nil || header.Alg == "" || header.Alg == "none" {
+		return false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return false
+	}
+	var claims checkpointAuthorityJWTClaims
+	if json.Unmarshal(payload, &claims) != nil {
+		return false
+	}
+	clock := time.Now
+	if now != nil {
+		clock = now
+	}
+	current := clock()
+	return claims.Role == "wedecent_checkpoint_authority" &&
+		claims.Sub == actorID && canonicalUUID(claims.Sub) &&
+		claims.Exp > current.Unix()+30 && claims.Iat > 0 &&
+		claims.Iat <= current.Unix()+30 && claims.Exp-claims.Iat <= 300
 }
 
 func (p *SupabaseCheckpointFencePrimary) CheckpointAuthorityKeyID() string {
@@ -400,9 +441,6 @@ func (p *SupabaseCheckpointFencePrimary) CommitFenceWithCheckpointHeads(
 		verifyCheckpointFenceTokenSignature(token, p.primaryKey) != nil ||
 		token.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(token.WitnessIDs, p.witnessIDs) {
 		return ErrCheckpointIntegrity
-	}
-	if token.ExpiresAtUnixMS <= p.now().UnixMilli() {
-		return ErrCheckpointFenceExpired
 	}
 	if err := p.verifyRevocationAuthorization(token.Action, token.OperationID, token.Participants,
 		token.AuthorizationProof, token.AuthorizationSHA256); err != nil {
@@ -692,6 +730,46 @@ func (p *SupabaseCheckpointFencePrimary) loadOperationFingerprint(
 	return decodeSHA256Hex(response.Fingerprint)
 }
 
+func checkpointFenceCommitAttestationMessage(
+	operationID string,
+	fingerprint, tokenDigest [sha256.Size]byte,
+	token checkpointFenceTokenWire,
+	acknowledgements []checkpointFenceAckWire,
+	actorID string,
+) ([]byte, error) {
+	canonical := func(value any) ([]byte, error) {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		var normalized any
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
+		decoder.UseNumber()
+		if err := decoder.Decode(&normalized); err != nil {
+			return nil, err
+		}
+		return json.Marshal(normalized)
+	}
+	tokenJSON, err := canonical(token)
+	if err != nil {
+		return nil, err
+	}
+	ackJSON, err := canonical(acknowledgements)
+	if err != nil {
+		return nil, err
+	}
+	tokenJSONHash := sha256.Sum256(tokenJSON)
+	ackJSONHash := sha256.Sum256(ackJSON)
+	message := "wedecent-checkpoint-fence-commit-v1\n" +
+		operationID + "\n" +
+		hex.EncodeToString(fingerprint[:]) + "\n" +
+		hex.EncodeToString(tokenDigest[:]) + "\n" +
+		hex.EncodeToString(tokenJSONHash[:]) + "\n" +
+		hex.EncodeToString(ackJSONHash[:]) + "\n" +
+		actorID + "\n"
+	return []byte(message), nil
+}
+
 func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, args any, out any) error {
 	if p == nil || ctx == nil || p.http == nil || p.endpoint == "" ||
 		!validCheckpointRPCName(name) {
@@ -706,8 +784,8 @@ func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, a
 	if err != nil {
 		return ErrCheckpointUnavailable
 	}
-	request.Header.Set("apikey", p.serviceRoleKey)
-	request.Header.Set("Authorization", "Bearer "+p.serviceRoleKey)
+	request.Header.Set("apikey", p.authorityJWT)
+	request.Header.Set("Authorization", "Bearer "+p.authorityJWT)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	response, err := p.http.Do(request)
