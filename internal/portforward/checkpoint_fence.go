@@ -5,8 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
-	"encoding/hex"
 	"encoding/binary"
+	"encoding/hex"
 	"sort"
 )
 
@@ -39,28 +39,28 @@ func checkpointFenceVersionForAction(action CheckpointFenceAction) (uint32, erro
 // finalize and revoke. It is not authorization until its quorum commit is durable.
 // Generation is the next durable fence generation, not a client counter.
 type CheckpointFenceToken struct {
-	Version                  uint32
-	Scope                    CheckpointWitnessScope
-	Participants             []CheckpointEndpoint
-	ExpectedFenceGeneration  uint64
-	Generation               uint64
-	ExpectedRevocationEpoch  uint64
-	ResultingRevocationEpoch uint64
-	Action                   CheckpointFenceAction
-	OperationID              string
-	RequestSHA256            [sha256.Size]byte
-	AuthorizationSHA256      [sha256.Size]byte
-	AuthorizationProof       []byte
-	AuthorizationProofIssuedAtUnixMS int64
+	Version                           uint32
+	Scope                             CheckpointWitnessScope
+	Participants                      []CheckpointEndpoint
+	ExpectedFenceGeneration           uint64
+	Generation                        uint64
+	ExpectedRevocationEpoch           uint64
+	ResultingRevocationEpoch          uint64
+	Action                            CheckpointFenceAction
+	OperationID                       string
+	RequestSHA256                     [sha256.Size]byte
+	AuthorizationSHA256               [sha256.Size]byte
+	AuthorizationProof                []byte
+	AuthorizationProofIssuedAtUnixMS  int64
 	AuthorizationProofExpiresAtUnixMS int64
-	PrimaryHeadGeneration    uint64
-	PrimaryHeadSHA256        [sha256.Size]byte
-	PreviousFenceSHA256      [sha256.Size]byte
-	WitnessSetVersion        string
-	WitnessIDs               []string
-	ExpiresAtUnixMS          int64
-	PrimaryKeyID             string
-	Signature                []byte
+	PrimaryHeadGeneration             uint64
+	PrimaryHeadSHA256                 [sha256.Size]byte
+	PreviousFenceSHA256               [sha256.Size]byte
+	WitnessSetVersion                 string
+	WitnessIDs                        []string
+	ExpiresAtUnixMS                   int64
+	PrimaryKeyID                      string
+	Signature                         []byte
 }
 
 // CheckpointFenceAcknowledgement attests that one witness advanced to this token.
@@ -151,7 +151,6 @@ type CheckpointFenceRequest struct {
 	WitnessIDs              []string
 	ExpiresAtUnixMS         int64
 }
-
 
 // CheckpointRevocationOperationID returns the stable operation identity used by
 // both the proof issuer and the PostgreSQL fence adapter.
