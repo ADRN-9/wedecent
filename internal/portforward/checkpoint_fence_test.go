@@ -193,12 +193,13 @@ func (h *fenceOrderingHarness) apply(action CheckpointFenceAction, operationID s
 		}
 		token.AuthorizationProofIssuedAtUnixMS = 1000
 		token.AuthorizationProofExpiresAtUnixMS = token.ExpiresAtUnixMS
-		token.AuthorizationProof, err = EncodeCheckpointRevocationAuthorizationProof(
+		proof, err := EncodeCheckpointRevocationAuthorizationProof(
 			token.AuthorizationProofIssuedAtUnixMS, token.AuthorizationProofExpiresAtUnixMS, signature,
 		)
 		if err != nil {
 			return CheckpointFenceToken{}, err
 		}
+		token.AuthorizationProof = proof
 		token.AuthorizationSHA256 = sha256.Sum256(token.AuthorizationProof)
 	}
 	signed, err := SignCheckpointFenceToken(token, h.primaryKey)
