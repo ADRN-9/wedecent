@@ -135,7 +135,7 @@ func runServiceInstall(args []string) error {
 	recoveryAuthorityPin := fs.String("pairing-recovery-authority-spki-sha256", strings.TrimSpace(os.Getenv("WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256")), "SHA-256 hex pin of the recovery authority TLS leaf SPKI")
 	recoveryTrustFile := fs.String("pairing-recovery-trust", "", "path to independently provisioned primary/witness Ed25519 public trust JSON")
 	recoveryTokenStdin := fs.Bool("pairing-recovery-authority-token-stdin", false, "read the short-lived recovery bearer token from standard input")
-shell := fs.String(
+	shell := fs.String(
 		"shell",
 		defaultShell(),
 		"absolute shell path",
