@@ -232,8 +232,7 @@ func TestPairingRecoveryMigratesLegacyArchiveWithAuthenticatedAuthorityProof(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	legacyReader := *migration
-	legacyReader.authority = nil
+	legacyReader := &PairingRecovery{path: migration.path, archiveKey: migration.archiveKey}
 	archive, err := legacyReader.readArchive()
 	if err != nil {
 		t.Fatal(err)
@@ -288,8 +287,7 @@ func TestPairingRecoveryMigrationRejectsForgedStateDigestProof(t *testing.T) {
 	if err := migration.MigrateLegacyArchive(context.Background(), proof); !errors.Is(err, ErrRecoveryCheckpointConflict) {
 		t.Fatalf("forged migration state digest accepted: %v", err)
 	}
-	legacyReader := *migration
-	legacyReader.authority = nil
+	legacyReader := &PairingRecovery{path: migration.path, archiveKey: migration.archiveKey}
 	stillLegacy, err := legacyReader.readArchive()
 	if err != nil || stillLegacy.AuthorityGeneration != 0 {
 		t.Fatalf("forged migration proof changed the local archive: %+v %v", stillLegacy, err)
