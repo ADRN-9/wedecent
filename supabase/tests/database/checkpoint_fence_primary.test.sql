@@ -202,11 +202,11 @@ select throws_ok($q$select public.reserve_checkpoint_fence_operation(
 select throws_ok($q$select public.commit_checkpoint_fence_operation(
  repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
  decode(repeat('b',64),'hex'),
- pg_catalog.jsonb_build_array((select value from pg_catalog.jsonb_array_elements(acknowledgements) limit 1)),
+ pg_catalog.jsonb_build_array((select item.value from c197_commit_material cross join lateral pg_catalog.jsonb_array_elements(c197_commit_material.acknowledgements) as item(value) limit 1)),
  pg_temp.c197_authority_signature(repeat('9',64),
    (select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
    decode(repeat('b',64),'hex'),
-   pg_catalog.jsonb_build_array((select value from pg_catalog.jsonb_array_elements(acknowledgements) limit 1)))
+   pg_catalog.jsonb_build_array((select item.value from c197_commit_material cross join lateral pg_catalog.jsonb_array_elements(c197_commit_material.acknowledgements) as item(value) limit 1)))
 )$q$,
  '22023','checkpoint witness quorum is insufficient',
  'database rejects a structurally valid but insufficient witness quorum');
