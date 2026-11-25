@@ -38,6 +38,7 @@ as $$
    'expected_revocation_epoch',0,'resulting_revocation_epoch',0,
    'action','finalize','operation_id',p_operation_id,
    'request_sha256',pg_catalog.repeat('9',64),'authorization_sha256',pg_catalog.repeat('a',64),
+   'authorization_proof','',
    'primary_head_generation',1,'primary_head_sha256',pg_catalog.repeat('f',64),
    'previous_fence_sha256',pg_catalog.repeat('0',64),
    'witness_set_version','c197-set',
