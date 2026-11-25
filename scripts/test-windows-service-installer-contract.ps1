@@ -59,7 +59,7 @@ Assert-Contains $installer 'Legacy ProgramData service state exists; refusing to
 Assert-Contains $installer 'Existing service state location is not authenticated by protected installer metadata' 'Upgrade must fail closed when existing state location metadata is unavailable.'
 Assert-Contains $installer 'Refusing to redirect or overwrite identity state' 'Upgrade must not silently redirect existing cryptographic state.'
 Assert-Contains $installer 'Existing SCM command line does not match the authenticated state_dir metadata' 'Upgrade must verify the SCM state path matches authenticated metadata.'
-Assert-Contains $uninstaller "[string]`$StateDir = (Join-Path `$InstallDir 'data\\agent')" 'Uninstaller default must match the fresh-install state location.'
+Assert-Contains $uninstaller "[string]`$StateDir = (Join-Path `$InstallDir 'data\agent')" 'Uninstaller default must match the fresh-install state location.'
 Assert-Contains $uninstaller '$StateDir = $metadataStateDir' 'Uninstaller must resolve existing state from authenticated metadata.'
 Assert-Contains $uninstaller 'function Test-DirectoryExistsStrict' 'Purge must distinguish a missing state path from an inaccessible or ambiguous path.'
 Assert-Contains $uninstaller 'SCM state path does not match authenticated installer metadata' 'Uninstaller must verify service state path before removal.'
