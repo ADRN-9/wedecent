@@ -398,7 +398,8 @@ function Copy-WeDecentMigrationTreeVerified {
         [Parameter(Mandatory = $true)][string]$Staging,
         [Parameter(Mandatory = $true)][string]$SourceServiceSid,
         [Parameter(Mandatory = $true)][string]$DestinationServiceSid,
-        [Parameter(Mandatory = $true)][string]$AgentPath
+        [Parameter(Mandatory = $true)][string]$AgentPath,
+        [string]$FaultAt
     )
 
     $sourceFull = Assert-WeDecentMigrationRealDirectory -Path $Source
@@ -423,6 +424,7 @@ function Copy-WeDecentMigrationTreeVerified {
         $parent = Split-Path -Parent $destination
         [IO.Directory]::CreateDirectory($parent) | Out-Null
         [IO.File]::Copy((Join-Path $sourceFull $relative), $destination, $false)
+        Invoke-WeDecentMigrationFaultPoint -Name 'StagingEntryCopied' -FaultAt $FaultAt
     }
 
     Set-WeDecentMigrationTreeOwner -Path $stagingFull -ServiceSid $DestinationServiceSid
@@ -874,9 +876,12 @@ function Restore-WeDecentMigrationTransaction {
     Invoke-WeDecentMigrationFaultPoint -Name 'RollbackServiceRestarted' -FaultAt $FaultAt
     foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
-        [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
-        if ($candidate -ceq [string]$Journal.staging -and
-            [string]::IsNullOrWhiteSpace([string]$Journal.source_manifest_sha256)) {
+        $partialStaging = $candidate -ceq [string]$Journal.staging -and
+            [string]::IsNullOrWhiteSpace([string]$Journal.source_manifest_sha256)
+        if (-not $partialStaging) {
+            [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
+        }
+        if ($partialStaging) {
             [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid)
         } else {
             $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
@@ -1032,7 +1037,7 @@ function Invoke-WeDecentStateMigration {
         $journal.phase = 'Copying'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'Copying' -FaultAt $FaultAt
-        $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath
+        $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath -FaultAt $FaultAt
         $journal.source_manifest_sha256 = $copy.SourceManifestSHA256
         $journal.source_stable_manifest_sha256 = $copy.SourceStableManifestSHA256
         $journal.identity = $copy.Identity
