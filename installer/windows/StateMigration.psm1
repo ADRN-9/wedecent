@@ -1198,17 +1198,16 @@ public static class WeDecentMigrationFileIdentityApi {
                 int error=Marshal.GetLastWin32Error();
                 if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
             }
-            // The parent remains pinned; use a source handle for the atomic rename.
-            byte[] nameBytes=System.Text.Encoding.Unicode.GetBytes(targetPath);
+            // Rename relative to the retained destination-parent handle.
+            byte[] nameBytes=System.Text.Encoding.Unicode.GetBytes(targetName);
             int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
-            int size=nameOffset+nameBytes.Length+2;
+            int size=nameOffset+nameBytes.Length;
             IntPtr buffer=Marshal.AllocHGlobal(size);
             try {
                 Marshal.WriteByte(buffer,0,replaceExisting?(byte)1:(byte)0);
-                Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),IntPtr.Zero);
+                Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),parent);
                 Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),nameBytes.Length);
                 Marshal.Copy(nameBytes,0,IntPtr.Add(buffer,nameOffset),nameBytes.Length);
-                Marshal.WriteInt16(buffer,nameOffset+nameBytes.Length,0);
                 if (!SetFileInformationByHandle(source,3,buffer,(uint)size))
                     throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"SetFileInformationByHandle(FileRenameInfo) failed.");
             } finally { Marshal.FreeHGlobal(buffer); }
