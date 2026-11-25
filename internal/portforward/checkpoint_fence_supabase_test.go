@@ -5,12 +5,26 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
 	"time"
 )
+
+func c203AuthorityJWT(actorID string) string {
+	encode := base64.RawURLEncoding.EncodeToString
+	header := encode([]byte(`{"alg":"HS256","typ":"JWT"}`))
+	now := time.Now().Unix()
+	claims, _ := json.Marshal(map[string]any{
+		"role": "wedecent_checkpoint_authority",
+		"sub": actorID,
+		"iat": now,
+		"exp": now + 240,
+	})
+	return header + "." + encode(claims) + ".test-signature"
+}
 
 func c197Key(t *testing.T) (ed25519.PublicKey, ed25519.PrivateKey) {
 	t.Helper()
@@ -48,7 +62,7 @@ func TestSupabaseCheckpointFencePrimaryRequiresIndependentTrustKeys(t *testing.T
 	}
 	config := SupabaseCheckpointFenceConfig{
 		Hostname: "localhost", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64),
-		ServiceRoleKey: "test-service-role-key", ActorID: "11111111-1111-4111-8111-111111111111",
+		AuthorityJWT: c203AuthorityJWT("11111111-1111-4111-8111-111111111111"), ActorID: "11111111-1111-4111-8111-111111111111",
 		PrimarySigner: primaryPrivate, CheckpointHeadKey: headPublic,
 		RevocationAuthorizationKey: revocationPublic,
 		WitnessSetVersion:          "c197-test", Witnesses: witnesses,
