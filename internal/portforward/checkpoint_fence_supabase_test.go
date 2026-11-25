@@ -109,6 +109,11 @@ func TestSupabaseCheckpointFencePrimaryVerifiesStrictWitnessQuorum(t *testing.T)
 	if err := primary.verifyAcknowledgements(token, []CheckpointFenceAcknowledgement{first, second}); err != nil {
 		t.Fatalf("valid quorum rejected: %v", err)
 	}
+	rotatedSet := token
+	rotatedSet.WitnessSetVersion = "rotated-witness-set"
+	if err := primary.verifyAcknowledgements(rotatedSet, []CheckpointFenceAcknowledgement{first, second}); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("acknowledgements from a stale witness set accepted: %v", err)
+	}
 	wrongSet := token
 	wrongSet.WitnessIDs = append([]string(nil), token.WitnessIDs[:2]...)
 	if err := primary.verifyAcknowledgements(wrongSet, []CheckpointFenceAcknowledgement{first, second}); !errors.Is(err, ErrCheckpointIntegrity) {
@@ -243,6 +248,11 @@ func TestSupabaseCheckpointFencePrimaryVerifiesOperationBoundRevocationProof(t *
 	digest := sha256.Sum256(proof)
 	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, proof, digest); err != nil {
 		t.Fatalf("valid operation-bound proof rejected: %v", err)
+	}
+	malformed := append([]byte(nil), proof...)
+	malformed[0] ^= 0x01
+	if err := primary.verifyRevocationAuthorization(CheckpointFenceRevoke, operationID, participants, malformed, sha256.Sum256(malformed)); !errors.Is(err, ErrCheckpointIntegrity) {
+		t.Fatalf("malformed proof envelope accepted: %v", err)
 	}
 	staleEndpoint := endpoint
 	staleEndpoint.RevocationEpoch++
