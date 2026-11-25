@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'WeDecent'),
-    [string]$StateDir = (Join-Path $env:ProgramData 'WeDecent\agent'),
+    [string]$StateDir = (Join-Path $InstallDir 'data\agent'),
     [ValidatePattern('^[A-Za-z0-9_.-]{1,128}$')]
     [string]$ServiceName = 'WeDecentAgent',
     [switch]$Purge,
@@ -167,19 +167,45 @@ if ($RemoveServiceAccount -and -not $Purge) {
 }
 
 $InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -Label 'InstallDir'
-$StateDir = Assert-SafeChildPath -Path $StateDir -Root (Join-Path $env:ProgramData 'WeDecent') -Label 'StateDir'
 $metadataPath = Get-MetadataPath
-$metadata = $null
-if ($RemoveServiceAccount) { $metadata = Read-Metadata }
+$metadata = Read-Metadata
+$metadataTrusted = $false
+if ($metadata) {
+    $metadataTrusted = Test-MetadataTrusted $metadataPath
+    if (-not $metadataTrusted) {
+        throw 'Installer metadata is not ACL-authenticated; refusing to guess the service-state location.'
+    }
+    $metadataInstallDir = [IO.Path]::GetFullPath([string]$metadata.install_dir).TrimEnd('\', '/')
+    if ($metadataInstallDir -ine $InstallDir) {
+        throw 'Installer metadata install path does not match the requested install directory.'
+    }
+    $metadataStateDir = [IO.Path]::GetFullPath([string]$metadata.state_dir).TrimEnd('\', '/')
+    if ($PSBoundParameters.ContainsKey('StateDir') -and
+        ([IO.Path]::GetFullPath($StateDir).TrimEnd('\', '/') -ine $metadataStateDir)) {
+        throw 'Explicit state path does not match authenticated installer metadata.'
+    }
+    $StateDir = $metadataStateDir
+} elseif ($Purge -or $RemoveServiceAccount) {
+    throw 'Purge and service-account removal require authenticated installer metadata.'
+}
+
+$programDataStateRoot = Join-Path $env:ProgramData 'WeDecent'
+$stateFull = [IO.Path]::GetFullPath($StateDir).TrimEnd('\', '/')
+$installFull = [IO.Path]::GetFullPath($InstallDir).TrimEnd('\', '/')
+$programDataFull = [IO.Path]::GetFullPath($programDataStateRoot).TrimEnd('\', '/')
+if ($stateFull.StartsWith($installFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    $StateDir = Assert-SafeChildPath -Path $StateDir -Root $InstallDir -Label 'StateDir'
+} elseif ($stateFull.StartsWith($programDataFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    $StateDir = Assert-SafeChildPath -Path $StateDir -Root $programDataStateRoot -Label 'StateDir'
+} else {
+    throw 'State directory must be beneath the authenticated install or legacy ProgramData root.'
+}
 $accountToRemove = $null
 
 # Destructive-account authorization is completed before stopping services or deleting files/state.
 if ($RemoveServiceAccount) {
-    if (-not $metadata) {
-        throw 'Refusing service-account removal because installer metadata is missing.'
-    }
-    if (-not (Test-MetadataTrusted $metadataPath)) {
-        throw 'Refusing service-account removal because installer metadata is not protected by a trusted ACL.'
+    if (-not $metadata -or -not $metadataTrusted) {
+        throw 'Refusing service-account removal because authenticated installer metadata is missing.'
     }
     if (-not [bool]$metadata.managed_service_account) {
         throw 'Refusing to remove a service account that is not recorded as installer-managed.'
@@ -208,6 +234,13 @@ if ($serviceInfo) {
     $expectedAgent = '^(?:"' + [Regex]::Escape($agent) + '"|' + [Regex]::Escape($agent) + ')(?:\s|$)'
     if ($serviceInfo.PathName -notmatch $expectedAgent) {
         throw "Existing service binary path is not $agent; refusing to delete an unrelated service."
+    }
+    if (-not $metadata -or -not $metadataTrusted) {
+        throw 'Existing service has no authenticated state-path metadata; refusing uninstall until its state is located.'
+    }
+    $stateArg = [regex]::Escape('--state=' + $StateDir)
+    if ($serviceInfo.PathName -notmatch ('(?i)(?:^|\s)"?' + $stateArg + '"?(?:\s|$)')) {
+        throw 'SCM state path does not match authenticated installer metadata; refusing uninstall.'
     }
 }
 
@@ -241,12 +274,24 @@ if ($service) {
     }
 }
 
-Remove-Item -LiteralPath $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+$stateFull = [IO.Path]::GetFullPath($StateDir).TrimEnd('\', '/')
+if (Test-Path -LiteralPath $InstallDir -PathType Container) {
+    foreach ($child in Get-ChildItem -LiteralPath $InstallDir -Force -ErrorAction Stop) {
+        $childFull = [IO.Path]::GetFullPath($child.FullName).TrimEnd('\', '/')
+        if ($stateFull -ieq $childFull -or
+            $stateFull.StartsWith($childFull + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            continue
+        }
+        Remove-Item -LiteralPath $child.FullName -Recurse -Force -ErrorAction Stop
+    }
+}
 if ($RemoveFromMachinePath) { Remove-MachinePathEntry $InstallDir }
 
-if ($Purge) {
-    Remove-Item -LiteralPath $StateDir -Recurse -Force -ErrorAction SilentlyContinue
+if ($Purge -and (Test-Path -LiteralPath $StateDir)) {
+    Remove-Item -LiteralPath $StateDir -Recurse -Force -ErrorAction Stop
+    Remove-EmptyDirectory -Path (Split-Path -Parent $StateDir)
 }
+Remove-EmptyDirectory -Path $InstallDir
 
 if ($RemoveServiceAccount) {
     if ($accountToRemove) {
@@ -254,10 +299,6 @@ if ($RemoveServiceAccount) {
         Remove-LocalUser -Name $accountToRemove.Name
     }
     Remove-Item -LiteralPath $metadataPath -Force -ErrorAction SilentlyContinue
-}
-
-if ($Purge) {
-    Remove-EmptyDirectory -Path (Split-Path -Parent $StateDir)
 }
 
 Write-Host 'WeDecent binaries and service removed.'
