@@ -330,6 +330,14 @@ shell := fs.String(
 	if err := trust.VerifyPairingStatePath(trustPath); err != nil {
 		return fmt.Errorf("verify recovery trust copy ACL: %w", err)
 	}
+	authorityTrust, err := audit.LoadRecoveryAuthorityTrust(trustPath)
+	if err != nil { return fmt.Errorf("validate recovery authority trust: %w", err) }
+	bearer, err := loadRecoveryAuthorityToken(tokenPath)
+	if err != nil { return fmt.Errorf("validate recovery authority bearer: %w", err) }
+	if _, err := audit.NewHTTPRecoveryAuthority(*recoveryAuthorityURL, *recoveryAuthorityPin, bearer, authorityTrust); err != nil {
+		return fmt.Errorf("validate recovery authority endpoint and credential: %w", err)
+	}
+	bearer = ""
 
 	executable, err := os.Executable()
 	if err != nil {
@@ -372,6 +380,9 @@ shell := fs.String(
 		"--pairing-recovery-authority-token-file=" + tokenPath,
 	}
 
+	if _, err := parseServeConfig(serviceArgs[3:]); err != nil {
+		return fmt.Errorf("validate service runtime configuration: %w", err)
+	}
 	if err := winservice.Install(
 		winservice.InstallOptions{
 			Name:        *serviceName,
