@@ -19,8 +19,8 @@ import (
 )
 
 type RelayOptions struct {
-	CAFile     string
-	ServerName string
+	CAFile      string
+	ServerName  string
 	Timeout     time.Duration
 	ReadTimeout time.Duration
 }
