@@ -1066,7 +1066,7 @@ function Get-WeDecentMigrationPathObjectChain {
                 }
                 $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
             } catch {
-                if ($_.Exception -is [Microsoft.PowerShell.Commands.ItemNotFoundException] -or
+                if ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound -or
                     $_.Exception -is [IO.FileNotFoundException] -or
                     $_.Exception -is [IO.DirectoryNotFoundException]) {
                     $missing = $true
