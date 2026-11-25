@@ -49,21 +49,21 @@ func TestNewSupabaseWitnessedReplayCheckpointProviderUsesAtomicServerPrimary(t *
 	}
 
 	config := SupabaseWitnessedReplayCheckpointConfig{
-		ReplayPrimary: replayPrimary,
+		ReplayPrimary:    replayPrimary,
 		ReplayPrimaryKey: append(ed25519.PublicKey(nil), replay.private.Public().(ed25519.PublicKey)...),
-		ReplayWitnesses: replayProvider.Witnesses,
-		ReplayQuorum: 2,
-		Pending: NewMemoryCheckpointPendingStore(),
+		ReplayWitnesses:  replayProvider.Witnesses,
+		ReplayQuorum:     2,
+		Pending:          NewMemoryCheckpointPendingStore(),
 		FencePrimary: SupabaseCheckpointFenceConfig{
 			Hostname: "fence.example.test", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64),
 			ServiceRoleKey: "test-service-role-key", ActorID: "11111111-1111-4111-8111-111111111111",
-			PrimarySigner: fencePrivate,
-			CheckpointHeadKey: append(ed25519.PublicKey(nil), replay.private.Public().(ed25519.PublicKey)...),
+			PrimarySigner:              fencePrivate,
+			CheckpointHeadKey:          append(ed25519.PublicKey(nil), replay.private.Public().(ed25519.PublicKey)...),
 			RevocationAuthorizationKey: revocationPublic,
-			WitnessSetVersion: "postgres-fence-v1", Witnesses: fenceTrust,
+			WitnessSetVersion:          "postgres-fence-v1", Witnesses: fenceTrust,
 		},
-		FenceWitnesses: fenceClients,
-		RevocationProofs: testCheckpointRevocationProofProvider{privateKey: revocationPrivate},
+		FenceWitnesses:               fenceClients,
+		RevocationProofs:             testCheckpointRevocationProofProvider{privateKey: revocationPrivate},
 		ControlPlaneAuthorizationKey: controlPlanePublic,
 	}
 	provider, err := NewSupabaseWitnessedReplayCheckpointProvider(config)
