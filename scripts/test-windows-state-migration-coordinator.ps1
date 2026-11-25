@@ -453,13 +453,21 @@ try {
 $nestedFileAcl = New-MigrationFixture
 try {
     $nestedFile = Join-Path $nestedFileAcl.Source 'nested/policy.json'
-    $users = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
     $output = & icacls.exe $nestedFile '/grant' '*S-1-5-32-545:(F)' 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Could not broaden nested file ACL for regression: $($output -join ' ')" }
     $fileRules = (Get-Acl -LiteralPath $nestedFile).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
-    if (-not @($fileRules | Where-Object { $_.IdentityReference.Value -ceq 'S-1-5-32-545' }).Count) {
-        throw 'Nested file ACL mutation did not create the expected Users ACE.'
-    }
+    $usersRules = @($fileRules | Where-Object {
+        $_.IdentityReference.Value -ceq 'S-1-5-32-545' -and
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        $_.FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl
+    })
+    if ($usersRules.Count -eq 0) { throw 'Nested file ACL mutation did not create the expected Users FullControl ACE.' }
+    $treePaths = @($nestedFileAcl.Source) + @(Get-ChildItem -LiteralPath $nestedFileAcl.Source -Force -Recurse | ForEach-Object FullName)
+    if ($nestedFile -notin $treePaths) { throw 'Recursive ACL test enumeration omitted the nested file.' }
+    $directFileAclRejected = $false
+    try { [void](Assert-WeDecentMigrationTreeAcl -Path $nestedFileAcl.Source -ServiceSid $nestedFileAcl.ServiceSid) }
+    catch { $directFileAclRejected = $_.Exception.Message -like '*unexpected access rule*'; if (-not $directFileAclRejected) { throw } }
+    if (-not $directFileAclRejected) { throw 'Recursive ACL validator accepted the broadened nested file DACL.' }
     $rejectedNestedFileAcl = $false
     try {
         [void](Recover-WeDecentStateMigration -JournalPath $nestedFileAcl.Journal -AgentPath $agentPath -MetadataPath $nestedFileAcl.MetadataPath -ServiceName $nestedFileAcl.ServiceName)
@@ -481,9 +489,16 @@ try {
     $output = & icacls.exe $nestedDirectory '/grant' '*S-1-5-32-545:(F)' 2>&1
     if ($LASTEXITCODE -ne 0) { throw "Could not broaden nested directory ACL for regression: $($output -join ' ')" }
     $directoryRules = (Get-Acl -LiteralPath $nestedDirectory).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])
-    if (-not @($directoryRules | Where-Object { $_.IdentityReference.Value -ceq 'S-1-5-32-545' }).Count) {
-        throw 'Nested directory ACL mutation did not create the expected Users ACE.'
-    }
+    $directoryUsersRules = @($directoryRules | Where-Object {
+        $_.IdentityReference.Value -ceq 'S-1-5-32-545' -and
+        $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        $_.FileSystemRights -eq [Security.AccessControl.FileSystemRights]::FullControl
+    })
+    if ($directoryUsersRules.Count -eq 0) { throw 'Nested directory ACL mutation did not create the expected Users FullControl ACE.' }
+    $directDirectoryAclRejected = $false
+    try { [void](Assert-WeDecentMigrationTreeAcl -Path $nestedDirectoryAcl.Source -ServiceSid $nestedDirectoryAcl.ServiceSid) }
+    catch { $directDirectoryAclRejected = $_.Exception.Message -like '*unexpected access rule*'; if (-not $directDirectoryAclRejected) { throw } }
+    if (-not $directDirectoryAclRejected) { throw 'Recursive ACL validator accepted the broadened nested directory DACL.' }
     $rejectedNestedDirectoryAcl = $false
     try {
         [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryAcl.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryAcl.MetadataPath -ServiceName $nestedDirectoryAcl.ServiceName)
