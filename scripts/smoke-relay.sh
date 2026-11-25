@@ -87,17 +87,25 @@ WEDECENT_PAIRING_RECOVERY_AUTHORITY_TOKEN=smoke-token SSL_CERT_FILE="$TMP/recove
   --shell /bin/sh >"$TMP/agent.log" 2>&1 &
 AGENT_PID=$!
 
-# Wait until both outbound slots are parked before attempting a client connection.
+# The relay logs each slot only after authenticating and parking it.
 attempts=0
-while [ "$(grep -c 'relay slot parked' "$TMP/agent.log" 2>/dev/null || true)" -lt 2 ]; do
+while [ "$(grep -c 'relay slot parked' "$TMP/relay.log" 2>/dev/null || true)" -lt 2 ]; do
   if ! kill -0 "$AGENT_PID" 2>/dev/null; then
+    printf 'agent exited before both relay slots registered\n' >&2
     cat "$TMP/agent.log" >&2
+    cat "$TMP/relay.log" >&2
+    exit 1
+  fi
+  if ! kill -0 "$RELAY_PID" 2>/dev/null; then
+    printf 'relay exited before both outbound slots registered\n' >&2
+    cat "$TMP/relay.log" >&2
     exit 1
   fi
   attempts=$((attempts + 1))
   if [ "$attempts" -ge 100 ]; then
-    printf 'agent did not park both relay slots\n' >&2
+    printf 'relay did not authenticate and park both outbound slots within 10 seconds\n' >&2
     cat "$TMP/agent.log" >&2
+    cat "$TMP/relay.log" >&2
     exit 1
   fi
   sleep 0.1
