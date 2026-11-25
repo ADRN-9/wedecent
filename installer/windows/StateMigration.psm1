@@ -1194,7 +1194,7 @@ public static class WeDecentMigrationFileIdentityApi {
             } else {
                 IntPtr target=CreateFile(targetPath, FILE_READ_ATTRIBUTES, 7, IntPtr.Zero, OPEN_EXISTING,
                     BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
-                if (target!=new IntPtr(-1)) { CloseHandle(target); throw new IOException("Publication destination appeared before atomic publication."); }
+                if (target!=new IntPtr(-1)) { CloseHandle(target); throw new System.IO.IOException("Publication destination appeared before atomic publication."); }
                 int error=Marshal.GetLastWin32Error();
                 if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
             }
