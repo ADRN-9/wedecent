@@ -286,7 +286,6 @@ func TestServiceProvisionRejectsBroadExistingParentDACL(t *testing.T) {
 		t.Fatalf("service provisioning rejected a protected parent: %v", err)
 	}
 }
-
 func TestServiceStartupRejectsUntrustedAncestorDeleteChild(t *testing.T) {
 	parent := filepath.Join(t.TempDir(), "protected-parent")
 	if err := preflightAgentState(parent); err != nil {
@@ -301,7 +300,9 @@ func TestServiceStartupRejectsUntrustedAncestorDeleteChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + active.String() + ")(A;;0x00000040;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	dacl, _, err := sd.DACL()
 	if err != nil || dacl == nil {
 		t.Fatalf("construct hostile ancestor DACL: %v", err)
@@ -324,13 +325,21 @@ func TestServiceStartupFailsClosedBeforeSensitiveStateOnAncestorMutationACL(t *t
 	state := filepath.Join(parent, "agent")
 	if err := preflightAgentState(state); err != nil { t.Fatal(err) }
 	active, err := activeWindowsSID()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	sd, err := windows.SecurityDescriptorFromString("D:P(A;OICI;FA;;;" + active.String() + ")(A;;0x00000040;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	dacl, _, err := sd.DACL()
-	if err != nil || dacl == nil { t.Fatalf("construct hostile ancestor DACL: %v", err) }
+	if err != nil || dacl == nil {
+		t.Fatalf("construct hostile ancestor DACL: %v", err)
+	}
 	if err := windows.SetNamedSecurityInfo(parent, windows.SE_FILE_OBJECT,
-		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil { t.Fatal(err) }
+		windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION, nil, nil, dacl, nil); err != nil {
+		t.Fatal(err)
+	}
 	err = runServiceRun([]string{"--state=" + state, "--name=ancestor-acl-test", "--listen=", "--web-relay="})
 	if err == nil || !strings.Contains(err.Error(), "verify guarded service state") {
 		t.Fatalf("service startup did not reject hostile ancestor ACL: %v", err)
