@@ -428,8 +428,8 @@ func verifyMigrationSourceForSID(dir, serviceSID string) error {
 		if err := verifyWindowsMigrationAncestorDirectory(path, trusted); err != nil {
 			return fmt.Errorf("untrusted legacy migration ancestor %q: %w", path, err)
 		}
-		owner, err := windowsServiceOwner(path)
-		if err != nil || owner == nil || !trusted[owner.String()] {
+		owner, err := windowsStateAncestorOwnerLookup(path)
+		if err != nil || owner == nil || !owner.IsValid() || !trusted[owner.String()] {
 			return fmt.Errorf("legacy migration ancestor %q has an untrusted owner: %v", path, err)
 		}
 		path = filepath.Join(path, components[i])
