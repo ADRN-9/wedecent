@@ -35,7 +35,7 @@ wait_for_log() {
     fi
     attempts=$((attempts + 1))
     if [ "$attempts" -ge 100 ]; then
-      printf "timed out waiting for %s in %s after 10 seconds (pid %s)\\n" "$pattern" "$file" "$pid" >&2
+      printf "timed out waiting for %s in %s after 10 seconds (pid %s)\n" "$pattern" "$file" "$pid" >&2
       cat "$file" >&2 2>/dev/null || true
       return 1
     fi
