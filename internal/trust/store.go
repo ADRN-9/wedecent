@@ -28,6 +28,10 @@ const maxStoreSize = 1 << 20
 // replacement is durable, even when the new snapshot is readable on disk.
 var ErrTrustStoreDurability = errors.New("trust store namespace durability uncertain")
 
+// ErrTrustStoreCommitUncertain means a replacement may be visible but its
+// containing directory could not be proven durable. Callers must re-read state.
+var ErrTrustStoreCommitUncertain = ErrTrustStoreDurability
+
 // This private marker can be produced only after the pairing directory sync.
 // A readable snapshot on its own never establishes durability.
 var errTrustStoreCommitted = errors.New("pairing trust store durably committed")
@@ -175,7 +179,7 @@ func (s *Store) DeletePeer(id string) (Peer, bool, error) {
 		return Peer{}, false, nil
 	}
 	delete(s.Peers, id)
-	if err := s.saveLocked(false); err != nil {
+	if err := s.saveLocked(true); err != nil {
 		s.Peers[id] = peer
 		return Peer{}, false, err
 	}
