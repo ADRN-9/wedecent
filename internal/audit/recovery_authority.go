@@ -94,6 +94,11 @@ func (t RecoveryAuthorityTrust) Validate() error {
 	return nil
 }
 
+func recoveryPrimaryKeyID(publicKey ed25519.PublicKey) string {
+	digest := sha256.Sum256(publicKey)
+	return "ed25519:" + hex.EncodeToString(digest[:])
+}
+
 // ValidateRecoveryCheckpointWithTrust is the mandatory complete verification
 // path: pinned primary signature, unique pinned witness identities and keys,
 // exact request binding, and strict-majority witness signatures.
@@ -203,8 +208,7 @@ func VerifyRecoveryCheckpointSignature(checkpoint RecoveryCheckpoint, primaryKey
 	if len(primaryKey) != ed25519.PublicKeySize {
 		return ErrRecoveryAuthorityUnavailable
 	}
-	keyDigest := sha256.Sum256(primaryKey)
-	expectedKeyID := "ed25519:" + hex.EncodeToString(keyDigest[:])
+	expectedKeyID := recoveryPrimaryKeyID(primaryKey)
 	if checkpoint.SignerKeyID != expectedKeyID || len(checkpoint.Signature) != ed25519.SignatureSize {
 		return ErrRecoveryCheckpointConflict
 	}
