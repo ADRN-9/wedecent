@@ -10,7 +10,7 @@ insert into c197_test_keys select 'primary',public,secret from pgsodium.crypto_s
 insert into c197_test_keys select 'witness-a',public,secret from pgsodium.crypto_sign_new_keypair();
 insert into c197_test_keys select 'witness-b',public,secret from pgsodium.crypto_sign_new_keypair();
 insert into c197_test_keys select 'witness-c',public,secret from pgsodium.crypto_sign_new_keypair();
-create function pg_temp.c197_key_id(p_key bytea) returns text language sql immutable as $
+create function pg_temp.c197_key_id(p_key bytea) returns text language sql immutable as $fn$
  select 'ed25519-' || pg_catalog.translate(
    pg_catalog.replace(pg_catalog.replace(pg_catalog.encode(extensions.digest(p_key,'sha256'),'base64'),'=',''),E'\n',''),
    '+/','-_'
@@ -106,7 +106,7 @@ $fn$;
 
 create function pg_temp.c197_authority_signature(
  p_operation_id text,p_fingerprint bytea,p_token_sha256 bytea,p_acks jsonb
-) returns bytea language sql volatile as $
+) returns bytea language sql volatile as $fn$
  select pgsodium.crypto_sign_detached(
    wedecent_private.checkpoint_fence_commit_signing_bytes(
      p_operation_id,p_fingerprint,p_token_sha256,
