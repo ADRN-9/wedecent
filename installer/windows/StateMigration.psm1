@@ -1702,6 +1702,7 @@ Export-ModuleMember -Function @(
     'Assert-WeDecentMigrationAdminDirectory',
     'Set-WeDecentMigrationAdminFileAcl',
     'Assert-WeDecentMigrationMetadataAcl',
+    'Write-WeDecentMigrationMetadata',
     'Recover-WeDecentStateMigration',
     'Invoke-WeDecentMigrationFaultPoint',
     'Get-WeDecentMigrationUpdatedServicePath',
