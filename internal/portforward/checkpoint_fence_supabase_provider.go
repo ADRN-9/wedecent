@@ -7,7 +7,7 @@ import (
 )
 
 // SupabaseWitnessedReplayCheckpointConfig is server-side composition only.
-// Its service-role key, primary signer and proof-verification key must never be
+// Its dedicated authority JWT, primary signer and proof-verification key must never be
 // copied into Local Core, wd-agent, desktop, or installer configuration.
 type SupabaseWitnessedReplayCheckpointConfig struct {
 	ReplayPrimary                ReplayCheckpointProvider

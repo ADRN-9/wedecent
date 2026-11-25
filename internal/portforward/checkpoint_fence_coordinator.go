@@ -22,6 +22,14 @@ type CheckpointFenceCoordinator struct {
 	WitnessSetVersion string
 	Witnesses         []CheckpointFenceWitnessClient
 	Quorum            int
+	Now               func() time.Time
+}
+
+func (c *CheckpointFenceCoordinator) now() time.Time {
+	if c != nil && c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
 }
 
 // Execute is retained for isolated fence-store tests and non-checkpoint use.
@@ -88,14 +96,29 @@ func (c *CheckpointFenceCoordinator) execute(
 	if err := ctx.Err(); err != nil {
 		return CheckpointFenceOperation{}, err
 	}
+	var recoveredToken *CheckpointFenceToken
+	if request.Scope.Kind == "organization" {
+		existing, found, loadErr := c.Primary.LoadFence(ctx, request.Scope, request.OperationID)
+		if loadErr != nil {
+			return CheckpointFenceOperation{}, errors.Join(ErrCheckpointAmbiguous, loadErr)
+		}
+		if found && checkpointFenceTokenMatchesOperation(existing.Token, request) {
+			if err := verifyCheckpointFenceTokenSignature(existing.Token, c.PrimaryKey); err != nil {
+				return CheckpointFenceOperation{}, err
+			}
+			token := cloneCheckpointFenceToken(existing.Token)
+			recoveredToken = &token
+		}
+	}
 	if request.Scope.Kind == "organization" && request.Action == CheckpointFenceRevoke {
 		envelope, proofErr := decodeCheckpointRevocationAuthorizationProof(request.AuthorizationProof)
 		if len(request.Participants) != 1 || proofErr != nil ||
 			sha256.Sum256(request.AuthorizationProof) != request.AuthorizationSHA256 {
 			return CheckpointFenceOperation{}, ErrCheckpointIntegrity
 		}
-		now := time.Now().UnixMilli()
-		if envelope.IssuedAtUnixMS > now+30000 || envelope.ExpiresAtUnixMS <= now {
+		now := c.now().UnixMilli()
+		if envelope.IssuedAtUnixMS > now+30000 ||
+			(envelope.ExpiresAtUnixMS <= now && recoveredToken == nil) {
 			return CheckpointFenceOperation{}, ErrCheckpointFenceExpired
 		}
 		expectedOperationID, operationErr := CheckpointRevocationOperationID(
@@ -120,6 +143,7 @@ func (c *CheckpointFenceCoordinator) execute(
 		!checkpointFenceTokenMatchesRequest(token, request) {
 		return CheckpointFenceOperation{}, ErrCheckpointIntegrity
 	}
+	recoverOnly := token.ExpiresAtUnixMS <= c.now().UnixMilli()
 	if existing, found, loadErr := c.Primary.LoadFence(ctx, token.Scope, token.OperationID); loadErr != nil {
 		return CheckpointFenceOperation{}, errors.Join(ErrCheckpointAmbiguous, loadErr)
 	} else if found && existing.Committed {
@@ -142,6 +166,19 @@ func (c *CheckpointFenceCoordinator) execute(
 	for _, witness := range c.Witnesses {
 		witness := witness
 		go func() {
+			if recoverOnly {
+				ack, found, err := witness.Witness.LoadFence(ctx, token.Scope, token.Generation)
+				if err != nil {
+					responses <- result{id: witness.ID, err: err}
+					return
+				}
+				if !found {
+					responses <- result{id: witness.ID, err: ErrCheckpointFenceExpired}
+					return
+				}
+				responses <- result{ack: ack, id: witness.ID}
+				return
+			}
 			ack, err := witness.Witness.CommitFence(ctx, token)
 			responses <- result{ack: ack, id: witness.ID, err: err}
 		}()

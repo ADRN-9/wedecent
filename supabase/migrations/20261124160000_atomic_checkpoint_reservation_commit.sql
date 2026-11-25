@@ -802,7 +802,10 @@ begin
              where reservation_row.device_id = v_participant.device_id
                and reservation_row.operation_id = p_operation_id
                and reservation_row.fingerprint = p_fingerprint
-               and reservation_row.expires_at > v_now
+               and (
+                   reservation_row.expires_at > v_now
+                   or pg_catalog.current_setting('wedecent.checkpoint_fence_verified', true) = p_operation_id
+               )
         ) then
             raise exception 'checkpoint reservation is missing or expired'
                 using errcode = '55P03';

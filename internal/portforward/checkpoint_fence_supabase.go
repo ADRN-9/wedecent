@@ -27,14 +27,20 @@ const (
 	checkpointFenceLeaseSecs  = 60
 )
 
-// SupabaseCheckpointFenceConfig is server-only configuration. Never embed the service-role
-// key or primary signing key in Local Core, a desktop renderer, or an installer.
+// CheckpointAuthorityTokenSource returns short-lived JWTs for the authenticated session.
+// It must derive sub from that session, never from a caller-supplied actor ID. Its signing
+// key must exist only on the trusted authority host.
+type CheckpointAuthorityTokenSource interface {
+	Token(context.Context) (string, error)
+}
+
+// SupabaseCheckpointFenceConfig is restricted to the checkpoint authority host.
 type SupabaseCheckpointFenceConfig struct {
 	Hostname                   string
 	Port                       uint16
 	SPKISHA256Pins             string
-	ServiceRoleKey             string
-	ActorID                    string
+	AnonAPIKey                 string
+	AuthorityTokenSource       CheckpointAuthorityTokenSource
 	PrimarySigner              crypto.Signer
 	CheckpointHeadKey          ed25519.PublicKey
 	RevocationAuthorizationKey ed25519.PublicKey
@@ -45,8 +51,9 @@ type SupabaseCheckpointFenceConfig struct {
 
 type SupabaseCheckpointFencePrimary struct {
 	endpoint                   string
+	anonAPIKey                 string
 	actorID                    string
-	serviceRoleKey             string
+	authorityTokenSource       CheckpointAuthorityTokenSource
 	primarySigner              crypto.Signer
 	primaryKey                 ed25519.PublicKey
 	checkpointHeadKey          ed25519.PublicKey
@@ -118,11 +125,16 @@ type checkpointFenceAckWire struct {
 
 func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*SupabaseCheckpointFencePrimary, error) {
 	if !validCheckpointAuditAuthority(config.Hostname, config.Port) ||
-		strings.TrimSpace(config.ServiceRoleKey) == "" || strings.TrimSpace(config.ServiceRoleKey) != config.ServiceRoleKey ||
-		!canonicalUUID(config.ActorID) || config.PrimarySigner == nil ||
+		strings.TrimSpace(config.AnonAPIKey) == "" || strings.TrimSpace(config.AnonAPIKey) != config.AnonAPIKey ||
+		config.AuthorityTokenSource == nil || config.PrimarySigner == nil ||
 		config.WitnessSetVersion == "" || len(config.WitnessSetVersion) > 128 ||
 		len(config.CheckpointHeadKey) != ed25519.PublicKeySize ||
 		len(config.RevocationAuthorizationKey) != ed25519.PublicKeySize {
+		return nil, ErrCheckpointUnavailable
+	}
+	initialAuthorityJWT, tokenErr := config.AuthorityTokenSource.Token(context.Background())
+	initialClaims, claimsOK := checkpointAuthorityJWTClaimsFromToken(initialAuthorityJWT, config.Now)
+	if tokenErr != nil || !claimsOK || !canonicalUUID(initialClaims.Sub) {
 		return nil, ErrCheckpointUnavailable
 	}
 	publicKey, ok := config.PrimarySigner.Public().(ed25519.PublicKey)
@@ -186,13 +198,61 @@ func NewSupabaseCheckpointFencePrimary(config SupabaseCheckpointFenceConfig) (*S
 		now = time.Now
 	}
 	return &SupabaseCheckpointFencePrimary{
-		endpoint: endpoint, actorID: config.ActorID, serviceRoleKey: config.ServiceRoleKey,
+		endpoint: endpoint, anonAPIKey: config.AnonAPIKey, actorID: initialClaims.Sub, authorityTokenSource: config.AuthorityTokenSource,
 		primarySigner: config.PrimarySigner, primaryKey: append(ed25519.PublicKey(nil), publicKey...),
 		checkpointHeadKey:          append(ed25519.PublicKey(nil), config.CheckpointHeadKey...),
 		revocationAuthorizationKey: append(ed25519.PublicKey(nil), config.RevocationAuthorizationKey...),
 		witnessSetVersion:          config.WitnessSetVersion, witnesses: trusted, witnessIDs: ids,
 		quorum: quorum, http: httpClient, now: now,
 	}, nil
+}
+
+type checkpointAuthorityJWTClaims struct {
+	Role string `json:"role"`
+	Sub  string `json:"sub"`
+	Exp  int64  `json:"exp"`
+	Iat  int64  `json:"iat"`
+}
+
+func checkpointAuthorityJWTClaimsFromToken(token string, now func() time.Time) (checkpointAuthorityJWTClaims, bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 || parts[0] == "" || parts[2] == "" {
+		return checkpointAuthorityJWTClaims{}, false
+	}
+	headerBytes, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return checkpointAuthorityJWTClaims{}, false
+	}
+	var header struct {
+		Alg string `json:"alg"`
+	}
+	if json.Unmarshal(headerBytes, &header) != nil || header.Alg == "" || header.Alg == "none" {
+		return checkpointAuthorityJWTClaims{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return checkpointAuthorityJWTClaims{}, false
+	}
+	var claims checkpointAuthorityJWTClaims
+	if json.Unmarshal(payload, &claims) != nil {
+		return checkpointAuthorityJWTClaims{}, false
+	}
+	clock := time.Now
+	if now != nil {
+		clock = now
+	}
+	current := clock()
+	if claims.Role != "wedecent_checkpoint_authority" || !canonicalUUID(claims.Sub) ||
+		claims.Exp <= current.Unix()+30 || claims.Iat <= 0 ||
+		claims.Iat > current.Unix()+30 || claims.Exp-claims.Iat > 300 {
+		return checkpointAuthorityJWTClaims{}, false
+	}
+	return claims, true
+}
+
+func validCheckpointAuthorityJWT(token, actorID string, now func() time.Time) bool {
+	claims, ok := checkpointAuthorityJWTClaimsFromToken(token, now)
+	return ok && claims.Sub == actorID
 }
 
 func (p *SupabaseCheckpointFencePrimary) CheckpointAuthorityKeyID() string {
@@ -402,9 +462,11 @@ func (p *SupabaseCheckpointFencePrimary) CommitFenceWithCheckpointHeads(
 		return ErrCheckpointIntegrity
 	}
 	if token.ExpiresAtUnixMS <= p.now().UnixMilli() {
-		return ErrCheckpointFenceExpired
-	}
-	if err := p.verifyRevocationAuthorization(token.Action, token.OperationID, token.Participants,
+		if err := p.verifyRevocationAuthorizationForRecovery(token.Action, token.OperationID,
+			token.Participants, token.AuthorizationProof, token.AuthorizationSHA256, true); err != nil {
+			return err
+		}
+	} else if err := p.verifyRevocationAuthorization(token.Action, token.OperationID, token.Participants,
 		token.AuthorizationProof, token.AuthorizationSHA256); err != nil {
 		return err
 	}
@@ -435,12 +497,27 @@ func (p *SupabaseCheckpointFencePrimary) CommitFenceWithCheckpointHeads(
 	for _, ack := range acknowledgements {
 		acks = append(acks, checkpointFenceAckToWire(ack))
 	}
+	tokenWire, err := checkpointFenceTokenToWire(token)
+	if err != nil {
+		return err
+	}
+	attestationMessage, err := checkpointFenceCommitAttestationMessage(
+		token.OperationID, fingerprint, tokenDigest, tokenWire, acks, p.actorID,
+	)
+	if err != nil {
+		return err
+	}
+	authoritySignature, err := p.primarySigner.Sign(rand.Reader, attestationMessage, crypto.Hash(0))
+	if err != nil || len(authoritySignature) != ed25519.SignatureSize {
+		return errors.Join(ErrCheckpointIntegrity, err)
+	}
 	var result json.RawMessage
 	err = p.rpc(ctx, "commit_checkpoint_fence_operation", map[string]any{
 		"p_operation_id":             token.OperationID,
 		"p_fingerprint":              "\\x" + hex.EncodeToString(fingerprint[:]),
 		"p_token_sha256":             "\\x" + hex.EncodeToString(tokenDigest[:]),
 		"p_witness_acknowledgements": acks,
+		"p_authority_signature":      "\\x" + hex.EncodeToString(authoritySignature),
 	}, &result)
 	if err != nil {
 		operation, found, loadErr := p.LoadFence(ctx, token.Scope, token.OperationID)
@@ -530,7 +607,7 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 		token.WitnessSetVersion != p.witnessSetVersion || !sameStringSet(token.WitnessIDs, p.witnessIDs) ||
 		verifyCheckpointFenceTokenSignature(token, p.primaryKey) != nil ||
 		p.verifyRevocationAuthorizationForRecovery(token.Action, token.OperationID, token.Participants,
-			token.AuthorizationProof, token.AuthorizationSHA256, response.Committed) != nil {
+			token.AuthorizationProof, token.AuthorizationSHA256, true) != nil {
 		return CheckpointFenceOperation{}, false, ErrCheckpointIntegrity
 	}
 	if !response.Committed {
@@ -692,6 +769,46 @@ func (p *SupabaseCheckpointFencePrimary) loadOperationFingerprint(
 	return decodeSHA256Hex(response.Fingerprint)
 }
 
+func checkpointFenceCommitAttestationMessage(
+	operationID string,
+	fingerprint, tokenDigest [sha256.Size]byte,
+	token checkpointFenceTokenWire,
+	acknowledgements []checkpointFenceAckWire,
+	actorID string,
+) ([]byte, error) {
+	canonical := func(value any) ([]byte, error) {
+		encoded, err := json.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+		var normalized any
+		decoder := json.NewDecoder(bytes.NewReader(encoded))
+		decoder.UseNumber()
+		if err := decoder.Decode(&normalized); err != nil {
+			return nil, err
+		}
+		return json.Marshal(normalized)
+	}
+	tokenJSON, err := canonical(token)
+	if err != nil {
+		return nil, err
+	}
+	ackJSON, err := canonical(acknowledgements)
+	if err != nil {
+		return nil, err
+	}
+	tokenJSONHash := sha256.Sum256(tokenJSON)
+	ackJSONHash := sha256.Sum256(ackJSON)
+	message := "wedecent-checkpoint-fence-commit-v1\n" +
+		operationID + "\n" +
+		hex.EncodeToString(fingerprint[:]) + "\n" +
+		hex.EncodeToString(tokenDigest[:]) + "\n" +
+		hex.EncodeToString(tokenJSONHash[:]) + "\n" +
+		hex.EncodeToString(ackJSONHash[:]) + "\n" +
+		actorID + "\n"
+	return []byte(message), nil
+}
+
 func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, args any, out any) error {
 	if p == nil || ctx == nil || p.http == nil || p.endpoint == "" ||
 		!validCheckpointRPCName(name) {
@@ -706,8 +823,12 @@ func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, a
 	if err != nil {
 		return ErrCheckpointUnavailable
 	}
-	request.Header.Set("apikey", p.serviceRoleKey)
-	request.Header.Set("Authorization", "Bearer "+p.serviceRoleKey)
+	authorityJWT, tokenErr := p.authorityTokenSource.Token(ctx)
+	if tokenErr != nil || !validCheckpointAuthorityJWT(authorityJWT, p.actorID, p.now) {
+		return ErrCheckpointUnavailable
+	}
+	request.Header.Set("apikey", p.anonAPIKey)
+	request.Header.Set("Authorization", "Bearer "+authorityJWT)
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "application/json")
 	response, err := p.http.Do(request)

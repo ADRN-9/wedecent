@@ -55,8 +55,8 @@ func TestNewSupabaseWitnessedReplayCheckpointProviderUsesAtomicServerPrimary(t *
 		ReplayQuorum:     2,
 		Pending:          NewMemoryCheckpointPendingStore(),
 		FencePrimary: SupabaseCheckpointFenceConfig{
-			Hostname: "fence.example.test", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64),
-			ServiceRoleKey: "test-service-role-key", ActorID: "11111111-1111-4111-8111-111111111111",
+			Hostname: "fence.example.test", Port: 443, SPKISHA256Pins: strings.Repeat("a", 64), AnonAPIKey: "test-anon-api-key",
+			AuthorityTokenSource: c203StaticAuthorityTokenSource(c203AuthorityJWT("11111111-1111-4111-8111-111111111111")),
 			PrimarySigner:              fencePrivate,
 			CheckpointHeadKey:          append(ed25519.PublicKey(nil), replay.private.Public().(ed25519.PublicKey)...),
 			RevocationAuthorizationKey: revocationPublic,
