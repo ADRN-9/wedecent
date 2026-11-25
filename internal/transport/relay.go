@@ -189,11 +189,15 @@ func readRelayMessage(ctx context.Context, conn net.Conn, timeout time.Duration)
 	if err := conn.SetReadDeadline(deadline); err != nil {
 		return relayproto.Message{}, err
 	}
+	interruptDone := make(chan struct{})
 	stop := context.AfterFunc(ctx, func() {
+		defer close(interruptDone)
 		_ = conn.SetReadDeadline(time.Now())
 	})
 	msg, err := relayproto.Read(conn)
-	stop()
+	if !stop() {
+		<-interruptDone
+	}
 	_ = conn.SetReadDeadline(time.Time{})
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return relayproto.Message{}, ctxErr
