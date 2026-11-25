@@ -176,3 +176,68 @@ both entry points and confirms wrong credentials do not cause migration.
 The current final validation candidate is tracked by draft PR #189. Exact-HEAD CI
 and Desktop results must be read from the final branch SHA, not the failed intermediate
 attempts. The intermediate failures are not represented as passing validation.
+
+
+## C301 — refreshed integration and recovery authority API
+
+### Freshness refresh
+
+The latest PR #188 head at this refresh is `9a0bccc220550921e13e9f744bd69a75c09bedca`.
+C210 was ancestry-merged against that exact head without rewriting PR #176, #186,
+or #188. The current C210 branch includes the four-file semantic integration plus
+the CI/test changes described below.
+
+### Independent recovery authority contract
+
+Added `internal/audit/recovery_authority.go` and
+`internal/audit/recovery_authority_test.go`.
+
+The provider contract deliberately exposes operations, not private key bytes:
+- `SignArchive` / `VerifyArchive` authenticate archive payloads using a provider
+  key identity and non-exportable signing key.
+- `CommitCheckpoint` / `LoadCheckpoint` provide monotonic scope generations,
+  previous and current state digests, deterministic operation IDs, and signed
+  receipts.
+- `MigrateLegacyArchive` requires an independently authenticated legacy
+  checkpoint. A local archive MAC is not sufficient proof for migration.
+- `VerifyCheckpoint` verifies the provider's primary signature.
+
+The checkpoint validator checks exact generation transitions, previous/current
+digests, operation identity, unique witness identities, Ed25519 witness signatures,
+and a strict-majority threshold. Provider implementations are contractually required
+to atomically reject stale generations, conflicting digests, duplicate operation
+IDs with different content, and unavailable quorum. Exact retries must return the
+same receipt. Unresolvable post-commit transport errors must remain
+`ErrRecoveryCommitUncertain`, never be interpreted as success or rolled back.
+
+**Important limitation:** this is an API/validation foundation, not a deployed
+provider. The existing `PairingRecovery` path still uses the legacy local archive
+HMAC implementation; it has not yet been migrated to this interface or wired to a
+real remote/platform signer. No external signing endpoint, pinned authority key,
+witness set, non-exportable credentials, or migration checkpoint was provisioned.
+The archive custody and rollback findings therefore remain open production blockers.
+
+### CI failure remediation
+
+- `TestCheckpointFenceCoordinatorExecutesStrictMajority` now injects the fixture's
+  deterministic clock into the coordinator, matching the primary and witness
+  clocks. The previous test mixed a Unix-millisecond fixture clock with real wall
+  time, causing an immediate expired-token path and false quorum failure.
+- The pgTAP fixture no longer attempts to grant `pgsodium_keymaker` to itself.
+  The CI workflow grants that role with ADMIN OPTION to the `postgres` test role
+  inside the disposable local Supabase database only, using its administrative
+  container role before pgTAP starts. No production application role or hosted
+  database privilege is changed.
+
+These CI changes are awaiting exact-HEAD workflow evidence. The database container
+administrative role name and local role grant must be confirmed by the next run.
+
+### Current validation
+
+The refreshed PR #188 head had successful Desktop validation, but its CI run failed:
+- Desktop: `45547797234` — success.
+- CI: `45547797227` — failure.
+
+The failing Linux strict-majority test and Supabase fixture privilege error have
+targeted corrections in C210. These corrections are not considered passing until
+the new exact-HEAD CI workflow completes. PR #189 remains draft.
