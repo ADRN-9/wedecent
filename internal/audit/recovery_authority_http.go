@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"mime"
 	"net/url"
 	"os"
 	"path"
@@ -114,7 +115,7 @@ func (a *HTTPRecoveryAuthority) LoadCheckpoint(ctx context.Context, scope string
 		return RecoveryCheckpoint{}, ErrRecoveryCheckpointConflict
 	}
 	var checkpoint RecoveryCheckpoint
-	endpoint := recoveryAuthorityAPIPrefix + "/checkpoints/" + url.PathEscape(scope)
+	endpoint := recoveryAuthorityAPIPrefix + "/checkpoints?scope=" + url.QueryEscape(scope)
 	if err := a.get(ctx, endpoint, &checkpoint); err != nil {
 		return RecoveryCheckpoint{}, err
 	}
@@ -203,7 +204,12 @@ func (a *HTTPRecoveryAuthority) do(ctx context.Context, method, endpoint string,
 	if err != nil {
 		return ErrRecoveryAuthorityUnavailable
 	}
-	u.Path = path.Join(u.Path, endpoint)
+	relative, err := url.Parse(endpoint)
+	if err != nil || relative.IsAbs() || relative.Host != "" || !strings.HasPrefix(relative.Path, "/") {
+		return ErrRecoveryAuthorityUnavailable
+	}
+	u.Path = path.Join(u.Path, relative.Path)
+	u.RawQuery = relative.RawQuery
 	req, err := http.NewRequestWithContext(ctx, method, u.String(), body)
 	if err != nil {
 		return ErrRecoveryAuthorityUnavailable
@@ -224,7 +230,8 @@ func (a *HTTPRecoveryAuthority) do(ctx context.Context, method, endpoint string,
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		return fmt.Errorf("%w: authority service returned HTTP %d", ErrRecoveryAuthorityUnavailable, response.StatusCode)
 	}
-	if response.Header.Get("Content-Type") != "application/json" {
+	mediaType, _, mediaErr := mime.ParseMediaType(response.Header.Get("Content-Type"))
+	if mediaErr != nil || mediaType != "application/json" {
 		return ErrRecoveryAuthorityUnavailable
 	}
 	limited := io.LimitReader(response.Body, maxRecoveryAuthorityBody+1)
