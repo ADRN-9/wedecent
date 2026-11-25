@@ -747,7 +747,10 @@ func (r *PairingRecovery) ReconcilePrivileged(log *Log, attemptID string) error 
 	if err := log.VerifyDurableEvent(event); err != nil {
 		return err
 	}
-	return r.recordAuditProof(attemptID, PairingAuditProof{
+	if err := r.recordAuditProof(attemptID, PairingAuditProof{
 		Kind: "reconciliation", Event: event, VerifiedAt: time.Now().UTC(),
-	})
+	}); err != nil {
+		return err
+	}
+	return r.AcknowledgeResolved(attemptID)
 }
