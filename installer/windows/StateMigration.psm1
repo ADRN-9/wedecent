@@ -76,6 +76,13 @@ function Get-WeDecentMigrationManifest {
     return @($entries | Sort-Object -Property path)
 }
 
+function Get-WeDecentMigrationStableManifestDigest {
+    param([Parameter(Mandatory = $true)][object[]]$Manifest)
+
+    $stable = @($Manifest | Where-Object { $_.path -notin @('identity.key', 'identity.key.dpapi') })
+    return Get-WeDecentMigrationManifestDigest -Manifest $stable
+}
+
 function Get-WeDecentMigrationManifestDigest {
     param([Parameter(Mandatory = $true)][object[]]$Manifest)
 
@@ -373,6 +380,7 @@ function Copy-WeDecentMigrationTreeVerified {
     }
     return [pscustomobject]@{
         SourceManifestSHA256 = $sourceDigest
+        SourceStableManifestSHA256 = Get-WeDecentMigrationStableManifestDigest -Manifest $sourceManifest
         FileCount = @($sourceManifest | Where-Object kind -eq 'file').Count
         DirectoryCount = @($sourceManifest | Where-Object kind -eq 'directory').Count
         Identity = Assert-WeDecentMigrationIdentityContinuity -Source $sourceFull -Destination $stagingFull -AgentPath $AgentPath
@@ -708,6 +716,27 @@ function Invoke-WeDecentMigrationFaultPoint {
     }
 }
 
+function Assert-WeDecentMigrationRollbackIdentityContinuity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Candidate,
+        [Parameter(Mandatory = $true)][string]$AgentPath
+    )
+
+    $sourceCertificate = (Get-FileHash -LiteralPath (Join-Path $Source 'identity.crt') -Algorithm SHA256).Hash
+    $candidateCertificate = (Get-FileHash -LiteralPath (Join-Path $Candidate 'identity.crt') -Algorithm SHA256).Hash
+    if ($sourceCertificate -cne $candidateCertificate) {
+        throw 'Rollback candidate certificate differs from the original device certificate.'
+    }
+    $sourceIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $Source
+    $candidateIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $Candidate
+    if ($sourceIdentity.DeviceId -cne $candidateIdentity.DeviceId -or
+        $sourceIdentity.Fingerprint -cne $candidateIdentity.Fingerprint) {
+        throw 'Rollback candidate does not preserve the original cryptographic device identity.'
+    }
+    return $true
+}
+
 function Assert-WeDecentMigrationPartialTreeSafe {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -766,17 +795,16 @@ function Restore-WeDecentMigrationTransaction {
     foreach ($candidate in @([string]$Journal.destination, [string]$Journal.staging)) {
         if (-not (Test-Path -LiteralPath $candidate -PathType Container)) { continue }
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $Journal.agent_path -StatePath $candidate -ServiceSid $Journal.service_sid)
-        $expectedDigest = [string]$Journal.destination_manifest_sha256
-        if ([string]::IsNullOrWhiteSpace($expectedDigest)) { $expectedDigest = [string]$Journal.source_manifest_sha256 }
         if ($candidate -ceq [string]$Journal.staging -and
             [string]::IsNullOrWhiteSpace([string]$Journal.source_manifest_sha256)) {
             [void](Assert-WeDecentMigrationPartialTreeSafe -Path $candidate -ServiceSid $Journal.service_sid)
         } else {
             $manifest = @(Get-WeDecentMigrationManifest -Root $candidate)
-            $digest = Get-WeDecentMigrationManifestDigest -Manifest $manifest
-            if ($digest -cne $expectedDigest) {
+            $digest = Get-WeDecentMigrationStableManifestDigest -Manifest $manifest
+            if ($digest -cne [string]$Journal.source_stable_manifest_sha256) {
                 throw "Rollback refuses to remove changed migration copy: $candidate"
             }
+            [void](Assert-WeDecentMigrationRollbackIdentityContinuity -Source $Journal.source -Candidate $candidate -AgentPath $Journal.agent_path)
         }
         Remove-Item -LiteralPath $candidate -Recurse -Force -ErrorAction Stop
     }
@@ -903,6 +931,7 @@ function Invoke-WeDecentStateMigration {
         metadata_path = [IO.Path]::GetFullPath($MetadataPath)
         original_metadata_json = $originalMetadataJson
         source_manifest_sha256 = ''
+        source_stable_manifest_sha256 = ''
         destination_manifest_sha256 = ''
         journal_path = [IO.Path]::GetFullPath($JournalPath)
         updated_utc = ''
@@ -920,6 +949,7 @@ function Invoke-WeDecentStateMigration {
         Invoke-WeDecentMigrationFaultPoint -Name 'Copying' -FaultAt $FaultAt
         $copy = Copy-WeDecentMigrationTreeVerified -Source $sourceFull -Staging $staging -SourceServiceSid $ServiceSid -DestinationServiceSid $ServiceSid -AgentPath $AgentPath
         $journal.source_manifest_sha256 = $copy.SourceManifestSHA256
+        $journal.source_stable_manifest_sha256 = $copy.SourceStableManifestSHA256
         $journal.identity = $copy.Identity
         $journal.phase = 'Copied'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
@@ -987,6 +1017,8 @@ Export-ModuleMember -Function @(
     'Set-WeDecentMigrationTreeOwner',
     'Assert-WeDecentMigrationTreeAcl',
     'Assert-WeDecentMigrationPartialTreeSafe',
+    'Assert-WeDecentMigrationRollbackIdentityContinuity',
+    'Get-WeDecentMigrationStableManifestDigest',
     'Assert-WeDecentMigrationIdentityContinuity',
     'Invoke-WeDecentMigrationIdentityCheck',
     'Write-WeDecentMigrationJournal',
