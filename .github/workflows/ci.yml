@@ -322,6 +322,17 @@ jobs:
           PY
       - name: Start disposable local Supabase database
         run: ./scripts/start-supabase-db-ci.sh
+      - name: Grant pgsodium keymaker to the disposable test role
+        shell: bash
+        run: |
+          set -euo pipefail
+          db_container="$(docker ps --filter 'name=supabase_db_wedecent-local' --format '{{.Names}}' | head -n 1)"
+          if [[ -z "$db_container" ]]; then
+            echo "disposable Supabase database container not found" >&2
+            exit 1
+          fi
+          docker exec "$db_container" psql -U supabase_admin -d postgres -v ON_ERROR_STOP=1 \
+            -c 'GRANT pgsodium_keymaker TO postgres WITH ADMIN OPTION'
       - name: Run database pgTAP tests
         run: env -u SUPABASE_INTERNAL_IMAGE_REGISTRY supabase test db
       - name: Install PostgreSQL client for independent-session tests
