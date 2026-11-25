@@ -516,8 +516,11 @@ func (p *WitnessedReplayCheckpointProvider) Revoke(ctx context.Context, endpoint
 		Participants: []CheckpointEndpoint{endpoint},
 	}
 	authorizationProof, err := p.RevocationProofs.CheckpointRevocationProof(ctx, proofRequest)
-	if err != nil || len(authorizationProof) != ed25519.SignatureSize {
+	if err != nil {
 		return errors.Join(ErrCheckpointIntegrity, err)
+	}
+	if _, proofErr := decodeCheckpointRevocationAuthorizationProof(authorizationProof); proofErr != nil {
+		return ErrCheckpointIntegrity
 	}
 	authorizationHash := sha256.Sum256(authorizationProof)
 	if err := p.executeRevocationFence(ctx, endpoint, next, operationID, authorizationHash, authorizationProof); err != nil {
@@ -1385,6 +1388,11 @@ func (p *WitnessedReplayCheckpointProvider) executeFinalizationFence(ctx context
 	return p.executeOrganizationFence(ctx, scope, CheckpointFenceFinalize, operationID, fingerprint, request.AuthorizationSHA256, nil, checkpointRequestParticipants(request), heads)
 }
 
+func decodeRevocationProofEnvelope(proof []byte) error {
+	_, err := decodeCheckpointRevocationAuthorizationProof(proof)
+	return err
+}
+
 func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.Context, endpoint CheckpointEndpoint, next uint64, operationID string, authorizationHash [sha256.Size]byte, authorizationProof []byte) error {
 	if p == nil || p.Fencing == nil || !validCheckpointEndpoint(endpoint) ||
 		endpoint.RevocationEpoch == ^uint64(0) || next != endpoint.RevocationEpoch+1 {
@@ -1392,7 +1400,7 @@ func (p *WitnessedReplayCheckpointProvider) executeRevocationFence(ctx context.C
 	}
 	expectedOperationID, operationErr := CheckpointRevocationOperationID(endpoint, next)
 	if operationErr != nil || operationID != expectedOperationID ||
-		authorizationHash == ([sha256.Size]byte{}) || len(authorizationProof) != ed25519.SignatureSize {
+		authorizationHash == ([sha256.Size]byte{}) || decodeRevocationProofEnvelope(authorizationProof) != nil {
 		return ErrCheckpointIntegrity
 	}
 	fingerprint := checkpointRevocationFingerprint(endpoint, next)
