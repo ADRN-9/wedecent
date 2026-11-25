@@ -156,6 +156,7 @@ func TestServiceProvisionDistinctConfiguredSIDNativeIntegration(t *testing.T) {
 	if err := trust.VerifyPairingStatePath(state); err != nil {
 		t.Fatalf("service state retained inherited unauthorized ACE: %v", err)
 	}
+	t.Logf("provisioned protected empty service state under distinct service SID %s", serviceSID)
 	entries, err := os.ReadDir(state)
 	if err != nil || len(entries) != 0 {
 		t.Fatalf("sensitive material created during installer provisioning: %v, %v", entries, err)
