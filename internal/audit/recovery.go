@@ -40,6 +40,7 @@ type PairingOutcome struct {
 	PeerID               string             `json:"peer_id"`
 	Fingerprint          string             `json:"fingerprint"`
 	CredentialGeneration uint64             `json:"credential_generation,omitempty"`
+	Operation            string             `json:"operation,omitempty"`
 	Sequence             uint64             `json:"sequence,omitempty"`
 	Outcome              string             `json:"outcome"`
 	CreatedAt            time.Time          `json:"created_at"`
@@ -331,6 +332,12 @@ func validatePairingProof(record PairingOutcome, proof PairingAuditProof) error 
 				event.Type == "pairing.request" && event.Outcome == "denied") {
 			return nil
 		}
+	case "revocation":
+		if record.Operation == "revocation" &&
+			((record.Outcome == PairingOutcomeSuccess && event.Type == "trust.client_revoke" && event.Outcome == "success") ||
+				(record.Outcome == PairingOutcomeDenied && event.Type == "trust.client_revoke" && event.Outcome == "failed")) {
+			return nil
+		}
 	case "reconciliation":
 		if record.Outcome == PairingOutcomeSuccess &&
 			event.Type == "pairing.reconciliation" && event.Outcome == "success" &&
@@ -342,7 +349,8 @@ func validatePairingProof(record PairingOutcome, proof PairingAuditProof) error 
 }
 
 func validatePairingOutcome(record PairingOutcome) error {
-	if !pairingAttemptPattern.MatchString(record.AttemptID) ||
+	if (record.Operation != "" && record.Operation != "revocation") ||
+		!pairingAttemptPattern.MatchString(record.AttemptID) ||
 		!pairingIdentityPattern.MatchString(record.ActorID) ||
 		!pairingIdentityPattern.MatchString(record.PeerID) ||
 		!pairingFingerprintPattern.MatchString(record.Fingerprint) ||
@@ -826,6 +834,23 @@ func (r *PairingRecovery) ConfirmCompletion(log *Log, attemptID string, event Ev
 	}
 	return r.recordAuditProof(attemptID, PairingAuditProof{
 		Kind: "completion", Event: event, VerifiedAt: time.Now().UTC(),
+	})
+}
+
+// ConfirmRevocation stores a durable proof for an independently authorized
+// revocation operation in the same authority-protected active ledger.
+func (r *PairingRecovery) ConfirmRevocation(log *Log, attemptID string, event Event) error {
+	if err := r.verifyPairingLogSource(log); err != nil {
+		return err
+	}
+	if !pairingAttemptPattern.MatchString(attemptID) {
+		return errors.New("invalid revocation audit confirmation")
+	}
+	if err := log.VerifyDurableEvent(event); err != nil {
+		return fmt.Errorf("revocation audit event not independently verified: %w", err)
+	}
+	return r.recordAuditProof(attemptID, PairingAuditProof{
+		Kind: "revocation", Event: event, VerifiedAt: time.Now().UTC(),
 	})
 }
 
