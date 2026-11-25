@@ -168,7 +168,6 @@ func writeLegacyWindowsKey(t *testing.T, dir string, priv ed25519.PrivateKey) {
 	}
 }
 
-
 func TestEnsureDPAPIIdentityPersistsAcrossProcessRestart(t *testing.T) {
 	const helperDirEnv = "WEDECENT_DPAPI_RESTART_HELPER_DIR"
 	if dir := os.Getenv(helperDirEnv); dir != "" {
