@@ -300,13 +300,60 @@ function New-ServiceAccountPassword {
     return -join $chars
 }
 
-function ConvertFrom-SecureStringTransient {
-    param([Parameter(Mandatory = $true)][Security.SecureString]$SecureString)
-    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
+function Assert-SecureStringLine {
+    param(
+        [Parameter(Mandatory = $true)][Security.SecureString]$SecureString,
+        [Parameter(Mandatory = $true)][int]$MinimumLength,
+        [Parameter(Mandatory = $true)][int]$MaximumLength,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [switch]$RejectEdgeWhitespace
+    )
+    if ($SecureString.Length -lt $MinimumLength -or $SecureString.Length -gt $MaximumLength) {
+        throw "$Label length must be between $MinimumLength and $MaximumLength characters."
+    }
+    $pointer = [IntPtr]::Zero
+    $characters = $null
     try {
-        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+        $pointer = [Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($SecureString)
+        $characters = New-Object char[] $SecureString.Length
+        for ($i = 0; $i -lt $characters.Length; $i++) {
+            $characters[$i] = [char][Runtime.InteropServices.Marshal]::ReadInt16($pointer, $i * 2)
+            if ($characters[$i] -eq [char]10 -or $characters[$i] -eq [char]13) {
+                throw "$Label must not contain newline characters."
+            }
+        }
+        if ($RejectEdgeWhitespace -and
+            ([char]::IsWhiteSpace($characters[0]) -or [char]::IsWhiteSpace($characters[$characters.Length - 1]))) {
+            throw "$Label must not contain leading or trailing whitespace."
+        }
     } finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+        if ($characters) { [Array]::Clear($characters, 0, $characters.Length) }
+        if ($pointer -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($pointer)
+        }
+    }
+}
+
+function Write-SecureStringLine {
+    param(
+        [Parameter(Mandatory = $true)][IO.StreamWriter]$Writer,
+        [Parameter(Mandatory = $true)][Security.SecureString]$SecureString
+    )
+    $pointer = [IntPtr]::Zero
+    $characters = $null
+    try {
+        $pointer = [Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($SecureString)
+        $characters = New-Object char[] $SecureString.Length
+        for ($i = 0; $i -lt $characters.Length; $i++) {
+            $characters[$i] = [char][Runtime.InteropServices.Marshal]::ReadInt16($pointer, $i * 2)
+        }
+        $Writer.Write($characters)
+        $Writer.WriteLine()
+    } finally {
+        if ($characters) { [Array]::Clear($characters, 0, $characters.Length) }
+        if ($pointer -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($pointer)
+        }
     }
 }
 
@@ -458,19 +505,13 @@ function Invoke-AgentServiceInstall {
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw 'Failed to start wd-agent.exe service installer' }
-    $plainPassword = $null
-    $plainBearer = $null
     try {
-        $plainPassword = ConvertFrom-SecureStringTransient $Password
-        $plainBearer = ConvertFrom-SecureStringTransient $RecoveryBearerToken
-        $process.StandardInput.WriteLine($plainPassword)
-        $process.StandardInput.WriteLine($plainBearer)
+        Write-SecureStringLine -Writer $process.StandardInput -SecureString $Password
+        Write-SecureStringLine -Writer $process.StandardInput -SecureString $RecoveryBearerToken
         $process.StandardInput.Close()
         $process.WaitForExit()
         $exitCode = $process.ExitCode
     } finally {
-        $plainPassword = $null
-        $plainBearer = $null
         if (-not $process.HasExited) {
             try { $process.StandardInput.Close() } catch {}
             try { $process.Kill() } catch {}
@@ -759,15 +800,7 @@ if ($service) {
         $RecoveryAuthorityBearerToken.Length -gt 4096) {
         throw 'RecoveryAuthorityBearerToken must contain 32 to 4096 characters.'
     }
-    $bearerForValidation = ConvertFrom-SecureStringTransient $RecoveryAuthorityBearerToken
-    try {
-        if ($bearerForValidation.Trim() -ne $bearerForValidation -or
-            $bearerForValidation.IndexOf([char]13) -ge 0 -or $bearerForValidation.IndexOf([char]10) -ge 0) {
-            throw 'RecoveryAuthorityBearerToken must not contain leading, trailing or newline characters.'
-        }
-    } finally {
-        $bearerForValidation = $null
-    }
+    Assert-SecureStringLine -SecureString $RecoveryAuthorityBearerToken -MinimumLength 32 -MaximumLength 4096 -Label 'RecoveryAuthorityBearerToken' -RejectEdgeWhitespace
 
     $installDirExisted = Test-Path -LiteralPath $InstallDir -PathType Container
     $stateParent = Split-Path -Parent $StateDir
@@ -819,6 +852,7 @@ if ($service) {
         }
 
         Assert-StandardLocalAccount $localUser
+        Assert-SecureStringLine -SecureString $password -MinimumLength 1 -MaximumLength 4096 -Label 'Service account password'
         $hadLogonRight = Test-ServiceLogonRight -Sid $localUser.SID.Value
         if (-not $hadLogonRight) { Set-ServiceLogonRight -Sid $localUser.SID.Value -Present $true }
 
