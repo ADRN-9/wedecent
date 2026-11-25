@@ -19,12 +19,12 @@ import (
 
 type gatedConn struct {
 	net.Conn
-	mu       sync.Mutex
-	writes   int
-	entered  chan struct{}
-	release  chan struct{}
-	failed   bool
-	once     sync.Once
+	mu      sync.Mutex
+	writes  int
+	entered chan struct{}
+	release chan struct{}
+	failed  bool
+	once    sync.Once
 }
 
 func (c *gatedConn) Write(p []byte) (int, error) {
@@ -55,7 +55,7 @@ func (h *relayTestHandler) Handle(_ context.Context, r slog.Record) error {
 	return nil
 }
 func (h *relayTestHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
-func (h *relayTestHandler) WithGroup(string) slog.Handler     { return h }
+func (h *relayTestHandler) WithGroup(string) slog.Handler      { return h }
 
 func registerRelayTestAgent(t *testing.T, conn net.Conn) (string, *identity.Identity) {
 	t.Helper()
@@ -73,8 +73,8 @@ func registerRelayTestAgent(t *testing.T, conn net.Conn) (string, *identity.Iden
 	}
 	sig := ed25519.Sign(private, relayproto.RegistrationBytes(challenge.Challenge, id))
 	msg := relayproto.Message{
-		Type: relayproto.TypeRegister,
-		DeviceID: id,
+		Type:      relayproto.TypeRegister,
+		DeviceID:  id,
 		PublicKey: base64.RawStdEncoding.EncodeToString(pub),
 		Signature: base64.RawStdEncoding.EncodeToString(sig),
 	}
