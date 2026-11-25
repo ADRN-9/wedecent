@@ -1,6 +1,6 @@
 begin;
 create extension if not exists pgtap with schema extensions;
-select plan(23);
+select plan(25);
 
 insert into auth.users(id,aud,role,email)
 values ('11000000-0000-4000-8000-000000000197','authenticated','authenticated','c197-primary@example.test');
@@ -118,9 +118,6 @@ create function pg_temp.c197_authority_signature(
  );
 $;
 
-create temporary table c197_commit_material as
-select pg_temp.c197_acks(repeat('9',64)) as acknowledgements;
-
 select ok(
  not pg_catalog.has_function_privilege('service_role','public.reserve_checkpoint_operation(text,text,uuid,uuid,bytea,jsonb,integer)','EXECUTE')
  and not pg_catalog.has_function_privilege('service_role','public.commit_checkpoint_operation(text,bytea,jsonb)','EXECUTE')
@@ -160,6 +157,33 @@ select is(public.record_checkpoint_fence_token(
  repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
  decode(repeat('b',64),'hex'),pg_temp.c197_token(repeat('9',64))
 )->>'token_sha256',repeat('b',64),'signed reservation token receipt is persisted');
+create temporary table c197_commit_material as
+select pg_temp.c197_acks(repeat('9',64)) as acknowledgements;
+
+select throws_ok($q$select public.commit_checkpoint_fence_operation(
+ repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
+ decode(repeat('b',64),'hex'),
+ pg_catalog.jsonb_build_array((select value from pg_catalog.jsonb_array_elements(acknowledgements) limit 1)),
+ pg_temp.c197_authority_signature(repeat('9',64),
+   (select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
+   decode(repeat('b',64),'hex'),
+   pg_catalog.jsonb_build_array((select value from pg_catalog.jsonb_array_elements(acknowledgements) limit 1)))
+)$q$,
+ '22023','checkpoint witness quorum is insufficient',
+ 'database rejects a structurally valid but insufficient witness quorum');
+
+select throws_ok($q$select public.commit_checkpoint_fence_operation(
+ repeat('9',64),(select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
+ decode(repeat('b',64),'hex'),
+ pg_catalog.jsonb_set((select acknowledgements from c197_commit_material),'{0,signature}',to_jsonb(repeat('A',88))),
+ pg_temp.c197_authority_signature(repeat('9',64),
+   (select fingerprint from public.checkpoint_operations where operation_id=repeat('9',64)),
+   decode(repeat('b',64),'hex'),
+   pg_catalog.jsonb_set((select acknowledgements from c197_commit_material),'{0,signature}',to_jsonb(repeat('A',88))))
+)$q$,
+ '42501','checkpoint witness signature verification failed',
+ 'database rejects fabricated witness signatures even with a primary commit attestation');
+
 select is((public.load_checkpoint_fence_operation(
  '22000000-0000-4000-8000-000000000197',repeat('9',64)
 )->>'found')::boolean,true,'reservation token is recoverable after a lost response');
