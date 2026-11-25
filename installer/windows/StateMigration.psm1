@@ -1166,7 +1166,7 @@ public static class WeDecentMigrationFileIdentityApi {
                     BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
                 if (target!=new IntPtr(-1)) {
                     CloseHandle(target);
-                    throw new IOException("Publication destination already exists.");
+                    throw new System.IO.IOException("Publication destination already exists.");
                 }
                 int error=Marshal.GetLastWin32Error();
                 if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
