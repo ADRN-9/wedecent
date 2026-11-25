@@ -426,7 +426,6 @@ grant execute on function public.load_checkpoint_fence_operation(uuid,text)
 grant execute on function public.load_checkpoint_fence_head(uuid)
     to wedecent_checkpoint_authority;
 
-revoke all on function wedecent_private.checkpoint_fence_ack_message(jsonb)
     from public, anon, authenticated, service_role, wedecent_checkpoint_authority;
 revoke all on function wedecent_private.checkpoint_fence_ack_signing_bytes(jsonb)
     from public, anon, authenticated, service_role, wedecent_checkpoint_authority;
