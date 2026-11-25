@@ -1145,7 +1145,7 @@ public static class WeDecentMigrationFileIdentityApi {
     private static extern bool SetFileInformationByHandle(IntPtr h, int infoClass, IntPtr info, uint size);
     public static string PublishByHandle(string temporaryPath, string parentPath, string targetName,
         string expectedTemporaryIdentity, string expectedTargetIdentity, bool replaceExisting) {
-        if (String.IsNullOrWhiteSpace(targetName) || targetName.IndexOfAny(new char[]{'\\\\','/'})>=0 ||
+        if (String.IsNullOrWhiteSpace(targetName) || targetName.IndexOfAny(new char[]{'\\','/'})>=0 ||
             targetName=="." || targetName=="..")
             throw new ArgumentException("Publication target must be a single path component.");
         IntPtr parent=IntPtr.Zero, source=IntPtr.Zero, targetGuard=IntPtr.Zero;
