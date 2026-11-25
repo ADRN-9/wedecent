@@ -50,6 +50,11 @@ Assert-Contains $validation 'recovery-authority.token' 'Installed-service valida
 Assert-Contains $validation 'recovery-authority-trust.json' 'Installed-service validation does not inspect the protected trust copy.'
 
 
+Assert-Contains $installer "[string]`$StateDir = (Join-Path `$InstallDir 'data\\agent')" 'Fresh service state must default beneath the protected Program Files install root.'
+Assert-Contains $installer "-Root `$InstallDir -Label 'StateDir'" 'Installer must reject service state outside the selected protected install root.'
+Assert-Contains $installer 'Existing service state location is not authenticated by protected installer metadata' 'Upgrade must fail closed when existing state location metadata is unavailable.'
+Assert-Contains $installer 'Refusing to redirect or overwrite identity state' 'Upgrade must not silently redirect existing cryptographic state.'
+Assert-Contains $installer 'Existing SCM command line does not match the authenticated state_dir metadata' 'Upgrade must verify the SCM state path matches authenticated metadata.'
 Assert-Contains $installer 'function Test-DirectoryExistsStrict' 'Installer must distinguish a missing state path from an inaccessible or ambiguous path.'
 Assert-Contains $installer 'function Test-ServiceStateSafeForAccountRemoval' 'Installer must centralize fail-closed account-removal checks.'
 Assert-Contains $installer '$stateExisted = Test-DirectoryExistsStrict -Path $StateDir' 'Installer state existence must fail on ambiguous paths.'
