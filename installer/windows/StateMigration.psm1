@@ -557,7 +557,7 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal transaction identifier is invalid.'
     }
     foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path',
-        'service_name', 'service_sid', 'installer_sid', 'service_start_name', 'service_start_mode', 'agent_path', 'original_service_path',
+        'service_name', 'service_sid', 'service_start_name', 'service_start_mode', 'agent_path', 'original_service_path',
         'updated_service_path', 'original_metadata_json')) {
         if ([string]::IsNullOrWhiteSpace([string]$journal.$field)) {
             throw "Migration journal field '$field' is missing."
@@ -578,7 +578,9 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal path does not match the protected journal file.'
     }
     [void](ConvertTo-WeDecentMigrationSid -Sid ([string]$journal.service_sid))
-    [void](ConvertTo-WeDecentMigrationSid -Sid ([string]$journal.installer_sid))
+    if (-not [string]::IsNullOrWhiteSpace([string]$journal.installer_sid)) {
+        [void](ConvertTo-WeDecentMigrationSid -Sid ([string]$journal.installer_sid))
+    }
     if ([string]$journal.service_name -notmatch '^[A-Za-z0-9_.-]{1,128}$' -or
         [string]$journal.service_start_mode -notin @('Boot', 'System', 'Auto', 'Manual', 'Disabled')) {
         throw 'Migration journal contains an invalid SCM service configuration.'
