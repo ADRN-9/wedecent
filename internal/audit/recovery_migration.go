@@ -2,6 +2,7 @@ package audit
 
 import (
 	"context"
+	"io"
 	"crypto/sha256"
 	"crypto/hmac"
 	"encoding/hex"
@@ -54,8 +55,19 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	if !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxPairingArchiveBytes {
 		return ErrRecoveryMigrationUntrusted
 	}
-	legacyBytes, err := os.ReadFile(archivePath)
-	if err != nil || len(legacyBytes) == 0 || len(legacyBytes) > maxPairingArchiveBytes {
+	archiveFile, err := os.Open(archivePath)
+	if err != nil {
+		return ErrRecoveryMigrationUntrusted
+	}
+	opened, statErr := archiveFile.Stat()
+	after, pathErr := os.Lstat(archivePath)
+	if statErr != nil || pathErr != nil || !os.SameFile(info, opened) || !os.SameFile(opened, after) {
+		_ = archiveFile.Close()
+		return ErrRecoveryMigrationUntrusted
+	}
+	legacyBytes, readErr := io.ReadAll(io.LimitReader(archiveFile, maxPairingArchiveBytes+1))
+	closeErr := archiveFile.Close()
+	if readErr != nil || closeErr != nil || len(legacyBytes) == 0 || len(legacyBytes) > maxPairingArchiveBytes {
 		return ErrRecoveryMigrationUntrusted
 	}
 	legacyReader := *r
@@ -75,7 +87,7 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	if err != nil {
 		return fmt.Errorf("%w: load migration authority head: %v", ErrRecoveryAuthorityUnavailable, err)
 	}
-	if head.Scope != r.authorityScope {
+	if head.Scope != r.authorityScope || (head.Generation == 0 && !emptyRecoveryCheckpoint(head)) {
 		return ErrRecoveryCheckpointConflict
 	}
 	if head.Generation > 0 {
@@ -192,6 +204,7 @@ func (r *PairingRecovery) MigrateLegacyArchive(ctx context.Context, authenticate
 	if err != nil || !sameRecoveryCheckpoint(verified.AuthorityCheckpoint, checkpoint) {
 		return fmt.Errorf("%w: migrated archive did not verify after publication: %v", ErrRecoveryCommitUncertain, err)
 	}
+	r.migrationPending = false
 	return nil
 }
 
