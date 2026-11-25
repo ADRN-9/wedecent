@@ -593,8 +593,8 @@ func (p *SupabaseCheckpointFencePrimary) verifyRevocationAuthorizationAt(
 	if err != nil {
 		return ErrCheckpointIntegrity
 	}
-	if envelope.IssuedAtUnixMS > nowUnixMS+30000 ||
-		(requireCurrent && envelope.ExpiresAtUnixMS <= nowUnixMS) {
+	if requireCurrent && (envelope.IssuedAtUnixMS > nowUnixMS+30000 ||
+		envelope.ExpiresAtUnixMS <= nowUnixMS) {
 		return ErrCheckpointFenceExpired
 	}
 	if len(participants) != 1 {
