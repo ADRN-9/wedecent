@@ -451,3 +451,47 @@ func TestServiceStartupFailsClosedBeforeSensitiveStateOnAncestorMutationACL(t *t
 		}
 	}
 }
+
+func TestWindowsServiceStateDefaultLocationUsesProtectedProgramFilesAncestors(t *testing.T) {
+	programFiles := strings.TrimSpace(os.Getenv("ProgramFiles"))
+	if programFiles == "" {
+		programFiles = `C:\Program Files`
+	}
+	programData := strings.TrimSpace(os.Getenv("ProgramData"))
+	if programData == "" {
+		programData = `C:\ProgramData`
+	}
+	active, err := activeWindowsSID()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inspect := func(label, base string) error {
+		t.Helper()
+		root, err := os.MkdirTemp(base, "WeDecent-C234-")
+		if err != nil {
+			return fmt.Errorf("create %s probe: %w", label, err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(root) })
+		state := filepath.Join(root, "data", "agent")
+		if err := preflightAgentState(state); err != nil {
+			return fmt.Errorf("preflight %s probe: %w", label, err)
+		}
+		ownerDACL, err := windows.GetNamedSecurityInfo(base, windows.SE_FILE_OBJECT,
+			windows.OWNER_SECURITY_INFORMATION|windows.DACL_SECURITY_INFORMATION)
+		if err != nil || ownerDACL == nil {
+			return fmt.Errorf("inspect %s ancestor ACL: %w", label, err)
+		}
+		t.Logf("%s ancestor %q security descriptor: %s", label, base, ownerDACL.String())
+		return verifyWindowsStateForSID(state, active)
+	}
+
+	if err := inspect("Program Files", programFiles); err != nil {
+		t.Fatalf("supported fresh-install state location failed strict ancestor validation: %v", err)
+	}
+	if err := inspect("ProgramData", programData); err != nil {
+		t.Logf("legacy ProgramData location rejected by strict ancestor validation: %v", err)
+	} else {
+		t.Log("legacy ProgramData probe passed strict ancestor validation on this runner")
+	}
+}
