@@ -259,3 +259,41 @@ func verifyMigrationStateForSID(path, serviceSID string) error {
 	}
 	return verifyWindowsStateForSID(path, sid)
 }
+
+func verifyMigrationParentForProvisioning(path string) error {
+	root, components, err := windowsStatePathComponents(path)
+	if err != nil {
+		return err
+	}
+	if len(components) < 2 {
+		return errors.New("migration parent path is too close to the volume root")
+	}
+	if err := requireLocalNTFS(root); err != nil {
+		return err
+	}
+	if err := verifyWindowsStateAncestors(root, components[:len(components)-1], nil); err != nil {
+		return fmt.Errorf("verify migration parent ancestors: %w", err)
+	}
+	parent := filepath.Clean(filepath.Dir(path))
+	if _, err := inspectWindowsStateDirectory(parent); err != nil {
+		return fmt.Errorf("inspect migration parent: %w", err)
+	}
+	owner, err := windowsServiceOwner(parent)
+	if err != nil {
+		return err
+	}
+	active, err := activeWindowsSID()
+	if err != nil {
+		return err
+	}
+	allowed := map[string]bool{
+		active.String(): true,
+		"S-1-5-18": true,
+		"S-1-5-32-544": true,
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": true,
+	}
+	if !allowed[owner.String()] {
+		return fmt.Errorf("migration parent owner %s is not trusted for protected ACL provisioning", owner)
+	}
+	return nil
+}
