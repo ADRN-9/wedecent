@@ -718,8 +718,8 @@ try {
 
 $journalRaceFixture = New-MigrationFixture
 try {
-    # Match the production journal schema before the strict-mode writer refreshes its timestamp.
-$raceJournal = [pscustomobject]@{ schema=1; product='WeDecent'; phase='Prepared'; transaction_id=[Guid]::NewGuid().ToString('D'); updated_utc=[DateTime]::UtcNow.ToString('o') }
+        # Match the production journal schema before the strict-mode writer refreshes its timestamp.
+    $raceJournal = [pscustomobject]@{ schema=1; product='WeDecent'; phase='Prepared'; transaction_id=[Guid]::NewGuid().ToString('D'); updated_utc=[DateTime]::UtcNow.ToString('o') }
     Write-WeDecentMigrationJournal -Path $journalRaceFixture.Journal -Journal $raceJournal
     $global:WeDecentMigrationRaceTarget = $journalRaceFixture.Journal
     $global:WeDecentMigrationRaceBackup = $journalRaceFixture.Journal + '.race-original'
