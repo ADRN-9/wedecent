@@ -15,15 +15,23 @@ const maxServicePasswordBytes = 4096
 
 func readServicePassword(r io.Reader) (string, error) {
 	br, ok := r.(*bufio.Reader)
-	if !ok { br = bufio.NewReaderSize(io.LimitReader(r, maxServicePasswordBytes+2), maxServicePasswordBytes+2) }
+	if !ok {
+		br = bufio.NewReaderSize(io.LimitReader(r, maxServicePasswordBytes+2), maxServicePasswordBytes+2)
+	}
 	line, err := br.ReadSlice('\n')
 	if errors.Is(err, bufio.ErrBufferFull) {
-		for errors.Is(err, bufio.ErrBufferFull) { _, err = br.ReadSlice('\n') }
+		for errors.Is(err, bufio.ErrBufferFull) {
+			_, err = br.ReadSlice('\n')
+		}
 		return "", errors.New("service credential is too long")
 	}
-	if err != nil && !errors.Is(err, io.EOF) { return "", err }
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
 	line = []byte(strings.TrimRight(string(line), "\r\n"))
-	if len(line) > maxServicePasswordBytes { return "", errors.New("service credential is too long") }
+	if len(line) > maxServicePasswordBytes {
+		return "", errors.New("service credential is too long")
+	}
 	return string(line), nil
 }
 
