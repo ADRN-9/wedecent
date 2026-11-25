@@ -3867,6 +3867,9 @@ func TestLifecycleFenceRecoversPartialRevocationAfterRestartAndLostPrimaryRespon
 	if err != nil || !found || !committed.Committed || !bytes.Equal(persistedProof, committed.Token.AuthorizationProof) {
 		t.Fatalf("recovery did not reuse the exact persisted revocation proof: found=%v committed=%v err=%v", found, committed.Committed, err)
 	}
+	if err := client.Revoke(context.Background(), endpoint, next); err != nil {
+		t.Fatalf("exact retry after committed revocation was not idempotent: %v", err)
+	}
 	head, err := client.Primary.Head(context.Background(), endpoint)
 	if err != nil || head.RevocationEpoch != next {
 		t.Fatalf("revocation checkpoint head not committed: epoch=%d err=%v", head.RevocationEpoch, err)
