@@ -437,7 +437,7 @@ func (p *SupabaseCheckpointFencePrimary) FenceHead(ctx context.Context, scope Ch
 		PendingOperationID    string     `json:"pending_operation_id"`
 		PendingExpiresAt      *time.Time `json:"pending_expires_at"`
 	}
-	if err := json.Unmarshal(raw, &response); err != nil {
+	if err := decodeCheckpointFenceJSON(raw, &response); err != nil {
 		return CheckpointFenceHead{}, ErrCheckpointIntegrity
 	}
 	fenceHash, err := decodeSHA256Hex(response.FenceHash)
@@ -479,7 +479,7 @@ func (p *SupabaseCheckpointFencePrimary) LoadFence(
 		Committed        bool                     `json:"committed"`
 		Acknowledgements []checkpointFenceAckWire `json:"acknowledgements"`
 	}
-	if err := json.Unmarshal(raw, &response); err != nil {
+	if err := decodeCheckpointFenceJSON(raw, &response); err != nil {
 		return CheckpointFenceOperation{}, false, ErrCheckpointIntegrity
 	}
 	if !response.Found {
@@ -567,7 +567,7 @@ func (p *SupabaseCheckpointFencePrimary) loadOperationFingerprint(
 		Found       bool   `json:"found"`
 		Fingerprint string `json:"fingerprint"`
 	}
-	if err := json.Unmarshal(raw, &response); err != nil || !response.Found {
+	if err := decodeCheckpointFenceJSON(raw, &response); err != nil || !response.Found {
 		return [sha256.Size]byte{}, ErrCheckpointHistorical
 	}
 	return decodeSHA256Hex(response.Fingerprint)
@@ -608,6 +608,20 @@ func (p *SupabaseCheckpointFencePrimary) rpc(ctx context.Context, name string, a
 	decoder := json.NewDecoder(io.LimitReader(response.Body, checkpointFenceRPCMaxBody))
 	if err := decoder.Decode(out); err != nil {
 		return errors.Join(ErrCheckpointIntegrity, err)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return ErrCheckpointIntegrity
+	}
+	return nil
+}
+
+
+func decodeCheckpointFenceJSON(raw []byte, target any) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return err
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
@@ -669,7 +683,7 @@ func checkpointFenceTokenToWire(token CheckpointFenceToken) (checkpointFenceToke
 
 func checkpointFenceTokenFromWire(raw json.RawMessage) (CheckpointFenceToken, error) {
 	var wire checkpointFenceTokenWire
-	if len(raw) == 0 || json.Unmarshal(raw, &wire) != nil {
+	if len(raw) == 0 || decodeCheckpointFenceJSON(raw, &wire) != nil {
 		return CheckpointFenceToken{}, ErrCheckpointIntegrity
 	}
 	requestHash, err := decodeSHA256Hex(wire.RequestSHA256)
