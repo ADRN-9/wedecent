@@ -683,6 +683,46 @@ function Remove-EmptyDirectory {
     }
 }
 
+function Test-DirectoryExistsStrict {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer) {
+            throw "Expected a directory at '$Path'."
+        }
+        return $true
+    } catch {
+        if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -and
+            $_.FullyQualifiedErrorId -match 'PathNotFound|ItemNotFound') {
+            return $false
+        }
+        throw
+    }
+}
+
+function Test-ServiceStateSafeForAccountRemoval {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch {
+        if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -and
+            $_.FullyQualifiedErrorId -match 'PathNotFound|ItemNotFound') {
+            return $true
+        }
+        return $false
+    }
+    if (-not $item.PSIsContainer) { return $false }
+
+    try {
+        $remainingState = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+        return $remainingState.Count -eq 0
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-RollbackStep {
     param(
         [Parameter(Mandatory = $true)][string]$Description,
@@ -804,8 +844,8 @@ if ($service) {
 
     $installDirExisted = Test-Path -LiteralPath $InstallDir -PathType Container
     $stateParent = Split-Path -Parent $StateDir
-    $stateParentExisted = Test-Path -LiteralPath $stateParent -PathType Container
-    $stateExisted = Test-Path -LiteralPath $StateDir -PathType Container
+    $stateParentExisted = Test-DirectoryExistsStrict -Path $stateParent
+    $stateExisted = Test-DirectoryExistsStrict -Path $StateDir
     $createdAccount = $false
     $hadLogonRight = $false
     $originalMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -918,20 +958,10 @@ if ($service) {
         }
         if ($createdAccount) {
             Invoke-RollbackStep 'remove installer-created service account only when protected state is empty' {
-                $stateContainsProtectedMaterial = $false
-                if (Test-Path -LiteralPath $StateDir) {
-                    try {
-                        $remainingState = @(Get-ChildItem -LiteralPath $StateDir -Force -ErrorAction Stop)
-                        $stateContainsProtectedMaterial = $remainingState.Count -gt 0
-                    } catch {
-                        # An unreadable or ambiguous state directory is not safe to orphan.
-                        $stateContainsProtectedMaterial = $true
-                    }
-                }
-                if ($stateContainsProtectedMaterial) {
-                    Write-Warning "Retaining installer-created service account '$ServiceAccountName': protected state is non-empty or could not be inspected. Preserve the account for offline recovery."
-                } else {
+                if (Test-ServiceStateSafeForAccountRemoval -Path $StateDir) {
                     Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
+                } else {
+                    Write-Warning "Retaining installer-created service account '$ServiceAccountName': protected state is non-empty, non-directory, or could not be inspected. Preserve the account for offline recovery."
                 }
             }
         }
