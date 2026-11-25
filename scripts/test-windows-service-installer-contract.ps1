@@ -171,11 +171,12 @@ $migrationRoot = Join-Path ([IO.Path]::GetTempPath()) ('wedecent-migration-' + [
 $sourceState = Join-Path $migrationRoot 'source'
 $stageState = Join-Path $migrationRoot 'stage'
 $journalPath = Join-Path $migrationRoot 'migration.json'
-New-Item -ItemType Directory -Path (Join-Path $sourceState 'nested') -Force | Out-Null
-New-Item -ItemType Directory -Path (Join-Path $sourceState 'empty') -Force | Out-Null
+New-Item -ItemType Directory -Path $sourceState -Force | Out-Null
 $serviceSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $agentPath = Join-Path $root 'dist/wedecent-windows-amd64/wd-agent.exe'
 Set-WeDecentMigrationDirectoryAcl -Path $sourceState -ServiceSid $serviceSid
+New-Item -ItemType Directory -Path (Join-Path $sourceState 'nested') -Force | Out-Null
+New-Item -ItemType Directory -Path (Join-Path $sourceState 'empty') -Force | Out-Null
 & $agentPath identity "--state=$sourceState" --name=migration-test | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Failed to create valid migration identity fixture.' }
 [IO.File]::WriteAllText((Join-Path $sourceState 'nested/recovery-authority.token'), 'synthetic-recovery-bytes')
