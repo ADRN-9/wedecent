@@ -474,7 +474,10 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newDiscoveryFixture(t)
 			var err error
-			_, archive := buildInstallerPackageFixture(t, nil)
+			packageManifest, archive := buildInstallerPackageFixture(t, nil)
+			fixture.manifest.Version = packageManifest.Version
+			fixture.manifest.ReleaseURL = packageManifest.ReleaseURL
+			fixture.manifest.InstallerURL = packageManifest.InstallerURL
 			fixture.manifest.InstallerSHA256 = sha256Hex(archive)
 			fixture.manifestBody, err = EncodeCanonical(fixture.manifest)
 			if err != nil {
@@ -500,7 +503,7 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 
 			calls := 0
 			_, err = client.ApplyStable(
-				context.Background(), "v1.2.2", 0,
+				context.Background(), "v0.3.9", 0,
 				InstallerClient{}, filepath.Join(t.TempDir(), "staging"), 0,
 				func(context.Context, string) error { return nil },
 				InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
@@ -528,7 +531,10 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 	fixture := newDiscoveryFixture(t)
 	var err error
-	_, archive := buildInstallerPackageFixture(t, nil)
+	packageManifest, archive := buildInstallerPackageFixture(t, nil)
+	fixture.manifest.Version = packageManifest.Version
+	fixture.manifest.ReleaseURL = packageManifest.ReleaseURL
+	fixture.manifest.InstallerURL = packageManifest.InstallerURL
 	fixture.manifest.InstallerSHA256 = sha256Hex(archive)
 	fixture.manifestBody, err = EncodeCanonical(fixture.manifest)
 	if err != nil {
