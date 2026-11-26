@@ -1275,7 +1275,7 @@ function Get-WeDecentMigrationCanonicalPath {
     $full = $full.TrimEnd('\')
 
     if (-not ('WeDecentMigrationPathApi' -as [type])) {
-        Add-Type -TypeDefinition @'
+        try { Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -1285,7 +1285,7 @@ public static class WeDecentMigrationPathApi {
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     public static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferLength);
 }
-'@ -ErrorAction Stop
+'@ -ErrorAction Stop } catch { throw "Failed to initialize native migration path API: $($_.Exception.Message)" }
     }
 
     $walk = $root
@@ -1711,6 +1711,7 @@ Export-ModuleMember -Function @(
     'Assert-WeDecentMigrationIdentitySnapshot',
     'New-WeDecentMigrationMutationLease',
     'Assert-WeDecentMigrationMutationLease',
+    'Assert-WeDecentMigrationPublicationNamespace',
     'Publish-WeDecentMigrationObject',
     'Invoke-WeDecentMigrationRacePoint',
     'Assert-WeDecentMigrationPathsDisjoint',
