@@ -472,6 +472,7 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newDiscoveryFixture(t)
+	var err error
 			_, archive := buildInstallerPackageFixture(t, nil)
 			fixture.manifest.InstallerSHA256 = sha256Hex(archive)
 			fixture.manifestBody, err = EncodeCanonical(fixture.manifest)
@@ -525,6 +526,7 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 
 func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 	fixture := newDiscoveryFixture(t)
+	var err error
 	_, archive := buildInstallerPackageFixture(t, nil)
 	fixture.manifest.InstallerSHA256 = sha256Hex(archive)
 	fixture.manifestBody, err := EncodeCanonical(fixture.manifest)
