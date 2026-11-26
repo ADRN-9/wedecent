@@ -75,6 +75,16 @@ func TestKeysetCanonicalVerificationAndEpochPersistence(t *testing.T) {
 	if same.Digest() != verified.Digest() {
 		t.Fatal("identical keyset digest changed")
 	}
+	nextKeyset := keyset
+	nextKeyset.Epoch++
+	nextBody, nextSignature := signKeyset(t, nextKeyset, rootPrivate, now)
+	rotated, err := VerifyKeyset(keyset.RootKeyID, rootPublic, nextBody, nextSignature, now, keyset.Epoch, verified.Digest())
+	if err != nil {
+		t.Fatalf("strictly newer keyset epoch was rejected: %v", err)
+	}
+	if rotated.Epoch() != nextKeyset.Epoch {
+		t.Fatalf("rotated epoch = %d, want %d", rotated.Epoch(), nextKeyset.Epoch)
+	}
 	if _, err := VerifyKeyset(keyset.RootKeyID, rootPublic, body, signature, now, keyset.Epoch+1, verified.Digest()); !errors.Is(err, ErrKeysetRollback) {
 		t.Fatalf("lower epoch error = %v, want ErrKeysetRollback", err)
 	}
