@@ -149,11 +149,11 @@ def main() -> None:
         publisher_env = {"PATH": os.environ.get("PATH", ""), "AWS_ACCESS_KEY_ID": "test-access", "AWS_SECRET_ACCESS_KEY": str(publish_token)}
         require(subprocess.run([str(signer_adapter), "sign", "manifest"], env=signer_env, check=False).returncode == 0,
                 "restricted signer credential must permit signing")
-        require(subprocess.run([str(signer_adapter), "publish", "object"], env=signer_env, check=False).returncode != 0,
+        require(subprocess.run([str(signer_adapter), "publish", "object"], env=signer_env, check=False, stderr=subprocess.DEVNULL).returncode != 0,
                 "signer credential must not permit publication")
         require(subprocess.run([str(publisher_adapter), "publish"], env=publisher_env, check=False).returncode == 0,
                 "restricted publisher credential must permit publication")
-        require(subprocess.run([str(publisher_adapter), "sign"], env=publisher_env, check=False).returncode != 0,
+        require(subprocess.run([str(publisher_adapter), "sign"], env=publisher_env, check=False, stderr=subprocess.DEVNULL).returncode != 0,
                 "publisher credential must not permit signing")
 
     # Exercise the same boundary with two real, distinct ephemeral Linux UIDs
@@ -206,13 +206,17 @@ def main() -> None:
                          operation, str(own), str(other)],
                         check=False,
                     ).returncode
-                require(as_user(signer_user, "sign", signer_secret, publisher_secret) == 0,
-                        "signer OS account must read its own key and not publisher credentials")
-                require(as_user(publisher_user, "publish", publisher_secret, signer_secret) == 0,
-                        "publisher OS account must read its own credential and not signer key")
-                require(as_user(signer_user, "publish", publisher_secret, signer_secret) != 0,
-                        "signer OS account must be unable to publish")
-                require(as_user(publisher_user, "sign", signer_secret, publisher_secret) != 0,
+                try:
+                    require(as_user(signer_user, "sign", signer_secret, publisher_secret) == 0,
+                            "signer OS account must read its own key and not publisher credentials")
+                    require(as_user(publisher_user, "publish", publisher_secret, signer_secret) == 0,
+                            "publisher OS account must read its own credential and not signer key")
+                    require(as_user(signer_user, "publish", publisher_secret, signer_secret) != 0,
+                            "signer OS account must be unable to publish")
+                    require(as_user(publisher_user, "sign", signer_secret, publisher_secret) != 0,
+                finally:
+                    # Restore ownership so the invoking runner can remove the temporary tree.
+                    subprocess.run([sudo, "-n", "chown", "-R", f"{os.getuid()}:{os.getgid()}", str(temp)], check=True)
                         "publisher OS account must be unable to sign")
         finally:
             for username in reversed(created_users):
