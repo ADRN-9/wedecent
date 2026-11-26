@@ -3,6 +3,7 @@
 package updateinfo
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
