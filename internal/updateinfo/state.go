@@ -2,8 +2,8 @@ package updateinfo
 
 import (
 	"bytes"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,10 +14,10 @@ import (
 )
 
 const (
-	UpdateStateVersion          = 1
+	UpdateStateVersion           = 1
 	UpdateStateVersionWithKeyset = 2
-	UpdateStateFilename         = "update-state.json"
-	MaxUpdateStateBytes = 4 << 10
+	UpdateStateFilename          = "update-state.json"
+	MaxUpdateStateBytes           = 4 << 10
 )
 
 var ErrInvalidState = errors.New("updateinfo: invalid update state")
