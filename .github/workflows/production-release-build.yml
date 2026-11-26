@@ -599,7 +599,12 @@ jobs:
       WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256: ${{ vars.WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256 }}
       WEDECENT_UPDATE_MANIFEST_SIGNER: ${{ vars.WEDECENT_UPDATE_MANIFEST_SIGNER }}
       WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256: ${{ vars.WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256 }}
-      WEDECENT_UPDATE_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_PUBLIC_KEY_PATH }}
+      WEDECENT_UPDATE_ROOT_KEY_ID: ${{ vars.WEDECENT_UPDATE_ROOT_KEY_ID }}
+      WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH }}
+      WEDECENT_UPDATE_KEYSET_PATH: ${{ vars.WEDECENT_UPDATE_KEYSET_PATH }}
+      WEDECENT_UPDATE_KEYSET_SIGNATURE_PATH: ${{ vars.WEDECENT_UPDATE_KEYSET_SIGNATURE_PATH }}
+      WEDECENT_UPDATE_SIGNING_KEY_ID: ${{ vars.WEDECENT_UPDATE_SIGNING_KEY_ID }}
+      WEDECENT_UPDATE_KEYSET_EPOCH: ${{ vars.WEDECENT_UPDATE_KEYSET_EPOCH }}
       WEDECENT_UPDATE_SEQUENCE: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -624,7 +629,8 @@ jobs:
           [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
           [[ "$WEDECENT_UPDATE_MANIFEST_SIGNER" == /* && -f "$WEDECENT_UPDATE_MANIFEST_SIGNER" && -x "$WEDECENT_UPDATE_MANIFEST_SIGNER" && ! -L "$WEDECENT_UPDATE_MANIFEST_SIGNER" ]]
           [[ "$WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256" =~ ^[0-9a-f]{64}$ ]]
-          [[ "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" == /* && -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
+          [[ "$WEDECENT_UPDATE_ROOT_KEY_ID" =~ ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]]
+          [[ "$WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" == /* && -f "$WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" ]]
           [[ "$WEDECENT_UPDATE_SEQUENCE" =~ ^[1-9][0-9]*$ ]]
           for name in WEDECENT_REPLAY_AUTHORITY_HOSTNAME WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 WEDECENT_CHECKPOINT_AUDIT_HOSTNAME WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256 WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256; do
             [[ -n "${!name}" ]]
@@ -657,7 +663,8 @@ jobs:
     environment:
       name: wedecent-production-update-verification
     env:
-      WEDECENT_UPDATE_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_PUBLIC_KEY_PATH }}
+      WEDECENT_UPDATE_ROOT_KEY_ID: ${{ vars.WEDECENT_UPDATE_ROOT_KEY_ID }}
+      WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -676,12 +683,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" == /* && -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
+          [[ "$WEDECENT_UPDATE_ROOT_KEY_ID" =~ ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]]
+          [[ "$WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" == /* && -f "$WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" ]]
           ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
           bash ./scripts/verify-windows-stable-update.sh \
-            --public-key "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" \
-            --manifest "$RUNNER_TEMP/stable-update-candidate/manifest-v1.json" \
-            --signature "$RUNNER_TEMP/stable-update-candidate/manifest-v1.sig" \
+            --root-key-id "$WEDECENT_UPDATE_ROOT_KEY_ID" \
+            --root-public-key "$WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" \
+            --keyset "$RUNNER_TEMP/stable-update-candidate/keyset-v1.json" \
+            --keyset-signature "$RUNNER_TEMP/stable-update-candidate/keyset-v1.sig" \
+            --manifest "$RUNNER_TEMP/stable-update-candidate/manifest-v2.json" \
+            --signature "$RUNNER_TEMP/stable-update-candidate/manifest-v2.sig" \
             --receipt "$RUNNER_TEMP/stable-update-candidate/verification.receipt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
@@ -712,7 +723,10 @@ jobs:
       WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256: ${{ vars.WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256 }}
       WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER: ${{ vars.WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER }}
       WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256: ${{ vars.WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256 }}
-      WEDECENT_UPDATE_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_PUBLIC_KEY_PATH }}
+      WEDECENT_R2_CREATE_ONLY_UPLOADER: ${{ vars.WEDECENT_R2_CREATE_ONLY_UPLOADER }}
+      WEDECENT_R2_CREATE_ONLY_UPLOADER_SHA256: ${{ vars.WEDECENT_R2_CREATE_ONLY_UPLOADER_SHA256 }}
+      WEDECENT_UPDATE_ROOT_KEY_ID: ${{ vars.WEDECENT_UPDATE_ROOT_KEY_ID }}
+      WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -745,7 +759,10 @@ jobs:
         shell: bash
         run: |
           bash ./scripts/publish-windows-stable-update-pair.sh \
-            --public-key "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" \
-            --manifest "$RUNNER_TEMP/stable-update-verified/manifest-v1.json" \
-            --signature "$RUNNER_TEMP/stable-update-verified/manifest-v1.sig" \
+            --root-key-id "$WEDECENT_UPDATE_ROOT_KEY_ID" \
+            --root-public-key "$WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" \
+            --keyset "$RUNNER_TEMP/stable-update-verified/keyset-v1.json" \
+            --keyset-signature "$RUNNER_TEMP/stable-update-verified/keyset-v1.sig" \
+            --manifest "$RUNNER_TEMP/stable-update-verified/manifest-v2.json" \
+            --signature "$RUNNER_TEMP/stable-update-verified/manifest-v2.sig" \
             --receipt "$RUNNER_TEMP/stable-update-verified/verification.receipt"
