@@ -162,17 +162,22 @@ function Invoke-MigrationUntrustedMutationAttempt {
     $global:WeDecentMigrationAttackBackup = $BackupPath
     $global:WeDecentMigrationAttackMoveError = 0
     $global:WeDecentMigrationAttackWriteError = 0
+    $global:WeDecentMigrationAttackObservedSid = $null
     [WeDecentMigrationTestLogon]::RunAs(
         $global:WeDecentMigrationAttackerName,
         $env:COMPUTERNAME,
         $global:WeDecentMigrationAttackerPassword,
         [Action] {
+            $global:WeDecentMigrationAttackObservedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
             try { [IO.File]::Move($global:WeDecentMigrationAttackTarget,$global:WeDecentMigrationAttackBackup) }
             catch { $global:WeDecentMigrationAttackMoveError = $_.Exception.HResult }
             try { [IO.File]::WriteAllText($global:WeDecentMigrationAttackTarget,'attacker') }
             catch { $global:WeDecentMigrationAttackWriteError = $_.Exception.HResult }
         }
     )
+    if ($global:WeDecentMigrationAttackObservedSid -cne $global:WeDecentMigrationAttackerSid) {
+        throw "Native publication attack did not execute under the distinct unprivileged account (observed=$global:WeDecentMigrationAttackObservedSid expected=$global:WeDecentMigrationAttackerSid)."
+    }
     $denied = @(-2147024891, -2147024864)
     if ($global:WeDecentMigrationAttackMoveError -in $denied -and
         $global:WeDecentMigrationAttackWriteError -in $denied) { return $true }
@@ -886,6 +891,11 @@ try {
     }
     $global:WeDecentMigrationAttackerName = $attackerName
     $global:WeDecentMigrationAttackerPassword = $attackerPassword
+    $global:WeDecentMigrationAttackerSid = $attackerSid
+    $adminSids = @(Get-LocalGroupMember -Group 'Administrators' | ForEach-Object { $_.SID.Value })
+    if ($attackerSid -in $adminSids) { throw 'Native publication attacker account unexpectedly belongs to Administrators.' }
+    $userSids = @(Get-LocalGroupMember -Group 'Users' | ForEach-Object { $_.SID.Value })
+    if ($attackerSid -notin $userSids) { throw 'Native publication attacker account is not a standard Users member.' }
 foreach ($nativeRaceKind in @('metadata', 'journal')) {
     $nativeRaceFixture = New-MigrationFixture
     try {
