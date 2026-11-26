@@ -103,6 +103,31 @@ function Assert-MigrationRolledBack {
     if ($journal.phase -cne 'RolledBack') { throw "Rollback journal phase is $($journal.phase), not RolledBack." }
     if (Test-Path -LiteralPath $journal.staging) { throw "Terminal rollback retained staging after $Fault." }
 }
+$namespaceFixture = New-MigrationFixture
+try {
+    $namespaceAcl = Get-Acl -LiteralPath $namespaceFixture.Root
+    $usersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+    $usersWrite = [Security.AccessControl.FileSystemAccessRule]::new(
+        $usersSid,
+        [Security.AccessControl.FileSystemRights]::Modify,
+        [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit,
+        [Security.AccessControl.PropagationFlags]::None,
+        [Security.AccessControl.AccessControlType]::Allow
+    )
+    [void]$namespaceAcl.AddAccessRule($usersWrite)
+    Set-Acl -LiteralPath $namespaceFixture.Root -AclObject $namespaceAcl -ErrorAction Stop
+    $rejected = $false
+    try { [void](Assert-WeDecentMigrationPublicationNamespace -Path $namespaceFixture.Root) }
+    catch {
+        $rejected = $_.Exception.Message -like '*untrusted principal*'
+        if (-not $rejected) { throw }
+    }
+    if (-not $rejected) { throw 'Migration publication namespace accepted untrusted Users write access.' }
+    Write-Host 'Migration protected publication namespace rejects untrusted writer PASS'
+} finally {
+    Remove-Item -LiteralPath $namespaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $forwardFaults = @('Prepared','ServiceStopped','Copying','Copied','IdentityVerification','IdentityProtected','Verified','StatePublished','SCMTransition','ServiceReconfigured','MetadataUpdated','ServiceRestarted')
 foreach ($fault in $forwardFaults) {
     $fixture = New-MigrationFixture
