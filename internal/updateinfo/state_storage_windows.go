@@ -348,22 +348,6 @@ func parseUpdateStateAccessMask(value string) (uint32, error) {
 			right = 0x00010000
 		case "AD":
 			right = 0x00000004
-		case "CC":
-			right = 0x00000001
-		case "LC":
-			right = 0x00000001
-		case "SW":
-			right = 0x00000008
-		case "RP":
-			right = 0x00000010
-		case "WP":
-			right = 0x00000020
-		case "DT":
-			right = 0x00000040
-		case "LO":
-			right = 0x00000080
-		case "CR":
-			right = 0x00000100
 		case "RC":
 			right = 0x00020000
 		default:
