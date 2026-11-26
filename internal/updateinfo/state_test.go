@@ -323,7 +323,7 @@ func TestStateStoreKeysetAntiRollbackSurvivesRestartAndRejectsCorruption(t *test
 		t.Fatalf("restarted same-epoch equivocation error = %v, want ErrKeysetRollback", err)
 	}
 
-	if err := os.WriteFile(path, []byte("{\\"version\\":2,\\"stable_sequence\\":0,\\"keyset_epoch\\":7,\\"keyset_digest\\":\\"broken\\"}\\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"version":2,"stable_sequence":0,"keyset_epoch":7,"keyset_digest":"broken"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := NewStateStore(path).Load(); !errors.Is(err, ErrInvalidState) {
