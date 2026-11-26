@@ -569,7 +569,7 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 	})
 	apply := func(client DiscoveryClient) error {
 		_, applyErr := client.ApplyStable(
-			context.Background(), "v1.2.2", 0, InstallerClient{},
+			context.Background(), "v0.3.9", 0, InstallerClient{},
 			filepath.Join(t.TempDir(), "staging"), 0,
 			func(context.Context, string) error { return nil }, executor,
 		)
