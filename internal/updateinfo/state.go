@@ -3,17 +3,20 @@ package updateinfo
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
 const (
-	UpdateStateVersion  = 1
-	UpdateStateFilename = "update-state.json"
+	UpdateStateVersion          = 1
+	UpdateStateVersionWithKeyset = 2
+	UpdateStateFilename         = "update-state.json"
 	MaxUpdateStateBytes = 4 << 10
 )
 
@@ -25,6 +28,8 @@ var ErrInvalidState = errors.New("updateinfo: invalid update state")
 type State struct {
 	Version        int    `json:"version"`
 	StableSequence uint64 `json:"stable_sequence"`
+	KeysetEpoch    uint64 `json:"keyset_epoch,omitempty"`
+	KeysetDigest   string `json:"keyset_digest,omitempty"`
 }
 
 type StateStore struct {
@@ -203,11 +208,29 @@ func saveState(path string, state State) error {
 }
 
 func (s State) validatePersisted() error {
-	if s.Version != UpdateStateVersion {
+	switch s.Version {
+	case UpdateStateVersion:
+		if s.StableSequence == 0 || s.KeysetEpoch != 0 || s.KeysetDigest != "" {
+			return fmt.Errorf("%w: legacy state fields are invalid", ErrInvalidState)
+		}
+	case UpdateStateVersionWithKeyset:
+		if s.StableSequence == 0 && s.KeysetEpoch == 0 {
+			return fmt.Errorf("%w: version 2 state has no anti-rollback data", ErrInvalidState)
+		}
+		if s.KeysetEpoch == 0 {
+			if s.KeysetDigest != "" {
+				return fmt.Errorf("%w: keyset digest has no epoch", ErrInvalidState)
+			}
+		} else {
+			if len(s.KeysetDigest) != 64 || strings.ToLower(s.KeysetDigest) != s.KeysetDigest {
+				return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
+			}
+			if _, err := hex.DecodeString(s.KeysetDigest); err != nil {
+				return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
+			}
+		}
+	default:
 		return fmt.Errorf("%w: unsupported state version %d", ErrInvalidState, s.Version)
-	}
-	if s.StableSequence == 0 {
-		return fmt.Errorf("%w: persisted sequence must be positive", ErrInvalidState)
 	}
 	return nil
 }
