@@ -62,6 +62,9 @@ def main() -> None:
             "verifier receipt must bind candidate digests to publication")
     require("publish-windows-stable-update.sh" not in workflow,
             "production workflow must not invoke the legacy combined signing/publication script")
+    legacy_script = (ROOT / "scripts/publish-windows-stable-update.sh").read_text(encoding="utf-8")
+    require('GITHUB_WORKFLOW:-' in legacy_script and 'Production release' in legacy_script,
+            "legacy combined entrypoint must reject the production release workflow")
 
     print("Production signing/verifier/publisher privilege-boundary regression tests passed.")
 
