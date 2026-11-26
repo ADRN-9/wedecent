@@ -103,6 +103,77 @@ function Assert-MigrationRolledBack {
     if ($journal.phase -cne 'RolledBack') { throw "Rollback journal phase is $($journal.phase), not RolledBack." }
     if (Test-Path -LiteralPath $journal.staging) { throw "Terminal rollback retained staging after $Fault." }
 }
+function Set-MigrationJournalJsonForTest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [hashtable]$Fields = @{},
+        [string[]]$RemoveFields = @()
+    )
+    $value = ConvertFrom-Json -InputObject $Json -AsHashtable -ErrorAction Stop
+    foreach ($field in $RemoveFields) { [void]$value.Remove($field) }
+    foreach ($field in $Fields.Keys) { $value[$field] = $Fields[$field] }
+    return ConvertTo-Json -InputObject $value -Depth 10
+}
+function Assert-MigrationJournalRejected {
+    param(
+        [Parameter(Mandatory = $true)]$Fixture,
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][string]$Case
+    )
+    [IO.File]::WriteAllText($Fixture.Journal, $Json, [Text.UTF8Encoding]::new($false))
+    $rejected = $false
+    try { [void](Read-WeDecentMigrationJournal -Path $Fixture.Journal) }
+    catch { $rejected = $true }
+    if (-not $rejected) { throw "Migration journal parser accepted $Case." }
+    Write-Host "Migration journal parser rejects $Case PASS"
+}
+
+$journalParserFixture = New-MigrationFixture
+try {
+    $migrationFailed = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $journalParserFixture.Source -Destination $journalParserFixture.Destination -AgentPath $agentPath -ServiceName $journalParserFixture.ServiceName -ServiceSid $journalParserFixture.ServiceSid -MetadataPath $journalParserFixture.MetadataPath -JournalPath $journalParserFixture.Journal -FaultAt 'Verified' | Out-Null
+    } catch {
+        $migrationFailed = $_.Exception.Message -like '*was rolled back*'
+        if (-not $migrationFailed) { throw }
+    }
+    if (-not $migrationFailed) { throw 'Journal parser fixture did not reach a verified migration and rollback.' }
+    $validJournalJson = Get-Content -LiteralPath $journalParserFixture.Journal -Raw -ErrorAction Stop
+    $validJournal = Read-WeDecentMigrationJournal -Path $journalParserFixture.Journal
+    if ($validJournal.phase -cne 'RolledBack' -or -not $validJournal.staging_complete) {
+        throw 'Journal parser fixture is not a valid completed-staging rollback record.'
+    }
+
+    $duplicateJson = $validJournalJson -replace '^\s*\{', '{"Phase":"RolledBack",'
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $duplicateJson -Case 'case-insensitive duplicate JSON properties'
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json ($validJournalJson.TrimEnd() + [Environment]::NewLine + '{}') -Case 'trailing JSON documents'
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json ($validJournalJson.TrimEnd() + ' unexpected') -Case 'unexpected trailing content'
+
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -RemoveFields @('source_manifest_sha256')
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'missing source manifest digest'
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -RemoveFields @('source_stable_manifest_sha256')
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'missing stable source manifest digest'
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ source_manifest_sha256 = 'not-a-sha256' }
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'malformed source manifest digest'
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ source_stable_manifest_sha256 = ('a' * 63) }
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'malformed stable source manifest digest'
+
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ phase = 'Verified' } -RemoveFields @('destination_manifest_sha256')
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'missing destination digest after staging completion'
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ destination_manifest_sha256 = 'invalid' }
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'malformed completed destination digest'
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ phase = 'Verified'; staging_complete = $false; destination_manifest_sha256 = '' }
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'Verified phase without completed staging'
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ phase = 'Prepared' }
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'Prepared phase with completed staging'
+    $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ staging_complete = $false; destination_manifest_sha256 = '' }
+    $preparedJournal = Set-MigrationJournalJsonForTest -Json $caseJson -Fields @{ phase = 'Prepared' }
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $preparedJournal -Case 'completed rollback fields inconsistent with early phase'
+    Write-Host 'Migration journal strict JSON and phase/digest regression suite PASS'
+} finally {
+    Remove-Item -LiteralPath $journalParserFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $namespaceFixture = New-MigrationFixture
 try {
     $namespaceAcl = Get-Acl -LiteralPath $namespaceFixture.Root
