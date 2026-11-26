@@ -645,16 +645,16 @@ func runPair(args []string) error {
 		return errors.New("--discover-timeout requires --discover-lan")
 	}
 	locator, err := resolvePairLocator(context.Background(), pairLocatorOptions{
-		Endpoint:        *endpoint,
-		RFCOMM:          *rfcomm,
-		SerialDevice:    *serialDevice,
-		Relay:           *relayAddr,
-		WebRelay:        *webRelay,
+		Endpoint:               *endpoint,
+		RFCOMM:                 *rfcomm,
+		SerialDevice:           *serialDevice,
+		Relay:                  *relayAddr,
+		WebRelay:               *webRelay,
 		ExplicitTransportFlags: presentTransportFlags,
-		DeviceID:        *deviceID,
-		Fingerprint:     *fingerprint,
-		DiscoverLAN:     *discoverLAN,
-		DiscoverTimeout: *discoverTimeout,
+		DeviceID:               *deviceID,
+		Fingerprint:            *fingerprint,
+		DiscoverLAN:            *discoverLAN,
+		DiscoverTimeout:        *discoverTimeout,
 	}, discovery.FindPairCandidate)
 	if err != nil {
 		return err
