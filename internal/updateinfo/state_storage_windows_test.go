@@ -557,3 +557,101 @@ func TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock(t *testing.T) {
 		t.Fatalf("unsafe temporary state files were created: %v", temps)
 	}
 }
+
+
+func windowsTestSetFileDACL(t *testing.T, path, sddl string) {
+	t.Helper()
+	sd, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		t.Fatalf("parse test file security descriptor: %v", err)
+	}
+	name, err := windows.UTF16PtrFromString(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.CreateFile(name,
+		windows.READ_CONTROL|windows.WRITE_DAC,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_ATTRIBUTE_NORMAL, 0)
+	if err != nil {
+		t.Fatalf("open state file to set test DACL: %v", err)
+	}
+	defer windows.CloseHandle(h)
+	if err := windows.SetKernelObjectSecurity(h, windows.DACL_SECURITY_INFORMATION, sd); err != nil {
+		t.Fatalf("set state file DACL: %v", err)
+	}
+}
+
+func TestWindowsStateStoreRejectsHostileStateFileACLBeforeReadOrAdvance(t *testing.T) {
+	user := windowsTestCurrentSID(t)
+	dir := t.TempDir()
+	path := StatePath(dir)
+	original := []byte("{\"version\":1,\"stable_sequence\":41}\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	windowsTestSetFileDACL(t, path, "D:P(A;;FA;;;"+user+")(A;;0x00000004;;;WD)")
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sddl := sd.String()
+	t.Logf("actual updater-state file DACL with explicit broad append-data ACE: %s", sddl)
+	if err := validateUpdateStateDACL(sddl, user, user, false); err == nil {
+		t.Fatalf("state-file validator accepted broad append-data ACE: %s", sddl)
+	}
+	store := NewStateStore(path)
+	if _, err := store.Load(); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Load accepted state file with broad append-data permission: %v", err)
+	}
+	if err := store.Advance(42); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Advance accepted state file with broad append-data permission: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("rejected state-file ACL changed rollback bytes: %q", got)
+	}
+	temps, err := filepath.Glob(filepath.Join(dir, ".update-state-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("Advance created temporary state files after rejecting the state-file ACL: %v", temps)
+	}
+}
+
+func TestWindowsUpdateLockRejectsHostileLockFileACLBeforeLocking(t *testing.T) {
+	user := windowsTestCurrentSID(t)
+	dir := t.TempDir()
+	statePath := StatePath(dir)
+	lockPath := filepath.Join(dir, ".update-apply.lock")
+	if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	windowsTestSetFileDACL(t, lockPath, "D:P(A;;FA;;;"+user+")(A;;0x00000004;;;WD)")
+	sd, err := windows.GetNamedSecurityInfo(lockPath, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("actual updater lock-file DACL with broad append-data ACE: %s", sd.String())
+	if _, err := acquireUpdateLock(context.Background(), statePath); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("update lock acquisition accepted hostile lock-file ACL: %v", err)
+	}
+
+	file, err := os.OpenFile(lockPath, os.O_RDWR, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	var overlapped windows.Overlapped
+	if err := windows.LockFileEx(windows.Handle(file.Fd()),
+		windows.LOCKFILE_EXCLUSIVE_LOCK|windows.LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped); err != nil {
+		t.Fatalf("rejected updater retained the lock after ACL failure: %v", err)
+	}
+	if err := windows.UnlockFileEx(windows.Handle(file.Fd()), 0, 1, 0, &overlapped); err != nil {
+		t.Fatalf("release test lock: %v", err)
+	}
+}
