@@ -310,7 +310,6 @@ func TestWindowsUpdateStateRejectsReparsePointSubstitution(t *testing.T) {
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	user := windowsTestCurrentSID(t)
 	if err := validateStateDirAncestors(stateDir); err != nil {
 		t.Fatalf("initial trusted ancestor validation failed: %v", err)
 	}
