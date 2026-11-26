@@ -71,7 +71,7 @@ func validateWindowsUpdateStatePath(path string, before os.FileInfo, directory b
 		return fmt.Errorf("%w: inspect updater administrator token: %v", ErrInvalidState, err)
 	}
 	currentSID := user.User.Sid.String()
-	rootSID, err := validateUpdateStateAncestorChain(absolute, currentSID)
+	rootSID, err := validateUpdateStateAncestorChain(absolute, currentSID, false)
 	if err != nil {
 		return err
 	}
@@ -112,13 +112,13 @@ func validateStateDirAncestors(dir string) error {
 	if err != nil || user == nil || user.User.Sid == nil {
 		return fmt.Errorf("%w: read update process SID: %v", ErrInvalidState, err)
 	}
-	if _, err := validateUpdateStateAncestorChain(dir, user.User.Sid.String()); err != nil {
+	if _, err := validateUpdateStateAncestorChain(dir, user.User.Sid.String(), true); err != nil {
 		return err
 	}
 	return nil
 }
 
-func validateUpdateStateAncestorChain(path, currentSID string) (string, error) {
+func validateUpdateStateAncestorChain(path, currentSID string, allowMissing bool) (string, error) {
 	volume := filepath.VolumeName(path)
 	if len(volume) != 2 || path[2:3] != string(os.PathSeparator) {
 		return "", fmt.Errorf("%w: update state must reside on a local drive path", ErrInvalidState)
@@ -146,7 +146,10 @@ func validateUpdateStateAncestorChain(path, currentSID string) (string, error) {
 	for _, component := range components {
 		info, err := os.Lstat(component)
 		if errors.Is(err, os.ErrNotExist) {
-			break
+			if allowMissing {
+				break
+			}
+			return "", fmt.Errorf("%w: update state ancestor is missing: %s", ErrInvalidState, component)
 		}
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return "", fmt.Errorf("%w: update state ancestor is not a directory or is a reparse point: %s", ErrInvalidState, component)
