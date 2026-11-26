@@ -87,7 +87,7 @@ mapfile -t candidate_fields < "$candidate_output"
 
 probe() {
   local status
-  status="$(curl -sS -I --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "$1")" || die "cannot determine stable object state: $1"
+  status="$(curl --disable -sS -I --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "$1")" || die "cannot determine stable object state: $1"
   case "$status" in 200|404) printf '%s\n' "$status" ;; *) die "ambiguous stable object HTTP status $status" ;; esac
 }
 manifest_status="$(probe "$base/manifest-v1.json")"
@@ -96,8 +96,8 @@ if [[ "${fields[expected_manifest_sha256]}" == '-' && "${fields[expected_signatu
   [[ "$manifest_status" == 404 && "$signature_status" == 404 ]] || die 'stable channel changed after verification'
 elif [[ "${fields[expected_manifest_sha256]}" =~ ^[0-9a-f]{64}$ && "${fields[expected_signature_sha256]}" =~ ^[0-9a-f]{64}$ ]]; then
   [[ "$manifest_status" == 200 && "$signature_status" == 200 ]] || die 'stable channel presence changed after verification'
-  curl -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.json" -o "$old_manifest" || die 'cannot fetch prior manifest'
-  curl -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.sig" -o "$old_signature" || die 'cannot fetch prior signature'
+  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.json" -o "$old_manifest" || die 'cannot fetch prior manifest'
+  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.sig" -o "$old_signature" || die 'cannot fetch prior signature'
   [[ "$(sha_file "$old_manifest")" == "${fields[expected_manifest_sha256]}" ]] || die 'prior manifest changed since independent verification'
   [[ "$(sha_file "$old_signature")" == "${fields[expected_signature_sha256]}" ]] || die 'prior signature changed since independent verification'
   (cd "$ROOT" && go run ./cmd/wd-update-manifest verify --public-key "$PUBLIC_KEY" --manifest "$old_manifest" --signature "$old_signature") > "$old_output" ||
@@ -121,8 +121,8 @@ fi
 
 published_manifest="$tmpdir/published-manifest.json"
 published_signature="$tmpdir/published-manifest.sig"
-curl -fsS --retry 5 --retry-all-errors --proto '=https' "$base/manifest-v1.json" -o "$published_manifest" || die 'published manifest read-back failed'
-curl -fsS --retry 5 --retry-all-errors --proto '=https' "$base/manifest-v1.sig" -o "$published_signature" || die 'published signature read-back failed'
+curl --disable -fsS --retry 5 --retry-all-errors --proto '=https' "$base/manifest-v1.json" -o "$published_manifest" || die 'published manifest read-back failed'
+curl --disable -fsS --retry 5 --retry-all-errors --proto '=https' "$base/manifest-v1.sig" -o "$published_signature" || die 'published signature read-back failed'
 cmp -s "$MANIFEST" "$published_manifest" || die 'published manifest bytes differ from verified candidate'
 cmp -s "$SIGNATURE" "$published_signature" || die 'published signature bytes differ from verified candidate'
 (cd "$ROOT" && go run ./cmd/wd-update-manifest verify --public-key "$PUBLIC_KEY" --manifest "$published_manifest" --signature "$published_signature") >/dev/null ||
