@@ -5,6 +5,7 @@ package updateinfo
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -374,5 +375,54 @@ func TestWindowsStateStoreRejectsAncestorACLBeforeReadOrAdvance(t *testing.T) {
 	}
 	if string(got) != string(original) {
 		t.Fatalf("failed ACL validation changed rollback state: %q", got)
+	}
+}
+
+
+func windowsTestCreateJunction(t *testing.T, link, target string) {
+	t.Helper()
+	output, err := exec.Command("cmd.exe", "/c", "mklink", "/J", link, target).CombinedOutput()
+	if err != nil {
+		t.Skipf("creating a Windows junction is unavailable: %v: %s", err, strings.TrimSpace(string(output)))
+	}
+}
+
+func TestWindowsUpdateStateRejectsJunctionTraversalAndSubstitution(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "real-target")
+	if err := os.MkdirAll(filepath.Join(target, "state"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	user := windowsTestCurrentSID(t)
+
+	link := filepath.Join(root, "junction")
+	windowsTestCreateJunction(t, link, target)
+	if _, err := validateUpdateStateAncestorChain(filepath.Join(link, "state"), user, false); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("junction traversal accepted: %v", err)
+	}
+
+	parent := filepath.Join(root, "parent")
+	stateDir := filepath.Join(parent, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStateDirAncestors(stateDir); err != nil {
+		t.Fatalf("initial ancestor validation failed: %v", err)
+	}
+	moved := filepath.Join(root, "moved-parent")
+	if err := os.Rename(parent, moved); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(root, "replacement")
+	if err := os.Mkdir(replacement, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	windowsTestCreateJunction(t, parent, replacement)
+	info, err := os.Lstat(filepath.Join(parent, "state"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStateDirInfo(filepath.Join(parent, "state"), info); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("junction substituted for a previously validated ancestor was accepted: %v", err)
 	}
 }
