@@ -181,6 +181,9 @@ func VerifyKeyset(rootKeyID string, rootPublicKey ed25519.PublicKey, keysetBytes
 	if !keyIDPattern.MatchString(rootKeyID) || len(rootPublicKey) != ed25519.PublicKeySize {
 		return zero, fmt.Errorf("%w: pinned root identity", ErrInvalidKeyset)
 	}
+	if len(keysetBytes) == 0 || len(keysetBytes) > MaxKeysetBytes {
+		return zero, fmt.Errorf("%w: keyset size", ErrInvalidKeyset)
+	}
 	signature, err := DecodeSignature(signatureBytes)
 	if err != nil || !ed25519.Verify(rootPublicKey, keysetBytes, signature) {
 		return zero, fmt.Errorf("%w: root signature", ErrInvalidKeyset)
@@ -217,6 +220,9 @@ func VerifyManifestV2(verified VerifiedKeyset, manifestBytes, signatureBytes []b
 	var zero Manifest
 	if verified.digest == "" || verified.keyset.Epoch == 0 {
 		return zero, fmt.Errorf("%w: unverified keyset", ErrInvalidKeyset)
+	}
+	if err := verified.keyset.Validate(now); err != nil {
+		return zero, err
 	}
 	manifest, err := ParseCanonical(manifestBytes)
 	if err != nil {
