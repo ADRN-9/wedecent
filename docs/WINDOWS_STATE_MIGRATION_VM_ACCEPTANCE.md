@@ -34,3 +34,44 @@ Hosted CI and the PowerShell migration coordinator are necessary but do not prov
 ## Current infrastructure dependency
 
 The repository does not provision or control this persistent elevated VM. A Windows infrastructure owner must supply the VM, administrator operator access, dedicated non-administrator service account/SID, snapshot/reboot capability, and access to the approved signing/test-credential workflow. Hosted GitHub Actions must not be presented as a substitute for this acceptance.
+
+## C277 infrastructure reconnaissance (2026-11-25)
+
+This section records the repository-visible infrastructure evidence checked for the persistent acceptance dependency. It does not assert that no external VM or runner exists.
+
+### Findings
+
+- The CI workflow uses GitHub-hosted `windows-latest` for the Windows agent job. The Desktop workflow also uses `windows-latest` for its Windows Tauri job. These jobs are not configured as persistent, elevated acceptance VMs.
+- The production release workflow declares separate self-hosted runner labels: `[self-hosted, windows, wedecent-signing]` for Windows signing and `[self-hosted, linux, wedecent-release-publisher]` for publication. Those labels establish workflow dependencies, not current runner availability, VM persistence, administrative access, snapshot/reboot capability, or suitability for destructive migration acceptance.
+- The signing runner must not be repurposed for migration fault injection or reboot testing. Acceptance requires an isolated machine and credentials so that tests cannot affect signing keys, release artifacts, or publication infrastructure.
+- The repository root and `.github` directory contain no CODEOWNERS file. The Windows migration acceptance procedure identifies a required Windows infrastructure owner but does not name one.
+- The repository-visible issue search and PR #203 discussion did not establish a named Windows infrastructure owner, an assigned VM-provisioning ticket, or a commitment that a persistent acceptance VM can be provisioned.
+- The available GitHub integration does not expose the repository self-hosted runner inventory/administration endpoint. Consequently, online/offline runner status and the existence of an unadvertised persistent Windows VM remain unverified.
+
+### Ownership and provisioning disposition
+
+**Accountable Windows infrastructure owner: not identified from verifiable available evidence.**
+
+**Provisioning decision: unknown.** There is no evidence sufficient to say that a persistent elevated Windows 11/Server VM is currently available or that an owner has committed to provision one. This is an external infrastructure dependency, not a failed software test.
+
+The repository owner or organization administrator must identify a named infrastructure owner and confirm one of these outcomes:
+
+1. Supply an isolated, persistent Windows 11 or supported Windows Server VM meeting the prerequisites above; or
+2. Explicitly state that provisioning is unavailable, identify the reason, and provide an owner and target date for resolving the dependency.
+
+### Exact provisioning request
+
+Provide an isolated persistent Windows 11 or supported Windows Server VM with:
+
+- A clean snapshot and the ability to create/restore a post-baseline snapshot.
+- Elevated operator access for installer, SCM, filesystem ACL/owner, process-termination, and reboot testing.
+- A dedicated local non-administrator service account with stable SID and only the rights needed to run the service; the operator account must remain separate.
+- Ability to install the test-signed WeDecent build and configure/query the actual Windows Service Control Manager service.
+- A persistent disk and permission to terminate the VM/process at specified migration journal boundaries and reboot the same disk for recovery.
+- An approved secret store for operator credentials and recovery material; no secrets or DPAPI/private-key material may be copied into repository files or CI artifacts.
+- A controlled method to provision an actual DPAPI-protected Ed25519 identity and capture redacted device ID, public fingerprint, certificate hash, service SID, ACL, SCM, event-log, snapshot, and artifact-hash evidence.
+- Network isolation and access sufficient for authorized terminal validation without exposing production signing keys, production customer data, or release publication credentials.
+
+On receipt, run every step and negative case in this document against the exact candidate SHA and record redacted evidence. Hosted CI remains supplemental only.
+
+No code, trust policy, ACL rule, migration behavior, release workflow, or signing configuration is changed by this infrastructure note.
