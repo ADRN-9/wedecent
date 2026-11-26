@@ -839,7 +839,7 @@ function Set-WeDecentMigrationServicePath {
     if (-not $service -or [string]$service.PathName -cne $BinaryPath) {
         throw 'SCM service path did not persist exactly as requested.'
     }
-    $actualSid = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $actualSid = ([Security.Principal.NTAccount]::new($preflightServiceStartName)).Translate([Security.Principal.SecurityIdentifier]).Value
     if ($actualSid -cne $ServiceSid -or [string]$service.StartMode -cne $StartMode) {
         throw 'SCM service account or start mode changed during the state migration transition.'
     }
@@ -1588,6 +1588,9 @@ function Invoke-WeDecentStateMigration {
     if ($serviceState -notin @('Running', 'Stopped')) {
         throw "Migration requires SCM service to be Running or Stopped; refusing transient or paused state '$serviceState'."
     }
+    $preflightServicePath = [string]$service.PathName
+    $preflightServiceStartMode = [string]$service.StartMode
+    $preflightServiceStartName = [string]$service.StartName
 
     $destinationParent = Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $destinationFull)
     $transactionId = [Guid]::NewGuid().ToString('D')
@@ -1608,7 +1611,7 @@ function Invoke-WeDecentStateMigration {
 
     $account = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
     if ($account -cne $ServiceSid) { throw 'SCM service account SID differs from the migration target SID.' }
-    $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath ([string]$service.PathName) -Source $sourceFull -Destination $destinationFull
+    $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath $preflightServicePath -Source $sourceFull -Destination $destinationFull
     if ($updatedPath -ceq [string]$service.PathName) { throw 'Could not construct an unambiguous destination SCM command line.' }
 
     Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
@@ -1637,11 +1640,11 @@ function Invoke-WeDecentStateMigration {
         service_name = $ServiceName
         service_sid = $ServiceSid
         installer_sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        service_start_name = [string]$service.StartName
-        service_start_mode = [string]$service.StartMode
+        service_start_name = $preflightServiceStartName
+        service_start_mode = $preflightServiceStartMode
         agent_path = [IO.Path]::GetFullPath($AgentPath)
-        service_was_running = ([string]$service.State -eq 'Running')
-        original_service_path = [string]$service.PathName
+        service_was_running = ($serviceState -eq 'Running')
+        original_service_path = $preflightServicePath
         updated_service_path = $updatedPath
         metadata_path = [IO.Path]::GetFullPath($MetadataPath)
         original_metadata_json = $originalMetadataJson
@@ -1666,9 +1669,10 @@ function Invoke-WeDecentStateMigration {
         if (-not $currentService) { throw "Migration service '$ServiceName' disappeared after preflight." }
         $currentServiceSid = ([Security.Principal.NTAccount]::new([string]$currentService.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
         if ($currentServiceSid -cne $ServiceSid -or
-            [string]$currentService.PathName -cne [string]$service.PathName -or
-            [string]$currentService.StartMode -cne [string]$service.StartMode -or
-            [string]$currentService.State -cne [string]$service.State) {
+            [string]$currentService.PathName -cne $preflightServicePath -or
+            [string]$currentService.StartMode -cne $preflightServiceStartMode -or
+            [string]$currentService.StartName -cne $preflightServiceStartName -or
+            [string]$currentService.State -cne $serviceState) {
             throw 'SCM service identity, command line, start mode, or state changed after migration preflight; refusing filesystem mutation.'
         }
         if ([string]$currentService.State -notin @('Running', 'Stopped')) {
