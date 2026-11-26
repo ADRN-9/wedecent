@@ -113,7 +113,7 @@ func TestValidateUpdateStateAncestorDACLRejectsNamespaceWriters(t *testing.T) {
 		{"broad-principal-delete-child", "D:P(A;;FA;;;" + user + ")(A;;0x00000040;;;WD)", true},
 		{"inherited-authenticated-users-create", "D:AI(A;CI;0x00000004;;;AU)(A;;FA;;;" + user + ")", true},
 		{"inherited-world-write", "D:AI(A;OICI;0x00000002;;;WD)(A;;FA;;;" + user + ")", true},
-		{"inherited-only-world-generic-write", "D:AI(A;OICIIO;GW;;;WD)(A;;FA;;;" + user + ")", true},
+		{"inherit-only-world-generic-write-is-not-effective-on-parent", "D:AI(A;OICIIO;GW;;;WD)(A;;FA;;;" + user + ")", false},
 		{"inherit-only-object-write-does-not-modify-directory", "D:AI(A;OIIO;GW;;;WD)(A;;FA;;;" + user + ")", false},
 		{"broad-principal-read-execute", "D:AI(A;OICI;FRFX;;;BU)(A;;FA;;;" + user + ")", false},
 		{"list-children-read", "D:AI(A;;LC;;;BU)(A;;FA;;;" + user + ")", false},
@@ -206,7 +206,7 @@ func TestWindowsUpdateStateRejectsInheritedBroadAncestorACE(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := windowsTestCurrentSID(t)
-	windowsTestSetDACL(t, parent, "D:P(A;OICI;FA;;;"+user+")(A;OICI;0x00000004;;;WD)")
+	windowsTestSetDACL(t, parent, "D:P(A;OICI;FA;;;"+user+")(A;OICIIO;0x00000004;;;WD)")
 	if err := os.Mkdir(child, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -220,8 +220,11 @@ func TestWindowsUpdateStateRejectsInheritedBroadAncestorACE(t *testing.T) {
 	if !strings.Contains(childSD.String(), "WD") {
 		t.Fatalf("test child did not inherit the broad-principal ACE: %s", childSD.String())
 	}
-	if _, err := validateUpdateStateAncestorChain(grandchild, user, false); err == nil || !errors.Is(err, ErrInvalidState) {
-		t.Fatalf("inherited broad-principal write ACE accepted: %v", err)
+	if _, err := validateUpdateStateAncestorChain(grandchild, user, false); err != nil {
+		t.Fatalf("inherit-only ACE unexpectedly grants directory namespace rights: %v", err)
+	}
+	if err := validateUpdateStateDACL(childSD.String(), user, user, false); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("inherited broad-principal write ACE on state object accepted: %v", err)
 	}
 }
 
