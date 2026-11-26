@@ -327,9 +327,9 @@ function New-MigrationAttackerWorkspace {
     )
     $path = Join-Path $RootPath 'attacker-workspace'
     New-Item -ItemType Directory -Path $path -Force | Out-Null
-    $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
-    $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
-    $attacker = ConvertTo-WeDecentMigrationSid -Sid $AttackerSid
+    $admins = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $attacker = [Security.Principal.SecurityIdentifier]::new($AttackerSid)
     $acl = [Security.AccessControl.DirectorySecurity]::new()
     $acl.SetAccessRuleProtection($true, $false)
     $acl.SetOwner($admins)
@@ -1089,8 +1089,8 @@ foreach ($mutationCase in $mutationCases) {
     try {
         $ancestor = Join-Path $aclFixture.Root ('acl-ancestor-' + $mutationCase.Name)
         New-Item -ItemType Directory -Path $ancestor | Out-Null
-        $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
-        $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
+        $admins = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+        $system = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
         $acl = [Security.AccessControl.DirectorySecurity]::new()
         $acl.SetAccessRuleProtection($true, $false)
         $acl.SetOwner($admins)
@@ -1164,7 +1164,7 @@ try {
     $controlDirectory = Join-Path $controlWorkspace 'control'
     New-Item -ItemType Directory -Path $controlDirectory | Out-Null
     $controlDirectoryAcl = Get-Acl -LiteralPath $controlDirectory
-    $controlDirectoryAcl.SetOwner((ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'))
+    $controlDirectoryAcl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
     Set-Acl -LiteralPath $controlDirectory -AclObject $controlDirectoryAcl -ErrorAction Stop
     $controlNamespaceRejected = $false
     try { [void](Assert-WeDecentMigrationPublicationNamespace -Path $controlDirectory) }
