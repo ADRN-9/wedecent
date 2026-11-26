@@ -41,11 +41,13 @@ The installer prompts without echo only for the service-account password (unless
 
 It then:
 
-- creates/loads the machine-wide device identity;
-- creates a new one-time pairing secret;
-- locks down the state directory ACL;
+- resolves and verifies the **actual configured dedicated service-account SID** (which must differ from the elevated installer SID);
+- creates a new, empty state directory with a protected Windows DACL, and transfers ownership to that dedicated service SID **before any identity, trust, pairing, audit, or service log file is written**;
+- refuses preexisting populated or insecure state instead of silently rewriting exposed credentials;
 - registers the Windows service;
-- starts the service unless `--start=false` is supplied.
+- starts the service unless `--start=false` is supplied. Only the running service, under its own dedicated account, may initialize its device identity and trust store.
+
+**Security-first onboarding change:** The elevated installer no longer prints a pairing secret or a device fingerprint before service startup, because doing so would initialize identity material outside the service-account boundary. Pairing/identity inspection must occur in an explicitly authorized dedicated-service-account context after startup. Do not use the installer administrator's separate `wd-agent init` context or extract trust keys from the service state.
 
 The default machine-wide state directory is:
 
@@ -59,7 +61,7 @@ The service log is:
 C:\ProgramData\WeDecent\agent\service.log
 ```
 
-Keep the printed pairing secret private. It is single-use.
+Treat each subsequently issued pairing secret as single-use. Do not pass the secret through SCM arguments, service logs, or a world-readable output file. An administrator must arrange a controlled service-account onboarding workflow before end-user pairing; this unattended operator-facing bridge is not yet provided by the service installer.
 
 ## Manage
 
@@ -76,7 +78,7 @@ Use a non-default service name consistently with `--service-name` on management 
 
 The earlier service prototype stored `relay-token.dpapi` in the state directory. Relay-auth-v2 does not read that file. After the Worker is on v5 and the upgraded service has been validated, the stale DPAPI blob can be removed from the machine.
 
-Existing plaintext `identity.key` files are migrated on the next identity `Ensure`: WeDecent protects the same Ed25519 key with DPAPI, verifies the protected copy, and only then removes the live plaintext file. The public key, device ID, and existing trust pins therefore remain unchanged. Removing the old file is not secure erasure of filesystem history, backups, snapshots, or SSD remnants.
+**Existing state is not automatically migrated by the hardened installer.** Stop the service and preserve protected forensic copies of existing keys, trust, consumed pairing markers and audit logs; inspect the old ACLs and owners offline. Migration or re-enrollment under a freshly provisioned dedicated service identity requires an explicitly approved procedure. Do not install onto previously exposed state and infer that ACL repair retroactively protects the old Ed25519 key. The ordinary identity subsystem's file-to-DPAPI migration mechanism remains separate from service-state authorization.
 
 ## Service runtime
 
@@ -105,5 +107,7 @@ The low-level `wd-agent service install` command intentionally still does not cr
 ## Current limitations
 
 - DPAPI protection is machine-scoped for service-install compatibility; TPM/CNG non-exportable identity keys are not implemented yet.
-- The service log is a local text file rather than Windows Event Log.
+- The service log is a local text file rather than Windows Event Log, with explicit protected owner/DACL on first creation.
+- The hardened service installer does not expose an interactive enrollment/secret-rotation bridge for the dedicated service account. Provisioning the account, startup, and approved onboarding therefore remain separate operational steps.
+- An existing ancestor granting unrelated principals delete-child/rename authority and a concurrent state-path substitution remain independent security-review gates; no completed WD-C32-01 claim is made.
 - MSI/WiX packaging is not implemented yet.
