@@ -1082,6 +1082,24 @@ public static class WeDecentMigrationFileIdentityApi {
     private const uint FILE_READ_ATTRIBUTES=0x80, FILE_LIST_DIRECTORY=0x1, FILE_ADD_FILE=0x2, FILE_ADD_SUBDIRECTORY=0x4, FILE_TRAVERSE=0x20, DELETE_ACCESS=0x10000;
     private const uint SHARE_READ_WRITE=3, OPEN_EXISTING=3;
     private const uint BACKUP_SEMANTICS=0x02000000, OPEN_REPARSE_POINT=0x00200000;
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    private struct FILE_RENAME_INFO {
+        [MarshalAs(UnmanagedType.U1)] public bool ReplaceIfExists;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        public char FileName;
+    }
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    private struct FILE_RENAME_INFO_EX {
+        public uint Flags;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        public char FileName;
+    }
+    private const int FILE_RENAME_INFO_EX_CLASS=22;
+    private const uint FILE_RENAME_REPLACE_IF_EXISTS=0x1;
+    private const uint FILE_RENAME_POSIX_SEMANTICS=0x2;
+
     private static void Inject(string name) {
         if (String.Equals(Environment.GetEnvironmentVariable(name), "1", StringComparison.Ordinal))
             throw new System.ComponentModel.Win32Exception(5, "Injected native filesystem failure: " + name);
@@ -1139,10 +1157,8 @@ public static class WeDecentMigrationFileIdentityApi {
         }
     }
 
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="MoveFileExW")]
-    private static extern bool MoveFileEx(string existingPath, string newPath, uint flags);
-    private const uint MOVEFILE_REPLACE_EXISTING=0x1;
-    private const uint MOVEFILE_WRITE_THROUGH=0x8;
+    [DllImport("kernel32.dll", SetLastError=true)]
+    private static extern bool SetFileInformationByHandle(IntPtr h, int infoClass, IntPtr info, uint size);
     public static string PublishByHandle(string temporaryPath, string parentPath, string targetName,
         string expectedTemporaryIdentity, string expectedTargetIdentity, bool replaceExisting) {
         if (String.IsNullOrWhiteSpace(targetName) || targetName.IndexOfAny(new char[]{'\\','/'})>=0 ||
@@ -1150,7 +1166,7 @@ public static class WeDecentMigrationFileIdentityApi {
             throw new ArgumentException("Publication target must be a single path component.");
         IntPtr parent=IntPtr.Zero, source=IntPtr.Zero, targetGuard=IntPtr.Zero;
         try {
-            parent=Open(parentPath, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY|FILE_ADD_FILE|FILE_ADD_SUBDIRECTORY|FILE_TRAVERSE, SHARE_READ_WRITE, BACKUP_SEMANTICS);
+            parent=Open(parentPath, FILE_READ_ATTRIBUTES|FILE_LIST_DIRECTORY|FILE_TRAVERSE, SHARE_READ_WRITE, BACKUP_SEMANTICS);
             BY_HANDLE_FILE_INFORMATION parentInfo=Info(parent);
             if ((parentInfo.FileAttributes & 0x410)!=0x10)
                 throw new InvalidOperationException("Publication parent is not a real directory.");
@@ -1188,14 +1204,40 @@ public static class WeDecentMigrationFileIdentityApi {
             if (GetIdentity(temporaryPath)!=sourceId)
                 throw new InvalidOperationException("Publication source pathname changed before atomic publication.");
             if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED")=="1")
-                throw new System.ComponentModel.Win32Exception(87,"Injected unsupported native rename; refusing publication.");
-            // MoveFileEx performs the same-volume namespace operation. The protected ancestor
-            // lease and ACL checks are the security boundary; this is not a kernel compare-and-swap.
-            if (source!=IntPtr.Zero) { CloseHandle(source); source=IntPtr.Zero; }
-            uint moveFlags=MOVEFILE_WRITE_THROUGH|(replaceExisting?MOVEFILE_REPLACE_EXISTING:0);
-            if (!MoveFileEx(temporaryPath,targetPath,moveFlags)) {
-                int error=Marshal.GetLastWin32Error();
-                throw new System.ComponentModel.Win32Exception(error,"Protected absolute-path atomic publication failed (Win32 " + error + "); refusing fallback.");
+                throw new System.ComponentModel.Win32Exception(87,"Injected unsupported handle-relative rename; refusing publication.");
+            if (replaceExisting) {
+                // Atomic replacement is not a kernel compare-and-swap. The protected namespace ACL
+                // and ancestor leases are the security boundary; RootDirectory anchors the target.
+                int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileName").ToInt32();
+                byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
+                int bufferSize=Marshal.SizeOf(typeof(FILE_RENAME_INFO_EX))+relativeName.Length-2;
+                IntPtr buffer=Marshal.AllocHGlobal(bufferSize);
+                try {
+                    uint flags=FILE_RENAME_REPLACE_IF_EXISTS|FILE_RENAME_POSIX_SEMANTICS;
+                    Marshal.WriteInt32(buffer,0,unchecked((int)flags));
+                    Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"RootDirectory").ToInt32(),parent);
+                    Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileNameLength").ToInt32(),relativeName.Length);
+                    Marshal.Copy(relativeName,0,IntPtr.Add(buffer,nameOffset),relativeName.Length);
+                    if (!SetFileInformationByHandle(source,FILE_RENAME_INFO_EX_CLASS,buffer,(uint)bufferSize)) {
+                        int error=Marshal.GetLastWin32Error();
+                        throw new System.ComponentModel.Win32Exception(error,"Handle-relative atomic replacement failed (Win32 " + error + "); refusing fallback.");
+                    }
+                } finally { Marshal.FreeHGlobal(buffer); }
+            } else {
+                int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
+                byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
+                int bufferSize=Marshal.SizeOf(typeof(FILE_RENAME_INFO))+relativeName.Length-2;
+                IntPtr buffer=Marshal.AllocHGlobal(bufferSize);
+                try {
+                    Marshal.WriteByte(buffer,0,0);
+                    Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),parent);
+                    Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),relativeName.Length);
+                    Marshal.Copy(relativeName,0,IntPtr.Add(buffer,nameOffset),relativeName.Length);
+                    if (!SetFileInformationByHandle(source,3,buffer,(uint)bufferSize)) {
+                        int error=Marshal.GetLastWin32Error();
+                        throw new System.ComponentModel.Win32Exception(error,"Handle-relative no-replace publication failed (Win32 " + error + "); refusing fallback.");
+                    }
+                } finally { Marshal.FreeHGlobal(buffer); }
             }
             string published=GetIdentity(targetPath);
             if (published!=sourceId) throw new InvalidOperationException("Published object identity did not match the verified source.");
