@@ -111,12 +111,15 @@ func TestValidateUpdateStateAncestorDACLRejectsNamespaceWriters(t *testing.T) {
 		wantErr bool
 	}{
 		{"broad-principal-delete-child", "D:P(A;;FA;;;" + user + ")(A;;0x00000040;;;WD)", true},
-		{"inherited-authenticated-users-create", "D:AI(A;CI;0x00000004;;;AU)(A;;FA;;;" + user + ")", true},
-		{"inherited-world-write", "D:AI(A;OICI;0x00000002;;;WD)(A;;FA;;;" + user + ")", true},
+		{"broad-principal-write-ea", "D:P(A;;FA;;;" + user + ")(A;;0x00000010;;;WD)", true},
+		{"broad-principal-generic-write-only", "D:P(A;;FA;;;" + user + ")(A;;GW;;;WD)", false},
+		{"broad-principal-generic-all", "D:P(A;;FA;;;" + user + ")(A;;GA;;;WD)", true},
+		{"inherited-authenticated-users-create-only", "D:AI(A;CI;0x00000004;;;AU)(A;;FA;;;" + user + ")", false},
+		{"inherited-world-create-file-only", "D:AI(A;OICI;0x00000002;;;WD)(A;;FA;;;" + user + ")", false},
 		{"inherit-only-world-generic-write-is-not-effective-on-parent", "D:AI(A;OICIIO;GW;;;WD)(A;;FA;;;" + user + ")", false},
 		{"inherit-only-object-write-does-not-modify-directory", "D:AI(A;OIIO;GW;;;WD)(A;;FA;;;" + user + ")", false},
 		{"broad-principal-read-execute", "D:AI(A;OICI;FRFX;;;BU)(A;;FA;;;" + user + ")", false},
-		{"list-children-directory-create-mask", "D:AI(A;;LC;;;BU)(A;;FA;;;" + user + ")", true},
+		{"list-children-create-only-mask", "D:AI(A;;LC;;;BU)(A;;FA;;;" + user + ")", false},
 		{"trusted-system-admin-writers", "D:P(A;;FA;;;" + user + ")(A;;FA;;;SY)(A;;FA;;;BA)", false},
 		{"unknown-ace-type", "D:P(D;;0x00000040;;;WD)(A;;FA;;;" + user + ")", true},
 	} {
