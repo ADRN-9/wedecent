@@ -31,7 +31,7 @@ for path in "$ROOT_PUBLIC_KEY" "$KEYSET" "$KEYSET_SIGNATURE" "$MANIFEST" "$SIGNA
   [[ "$path" == /* && -f "$path" && ! -L "$path" ]] || die "input must be an absolute regular non-symlink file: $path"
 done
 [[ "$RECEIPT" == /* && ! -e "$RECEIPT" && ! -L "$RECEIPT" ]] || die 'receipt must be a new absolute path'
-for command in curl sha256sum awk go; do command -v "$command" >/dev/null 2>&1 || die "missing command: $command"; done
+for command in curl sha256sum awk go python3; do command -v "$command" >/dev/null 2>&1 || die "missing command: $command"; done
 [[ "${GITHUB_REF_TYPE:-}" == tag && "${GITHUB_REPOSITORY:-}" == ADRN-9/wedecent && "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || die 'verification job is not bound to the expected immutable GitHub release'
 "$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" || die 'live release tag does not match workflow commit'
 
@@ -71,10 +71,13 @@ expected_signature='-'
 expected_keyset='-'
 expected_keyset_signature='-'
 if [[ "$manifest_status" == 200 && "$signature_status" == 200 ]]; then
-  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/keyset-v1.json" -o "$old_keyset" || die 'cannot fetch current root-signed keyset'
-  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/keyset-v1.sig" -o "$old_keyset_signature" || die 'cannot fetch current keyset signature'
   curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v2.json" -o "$old_manifest" || die 'cannot fetch current stable manifest'
   curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v2.sig" -o "$old_signature" || die 'cannot fetch current stable signature'
+  old_epoch="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); e=d.get("keyset_epoch"); assert d.get("schema")==2 and isinstance(e,int) and e>0; print(e)' "$old_manifest")" || die 'current manifest does not identify a valid keyset epoch'
+  old_keyset_url="${base}/keysets/${old_epoch}/keyset.json"
+  old_keyset_signature_url="${base}/keysets/${old_epoch}/keyset.sig"
+  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$old_keyset_url" -o "$old_keyset" || die 'cannot fetch current root-signed keyset'
+  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$old_keyset_signature_url" -o "$old_keyset_signature" || die 'cannot fetch current keyset signature'
   verify_pair "$old_keyset" "$old_keyset_signature" "$old_manifest" "$old_signature" "$old_output" || die 'existing stable v2 pair is invalid'
   mapfile -t old_fields < "$old_output"
   [[ "${#old_fields[@]}" == 4 ]] || die 'existing verifier output malformed'
