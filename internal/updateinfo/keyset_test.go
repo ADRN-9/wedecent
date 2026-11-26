@@ -202,6 +202,7 @@ func TestManifestV2RejectsUnknownVerifyOnlyAndRevokedKeys(t *testing.T) {
 	manifest.Schema = ManifestSchemaV2
 	manifest.SigningKeyID = keyset.Keys[0].ID
 	manifest.KeysetEpoch = keyset.Epoch
+	manifest.PublishedAt = now.Add(-30 * time.Minute).UTC().Format(time.RFC3339)
 	body, err := EncodeCanonical(manifest)
 	if err != nil {
 		t.Fatal(err)
