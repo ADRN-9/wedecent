@@ -328,3 +328,51 @@ func TestWindowsUpdateStateRejectsReparsePointSubstitution(t *testing.T) {
 		t.Fatalf("reparse-point substitution of a validated ancestor was accepted: %v", err)
 	}
 }
+
+
+func TestWindowsUpdateStatePreflightRejectsHostileParentBeforeCreate(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "hostile")
+	if err := os.Mkdir(parent, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	user := windowsTestCurrentSID(t)
+	windowsTestSetDACL(t, parent, "D:P(A;;FA;;;"+user+")(A;;0x00000040;;;WD)")
+	stateDir := filepath.Join(parent, "new", "state")
+	if err := ensurePrivateStateDir(stateDir); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("state directory creation under hostile ancestor accepted: %v", err)
+	}
+	if _, err := os.Lstat(stateDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsafe state directory was created before ACL rejection: %v", err)
+	}
+}
+
+func TestWindowsStateStoreRejectsAncestorACLBeforeReadOrAdvance(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "hostile")
+	stateDir := filepath.Join(parent, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := StatePath(stateDir)
+	original := []byte("{\\"version\\":1,\\"stable_sequence\\":41}\\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	user := windowsTestCurrentSID(t)
+	windowsTestSetDACL(t, parent, "D:P(A;;FA;;;"+user+")(A;;FA;;;SY)(A;;0x00000040;;;WD)")
+	store := NewStateStore(path)
+	if _, err := store.Load(); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Load accepted state below hostile parent: %v", err)
+	}
+	if err := store.Advance(42); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Advance accepted state below hostile parent: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("failed ACL validation changed rollback state: %q", got)
+	}
+}
