@@ -43,6 +43,9 @@ def main() -> None:
     require("needs: publish-windows-downloads" in signing, "signer must wait for immutable artifacts")
     require("needs: sign-stable-update" in verification, "verifier must depend on signed candidate")
     require("needs: verify-stable-update" in publication, "publisher must depend on independent verification")
+    require("id-token: write" in signing, "only signer workload may request an OIDC identity token")
+    require("id-token: write" not in verification and "id-token: write" not in publication,
+            "verification and publication workloads must not receive signer OIDC permission")
 
     sign_script = (ROOT / "scripts/sign-windows-stable-update.sh").read_text(encoding="utf-8")
     verify_script = (ROOT / "scripts/verify-windows-stable-update.sh").read_text(encoding="utf-8")
