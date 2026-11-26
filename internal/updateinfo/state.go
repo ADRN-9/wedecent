@@ -19,7 +19,7 @@ const (
 	UpdateStateVersion           = 1
 	UpdateStateVersionWithKeyset = 2
 	UpdateStateFilename          = "update-state.json"
-	MaxUpdateStateBytes           = 4 << 10
+	MaxUpdateStateBytes          = 4 << 10
 )
 
 var ErrInvalidState = errors.New("updateinfo: invalid update state")
