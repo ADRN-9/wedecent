@@ -655,13 +655,16 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal contains an invalid SCM service configuration.'
     }
     $hasStagingMarker = $null -ne $journal.PSObject.Properties['staging_complete']
+    $hasServiceWasRunning = $null -ne $journal.PSObject.Properties['service_was_running']
     $hasIdentity = $null -ne $journal.identity -and
         -not [string]::IsNullOrWhiteSpace([string]$journal.identity.DeviceId) -and
         -not [string]::IsNullOrWhiteSpace([string]$journal.identity.Fingerprint)
-    if (-not $hasStagingMarker -or $journal.staging_complete -isnot [bool] -or -not $hasIdentity) {
+    if (-not $hasStagingMarker -or $journal.staging_complete -isnot [bool] -or
+        -not $hasServiceWasRunning -or $journal.service_was_running -isnot [bool] -or -not $hasIdentity) {
         $identityJson = if ($null -eq $journal.identity) { '<null>' } else { ConvertTo-Json -InputObject $journal.identity -Compress -Depth 3 }
         $markerType = if ($null -eq $journal.staging_complete) { '<null>' } else { $journal.staging_complete.GetType().FullName }
-        throw "Migration journal lacks its source identity snapshot or staging completion marker (marker=$hasStagingMarker; markerType=$markerType; identity=$identityJson)."
+        $serviceWasRunningType = if (-not $hasServiceWasRunning) { '<missing>' } elseif ($null -eq $journal.service_was_running) { '<null>' } else { $journal.service_was_running.GetType().FullName }
+        throw "Migration journal lacks a valid source identity snapshot or required Boolean state markers (staging=$hasStagingMarker/$markerType; service_was_running=$serviceWasRunningType; identity=$identityJson)."
     }
     [void](Assert-WeDecentMigrationPathsDisjoint -Paths @(
         [string]$journal.source, [string]$journal.destination, [string]$journal.staging,
