@@ -114,6 +114,7 @@ func TestValidateUpdateStateAncestorDACLRejectsNamespaceWriters(t *testing.T) {
 		{"inherited-world-write", "D:AI(A;OICI;0x00000002;;;WD)(A;;FA;;;" + user + ")", true},
 		{"inherited-only-world-generic-write", "D:AI(A;OICIIO;GW;;;WD)(A;;FA;;;" + user + ")", true},
 		{"broad-principal-read-execute", "D:AI(A;OICI;FRFX;;;BU)(A;;FA;;;" + user + ")", false},
+		{"list-children-read", "D:AI(A;;LC;;;BU)(A;;FA;;;" + user + ")", false},
 		{"trusted-system-admin-writers", "D:P(A;;FA;;;" + user + ")(A;;FA;;;SY)(A;;FA;;;BA)", false},
 		{"unknown-ace-type", "D:P(D;;0x00000040;;;WD)(A;;FA;;;" + user + ")", true},
 	} {
