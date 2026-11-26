@@ -149,6 +149,9 @@ func (c DiscoveryClient) ApplyStable(
 	if err != nil {
 		return zero, err
 	}
+	if installerClient.Transport == nil {
+		installerClient.Transport = c.Transport
+	}
 	staged, err := installerClient.Stage(ctx, manifest, stagingDir)
 	if err != nil {
 		return zero, err
