@@ -825,6 +825,57 @@ try {
 
 
 
+$usersSid = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-545'
+$metadataDaclFixture = New-MigrationFixture
+try {
+    $metadataAcl = Get-Acl -LiteralPath $metadataDaclFixture.MetadataPath
+    $metadataAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        $usersSid,[Security.AccessControl.FileSystemRights]::Modify,
+        [Security.AccessControl.AccessControlType]::Allow
+    ))
+    Set-Acl -LiteralPath $metadataDaclFixture.MetadataPath -AclObject $metadataAcl -ErrorAction Stop
+    $rejected = $false
+    try {
+        Write-WeDecentMigrationMetadata -Path $metadataDaclFixture.MetadataPath -StatePath $metadataDaclFixture.Source
+    } catch {
+        $rejected = $_.Exception.Message -like '*unexpected access rule*'
+        if (-not $rejected) { throw }
+    }
+    if (-not $rejected) { throw 'Metadata publication accepted a pre-existing destination DACL granting Users Modify.' }
+    Write-Host 'Migration metadata pre-existing destination DACL rejection PASS'
+} finally {
+    Remove-Item -LiteralPath $metadataDaclFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$journalDaclFixture = New-MigrationFixture
+try {
+    $journalDacl = [pscustomobject]@{
+        schema = 1
+        product = 'WeDecent'
+        phase = 'Prepared'
+        transaction_id = [Guid]::NewGuid().ToString('D')
+        updated_utc = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-WeDecentMigrationJournal -Path $journalDaclFixture.Journal -Journal $journalDacl
+    $journalAcl = Get-Acl -LiteralPath $journalDaclFixture.Journal
+    $journalAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+        $usersSid,[Security.AccessControl.FileSystemRights]::Modify,
+        [Security.AccessControl.AccessControlType]::Allow
+    ))
+    Set-Acl -LiteralPath $journalDaclFixture.Journal -AclObject $journalAcl -ErrorAction Stop
+    $journalDacl.phase = 'Copying'
+    $rejected = $false
+    try { Write-WeDecentMigrationJournal -Path $journalDaclFixture.Journal -Journal $journalDacl }
+    catch {
+        $rejected = $_.Exception.Message -like '*unexpected access rule*'
+        if (-not $rejected) { throw }
+    }
+    if (-not $rejected) { throw 'Journal publication accepted a pre-existing destination DACL granting Users Modify.' }
+    Write-Host 'Migration journal pre-existing destination DACL rejection PASS'
+} finally {
+    Remove-Item -LiteralPath $journalDaclFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $attackerName = 'WDA' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $attackerPassword = ConvertTo-SecureString -String ('WDecent-' + [Guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
 try {
