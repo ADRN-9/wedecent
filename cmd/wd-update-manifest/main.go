@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -33,6 +34,10 @@ func run(args []string, stdout io.Writer) error {
 		return runVerify(args[1:], stdout)
 	case "verify-v2":
 		return runVerifyV2(args[1:], stdout)
+	case "create-pair":
+		return runCreatePair(args[1:], stdout)
+	case "unpack-pair":
+		return runUnpackPair(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -139,6 +144,51 @@ func runVerify(args []string, stdout io.Writer) error {
 	return err
 }
 
+
+
+func runCreatePair(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("create-pair", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	manifestPath := flags.String("manifest", "", "canonical schema-v2 manifest")
+	signaturePath := flags.String("signature", "", "detached manifest signature")
+	out := flags.String("out", "", "exclusive output path")
+	if err := flags.Parse(args); err != nil { return err }
+	if flags.NArg() != 0 || *manifestPath == "" || *signaturePath == "" || *out == "" {
+		return errors.New("--manifest, --signature and --out are required")
+	}
+	manifest, err := readBoundedRegular(*manifestPath, updateinfo.MaxManifestBytes)
+	if err != nil { return err }
+	signature, err := readBoundedRegular(*signaturePath, 128)
+	if err != nil { return err }
+	encoded, err := updateinfo.EncodeCanonicalStablePair(manifest, signature)
+	if err != nil { return err }
+	if err := writeExclusive(*out, encoded, 0o600); err != nil { return err }
+	_, err = fmt.Fprintf(stdout, "pair_sha256=%x\n", sha256.Sum256(encoded))
+	return err
+}
+
+func runUnpackPair(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("unpack-pair", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	pairPath := flags.String("pair", "", "canonical stable-pair envelope")
+	manifestOut := flags.String("manifest-out", "", "exclusive manifest output path")
+	signatureOut := flags.String("signature-out", "", "exclusive signature output path")
+	if err := flags.Parse(args); err != nil { return err }
+	if flags.NArg() != 0 || *pairPath == "" || *manifestOut == "" || *signatureOut == "" {
+		return errors.New("--pair, --manifest-out and --signature-out are required")
+	}
+	pair, err := readBoundedRegular(*pairPath, updateinfo.MaxStablePairBytes)
+	if err != nil { return err }
+	manifest, signature, err := updateinfo.ParseCanonicalStablePair(pair)
+	if err != nil { return err }
+	if err := writeExclusive(*manifestOut, manifest, 0o600); err != nil { return err }
+	if err := writeExclusive(*signatureOut, signature, 0o600); err != nil {
+		_ = os.Remove(*manifestOut)
+		return err
+	}
+	_, err = fmt.Fprintln(stdout, "stable pair unpacked")
+	return err
+}
 
 func runVerifyV2(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("verify-v2", flag.ContinueOnError)
