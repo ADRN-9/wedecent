@@ -83,6 +83,18 @@ if [[ "$manifest_status" == 200 && "$signature_status" == 200 ]]; then
   [[ "${#old_fields[@]}" == 4 ]] || die 'existing verifier output malformed'
   old_sequence="${old_fields[0]#sequence=}"
   old_version="${old_fields[1]#version=}"
+  old_verified_epoch="${old_fields[2]#keyset_epoch=}"
+  old_verified_digest="${old_fields[3]#keyset_digest=}"
+  [[ "$old_verified_epoch" =~ ^[1-9][0-9]*$ && "$old_verified_digest" =~ ^[0-9a-f]{64}$ ]] || die 'existing keyset verification output malformed'
+  if ((keyset_epoch < old_verified_epoch)); then
+    die 'candidate keyset epoch rolls back the current stable channel'
+  fi
+  if ((keyset_epoch == old_verified_epoch)) && [[ "$keyset_digest" != "$old_verified_digest" ]]; then
+    die 'candidate keyset equivocates at the current stable epoch'
+  fi
+  if ((keyset_epoch > old_verified_epoch)) && [[ "$keyset_digest" == "$old_verified_digest" ]]; then
+    die 'new keyset epoch reuses the previous keyset digest'
+  fi
   (cd "$ROOT" && go run ./cmd/wd-update-manifest verify-v2 \
     --root-key-id "$ROOT_KEY_ID" --root-public-key "$ROOT_PUBLIC_KEY" \
     --keyset "$KEYSET" --keyset-signature "$KEYSET_SIGNATURE" \
