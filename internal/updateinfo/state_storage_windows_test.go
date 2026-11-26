@@ -21,6 +21,7 @@ func TestValidateUpdateStateDACLFailClosed(t *testing.T) {
 		valid bool
 	}{
 		{"private-user-system", "D:P(A;;FA;;;" + owner + ")(A;;FA;;;SY)", true},
+		{"inherited-world-read-execute", "D:AI(A;;FA;;;" + owner + ")(A;OICI;FRFX;;;WD)", true},
 		{"world-access", "D:P(A;;FA;;;" + owner + ")(A;;FA;;;WD)", false},
 		{"authenticated-users", "D:P(A;;FA;;;" + owner + ")(A;;FA;;;AU)", false},
 		{"builtin-users", "D:P(A;;FA;;;" + owner + ")(A;;FA;;;BU)", false},
