@@ -13,8 +13,8 @@ import (
 func TestValidateUpdateStateDACLFailClosed(t *testing.T) {
 	const owner = "S-1-5-21-1234-5678-9012-1001"
 	for _, tc := range []struct {
-		name string
-		sddl string
+		name  string
+		sddl  string
 		valid bool
 	}{
 		{"private-user-system", "D:P(A;;FA;;;" + owner + ")(A;;FA;;;SY)", true},
@@ -38,14 +38,14 @@ func TestValidateUpdateStateDACLFailClosed(t *testing.T) {
 
 func TestValidateUpdateStateOwnerBoundary(t *testing.T) {
 	const (
-		user = "S-1-5-21-1234-5678-9012-1001"
+		user    = "S-1-5-21-1234-5678-9012-1001"
 		service = "S-1-5-21-1234-5678-9012-1002"
-		other = "S-1-5-21-1234-5678-9012-1003"
+		other   = "S-1-5-21-1234-5678-9012-1003"
 	)
 	for _, tc := range []struct {
-		name string
+		name                 string
 		owner, current, root string
-		admin, valid bool
+		admin, valid         bool
 	}{
 		{"current-user", user, user, user, false, true},
 		{"system", updateStateSystemSID, user, updateStateSystemSID, false, true},
