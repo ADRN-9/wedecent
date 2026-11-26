@@ -1037,7 +1037,7 @@ function Get-WeDecentMigrationUpdatedServicePath {
 
 function Initialize-WeDecentMigrationFileIdentityApi {
     if ('WeDecentMigrationFileIdentityApi' -as [type]) { return }
-    Add-Type -TypeDefinition @'
+    try { Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
 public sealed class WeDecentMigrationDirectoryLease : IDisposable {
@@ -1242,7 +1242,114 @@ public static class WeDecentMigrationFileIdentityApi {
         }
     }
 }
-'@
+'@ -ErrorAction Stop } catch { throw "Failed to initialize native migration file identity API: $($_.Exception.Message)" }
+}
+
+function Get-WeDecentMigrationPathObjectChain {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    Initialize-WeDecentMigrationFileIdentityApi
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\')) {
+        throw 'Filesystem identity requires a local drive path.'
+    }
+    $parts = @($full.Substring($root.Length).Split([char[]]@([char]92), [StringSplitOptions]::RemoveEmptyEntries))
+    $chain = [Collections.Generic.List[string]]::new()
+    $walk = $root
+    $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
+    $missing = $false
+    for ($index = 0; $index -lt $parts.Count; $index++) {
+        $part = $parts[$index]
+        $walk = Join-Path $walk $part
+        if (-not $missing) {
+            try {
+                $item = Get-Item -LiteralPath $walk -Force -ErrorAction Stop
+                if ($index -lt ($parts.Count - 1) -and -not $item.PSIsContainer) {
+                    throw "Migration path traverses a non-directory component: $walk"
+                }
+                $chain.Add([WeDecentMigrationFileIdentityApi]::GetIdentity($walk))
+            } catch {
+                if ($_.CategoryInfo.Category -eq [Management.Automation.ErrorCategory]::ObjectNotFound -or
+                    $_.Exception -is [IO.FileNotFoundException] -or
+                    $_.Exception -is [IO.DirectoryNotFoundException]) {
+                    $missing = $true
+                    $chain.Add('PATH:' + $part.ToUpperInvariant())
+                } else {
+                    throw
+                }
+            }
+        } else {
+            $chain.Add('PATH:' + $part.ToUpperInvariant())
+        }
+    }
+    return $chain.ToArray()
+}
+
+function Get-WeDecentMigrationCanonicalPath {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or $Path.StartsWith('\\?\') -or $Path.StartsWith('\\.\')) {
+        throw 'Migration paths must be ordinary, absolute local filesystem paths.'
+    }
+    $full = [IO.Path]::GetFullPath($Path)
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\') -or $full -match '^[A-Za-z]:[^\\]') {
+        throw 'Migration paths must use an absolute local drive path.'
+    }
+    if ([string]::Equals($full, $root, [StringComparison]::OrdinalIgnoreCase)) { return $root }
+    $full = $full.TrimEnd('\')
+
+    if (-not ('WeDecentMigrationPathApi' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+public static class WeDecentMigrationPathApi {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetLongPathName(string shortPath, StringBuilder longPath, uint bufferLength);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferLength);
+}
+'@ -ErrorAction Stop
+    }
+
+    $walk = $root
+    $relativeParts = $full.Substring($root.Length).Split([char[]]@([char]92), [System.StringSplitOptions]::RemoveEmptyEntries)
+    foreach ($part in $relativeParts) {
+        $walk = Join-Path $walk $part
+        if (Test-Path -LiteralPath $walk) {
+            $component = Get-Item -LiteralPath $walk -Force -ErrorAction Stop
+            if (($component.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Migration path traverses a reparse point: $walk"
+            }
+        }
+    }
+
+    $probe = $full
+    $suffix = [Collections.Generic.Stack[string]]::new()
+    while (-not (Test-Path -LiteralPath $probe)) {
+        $leaf = [IO.Path]::GetFileName($probe)
+        $parent = [IO.Path]::GetDirectoryName($probe)
+        if ([string]::IsNullOrWhiteSpace($leaf) -or [string]::IsNullOrWhiteSpace($parent) -or
+            [string]::Equals($parent, $probe, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Migration path has no resolvable existing ancestor: $Path"
+        }
+        $suffix.Push($leaf)
+        $probe = $parent
+    }
+
+    $item = Get-Item -LiteralPath $probe -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Migration path traverses a reparse point: $probe"
+    }
+    $buffer = [Text.StringBuilder]::new(32768)
+    $length = [WeDecentMigrationPathApi]::GetLongPathName($probe, $buffer, [uint32]$buffer.Capacity)
+    if ($length -eq 0 -or $length -ge $buffer.Capacity) {
+        throw "Migration path could not be resolved to its filesystem long name: $probe"
+    }
+    $resolved = $buffer.ToString()
+    while ($suffix.Count -gt 0) { $resolved = Join-Path $resolved $suffix.Pop() }
+    return $resolved.TrimEnd('\')
 }
 
 function New-WeDecentMigrationMutationLease {
@@ -1263,6 +1370,51 @@ function Invoke-WeDecentMigrationRacePoint {
     param([Parameter(Mandatory = $true)][string]$Name)
     $injection = Get-Variable -Name WeDecentMigrationRaceInjection -Scope Global -ValueOnly -ErrorAction SilentlyContinue
     if ($injection -is [scriptblock]) { & $injection $Name }
+}
+
+function Publish-WeDecentMigrationObject {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$TemporaryPath,
+        [Parameter(Mandatory = $true)][string]$ParentPath,
+        [Parameter(Mandatory = $true)][string]$TargetName,
+        [string]$ExpectedTemporaryIdentity,
+        [string]$ExpectedTargetIdentity,
+        [switch]$ReplaceExisting,
+        [string]$RacePoint
+    )
+    $temporaryIdentity = if ([string]::IsNullOrWhiteSpace($ExpectedTemporaryIdentity)) {
+        [WeDecentMigrationFileIdentityApi]::GetIdentity($TemporaryPath)
+    } else { $ExpectedTemporaryIdentity }
+    if (-not [string]::IsNullOrWhiteSpace($RacePoint)) { Invoke-WeDecentMigrationRacePoint -Name $RacePoint }
+    return [WeDecentMigrationFileIdentityApi]::PublishByHandle($TemporaryPath,$ParentPath,$TargetName,$temporaryIdentity,$ExpectedTargetIdentity,[bool]$ReplaceExisting)
+}
+
+function Get-WeDecentMigrationIdentitySnapshot {
+    param([Parameter(Mandatory = $true)][string[]]$Paths)
+    $snapshot = @{}
+    foreach ($path in $Paths) {
+        $snapshot[$path] = @(Get-WeDecentMigrationPathObjectChain -Path $path)
+    }
+    return $snapshot
+}
+
+function Assert-WeDecentMigrationIdentitySnapshot {
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Snapshot,
+        [Parameter(Mandatory = $true)][string[]]$Paths
+    )
+    foreach ($path in $Paths) {
+        if (-not $Snapshot.ContainsKey($path)) { throw "Missing migration filesystem identity snapshot: $path" }
+        $current = @(Get-WeDecentMigrationPathObjectChain -Path $path)
+        $before = @($Snapshot[$path])
+        if ($current.Count -ne $before.Count) { throw "Migration pathname component chain changed: $path" }
+        for ($i = 0; $i -lt $before.Count; $i++) {
+            if ($current[$i] -cne $before[$i]) {
+                throw "Migration filesystem object changed after preflight: $path"
+            }
+        }
+    }
 }
 
 function Assert-WeDecentMigrationPathsDisjoint {
