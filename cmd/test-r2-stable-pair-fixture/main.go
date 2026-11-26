@@ -70,7 +70,7 @@ func main() {
 	}
 
 	var firstPair []byte
-	for _, sequence := range []uint64{42, 43} {
+	for _, sequence := range []uint64{42, 43, 44} {
 		manifest := updateinfo.Manifest{
 			Schema:          updateinfo.ManifestSchemaV2,
 			SigningKeyID:    signingID,
@@ -101,12 +101,11 @@ func main() {
 		write(filepath.Join(dir, prefix+".sig"), manifestSignature)
 		write(filepath.Join(dir, prefix+".pair"), pair)
 		expected := "-"
-		if sequence == 43 {
+		if sequence > 42 {
 			sum := sha256.Sum256(firstPair)
 			expected = fmt.Sprintf("%x", sum)
-		} else {
-			firstPair = pair
 		}
+		firstPair = pair
 		pairSum := sha256.Sum256(pair)
 		keysetSum := sha256.Sum256(keysetBody)
 		keysetSignatureSum := sha256.Sum256(keysetSignature)
