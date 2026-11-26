@@ -263,3 +263,22 @@ Required production changes are therefore:
 
 The GitHub integration available to this task can read rulesets but cannot write them or inspect environment reviewers/runner inventory. No policy update is claimed. These settings require a named repository administrator/security owner and provider-side administration.
 
+
+
+### C314 workflow wiring audit — signer/publisher co-location is not acceptable
+
+The current workflow source at this PR head contains one publish-stable-update job that injects both WEDECENT_UPDATE_MANIFEST_SIGNER and WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER into the same job, environment and self-hosted publisher runner. The script publish-windows-stable-update.sh invokes the signer, verifies the candidate with the public key, then invokes the pair publisher and reads the result back. The signer and publisher are distinct executable paths, but they are not isolated credential or workload identities in this wiring.
+
+This is an implementation gap against the required trust separation, not a completed security control. Before production activation, split the flow into independently protected jobs and runner groups:
+1. Stable-manifest preparation/signing job: receives verified artifact digests and release provenance, uses the update-signing environment and signer identity only, and emits a bounded signed-pair bundle plus public signer receipt. It must not receive R2 credentials, uploader executable or publication permissions.
+2. Independent verification gate: runs with public key/keyset only, no signer socket/session and no publication credentials; verifies exact canonical manifest bytes, detached signature, key ID/epoch, monotonic sequence, artifact digests, release provenance and signer receipt.
+3. Stable-pair publication job: receives only the verified signed bundle and expected prior object generation/digests; it has the create-only/CAS publisher identity only, no signer adapter, HSM session or signing permission. It rechecks the immutable tag and release approval, performs one atomic generation/pointer commit, and reads back and verifies the exact published generation.
+4. Retain the signed bundle, verifier report, publisher generation ID/read-back digests and workflow attestations as release evidence.
+
+The current production workflow does not implement this split. The stable-manifest script also prepares, signs, verifies and publishes in one invocation. Both require a reviewed refactor and negative tests proving the signer cannot publish and the publisher cannot sign. A separate executable path or environment variable alone is not isolation.
+
+### C314 repository ownership and provider administration evidence
+
+The current source tree has no CODEOWNERS file, so requiring code-owner review in a ruleset would not by itself establish meaningful ownership until an approved CODEOWNERS map exists. The live ruleset API remains read-only through the connected integration. The ruleset listing shows only Protect main; no tag-targeted ruleset was returned. Direct branch-protection read returned HTTP 403. Repository Actions environment, runner inventory and runner-group endpoints were not available through this integration. Therefore environment required-reviewer state, self-approval restrictions, runner isolation and provider secret state remain NOT ESTABLISHED; absence of connector access is not proof those settings are absent.
+
+Named human dependencies are not yet established: the repository owner/admin must designate a repository ruleset/CODEOWNERS owner, production security owner, update-signing key custodians, HSM/KMS operator, Windows signing operator, publisher operator and Windows privileged-VM infrastructure owner. Do not infer these people from repository ownership or runner labels.
