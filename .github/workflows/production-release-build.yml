@@ -625,7 +625,7 @@ jobs:
       - name: Sign canonical stable update candidate
         shell: bash
         run: |
-          ./scripts/sign-windows-stable-update.sh \
+          bash ./scripts/sign-windows-stable-update.sh \
             --version "v$(tr -d '\r\n' < VERSION)" \
             --sequence "$WEDECENT_UPDATE_SEQUENCE" \
             --published-at "$WEDECENT_UPDATE_PUBLISHED_AT" \
@@ -669,7 +669,7 @@ jobs:
           set -euo pipefail
           [[ "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" == /* && -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
           ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
-          ./scripts/verify-windows-stable-update.sh \
+          bash ./scripts/verify-windows-stable-update.sh \
             --public-key "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" \
             --manifest "$RUNNER_TEMP/stable-update-candidate/manifest-v1.json" \
             --signature "$RUNNER_TEMP/stable-update-candidate/manifest-v1.sig" \
@@ -731,7 +731,7 @@ jobs:
       - name: Publish independently verified stable pair
         shell: bash
         run: |
-          ./scripts/publish-windows-stable-update-pair.sh \
+          bash ./scripts/publish-windows-stable-update-pair.sh \
             --public-key "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" \
             --manifest "$RUNNER_TEMP/stable-update-verified/manifest-v1.json" \
             --signature "$RUNNER_TEMP/stable-update-verified/manifest-v1.sig" \
