@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 )
 
 var (
@@ -115,4 +116,48 @@ func (s *StateStore) ApplyVerifiedInstaller(
 		return ErrSequenceCommit
 	}
 	return nil
+}
+
+
+// ApplyStable performs the complete verified stable-channel update transaction:
+// discover and authenticate the v2 manifest/keyset, stage the immutable archive,
+// re-verify the package and Authenticode policy, execute the installer, then
+// commit the sequence only after successful installation. The caller must supply
+// a provisioned root pin, protected StateStore, platform Authenticode policy,
+// and an executor running in the required trusted privilege context.
+func (c DiscoveryClient) ApplyStable(
+	ctx context.Context,
+	currentVersion string,
+	highestSequence uint64,
+	installerClient InstallerClient,
+	stagingDir string,
+	maxArchiveBytes int64,
+	verifyAuthenticode AuthenticodeVerifier,
+	executor InstallerExecutor,
+) (Manifest, error) {
+	var zero Manifest
+	if c.State == nil {
+		return zero, fmt.Errorf("%w: protected update state is required", ErrDiscovery)
+	}
+	if verifyAuthenticode == nil {
+		return zero, fmt.Errorf("%w: Authenticode policy is required", ErrInstallerPackage)
+	}
+	if executor == nil {
+		return zero, ErrInstallerUnavailable
+	}
+	manifest, err := c.DiscoverStable(ctx, currentVersion, highestSequence)
+	if err != nil {
+		return zero, err
+	}
+	staged, err := installerClient.Stage(ctx, manifest, stagingDir)
+	if err != nil {
+		return zero, err
+	}
+	defer os.Remove(staged.Path)
+	if err := c.State.ApplyVerifiedInstaller(
+		ctx, manifest, staged.Path, maxArchiveBytes, verifyAuthenticode, executor,
+	); err != nil {
+		return zero, err
+	}
+	return manifest, nil
 }
