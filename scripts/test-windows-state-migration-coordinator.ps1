@@ -139,6 +139,26 @@ using Microsoft.Win32.SafeHandles;
 public static class WeDecentMigrationTestLogon {
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="LogonUserW")]
     private static extern bool LogonUserNative(string user, string domain, string password, int logonType, int logonProvider, out SafeAccessTokenHandle token);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="MoveFileExW")]
+    private static extern bool MoveFileNative(string existingPath, string newPath, uint flags);
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="CreateFileW")]
+    private static extern SafeFileHandle CreateFileNative(string path, uint access, uint share, IntPtr security,
+        uint creation, uint attributes, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true, EntryPoint="WriteFile")]
+    private static extern bool WriteFileNative(SafeFileHandle handle, byte[] buffer, uint count, out uint written, IntPtr overlapped);
+    public static int TryMove(string target, string backup) {
+        return MoveFileNative(target,backup,0x8) ? 0 : Marshal.GetLastWin32Error();
+    }
+    public static int TryWrite(string target) {
+        using (SafeFileHandle handle=CreateFileNative(target,0x40000000,7,IntPtr.Zero,3,0x80,IntPtr.Zero)) {
+            if (handle==null || handle.IsInvalid) return Marshal.GetLastWin32Error();
+            byte[] payload=System.Text.Encoding.UTF8.GetBytes("attacker");
+            uint written;
+            if (!WriteFileNative(handle,payload,(uint)payload.Length,out written,IntPtr.Zero))
+                return Marshal.GetLastWin32Error();
+            return written==(uint)payload.Length ? 0 : 29;
+        }
+    }
     public static void RunAs(string user, string domain, SecureString securePassword, Action action) {
         IntPtr passwordBuffer=Marshal.SecureStringToBSTR(securePassword);
         try {
@@ -169,10 +189,10 @@ function Invoke-MigrationUntrustedMutationAttempt {
         $global:WeDecentMigrationAttackerPassword,
         [Action] {
             $global:WeDecentMigrationAttackObservedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            try { [IO.File]::Move($global:WeDecentMigrationAttackTarget,$global:WeDecentMigrationAttackBackup) }
-            catch { $global:WeDecentMigrationAttackMoveError = $_.Exception.HResult }
-            try { [IO.File]::WriteAllText($global:WeDecentMigrationAttackTarget,'attacker') }
-            catch { $global:WeDecentMigrationAttackWriteError = $_.Exception.HResult }
+            $global:WeDecentMigrationAttackMoveError = [WeDecentMigrationTestLogon]::TryMove(
+                $global:WeDecentMigrationAttackTarget,$global:WeDecentMigrationAttackBackup)
+            $global:WeDecentMigrationAttackWriteError = [WeDecentMigrationTestLogon]::TryWrite(
+                $global:WeDecentMigrationAttackTarget)
         }
     )
     if ($global:WeDecentMigrationAttackObservedSid -cne $global:WeDecentMigrationAttackerSid) {
