@@ -582,6 +582,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      id-token: write
     environment:
       name: wedecent-production-update-signing
     env:
