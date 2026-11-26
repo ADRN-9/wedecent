@@ -128,6 +128,31 @@ try {
     Remove-Item -LiteralPath $namespaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+function Invoke-MigrationUntrustedMutationAttempt {
+    param(
+        [Parameter(Mandatory = $true)][string]$TargetPath,
+        [Parameter(Mandatory = $true)][string]$BackupPath
+    )
+    $targetLiteral = "'" + $TargetPath.Replace("'", "''") + "'"
+    $backupLiteral = "'" + $BackupPath.Replace("'", "''") + "'"
+    $command = @"
+`$moveError = 0
+try { [IO.File]::Move($targetLiteral, $backupLiteral) } catch { `$moveError = `$_.Exception.HResult }
+`$writeError = 0
+try { [IO.File]::WriteAllText($targetLiteral, 'attacker') } catch { `$writeError = `$_.Exception.HResult }
+if (`$moveError -eq -2147024891 -and `$writeError -eq -2147024891) { exit 0 }
+exit 1
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+    $pwsh = Join-Path $PSHOME 'pwsh.exe'
+    $process = Start-Process -FilePath $pwsh -Credential $global:WeDecentMigrationAttackerCredential `
+        -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) `
+        -Wait -PassThru -WindowStyle Hidden
+    if ($process.ExitCode -ne 0) {
+        throw "Unprivileged publication mutation unexpectedly succeeded or failed for another reason (exit=$($process.ExitCode))."
+    }
+    return -2147024891
+}
 $forwardFaults = @('Prepared','ServiceStopped','Copying','Copied','IdentityVerification','IdentityProtected','Verified','StatePublished','SCMTransition','ServiceReconfigured','MetadataUpdated','ServiceRestarted')
 foreach ($fault in $forwardFaults) {
     $fixture = New-MigrationFixture
@@ -774,6 +799,12 @@ try {
 
 
 
+$attackerName = 'WDA' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
+$attackerPassword = ConvertTo-SecureString -String ('WDecent-' + [Guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
+New-LocalUser -Name $attackerName -Password $attackerPassword -PasswordNeverExpires -AccountNeverExpires | Out-Null
+Add-LocalGroupMember -Group 'Users' -Member $attackerName
+$global:WeDecentMigrationAttackerCredential = [PSCredential]::new("$env:COMPUTERNAME\$attackerName", $attackerPassword)
+try {
 foreach ($nativeRaceKind in @('metadata', 'journal')) {
     $nativeRaceFixture = New-MigrationFixture
     try {
@@ -799,14 +830,10 @@ foreach ($nativeRaceKind in @('metadata', 'journal')) {
             param($targetPath)
             if ([string]::Equals($targetPath, $global:WeDecentMigrationNativeRaceTarget, [StringComparison]::OrdinalIgnoreCase)) {
                 $global:WeDecentMigrationNativeRaceHookInvoked = $true
-                try {
-                    [IO.File]::Move($global:WeDecentMigrationNativeRaceTarget, $global:WeDecentMigrationNativeRaceBackup)
-                    [IO.File]::WriteAllText($global:WeDecentMigrationNativeRaceTarget, '{"attacker":"native-boundary-substitution"}')
-                } catch {
-                    $global:WeDecentMigrationNativeRaceError = $_.Exception.HResult
-                    $global:WeDecentMigrationNativeRaceBlocked = $_.Exception.HResult -in @(-2147024864, -2147024891)
-                    if (-not $global:WeDecentMigrationNativeRaceBlocked) { throw }
-                }
+                $global:WeDecentMigrationNativeRaceError = Invoke-MigrationUntrustedMutationAttempt `
+                    -TargetPath $global:WeDecentMigrationNativeRaceTarget `
+                    -BackupPath $global:WeDecentMigrationNativeRaceBackup
+                $global:WeDecentMigrationNativeRaceBlocked = $global:WeDecentMigrationNativeRaceError -eq -2147024891
             }
         }
         if ($nativeRaceKind -ceq 'metadata') {
@@ -838,7 +865,7 @@ foreach ($nativeRaceKind in @('metadata', 'journal')) {
                 throw 'Native journal publication did not publish the intended journal phase.'
             }
         }
-        Write-Host "Migration native-boundary $nativeRaceKind substitution blocked by held target guard PASS"
+        Write-Host "Migration native-boundary $nativeRaceKind substitution blocked by unprivileged namespace ACL PASS"
     } finally {
         [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
         $global:WeDecentMigrationNativeRaceTarget = $null
@@ -875,13 +902,10 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
             param($targetPath)
             if ([string]::Equals($targetPath, $global:WeDecentMigrationNativeRaceTarget, [StringComparison]::OrdinalIgnoreCase)) {
                 $global:WeDecentMigrationNativeRaceHookInvoked = $true
-                try {
-                    [IO.File]::Move($global:WeDecentMigrationNativeRaceTarget, $global:WeDecentMigrationNativeRaceBackup)
-                    [IO.File]::WriteAllText($global:WeDecentMigrationNativeRaceTarget, '{"attacker":"absolute-fallback-substitution"}')
-                } catch {
-                    $global:WeDecentMigrationNativeRaceBlocked = $_.Exception.HResult -in @(-2147024864, -2147024891)
-                    if (-not $global:WeDecentMigrationNativeRaceBlocked) { throw }
-                }
+                $blockedHResult = Invoke-MigrationUntrustedMutationAttempt `
+                    -TargetPath $global:WeDecentMigrationNativeRaceTarget `
+                    -BackupPath $global:WeDecentMigrationNativeRaceBackup
+                $global:WeDecentMigrationNativeRaceBlocked = $blockedHResult -eq -2147024891
             }
         }
         $env:WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED = '1'
@@ -894,11 +918,11 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
                 Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
             }
         } catch {
-            $failedClosed = $_.Exception.Message -like '*Injected unsupported handle-relative rename*'
+            $failedClosed = $_.Exception.Message -like '*Injected unsupported native rename*'
             if (-not $failedClosed) { throw }
         }
         if (-not $global:WeDecentMigrationNativeRaceHookInvoked -or -not $global:WeDecentMigrationNativeRaceBlocked -or -not $failedClosed) {
-            throw "Handle-relative $fallbackRaceKind publication did not fail closed after blocking destination substitution."
+            throw "Protected absolute-path $fallbackRaceKind publication did not fail closed after blocking unprivileged mutation."
         }
         if (Test-Path -LiteralPath $global:WeDecentMigrationNativeRaceBackup) {
             throw "Fail-closed $fallbackRaceKind publication allowed the original target to be renamed."
@@ -923,6 +947,10 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
     }
 }
 
+} finally {
+    $global:WeDecentMigrationAttackerCredential = $null
+    Remove-LocalUser -Name $attackerName -ErrorAction SilentlyContinue
+}
 
 $recoverySeparationFixture = New-MigrationFixture
 try {
