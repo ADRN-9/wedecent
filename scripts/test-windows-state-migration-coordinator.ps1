@@ -255,10 +255,12 @@ public static class WeDecentMigrationTestLogon {
                     if ((entry.Attributes&0x2)==0) continue;
                     uint nameLength=256;
                     StringBuilder name=new StringBuilder((int)nameLength);
-                    if (LookupPrivilegeName(null,ref entry.Luid,name,ref nameLength))
-                        enabled.Add(name.ToString());
+                    if (!LookupPrivilegeName(null,ref entry.Luid,name,ref nameLength))
+                        throw new Win32Exception(Marshal.GetLastWin32Error(),"LookupPrivilegeName failed; refusing incomplete attacker-token evidence.");
+                    enabled.Add(name.ToString());
                 }
             } finally { Marshal.FreeHGlobal(privileges); }
+            enabled.Sort(StringComparer.Ordinal);
             return "sid="+identity.User.Value+";integrityRid="+integrityRid.ToString("X")+";elevated="+elevated.ToString().ToLowerInvariant()+
                 ";enabledPrivileges="+String.Join(",",enabled.ToArray());
         }
@@ -321,6 +323,39 @@ function Invoke-MigrationUntrustedMutationAttempt {
     )
     if ($global:WeDecentMigrationAttackObservedSid -cne $global:WeDecentMigrationAttackerSid) {
         throw "Native publication attack did not execute under the distinct unprivileged account (observed=$global:WeDecentMigrationAttackObservedSid expected=$global:WeDecentMigrationAttackerSid)."
+    }
+    # Fail closed unless the actual impersonated token is an ordinary medium-integrity,
+    # non-elevated user token with only the explicitly permitted baseline privileges.
+    $tokenFields = @{}
+    foreach ($field in ($global:WeDecentMigrationAttackTokenEvidence -split ';')) {
+        $parts = $field -split '=', 2
+        if ($parts.Count -ne 2 -or $tokenFields.ContainsKey($parts[0])) {
+            throw "Attacker token evidence is malformed or duplicated: $global:WeDecentMigrationAttackTokenEvidence"
+        }
+        $tokenFields[$parts[0]] = $parts[1]
+    }
+    foreach ($requiredField in @('sid','integrityRid','elevated','enabledPrivileges')) {
+        if (-not $tokenFields.ContainsKey($requiredField)) {
+            throw "Attacker token evidence is missing required field: $requiredField"
+        }
+    }
+    if ($tokenFields.sid -cne $global:WeDecentMigrationAttackerSid) {
+        throw "Attacker token SID mismatch (token=$($tokenFields.sid), impersonation=$global:WeDecentMigrationAttackerSid)."
+    }
+    if ($tokenFields.integrityRid -cne '2000') {
+        throw "Attacker token must have medium integrity RID 0x2000 (observed=$($tokenFields.integrityRid))."
+    }
+    if ($tokenFields.elevated -cne 'false') {
+        throw "Attacker token must not be elevated (observed=$($tokenFields.elevated))."
+    }
+    $enabledPrivileges = @()
+    if (-not [string]::IsNullOrEmpty($tokenFields.enabledPrivileges)) {
+        $enabledPrivileges = @($tokenFields.enabledPrivileges -split ',')
+    }
+    $allowedEnabledPrivileges = @('SeChangeNotifyPrivilege','SeIncreaseWorkingSetPrivilege','SeShutdownPrivilege','SeTimeZonePrivilege')
+    $unexpectedPrivileges = @($enabledPrivileges | Where-Object { $_ -notin $allowedEnabledPrivileges })
+    if ($unexpectedPrivileges.Count -gt 0 -or 'SeChangeNotifyPrivilege' -notin $enabledPrivileges) {
+        throw "Attacker token enabled privilege set violates standard-user policy (enabled=$($enabledPrivileges -join ','), unexpected=$($unexpectedPrivileges -join ','))."
     }
     if ($global:WeDecentMigrationAttackMoveError -ne 5 -or $global:WeDecentMigrationAttackWriteError -ne 5) {
         throw "Unprivileged FILE_RENAME_INFO_EX POSIX replacement/write was not denied (rename=$global:WeDecentMigrationAttackMoveError, write=$global:WeDecentMigrationAttackWriteError)."
