@@ -467,7 +467,8 @@ func TestWindowsUpdateStateRejectsInheritedFileWritePermissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			// OI-only makes this ACE apply to files, not as an effective
-			// permission on the containing directory.
+			// permission on the containing directory. Keep an inheritable
+			// owner ACE so the native test can inspect the created file.
 			windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;FA;;;"+user+")(A;OI;"+tc.mask+";;;WD)")
 			dirSD, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 			if err != nil {
