@@ -392,3 +392,10 @@ The v2 stable channel uses these object conventions:
 - `windows/stable/keysets/{epoch}/keyset.sig` — immutable root signature.
 
 The epoch keyset must be uploaded with `If-None-Match: *` and read back before the stable envelope CAS is attempted. Existing immutable keyset objects are accepted only when exact bytes match. The stable envelope is updated with `If-Match` on the observed ETag, or created with `If-None-Match: *` when absent. A single object is the atomic commit point; no sequential mutable manifest/signature writes are used. Old epoch keysets remain immutable and available for existing manifests and historical verification.
+
+
+### C316 repository governance evidence
+
+The active GitHub default-branch ruleset `Protect main` (ID `21507567`) currently has an approving-review requirement of zero, no required reviewers, code-owner review disabled, stale-review dismissal disabled, last-push approval disabled and strict required-status-check policy disabled. No `CODEOWNERS` file exists on `main`. The required check list includes Linux, Windows agent/release, route capability/E2E, relay, control-plane and Supabase DB; Desktop shell is not a required status check.
+
+This is a **FAIL** for independent release-governance assurance. The required change is an administrator-owned ruleset update with at least one independent security/release reviewer, code-owner review and maintained ownership mapping, stale-review dismissal, last-push approval, strict status checks, and Desktop shell gating where appropriate. No named accountable human administrator/owner is established in the current repository evidence. Production environment reviewer configuration remains **NOT ESTABLISHED**. C316 did not weaken or change repository governance settings.
