@@ -74,7 +74,7 @@ func TestRunPairFingerprintGuidanceRequiresIndependentChannel(t *testing.T) {
 
 func TestRunPairRejectsExplicitEmptyTransportFlagsWithDiscoveryBeforeSecretPrompt(t *testing.T) {
 	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
-		_, err := runPair([]string{
+		err := runPair([]string{
 			"--discover-lan",
 			"--device-id", "wd_aaaaaaaaaaaaaaaa",
 			"--fingerprint", pairParserTestFingerprint,
@@ -88,7 +88,7 @@ func TestRunPairRejectsExplicitEmptyTransportFlagsWithDiscoveryBeforeSecretPromp
 
 func TestRunPairRejectsExplicitEmptyTransportFlagsWithoutDiscovery(t *testing.T) {
 	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
-		_, err := runPair([]string{
+		err := runPair([]string{
 			"--fingerprint", pairParserTestFingerprint,
 			"--" + name + "=",
 		})
@@ -100,7 +100,7 @@ func TestRunPairRejectsExplicitEmptyTransportFlagsWithoutDiscovery(t *testing.T)
 
 func TestRunPairRejectsWhitespaceOnlyTransportFlags(t *testing.T) {
 	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
-		_, err := runPair([]string{
+		err := runPair([]string{
 			"--fingerprint", pairParserTestFingerprint,
 			"--" + name + "= ",
 		})
