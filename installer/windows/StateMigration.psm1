@@ -1420,8 +1420,7 @@ function Assert-WeDecentMigrationPublicationNamespace {
         }
         # Inspect explicit and inherited ACEs. Deny ACEs never excuse an untrusted allow ACE.
         foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
-                ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
+            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
                 continue
             }
             if ($rule.IdentityReference.Value -notin $trusted -and
