@@ -1263,6 +1263,7 @@ function Invoke-WeDecentMigrationRacePoint {
     param([Parameter(Mandatory = $true)][string]$Name)
     $injection = Get-Variable -Name WeDecentMigrationRaceInjection -Scope Global -ValueOnly -ErrorAction SilentlyContinue
     if ($injection -is [scriptblock]) { & $injection $Name }
+}
 
 function Assert-WeDecentMigrationPathsDisjoint {
     param([Parameter(Mandatory = $true)][string[]]$Paths)
