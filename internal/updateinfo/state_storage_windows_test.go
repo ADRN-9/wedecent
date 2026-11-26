@@ -355,7 +355,7 @@ func TestWindowsStateStoreRejectsAncestorACLBeforeReadOrAdvance(t *testing.T) {
 		t.Fatal(err)
 	}
 	path := StatePath(stateDir)
-	original := []byte("{\\"version\\":1,\\"stable_sequence\\":41}\\n")
+	original := []byte("{\"version\":1,\"stable_sequence\":41}\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
