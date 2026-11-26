@@ -1941,7 +1941,7 @@ try {
         throw 'Fixture did not retain the verified staging tree and pre-publication journal phase.'
     }
     [IO.Directory]::Move([string]$pending.staging, [string]$publishedCrashRecovery.Destination)
-    if (Test-Path -LiteralPath $pending.staging -or -not (Test-Path -LiteralPath $publishedCrashRecovery.Destination -PathType Container)) {
+    if ((Test-Path -LiteralPath $pending.staging) -or -not (Test-Path -LiteralPath $publishedCrashRecovery.Destination -PathType Container)) {
         throw 'Could not model atomic destination publication before the StatePublished journal write.'
     }
     $afterRename = Read-WeDecentMigrationJournal -Path $publishedCrashRecovery.Journal
