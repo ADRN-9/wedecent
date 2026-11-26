@@ -702,7 +702,7 @@ func TestWindowsUpdateStateRejectsHostileSiblingSubstitution(t *testing.T) {
 	if err != nil || string(gotOriginal) != string(original) {
 		t.Fatalf("original state changed during hostile sibling rejection: %q: %v", gotOriginal, err)
 	}
-	gotHostile, err := os.ReadFile(hostilePath)
+	gotHostile, err := os.ReadFile(StatePath(stateDir))
 	if err != nil || string(gotHostile) != string(hostile) {
 		t.Fatalf("hostile sibling contents changed during rejection: %q: %v", gotHostile, err)
 	}
