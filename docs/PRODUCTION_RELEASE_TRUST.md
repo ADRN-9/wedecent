@@ -307,6 +307,8 @@ New scripts:
 - `scripts/publish-windows-stable-update-pair.sh`
 - `scripts/test-production-signing-isolation.py`
 
+The signer and publisher adapters must now each have an independently configured lowercase SHA-256 pin (`WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256` and `WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256`). Their scripts reject a digest mismatch and reject group/world-writable adapter files. The signer job alone receives GitHub `id-token: write`; verification and publication jobs do not receive that permission. Signer-side OIDC claim enforcement and provider-side adapter immutability remain external configuration requirements.
+
 The production workflow calls each script through Bash (new repository scripts are created as non-executable text files through the repository contents API). The old `publish-windows-stable-update.sh` combined entrypoint remains for deterministic regression fixtures, but now explicitly rejects execution when `GITHUB_WORKFLOW=Production release`. The production workflow static regression rejects any call to that legacy entrypoint.
 
 ### Negative privilege-boundary regression
