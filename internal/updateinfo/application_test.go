@@ -247,6 +247,8 @@ func TestApplyVerifiedInstallerForKeysetRejectsConcurrentKeysetRotation(t *testi
 
 	manifest, archive := buildInstallerPackageFixture(t, nil)
 	manifest.Schema = ManifestSchemaV2
+	manifest.SigningKeyID = keyset.Keys[0].ID
+	manifest.PublishedAt = now.Format(time.RFC3339)
 	manifest.Sequence = 17
 	manifest.KeysetEpoch = keyset.Epoch - 1
 	manifest.InstallerSHA256 = sha256Hex(archive)
