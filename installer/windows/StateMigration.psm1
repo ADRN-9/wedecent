@@ -1179,8 +1179,8 @@ public static class WeDecentMigrationFileIdentityApi {
             if (replaceExisting) {
                 if (String.IsNullOrEmpty(expectedTargetIdentity))
                     throw new InvalidOperationException("Replacing an existing object requires its verified identity.");
-                // Keep the verified destination object open through publication; deny later delete-capable opens.
-                targetGuard=Open(targetPath, FILE_READ_ATTRIBUTES|DELETE_ACCESS, 1, BACKUP_SEMANTICS);
+                // Retain the verified destination object handle; the protected namespace ACL is the mutation boundary.
+                targetGuard=Open(targetPath, FILE_READ_ATTRIBUTES|DELETE_ACCESS, 7, BACKUP_SEMANTICS);
                 BY_HANDLE_FILE_INFORMATION targetInfo=Info(targetGuard);
                 if ((targetInfo.FileAttributes&0x400)!=0 ||
                     (sourceInfo.FileAttributes&0x10)!=(targetInfo.FileAttributes&0x10) ||
