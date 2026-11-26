@@ -265,14 +265,14 @@ func validateUpdateStateAncestorDACL(sddl, currentSID string) error {
 		if err != nil {
 			return err
 		}
-		// Inherit-only object ACEs do not grant directory namespace rights;
-		// the final state-file DACL is checked separately for those file grants.
-		canAffectDescendants := flags&updateStateACEInheritOnly == 0 ||
-			flags&updateStateACEContainerInherit != 0
+		// Inherited ACEs are checked again on each actual child object. An
+		// inherit-only ACE does not grant rights on this directory; the final
+		// state-object DACL rejects inherited write grants before state I/O.
+		effectiveOnDirectory := flags&updateStateACEInheritOnly == 0
 		isCreatorOwnerInheritance := trustee.String() == "S-1-3-0" &&
 			flags&updateStateACEInheritOnly != 0 &&
 			flags&(updateStateACEObjectInherit|updateStateACEContainerInherit) != 0
-		if mask&dangerous != 0 && canAffectDescendants && !trusted[trustee.String()] && !isCreatorOwnerInheritance {
+		if mask&dangerous != 0 && effectiveOnDirectory && !trusted[trustee.String()] && !isCreatorOwnerInheritance {
 			return fmt.Errorf("untrusted SID %s has namespace-modifying rights 0x%08x (ACE flags %q)", trustee.String(), mask&dangerous, parts[1])
 		}
 		entries = entries[end+1:]
