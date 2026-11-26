@@ -91,7 +91,7 @@ def main() -> None:
 
     require("keysets/" in publish_script and "current-v2.json" in publish_script,
             "publisher must create immutable epoch keysets before the atomic v2 pair object")
-    require("verification.receipt" in publish_script and "candidate_pair_sha256" in publish_script,
+    require("--receipt" in publish_script and "candidate_pair_sha256" in publish_script,
             "publisher must bind the single pair object to the independent verifier receipt")
     require("WEDECENT_UPDATE_MANIFEST_SIGNER" not in publish_script,
             "publisher must not access signing credentials")
