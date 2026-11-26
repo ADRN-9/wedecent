@@ -60,6 +60,55 @@ function global:sc.exe {
     $global:LASTEXITCODE = 0
     return 'SUCCESS'
 }
+function Get-MigrationTreeSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return '<missing>' }
+    $root = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $entries = [Collections.Generic.List[string]]::new()
+    foreach ($item in @(Get-ChildItem -LiteralPath $root -Force -Recurse | Sort-Object -Property FullName)) {
+        $relative = $item.FullName.Substring($root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $entries.Add("R|$relative|$($item.LinkType)|$($item.Target)")
+        } elseif ($item.PSIsContainer) {
+            $entries.Add("D|$relative")
+        } else {
+            $digest = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
+            $entries.Add("F|$relative|$($item.Length)|$digest")
+        }
+    }
+    return [string]::Join("`n", $entries.ToArray())
+}
+function Get-MigrationRecoverySideEffectSnapshot {
+    param([Parameter(Mandatory = $true)]$Fixture, [Parameter(Mandatory = $true)]$Journal)
+    $trees = [ordered]@{}
+    foreach ($treePath in @($Journal.source, $Journal.destination, $Journal.staging) | Select-Object -Unique) {
+        $fullPath = [IO.Path]::GetFullPath([string]$treePath)
+        $trees[$fullPath] = Get-MigrationTreeSnapshot -Path $fullPath
+    }
+    return [pscustomobject]@{
+        Trees = $trees
+        MetadataBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Fixture.MetadataPath))
+        JournalBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Fixture.Journal))
+        ServicePath = [string]$global:WeDecentMigrationMockService.PathName
+        ServiceStartName = [string]$global:WeDecentMigrationMockService.StartName
+        ServiceStartMode = [string]$global:WeDecentMigrationMockService.StartMode
+        ServiceState = [string]$global:WeDecentMigrationMockService.State
+        MockServiceStatus = [string]$global:WeDecentMigrationMockStatus
+        ServiceStartCount = [int]$global:WeDecentMigrationStartCount
+    }
+}
+function Assert-MigrationRecoveryNoSideEffects {
+    param([Parameter(Mandatory = $true)]$Fixture, [Parameter(Mandatory = $true)]$Journal, [Parameter(Mandatory = $true)]$Before, [Parameter(Mandatory = $true)][string]$Case)
+    $after = Get-MigrationRecoverySideEffectSnapshot -Fixture $Fixture -Journal $Journal
+    if ($after.MetadataBytes -cne $Before.MetadataBytes) { throw "Rejected $Case changed installer metadata bytes." }
+    if ($after.JournalBytes -cne $Before.JournalBytes) { throw "Rejected $Case changed migration journal bytes." }
+    foreach ($treePath in $Before.Trees.Keys) {
+        if ($after.Trees[$treePath] -cne $Before.Trees[$treePath]) { throw "Rejected $Case changed migration filesystem tree: $treePath" }
+    }
+    foreach ($field in @('ServicePath','ServiceStartName','ServiceStartMode','ServiceState','MockServiceStatus','ServiceStartCount')) {
+        if ([string]$after.$field -cne [string]$Before.$field) { throw "Rejected $Case changed mocked SCM/service field $field." }
+    }
+}
 function New-MigrationFixture {
     $root = Join-Path $env:ProgramFiles ('WeDecentMigrationCoordinator-' + [Guid]::NewGuid().ToString('N'))
     $source = Join-Path $root 'source-state'
@@ -208,16 +257,14 @@ try {
         if ($malformed.ContainsKey('RemoveFields')) { $removeFields = @($malformed['RemoveFields']) }
         $caseJson = Set-MigrationJournalJsonForTest -Json $pendingJson -Fields $malformed.Fields -RemoveFields $removeFields
         [IO.File]::WriteAllText($serviceBooleanFixture.Journal, $caseJson, [Text.UTF8Encoding]::new($false))
-        $startCount = $global:WeDecentMigrationStartCount
+        $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $serviceBooleanFixture -Journal $pending
         $rejected = $false
         try {
             [void](Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName)
         } catch { $rejected = $true }
         if (-not $rejected) { throw "Recovery accepted malformed service_was_running representation: $($malformed.Name)." }
-        if ($global:WeDecentMigrationStartCount -ne $startCount -or $global:WeDecentMigrationMockStatus -cne 'Stopped') {
-            throw "Malformed service_was_running representation '$($malformed.Name)' triggered service startup."
-        }
-        Write-Host "Migration recovery rejects service_was_running $($malformed.Name) without service startup PASS"
+        Assert-MigrationRecoveryNoSideEffects -Fixture $serviceBooleanFixture -Journal $pending -Before $before -Case "service_was_running $($malformed.Name)"
+        Write-Host "Migration recovery rejects service_was_running $($malformed.Name) without SCM, metadata, journal or filesystem mutation PASS"
     }
 
     [IO.File]::WriteAllText($serviceBooleanFixture.Journal, $pendingJson, [Text.UTF8Encoding]::new($false))
