@@ -107,12 +107,16 @@ func validateWindowsUpdateStatePath(path string, before os.FileInfo, directory b
 // separately. UNC and device paths are rejected because their namespace and
 // ACL semantics are outside this local updater-state trust boundary.
 func validateStateDirAncestors(dir string) error {
+	absolute, err := filepath.Abs(dir)
+	if err != nil {
+		return fmt.Errorf("%w: resolve update state directory: %v", ErrInvalidState, err)
+	}
 	token := windows.GetCurrentProcessToken()
 	user, err := token.GetTokenUser()
 	if err != nil || user == nil || user.User.Sid == nil {
 		return fmt.Errorf("%w: read update process SID: %v", ErrInvalidState, err)
 	}
-	if _, err := validateUpdateStateAncestorChain(dir, user.User.Sid.String(), true); err != nil {
+	if _, err := validateUpdateStateAncestorChain(absolute, user.User.Sid.String(), true); err != nil {
 		return err
 	}
 	return nil
