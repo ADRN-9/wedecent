@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"path"
 	"strings"
 
@@ -41,6 +42,33 @@ func serialLocator(endpoint string) (string, error) {
 		return "", errors.New("serial device path must be a canonical absolute path under /dev")
 	}
 	return "serial://" + raw, nil
+}
+
+var transportFlagNames = []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"}
+
+func visitedTransportFlags(fs *flag.FlagSet) []string {
+	present := make(map[string]bool, len(transportFlagNames))
+	fs.Visit(func(f *flag.Flag) {
+		present[f.Name] = true
+	})
+	var names []string
+	for _, name := range transportFlagNames {
+		if present[name] {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func validateExplicitTransportFlags(present []string, values map[string]string) error {
+	for _, name := range transportFlagNames {
+		for _, supplied := range present {
+			if supplied == name && values[name] == "" {
+				return errors.New("--" + name + " must not be empty when explicitly supplied")
+			}
+		}
+	}
+	return nil
 }
 
 func countTransportSelections(values ...string) (int, error) {
