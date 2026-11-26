@@ -11,8 +11,7 @@ import (
 )
 
 const (
-	StableKeysetURL       = "https://downloads.wedecent.com/windows/stable/keyset-v1.json"
-	StableKeysetSignatureURL = "https://downloads.wedecent.com/windows/stable/keyset-v1.sig"
+	StableKeysetURLPrefix = "https://downloads.wedecent.com/windows/stable/keysets/"
 	StableManifestURL     = "https://downloads.wedecent.com/windows/stable/manifest-v2.json"
 	StableSignatureURL    = "https://downloads.wedecent.com/windows/stable/manifest-v2.sig"
 	MaxSignatureFileBytes = 128
@@ -49,11 +48,24 @@ func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion stri
 		now = c.Now()
 	}
 
-	keysetBytes, err := c.fetch(ctx, StableKeysetURL, MaxKeysetBytes)
+	manifestBytes, err := c.fetch(ctx, StableManifestURL, MaxManifestBytes)
 	if err != nil {
 		return zero, err
 	}
-	keysetSignature, err := c.fetch(ctx, StableKeysetSignatureURL, MaxSignatureFileBytes)
+	signatureBytes, err := c.fetch(ctx, StableSignatureURL, MaxSignatureFileBytes)
+	if err != nil {
+		return zero, err
+	}
+	untrustedManifest, err := ParseCanonical(manifestBytes)
+	if err != nil || untrustedManifest.Schema != ManifestSchemaV2 {
+		return zero, fmt.Errorf("%w: stable channel requires a canonical schema-v2 manifest", ErrDiscovery)
+	}
+	keysetURL, keysetSignatureURL := stableKeysetURLs(untrustedManifest.KeysetEpoch)
+	keysetBytes, err := c.fetch(ctx, keysetURL, MaxKeysetBytes)
+	if err != nil {
+		return zero, err
+	}
+	keysetSignature, err := c.fetch(ctx, keysetSignatureURL, MaxSignatureFileBytes)
 	if err != nil {
 		return zero, err
 	}
@@ -72,19 +84,16 @@ func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion stri
 		highestSequence = persisted.StableSequence
 	}
 
-	manifestBytes, err := c.fetch(ctx, StableManifestURL, MaxManifestBytes)
-	if err != nil {
-		return zero, err
-	}
-	signatureBytes, err := c.fetch(ctx, StableSignatureURL, MaxSignatureFileBytes)
-	if err != nil {
-		return zero, err
-	}
 	manifest, err := VerifyManifestV2(verified, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
 	if err != nil {
 		return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err)
 	}
 	return manifest, nil
+}
+
+func stableKeysetURLs(epoch uint64) (string, string) {
+	base := fmt.Sprintf("%s%d/", StableKeysetURLPrefix, epoch)
+	return base + "keyset.json", base + "keyset.sig"
 }
 
 func (c DiscoveryClient) fetch(ctx context.Context, rawURL string, limit int) ([]byte, error) {
