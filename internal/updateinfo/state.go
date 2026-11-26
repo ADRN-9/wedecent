@@ -259,20 +259,11 @@ func (s State) validatePersisted() error {
 			return fmt.Errorf("%w: legacy state fields are invalid", ErrInvalidState)
 		}
 	case UpdateStateVersionWithKeyset:
-		if s.StableSequence == 0 && s.KeysetEpoch == 0 {
-			return fmt.Errorf("%w: version 2 state has no anti-rollback data", ErrInvalidState)
+		if s.KeysetEpoch == 0 || len(s.KeysetDigest) != 64 || strings.ToLower(s.KeysetDigest) != s.KeysetDigest {
+			return fmt.Errorf("%w: version 2 keyset epoch or digest is invalid", ErrInvalidState)
 		}
-		if s.KeysetEpoch == 0 {
-			if s.KeysetDigest != "" {
-				return fmt.Errorf("%w: keyset digest has no epoch", ErrInvalidState)
-			}
-		} else {
-			if len(s.KeysetDigest) != 64 || strings.ToLower(s.KeysetDigest) != s.KeysetDigest {
-				return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
-			}
-			if _, err := hex.DecodeString(s.KeysetDigest); err != nil {
-				return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
-			}
+		if _, err := hex.DecodeString(s.KeysetDigest); err != nil {
+			return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
 		}
 	default:
 		return fmt.Errorf("%w: unsupported state version %d", ErrInvalidState, s.Version)
