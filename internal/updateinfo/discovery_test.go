@@ -23,16 +23,16 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 type discoveryFixture struct {
-	now                time.Time
-	rootPublic         ed25519.PublicKey
-	manifestPrivate    ed25519.PrivateKey
-	keyset             Keyset
-	keysetBody         []byte
-	keysetSignature    []byte
-	manifest           Manifest
-	manifestBody       []byte
-	manifestSignature  []byte
-	pairBody           []byte
+	now               time.Time
+	rootPublic        ed25519.PublicKey
+	manifestPrivate   ed25519.PrivateKey
+	keyset            Keyset
+	keysetBody        []byte
+	keysetSignature   []byte
+	manifest          Manifest
+	manifestBody      []byte
+	manifestSignature []byte
+	pairBody          []byte
 }
 
 func newDiscoveryFixture(t *testing.T) discoveryFixture {
@@ -251,11 +251,13 @@ func TestDiscoverStableRejectsManifestV1AndBadSignatures(t *testing.T) {
 	}
 	v1Signature := ed25519.Sign(fixture.manifestPrivate, v1Body)
 	v1Envelope, err := json.Marshal(StablePairEnvelope{
-		Schema: StablePairSchema,
-		Manifest: base64.RawURLEncoding.EncodeToString(v1Body),
+		Schema:    StablePairSchema,
+		Manifest:  base64.RawURLEncoding.EncodeToString(v1Body),
 		Signature: base64.RawURLEncoding.EncodeToString(v1Signature),
 	})
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+			t.Fatal(err)
+		}
 	v1Envelope = append(v1Envelope, '\n')
 
 	tests := map[string]func(string, []byte) ([]byte, int){
