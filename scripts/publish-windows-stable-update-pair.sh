@@ -29,7 +29,8 @@ PUBLISHER="$(realpath -e -- "$PUBLISHER")" || die 'cannot resolve publisher'
 PUBLISHER_SHA_ACTUAL="$(sha256sum "$PUBLISHER" | awk '{print tolower($1)}')"
 [[ "$PUBLISHER_SHA_ACTUAL" == "$PUBLISHER_SHA_EXPECTED" ]] || die 'publisher executable does not match its pinned SHA-256'
 PUBLISHER_MODE="$(stat -c '%a' "$PUBLISHER")"
-(( (8#$PUBLISHER_MODE & 0022) == 0 )) || die 'publisher executable is group/world writable'
+[[ "$PUBLISHER_MODE" =~ ^[0-7]{3,4}$ ]] || die 'invalid publisher file mode'
+[[ ! "$PUBLISHER_MODE" =~ [2367][0-7]$ && ! "$PUBLISHER_MODE" =~ [0-7][2367]$ ]] || die 'publisher executable is group/world writable'
 [[ -f "$MANIFEST" && ! -L "$MANIFEST" ]] || die 'manifest must be a regular non-symlink file'
 [[ -f "$SIGNATURE" && ! -L "$SIGNATURE" ]] || die 'signature must be a regular non-symlink file'
 [[ -f "$RECEIPT" && ! -L "$RECEIPT" ]] || die 'verification receipt must be a regular non-symlink file'
