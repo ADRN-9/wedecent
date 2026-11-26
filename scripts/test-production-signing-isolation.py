@@ -60,6 +60,8 @@ def main() -> None:
             "publication must consume the verifier-approved artifact")
     require("verification.receipt" in verification and "verification.receipt" in publication,
             "verifier receipt must bind candidate digests to publication")
+    require("publish-windows-stable-update.sh" not in workflow,
+            "production workflow must not invoke the legacy combined signing/publication script")
 
     print("Production signing/verifier/publisher privilege-boundary regression tests passed.")
 
