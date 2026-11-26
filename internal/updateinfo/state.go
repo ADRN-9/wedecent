@@ -2,6 +2,7 @@ package updateinfo
 
 import (
 	"bytes"
+	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -11,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const (
@@ -86,40 +88,46 @@ func (s *StateStore) Advance(sequence uint64) error {
 	return saveState(s.Path, next)
 }
 
-// AdvanceKeyset atomically persists the highest root-authorized keyset epoch
-// and exact SHA-256 digest. Repeating the same epoch/digest is idempotent;
-// lower epochs and same-epoch equivocation fail closed.
-func (s *StateStore) AdvanceKeyset(epoch uint64, digest string) error {
+// VerifyAndAdvanceKeyset authenticates a root-signed keyset against the
+// persisted epoch/digest and commits a newer keyset atomically with the current
+// stable sequence. Callers cannot advance trust state using an unverified digest.
+func (s *StateStore) VerifyAndAdvanceKeyset(
+	rootKeyID string,
+	rootPublicKey ed25519.PublicKey,
+	keysetBytes, signatureBytes []byte,
+	now time.Time,
+) (VerifiedKeyset, error) {
+	var zero VerifiedKeyset
 	if s == nil || s.Path == "" {
-		return fmt.Errorf("%w: state path is required", ErrInvalidState)
-	}
-	if epoch == 0 || len(digest) != 64 || strings.ToLower(digest) != digest {
-		return fmt.Errorf("%w: keyset epoch or digest is invalid", ErrInvalidState)
-	}
-	if _, err := hex.DecodeString(digest); err != nil {
-		return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
+		return zero, fmt.Errorf("%w: state path is required", ErrInvalidState)
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, err := loadState(s.Path)
 	if err != nil {
-		return err
+		return zero, err
 	}
-	if epoch < current.KeysetEpoch ||
-		(epoch == current.KeysetEpoch && current.KeysetDigest != digest) ||
-		(epoch > current.KeysetEpoch && current.KeysetDigest != "" && current.KeysetDigest == digest) {
-		return ErrKeysetRollback
+	verified, err := VerifyKeyset(
+		rootKeyID, rootPublicKey, keysetBytes, signatureBytes, now,
+		current.KeysetEpoch, current.KeysetDigest,
+	)
+	if err != nil {
+		return zero, err
 	}
-	if epoch == current.KeysetEpoch {
-		return nil
+	if verified.Epoch() == current.KeysetEpoch {
+		return verified, nil
 	}
-	return saveState(s.Path, State{
+	next := State{
 		Version:        UpdateStateVersionWithKeyset,
 		StableSequence: current.StableSequence,
-		KeysetEpoch:    epoch,
-		KeysetDigest:   digest,
-	})
+		KeysetEpoch:    verified.Epoch(),
+		KeysetDigest:   verified.Digest(),
+	}
+	if err := saveState(s.Path, next); err != nil {
+		return zero, fmt.Errorf("%w: persist verified keyset: %v", ErrInvalidState, err)
+	}
+	return verified, nil
 }
 
 func loadState(path string) (State, error) {
