@@ -32,6 +32,9 @@ args = sys.argv[1:]
 if args == ["--version"]:
     print("aws-cli/2.99.0 Python/3.12")
     raise SystemExit(0)
+if args[:3] == ["s3api", "put-object", "--generate-cli-skeleton"]:
+    print('{"IfMatch":"","IfNoneMatch":"","Metadata":{}}')
+    raise SystemExit(0)
 if len(args) < 2 or args[0] != "s3api":
     raise SystemExit(2)
 action = args[1]
