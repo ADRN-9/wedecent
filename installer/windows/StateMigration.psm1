@@ -1199,11 +1199,11 @@ public static class WeDecentMigrationFileIdentityApi {
                 Marshal.WriteIntPtr(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"RootDirectory").ToInt32(),parent);
                 Marshal.WriteInt32(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileNameLength").ToInt32(),relativeName.Length);
                 Marshal.Copy(relativeName,0,IntPtr.Add(relativeBuffer,nameOffset),relativeName.Length);
-                if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED")=="1")
-                    throw new System.ComponentModel.Win32Exception(87,"Injected unsupported handle-relative rename; refusing pathname fallback.");
                 if (PublicationHook!=null) PublicationHook(targetPath);
                 if (GetIdentity(temporaryPath)!=sourceId)
                     throw new InvalidOperationException("Publication source pathname changed before atomic publication.");
+                if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED")=="1")
+                    throw new System.ComponentModel.Win32Exception(87,"Injected unsupported handle-relative rename; refusing pathname fallback.");
                 if (!SetFileInformationByHandle(source,FILE_RENAME_INFO_EX_CLASS,relativeBuffer,(uint)relativeSize))
                     throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Handle-relative atomic publication failed; refusing absolute-path fallback.");
             } finally { Marshal.FreeHGlobal(relativeBuffer); }
