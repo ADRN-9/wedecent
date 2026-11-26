@@ -654,3 +654,56 @@ func TestWindowsUpdateLockRejectsHostileLockFileACLBeforeLocking(t *testing.T) {
 		t.Fatalf("release test lock: %v", err)
 	}
 }
+
+
+// A writable hostile sibling may be created under a parent that permits
+// additive child creation. If it is later substituted at the protected state
+// name, the state store must reject its DACL before reading or changing data.
+func TestWindowsUpdateStateRejectsHostileSiblingSubstitution(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	sibling := filepath.Join(root, "sibling")
+	displaced := filepath.Join(root, "displaced-state")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(sibling, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("{\"version\":1,\"stable_sequence\":41}\\n")
+	statePath := StatePath(stateDir)
+	if err := os.WriteFile(statePath, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	hostilePath := StatePath(sibling)
+	hostile := []byte("{\"version\":1,\"stable_sequence\":999}\\n")
+	if err := os.WriteFile(hostilePath, hostile, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	user := windowsTestCurrentSID(t)
+	windowsTestSetDACL(t, sibling,
+		"D:P(A;OICI;FA;;;"+user+")(A;OICI;FA;;;SY)(A;OICI;FA;;;WD)")
+
+	if _, err := NewStateStore(statePath).Load(); err != nil {
+		t.Fatalf("trusted original state was rejected before substitution: %v", err)
+	}
+	if err := os.Rename(stateDir, displaced); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(sibling, stateDir); err != nil {
+		t.Fatalf("substitute hostile sibling at protected state path: %v", err)
+	}
+
+	if _, err := NewStateStore(statePath).Load(); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("hostile sibling substituted at state path was accepted: %v", err)
+	}
+	gotOriginal, err := os.ReadFile(StatePath(displaced))
+	if err != nil || string(gotOriginal) != string(original) {
+		t.Fatalf("original state changed during hostile sibling rejection: %q: %v", gotOriginal, err)
+	}
+	gotHostile, err := os.ReadFile(hostilePath)
+	if err != nil || string(gotHostile) != string(hostile) {
+		t.Fatalf("hostile sibling contents changed during rejection: %q: %v", gotHostile, err)
+	}
+}
