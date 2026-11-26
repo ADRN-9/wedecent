@@ -198,7 +198,7 @@ function Invoke-MigrationUntrustedMutationAttempt {
     if ($global:WeDecentMigrationAttackObservedSid -cne $global:WeDecentMigrationAttackerSid) {
         throw "Native publication attack did not execute under the distinct unprivileged account (observed=$global:WeDecentMigrationAttackObservedSid expected=$global:WeDecentMigrationAttackerSid)."
     }
-    $denied = @(-2147024891, -2147024864)
+    $denied = @(5, 32)
     if ($global:WeDecentMigrationAttackMoveError -in $denied -and
         $global:WeDecentMigrationAttackWriteError -in $denied) { return $true }
     throw "Unprivileged publication mutation was not denied (move=$($global:WeDecentMigrationAttackMoveError), write=$($global:WeDecentMigrationAttackWriteError))."
