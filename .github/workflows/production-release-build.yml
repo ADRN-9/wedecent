@@ -576,12 +576,119 @@ jobs:
             --signed-release "$GITHUB_WORKSPACE/dist/wedecent-windows-signed/release" \
             --signed-installer "$GITHUB_WORKSPACE/dist/wedecent-windows-signed/installer"
 
-  publish-stable-update:
+  sign-stable-update:
     needs: publish-windows-downloads
+    runs-on: [self-hosted, linux, wedecent-update-signer]
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    environment:
+      name: wedecent-production-update-signing
+    env:
+      WEDECENT_PRODUCTION_RELEASE_APPROVED: ${{ vars.WEDECENT_PRODUCTION_RELEASE_APPROVED }}
+      WEDECENT_REPLAY_AUTHORITY_HOSTNAME: ${{ vars.WEDECENT_REPLAY_AUTHORITY_HOSTNAME }}
+      WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256: ${{ vars.WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 }}
+      WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256: ${{ vars.WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 }}
+      WEDECENT_CHECKPOINT_AUDIT_HOSTNAME: ${{ vars.WEDECENT_CHECKPOINT_AUDIT_HOSTNAME }}
+      WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256: ${{ vars.WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256 }}
+      WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256: ${{ vars.WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256 }}
+      WEDECENT_UPDATE_MANIFEST_SIGNER: ${{ vars.WEDECENT_UPDATE_MANIFEST_SIGNER }}
+      WEDECENT_UPDATE_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_PUBLIC_KEY_PATH }}
+      WEDECENT_UPDATE_SEQUENCE: ${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Set stable manifest timestamp
+        shell: bash
+        run: printf 'WEDECENT_UPDATE_PUBLISHED_AT=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
+      - name: Validate signer-only workload inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
+          [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
+          [[ "$WEDECENT_UPDATE_MANIFEST_SIGNER" == /* && -f "$WEDECENT_UPDATE_MANIFEST_SIGNER" && -x "$WEDECENT_UPDATE_MANIFEST_SIGNER" && ! -L "$WEDECENT_UPDATE_MANIFEST_SIGNER" ]]
+          [[ "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" == /* && -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
+          [[ "$WEDECENT_UPDATE_SEQUENCE" =~ ^[1-9][0-9]*$ ]]
+          for name in WEDECENT_REPLAY_AUTHORITY_HOSTNAME WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 WEDECENT_CHECKPOINT_AUDIT_HOSTNAME WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256 WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256; do
+            [[ -n "${!name}" ]]
+          done
+      - name: Sign canonical stable update candidate
+        shell: bash
+        run: |
+          ./scripts/sign-windows-stable-update.sh \
+            --version "v$(tr -d '\r\n' < VERSION)" \
+            --sequence "$WEDECENT_UPDATE_SEQUENCE" \
+            --published-at "$WEDECENT_UPDATE_PUBLISHED_AT" \
+            --out-dir "$RUNNER_TEMP/stable-update-candidate"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: wedecent-stable-update-candidate-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/stable-update-candidate/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  verify-stable-update:
+    needs: sign-stable-update
+    runs-on: [self-hosted, linux, wedecent-update-verifier]
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    environment:
+      name: wedecent-production-update-verification
+    env:
+      WEDECENT_UPDATE_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_PUBLIC_KEY_PATH }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: wedecent-stable-update-candidate-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/stable-update-candidate
+      - name: Verify candidate signature, canonical bytes and rollback policy
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" == /* && -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
+          ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
+          ./scripts/verify-windows-stable-update.sh \
+            --public-key "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" \
+            --manifest "$RUNNER_TEMP/stable-update-candidate/manifest-v1.json" \
+            --signature "$RUNNER_TEMP/stable-update-candidate/manifest-v1.sig" \
+            --receipt "$RUNNER_TEMP/stable-update-candidate/verification.receipt"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: wedecent-stable-update-verified-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/stable-update-candidate/
+          if-no-files-found: error
+          retention-days: 7
+          compression-level: 0
+
+  publish-stable-update:
+    needs: verify-stable-update
     runs-on: [self-hosted, linux, wedecent-release-publisher]
     timeout-minutes: 20
     permissions:
       contents: read
+      actions: read
     environment:
       name: wedecent-production-publication
     env:
@@ -592,58 +699,40 @@ jobs:
       WEDECENT_CHECKPOINT_AUDIT_HOSTNAME: ${{ vars.WEDECENT_CHECKPOINT_AUDIT_HOSTNAME }}
       WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256: ${{ vars.WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256 }}
       WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256: ${{ vars.WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256 }}
-      WEDECENT_UPDATE_MANIFEST_SIGNER: ${{ vars.WEDECENT_UPDATE_MANIFEST_SIGNER }}
       WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER: ${{ vars.WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER }}
       WEDECENT_UPDATE_PUBLIC_KEY_PATH: ${{ vars.WEDECENT_UPDATE_PUBLIC_KEY_PATH }}
-      WEDECENT_UPDATE_SEQUENCE: ${{ github.run_number }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
-      - name: Set stable publication timestamp
-        shell: bash
-        run: |
-          printf 'WEDECENT_UPDATE_PUBLISHED_AT=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" >> "$GITHUB_ENV"
-      - name: Fail closed on missing protected stable-update inputs
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: wedecent-stable-update-verified-${{ github.sha }}-${{ github.run_id }}
+          path: ${{ runner.temp }}/stable-update-verified
+      - name: Validate publisher-only workload inputs
         shell: bash
         run: |
           set -euo pipefail
           [[ "$GITHUB_REPOSITORY" == "ADRN-9/wedecent" ]]
           [[ "$GITHUB_REF_TYPE" == "tag" && "$GITHUB_REF_NAME" == "v$(tr -d '\r\n' < VERSION)" ]]
           [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
-          ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
           [[ "$WEDECENT_PRODUCTION_RELEASE_APPROVED" == "true" ]]
-          [[ -n "$WEDECENT_REPLAY_AUTHORITY_HOSTNAME" ]]
-          [[ -n "$WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256" ]]
-          [[ -n "$WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256" ]]
-          [[ -n "$WEDECENT_CHECKPOINT_AUDIT_HOSTNAME" ]]
-          [[ -n "$WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256" ]]
-          [[ -n "$WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256" ]]
-          for name in WEDECENT_UPDATE_MANIFEST_SIGNER WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER; do
-            value="${!name}"
-            [[ "$value" == /* && -f "$value" && -x "$value" && ! -L "$value" ]]
+          [[ "$WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER" == /* && -f "$WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER" && -x "$WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER" && ! -L "$WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER" ]]
+          [[ "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" == /* && -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
+          for name in WEDECENT_REPLAY_AUTHORITY_HOSTNAME WEDECENT_REPLAY_AUTHORITY_SPKI_SHA256 WEDECENT_REPLAY_AUTHORITY_APPROVAL_SHA256 WEDECENT_CHECKPOINT_AUDIT_HOSTNAME WEDECENT_CHECKPOINT_AUDIT_SPKI_SHA256 WEDECENT_CHECKPOINT_AUDIT_APPROVAL_SHA256; do
+            [[ -n "${!name}" ]]
           done
-          [[ "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" == /* ]]
-          [[ -f "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" && ! -L "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" ]]
-          [[ "$WEDECENT_UPDATE_SEQUENCE" =~ ^[1-9][0-9]*$ ]]
-          [[ -n "$WEDECENT_UPDATE_PUBLISHED_AT" ]]
-          for command in git curl sha256sum realpath; do
-            command -v "$command" >/dev/null 2>&1
-          done
-      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
-        with:
-          go-version: '1.27.0'
-          cache: true
-      - name: Publish stable update metadata after immutable artifacts
+      - name: Publish independently verified stable pair
         shell: bash
         run: |
-          set -euo pipefail
-          version="$(tr -d '\r\n' < VERSION)"
-          ./scripts/verify-live-release-tag.sh "$GITHUB_WORKSPACE" "$GITHUB_REF_NAME" "$GITHUB_SHA"
-          ./scripts/publish-windows-stable-update.sh \
-            --version "v$version" \
-            --sequence "$WEDECENT_UPDATE_SEQUENCE" \
-            --published-at "$WEDECENT_UPDATE_PUBLISHED_AT" \
-            --public-key "$WEDECENT_UPDATE_PUBLIC_KEY_PATH"
+          ./scripts/publish-windows-stable-update-pair.sh \
+            --public-key "$WEDECENT_UPDATE_PUBLIC_KEY_PATH" \
+            --manifest "$RUNNER_TEMP/stable-update-verified/manifest-v1.json" \
+            --signature "$RUNNER_TEMP/stable-update-verified/manifest-v1.sig" \
+            --receipt "$RUNNER_TEMP/stable-update-verified/verification.receipt"
