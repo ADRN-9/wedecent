@@ -1788,6 +1788,7 @@ function Invoke-WeDecentStateMigration {
         }
         $stagingObjectIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($staging)
         [void](Publish-WeDecentMigrationObject -TemporaryPath $staging -ParentPath $destinationParent -TargetName ([IO.Path]::GetFileName($destinationFull)) -ExpectedTemporaryIdentity $stagingObjectIdentity -ExpectedTargetIdentity '' -RacePoint 'BeforeDestinationAtomicPublish')
+        Invoke-WeDecentMigrationFaultPoint -Name 'DestinationPublished' -FaultAt $FaultAt
         [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull -ServiceSid $ServiceSid)
         $journal.phase = 'StatePublished'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
