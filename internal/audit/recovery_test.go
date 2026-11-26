@@ -207,11 +207,11 @@ func TestPairingRecoveryConcurrentAttemptsAndCapacityRepair(t *testing.T) {
 	if err := recovery.Complete(fmt.Sprintf("%032x", 0), PairingOutcomeSuccess); err != nil {
 		t.Fatal(err)
 	}
-	if err := recovery.AcknowledgeResolved(fmt.Sprintf("%032x", 0)); err != nil {
-		t.Fatal(err)
+	if err := recovery.AcknowledgeResolved(fmt.Sprintf("%032x", 0)); err == nil {
+		t.Fatal("success without durable completion audit was acknowledged")
 	}
-	if err := recovery.Begin(testRecoveryRecord(strings.Repeat("f", 32))); err != nil {
-		t.Fatalf("explicit resolved-record repair did not free capacity: %v", err)
+	if err := recovery.Begin(testRecoveryRecord(strings.Repeat("f", 32))); err == nil {
+		t.Fatal("unresolved outcome was evicted to bypass the capacity bound")
 	}
 }
 

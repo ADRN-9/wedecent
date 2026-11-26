@@ -12,6 +12,7 @@ import (
 
 const (
 	PairingRecoveryConfirmed          = "confirmed"
+	PairingRecoveryAuditOutstanding   = "trust_confirmed_audit_outstanding"
 	PairingRecoveryVisibleUnconfirmed = "trust_visible_unconfirmed"
 	PairingRecoveryUnresolved         = "unresolved"
 	PairingRecoveryConflict           = "trust_conflict"
@@ -55,7 +56,11 @@ func InspectPairingRecovery(stateDir string) ([]PairingRecoveryAssessment, error
 		case found && stored.Fingerprint != record.Fingerprint:
 			status = PairingRecoveryConflict
 		case record.Outcome == audit.PairingOutcomeSuccess && found:
-			status = PairingRecoveryConfirmed
+			if record.AuditProof == nil {
+				status = PairingRecoveryAuditOutstanding
+			} else {
+				status = PairingRecoveryConfirmed
+			}
 		case found:
 			status = PairingRecoveryVisibleUnconfirmed
 		case record.Outcome == audit.PairingOutcomeDenied:

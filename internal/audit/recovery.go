@@ -32,13 +32,24 @@ var pairingFingerprintPattern = regexp.MustCompile(`^SHA256:[0-9A-Fa-f]{64}$`)
 var pairingAttemptPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 type PairingOutcome struct {
-	AttemptID   string    `json:"attempt_id"`
-	ActorID     string    `json:"actor_id"`
-	PeerID      string    `json:"peer_id"`
-	Fingerprint string    `json:"fingerprint"`
-	Outcome     string    `json:"outcome"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	AttemptID      string             `json:"attempt_id"`
+	ActorID        string             `json:"actor_id"`
+	PeerID         string             `json:"peer_id"`
+	Fingerprint    string             `json:"fingerprint"`
+	Outcome        string             `json:"outcome"`
+	CreatedAt      time.Time          `json:"created_at"`
+	UpdatedAt      time.Time          `json:"updated_at"`
+	AuditProof     *PairingAuditProof `json:"audit_proof,omitempty"`
+	AcknowledgedAt *time.Time         `json:"acknowledged_at,omitempty"`
+}
+
+// PairingAuditProof is a durable, nonrotating copy of an independently
+// verified completion or privileged reconciliation audit event. It is not a
+// caller-supplied assertion that a rotating log append succeeded.
+type PairingAuditProof struct {
+	Kind       string    `json:"kind"`
+	Event      Event     `json:"event"`
+	VerifiedAt time.Time `json:"verified_at"`
 }
 
 type pairingOutcomeSnapshot struct {
@@ -55,6 +66,7 @@ type PairingRecovery struct {
 	afterReplace  func() error
 	beforeRead    func() error
 	allowEmpty    bool
+	operatorCheck func() error // test-only authorization fault seam
 }
 
 func NewPairingAttemptID() (string, error) {
@@ -156,6 +168,36 @@ func validPairingOutcomeState(state string) bool {
 	return false
 }
 
+func validatePairingProof(record PairingOutcome, proof PairingAuditProof) error {
+	event := proof.Event
+	if proof.VerifiedAt.IsZero() || event.Time.IsZero() ||
+		proof.VerifiedAt.Before(event.Time) ||
+		event.AttemptID != record.AttemptID ||
+		event.ActorID != record.ActorID || event.PeerID != record.PeerID {
+		return errors.New("pairing recovery audit proof identity or timestamp mismatch")
+	}
+	copyEvent := event
+	if err := validateEvent(&copyEvent); err != nil || copyEvent != event {
+		return errors.New("pairing recovery audit proof event is invalid")
+	}
+	switch proof.Kind {
+	case "completion":
+		if (record.Outcome == PairingOutcomeSuccess &&
+			event.Type == "pairing.trust_added" && event.Outcome == "success") ||
+			(record.Outcome == PairingOutcomeDenied &&
+				event.Type == "pairing.request" && event.Outcome == "denied") {
+			return nil
+		}
+	case "reconciliation":
+		if record.Outcome == PairingOutcomeSuccess &&
+			event.Type == "pairing.reconciliation" && event.Outcome == "success" &&
+			event.Reason == "privileged_trust_review" {
+			return nil
+		}
+	}
+	return errors.New("pairing recovery audit proof type or outcome mismatch")
+}
+
 func validatePairingOutcome(record PairingOutcome) error {
 	if !pairingAttemptPattern.MatchString(record.AttemptID) ||
 		!pairingIdentityPattern.MatchString(record.ActorID) ||
@@ -165,6 +207,17 @@ func validatePairingOutcome(record PairingOutcome) error {
 		record.CreatedAt.IsZero() || record.UpdatedAt.IsZero() ||
 		record.UpdatedAt.Before(record.CreatedAt) {
 		return errors.New("invalid pairing recovery record")
+	}
+	if record.AuditProof != nil {
+		if err := validatePairingProof(record, *record.AuditProof); err != nil {
+			return err
+		}
+	}
+	if record.AcknowledgedAt != nil {
+		if record.AuditProof == nil || record.AcknowledgedAt.IsZero() ||
+			record.AcknowledgedAt.Before(record.AuditProof.VerifiedAt) {
+			return errors.New("pairing acknowledged without verified durable audit proof")
+		}
 	}
 	return nil
 }
@@ -404,21 +457,182 @@ func (r *PairingRecovery) Records() ([]PairingOutcome, error) {
 	return append([]PairingOutcome(nil), snapshot.Records...), nil
 }
 
-// Explicit operator action. Never remove pending, uncertain, or failed state.
+// AcknowledgeResolved never deletes evidence. It records review of an
+// independently verified completion in the same bounded durable register.
+// Full registers require an approved offline evidence export/repair procedure.
 func (r *PairingRecovery) AcknowledgeResolved(attemptID string) error {
 	if !pairingAttemptPattern.MatchString(attemptID) {
 		return errors.New("invalid pairing recovery acknowledgment")
 	}
 	return r.withLock(func(snapshot *pairingOutcomeSnapshot) error {
-		for i, record := range snapshot.Records {
-			if record.AttemptID == attemptID {
-				if record.Outcome != PairingOutcomeSuccess && record.Outcome != PairingOutcomeDenied {
-					return errors.New("unresolved pairing recovery record cannot be deleted")
-				}
-				snapshot.Records = append(snapshot.Records[:i], snapshot.Records[i+1:]...)
+		for i := range snapshot.Records {
+			record := &snapshot.Records[i]
+			if record.AttemptID != attemptID {
+				continue
+			}
+			if record.Outcome != PairingOutcomeSuccess && record.Outcome != PairingOutcomeDenied {
+				return errors.New("unresolved pairing recovery record cannot be acknowledged")
+			}
+			if record.AuditProof == nil {
+				return errors.New("pairing completion audit has no independently durable evidence; operator reconciliation required")
+			}
+			if err := r.ensureCurrentSnapshotDurable(); err != nil {
+				return fmt.Errorf("pairing recovery proof durability uncertain: %w", err)
+			}
+			if record.AcknowledgedAt != nil {
 				return nil
 			}
+			now := time.Now().UTC()
+			record.AcknowledgedAt = &now
+			record.UpdatedAt = now
+			return nil
 		}
 		return errors.New("pairing recovery attempt not found")
+	})
+}
+
+// A snapshot may be readable after a failed post-replacement directory sync.
+// Re-synchronize its exact inode and containing directory before treating
+// recorded audit proof as durable. Ambiguous errors reject acknowledgment.
+func (r *PairingRecovery) ensureCurrentSnapshotDurable() error {
+	before, err := os.Lstat(r.path)
+	if err != nil {
+		return err
+	}
+	if err := trust.VerifyPairingStatePath(r.path); err != nil {
+		return err
+	}
+	f, err := os.OpenFile(r.path, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil || !os.SameFile(before, opened) {
+		return errors.New("pairing recovery changed while synchronizing proof")
+	}
+	if err := f.Sync(); err != nil {
+		return err
+	}
+	onPath, err := os.Lstat(r.path)
+	if err != nil || !os.SameFile(opened, onPath) {
+		return errors.New("pairing recovery replaced while synchronizing proof")
+	}
+	syncDir := syncAuditDirectory
+	if r.syncDirectory != nil {
+		syncDir = r.syncDirectory
+	}
+	return syncDir(filepath.Dir(r.path))
+}
+
+// Proof and authorized reconciliation must use the audit log belonging to
+// this exact state root, never a caller-selected external audit file.
+func (r *PairingRecovery) verifyPairingLogSource(log *Log) error {
+	if r == nil || log == nil ||
+		filepath.Clean(log.path) != filepath.Join(filepath.Dir(r.path), FileName) {
+		return errors.New("pairing recovery audit source does not match protected state directory")
+	}
+	if err := trust.VerifyPairingStatePath(filepath.Dir(r.path)); err != nil {
+		return fmt.Errorf("pairing recovery audit root is unsafe: %w", err)
+	}
+	return nil
+}
+
+// ConfirmCompletion independently re-reads the durably appended audit event
+// under the rotating log lock, then retains a durable copy in the recovery
+// register. A lost or ambiguous append never manufactures completion proof.
+func (r *PairingRecovery) ConfirmCompletion(log *Log, attemptID string, event Event) error {
+	if err := r.verifyPairingLogSource(log); err != nil {
+		return err
+	}
+	if !pairingAttemptPattern.MatchString(attemptID) {
+		return errors.New("invalid pairing audit confirmation")
+	}
+	if err := log.VerifyDurableEvent(event); err != nil {
+		return fmt.Errorf("pairing audit event not independently verified: %w", err)
+	}
+	return r.recordAuditProof(attemptID, PairingAuditProof{
+		Kind: "completion", Event: event, VerifiedAt: time.Now().UTC(),
+	})
+}
+
+func (r *PairingRecovery) recordAuditProof(attemptID string, proof PairingAuditProof) error {
+	return r.withLock(func(snapshot *pairingOutcomeSnapshot) error {
+		for i := range snapshot.Records {
+			record := &snapshot.Records[i]
+			if record.AttemptID != attemptID {
+				continue
+			}
+			if err := validatePairingProof(*record, proof); err != nil {
+				return err
+			}
+			if record.AuditProof != nil {
+				if *record.AuditProof != proof {
+					return errors.New("conflicting immutable pairing audit proof")
+				}
+				return nil
+			}
+			record.AuditProof = &proof
+			record.UpdatedAt = time.Now().UTC()
+			return nil
+		}
+		return errors.New("pairing recovery attempt not found")
+	})
+}
+
+// ReconcilePrivileged is an explicit locally privileged operator action.
+// Readable trust alone is not an automatic reconciliation. The operator must
+// have OS administrator/root authority, trust must match the exact recorded
+// fingerprint, and the reconciliation must itself be audited and synchronized.
+func (r *PairingRecovery) ReconcilePrivileged(log *Log, attemptID string) error {
+	if err := r.verifyPairingLogSource(log); err != nil {
+		return err
+	}
+	check := authorizePairingRecoveryOperator
+	if r != nil && r.operatorCheck != nil {
+		check = r.operatorCheck
+	}
+	if err := check(); err != nil {
+		return fmt.Errorf("privileged pairing reconciliation denied: %w", err)
+	}
+	records, err := r.Records()
+	if err != nil {
+		return err
+	}
+	var record *PairingOutcome
+	for i := range records {
+		if records[i].AttemptID == attemptID {
+			record = &records[i]
+			break
+		}
+	}
+	if record == nil || record.Outcome != PairingOutcomeSuccess || record.AuditProof != nil {
+		return errors.New("reconciliation requires unresolved success record")
+	}
+	trustPath := filepath.Join(filepath.Dir(r.path), "trusted-clients.json")
+	if err := trust.VerifyPairingStatePath(trustPath); err != nil {
+		return fmt.Errorf("unsafe authoritative trust state: %w", err)
+	}
+	store, err := trust.Open(trustPath)
+	if err != nil {
+		return err
+	}
+	peer, found := store.Peers[record.PeerID]
+	if !found || peer.Fingerprint != record.Fingerprint {
+		return errors.New("authoritative trust does not confirm the exact pairing identity")
+	}
+	event := Event{
+		Time: time.Now().UTC(), Type: "pairing.reconciliation", Outcome: "success",
+		AttemptID: record.AttemptID, ActorID: record.ActorID, PeerID: record.PeerID,
+		Reason: "privileged_trust_review",
+	}
+	if err := log.Append(event); err != nil {
+		return fmt.Errorf("durable privileged reconciliation audit failed: %w", err)
+	}
+	if err := log.VerifyDurableEvent(event); err != nil {
+		return err
+	}
+	return r.recordAuditProof(attemptID, PairingAuditProof{
+		Kind: "reconciliation", Event: event, VerifiedAt: time.Now().UTC(),
 	})
 }

@@ -192,7 +192,18 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 	}
 	if pairErr != nil && !reconciled {
 		if errors.Is(pairErr, trust.ErrPairingSecretInvalid) {
-			s.recordAudit(audit.Event{Type: "pairing.request", Outcome: "denied", PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: "invalid_pairing_secret"})
+			// A denied recovery outcome also requires durable audit proof before
+			// it can be acknowledged. Missing completion leaves the record intact.
+			denial := audit.Event{
+				Time: time.Now().UTC(), Type: "pairing.request", Outcome: "denied",
+				ActorID: s.Identity.ID, PeerID: clientID, Transport: transport,
+				AttemptID: attemptID, Reason: "invalid_pairing_secret",
+			}
+			if err := pairingAudit.Append(denial); err != nil {
+				s.log().Error("pairing denial completion audit unavailable", "attempt_id", attemptID, "error", err)
+			} else if err := recovery.ConfirmCompletion(pairingAudit, attemptID, denial); err != nil {
+				s.log().Error("pairing denial audit proof uncertain", "attempt_id", attemptID, "error", err)
+			}
 			_ = sendError(conn, "pairing_denied", "invalid or already consumed pairing secret")
 			return
 		}
@@ -212,7 +223,7 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 		reason = "trust_persist_reconciled"
 	}
 	completion := audit.Event{
-		Type: "pairing.trust_added", Outcome: "success", ActorID: s.Identity.ID,
+		Time: time.Now().UTC(), Type: "pairing.trust_added", Outcome: "success", ActorID: s.Identity.ID,
 		PeerID: clientID, Transport: transport, AttemptID: attemptID, Reason: reason,
 	}
 	appendCompletion := pairingAudit.Append
@@ -222,9 +233,12 @@ func (s *Server) handlePairCommit(conn *tls.Conn, transport, clientID, name, fp,
 		}
 	}
 	if err := appendCompletion(completion); err != nil {
-		// A pending audit record remains, but trust is already committed.
-		// Returning a denial here would misrepresent actual authorization.
+		// Trust is already committed. Do not fabricate denial or audit proof.
 		s.log().Error("pairing success audit could not be completed", "peer_id", clientID, "error", err)
+	} else if err := recovery.ConfirmCompletion(pairingAudit, attemptID, completion); err != nil {
+		// A completed audit log line may rotate away; the unconfirmed ledger
+		// entry remains and requires privileged, independently audited repair.
+		s.log().Error("pairing completion proof not durable", "peer_id", clientID, "attempt_id", attemptID, "error", err)
 	}
 	if err := protocol.WriteFrame(conn, protocol.Frame{Type: protocol.TypePairResponse, Payload: mustJSON(protocol.PairResponse{DeviceID: s.Identity.ID, DeviceName: s.Identity.Name})}); err != nil {
 		return
