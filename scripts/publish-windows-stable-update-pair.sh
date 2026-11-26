@@ -41,7 +41,7 @@ done
 export AWS_DEFAULT_REGION=auto AWS_EC2_METADATA_DISABLED=true AWS_PAGER=""
 command -v aws >/dev/null 2>&1 || die 'AWS CLI v2 is required for conditional R2 writes'
 aws --version 2>&1 | grep -q '^aws-cli/2\.' || die 'AWS CLI v2 is required for conditional R2 writes'
-for command in curl sha256sum awk go realpath cmp stat python3; do command -v "$command" >/dev/null 2>&1 || die "missing command: $command"; done
+for command in curl sha256sum awk go realpath cmp stat python3 sleep; do command -v "$command" >/dev/null 2>&1 || die "missing command: $command"; done
 
 VERSION="$(tr -d '\r\n' < "$ROOT/VERSION")"
 wedecent_require_production_release_context "$VERSION" || die 'production release context invalid'
@@ -100,7 +100,7 @@ get_object() {
   aws s3api get-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$key" "$output" >/dev/null 2>"$tmpdir/aws-get.err"
 }
 head_etag() {
-  local key="$1" output_name="$2"
+  local key="$1"
   local value
   if value="$(aws s3api head-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$key" --query ETag --output text 2>"$tmpdir/aws-head.err")"; then
     printf '%s\n' "$value"
@@ -113,22 +113,45 @@ head_etag() {
   cat "$tmpdir/aws-head.err" >&2
   die "R2 HeadObject failed for $key"
 }
+head_write_id() {
+  local key="$1"
+  local value
+  if value="$(aws s3api head-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$key" --query Metadata.writeid --output text 2>"$tmpdir/aws-head-metadata.err")"; then
+    [[ "$value" == "None" || "$value" == "null" ]] && value='-'
+    printf '%s\n' "$value"
+    return 0
+  fi
+  if grep -Eqi '404|Not Found|NoSuchKey' "$tmpdir/aws-head-metadata.err"; then
+    printf '%s\n' '-'
+    return 0
+  fi
+  cat "$tmpdir/aws-head-metadata.err" >&2
+  die "R2 HeadObject metadata read failed for $key"
+}
 put_create_only() {
   local key="$1" source="$2" content_type="$3" existing="$tmpdir/existing-$(basename "$key")"
-  local etag
-  etag="$(head_etag "$key" unused)"
+  local etag write_id attempt=0
+  etag="$(head_etag "$key")"
   if [[ "$etag" != '-' ]]; then
     get_object "$key" "$existing" || die "cannot read existing immutable object $key"
     cmp -s "$source" "$existing" || die "immutable keyset object already exists with different bytes: $key"
     return 0
   fi
-  if ! aws s3api put-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$key" \
-      --body "$source" --content-type "$content_type" --cache-control 'public, max-age=31536000, immutable' \
-      --if-none-match '*' >/dev/null 2>"$tmpdir/aws-put-create.err"; then
-    # A competing create is harmless only if the committed object is byte-identical.
+  write_id="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+  while ((attempt < 3)); do
+    if aws s3api put-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$key" \
+        --body "$source" --content-type "$content_type" --cache-control 'public, max-age=31536000, immutable' \
+        --metadata "writeid=$write_id" --if-none-match '*' >/dev/null 2>"$tmpdir/aws-put-create.err"; then
+      break
+    fi
+    # A retry with the same condition and write ID resolves an ambiguous response.
     if get_object "$key" "$existing" && cmp -s "$source" "$existing"; then return 0; fi
+    attempt=$((attempt + 1))
+    sleep 1
+  done
+  if ((attempt == 3)); then
     cat "$tmpdir/aws-put-create.err" >&2
-    die "atomic create-only R2 write failed for $key"
+    die "immutable R2 create outcome is unresolved or conflicting: $key"
   fi
   get_object "$key" "$existing" || die "R2 immutable-object read-back failed for $key"
   cmp -s "$source" "$existing" || die "R2 immutable-object read-back differs for $key"
@@ -155,17 +178,34 @@ if [[ "$etag" == '-' ]]; then
 else
   put_args=(--if-match "$etag")
 fi
-if ! aws s3api put-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$STABLE_KEY" \
-    --body "$PAIR" --content-type 'application/json' --content-disposition 'inline' \
-    --cache-control 'public, max-age=30, must-revalidate' "${put_args[@]}" \
-    >/dev/null 2>"$tmpdir/aws-put-cas.err"; then
-  # Reconcile an ambiguous response or a competing identical publication.
-  if get_object "$STABLE_KEY" "$current" && cmp -s "$PAIR" "$current"; then
-    printf 'Stable pair already committed with identical bytes.\n'
-  else
-    cat "$tmpdir/aws-put-cas.err" >&2
-    die 'atomic R2 stable-pair CAS failed; concurrent update preserved'
+write_id="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
+attempt=0
+committed=0
+while ((attempt < 3)); do
+  if aws s3api put-object --endpoint-url "$ENDPOINT" --bucket "$R2_BUCKET" --key "$STABLE_KEY" \
+      --body "$PAIR" --content-type 'application/json' --content-disposition 'inline' \
+      --cache-control 'public, max-age=30, must-revalidate' --metadata "writeid=$write_id" \
+      "${put_args[@]}" >/dev/null 2>"$tmpdir/aws-put-cas.err"; then
+    committed=1
+    break
   fi
+  # Retry the exact same conditional write. If an earlier attempt committed,
+  # R2 returns 412 and the write ID on HeadObject identifies our own commit.
+  observed_write_id="$(head_write_id "$STABLE_KEY")"
+  if [[ "$observed_write_id" == "$write_id" ]]; then
+    committed=1
+    break
+  fi
+  if get_object "$STABLE_KEY" "$current" && cmp -s "$PAIR" "$current"; then
+    committed=1
+    break
+  fi
+  attempt=$((attempt + 1))
+  sleep 1
+done
+if ((committed == 0)); then
+  cat "$tmpdir/aws-put-cas.err" >&2
+  die 'R2 conditional publication outcome is unresolved or conflicted; inspect current-v2 writeid before retrying'
 fi
 get_object "$STABLE_KEY" "$current" || die 'R2 stable-pair read-back failed'
 cmp -s "$PAIR" "$current" || die 'R2 stable-pair read-back differs from verified candidate'
