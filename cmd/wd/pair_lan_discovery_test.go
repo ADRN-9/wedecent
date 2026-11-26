@@ -131,10 +131,10 @@ func TestResolvePairLocatorDiscoveryRejectsExplicitEmptyFlagPresence(t *testing.
 	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
 		_, err := resolvePairLocator(context.Background(), pairLocatorOptions{
 			ExplicitTransportFlags: []string{name},
-			DiscoverLAN: true,
-			DiscoverTimeout: time.Second,
-			DeviceID: "wd_aaaaaaaaaaaaaaaa",
-			Fingerprint: testPairLANFingerprint,
+			DiscoverLAN:            true,
+			DiscoverTimeout:        time.Second,
+			DeviceID:               "wd_aaaaaaaaaaaaaaaa",
+			Fingerprint:            testPairLANFingerprint,
 		}, func(context.Context, string, string) (discovery.Result, error) {
 			t.Fatalf("discovery finder called with explicitly supplied empty --%s", name)
 			return discovery.Result{}, nil
