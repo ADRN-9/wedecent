@@ -79,6 +79,17 @@ sha_file() { sha256sum "$1" | awk '{print tolower($1)}'; }
 tmpdir="$(mktemp -d)"
 chmod 0700 "$tmpdir"
 trap 'rm -rf -- "$tmpdir"' EXIT
+aws s3api put-object --generate-cli-skeleton input > "$tmpdir/aws-put-skeleton.json" || die 'AWS CLI lacks PutObject input model'
+python3 - "$tmpdir/aws-put-skeleton.json" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as stream:
+    fields = json.load(stream)
+missing = {"IfMatch", "IfNoneMatch", "Metadata"} - set(fields)
+if missing:
+    raise SystemExit("AWS CLI PutObject model lacks conditional fields: " + ", ".join(sorted(missing)))
+PY
 candidate_output="$tmpdir/candidate.txt"
 pair_manifest="$tmpdir/pair-manifest.json"
 pair_signature="$tmpdir/pair-manifest.sig"
