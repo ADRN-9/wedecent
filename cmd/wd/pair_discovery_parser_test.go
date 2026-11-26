@@ -97,3 +97,26 @@ func TestRunPairRejectsExplicitEmptyTransportFlagsWithoutDiscovery(t *testing.T)
 		}
 	}
 }
+
+func TestRunPairRejectsWhitespaceOnlyTransportFlags(t *testing.T) {
+	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
+		_, err := runPair([]string{
+			"--fingerprint", pairParserTestFingerprint,
+			"--" + name + "= ",
+		})
+		if err == nil || !strings.Contains(err.Error(), "surrounding whitespace") {
+			t.Errorf("--%s whitespace-only: error = %v; want whitespace rejection", name, err)
+		}
+	}
+}
+
+func TestRunPairRejectsConflictingTransportFlags(t *testing.T) {
+	_, err := runPair([]string{
+		"--fingerprint", pairParserTestFingerprint,
+		"--endpoint=192.0.2.10:7443",
+		"--rfcomm=01:23:45:67:89:AB/7",
+	})
+	if err == nil || !strings.Contains(err.Error(), "exactly one") {
+		t.Fatalf("conflicting transport flags error = %v", err)
+	}
+}
