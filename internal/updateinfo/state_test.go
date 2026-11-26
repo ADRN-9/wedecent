@@ -1,6 +1,7 @@
 package updateinfo
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -200,35 +201,35 @@ func TestStateStorePersistsVerifiedKeysetAndSequenceAtomically(t *testing.T) {
 	if err := store.Advance(41); err != nil {
 		t.Fatal(err)
 	}
-	verified, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, body, signature, now)
+	verified, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, body, signature, now)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if verified.Epoch() != keyset.Epoch {
 		t.Fatalf("verified keyset epoch = %d, want %d", verified.Epoch(), keyset.Epoch)
 	}
-	if _, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, body, signature, now); err != nil {
+	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, body, signature, now); err != nil {
 		t.Fatalf("idempotent keyset verification failed: %v", err)
 	}
 
 	lower := keyset
 	lower.Epoch--
 	lowerBody, lowerSignature := signKeyset(t, lower, rootPrivate, now)
-	if _, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, lowerBody, lowerSignature, now); !errors.Is(err, ErrKeysetRollback) {
+	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, lowerBody, lowerSignature, now); !errors.Is(err, ErrKeysetRollback) {
 		t.Fatalf("lower keyset epoch error = %v, want ErrKeysetRollback", err)
 	}
 
 	equivocation := keyset
 	equivocation.ExpiresAt = now.Add(23 * time.Hour).UTC().Format(time.RFC3339)
 	equivocationBody, equivocationSignature := signKeyset(t, equivocation, rootPrivate, now)
-	if _, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, equivocationBody, equivocationSignature, now); !errors.Is(err, ErrKeysetRollback) {
+	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, equivocationBody, equivocationSignature, now); !errors.Is(err, ErrKeysetRollback) {
 		t.Fatalf("same-epoch equivocation error = %v, want ErrKeysetRollback", err)
 	}
 
 	next := keyset
 	next.Epoch++
 	nextBody, nextSignature := signKeyset(t, next, rootPrivate, now)
-	rotated, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, nextBody, nextSignature, now)
+	rotated, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, nextBody, nextSignature, now)
 	if err != nil {
 		t.Fatalf("monotonic keyset rotation failed: %v", err)
 	}
@@ -253,7 +254,7 @@ func TestStateStoreKeysetStateCanPrecedeFirstUpdate(t *testing.T) {
 	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
 	body, signature := signKeyset(t, keyset, rootPrivate, now)
 	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
-	verified, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, body, signature, now)
+	verified, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, body, signature, now)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +280,7 @@ func TestStateStoreKeysetStateCanPrecedeFirstUpdate(t *testing.T) {
 func TestStateStoreRejectsInvalidKeysetVerification(t *testing.T) {
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
-	if _, err := store.VerifyAndAdvanceKeyset("root-1", nil, []byte("{}"), []byte("invalid"), now); !errors.Is(err, ErrInvalidKeyset) {
+	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), "root-1", nil, []byte("{}"), []byte("invalid"), now); !errors.Is(err, ErrInvalidKeyset) {
 		t.Fatalf("invalid keyset verification error = %v, want ErrInvalidKeyset", err)
 	}
 }
