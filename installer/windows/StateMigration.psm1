@@ -1601,6 +1601,10 @@ function Invoke-WeDecentStateMigration {
 
     $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
     if (-not $service) { throw "Migration service '$ServiceName' does not exist." }
+    $serviceState = [string]$service.State
+    if ($serviceState -notin @('Running', 'Stopped')) {
+        throw "Migration requires SCM service to be Running or Stopped; refusing transient or paused state '$serviceState'."
+    }
     $account = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
     if ($account -cne $ServiceSid) { throw 'SCM service account SID differs from the migration target SID.' }
     $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath ([string]$service.PathName) -Source $sourceFull -Destination $destinationFull
