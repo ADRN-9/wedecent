@@ -3,10 +3,11 @@ set -euo pipefail
 umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+source "$ROOT/scripts/lib/release-trust.sh"
 ROOT_KEY_ID="${WEDECENT_UPDATE_ROOT_KEY_ID:-}"
 ROOT_PUBLIC_KEY="${WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH:-}"
 R2_ACCOUNT_ID="${WEDECENT_R2_ACCOUNT_ID:-}"
-R2_BUCKET="${WEDECENT_R2_BUCKET:-wedecent-downloads}"
+R2_BUCKET="${WEDECENT_R2_BUCKET:-}"
 KEYSET=""
 KEYSET_SIGNATURE=""
 MANIFEST=""
