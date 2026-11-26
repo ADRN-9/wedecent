@@ -118,7 +118,6 @@ func (s *StateStore) ApplyVerifiedInstaller(
 	return nil
 }
 
-
 // ApplyStable performs the complete verified stable-channel update transaction:
 // discover and authenticate the v2 manifest/keyset, stage the immutable archive,
 // re-verify the package and Authenticode policy, execute the installer, then
