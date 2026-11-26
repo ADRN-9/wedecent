@@ -9,7 +9,36 @@ bytes.
 This document defines the current update-protocol boundary. It does **not** enable automatic
 background polling or installer execution yet.
 
-## Stable channel manifest
+## Current protocol — C316 schema-v2 stable channel (2026-11-26)
+
+**This section is authoritative and supersedes the historical schema-v1 sections below.** The v1 examples and tooling notes are retained only to explain legacy compatibility tests. Production stable discovery and publication must not use manifest-v1 or the old two-object stable pair.
+
+The current stable manifest is schema v2. It includes the active `signing_key_id` and `keyset_epoch` in addition to the channel, sequence, version, publication time and immutable artifact hashes/URLs. It is canonical JSON and is signed over its exact bytes with Ed25519. A v2 manifest without an authorized active key in the referenced root-signed keyset is rejected. There is no automatic v1 fallback.
+
+The client fetches one stable object:
+
+```text
+https://downloads.wedecent.com/windows/stable/current-v2.json
+```
+
+That canonical envelope contains both the exact canonical manifest bytes and its detached Ed25519 signature, encoded as unpadded base64url fields. This single object is the stable publication pointer; readers cannot observe a new manifest with an old signature or vice versa. The client strictly parses the envelope and v2 manifest before deriving the immutable keyset path from the untrusted epoch field:
+
+```text
+https://downloads.wedecent.com/windows/stable/keysets/{epoch}/keyset.json
+https://downloads.wedecent.com/windows/stable/keysets/{epoch}/keyset.sig
+```
+
+The keyset is signed by the independently pinned Ed25519 root key. Its epoch, digest, validity, root ID, key IDs, key status and revocation state are verified. The keyset is persisted through `StateStore.VerifyAndAdvanceKeyset` under the same cross-process updater lock used by manifest sequence advancement and installer application. Lower epochs and same-epoch equivocation are rejected. The manifest must reference the exact verified epoch and an active signing key. Keyset epoch/digest are retained in protected state schema v2; successful installer application advances the manifest sequence while preserving the keyset fields.
+
+Stable publication first creates immutable epoch keyset objects using conditional create-only R2 writes. It then publishes `current-v2.json` as one R2 object with S3 `PutObject If-None-Match: *` for initial creation or `PutObject If-Match: <observed ETag>` for replacement. A single object is the atomic commit point. The publisher verifies the prior object hash against the independent verifier receipt, uses a unique `writeid` metadata value to reconcile ambiguous responses, retries the identical conditional request, and reads back exact committed bytes. A competing writer is never overwritten; an unresolved response fails closed and requires inspection of the object `writeid` before retrying.
+
+The production workflow is split into signer, public-key verifier and R2 publisher jobs. The signer has no R2 publication credentials; the verifier has neither signing nor R2 credentials and hashes signed inputs before/after verification; the publisher has R2 write credentials but no signer identity. Repository CI includes restricted-credential cross-operation tests, separate ephemeral Linux UID/0600-file tests, and a fake R2 conditional-write race regression.
+
+**Production activation remains blocked** until the root public key is pinned in shipped clients, the offline root/keyset provisioning ceremony is approved, R2 publisher-only credentials and least-privilege bucket policy are provisioned, actual production runner host/OS-account/admin separation is evidenced, GitHub environment reviewers and branch governance are hardened, and live R2 concurrent-writer/read-back plus production client E2E tests pass. The current repository branch has no production root key or production signing secret. The v1 client/state migration gate is also required before v2 stable activation. The `DiscoveryClient` implementation is present, but no production UI/agent update-polling call site or end-to-end installer handoff has been demonstrated in C316.
+
+---
+
+## Legacy schema-v1 stable manifest (historical; not production)
 
 The stable channel uses a canonical JSON manifest authenticated by a detached Ed25519
 signature. The current schema is version 1:

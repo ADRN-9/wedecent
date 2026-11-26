@@ -44,11 +44,19 @@ type Manifest struct {
 	ReleaseSHA256   string `json:"release_sha256"`
 	InstallerURL    string `json:"installer_url"`
 	InstallerSHA256 string `json:"installer_sha256"`
+	SigningKeyID    string `json:"signing_key_id,omitempty"`
+	KeysetEpoch     uint64 `json:"keyset_epoch,omitempty"`
 }
 
 func (m Manifest) Validate() error {
-	if m.Schema != ManifestSchemaV1 {
-		return fmt.Errorf("%w: schema must be %d", ErrInvalidManifest, ManifestSchemaV1)
+	if m.Schema != ManifestSchemaV1 && m.Schema != ManifestSchemaV2 {
+		return fmt.Errorf("%w: unsupported schema %d", ErrInvalidManifest, m.Schema)
+	}
+	if m.Schema == ManifestSchemaV1 && (m.SigningKeyID != "" || m.KeysetEpoch != 0) {
+		return fmt.Errorf("%w: v1 manifest cannot carry keyset metadata", ErrInvalidManifest)
+	}
+	if m.Schema == ManifestSchemaV2 && (!keyIDPattern.MatchString(m.SigningKeyID) || m.KeysetEpoch == 0) {
+		return fmt.Errorf("%w: v2 manifest requires signing key ID and keyset epoch", ErrInvalidManifest)
 	}
 	if m.Channel != StableChannel {
 		return fmt.Errorf("%w: unsupported channel %q", ErrInvalidManifest, m.Channel)
@@ -156,7 +164,14 @@ func Verify(publicKey ed25519.PublicKey, manifestBytes, signatureBytes []byte) (
 	if !ed25519.Verify(publicKey, manifestBytes, signature) {
 		return zero, ErrInvalidSignature
 	}
-	return ParseCanonical(manifestBytes)
+	manifest, err := ParseCanonical(manifestBytes)
+	if err != nil {
+		return zero, err
+	}
+	if manifest.Schema != ManifestSchemaV1 {
+		return zero, fmt.Errorf("%w: v2 manifests require root-authorized keyset verification", ErrInvalidManifest)
+	}
+	return manifest, nil
 }
 
 func EncodeSignature(signature []byte) ([]byte, error) {

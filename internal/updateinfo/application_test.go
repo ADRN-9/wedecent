@@ -233,3 +233,46 @@ func privateTempDir(t *testing.T) string {
 func storeStateWithoutLock(path string) (State, error) {
 	return loadState(path)
 }
+
+func TestApplyVerifiedInstallerForKeysetRejectsConcurrentKeysetRotation(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
+	keyset.Epoch++
+	keysetBody, keysetSignature := signKeyset(t, keyset, rootPrivate, now)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, keysetBody, keysetSignature, now); err != nil {
+		t.Fatal(err)
+	}
+
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Schema = ManifestSchemaV2
+	manifest.SigningKeyID = keyset.Keys[0].ID
+	manifest.PublishedAt = now.Format(time.RFC3339)
+	manifest.Sequence = 17
+	manifest.KeysetEpoch = keyset.Epoch - 1
+	manifest.InstallerSHA256 = sha256Hex(archive)
+	path := writeStagedArchive(t, archive)
+	called := false
+	err := store.ApplyVerifiedInstallerForKeyset(
+		context.Background(), manifest, path, 0,
+		func(context.Context, string) error { return nil },
+		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+			called = true
+			return nil
+		}),
+		keyset.Epoch-1,
+	)
+	if !errors.Is(err, ErrKeysetRollback) {
+		t.Fatalf("changed keyset epoch error = %v, want ErrKeysetRollback", err)
+	}
+	if called {
+		t.Fatal("installer executor ran after concurrent keyset rotation")
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != 0 || state.KeysetEpoch != keyset.Epoch {
+		t.Fatalf("state after rejected stale signer = %#v", state)
+	}
+}

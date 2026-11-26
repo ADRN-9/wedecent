@@ -58,6 +58,13 @@ die() {
   exit 1
 }
 
+
+# This combined legacy harness remains for deterministic regression fixtures only.
+# Production release execution must use the isolated sign/verify/publish jobs.
+if [[ "${GITHUB_ACTIONS:-}" == "true" && "${GITHUB_WORKFLOW:-}" == "Production release" ]]; then
+  die 'combined signing/publication entrypoint is disabled in the production release workflow'
+fi
+
 resolve_hook() {
   local value="$1"
   local label="$2"
