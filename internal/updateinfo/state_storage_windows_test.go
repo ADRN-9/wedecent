@@ -414,7 +414,7 @@ func TestWindowsUpdateStateRejectsJunctionTraversalAndSubstitution(t *testing.T)
 		t.Fatal(err)
 	}
 	replacement := filepath.Join(root, "replacement")
-	if err := os.Mkdir(replacement, 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(replacement, "state"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	windowsTestCreateJunction(t, parent, replacement)
