@@ -32,23 +32,6 @@ var (
 	keyIDPattern = regexp.MustCompile("^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 )
 
-const (
-	KeysetSchemaV1       = 1
-	ManifestSchemaV2     = 2
-	MaxKeysetBytes       = 32 << 10
-	MaxKeysetEntries     = 64
-	MaxKeysetValidity    = 90 * 24 * time.Hour
-	MaxKeysetClockSkew   = 5 * time.Minute
-)
-
-var (
-	ErrInvalidKeyset       = errors.New("updateinfo: invalid update keyset")
-	ErrKeysetRollback      = errors.New("updateinfo: keyset rollback or equivocation rejected")
-	ErrUnknownSigningKey   = errors.New("updateinfo: manifest signing key is not authorized")
-	ErrRevokedSigningKey   = errors.New("updateinfo: manifest signing key is revoked")
-	keyIDPattern           = )
-)
-
 type KeysetEntry struct {
 	ID        string `json:"id"`
 	PublicKey string `json:"public_key"`
