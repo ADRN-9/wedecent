@@ -1885,9 +1885,29 @@ $recoveryRejectedCases = @(
         Mutate = { param($journal, $fixture) $journal.phase = 'Verified'; $journal.staging_complete = $false; $journal.destination_manifest_sha256 = '' }
     },
     [pscustomobject]@{
-        Name = 'non-Boolean service_was_running marker'
+        Name = 'string true service_was_running marker'
+        ExpectedError = '*required Boolean state markers*'
+        Mutate = { param($journal, $fixture) $journal.service_was_running = 'true' }
+    },
+    [pscustomobject]@{
+        Name = 'string false service_was_running marker'
         ExpectedError = '*required Boolean state markers*'
         Mutate = { param($journal, $fixture) $journal.service_was_running = 'false' }
+    },
+    [pscustomobject]@{
+        Name = 'numeric service_was_running marker'
+        ExpectedError = '*required Boolean state markers*'
+        Mutate = { param($journal, $fixture) $journal.service_was_running = 1 }
+    },
+    [pscustomobject]@{
+        Name = 'null service_was_running marker'
+        ExpectedError = '*required Boolean state markers*'
+        Mutate = { param($journal, $fixture) $journal.service_was_running = $null }
+    },
+    [pscustomobject]@{
+        Name = 'missing service_was_running marker'
+        ExpectedError = '*required Boolean state markers*'
+        Mutate = { param($journal, $fixture) [void]$journal.PSObject.Properties.Remove('service_was_running') }
     },
     [pscustomobject]@{
         Name = 'original metadata bound to a different source'
