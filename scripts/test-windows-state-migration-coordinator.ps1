@@ -128,33 +128,57 @@ try {
     Remove-Item -LiteralPath $namespaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+if (-not ('WeDecentMigrationTestLogon' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security;
+using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
+public static class WeDecentMigrationTestLogon {
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="LogonUserW")]
+    private static extern bool LogonUserNative(string user, string domain, string password, int logonType, int logonProvider, out SafeAccessTokenHandle token);
+    public static void RunAs(string user, string domain, SecureString securePassword, Action action) {
+        IntPtr passwordBuffer=Marshal.SecureStringToBSTR(securePassword);
+        try {
+            string password=Marshal.PtrToStringBSTR(passwordBuffer);
+            SafeAccessTokenHandle token;
+            if (!LogonUserNative(user,domain,password,2,0,out token))
+                throw new Win32Exception(Marshal.GetLastWin32Error(),"LogonUser failed for unprivileged migration test identity.");
+            using (token) { WindowsIdentity.RunImpersonated(token,action); }
+        } finally { Marshal.ZeroFreeBSTR(passwordBuffer); }
+    }
+}
+'@
+}
+
 function Invoke-MigrationUntrustedMutationAttempt {
     param(
         [Parameter(Mandatory = $true)][string]$TargetPath,
         [Parameter(Mandatory = $true)][string]$BackupPath
     )
-    $targetLiteral = "'" + $TargetPath.Replace("'", "''") + "'"
-    $backupLiteral = "'" + $BackupPath.Replace("'", "''") + "'"
-    $command = @"
-`$moveError = 0
-try { [IO.File]::Move($targetLiteral, $backupLiteral) } catch { `$moveError = `$_.Exception.HResult }
-`$writeError = 0
-try { [IO.File]::WriteAllText($targetLiteral, 'attacker') } catch { `$writeError = `$_.Exception.HResult }
-if (`$moveError -in @(-2147024891, -2147024864) -and `$writeError -in @(-2147024891, -2147024864)) { exit 0 }
-exit 1
-"@
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
-    $pwsh = Join-Path $PSHOME 'pwsh.exe'
-    try {
-    $process = Start-Process -FilePath $pwsh -Credential $global:WeDecentMigrationAttackerCredential -ArgumentList "-NoProfile -NonInteractive -EncodedCommand $encoded" -Wait -PassThru
-} catch {
-    throw "Unable to launch unprivileged migration attacker process: $($_.Exception.Message) (HRESULT=$($_.Exception.HResult))."
+    $global:WeDecentMigrationAttackTarget = $TargetPath
+    $global:WeDecentMigrationAttackBackup = $BackupPath
+    $global:WeDecentMigrationAttackMoveError = 0
+    $global:WeDecentMigrationAttackWriteError = 0
+    [WeDecentMigrationTestLogon]::RunAs(
+        $global:WeDecentMigrationAttackerName,
+        $env:COMPUTERNAME,
+        $global:WeDecentMigrationAttackerPassword,
+        [Action] {
+            try { [IO.File]::Move($global:WeDecentMigrationAttackTarget,$global:WeDecentMigrationAttackBackup) }
+            catch { $global:WeDecentMigrationAttackMoveError = $_.Exception.HResult }
+            try { [IO.File]::WriteAllText($global:WeDecentMigrationAttackTarget,'attacker') }
+            catch { $global:WeDecentMigrationAttackWriteError = $_.Exception.HResult }
+        }
+    )
+    $denied = @(-2147024891, -2147024864)
+    if ($global:WeDecentMigrationAttackMoveError -in $denied -and
+        $global:WeDecentMigrationAttackWriteError -in $denied) { return $true }
+    throw "Unprivileged publication mutation was not denied (move=$($global:WeDecentMigrationAttackMoveError), write=$($global:WeDecentMigrationAttackWriteError))."
 }
-    if ($process.ExitCode -ne 0) {
-        throw "Unprivileged publication mutation unexpectedly succeeded or failed for another reason (exit=$($process.ExitCode))."
-    }
-    return $true
-}
+
 $forwardFaults = @('Prepared','ServiceStopped','Copying','Copied','IdentityVerification','IdentityProtected','Verified','StatePublished','SCMTransition','ServiceReconfigured','MetadataUpdated','ServiceRestarted')
 foreach ($fault in $forwardFaults) {
     $fixture = New-MigrationFixture
@@ -809,7 +833,8 @@ try {
     if (-not (Get-LocalGroupMember -Group 'Users' | Where-Object { $_.SID.Value -eq $attackerSid })) {
         Add-LocalGroupMember -Group 'Users' -Member $attackerName
     }
-    $global:WeDecentMigrationAttackerCredential = [PSCredential]::new(".\$attackerName", $attackerPassword)
+    $global:WeDecentMigrationAttackerName = $attackerName
+    $global:WeDecentMigrationAttackerPassword = $attackerPassword
 foreach ($nativeRaceKind in @('metadata', 'journal')) {
     $nativeRaceFixture = New-MigrationFixture
     try {
@@ -951,7 +976,9 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
 }
 
 } finally {
-    $global:WeDecentMigrationAttackerCredential = $null
+    $global:WeDecentMigrationAttackerName = $null
+    if ($global:WeDecentMigrationAttackerPassword) { $global:WeDecentMigrationAttackerPassword.Dispose() }
+    $global:WeDecentMigrationAttackerPassword = $null
     Remove-LocalUser -Name $attackerName -ErrorAction SilentlyContinue
 }
 
