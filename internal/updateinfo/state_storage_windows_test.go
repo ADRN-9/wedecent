@@ -269,7 +269,6 @@ func TestWindowsUpdateStateAcceptsLegitimateNestedPath(t *testing.T) {
 	}
 }
 
-
 func TestWindowsUpdateStateRejectsNativeHostileAncestorOwner(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "foreign-owner")
