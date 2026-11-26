@@ -102,7 +102,7 @@ func TestStateStoreRejectsInvalidPersistedForms(t *testing.T) {
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
-			if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
+			if err := os.WriteFile(path, []byte(`{"version":2,"stable_sequence":0,"keyset_epoch":7,"keyset_digest":"broken"}`+"\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := NewStateStore(path).Load(); !errors.Is(err, ErrInvalidState) {
