@@ -375,6 +375,18 @@ func TestWindowsStateStoreRejectsAncestorACLBeforeReadOrAdvance(t *testing.T) {
 	if string(got) != string(original) {
 		t.Fatalf("failed ACL validation changed rollback state: %q", got)
 	}
+
+	missingDir := filepath.Join(parent, "missing-state")
+	missingStore := NewStateStore(StatePath(missingDir))
+	if _, err := missingStore.Load(); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Load accepted missing state below hostile ancestor: %v", err)
+	}
+	if err := missingStore.Advance(43); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Advance accepted missing state below hostile ancestor: %v", err)
+	}
+	if _, err := os.Lstat(missingDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsafe missing-state directory was created: %v", err)
+	}
 }
 
 func windowsTestCreateJunction(t *testing.T, link, target string) {
