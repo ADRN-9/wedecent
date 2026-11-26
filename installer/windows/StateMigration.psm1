@@ -1347,6 +1347,39 @@ function Invoke-WeDecentMigrationRacePoint {
     if ($injection -is [scriptblock]) { & $injection $Name }
 }
 
+function Assert-WeDecentMigrationPublicationNamespace {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $full = Assert-WeDecentMigrationRealDirectory -Path $Path
+    $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
+    $trusted = @(
+        'S-1-5-18',
+        'S-1-5-32-544',
+        'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
+    )
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin $trusted) {
+        throw "Migration publication namespace has an untrusted owner: $full"
+    }
+    $mutationRights = [Security.AccessControl.FileSystemRights]::Write -bor
+        [Security.AccessControl.FileSystemRights]::Modify -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
+            continue
+        }
+        if ($rule.IdentityReference.Value -notin $trusted -and
+            ($rule.FileSystemRights -band $mutationRights) -ne 0) {
+            throw "Migration publication namespace grants mutation rights to an untrusted principal: $full ($($rule.IdentityReference.Value))"
+        }
+    }
+    return $true
+}
+
 function Publish-WeDecentMigrationObject {
     [CmdletBinding()]
     param(
@@ -1358,6 +1391,7 @@ function Publish-WeDecentMigrationObject {
         [switch]$ReplaceExisting,
         [string]$RacePoint
     )
+    [void](Assert-WeDecentMigrationPublicationNamespace -Path $ParentPath)
     $temporaryIdentity = if ([string]::IsNullOrWhiteSpace($ExpectedTemporaryIdentity)) {
         [WeDecentMigrationFileIdentityApi]::GetIdentity($TemporaryPath)
     } else { $ExpectedTemporaryIdentity }
