@@ -12,7 +12,9 @@ import (
 
 func TestCanonicalStablePairRoundTrip(t *testing.T) {
 	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	_ = publicKey
 	manifest := validManifest()
 	manifest.Schema = ManifestSchemaV2
@@ -38,8 +40,8 @@ func TestStablePairRejectsV1AndMalformedEnvelopes(t *testing.T) {
 	if err != nil { t.Fatal(err) }
 	signature := make([]byte, ed25519.SignatureSize)
 	v1Envelope, err := json.Marshal(StablePairEnvelope{
-		Schema: StablePairSchema,
-		Manifest: base64.RawURLEncoding.EncodeToString(body),
+		Schema:    StablePairSchema,
+		Manifest:  base64.RawURLEncoding.EncodeToString(body),
 		Signature: base64.RawURLEncoding.EncodeToString(signature),
 	})
 	if err != nil { t.Fatal(err) }
