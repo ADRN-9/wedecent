@@ -158,6 +158,15 @@ func saveState(path string, state State) error {
 		cleanup()
 		return fmt.Errorf("%w: protect update state temp file: %v", ErrInvalidState, err)
 	}
+	tempInfo, err := tmp.Stat()
+	if err != nil {
+		cleanup()
+		return fmt.Errorf("%w: inspect update state temp file: %v", ErrInvalidState, err)
+	}
+	if err := validateStateFileInfo(tmpPath, tempInfo); err != nil {
+		cleanup()
+		return err
+	}
 	if _, err := tmp.Write(data); err != nil {
 		cleanup()
 		return fmt.Errorf("%w: write update state: %v", ErrInvalidState, err)
