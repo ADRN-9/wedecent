@@ -50,7 +50,15 @@ old_keyset_signature="$(mktemp)"
 old_manifest="$(mktemp)"
 old_signature="$(mktemp)"
 trap 'rm -f -- "$candidate_output" "$old_output" "$old_keyset" "$old_keyset_signature" "$old_manifest" "$old_signature"' EXIT
+manifest_before="$(sha256sum "$MANIFEST" | awk '{print tolower($1)}')"
+signature_before="$(sha256sum "$SIGNATURE" | awk '{print tolower($1)}')"
+keyset_before="$(sha256sum "$KEYSET" | awk '{print tolower($1)}')"
+keyset_signature_before="$(sha256sum "$KEYSET_SIGNATURE" | awk '{print tolower($1)}')"
 verify_pair "$KEYSET" "$KEYSET_SIGNATURE" "$MANIFEST" "$SIGNATURE" "$candidate_output" || die 'candidate root keyset or v2 manifest invalid'
+[[ "$(sha256sum "$MANIFEST" | awk '{print tolower($1)}')" == "$manifest_before" ]] || die 'verifier modified candidate manifest bytes'
+[[ "$(sha256sum "$SIGNATURE" | awk '{print tolower($1)}')" == "$signature_before" ]] || die 'verifier modified candidate signature bytes'
+[[ "$(sha256sum "$KEYSET" | awk '{print tolower($1)}')" == "$keyset_before" ]] || die 'verifier modified candidate keyset bytes'
+[[ "$(sha256sum "$KEYSET_SIGNATURE" | awk '{print tolower($1)}')" == "$keyset_signature_before" ]] || die 'verifier modified candidate keyset signature bytes'
 mapfile -t candidate_fields < "$candidate_output"
 [[ "${#candidate_fields[@]}" == 4 && "${candidate_fields[0]}" =~ ^sequence=[1-9][0-9]*$ && "${candidate_fields[1]}" =~ ^version=v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ && "${candidate_fields[2]}" =~ ^keyset_epoch=[1-9][0-9]*$ && "${candidate_fields[3]}" =~ ^keyset_digest=[0-9a-f]{64}$ ]] || die 'candidate verifier output malformed'
 sequence="${candidate_fields[0]#sequence=}"
