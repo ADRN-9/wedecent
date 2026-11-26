@@ -176,8 +176,9 @@ jobs:
       - name: Test native Windows agent
         run: go test ./...
       - name: Verify inherited updater-state directory and file ACL enforcement
-        run: |
-          go test ./internal/updateinfo -run '^(TestWindowsUpdateStateRejectsInheritedBroadAncestorACE|TestWindowsUpdateStateRejectsInheritedFileWritePermissions|TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock)
+        run: go test ./internal/updateinfo -run TestWindowsUpdateStateRejectsInherited -count=1 -v
+      - name: Verify inherited updater-state load, write, and lock rejection
+        run: go test ./internal/updateinfo -run TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock -count=1 -v
       - name: Verify actual Windows service-state ancestor ACLs
         run: |
           go test ./cmd/wd-agent -run TestWindowsServiceStateDefaultLocationUsesProtectedProgramFilesAncestors -count=1 -v
