@@ -59,10 +59,14 @@ def main() -> None:
     publish_script = (ROOT / "scripts/publish-windows-stable-update-pair.sh").read_text(encoding="utf-8")
     require(signer in sign_script and publisher not in sign_script,
             "signing script must invoke only the signing adapter")
+    require("WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256" in sign_script and "sha256sum" in sign_script,
+            "signing script must enforce the configured signer digest pin")
     require(signer not in verify_script and publisher not in verify_script,
             "verification script must have no signing or publication adapter")
     require(publisher in publish_script and signer not in publish_script,
             "publication script must invoke only the publication adapter")
+    require("WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256" in publish_script and "sha256sum" in publish_script,
+            "publication script must enforce the configured publisher digest pin")
 
     require("wedecent-stable-update-candidate-" in verification,
             "verification must consume the immutable signed-candidate artifact")
