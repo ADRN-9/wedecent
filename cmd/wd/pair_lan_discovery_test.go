@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -123,5 +124,23 @@ func TestResolvePairLocatorDiscoveryPropagatesFinderError(t *testing.T) {
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v, want %v", err, want)
+	}
+}
+
+func TestResolvePairLocatorDiscoveryRejectsExplicitEmptyFlagPresence(t *testing.T) {
+	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
+		_, err := resolvePairLocator(context.Background(), pairLocatorOptions{
+			ExplicitTransportFlags: []string{name},
+			DiscoverLAN: true,
+			DiscoverTimeout: time.Second,
+			DeviceID: "wd_aaaaaaaaaaaaaaaa",
+			Fingerprint: testPairLANFingerprint,
+		}, func(context.Context, string, string) (discovery.Result, error) {
+			t.Fatalf("discovery finder called with explicitly supplied empty --%s", name)
+			return discovery.Result{}, nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+			t.Errorf("explicit empty --%s: error = %v; want discovery conflict", name, err)
+		}
 	}
 }
