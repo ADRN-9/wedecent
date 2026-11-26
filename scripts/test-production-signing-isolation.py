@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
+import os
 import re
+import subprocess
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,6 +57,23 @@ def main() -> None:
     require("id-token: write" not in verification and "id-token: write" not in publication,
             "verification and publication workloads must not receive signer OIDC permission")
 
+    require("WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" in signing and "WEDECENT_UPDATE_KEYSET_PATH" in signing,
+            "signer must use the provisioned root key and signed keyset")
+    require("WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" in verification and "WEDECENT_UPDATE_KEYSET_PATH" not in verification,
+            "verifier must consume candidate keyset but must not receive signer-side keyset path credentials")
+    require("WEDECENT_R2_CREATE_ONLY_UPLOADER" not in signing and "WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER" not in verification,
+            "signer and verifier must not receive publication credentials")
+    require("manifest-v2.json" in verification and "manifest-v2.sig" in verification,
+            "independent verifier must verify only schema-v2 stable manifests")
+    require("manifest-v1.json" not in verification and "manifest-v1.sig" not in verification,
+            "production verifier must not fall back to schema-v1 manifests")
+    require("keysets/" in (ROOT / "internal/updateinfo/discovery.go").read_text(encoding="utf-8"),
+            "stable discovery must resolve immutable epoch-specific keysets")
+    require("VerifyManifestV2" in (ROOT / "internal/updateinfo/discovery.go").read_text(encoding="utf-8"),
+            "stable discovery must use root-authorized v2 manifest verification")
+    require("VerifyKeyset" in (ROOT / "internal/updateinfo/state.go").read_text(encoding="utf-8"),
+            "protected update state must persist only root-verified keysets")
+
     sign_script = (ROOT / "scripts/sign-windows-stable-update.sh").read_text(encoding="utf-8")
     verify_script = (ROOT / "scripts/verify-windows-stable-update.sh").read_text(encoding="utf-8")
     publish_script = (ROOT / "scripts/publish-windows-stable-update-pair.sh").read_text(encoding="utf-8")
@@ -68,6 +88,17 @@ def main() -> None:
     require("WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256" in publish_script and "sha256sum" in publish_script,
             "publication script must enforce the configured publisher digest pin")
 
+    require("WEDECENT_R2_CREATE_ONLY_UPLOADER_SHA256" in publish_script,
+            "publisher must pin the immutable keyset uploader executable")
+    require("keysets/$epoch/keyset.json" in publish_script and "manifest-v2.json" in publish_script,
+            "publisher must create immutable epoch keysets before the atomic v2 manifest pointer")
+    require("verification.receipt" in publish_script and "keyset_sha256" in publish_script,
+            "publisher must bind root-keyset bytes to the independent verifier receipt")
+    require("WEDECENT_UPDATE_MANIFEST_SIGNER" not in publish_script,
+            "publisher must not access signing credentials")
+    require("WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER" not in verify_script and "WEDECENT_R2_CREATE_ONLY_UPLOADER" not in verify_script,
+            "verifier must not access publication credentials")
+
     require("wedecent-stable-update-candidate-" in verification,
             "verification must consume the immutable signed-candidate artifact")
     require("wedecent-stable-update-verified-" in publication,
@@ -79,6 +110,46 @@ def main() -> None:
     legacy_script = (ROOT / "scripts/publish-windows-stable-update.sh").read_text(encoding="utf-8")
     require('GITHUB_WORKFLOW:-' in legacy_script and 'Production release' in legacy_script,
             "legacy combined entrypoint must reject the production release workflow")
+
+    # Test-only capability adapters model deliberately restricted credentials.
+    # The signer receives a signing token only; the publisher receives a publish
+    # token only. Cross-operations must fail closed.
+    with tempfile.TemporaryDirectory() as temporary:
+        temp = Path(temporary)
+        sign_token = temp / "sign.token"
+        publish_token = temp / "publish.token"
+        sign_token.write_text("test-sign-only", encoding="utf-8")
+        publish_token.write_text("test-publish-only", encoding="utf-8")
+        sign_token.chmod(0o600)
+        publish_token.chmod(0o600)
+        signer_adapter = temp / "signer"
+        publisher_adapter = temp / "publisher"
+        signer_adapter.write_text(
+            "#!/usr/bin/env python3\\n"
+            "import os,sys\\n"
+            "assert len(sys.argv)==3 and sys.argv[1]=='sign'\\n"
+            "assert os.environ.get('SIGN_TOKEN') and not os.environ.get('PUBLISH_TOKEN')\\n",
+            encoding="utf-8",
+        )
+        publisher_adapter.write_text(
+            "#!/usr/bin/env python3\\n"
+            "import os,sys\\n"
+            "assert len(sys.argv)==2 and sys.argv[1]=='publish'\\n"
+            "assert os.environ.get('PUBLISH_TOKEN') and not os.environ.get('SIGN_TOKEN')\\n",
+            encoding="utf-8",
+        )
+        signer_adapter.chmod(0o700)
+        publisher_adapter.chmod(0o700)
+        signer_env = {"PATH": os.environ.get("PATH", ""), "SIGN_TOKEN": str(sign_token)}
+        publisher_env = {"PATH": os.environ.get("PATH", ""), "PUBLISH_TOKEN": str(publish_token)}
+        require(subprocess.run([str(signer_adapter), "sign", "manifest"], env=signer_env, check=False).returncode == 0,
+                "restricted signer credential must permit signing")
+        require(subprocess.run([str(signer_adapter), "publish", "object"], env=signer_env, check=False).returncode != 0,
+                "signer credential must not permit publication")
+        require(subprocess.run([str(publisher_adapter), "publish"], env=publisher_env, check=False).returncode == 0,
+                "restricted publisher credential must permit publication")
+        require(subprocess.run([str(publisher_adapter), "sign"], env=publisher_env, check=False).returncode != 0,
+                "publisher credential must not permit signing")
 
     print("Production signing/verifier/publisher privilege-boundary regression tests passed.")
 
