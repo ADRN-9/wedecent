@@ -131,43 +131,147 @@ try {
 if (-not ('WeDecentMigrationTestLogon' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security;
 using System.Security.Principal;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
+
 public static class WeDecentMigrationTestLogon {
+    private const uint DELETE_ACCESS=0x00010000, FILE_READ_ATTRIBUTES=0x80;
+    private const uint SHARE_READ_WRITE=3, OPEN_EXISTING=3;
+    private const uint BACKUP_SEMANTICS=0x02000000, OPEN_REPARSE_POINT=0x00200000;
+    private const int FILE_RENAME_INFO_EX_CLASS=22;
+    private const uint FILE_RENAME_REPLACE_IF_EXISTS=0x1, FILE_RENAME_POSIX_SEMANTICS=0x2;
+
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
+    private struct FILE_RENAME_INFO_EX {
+        public uint Flags;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        public char FileName;
+    }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_ELEVATION { public int TokenIsElevated; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
     [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="LogonUserW")]
-    private static extern bool LogonUserNative(string user, string domain, string password, int logonType, int logonProvider, out SafeAccessTokenHandle token);
-    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="MoveFileExW")]
-    private static extern bool MoveFileNative(string existingPath, string newPath, uint flags);
+    private static extern bool LogonUserNative(string user, string domain, IntPtr password, int logonType, int logonProvider, out SafeAccessTokenHandle token);
     [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="CreateFileW")]
     private static extern SafeFileHandle CreateFileNative(string path, uint access, uint share, IntPtr security,
         uint creation, uint attributes, IntPtr template);
     [DllImport("kernel32.dll", SetLastError=true, EntryPoint="WriteFile")]
     private static extern bool WriteFileNative(SafeFileHandle handle, byte[] buffer, uint count, out uint written, IntPtr overlapped);
-    public static int TryMove(string target, string backup) {
-        return MoveFileNative(target,backup,0x8) ? 0 : Marshal.GetLastWin32Error();
+    [DllImport("kernel32.dll", SetLastError=true)]
+    private static extern bool SetFileInformationByHandle(SafeFileHandle handle, int infoClass, IntPtr info, uint size);
+    [DllImport("advapi32.dll", SetLastError=true)]
+    private static extern bool GetTokenInformation(IntPtr token, int infoClass, IntPtr info, uint size, out uint returned);
+    [DllImport("advapi32.dll")]
+    private static extern IntPtr GetSidSubAuthorityCount(IntPtr sid);
+    [DllImport("advapi32.dll")]
+    private static extern IntPtr GetSidSubAuthority(IntPtr sid, uint index);
+    [DllImport("advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+    private static extern bool LookupPrivilegeName(string systemName, ref LUID luid, StringBuilder name, ref uint length);
+
+    public static int TryNativeReplace(string sourcePath, string targetPath) {
+        using (SafeFileHandle source=CreateFileNative(sourcePath,DELETE_ACCESS|FILE_READ_ATTRIBUTES,
+            SHARE_READ_WRITE,IntPtr.Zero,OPEN_EXISTING,BACKUP_SEMANTICS|OPEN_REPARSE_POINT,IntPtr.Zero)) {
+            if (source==null || source.IsInvalid) return Marshal.GetLastWin32Error();
+            int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileName").ToInt32();
+            byte[] absoluteName=Encoding.Unicode.GetBytes(System.IO.Path.GetFullPath(targetPath));
+            int bufferSize=Marshal.SizeOf(typeof(FILE_RENAME_INFO_EX))+absoluteName.Length-2;
+            IntPtr buffer=Marshal.AllocHGlobal(bufferSize);
+            try {
+                for (int n=0;n<bufferSize;n++) Marshal.WriteByte(buffer,n,0);
+                uint flags=FILE_RENAME_REPLACE_IF_EXISTS|FILE_RENAME_POSIX_SEMANTICS;
+                Marshal.WriteInt32(buffer,0,unchecked((int)flags));
+                Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"RootDirectory").ToInt32(),IntPtr.Zero);
+                Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileNameLength").ToInt32(),absoluteName.Length);
+                Marshal.Copy(absoluteName,0,IntPtr.Add(buffer,nameOffset),absoluteName.Length);
+                return SetFileInformationByHandle(source,FILE_RENAME_INFO_EX_CLASS,buffer,(uint)bufferSize)
+                    ? 0 : Marshal.GetLastWin32Error();
+            } finally { Marshal.FreeHGlobal(buffer); }
+        }
     }
+
     public static int TryWrite(string target) {
         using (SafeFileHandle handle=CreateFileNative(target,0x40000000,7,IntPtr.Zero,3,0x80,IntPtr.Zero)) {
             if (handle==null || handle.IsInvalid) return Marshal.GetLastWin32Error();
-            byte[] payload=System.Text.Encoding.UTF8.GetBytes("attacker");
+            byte[] payload=Encoding.UTF8.GetBytes("attacker");
             uint written;
             if (!WriteFileNative(handle,payload,(uint)payload.Length,out written,IntPtr.Zero))
                 return Marshal.GetLastWin32Error();
             return written==(uint)payload.Length ? 0 : 29;
         }
     }
+
+    private static IntPtr TokenBuffer(IntPtr token, int infoClass, out uint size) {
+        size=0;
+        GetTokenInformation(token,infoClass,IntPtr.Zero,0,out size);
+        if (size==0) throw new Win32Exception(Marshal.GetLastWin32Error());
+        IntPtr buffer=Marshal.AllocHGlobal((int)size);
+        if (!GetTokenInformation(token,infoClass,buffer,size,out size)) {
+            int error=Marshal.GetLastWin32Error();
+            Marshal.FreeHGlobal(buffer);
+            throw new Win32Exception(error);
+        }
+        return buffer;
+    }
+
+    public static string GetTokenEvidence() {
+        using (WindowsIdentity identity=WindowsIdentity.GetCurrent()) {
+            IntPtr token=identity.Token;
+            uint size;
+            IntPtr integrity=TokenBuffer(token,25,out size);
+            uint integrityRid;
+            try {
+                SID_AND_ATTRIBUTES label=(SID_AND_ATTRIBUTES)Marshal.PtrToStructure(integrity,typeof(SID_AND_ATTRIBUTES));
+                byte count=Marshal.ReadByte(GetSidSubAuthorityCount(label.Sid));
+                integrityRid=unchecked((uint)Marshal.ReadInt32(GetSidSubAuthority(label.Sid,(uint)(count-1))));
+            } finally { Marshal.FreeHGlobal(integrity); }
+
+            IntPtr elevationBuffer=TokenBuffer(token,20,out size);
+            bool elevated;
+            try {
+                TOKEN_ELEVATION elevation=(TOKEN_ELEVATION)Marshal.PtrToStructure(elevationBuffer,typeof(TOKEN_ELEVATION));
+                elevated=elevation.TokenIsElevated!=0;
+            } finally { Marshal.FreeHGlobal(elevationBuffer); }
+
+            IntPtr privileges=TokenBuffer(token,3,out size);
+            List<string> enabled=new List<string>();
+            try {
+                uint count=unchecked((uint)Marshal.ReadInt32(privileges));
+                int offset=4, entrySize=Marshal.SizeOf(typeof(LUID_AND_ATTRIBUTES));
+                for (uint i=0;i<count;i++) {
+                    IntPtr entryPtr=IntPtr.Add(privileges,offset+checked((int)i)*entrySize);
+                    LUID_AND_ATTRIBUTES entry=(LUID_AND_ATTRIBUTES)Marshal.PtrToStructure(entryPtr,typeof(LUID_AND_ATTRIBUTES));
+                    if ((entry.Attributes&0x2)==0) continue;
+                    uint nameLength=256;
+                    StringBuilder name=new StringBuilder((int)nameLength);
+                    if (LookupPrivilegeName(null,ref entry.Luid,name,ref nameLength))
+                        enabled.Add(name.ToString());
+                }
+            } finally { Marshal.FreeHGlobal(privileges); }
+            return "sid="+identity.User.Value+";integrityRid="+integrityRid.ToString("X")+";elevated="+elevated.ToString().ToLowerInvariant()+
+                ";enabledPrivileges="+String.Join(",",enabled.ToArray());
+        }
+    }
+
     public static void RunAs(string user, string domain, SecureString securePassword, Action action) {
-        IntPtr passwordBuffer=Marshal.SecureStringToBSTR(securePassword);
+        IntPtr passwordBuffer=Marshal.SecureStringToGlobalAllocUnicode(securePassword);
         try {
-            string password=Marshal.PtrToStringBSTR(passwordBuffer);
             SafeAccessTokenHandle token;
-            if (!LogonUserNative(user,domain,password,2,0,out token))
+            if (!LogonUserNative(user,domain,passwordBuffer,2,0,out token))
                 throw new Win32Exception(Marshal.GetLastWin32Error(),"LogonUser failed for unprivileged migration test identity.");
             using (token) { WindowsIdentity.RunImpersonated(token,action); }
-        } finally { Marshal.ZeroFreeBSTR(passwordBuffer); }
+        } finally { Marshal.ZeroFreeGlobalAllocUnicode(passwordBuffer); }
     }
 }
 '@
@@ -176,21 +280,26 @@ public static class WeDecentMigrationTestLogon {
 function Invoke-MigrationUntrustedMutationAttempt {
     param(
         [Parameter(Mandatory = $true)][string]$TargetPath,
-        [Parameter(Mandatory = $true)][string]$BackupPath
+        [Parameter(Mandatory = $true)][string]$SourcePath
     )
+    $beforeIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($TargetPath)
+    $beforeContent = [IO.File]::ReadAllText($TargetPath)
+    $sourceIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($SourcePath)
     $global:WeDecentMigrationAttackTarget = $TargetPath
-    $global:WeDecentMigrationAttackBackup = $BackupPath
+    $global:WeDecentMigrationAttackSource = $SourcePath
     $global:WeDecentMigrationAttackMoveError = 0
     $global:WeDecentMigrationAttackWriteError = 0
     $global:WeDecentMigrationAttackObservedSid = $null
+    $global:WeDecentMigrationAttackTokenEvidence = $null
     [WeDecentMigrationTestLogon]::RunAs(
         $global:WeDecentMigrationAttackerName,
         $env:COMPUTERNAME,
         $global:WeDecentMigrationAttackerPassword,
         [Action] {
             $global:WeDecentMigrationAttackObservedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-            $global:WeDecentMigrationAttackMoveError = [WeDecentMigrationTestLogon]::TryMove(
-                $global:WeDecentMigrationAttackTarget,$global:WeDecentMigrationAttackBackup)
+            $global:WeDecentMigrationAttackTokenEvidence = [WeDecentMigrationTestLogon]::GetTokenEvidence()
+            $global:WeDecentMigrationAttackMoveError = [WeDecentMigrationTestLogon]::TryNativeReplace(
+                $global:WeDecentMigrationAttackSource,$global:WeDecentMigrationAttackTarget)
             $global:WeDecentMigrationAttackWriteError = [WeDecentMigrationTestLogon]::TryWrite(
                 $global:WeDecentMigrationAttackTarget)
         }
@@ -198,10 +307,43 @@ function Invoke-MigrationUntrustedMutationAttempt {
     if ($global:WeDecentMigrationAttackObservedSid -cne $global:WeDecentMigrationAttackerSid) {
         throw "Native publication attack did not execute under the distinct unprivileged account (observed=$global:WeDecentMigrationAttackObservedSid expected=$global:WeDecentMigrationAttackerSid)."
     }
-    $denied = @(5)
-    if ($global:WeDecentMigrationAttackMoveError -in $denied -and
-        $global:WeDecentMigrationAttackWriteError -in $denied) { return $true }
-    throw "Unprivileged publication mutation was not denied (move=$($global:WeDecentMigrationAttackMoveError), write=$($global:WeDecentMigrationAttackWriteError))."
+    if ($global:WeDecentMigrationAttackMoveError -ne 5 -or $global:WeDecentMigrationAttackWriteError -ne 5) {
+        throw "Unprivileged FILE_RENAME_INFO_EX POSIX replacement/write was not denied (rename=$global:WeDecentMigrationAttackMoveError, write=$global:WeDecentMigrationAttackWriteError)."
+    }
+    if ([WeDecentMigrationFileIdentityApi]::GetIdentity($TargetPath) -cne $beforeIdentity -or
+        [IO.File]::ReadAllText($TargetPath) -cne $beforeContent) {
+        throw 'Unprivileged native replacement changed the original destination identity or contents.'
+    }
+    if ([WeDecentMigrationFileIdentityApi]::GetIdentity($SourcePath) -cne $sourceIdentity) {
+        throw 'Unprivileged native replacement changed the attacker source identity.'
+    }
+    return $true
+}
+
+function New-MigrationAttackerWorkspace {
+    param(
+        [Parameter(Mandatory = $true)][string]$RootPath,
+        [Parameter(Mandatory = $true)][string]$AttackerSid
+    )
+    $path = Join-Path $RootPath 'attacker-workspace'
+    New-Item -ItemType Directory -Path $path -Force | Out-Null
+    $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
+    $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
+    $attacker = ConvertTo-WeDecentMigrationSid -Sid $AttackerSid
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner($admins)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($admins, $system, $attacker)) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance,
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $path -AclObject $acl -ErrorAction Stop
+    return $path
 }
 
 $forwardFaults = @('Prepared','ServiceStopped','Copying','Copied','IdentityVerification','IdentityProtected','Verified','StatePublished','SCMTransition','ServiceReconfigured','MetadataUpdated','ServiceRestarted')
