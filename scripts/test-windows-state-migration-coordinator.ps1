@@ -464,6 +464,9 @@ $unsupportedServiceStates = @('Paused', 'Start Pending', 'Stop Pending', 'Pause 
 foreach ($unsupportedState in $unsupportedServiceStates) {
     $fixture = New-MigrationFixture
     try {
+        $rootSddlBefore = (Get-Acl -LiteralPath $fixture.Root).Sddl
+        $metadataBefore = [IO.File]::ReadAllText($fixture.MetadataPath)
+        $sourceManifestBefore = Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $fixture.Source)
         $global:WeDecentMigrationMockService.State = $unsupportedState
         $global:WeDecentMigrationMockStatus = $unsupportedState
         $rejected = $false
@@ -477,6 +480,9 @@ foreach ($unsupportedState in $unsupportedServiceStates) {
         if (Test-Path -LiteralPath $fixture.Journal) { throw "Migration wrote a journal before rejecting SCM state '$unsupportedState'." }
         if (Test-Path -LiteralPath $fixture.Destination) { throw "Migration created a destination before rejecting SCM state '$unsupportedState'." }
         if (-not (Test-Path -LiteralPath $fixture.Source -PathType Container)) { throw "Migration changed the source while rejecting SCM state '$unsupportedState'." }
+        if ((Get-Acl -LiteralPath $fixture.Root).Sddl -cne $rootSddlBefore) { throw "Migration changed parent ACLs before rejecting SCM state '$unsupportedState'." }
+        if ([IO.File]::ReadAllText($fixture.MetadataPath) -cne $metadataBefore) { throw "Migration changed metadata before rejecting SCM state '$unsupportedState'." }
+        if ((Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $fixture.Source)) -cne $sourceManifestBefore) { throw "Migration changed source contents before rejecting SCM state '$unsupportedState'." }
         if ($global:WeDecentMigrationMockService.PathName -cne $fixture.OriginalServicePath -or
             $global:WeDecentMigrationMockService.State -cne $unsupportedState -or
             $global:WeDecentMigrationMockStatus -cne $unsupportedState) {
