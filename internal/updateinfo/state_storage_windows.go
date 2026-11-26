@@ -71,7 +71,7 @@ func validateWindowsUpdateStatePath(path string, before os.FileInfo, directory b
 		return fmt.Errorf("%w: inspect updater administrator token: %v", ErrInvalidState, err)
 	}
 	currentSID := user.User.Sid.String()
-	rootSID, err := validateUpdateStateAncestorChain(absolute, currentSID, isAdmin)
+	rootSID, err := validateUpdateStateAncestorChain(absolute, currentSID)
 	if err != nil {
 		return err
 	}
@@ -106,7 +106,7 @@ func validateWindowsUpdateStatePath(path string, before os.FileInfo, directory b
 // volume root through the state path's parent. The final object is validated
 // separately. UNC and device paths are rejected because their namespace and
 // ACL semantics are outside this local updater-state trust boundary.
-func validateUpdateStateAncestorChain(path, currentSID string, isAdmin bool) (string, error) {
+func validateUpdateStateAncestorChain(path, currentSID string) (string, error) {
 	volume := filepath.VolumeName(path)
 	if len(volume) != 2 || path[2:3] != string(os.PathSeparator) {
 		return "", fmt.Errorf("%w: update state must reside on a local drive path", ErrInvalidState)
@@ -181,7 +181,6 @@ func validateUpdateStateAncestorChain(path, currentSID string, isAdmin bool) (st
 			return "", fmt.Errorf("%w: update state ancestor became a reparse point: %s", ErrInvalidState, ancestor.path)
 		}
 	}
-	_ = isAdmin
 	return parentOwner, nil
 }
 
@@ -246,7 +245,10 @@ func validateUpdateStateAncestorDACL(sddl, currentSID string) error {
 		}
 		canAffectDescendants := flags&updateStateACEInheritOnly == 0 ||
 			flags&(updateStateACEObjectInherit|updateStateACEContainerInherit) != 0
-		if mask&dangerous != 0 && canAffectDescendants && !trusted[trustee.String()] {
+		isCreatorOwnerInheritance := trustee.String() == "S-1-3-0" &&
+			flags&updateStateACEInheritOnly != 0 &&
+			flags&(updateStateACEObjectInherit|updateStateACEContainerInherit) != 0
+		if mask&dangerous != 0 && canAffectDescendants && !trusted[trustee.String()] && !isCreatorOwnerInheritance {
 			return fmt.Errorf("untrusted SID %s has namespace-modifying rights 0x%08x", trustee.String(), mask&dangerous)
 		}
 		entries = entries[end+1:]
