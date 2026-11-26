@@ -29,21 +29,7 @@ var (
 	ErrKeysetRollback      = errors.New("updateinfo: keyset rollback or equivocation rejected")
 	ErrUnknownSigningKey   = errors.New("updateinfo: manifest signing key is not authorized")
 	ErrRevokedSigningKey   = errors.New("updateinfo: manifest signing key is revoked")
-	keyIDPattern           = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?package updateinfo
-
-import (
-	"bytes"
-	"crypto/ed25519"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
-	"errors"
-	"fmt"
-	"io"
-	"regexp"
-	"sort"
-	"strings"
-	"time"
+	keyIDPattern = regexp.MustCompile("^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 )
 
 const (
