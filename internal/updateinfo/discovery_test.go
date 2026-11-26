@@ -256,8 +256,8 @@ func TestDiscoverStableRejectsManifestV1AndBadSignatures(t *testing.T) {
 		Signature: base64.RawURLEncoding.EncodeToString(v1Signature),
 	})
 	if err != nil {
-			t.Fatal(err)
-		}
+		t.Fatal(err)
+	}
 	v1Envelope = append(v1Envelope, '\n')
 
 	tests := map[string]func(string, []byte) ([]byte, int){
@@ -279,14 +279,22 @@ func TestDiscoverStableRejectsManifestV1AndBadSignatures(t *testing.T) {
 		"bad manifest signature": func(url string, body []byte) ([]byte, int) {
 			if url == StablePairURL {
 				manifestBytes, signatureBytes, err := ParseCanonicalStablePair(body)
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				signature, err := DecodeSignature(signatureBytes)
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				signature[0] ^= 1
 				changedSignature, err := EncodeSignature(signature)
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				changed, err := EncodeCanonicalStablePair(manifestBytes, changedSignature)
-				if err != nil { t.Fatal(err) }
+				if err != nil {
+					t.Fatal(err)
+				}
 				return changed, http.StatusOK
 			}
 			return body, http.StatusOK
