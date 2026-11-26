@@ -3,6 +3,7 @@
 package updateinfo
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -444,3 +445,92 @@ func TestWindowsUpdateStateRejectsJunctionTraversalAndSubstitution(t *testing.T)
 		t.Fatalf("junction substituted for a previously validated ancestor was accepted: %v", err)
 	}
 }
+
+func TestWindowsUpdateStateRejectsInheritedFileWritePermissions(t *testing.T) {
+	user := windowsTestCurrentSID(t)
+	for _, tc := range []struct {
+		name string
+		mask string
+	}{
+		{"write-data", "0x00000002"},
+		{"append-data", "0x00000004"},
+		{"write-extended-attributes", "0x00000010"},
+		{"delete-child-namespace", "0x00000040"},
+		{"write-attributes", "0x00000100"},
+		{"delete", "0x00010000"},
+		{"write-dac", "0x00040000"},
+		{"write-owner", "0x00080000"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := filepath.Join(t.TempDir(), "state")
+			if err := os.Mkdir(dir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			// OI-only makes this ACE apply to files, not as an effective
+			// permission on the containing directory.
+			windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;"+tc.mask+";;;WD)")
+			path := StatePath(dir)
+			if err := os.WriteFile(path, []byte("{\"version\":1,\"stable_sequence\":41}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				t.Fatal(err)
+			}
+			sddl := sd.String()
+			if !strings.Contains(sddl, "WD") && !strings.Contains(sddl, "S-1-1-0") {
+				t.Fatalf("state file did not inherit broad-principal ACE; actual file DACL: %s", sddl)
+			}
+			if err := validateUpdateStateDACL(sddl, user, user, false); err == nil {
+				t.Fatalf("state file accepted inherited write/namespace mask %s; actual file DACL: %s", tc.mask, sddl)
+			}
+		})
+	}
+}
+
+func TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock(t *testing.T) {
+	user := windowsTestCurrentSID(t)
+	dir := filepath.Join(t.TempDir(), "state")
+	if err := os.Mkdir(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// The append-data mask is inherited by files only. This must be rejected
+	// during directory preflight, before state reads, temp files, or lock files.
+	windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;0x00000004;;;WD)")
+	path := StatePath(dir)
+	original := []byte("{\\"version\\":1,\\"stable_sequence\\":41}\\n")
+	if err := os.WriteFile(path, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := NewStateStore(path)
+	if _, err := store.Load(); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Load accepted state with inherited file append permission: %v", err)
+	}
+	if err := store.Advance(42); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("Advance accepted state with inherited file append permission: %v", err)
+	}
+	if err := saveState(path, State{Version: UpdateStateVersion, StableSequence: 42}); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("saveState created a temporary file under inherited file append permission: %v", err)
+	}
+	if _, err := acquireUpdateLock(context.Background(), path); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("update lock acquisition accepted inherited file append permission: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(original) {
+		t.Fatalf("rejected state operations changed rollback bytes: %q", got)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, ".update-apply.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unsafe update lock was created: %v", err)
+	}
+	temps, err := filepath.Glob(filepath.Join(dir, ".update-state-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Fatalf("unsafe temporary state files were created: %v", temps)
+	}
+}
+
