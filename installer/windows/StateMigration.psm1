@@ -1198,11 +1198,6 @@ public static class WeDecentMigrationFileIdentityApi {
             if (GetIdentity(temporaryPath)!=sourceId)
                 throw new InvalidOperationException("Publication source pathname changed before atomic publication.");
             if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED")=="1")
-                throw new System.ComponentModel.Win32Exception(87,"Injected unsupported handle-relative rename; refusing publication.");
-            if (PublicationHook!=null) PublicationHook(targetPath);
-            if (GetIdentity(temporaryPath)!=sourceId)
-                throw new InvalidOperationException("Publication source pathname changed before atomic publication.");
-            if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED")=="1")
                 throw new System.ComponentModel.Win32Exception(87,"Injected unsupported native rename; refusing publication.");
             // The same-directory target is fully qualified; RootDirectory must be NULL.
             // This is atomic replacement, not a kernel compare-and-swap; protected ACLs and ancestor leases are required.
