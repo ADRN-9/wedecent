@@ -205,6 +205,7 @@ def main() -> None:
                         [sudo, "-n", "-u", username, "--", "python3", "-c", probe,
                          operation, str(own), str(other)],
                         check=False,
+                        stderr=subprocess.DEVNULL,
                     ).returncode
                 try:
                     require(as_user(signer_user, "sign", signer_secret, publisher_secret) == 0,
