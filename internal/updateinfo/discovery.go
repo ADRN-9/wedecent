@@ -11,34 +11,65 @@ import (
 )
 
 const (
-	StableManifestURL     = "https://downloads.wedecent.com/windows/stable/manifest-v1.json"
-	StableSignatureURL    = "https://downloads.wedecent.com/windows/stable/manifest-v1.sig"
+	StableKeysetURL       = "https://downloads.wedecent.com/windows/stable/keyset-v1.json"
+	StableKeysetSignatureURL = "https://downloads.wedecent.com/windows/stable/keyset-v1.sig"
+	StableManifestURL     = "https://downloads.wedecent.com/windows/stable/manifest-v2.json"
+	StableSignatureURL    = "https://downloads.wedecent.com/windows/stable/manifest-v2.sig"
 	MaxSignatureFileBytes = 128
 	DefaultFetchTimeout   = 10 * time.Second
 )
 
 var ErrDiscovery = errors.New("updateinfo: update discovery failed")
 
-// DiscoveryClient fetches the stable update manifest from the fixed public
-// origin and authenticates it with an explicitly provisioned Ed25519 key.
-// Transport is injectable for tests; production callers should normally leave
-// it nil so the default HTTPS transport is used.
+// DiscoveryClient requires an independently provisioned root public key and
+// protected state store. There is deliberately no manifest-v1 fallback.
 type DiscoveryClient struct {
-	PublicKey ed25519.PublicKey
-	Transport http.RoundTripper
-	Timeout   time.Duration
+	RootKeyID     string
+	RootPublicKey ed25519.PublicKey
+	State         *StateStore
+	Transport     http.RoundTripper
+	Timeout       time.Duration
+	Now           func() time.Time
 }
 
-// DiscoverStable fetches and verifies the stable manifest, then applies the
-// caller's installed-version and anti-rollback sequence policy. It never
-// persists sequence state merely because a candidate was observed.
+// DiscoverStable verifies and persists the root-authorized keyset before
+// verifying a v2 manifest. Sequence rollback is checked against both caller
+// state and the protected persisted sequence, which is committed after install.
 func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion string, highestSequence uint64) (Manifest, error) {
 	var zero Manifest
-	if len(c.PublicKey) != ed25519.PublicKeySize {
-		return zero, fmt.Errorf("%w: invalid pinned public key", ErrDiscovery)
+	if ctx == nil || c.State == nil || c.State.Path == "" ||
+		len(c.RootPublicKey) != ed25519.PublicKeySize || !keyIDPattern.MatchString(c.RootKeyID) {
+		return zero, fmt.Errorf("%w: pinned root key and protected state store are required", ErrDiscovery)
 	}
 	if c.Timeout < 0 {
 		return zero, fmt.Errorf("%w: timeout must not be negative", ErrDiscovery)
+	}
+	now := time.Now()
+	if c.Now != nil {
+		now = c.Now()
+	}
+
+	keysetBytes, err := c.fetch(ctx, StableKeysetURL, MaxKeysetBytes)
+	if err != nil {
+		return zero, err
+	}
+	keysetSignature, err := c.fetch(ctx, StableKeysetSignatureURL, MaxSignatureFileBytes)
+	if err != nil {
+		return zero, err
+	}
+	verified, err := c.State.VerifyAndAdvanceKeyset(ctx, c.RootKeyID, c.RootPublicKey, keysetBytes, keysetSignature, now)
+	if err != nil {
+		return zero, fmt.Errorf("%w: verify keyset: %w", ErrDiscovery, err)
+	}
+	persisted, err := c.State.Load()
+	if err != nil {
+		return zero, fmt.Errorf("%w: load protected update state: %w", ErrDiscovery, err)
+	}
+	if persisted.KeysetEpoch != verified.Epoch() || persisted.KeysetDigest != verified.Digest() {
+		return zero, fmt.Errorf("%w: verified keyset does not match persisted trust state", ErrDiscovery)
+	}
+	if persisted.StableSequence > highestSequence {
+		highestSequence = persisted.StableSequence
 	}
 
 	manifestBytes, err := c.fetch(ctx, StableManifestURL, MaxManifestBytes)
@@ -49,12 +80,9 @@ func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion stri
 	if err != nil {
 		return zero, err
 	}
-	manifest, err := Verify(c.PublicKey, manifestBytes, signatureBytes)
+	manifest, err := VerifyManifestV2(verified, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
 	if err != nil {
-		return zero, err
-	}
-	if err := CheckAdvance(currentVersion, highestSequence, manifest); err != nil {
-		return zero, err
+		return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err)
 	}
 	return manifest, nil
 }
