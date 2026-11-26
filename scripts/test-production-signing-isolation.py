@@ -186,28 +186,33 @@ def main() -> None:
                 publisher_secret.write_text("test-only-r2-publisher-secret", encoding="utf-8")
                 signer_secret.chmod(0o600)
                 publisher_secret.chmod(0o600)
-                subprocess.run([sudo, "-n", "chown", "-R", f"{signer_user}:{signer_user}", str(signer_dir)], check=True)
-                subprocess.run([sudo, "-n", "chown", "-R", f"{publisher_user}:{publisher_user}", str(publisher_dir)], check=True)
-                probe = (
-                    "import sys\n"
-                    "op, own, other = sys.argv[1:]\n"
-                    "open(own, 'r', encoding='utf-8').read()\n"
-                    "try:\n"
-                    "    open(other, 'r', encoding='utf-8').read()\n"
-                    "except (PermissionError, FileNotFoundError):\n"
-                    "    pass\n"
-                    "else:\n"
-                    "    raise SystemExit('cross-role credential unexpectedly readable')\n"
-                    "assert op in ('sign', 'publish')\n"
-                )
-                def as_user(username, operation, own, other):
-                    return subprocess.run(
-                        [sudo, "-n", "-u", username, "--", "python3", "-c", probe,
-                         operation, str(own), str(other)],
-                        check=False,
-                        stderr=subprocess.DEVNULL,
-                    ).returncode
                 try:
+                    # Keep every operation after the first ownership change inside
+                    # this finally so partial setup failures cannot strand root-owned
+                    # or role-owned descendants in TemporaryDirectory.
+                    subprocess.run([sudo, "-n", "chown", "-R", f"{signer_user}:{signer_user}", str(signer_dir)], check=True)
+                    subprocess.run([sudo, "-n", "chown", "-R", f"{publisher_user}:{publisher_user}", str(publisher_dir)], check=True)
+                    probe = (
+                        "import sys\\n"
+                        "op, own, other = sys.argv[1:]\\n"
+                        "open(own, 'r', encoding='utf-8').read()\\n"
+                        "try:\\n"
+                        "    open(other, 'r', encoding='utf-8').read()\\n"
+                        "except (PermissionError, FileNotFoundError):\\n"
+                        "    pass\\n"
+                        "else:\\n"
+                        "    raise SystemExit('cross-role credential unexpectedly readable')\\n"
+                        "assert op in ('sign', 'publish')\\n"
+                    )
+
+                    def as_user(username, operation, own, other):
+                        return subprocess.run(
+                            [sudo, "-n", "-u", username, "--", "python3", "-c", probe,
+                             operation, str(own), str(other)],
+                            check=False,
+                            stderr=subprocess.DEVNULL,
+                        ).returncode
+
                     require(as_user(signer_user, "sign", signer_secret, publisher_secret) == 0,
                             "signer OS account must read its own key and not publisher credentials")
                     require(as_user(publisher_user, "publish", publisher_secret, signer_secret) == 0,
@@ -217,7 +222,7 @@ def main() -> None:
                     require(as_user(publisher_user, "sign", signer_secret, publisher_secret) != 0,
                             "publisher OS account must be unable to sign")
                 finally:
-                    # Restore ownership so the invoking runner can remove the temporary tree.
+                    # Restore ownership even when either chown or a probe fails.
                     subprocess.run([sudo, "-n", "chown", "-R", f"{os.getuid()}:{os.getgid()}", str(temp)], check=True)
         finally:
             for username in reversed(created_users):
