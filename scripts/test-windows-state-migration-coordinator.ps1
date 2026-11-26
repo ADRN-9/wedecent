@@ -147,7 +147,7 @@ exit 1
     $pwsh = Join-Path $PSHOME 'pwsh.exe'
     $process = Start-Process -FilePath $pwsh -Credential $global:WeDecentMigrationAttackerCredential `
         -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) `
-        -Wait -PassThru -WindowStyle Hidden
+        -WorkingDirectory (Join-Path $env:SystemRoot 'System32') -Wait -PassThru -WindowStyle Hidden
     if ($process.ExitCode -ne 0) {
         throw "Unprivileged publication mutation unexpectedly succeeded or failed for another reason (exit=$($process.ExitCode))."
     }
