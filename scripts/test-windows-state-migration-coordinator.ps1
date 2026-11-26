@@ -1876,18 +1876,22 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
 $recoveryRejectedCases = @(
     [pscustomobject]@{
         Name = 'overlapping source/staging paths'
+        ExpectedError = '*unsafe or inconsistent source, destination, or staging paths*'
         Mutate = { param($journal, $fixture) $journal.staging = Join-Path $fixture.Source 'nested' }
     },
     [pscustomobject]@{
         Name = 'Verified phase without completed staging'
+        ExpectedError = '*requires completed, authenticated staging*'
         Mutate = { param($journal, $fixture) $journal.phase = 'Verified'; $journal.staging_complete = $false; $journal.destination_manifest_sha256 = '' }
     },
     [pscustomobject]@{
         Name = 'non-Boolean service_was_running marker'
+        ExpectedError = '*required Boolean state markers*'
         Mutate = { param($journal, $fixture) $journal.service_was_running = 'false' }
     },
     [pscustomobject]@{
         Name = 'original metadata bound to a different source'
+        ExpectedError = '*original metadata does not authenticate its source state*'
         Mutate = {
             param($journal, $fixture)
             $metadata = ConvertFrom-Json -InputObject $journal.original_metadata_json
@@ -1915,7 +1919,8 @@ foreach ($case in $recoveryRejectedCases) {
         try {
             [void](Recover-WeDecentStateMigration -JournalPath $fixture.Journal -AgentPath $agentPath -MetadataPath $fixture.MetadataPath -ServiceName $fixture.ServiceName)
         } catch {
-            $rejected = $true
+            $rejected = $_.Exception.Message -like $case.ExpectedError
+            if (-not $rejected) { throw }
         }
         if (-not $rejected) { throw "Recovery accepted $($case.Name)." }
         Assert-MigrationRecoveryNoSideEffects -Fixture $fixture -Journal $journal -Before $before -Case $case.Name
