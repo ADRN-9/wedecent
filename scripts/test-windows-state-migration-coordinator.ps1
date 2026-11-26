@@ -327,14 +327,18 @@ function Invoke-MigrationUntrustedMutationAttempt {
     # Fail closed unless the actual impersonated token is an ordinary medium-integrity,
     # non-elevated user token with only the explicitly permitted baseline privileges.
     $tokenFields = @{}
+    $allowedTokenFields = @('sid','integrityRid','elevated','enabledPrivileges')
     foreach ($field in ($global:WeDecentMigrationAttackTokenEvidence -split ';')) {
         $parts = $field -split '=', 2
         if ($parts.Count -ne 2 -or $tokenFields.ContainsKey($parts[0])) {
             throw "Attacker token evidence is malformed or duplicated: $global:WeDecentMigrationAttackTokenEvidence"
         }
+        if ($parts[0] -notin $allowedTokenFields) {
+            throw "Attacker token evidence contains an unexpected field '$($parts[0])'."
+        }
         $tokenFields[$parts[0]] = $parts[1]
     }
-    foreach ($requiredField in @('sid','integrityRid','elevated','enabledPrivileges')) {
+    foreach ($requiredField in $allowedTokenFields) {
         if (-not $tokenFields.ContainsKey($requiredField)) {
             throw "Attacker token evidence is missing required field: $requiredField"
         }
