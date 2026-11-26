@@ -460,6 +460,34 @@ foreach ($fault in $forwardFaults) {
         Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+$unsupportedServiceStates = @('Paused', 'Start Pending', 'Stop Pending', 'Pause Pending', 'Continue Pending')
+foreach ($unsupportedState in $unsupportedServiceStates) {
+    $fixture = New-MigrationFixture
+    try {
+        $global:WeDecentMigrationMockService.State = $unsupportedState
+        $global:WeDecentMigrationMockStatus = $unsupportedState
+        $rejected = $false
+        try {
+            Invoke-WeDecentStateMigration -Source $fixture.Source -Destination $fixture.Destination -AgentPath $agentPath -ServiceName $fixture.ServiceName -ServiceSid $fixture.ServiceSid -MetadataPath $fixture.MetadataPath -JournalPath $fixture.Journal | Out-Null
+        } catch {
+            $rejected = $_.Exception.Message -like "*requires SCM service to be Running or Stopped*"
+            if (-not $rejected) { throw }
+        }
+        if (-not $rejected) { throw "Migration accepted unsupported SCM state '$unsupportedState'." }
+        if (Test-Path -LiteralPath $fixture.Journal) { throw "Migration wrote a journal before rejecting SCM state '$unsupportedState'." }
+        if (Test-Path -LiteralPath $fixture.Destination) { throw "Migration created a destination before rejecting SCM state '$unsupportedState'." }
+        if (-not (Test-Path -LiteralPath $fixture.Source -PathType Container)) { throw "Migration changed the source while rejecting SCM state '$unsupportedState'." }
+        if ($global:WeDecentMigrationMockService.PathName -cne $fixture.OriginalServicePath -or
+            $global:WeDecentMigrationMockService.State -cne $unsupportedState -or
+            $global:WeDecentMigrationMockStatus -cne $unsupportedState) {
+            throw "Migration mutated SCM or service state while rejecting '$unsupportedState'."
+        }
+        Write-Host "Migration rejects unsupported SCM state without mutation PASS: $unsupportedState"
+    } finally {
+        Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 $success = New-MigrationFixture
 try {
     $result = Invoke-WeDecentStateMigration -Source $success.Source -Destination $success.Destination -AgentPath $agentPath -ServiceName $success.ServiceName -ServiceSid $success.ServiceSid -MetadataPath $success.MetadataPath -JournalPath $success.Journal
