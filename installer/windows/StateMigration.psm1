@@ -1138,25 +1138,11 @@ public static class WeDecentMigrationFileIdentityApi {
                 throw new InvalidOperationException("Migration directory pathname no longer identifies its leased object: " + lease.PathAt(n));
         }
     }
-    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
-    private struct FILE_RENAME_INFO {
-        [MarshalAs(UnmanagedType.U1)] public bool ReplaceIfExists;
-        public IntPtr RootDirectory;
-        public uint FileNameLength;
-        public char FileName;
-    }
-    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
-    private struct FILE_RENAME_INFO_EX {
-        public uint Flags;
-        public IntPtr RootDirectory;
-        public uint FileNameLength;
-        public char FileName;
-    }
-    private const int FILE_RENAME_INFO_EX_CLASS=22;
-    private const uint FILE_RENAME_REPLACE_IF_EXISTS=0x1;
-    private const uint FILE_RENAME_POSIX_SEMANTICS=0x2;
-    [DllImport("kernel32.dll", SetLastError=true)]
-    private static extern bool SetFileInformationByHandle(IntPtr h, int infoClass, IntPtr info, uint size);
+
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true, EntryPoint="MoveFileExW")]
+    private static extern bool MoveFileEx(string existingPath, string newPath, uint flags);
+    private const uint MOVEFILE_REPLACE_EXISTING=0x1;
+    private const uint MOVEFILE_WRITE_THROUGH=0x8;
     public static string PublishByHandle(string temporaryPath, string parentPath, string targetName,
         string expectedTemporaryIdentity, string expectedTargetIdentity, bool replaceExisting) {
         if (String.IsNullOrWhiteSpace(targetName) || targetName.IndexOfAny(new char[]{'\\','/'})>=0 ||
@@ -1203,40 +1189,13 @@ public static class WeDecentMigrationFileIdentityApi {
                 throw new InvalidOperationException("Publication source pathname changed before atomic publication.");
             if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED")=="1")
                 throw new System.ComponentModel.Win32Exception(87,"Injected unsupported native rename; refusing publication.");
-            if (replaceExisting) {
-                // Atomic replacement is not a kernel compare-and-swap. The caller must hold a protected
-                // namespace lease and this restrictive target handle throughout the native operation.
-                int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileName").ToInt32();
-                byte[] absoluteName=System.Text.Encoding.Unicode.GetBytes(targetPath);
-                int bufferSize=nameOffset+absoluteName.Length;
-                IntPtr buffer=Marshal.AllocHGlobal(bufferSize);
-                try {
-                    uint flags=FILE_RENAME_REPLACE_IF_EXISTS|FILE_RENAME_POSIX_SEMANTICS;
-                    Marshal.WriteInt32(buffer,0,unchecked((int)flags));
-                    Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"RootDirectory").ToInt32(),IntPtr.Zero);
-                    Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileNameLength").ToInt32(),absoluteName.Length);
-                    Marshal.Copy(absoluteName,0,IntPtr.Add(buffer,nameOffset),absoluteName.Length);
-                    if (!SetFileInformationByHandle(source,FILE_RENAME_INFO_EX_CLASS,buffer,(uint)bufferSize)) {
-                        int error=Marshal.GetLastWin32Error();
-                        throw new System.ComponentModel.Win32Exception(error,"Protected absolute-path atomic replacement failed (Win32 " + error + "); refusing fallback.");
-                    }
-                } finally { Marshal.FreeHGlobal(buffer); }
-            } else {
-                int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
-                byte[] absoluteName=System.Text.Encoding.Unicode.GetBytes(targetPath);
-                int bufferSize=nameOffset+absoluteName.Length+2;
-                IntPtr buffer=Marshal.AllocHGlobal(bufferSize);
-                try {
-                    Marshal.WriteByte(buffer,0,0);
-                    Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),IntPtr.Zero);
-                    Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),absoluteName.Length);
-                    Marshal.Copy(absoluteName,0,IntPtr.Add(buffer,nameOffset),absoluteName.Length);
-                    Marshal.WriteInt16(buffer,nameOffset+absoluteName.Length,0);
-                    if (!SetFileInformationByHandle(source,3,buffer,(uint)bufferSize)) {
-                        int error=Marshal.GetLastWin32Error();
-                        throw new System.ComponentModel.Win32Exception(error,"Protected absolute-path no-replace publication failed (Win32 " + error + "); refusing fallback.");
-                    }
-                } finally { Marshal.FreeHGlobal(buffer); }
+            // MoveFileEx performs the same-volume namespace operation. The protected ancestor
+            // lease and ACL checks are the security boundary; this is not a kernel compare-and-swap.
+            if (source!=IntPtr.Zero) { CloseHandle(source); source=IntPtr.Zero; }
+            uint moveFlags=MOVEFILE_WRITE_THROUGH|(replaceExisting?MOVEFILE_REPLACE_EXISTING:0);
+            if (!MoveFileEx(temporaryPath,targetPath,moveFlags)) {
+                int error=Marshal.GetLastWin32Error();
+                throw new System.ComponentModel.Win32Exception(error,"Protected absolute-path atomic publication failed (Win32 " + error + "); refusing fallback.");
             }
             string published=GetIdentity(targetPath);
             if (published!=sourceId) throw new InvalidOperationException("Published object identity did not match the verified source.");
