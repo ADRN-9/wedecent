@@ -173,3 +173,77 @@ For each run, retain the source, staging, and destination manifest digests (incl
 ### C293 assessment disposition
 
 The changes above correct runbook terminology, unsupported destination wording, phase enumeration, and the distinction between injected exceptions and hard process termination. They do not assert that the implementation has passed real SCM, service-account DPAPI, process-kill, rollback, or reboot acceptance. Those remain NOT ESTABLISHED until executed on the isolated persistent VM.
+
+
+## C313 — operator command worksheet and hard-stop evidence
+
+This worksheet is for the isolated persistent acceptance VM only. It does not provision the VM, sign the installer, or authorize running destructive steps on a shared workstation or production runner. Record the candidate SHA, test-installer SHA-256, VM/disk/snapshot IDs and UTC timestamp before each case. Run read-only collection before and after every state transition.
+
+### Capture real SCM configuration
+
+Run from the separate elevated operator session:
+
+```powershell
+$ErrorActionPreference = 'Stop'
+$serviceName = 'WeDecentAgent'
+$service = Get-CimInstance Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+if (-not $service) { throw "SCM service $serviceName is missing" }
+$accountSid = ([System.Security.Principal.NTAccount]::new([string]$service.StartName)).Translate(
+    [System.Security.Principal.SecurityIdentifier]
+).Value
+[pscustomobject]@{
+    Name = $service.Name
+    State = $service.State
+    ProcessId = $service.ProcessId
+    StartMode = $service.StartMode
+    StartName = $service.StartName
+    AccountSid = $accountSid
+    PathName = $service.PathName
+} | ConvertTo-Json -Depth 3
+sc.exe qc $serviceName
+if ($LASTEXITCODE -ne 0) { throw "sc.exe qc failed: $LASTEXITCODE" }
+sc.exe queryex $serviceName
+if ($LASTEXITCODE -ne 0) { throw "sc.exe queryex failed: $LASTEXITCODE" }
+```
+
+Save the output as a redacted before/after record. Confirm the resolved SID is the dedicated standard local account and independently verify it is not a member of Administrators. Capture effective service-token groups using the approved token-inspection method on the VM; do not infer the process token from the configured `StartName` alone. Capture owner/SDDL for the state directory, each descendant and each protected ancestor separately.
+
+### Exercise actual SCM stop/start/restart
+
+Only after the before-state evidence and baseline snapshot are recorded:
+
+```powershell
+$svc = Get-Service -Name $serviceName -ErrorAction Stop
+if ($svc.Status -ne 'Stopped') {
+    Stop-Service -Name $serviceName -Force -ErrorAction Stop
+    (Get-Service -Name $serviceName).WaitForStatus(
+        [System.ServiceProcess.ServiceControllerStatus]::Stopped,
+        [TimeSpan]::FromSeconds(30)
+    )
+}
+Start-Service -Name $serviceName -ErrorAction Stop
+(Get-Service -Name $serviceName).WaitForStatus(
+    [System.ServiceProcess.ServiceControllerStatus]::Running,
+    [TimeSpan]::FromSeconds(30)
+)
+```
+
+Repeat after migration and after recovery. For each transition capture SCM state/PID/configuration, service account SID/token evidence, state-tree owner/DACL, event logs, and the same public device ID, Ed25519 fingerprint and certificate digest. Verify an authorized terminal session from the independent test endpoint after the service is running. A successful SCM start without identity reopening and authorized terminal operation is not a pass.
+
+### DPAPI identity continuity evidence
+
+Use the agent's supported read-only identity inspection path to capture the device ID, public fingerprint and certificate digest under the actual service identity. Separately hash the protected key file at its configured state path using `Get-FileHash -Algorithm SHA256`; record only the digest and path, never file contents or DPAPI bytes. Compare the pre/post digest only when the source already held a machine-scope DPAPI blob. If migration converts a legacy plaintext key, require the same public identity, a new machine-scope protected file and absence of the plaintext legacy file at the destination; do not require byte equality with a nonexistent source DPAPI blob. Verify the service itself reopens the identity after SCM stop/start and after reboot. An elevated operator's successful identity check is supplemental and cannot substitute for service-token decryption.
+
+### Hard process termination and recovery worksheet
+
+For each disposable snapshot/case, use a second VM console or hypervisor-side supervisor. Record the installer PID, last durably written journal phase, journal SHA-256, source/staging/destination manifest digests and SCM state. Pause the actual installer immediately after the durable journal publication or side effect under test, then terminate that PID from the independent supervisor. Confirm process exit before invoking recovery in a new PowerShell process. Do not use the coordinator's `-FaultAt` exception path as a substitute for hard termination.
+
+Cover the nine durable phases and the between-write windows enumerated in C289 step 7. For every case, record: phase observed on disk; installer PID and exit timestamp; source/staging/destination existence and digest; before/after SCM PathName, StartName, start mode and state; metadata/journal digest; recovery process PID/exit code; final journal phase; identity evidence; and whether authorized terminal operation succeeds. A recovery process must not restart the service against an unverified state path. Restore the clean baseline snapshot between independent destructive cases.
+
+### Same-disk reboot recovery
+
+After a transaction is durably pending, record the VM and persistent disk IDs, snapshot ID, journal phase/digest, source and destination digests, SCM configuration, and identity evidence. Reboot the guest using the hypervisor/VM control plane while retaining the same persistent disk; do not recreate the VM from a clean disk. After boot, collect SCM state/configuration before invoking the documented installer recovery path in a fresh process. Then collect the same evidence again and verify the terminal journal phase, source retention, destination integrity, service-account SID, DPAPI identity continuity and authorized terminal operation. Record the boot ID/uptime and UTC times so the evidence proves a reboot rather than merely a service restart.
+
+### Per-case result ledger
+
+For each phase, side-effect window, negative input and reboot case, record one of `PREPARED`, `EXECUTED`, `PASS`, `FAIL`, or `NOT ESTABLISHED`. Attach redacted transcripts and evidence hashes, not secrets. A skipped case, a mock-driven coordinator pass, or an unavailable VM is `NOT ESTABLISHED`; it must not be rolled up as a real-machine pass. Any unexpected service restart, identity regeneration, source mutation, ACL broadening, unverified path use, or missing recovery evidence is a fail-closed acceptance failure requiring investigation.
