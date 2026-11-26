@@ -167,8 +167,8 @@ try {
     $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ phase = 'Prepared' }
     Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $caseJson -Case 'Prepared phase with completed staging'
     $caseJson = Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ staging_complete = $false; destination_manifest_sha256 = '' }
-    $preparedJournal = Set-MigrationJournalJsonForTest -Json $caseJson -Fields @{ phase = 'Prepared' }
-    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $preparedJournal -Case 'completed rollback fields inconsistent with early phase'
+    $caseJson = Set-MigrationJournalJsonForTest -Json $caseJson -Fields @{ phase = 'Prepared' }
+    Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json (Set-MigrationJournalJsonForTest -Json $validJournalJson -Fields @{ staging_complete = $false; destination_manifest_sha256 = 'a' * 64 }) -Case 'destination digest present before staging completion'
     Write-Host 'Migration journal strict JSON and phase/digest regression suite PASS'
 } finally {
     Remove-Item -LiteralPath $journalParserFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
