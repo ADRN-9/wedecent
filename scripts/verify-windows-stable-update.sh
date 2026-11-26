@@ -25,6 +25,8 @@ done
 [[ -f "$SIGNATURE" && ! -L "$SIGNATURE" ]] || die 'signature must be a regular non-symlink file'
 [[ "$RECEIPT" == /* && ! -e "$RECEIPT" && ! -L "$RECEIPT" ]] || die 'receipt must be a new absolute path'
 for command in curl sha256sum awk go; do command -v "$command" >/dev/null 2>&1 || die "missing command: $command"; done
+[[ "${GITHUB_REF_TYPE:-}" == tag && "${GITHUB_REPOSITORY:-}" == ADRN-9/wedecent && "${GITHUB_SHA:-}" =~ ^[0-9a-f]{40}$ ]] || die 'verification job is not bound to the expected immutable GitHub release'
+"$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" || die 'live release tag does not match workflow commit'
 
 verify_pair() {
   local manifest="$1" signature="$2" output="$3"
@@ -38,10 +40,10 @@ old_signature="$(mktemp)"
 trap 'rm -f -- "$candidate_output" "$old_output" "$old_manifest" "$old_signature"' EXIT
 
 verify_pair "$MANIFEST" "$SIGNATURE" "$candidate_output" || die 'candidate signature/canonical manifest invalid'
-read -r sequence_line version_line < "$candidate_output"
-[[ "$sequence_line" =~ ^sequence=[1-9][0-9]*$ && "$version_line" =~ ^version=v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die 'candidate verifier output malformed'
-sequence="${sequence_line#sequence=}"
-version="${version_line#version=}"
+mapfile -t candidate_fields < "$candidate_output"
+[[ "${#candidate_fields[@]}" == 2 && "${candidate_fields[0]}" =~ ^sequence=[1-9][0-9]*$ && "${candidate_fields[1]}" =~ ^version=v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die 'candidate verifier output malformed'
+sequence="${candidate_fields[0]#sequence=}"
+version="${candidate_fields[1]#version=}"
 
 base='https://downloads.wedecent.com/windows/stable'
 probe() {
@@ -58,10 +60,10 @@ if [[ "$manifest_status" == 200 && "$signature_status" == 200 ]]; then
   curl -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.json" -o "$old_manifest" || die 'cannot fetch current stable manifest'
   curl -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.sig" -o "$old_signature" || die 'cannot fetch current stable signature'
   verify_pair "$old_manifest" "$old_signature" "$old_output" || die 'existing stable pair is invalid'
-  read -r old_sequence_line old_version_line < "$old_output"
-  [[ "$old_sequence_line" =~ ^sequence=[1-9][0-9]*$ && "$old_version_line" =~ ^version=v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9]*)$ ]] || die 'existing verifier output malformed'
-  old_sequence="${old_sequence_line#sequence=}"
-  old_version="${old_version_line#version=}"
+  mapfile -t old_fields < "$old_output"
+  [[ "${#old_fields[@]}" == 2 && "${old_fields[0]}" =~ ^sequence=[1-9][0-9]*$ && "${old_fields[1]}" =~ ^version=v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die 'existing verifier output malformed'
+  old_sequence="${old_fields[0]#sequence=}"
+  old_version="${old_fields[1]#version=}"
   (cd "$ROOT" && go run ./cmd/wd-update-manifest verify --public-key "$PUBLIC_KEY" --manifest "$MANIFEST" --signature "$SIGNATURE" --current-version "$old_version" --current-sequence "$old_sequence") >/dev/null ||
     die 'candidate does not advance current stable version and sequence'
   expected_manifest="$(sha256sum "$old_manifest" | awk '{print tolower($1)}')"
