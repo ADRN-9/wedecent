@@ -839,7 +839,7 @@ function Set-WeDecentMigrationServicePath {
     if (-not $service -or [string]$service.PathName -cne $BinaryPath) {
         throw 'SCM service path did not persist exactly as requested.'
     }
-    $actualSid = ([Security.Principal.NTAccount]::new($preflightServiceStartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $actualSid = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
     if ($actualSid -cne $ServiceSid -or [string]$service.StartMode -cne $StartMode) {
         throw 'SCM service account or start mode changed during the state migration transition.'
     }
