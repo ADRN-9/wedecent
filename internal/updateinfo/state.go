@@ -2,6 +2,7 @@ package updateinfo
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"encoding/hex"
 	"encoding/json"
@@ -92,6 +93,7 @@ func (s *StateStore) Advance(sequence uint64) error {
 // persisted epoch/digest and commits a newer keyset atomically with the current
 // stable sequence. Callers cannot advance trust state using an unverified digest.
 func (s *StateStore) VerifyAndAdvanceKeyset(
+	ctx context.Context,
 	rootKeyID string,
 	rootPublicKey ed25519.PublicKey,
 	keysetBytes, signatureBytes []byte,
@@ -101,9 +103,17 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 	if s == nil || s.Path == "" {
 		return zero, fmt.Errorf("%w: state path is required", ErrInvalidState)
 	}
+	if ctx == nil {
+		return zero, fmt.Errorf("%w: context is required", ErrInvalidState)
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := acquireUpdateLock(ctx, s.Path)
+	if err != nil {
+		return zero, err
+	}
+	defer release()
 	current, err := loadState(s.Path)
 	if err != nil {
 		return zero, err
