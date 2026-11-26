@@ -71,3 +71,29 @@ func TestRunPairFingerprintGuidanceRequiresIndependentChannel(t *testing.T) {
 		t.Fatalf("error = %v, discovery must not be presented as a trust source", err)
 	}
 }
+
+func TestRunPairRejectsExplicitEmptyTransportFlagsWithDiscoveryBeforeSecretPrompt(t *testing.T) {
+	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
+		_, err := runPair([]string{
+			"--discover-lan",
+			"--device-id", "wd_aaaaaaaaaaaaaaaa",
+			"--fingerprint", pairParserTestFingerprint,
+			"--" + name + "=",
+		})
+		if err == nil || !strings.Contains(err.Error(), "--"+name+" must not be empty") {
+			t.Errorf("--%s=: error = %v; want explicit-empty rejection before discovery/secret prompt", name, err)
+		}
+	}
+}
+
+func TestRunPairRejectsExplicitEmptyTransportFlagsWithoutDiscovery(t *testing.T) {
+	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
+		_, err := runPair([]string{
+			"--fingerprint", pairParserTestFingerprint,
+			"--" + name + "=",
+		})
+		if err == nil || !strings.Contains(err.Error(), "--"+name+" must not be empty") {
+			t.Errorf("--%s=: error = %v; want explicit-empty rejection", name, err)
+		}
+	}
+}
