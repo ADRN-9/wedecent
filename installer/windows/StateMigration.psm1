@@ -1245,6 +1245,25 @@ public static class WeDecentMigrationFileIdentityApi {
 '@
 }
 
+function New-WeDecentMigrationMutationLease {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][string[]]$Directories)
+    Initialize-WeDecentMigrationFileIdentityApi
+    $resolved = @($Directories | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        ForEach-Object { Assert-WeDecentMigrationRealDirectory -Path $_ } | Sort-Object -Unique)
+    if ($resolved.Count -eq 0) { throw 'A filesystem mutation lease requires at least one directory.' }
+    return [WeDecentMigrationFileIdentityApi]::AcquireDirectoryLease([string[]]$resolved)
+}
+function Assert-WeDecentMigrationMutationLease {
+    param([Parameter(Mandatory = $true)]$Lease,[Parameter(Mandatory = $true)][string[]]$Paths)
+    [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($Lease)
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $Paths)
+}
+function Invoke-WeDecentMigrationRacePoint {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $injection = Get-Variable -Name WeDecentMigrationRaceInjection -Scope Global -ValueOnly -ErrorAction SilentlyContinue
+    if ($injection -is [scriptblock]) { & $injection $Name }
+
 function Assert-WeDecentMigrationPathsDisjoint {
     param([Parameter(Mandatory = $true)][string[]]$Paths)
 
