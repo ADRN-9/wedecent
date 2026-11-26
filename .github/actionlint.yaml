@@ -2,3 +2,5 @@ self-hosted-runner:
   labels:
     - wedecent-signing
     - wedecent-release-publisher
+    - wedecent-update-signer
+    - wedecent-update-verifier
