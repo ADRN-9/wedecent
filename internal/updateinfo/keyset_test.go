@@ -156,6 +156,7 @@ func TestManifestV2RequiresActiveKeysetAndRejectsRollback(t *testing.T) {
 	manifest.Schema = ManifestSchemaV2
 	manifest.SigningKeyID = keyset.Keys[0].ID
 	manifest.KeysetEpoch = keyset.Epoch
+	manifest.PublishedAt = now.Add(-30 * time.Minute).UTC().Format(time.RFC3339)
 	body, err := EncodeCanonical(manifest)
 	if err != nil {
 		t.Fatal(err)
@@ -179,6 +180,9 @@ func TestManifestV2RequiresActiveKeysetAndRejectsRollback(t *testing.T) {
 	}
 	if _, err := VerifyManifestV2(verified, body, signature, now, "v1.2.2", 42); !errors.Is(err, ErrRollback) {
 		t.Fatalf("sequence rollback error = %v, want ErrRollback", err)
+	}
+	if _, err := VerifyManifestV2(verified, body, signature, now.Add(48*time.Hour), "v1.2.2", 41); !errors.Is(err, ErrInvalidKeyset) {
+		t.Fatalf("expired keyset error = %v, want ErrInvalidKeyset", err)
 	}
 }
 
