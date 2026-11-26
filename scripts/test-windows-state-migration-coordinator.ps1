@@ -1112,6 +1112,9 @@ foreach ($mutationCase in $mutationCases) {
 
         $publication = Join-Path $ancestor 'publication'
         New-Item -ItemType Directory -Path $publication | Out-Null
+        $publicationAcl = Get-Acl -LiteralPath $publication
+        $publicationAcl.SetOwner($admins)
+        Set-Acl -LiteralPath $publication -AclObject $publicationAcl -ErrorAction Stop
         $inheritedRule = @( (Get-Acl -LiteralPath $publication).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
             Where-Object { $_.IdentityReference.Value -eq $usersSid.Value -and $_.IsInherited -and (($_.FileSystemRights -band $mutationCase.Rights) -ne 0) } )
         if ($inheritedRule.Count -eq 0) {
@@ -1160,6 +1163,9 @@ try {
     $controlWorkspace = New-MigrationAttackerWorkspace -RootPath $controlFixture.Root -AttackerSid $attackerSid
     $controlDirectory = Join-Path $controlWorkspace 'control'
     New-Item -ItemType Directory -Path $controlDirectory | Out-Null
+    $controlDirectoryAcl = Get-Acl -LiteralPath $controlDirectory
+    $controlDirectoryAcl.SetOwner((ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'))
+    Set-Acl -LiteralPath $controlDirectory -AclObject $controlDirectoryAcl -ErrorAction Stop
     $controlNamespaceRejected = $false
     try { [void](Assert-WeDecentMigrationPublicationNamespace -Path $controlDirectory) }
     catch {
