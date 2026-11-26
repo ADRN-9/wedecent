@@ -55,9 +55,14 @@ remote_sha256() {
   local url="$1"
   local tmp status hash
   tmp="$(mktemp)"
-  status="$(curl --disable -sS --connect-timeout 10 --max-time 120 --proto '=https' -o "$tmp" -w '%{http_code}' "$url")" ||
+  if ! status="$(curl --disable -sS --connect-timeout 10 --max-time 120 --proto '=https' -o "$tmp" -w '%{http_code}' "$url")"; then
+    rm -f -- "$tmp"
     die "cannot fetch immutable artifact: $url"
-  [[ "$status" == 200 ]] || die "unexpected HTTP $status for immutable artifact: $url"
+  fi
+  if [[ "$status" != 200 ]]; then
+    rm -f -- "$tmp"
+    die "unexpected HTTP $status for immutable artifact: $url"
+  fi
   hash="$(sha256sum "$tmp" | awk '{print tolower($1)}')"
   rm -f -- "$tmp"
   [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || die 'invalid artifact SHA-256'
