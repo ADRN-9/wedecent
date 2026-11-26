@@ -961,7 +961,8 @@ foreach ($nativeRaceKind in @('metadata', 'journal')) {
         if (Test-Path -LiteralPath $global:WeDecentMigrationNativeRaceBackup) {
             throw "Native $nativeRaceKind publication allowed the original target to be renamed during its publication guard."
         }
-        if ((Get-Content -LiteralPath $nativeTarget -Raw | ConvertFrom-Json).attacker) {
+        $nativePublishedContent = Get-Content -LiteralPath $nativeTarget -Raw | ConvertFrom-Json
+        if ($null -ne $nativePublishedContent.PSObject.Properties['attacker']) {
             throw "Native $nativeRaceKind publication exposed attacker-controlled replacement content."
         }
         if ($nativeRaceKind -ceq 'metadata') {
