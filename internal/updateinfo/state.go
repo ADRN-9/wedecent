@@ -74,7 +74,51 @@ func (s *StateStore) Advance(sequence uint64) error {
 	if sequence <= current.StableSequence {
 		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, sequence, current.StableSequence)
 	}
-	return saveState(s.Path, State{Version: UpdateStateVersion, StableSequence: sequence})
+	next := State{
+		Version:        current.Version,
+		StableSequence: sequence,
+		KeysetEpoch:    current.KeysetEpoch,
+		KeysetDigest:   current.KeysetDigest,
+	}
+	if next.Version == 0 {
+		next.Version = UpdateStateVersion
+	}
+	return saveState(s.Path, next)
+}
+
+// AdvanceKeyset atomically persists the highest root-authorized keyset epoch
+// and exact SHA-256 digest. Repeating the same epoch/digest is idempotent;
+// lower epochs and same-epoch equivocation fail closed.
+func (s *StateStore) AdvanceKeyset(epoch uint64, digest string) error {
+	if s == nil || s.Path == "" {
+		return fmt.Errorf("%w: state path is required", ErrInvalidState)
+	}
+	if epoch == 0 || len(digest) != 64 || strings.ToLower(digest) != digest {
+		return fmt.Errorf("%w: keyset epoch or digest is invalid", ErrInvalidState)
+	}
+	if _, err := hex.DecodeString(digest); err != nil {
+		return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, err := loadState(s.Path)
+	if err != nil {
+		return err
+	}
+	if epoch < current.KeysetEpoch ||
+		(epoch == current.KeysetEpoch && current.KeysetDigest != digest) {
+		return ErrKeysetRollback
+	}
+	if epoch == current.KeysetEpoch {
+		return nil
+	}
+	return saveState(s.Path, State{
+		Version:        UpdateStateVersionWithKeyset,
+		StableSequence: current.StableSequence,
+		KeysetEpoch:    epoch,
+		KeysetDigest:   digest,
+	})
 }
 
 func loadState(path string) (State, error) {
