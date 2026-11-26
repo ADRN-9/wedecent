@@ -469,6 +469,11 @@ func TestWindowsUpdateStateRejectsInheritedFileWritePermissions(t *testing.T) {
 			// OI-only makes this ACE apply to files, not as an effective
 			// permission on the containing directory.
 			windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;"+tc.mask+";;;WD)")
+			dirSD, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Logf("actual updater-state directory DACL: %s", dirSD.String())
 			path := StatePath(dir)
 			if err := os.WriteFile(path, []byte("{\"version\":1,\"stable_sequence\":41}\n"), 0o600); err != nil {
 				t.Fatal(err)
@@ -478,6 +483,7 @@ func TestWindowsUpdateStateRejectsInheritedFileWritePermissions(t *testing.T) {
 				t.Fatal(err)
 			}
 			sddl := sd.String()
+			t.Logf("actual updater-state file DACL: %s", sddl)
 			if !strings.Contains(sddl, "WD") && !strings.Contains(sddl, "S-1-1-0") {
 				t.Fatalf("state file did not inherit broad-principal ACE; actual file DACL: %s", sddl)
 			}
@@ -497,10 +503,23 @@ func TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock(t *testing.T) {
 	// The append-data mask is inherited by files only. This must be rejected
 	// during directory preflight, before state reads, temp files, or lock files.
 	windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;0x00000004;;;WD)")
+	dirSD, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("actual updater-state directory DACL before state operations: %s", dirSD.String())
 	path := StatePath(dir)
 	original := []byte("{\"version\":1,\"stable_sequence\":41}\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
+	}
+	fileSD, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("actual updater-state file DACL before state operations: %s", fileSD.String())
+	if err := validateUpdateStateDACL(fileSD.String(), user, user, false); err == nil {
+		t.Fatalf("actual inherited state-file DACL accepted: %s", fileSD.String())
 	}
 	store := NewStateStore(path)
 	if _, err := store.Load(); err == nil || !errors.Is(err, ErrInvalidState) {
