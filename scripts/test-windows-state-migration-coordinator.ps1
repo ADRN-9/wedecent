@@ -201,10 +201,10 @@ try {
         @{ Name = 'array'; Fields = @{ service_was_running = @($true) } },
         @{ Name = 'object'; Fields = @{ service_was_running = @{ value = $true } } },
         @{ Name = 'null'; Fields = @{ service_was_running = $null } },
-        @{ Name = 'missing'; Fields = @{}; Remove = @('service_was_running') }
+        @{ Name = 'missing'; Fields = @{}; RemoveFields = @('service_was_running') }
     )
     foreach ($malformed in $malformedServiceStates) {
-        $caseJson = Set-MigrationJournalJsonForTest -Json $pendingJson -Fields $malformed.Fields -RemoveFields $malformed.Remove
+        $caseJson = Set-MigrationJournalJsonForTest -Json $pendingJson -Fields $malformed.Fields -RemoveFields $malformed.RemoveFields
         [IO.File]::WriteAllText($serviceBooleanFixture.Journal, $caseJson, [Text.UTF8Encoding]::new($false))
         $startCount = $global:WeDecentMigrationStartCount
         $rejected = $false
