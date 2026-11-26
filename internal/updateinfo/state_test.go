@@ -91,14 +91,14 @@ func TestStateStoreRejectsInvalidPersistedForms(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, UpdateStateFilename)
 	tests := map[string]string{
-		"zero sequence":   "{\"version\":1,\"stable_sequence\":0}\n",
-		"wrong version":   "{\"version\":2,\"stable_sequence\":1}\n",
-		"unknown field":   "{\"version\":1,\"stable_sequence\":1,\"extra\":true}\n",
-		"reordered":       "{\"stable_sequence\":1,\"version\":1}\n",
-		"pretty":          "{\n  \"version\": 1,\n  \"stable_sequence\": 1\n}\n",
-		"multiple values": "{\"version\":1,\"stable_sequence\":1}\n{}\n",
-		"v2 missing keyset": "{\"version\":2,\"stable_sequence\":1}\n",
-		"v2 invalid digest": "{\"version\":2,\"stable_sequence\":0,\"keyset_epoch\":1,\"keyset_digest\":\"bad\"}\n",
+		"zero sequence":    "{\"version\":1,\"stable_sequence\":0}\n",
+		"wrong version":    "{\"version\":2,\"stable_sequence\":1}\n",
+		"unknown field":    "{\"version\":1,\"stable_sequence\":1,\"extra\":true}\n",
+		"reordered":        "{\"stable_sequence\":1,\"version\":1}\n",
+		"pretty":           "{\n  \"version\": 1,\n  \"stable_sequence\": 1\n}\n",
+		"multiple values":  "{\"version\":1,\"stable_sequence\":1}\n{}\n",
+		"v2 missing keyset":"{\"version\":2,\"stable_sequence\":1}\n",
+		"v2 invalid digest":"{\"version\":2,\"stable_sequence\":0,\"keyset_epoch\":1,\"keyset_digest\":\"bad\"}\n",
 	}
 	for name, data := range tests {
 		t.Run(name, func(t *testing.T) {
