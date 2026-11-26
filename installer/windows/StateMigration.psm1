@@ -1661,6 +1661,19 @@ function Invoke-WeDecentStateMigration {
         $mutationLease = New-WeDecentMigrationMutationLease -Directories $directoryAnchors
         Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
         Invoke-WeDecentMigrationFaultPoint -Name 'Prepared' -FaultAt $FaultAt
+        Invoke-WeDecentMigrationRacePoint -Name 'BeforeServiceStateRevalidation'
+        $currentService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        if (-not $currentService) { throw "Migration service '$ServiceName' disappeared after preflight." }
+        $currentServiceSid = ([Security.Principal.NTAccount]::new([string]$currentService.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+        if ($currentServiceSid -cne $ServiceSid -or
+            [string]$currentService.PathName -cne [string]$service.PathName -or
+            [string]$currentService.StartMode -cne [string]$service.StartMode -or
+            [string]$currentService.State -cne [string]$service.State) {
+            throw 'SCM service identity, command line, start mode, or state changed after migration preflight; refusing filesystem mutation.'
+        }
+        if ([string]$currentService.State -notin @('Running', 'Stopped')) {
+            throw "Migration requires SCM service to be Running or Stopped; refusing transient or paused state '$($currentService.State)'."
+        }
         if ($journal.service_was_running) {
             Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
             Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
