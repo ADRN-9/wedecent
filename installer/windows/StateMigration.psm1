@@ -1083,15 +1083,12 @@ public static class WeDecentMigrationFileIdentityApi {
     private const uint SHARE_READ_WRITE=3, OPEN_EXISTING=3;
     private const uint BACKUP_SEMANTICS=0x02000000, OPEN_REPARSE_POINT=0x00200000;
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
-    private struct FILE_RENAME_INFO_EX {
-        public uint Flags;
+    private struct FILE_RENAME_INFO {
+        [MarshalAs(UnmanagedType.U1)] public bool ReplaceIfExists;
         public IntPtr RootDirectory;
         public uint FileNameLength;
         public char FileName;
     }
-    private const int FILE_RENAME_INFO_EX_CLASS=22;
-    private const uint FILE_RENAME_REPLACE_IF_EXISTS=0x1;
-    private const uint FILE_RENAME_POSIX_SEMANTICS=0x2;
 
 
     private static void Inject(string name) {
@@ -1205,24 +1202,20 @@ public static class WeDecentMigrationFileIdentityApi {
             if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED")=="1")
                 throw new System.ComponentModel.Win32Exception(87,"Injected unsupported native rename; refusing publication.");
             // The same-directory target is fully qualified; RootDirectory must be NULL.
-            // This is atomic replacement, not a kernel compare-and-swap; protected ACLs and ancestor leases are required.
-            int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileName").ToInt32();
+            // Replacement is not a kernel compare-and-swap; protected ACLs and ancestor leases are required.
+            int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
             byte[] absoluteName=System.Text.Encoding.Unicode.GetBytes(targetPath);
-            int bufferSize=Marshal.SizeOf(typeof(FILE_RENAME_INFO_EX))+absoluteName.Length-2;
+            int bufferSize=Marshal.SizeOf(typeof(FILE_RENAME_INFO))+absoluteName.Length-2;
             IntPtr buffer=Marshal.AllocHGlobal(bufferSize);
             try {
                 for (int n=0;n<bufferSize;n++) Marshal.WriteByte(buffer,n,0);
-                uint flags=replaceExisting
-                    ? FILE_RENAME_REPLACE_IF_EXISTS|FILE_RENAME_POSIX_SEMANTICS
-                    : 0;
-                Marshal.WriteInt32(buffer,0,unchecked((int)flags));
-                Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"RootDirectory").ToInt32(),IntPtr.Zero);
-                Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileNameLength").ToInt32(),absoluteName.Length);
+                Marshal.WriteByte(buffer,0,replaceExisting?(byte)1:(byte)0);
+                Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),IntPtr.Zero);
+                Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),absoluteName.Length);
                 Marshal.Copy(absoluteName,0,IntPtr.Add(buffer,nameOffset),absoluteName.Length);
-                if (!SetFileInformationByHandle(source,FILE_RENAME_INFO_EX_CLASS,buffer,(uint)bufferSize)) {
+                if (!SetFileInformationByHandle(source,3,buffer,(uint)bufferSize)) {
                     int error=Marshal.GetLastWin32Error();
-                    string operation=replaceExisting?"replacement":"no-replace publication";
-                    throw new System.ComponentModel.Win32Exception(error,"Protected absolute-path " + operation + " failed (Win32 " + error + "); refusing fallback.");
+                    throw new System.ComponentModel.Win32Exception(error,"Protected absolute-path rename failed (Win32 " + error + "); refusing fallback.");
                 }
             } finally { Marshal.FreeHGlobal(buffer); }
             string published=GetIdentity(targetPath);
