@@ -500,9 +500,11 @@ try {
     $global:WeDecentMigrationMockStatus = 'Stopped'
     $serviceStateRaceManifest = Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $serviceStateRaceFixture.Source)
     $serviceStateRaceMetadata = [IO.File]::ReadAllText($serviceStateRaceFixture.MetadataPath)
+    $global:WeDecentMigrationServiceStateRaceInjected = $false
     $global:WeDecentMigrationRaceInjection = {
         param($Name)
         if ($Name -ceq 'BeforeServiceStateRevalidation') {
+            $global:WeDecentMigrationServiceStateRaceInjected = $true
             $global:WeDecentMigrationMockService.State = 'Running'
             $global:WeDecentMigrationMockStatus = 'Running'
         }
@@ -514,6 +516,7 @@ try {
         $rejected = $_.Exception.Message -like '*changed after migration preflight*'
         if (-not $rejected) { throw }
     }
+    if (-not $global:WeDecentMigrationServiceStateRaceInjected) { throw 'SCM state race injection point was not reached.' }
     if (-not $rejected) { throw 'Migration did not reject an SCM state change after preflight.' }
     if ($global:WeDecentMigrationMockService.State -cne 'Stopped' -or $global:WeDecentMigrationMockStatus -cne 'Stopped') {
         throw 'Migration did not restore the original stopped service state after an SCM race.'
