@@ -49,20 +49,20 @@ The existing code path is private-key-value oriented: loadOrCreatePrivateKey ret
 
 ### Required signer abstraction
 
-Introduce a narrow internal identity signer interface before implementing provider adapters:
+The certificate issuance boundary already accepts crypto.Signer, but the complete identity object and storage path are not yet provider-neutral: Identity.PrivateKey is still ed25519.PrivateKey, Ensure obtains raw bytes from loadOrCreatePrivateKey, and the current TLS certificate carries the raw key value. The required work is to extend the existing signer seam through the whole identity lifecycle rather than claim that the current seam alone completes the migration.
 
-- Public returns the exact Ed25519 public key whose bytes determine the existing device ID and fingerprint.
+- The provider-neutral identity handle exposes the exact Ed25519 public key whose bytes determine the existing device ID and fingerprint.
 - Sign accepts only Ed25519 signing options and returns a signature; unsupported algorithms/options fail closed.
 - Close releases provider handles and zeroizes any transient buffers the provider returns.
 - Key metadata exposes provider, algorithm, stable key handle/reference, protection class and public fingerprint, but never private key bytes or secret-bearing provider paths.
 - LoadExisting must be non-mutating. Ensure may create or migrate only under its existing explicit lifecycle authorization.
-- TLS certificate construction, challenge signing and identity proof must consume the signer interface rather than type-asserting an ed25519.PrivateKey.
+- Identity.PrivateKey must no longer expose an exportable ed25519.PrivateKey on the provider-backed path. TLS certificate construction, challenge signing and identity proof must consume the signer handle without exporting key bytes.
 
-The software-file and DPAPI implementations may temporarily adapt to this interface while retaining current behavior. Provider-backed signers must prove that private-key export is disabled by the provider policy, not merely omit an export method from Go.
+The software-file and DPAPI implementations may temporarily adapt to the signer interface while retaining current behavior. Provider-backed signers must prove that private-key export is disabled by provider policy, not merely omit an export method from Go.
 
 ### Windows provider requirements
 
-The desired Windows backend is a machine/service-scoped CNG or approved hardware-backed provider key with Ed25519 signing capability, non-exportable private material, a stable provider key name, and ACLs that grant access only to the dedicated WeDecent service SID and authorized recovery administrators. The service opens the provider key at runtime and signs without receiving private bytes. Provisioning must occur under a controlled elevated installer/operator context, and service startup must independently verify provider, algorithm, public fingerprint, key ACL and expected key name.
+Microsoft's current Windows native-cryptography documentation (as summarized in open Issue #84) states that Windows does not support EdDSA (Ed25519/Ed448); the documented built-in KSP algorithm sets cover RSA/ECDSA/ECDH, not Ed25519. The desired Windows backend is therefore conditional on a separately supported Ed25519-capable CNG/KSP or approved hardware provider, not an assumption that the Microsoft Platform Crypto Provider can do it. If no supported provider can create and use a persistent non-exportable Ed25519 key, retain the DPAPI implementation and keep this milestone open. The service opens the provider key at runtime and signs without receiving private bytes. Provisioning must occur under a controlled elevated installer/operator context, and service startup must independently verify provider, algorithm, public fingerprint, key ACL and expected key name.
 
 Do not assume that a given Windows CNG/KSP, TPM, smart-card or HSM supports Ed25519. Capability must be established on the minimum supported Windows versions and the exact provider/firmware combination. A provider that supports only RSA or NIST ECDSA cannot be silently substituted: changing the identity algorithm changes public-key fingerprints, device IDs, certificate semantics and trust pins. If the platform provider cannot preserve the existing Ed25519 public key and sign with it non-exportably, retain the explicitly documented DPAPI fallback or block the stronger-storage acceptance milestone; do not regenerate or silently migrate identity.
 
