@@ -110,7 +110,7 @@ func (f discoveryFixture) transport(mutate func(string, []byte) ([]byte, int)) h
 	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body []byte
 		keysetURL, keysetSignatureURL := stableKeysetURLs(f.keyset.Epoch)
-	switch req.URL.String() {
+		switch req.URL.String() {
 		case StableManifestURL:
 			body = f.manifestBody
 		case StableSignatureURL:
