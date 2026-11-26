@@ -36,7 +36,8 @@ SIGNER="$(realpath -e -- "$SIGNER")" || die 'cannot resolve signer'
 SIGNER_SHA_ACTUAL="$(sha256sum "$SIGNER" | awk '{print tolower($1)}')"
 [[ "$SIGNER_SHA_ACTUAL" == "$SIGNER_SHA_EXPECTED" ]] || die 'signer executable does not match its pinned SHA-256'
 SIGNER_MODE="$(stat -c '%a' "$SIGNER")"
-(( (8#$SIGNER_MODE & 0022) == 0 )) || die 'signer executable is group/world writable'
+[[ "$SIGNER_MODE" =~ ^[0-7]{3,4}$ ]] || die 'invalid signer file mode'
+[[ ! "$SIGNER_MODE" =~ [2367][0-7]$ && ! "$SIGNER_MODE" =~ [0-7][2367]$ ]] || die 'signer executable is group/world writable'
 [[ "$PUBLIC_KEY" == /* && -f "$PUBLIC_KEY" && ! -L "$PUBLIC_KEY" ]] || die 'public key path must be an absolute regular file'
 
 wedecent_require_production_release_context "${VERSION#v}" || die 'release context validation failed'
