@@ -102,7 +102,16 @@ func (s *StateStore) ApplyVerifiedInstaller(
 		return fmt.Errorf("%w: installer executor was not invoked", ErrInstallerApply)
 	}
 
-	if err := saveState(s.Path, State{Version: UpdateStateVersion, StableSequence: manifest.Sequence}); err != nil {
+	nextState := State{
+		Version:        current.Version,
+		StableSequence: manifest.Sequence,
+		KeysetEpoch:    current.KeysetEpoch,
+		KeysetDigest:   current.KeysetDigest,
+	}
+	if nextState.Version == 0 {
+		nextState.Version = UpdateStateVersion
+	}
+	if err := saveState(s.Path, nextState); err != nil {
 		return ErrSequenceCommit
 	}
 	return nil
