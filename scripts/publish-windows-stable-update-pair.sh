@@ -5,6 +5,7 @@ umask 077
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
 PUBLIC_KEY="${WEDECENT_UPDATE_PUBLIC_KEY_PATH:-}"
 PUBLISHER="${WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER:-}"
+PUBLISHER_SHA_EXPECTED="${WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256:-}"
 MANIFEST=""
 SIGNATURE=""
 RECEIPT=""
@@ -24,6 +25,11 @@ done
 [[ "$PUBLIC_KEY" == /* && -f "$PUBLIC_KEY" && ! -L "$PUBLIC_KEY" ]] || die 'public key must be an absolute regular file'
 [[ "$PUBLISHER" == /* && -f "$PUBLISHER" && -x "$PUBLISHER" && ! -L "$PUBLISHER" ]] || die 'publisher must be an absolute regular executable, not a symlink'
 PUBLISHER="$(realpath -e -- "$PUBLISHER")" || die 'cannot resolve publisher'
+[[ "$PUBLISHER_SHA_EXPECTED" =~ ^[0-9a-f]{64}$ ]] || die 'publisher SHA-256 pin is required'
+PUBLISHER_SHA_ACTUAL="$(sha256sum "$PUBLISHER" | awk '{print tolower($1)}')"
+[[ "$PUBLISHER_SHA_ACTUAL" == "$PUBLISHER_SHA_EXPECTED" ]] || die 'publisher executable does not match its pinned SHA-256'
+PUBLISHER_MODE="$(stat -c '%a' "$PUBLISHER")"
+(( (8#$PUBLISHER_MODE & 0022) == 0 )) || die 'publisher executable is group/world writable'
 [[ -f "$MANIFEST" && ! -L "$MANIFEST" ]] || die 'manifest must be a regular non-symlink file'
 [[ -f "$SIGNATURE" && ! -L "$SIGNATURE" ]] || die 'signature must be a regular non-symlink file'
 [[ -f "$RECEIPT" && ! -L "$RECEIPT" ]] || die 'verification receipt must be a regular non-symlink file'
@@ -32,7 +38,7 @@ VERSION="$(tr -d '\r\n' < "$ROOT/VERSION")"
 wedecent_require_production_release_context "$VERSION" || die 'production release context invalid'
 wedecent_require_approved_replay_trust || die 'replay trust validation failed'
 wedecent_require_approved_checkpoint_audit_trust || die 'checkpoint audit trust validation failed'
-for command in curl sha256sum awk go realpath cmp; do command -v "$command" >/dev/null 2>&1 || die "missing command: $command"; done
+for command in curl sha256sum awk go realpath cmp stat; do command -v "$command" >/dev/null 2>&1 || die "missing command: $command"; done
 
 declare -A fields=()
 while IFS= read -r line || [[ -n "$line" ]]; do
