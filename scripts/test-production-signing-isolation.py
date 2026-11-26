@@ -189,16 +189,16 @@ def main() -> None:
                 subprocess.run([sudo, "-n", "chown", "-R", f"{signer_user}:{signer_user}", str(signer_dir)], check=True)
                 subprocess.run([sudo, "-n", "chown", "-R", f"{publisher_user}:{publisher_user}", str(publisher_dir)], check=True)
                 probe = (
-                    "import sys\\n"
-                    "op, own, other = sys.argv[1:]\\n"
-                    "open(own, 'r', encoding='utf-8').read()\\n"
-                    "try:\\n"
-                    "    open(other, 'r', encoding='utf-8').read()\\n"
-                    "except (PermissionError, FileNotFoundError):\\n"
-                    "    pass\\n"
-                    "else:\\n"
-                    "    raise SystemExit('cross-role credential unexpectedly readable')\\n"
-                    "assert op in ('sign', 'publish')\\n"
+                    "import sys\n"
+                    "op, own, other = sys.argv[1:]\n"
+                    "open(own, 'r', encoding='utf-8').read()\n"
+                    "try:\n"
+                    "    open(other, 'r', encoding='utf-8').read()\n"
+                    "except (PermissionError, FileNotFoundError):\n"
+                    "    pass\n"
+                    "else:\n"
+                    "    raise SystemExit('cross-role credential unexpectedly readable')\n"
+                    "assert op in ('sign', 'publish')\n"
                 )
                 def as_user(username, operation, own, other):
                     return subprocess.run(
