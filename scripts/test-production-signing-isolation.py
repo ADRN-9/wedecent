@@ -214,10 +214,10 @@ def main() -> None:
                     require(as_user(signer_user, "publish", publisher_secret, signer_secret) != 0,
                             "signer OS account must be unable to publish")
                     require(as_user(publisher_user, "sign", signer_secret, publisher_secret) != 0,
+                            "publisher OS account must be unable to sign")
                 finally:
                     # Restore ownership so the invoking runner can remove the temporary tree.
                     subprocess.run([sudo, "-n", "chown", "-R", f"{os.getuid()}:{os.getgid()}", str(temp)], check=True)
-                        "publisher OS account must be unable to sign")
         finally:
             for username in reversed(created_users):
                 subprocess.run([sudo, "-n", "userdel", username], check=False)
