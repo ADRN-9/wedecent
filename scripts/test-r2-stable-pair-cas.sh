@@ -56,7 +56,11 @@ if action == "head-object":
     if not obj.exists():
         print("An error occurred (404) when calling the HeadObject operation: Not Found", file=sys.stderr)
         raise SystemExit(1)
-    print(etag(obj.read_bytes()))
+    if value("--query") == "Metadata.writeid":
+        metadata = pathlib.Path(str(obj) + ".writeid")
+        print(metadata.read_text(encoding="utf-8") if metadata.exists() else "None")
+    else:
+        print(etag(obj.read_bytes()))
 elif action == "get-object":
     output = pathlib.Path(opts[-1])
     if not obj.exists():
@@ -83,6 +87,10 @@ elif action == "put-object":
         print("unconditional writes are forbidden in this test adapter", file=sys.stderr)
         raise SystemExit(2)
     obj.write_bytes(data)
+    if "--metadata" in opts:
+        metadata_value = value("--metadata")
+        if metadata_value.startswith("writeid="):
+            pathlib.Path(str(obj) + ".writeid").write_text(metadata_value.split("=", 1)[1], encoding="utf-8")
     print("{}")
 else:
     raise SystemExit(f"unsupported mock operation: {action}")
