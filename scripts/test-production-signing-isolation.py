@@ -41,6 +41,9 @@ def main() -> None:
             "publisher adapter must be pinned by an independently configured digest")
     require(signer not in publication, "publication job must not receive signing credentials")
 
+    require("group: wedecent-update-signers" in signing, "signer must use its isolated runner group")
+    require("group: wedecent-update-verifiers" in verification, "verifier must use its isolated runner group")
+    require("group: wedecent-release-publishers" in publication, "publisher must use its isolated runner group")
     require("wedecent-update-signer" in signing, "signer must use its dedicated runner label")
     require("wedecent-update-verifier" in verification, "verifier must use its dedicated runner label")
     require("wedecent-release-publisher" in publication, "publisher must use its dedicated runner label")
