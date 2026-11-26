@@ -49,6 +49,37 @@ func (s *StateStore) ApplyVerifiedInstaller(
 	verifyAuthenticode AuthenticodeVerifier,
 	executor InstallerExecutor,
 ) error {
+	return s.applyVerifiedInstaller(ctx, manifest, stagedPath, maxArchiveBytes, verifyAuthenticode, executor, nil)
+}
+
+// ApplyVerifiedInstallerForKeyset binds installation to the keyset epoch used
+// during discovery. The epoch is checked under the same cross-process lock that
+// admits and commits the stable sequence, preventing a concurrent keyset rotation
+// from invalidating the signer between discovery and installation.
+func (s *StateStore) ApplyVerifiedInstallerForKeyset(
+	ctx context.Context,
+	manifest Manifest,
+	stagedPath string,
+	maxArchiveBytes int64,
+	verifyAuthenticode AuthenticodeVerifier,
+	executor InstallerExecutor,
+	expectedKeysetEpoch uint64,
+) error {
+	if expectedKeysetEpoch == 0 {
+		return fmt.Errorf("%w: expected keyset epoch is required", ErrInvalidState)
+	}
+	return s.applyVerifiedInstaller(ctx, manifest, stagedPath, maxArchiveBytes, verifyAuthenticode, executor, &expectedKeysetEpoch)
+}
+
+func (s *StateStore) applyVerifiedInstaller(
+	ctx context.Context,
+	manifest Manifest,
+	stagedPath string,
+	maxArchiveBytes int64,
+	verifyAuthenticode AuthenticodeVerifier,
+	executor InstallerExecutor,
+	expectedKeysetEpoch *uint64,
+) error {
 	if s == nil || s.Path == "" {
 		return fmt.Errorf("%w: state path is required", ErrInvalidState)
 	}
@@ -76,6 +107,9 @@ func (s *StateStore) ApplyVerifiedInstaller(
 	}
 	if manifest.Sequence <= current.StableSequence {
 		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, manifest.Sequence, current.StableSequence)
+	}
+	if expectedKeysetEpoch != nil && current.KeysetEpoch != *expectedKeysetEpoch {
+		return fmt.Errorf("%w: persisted keyset epoch changed before installation", ErrKeysetRollback)
 	}
 
 	mutated := false
@@ -156,8 +190,8 @@ func (c DiscoveryClient) ApplyStable(
 		return zero, err
 	}
 	defer os.Remove(staged.Path)
-	if err := c.State.ApplyVerifiedInstaller(
-		ctx, manifest, staged.Path, maxArchiveBytes, verifyAuthenticode, executor,
+	if err := c.State.ApplyVerifiedInstallerForKeyset(
+		ctx, manifest, staged.Path, maxArchiveBytes, verifyAuthenticode, executor, manifest.KeysetEpoch,
 	); err != nil {
 		return zero, err
 	}
