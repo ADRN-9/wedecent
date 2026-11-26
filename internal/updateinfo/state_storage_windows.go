@@ -241,7 +241,7 @@ func validateUpdateStateAncestorDACL(sddl, currentSID string) error {
 	// changed by untrusted principals. Non-destructive create/write grants are
 	// checked on the actual state directory and state file before state I/O.
 	const dangerous = uint32(0x00000010 | 0x00000040 | 0x00000100 |
-		0x00010000 | 0x00040000 | 0x00080000 | 0x10000000)
+		0x00010000 | 0x00040000 | 0x00080000 | 0x10000000 | 0x40000000)
 	for len(entries) > 0 {
 		if entries[0] != '(' {
 			return errors.New("ancestor DACL contains unsupported data")
