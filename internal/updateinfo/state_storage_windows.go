@@ -273,7 +273,7 @@ func validateUpdateStateAncestorDACL(sddl, currentSID string) error {
 			flags&updateStateACEInheritOnly != 0 &&
 			flags&(updateStateACEObjectInherit|updateStateACEContainerInherit) != 0
 		if mask&dangerous != 0 && canAffectDescendants && !trusted[trustee.String()] && !isCreatorOwnerInheritance {
-			return fmt.Errorf("untrusted SID %s has namespace-modifying rights 0x%08x", trustee.String(), mask&dangerous)
+			return fmt.Errorf("untrusted SID %s has namespace-modifying rights 0x%08x (ACE flags %q)", trustee.String(), mask&dangerous, parts[1])
 		}
 		entries = entries[end+1:]
 	}
