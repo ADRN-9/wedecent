@@ -31,10 +31,14 @@ def main() -> None:
     publisher = "WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER"
 
     require(signer in signing, "signing job must receive the signing adapter")
+    require("WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256" in signing,
+            "signer adapter must be pinned by an independently configured digest")
     require(publisher not in signing, "signing job must not receive publisher credentials")
     require(signer not in verification and publisher not in verification,
             "verification job must receive neither privileged adapter")
     require(publisher in publication, "publication job must receive the publisher adapter")
+    require("WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256" in publication,
+            "publisher adapter must be pinned by an independently configured digest")
     require(signer not in publication, "publication job must not receive signing credentials")
 
     require("wedecent-update-signer" in signing, "signer must use its dedicated runner label")
