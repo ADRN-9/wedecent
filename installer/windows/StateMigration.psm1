@@ -1243,6 +1243,7 @@ public static class WeDecentMigrationFileIdentityApi {
     }
 }
 '@
+}
 
 function Assert-WeDecentMigrationPathsDisjoint {
     param([Parameter(Mandatory = $true)][string[]]$Paths)
