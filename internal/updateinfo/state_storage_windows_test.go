@@ -116,7 +116,7 @@ func TestValidateUpdateStateAncestorDACLRejectsNamespaceWriters(t *testing.T) {
 		{"inherit-only-world-generic-write-is-not-effective-on-parent", "D:AI(A;OICIIO;GW;;;WD)(A;;FA;;;" + user + ")", false},
 		{"inherit-only-object-write-does-not-modify-directory", "D:AI(A;OIIO;GW;;;WD)(A;;FA;;;" + user + ")", false},
 		{"broad-principal-read-execute", "D:AI(A;OICI;FRFX;;;BU)(A;;FA;;;" + user + ")", false},
-		{"list-children-read", "D:AI(A;;LC;;;BU)(A;;FA;;;" + user + ")", false},
+		{"list-children-directory-create-mask", "D:AI(A;;LC;;;BU)(A;;FA;;;" + user + ")", true},
 		{"trusted-system-admin-writers", "D:P(A;;FA;;;" + user + ")(A;;FA;;;SY)(A;;FA;;;BA)", false},
 		{"unknown-ace-type", "D:P(D;;0x00000040;;;WD)(A;;FA;;;" + user + ")", true},
 	} {
