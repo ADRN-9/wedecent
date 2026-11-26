@@ -106,6 +106,18 @@ func validateWindowsUpdateStatePath(path string, before os.FileInfo, directory b
 // volume root through the state path's parent. The final object is validated
 // separately. UNC and device paths are rejected because their namespace and
 // ACL semantics are outside this local updater-state trust boundary.
+func validateStateDirAncestors(dir string) error {
+	token := windows.GetCurrentProcessToken()
+	user, err := token.GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil {
+		return fmt.Errorf("%w: read update process SID: %v", ErrInvalidState, err)
+	}
+	if _, err := validateUpdateStateAncestorChain(dir, user.User.Sid.String()); err != nil {
+		return err
+	}
+	return nil
+}
+
 func validateUpdateStateAncestorChain(path, currentSID string) (string, error) {
 	volume := filepath.VolumeName(path)
 	if len(volume) != 2 || path[2:3] != string(os.PathSeparator) {
@@ -133,8 +145,11 @@ func validateUpdateStateAncestorChain(path, currentSID string) (string, error) {
 	checked := make([]checkedAncestor, 0, len(components))
 	for _, component := range components {
 		info, err := os.Lstat(component)
+		if errors.Is(err, os.ErrNotExist) {
+			break
+		}
 		if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return "", fmt.Errorf("%w: update state ancestor is missing, not a directory, or a reparse point: %s", ErrInvalidState, component)
+			return "", fmt.Errorf("%w: update state ancestor is not a directory or is a reparse point: %s", ErrInvalidState, component)
 		}
 		name, err := windows.UTF16PtrFromString(component)
 		if err != nil {
