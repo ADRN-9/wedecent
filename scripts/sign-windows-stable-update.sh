@@ -10,6 +10,7 @@ SEQUENCE=""
 PUBLISHED_AT=""
 OUT_DIR=""
 SIGNER="${WEDECENT_UPDATE_MANIFEST_SIGNER:-}"
+SIGNER_SHA_EXPECTED="${WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256:-}"
 PUBLIC_KEY="${WEDECENT_UPDATE_PUBLIC_KEY_PATH:-}"
 
 die() { printf 'sign-windows-stable-update: %s\n' "$*" >&2; exit 1; }
@@ -31,13 +32,18 @@ done
 [[ ! -e "$OUT_DIR" && ! -L "$OUT_DIR" ]] || die 'out-dir must not already exist'
 [[ "$SIGNER" == /* && -f "$SIGNER" && -x "$SIGNER" && ! -L "$SIGNER" ]] || die 'signer must be an absolute regular executable, not a symlink'
 SIGNER="$(realpath -e -- "$SIGNER")" || die 'cannot resolve signer'
+[[ "$SIGNER_SHA_EXPECTED" =~ ^[0-9a-f]{64}$ ]] || die 'signer SHA-256 pin is required'
+SIGNER_SHA_ACTUAL="$(sha256sum "$SIGNER" | awk '{print tolower($1)}')"
+[[ "$SIGNER_SHA_ACTUAL" == "$SIGNER_SHA_EXPECTED" ]] || die 'signer executable does not match its pinned SHA-256'
+SIGNER_MODE="$(stat -c '%a' "$SIGNER")"
+(( (8#$SIGNER_MODE & 0022) == 0 )) || die 'signer executable is group/world writable'
 [[ "$PUBLIC_KEY" == /* && -f "$PUBLIC_KEY" && ! -L "$PUBLIC_KEY" ]] || die 'public key path must be an absolute regular file'
 
 wedecent_require_production_release_context "${VERSION#v}" || die 'release context validation failed'
 wedecent_require_approved_replay_trust || die 'replay trust validation failed'
 wedecent_require_approved_checkpoint_audit_trust || die 'checkpoint audit trust validation failed'
 
-for command in curl sha256sum awk go realpath mkdir chmod; do
+for command in curl sha256sum awk go realpath mkdir chmod stat; do
   command -v "$command" >/dev/null 2>&1 || die "required command not found: $command"
 done
 
