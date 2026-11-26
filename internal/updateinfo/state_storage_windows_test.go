@@ -669,13 +669,13 @@ func TestWindowsUpdateStateRejectsHostileSiblingSubstitution(t *testing.T) {
 	if err := os.Mkdir(sibling, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	original := []byte(`{"version":1,"stable_sequence":41}`)
+	original := []byte("{\"version\":1,\"stable_sequence\":41}\\n")
 	statePath := StatePath(stateDir)
 	if err := os.WriteFile(statePath, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	hostilePath := StatePath(sibling)
-	hostile := []byte(`{"version":1,"stable_sequence":999}`)
+	hostile := []byte("{\"version\":1,\"stable_sequence\":999}\\n")
 	if err := os.WriteFile(hostilePath, hostile, 0o600); err != nil {
 		t.Fatal(err)
 	}
