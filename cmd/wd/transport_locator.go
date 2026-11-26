@@ -106,11 +106,9 @@ func connectTransportOverride(endpoint, rfcomm, relayAddr, webRelay, deviceID st
 	if len(serialDevice) == 1 {
 		serial = serialDevice[0]
 	}
-	selected := 0
-	for _, value := range []string{endpoint, rfcomm, serial, relayAddr, webRelay} {
-		if strings.TrimSpace(value) != "" {
-			selected++
-		}
+	selected, err := countTransportSelections(endpoint, rfcomm, serial, relayAddr, webRelay)
+	if err != nil {
+		return "", false, err
 	}
 	if selected > 1 {
 		return "", false, errors.New("--endpoint, --rfcomm, --serial, --relay, and --web-relay are mutually exclusive")
