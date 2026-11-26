@@ -494,6 +494,50 @@ foreach ($unsupportedState in $unsupportedServiceStates) {
     }
 }
 
+$serviceStateRaceFixture = New-MigrationFixture
+try {
+    $global:WeDecentMigrationMockService.State = 'Stopped'
+    $global:WeDecentMigrationMockStatus = 'Stopped'
+    $serviceStateRaceManifest = Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $serviceStateRaceFixture.Source)
+    $serviceStateRaceMetadata = [IO.File]::ReadAllText($serviceStateRaceFixture.MetadataPath)
+    $global:WeDecentMigrationRaceInjection = {
+        param($Name)
+        if ($Name -ceq 'BeforeServiceStateRevalidation') {
+            $global:WeDecentMigrationMockService.State = 'Running'
+            $global:WeDecentMigrationMockStatus = 'Running'
+        }
+    }
+    $rejected = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $serviceStateRaceFixture.Source -Destination $serviceStateRaceFixture.Destination -AgentPath $agentPath -ServiceName $serviceStateRaceFixture.ServiceName -ServiceSid $serviceStateRaceFixture.ServiceSid -MetadataPath $serviceStateRaceFixture.MetadataPath -JournalPath $serviceStateRaceFixture.Journal | Out-Null
+    } catch {
+        $rejected = $_.Exception.Message -like '*changed after migration preflight*'
+        if (-not $rejected) { throw }
+    }
+    if (-not $rejected) { throw 'Migration did not reject an SCM state change after preflight.' }
+    if ($global:WeDecentMigrationMockService.State -cne 'Stopped' -or $global:WeDecentMigrationMockStatus -cne 'Stopped') {
+        throw 'Migration did not restore the original stopped service state after an SCM race.'
+    }
+    if ($global:WeDecentMigrationMockService.PathName -cne $serviceStateRaceFixture.OriginalServicePath) {
+        throw 'Migration changed the SCM command line after an SCM state race.'
+    }
+    if ([IO.File]::ReadAllText($serviceStateRaceFixture.MetadataPath) -cne $serviceStateRaceMetadata) {
+        throw 'Migration changed metadata after an SCM state race.'
+    }
+    if ((Get-WeDecentMigrationManifestDigest -Manifest @(Get-WeDecentMigrationManifest -Root $serviceStateRaceFixture.Source)) -cne $serviceStateRaceManifest) {
+        throw 'Migration changed source contents after an SCM state race.'
+    }
+    if (Test-Path -LiteralPath $serviceStateRaceFixture.Destination) {
+        throw 'Migration published destination state after an SCM state race.'
+    }
+    $terminal = Read-WeDecentMigrationJournal -Path $serviceStateRaceFixture.Journal
+    if ($terminal.phase -cne 'RolledBack') { throw "SCM state race journal phase is $($terminal.phase), not RolledBack." }
+    Write-Host 'Migration revalidates SCM state before filesystem mutation and rolls back state races PASS'
+} finally {
+    $global:WeDecentMigrationRaceInjection = $null
+    Remove-Item -LiteralPath $serviceStateRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $success = New-MigrationFixture
 try {
     $result = Invoke-WeDecentStateMigration -Source $success.Source -Destination $success.Destination -AgentPath $agentPath -ServiceName $success.ServiceName -ServiceSid $success.ServiceSid -MetadataPath $success.MetadataPath -JournalPath $success.Journal
