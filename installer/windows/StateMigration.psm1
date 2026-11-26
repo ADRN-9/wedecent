@@ -1201,40 +1201,40 @@ public static class WeDecentMigrationFileIdentityApi {
             if (PublicationHook!=null) PublicationHook(targetPath);
             if (GetIdentity(temporaryPath)!=sourceId)
                 throw new InvalidOperationException("Publication source pathname changed before atomic publication.");
-            if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED")=="1")
-                throw new System.ComponentModel.Win32Exception(87,"Injected unsupported handle-relative rename; refusing pathname fallback.");
+            if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED")=="1")
+                throw new System.ComponentModel.Win32Exception(87,"Injected unsupported native rename; refusing publication.");
             if (replaceExisting) {
-                // This is atomic replacement, not a kernel compare-and-swap. The protected namespace and
-                // restrictive target handle prevent untrusted concurrent namespace or content mutation.
+                // Atomic replacement is not a kernel compare-and-swap. The caller must hold a protected
+                // namespace lease and this restrictive target handle throughout the native operation.
                 int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileName").ToInt32();
-                byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
-                int bufferSize=nameOffset+relativeName.Length;
+                byte[] absoluteName=System.Text.Encoding.Unicode.GetBytes(targetPath);
+                int bufferSize=nameOffset+absoluteName.Length;
                 IntPtr buffer=Marshal.AllocHGlobal(bufferSize);
                 try {
                     uint flags=FILE_RENAME_REPLACE_IF_EXISTS|FILE_RENAME_POSIX_SEMANTICS;
                     Marshal.WriteInt32(buffer,0,unchecked((int)flags));
-                    Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"RootDirectory").ToInt32(),parent);
-                    Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileNameLength").ToInt32(),relativeName.Length);
-                    Marshal.Copy(relativeName,0,IntPtr.Add(buffer,nameOffset),relativeName.Length);
+                    Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"RootDirectory").ToInt32(),IntPtr.Zero);
+                    Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileNameLength").ToInt32(),absoluteName.Length);
+                    Marshal.Copy(absoluteName,0,IntPtr.Add(buffer,nameOffset),absoluteName.Length);
                     if (!SetFileInformationByHandle(source,FILE_RENAME_INFO_EX_CLASS,buffer,(uint)bufferSize)) {
                         int error=Marshal.GetLastWin32Error();
-                        throw new System.ComponentModel.Win32Exception(error,"Handle-relative atomic replacement failed (Win32 " + error + "); refusing pathname fallback.");
+                        throw new System.ComponentModel.Win32Exception(error,"Protected absolute-path atomic replacement failed (Win32 " + error + "); refusing fallback.");
                     }
                 } finally { Marshal.FreeHGlobal(buffer); }
             } else {
                 int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
-                byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
-                int bufferSize=nameOffset+relativeName.Length+2;
+                byte[] absoluteName=System.Text.Encoding.Unicode.GetBytes(targetPath);
+                int bufferSize=nameOffset+absoluteName.Length+2;
                 IntPtr buffer=Marshal.AllocHGlobal(bufferSize);
                 try {
                     Marshal.WriteByte(buffer,0,0);
-                    Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),parent);
-                    Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),relativeName.Length);
-                    Marshal.Copy(relativeName,0,IntPtr.Add(buffer,nameOffset),relativeName.Length);
-                    Marshal.WriteInt16(buffer,nameOffset+relativeName.Length,0);
+                    Marshal.WriteIntPtr(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),IntPtr.Zero);
+                    Marshal.WriteInt32(buffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),absoluteName.Length);
+                    Marshal.Copy(absoluteName,0,IntPtr.Add(buffer,nameOffset),absoluteName.Length);
+                    Marshal.WriteInt16(buffer,nameOffset+absoluteName.Length,0);
                     if (!SetFileInformationByHandle(source,3,buffer,(uint)bufferSize)) {
                         int error=Marshal.GetLastWin32Error();
-                        throw new System.ComponentModel.Win32Exception(error,"Handle-relative no-replace publication failed (Win32 " + error + "); refusing pathname fallback.");
+                        throw new System.ComponentModel.Win32Exception(error,"Protected absolute-path no-replace publication failed (Win32 " + error + "); refusing fallback.");
                     }
                 } finally { Marshal.FreeHGlobal(buffer); }
             }
@@ -1382,31 +1382,42 @@ function Assert-WeDecentMigrationPublicationNamespace {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     $full = Assert-WeDecentMigrationRealDirectory -Path $Path
-    $acl = Get-Acl -LiteralPath $full -ErrorAction Stop
+    $root = [IO.Path]::GetPathRoot($full)
+    if ([string]::IsNullOrWhiteSpace($root) -or $root.StartsWith('\\')) {
+        throw 'Migration publication namespace must be on a local drive.'
+    }
     $trusted = @(
         'S-1-5-18',
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
-    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
-    if ($owner -notin $trusted) {
-        throw "Migration publication namespace has an untrusted owner: $full"
-    }
     $mutationRights = [Security.AccessControl.FileSystemRights]::Write -bor
         [Security.AccessControl.FileSystemRights]::Modify -bor
         [Security.AccessControl.FileSystemRights]::Delete -bor
         [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [Security.AccessControl.FileSystemRights]::TakeOwnership
-    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
-        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
-            ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
-            continue
+    $current = $full
+    while (-not [string]::IsNullOrWhiteSpace($current)) {
+        $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
+        $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($owner -notin $trusted) {
+            throw "Migration publication namespace has an untrusted ancestor owner: $current"
         }
-        if ($rule.IdentityReference.Value -notin $trusted -and
-            ($rule.FileSystemRights -band $mutationRights) -ne 0) {
-            throw "Migration publication namespace grants mutation rights to an untrusted principal: $full ($($rule.IdentityReference.Value))"
+        foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
+                continue
+            }
+            if ($rule.IdentityReference.Value -notin $trusted -and
+                ($rule.FileSystemRights -band $mutationRights) -ne 0) {
+                throw "Migration publication namespace grants mutation rights to an untrusted principal: $current ($($rule.IdentityReference.Value))"
+            }
         }
+        $parent = [IO.Path]::GetDirectoryName($current)
+        if ([string]::IsNullOrWhiteSpace($parent) -or
+            [string]::Equals($parent, $current, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $current = $parent
     }
     return $true
 }
@@ -1427,7 +1438,22 @@ function Publish-WeDecentMigrationObject {
         [WeDecentMigrationFileIdentityApi]::GetIdentity($TemporaryPath)
     } else { $ExpectedTemporaryIdentity }
     if (-not [string]::IsNullOrWhiteSpace($RacePoint)) { Invoke-WeDecentMigrationRacePoint -Name $RacePoint }
-    return [WeDecentMigrationFileIdentityApi]::PublishByHandle($TemporaryPath,$ParentPath,$TargetName,$temporaryIdentity,$ExpectedTargetIdentity,[bool]$ReplaceExisting)
+    $namespaceDirectories = @()
+    $currentDirectory = [IO.Path]::GetFullPath($ParentPath)
+    while (-not [string]::IsNullOrWhiteSpace($currentDirectory)) {
+        $namespaceDirectories += $currentDirectory
+        $nextDirectory = [IO.Path]::GetDirectoryName($currentDirectory)
+        if ([string]::IsNullOrWhiteSpace($nextDirectory) -or
+            [string]::Equals($nextDirectory, $currentDirectory, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $currentDirectory = $nextDirectory
+    }
+    $namespaceLease = New-WeDecentMigrationMutationLease -Directories $namespaceDirectories
+    try {
+        [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($namespaceLease)
+        return [WeDecentMigrationFileIdentityApi]::PublishByHandle($TemporaryPath,$ParentPath,$TargetName,$temporaryIdentity,$ExpectedTargetIdentity,[bool]$ReplaceExisting)
+    } finally {
+        $namespaceLease.Dispose()
+    }
 }
 
 function Get-WeDecentMigrationIdentitySnapshot {
