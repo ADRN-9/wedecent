@@ -70,6 +70,11 @@ func (s *StateStore) Advance(sequence uint64) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := acquireUpdateLock(context.Background(), s.Path)
+	if err != nil {
+		return err
+	}
+	defer release()
 	current, err := loadState(s.Path)
 	if err != nil {
 		return err
