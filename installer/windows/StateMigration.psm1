@@ -1174,7 +1174,7 @@ public static class WeDecentMigrationFileIdentityApi {
                 if ((targetInfo.FileAttributes&0x400)!=0 ||
                     (sourceInfo.FileAttributes&0x10)!=(targetInfo.FileAttributes&0x10) ||
                     Id(targetInfo)!=expectedTargetIdentity)
-                    throw new InvalidOperationException("Publication target changed before its delete-sharing guard was acquired.");
+                    throw new InvalidOperationException("Publication target object changed before its delete-sharing guard was acquired.");
             } else {
                 IntPtr target=CreateFile(targetPath, FILE_READ_ATTRIBUTES, 7, IntPtr.Zero, OPEN_EXISTING,
                     BACKUP_SEMANTICS|OPEN_REPARSE_POINT, IntPtr.Zero);
