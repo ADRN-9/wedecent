@@ -214,7 +214,7 @@ func TestWindowsUpdateStateRejectsInheritedBroadAncestorACE(t *testing.T) {
 	if !strings.Contains(childSD.String(), "WD") {
 		t.Fatalf("test child did not inherit the broad-principal ACE: %s", childSD.String())
 	}
-	if _, err := validateUpdateStateAncestorChain(grandchild, user); err == nil || !errors.Is(err, ErrInvalidState) {
+	if _, err := validateUpdateStateAncestorChain(grandchild, user, false); err == nil || !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("inherited broad-principal write ACE accepted: %v", err)
 	}
 }
@@ -250,7 +250,7 @@ func TestWindowsUpdateStateRejectsIntermediateReparseTraversal(t *testing.T) {
 		t.Skipf("creating a Windows directory symlink requires unavailable privilege: %v", err)
 	}
 	user := windowsTestCurrentSID(t)
-	if _, err := validateUpdateStateAncestorChain(filepath.Join(link, "state"), user); err == nil || !errors.Is(err, ErrInvalidState) {
+	if _, err := validateUpdateStateAncestorChain(filepath.Join(link, "state"), user, false); err == nil || !errors.Is(err, ErrInvalidState) {
 		t.Fatalf("intermediate reparse-point traversal accepted: %v", err)
 	}
 }
