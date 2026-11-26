@@ -10,7 +10,7 @@ import (
 )
 
 const (
-	StablePairSchema = 1
+	StablePairSchema   = 1
 	MaxStablePairBytes = 24 << 10
 )
 
@@ -36,8 +36,8 @@ func EncodeCanonicalStablePair(manifestBytes, signatureBytes []byte) ([]byte, er
 		return nil, err
 	}
 	envelope := StablePairEnvelope{
-		Schema: StablePairSchema,
-		Manifest: base64.RawURLEncoding.EncodeToString(manifestBytes),
+		Schema:    StablePairSchema,
+		Manifest:  base64.RawURLEncoding.EncodeToString(manifestBytes),
 		Signature: base64.RawURLEncoding.EncodeToString(signature),
 	}
 	encoded, err := json.Marshal(envelope)
