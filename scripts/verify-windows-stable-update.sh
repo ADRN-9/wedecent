@@ -54,6 +54,7 @@ old_manifest="$(mktemp)"
 old_signature="$(mktemp)"
 old_keyset="$(mktemp)"
 old_keyset_signature="$(mktemp)"
+rm -f -- "$old_manifest" "$old_signature" "$old_keyset" "$old_keyset_signature"
 candidate_pair="${MANIFEST%/*}/current-v2.json"
 trap 'rm -f -- "$candidate_output" "$old_output" "$old_pair" "$old_manifest" "$old_signature" "$old_keyset" "$old_keyset_signature"' EXIT
 
