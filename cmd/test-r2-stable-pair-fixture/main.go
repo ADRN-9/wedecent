@@ -18,7 +18,9 @@ func main() {
 		fail("usage: test-r2-stable-pair-fixture <output-dir> <version>")
 	}
 	dir, version := os.Args[1], os.Args[2]
-	if err := os.MkdirAll(dir, 0o700); err != nil { fail("mkdir: %v", err) }
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		fail("mkdir: %v", err)
+	}
 	now := time.Now().UTC().Truncate(time.Second)
 	rootPublic, rootPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -34,17 +36,17 @@ func main() {
 		fail("encode manifest public key: %v", err)
 	}
 	keyset := updateinfo.Keyset{
-		Schema: updateinfo.KeysetSchemaV1,
-		Epoch: 1,
+		Schema:    updateinfo.KeysetSchemaV1,
+		Epoch:     1,
 		RootKeyID: rootID,
-		IssuedAt: now.Add(-time.Minute).Format(time.RFC3339),
-		ExpiresAt: now.Add(24*time.Hour).Format(time.RFC3339),
+		IssuedAt:  now.Add(-time.Minute).Format(time.RFC3339),
+		ExpiresAt: now.Add(24 * time.Hour).Format(time.RFC3339),
 		Keys: []updateinfo.KeysetEntry{{
-			ID: signingID,
+			ID:        signingID,
 			PublicKey: strings.TrimSpace(string(encodedManifestPublic)),
 			NotBefore: now.Add(-time.Minute).Format(time.RFC3339),
-			NotAfter: now.Add(12*time.Hour).Format(time.RFC3339),
-			Status: "active",
+			NotAfter:  now.Add(12 * time.Hour).Format(time.RFC3339),
+			Status:    "active",
 		}},
 	}
 	keysetBody, err := updateinfo.EncodeCanonicalKeyset(keyset, now)
@@ -70,16 +72,16 @@ func main() {
 	var firstPair []byte
 	for _, sequence := range []uint64{42, 43} {
 		manifest := updateinfo.Manifest{
-			Schema: updateinfo.ManifestSchemaV2,
-			SigningKeyID: signingID,
-			KeysetEpoch: keyset.Epoch,
-			Channel: updateinfo.StableChannel,
-			Sequence: sequence,
-			Version: version,
-			PublishedAt: now.Format(time.RFC3339),
-			ReleaseURL: fmt.Sprintf("https://%s/windows/%s/wedecent-%s-windows-amd64.zip", updateinfo.DownloadHost, version, version),
-			ReleaseSHA256: strings.Repeat("a", 64),
-			InstallerURL: fmt.Sprintf("https://%s/windows/%s/wedecent-%s-windows-installer.zip", updateinfo.DownloadHost, version, version),
+			Schema:          updateinfo.ManifestSchemaV2,
+			SigningKeyID:    signingID,
+			KeysetEpoch:     keyset.Epoch,
+			Channel:         updateinfo.StableChannel,
+			Sequence:        sequence,
+			Version:         version,
+			PublishedAt:     now.Format(time.RFC3339),
+			ReleaseURL:      fmt.Sprintf("https://%s/windows/%s/wedecent-%s-windows-amd64.zip", updateinfo.DownloadHost, version, version),
+			ReleaseSHA256:   strings.Repeat("a", 64),
+			InstallerURL:    fmt.Sprintf("https://%s/windows/%s/wedecent-%s-windows-installer.zip", updateinfo.DownloadHost, version, version),
 			InstallerSHA256: strings.Repeat("b", 64),
 		}
 		manifestBody, err := updateinfo.EncodeCanonical(manifest)
