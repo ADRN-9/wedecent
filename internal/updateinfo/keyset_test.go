@@ -24,12 +24,12 @@ func keysetFixture(t *testing.T, now time.Time) (ed25519.PublicKey, ed25519.Priv
 	}
 	keyset := Keyset{
 		Schema: KeysetSchemaV1, Epoch: 7, RootKeyID: "wedecent-update-root-1",
-		IssuedAt: now.Add(-time.Hour).UTC().Format(time.RFC3339),
-		ExpiresAt: now.Add(24*time.Hour).UTC().Format(time.RFC3339),
+		IssuedAt:  now.Add(-time.Hour).UTC().Format(time.RFC3339),
+		ExpiresAt: now.Add(24 * time.Hour).UTC().Format(time.RFC3339),
 		Keys: []KeysetEntry{{
 			ID: "stable-2026-01", PublicKey: string(bytesTrimLine(encodedPublic)),
 			NotBefore: now.Add(-time.Hour).UTC().Format(time.RFC3339),
-			NotAfter: now.Add(12*time.Hour).UTC().Format(time.RFC3339), Status: "active",
+			NotAfter:  now.Add(12 * time.Hour).UTC().Format(time.RFC3339), Status: "active",
 		}},
 	}
 	return rootPublic, rootPrivate, keyset
@@ -129,7 +129,7 @@ func TestKeysetRejectsDuplicateAndUnsortedKeys(t *testing.T) {
 	second := KeysetEntry{
 		ID: "aaa-secondary", PublicKey: string(bytesTrimLine(secondEncoded)),
 		NotBefore: now.Add(-time.Hour).UTC().Format(time.RFC3339),
-		NotAfter: now.Add(12*time.Hour).UTC().Format(time.RFC3339), Status: "active",
+		NotAfter:  now.Add(12 * time.Hour).UTC().Format(time.RFC3339), Status: "active",
 	}
 	keyset.Keys = append(keyset.Keys, second)
 	if _, err := EncodeCanonicalKeyset(keyset, now); !errors.Is(err, ErrInvalidKeyset) {
