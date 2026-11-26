@@ -1391,9 +1391,13 @@ function Assert-WeDecentMigrationPublicationNamespace {
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
-    $mutationRights = [Security.AccessControl.FileSystemRights]::Write -bor
+    $namespaceMutationRights = [Security.AccessControl.FileSystemRights]::Write -bor
         [Security.AccessControl.FileSystemRights]::Modify -bor
         [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    $ancestorMutationRights = [Security.AccessControl.FileSystemRights]::Delete -bor
         [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [Security.AccessControl.FileSystemRights]::TakeOwnership
@@ -1403,6 +1407,11 @@ function Assert-WeDecentMigrationPublicationNamespace {
         $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
         if ($owner -notin $trusted) {
             throw "Migration publication namespace has an untrusted ancestor owner: $current"
+        }
+        $mutationRights = if ([string]::Equals($current, $full, [StringComparison]::OrdinalIgnoreCase)) {
+            $namespaceMutationRights
+        } else {
+            $ancestorMutationRights
         }
         foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
             if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
