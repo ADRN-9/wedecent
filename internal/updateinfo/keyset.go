@@ -93,7 +93,7 @@ func (k Keyset) Validate(now time.Time) error {
 		}
 		seenKeys[entry.ID] = struct{}{}
 
-		if strings.ContainsAny(entry.PublicKey, " \\t\\r\\n") {
+		if strings.ContainsAny(entry.PublicKey, " \t\r\n") {
 			return fmt.Errorf("%w: key %q public key whitespace", ErrInvalidKeyset, entry.ID)
 		}
 		publicKey, err := DecodePublicKey([]byte(entry.PublicKey))
