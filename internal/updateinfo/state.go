@@ -87,7 +87,15 @@ func loadState(path string) (State, error) {
 	if !info.Mode().IsRegular() {
 		return zero, fmt.Errorf("%w: update state must be a regular file", ErrInvalidState)
 	}
-	if err := validateStateFileInfo(info); err != nil {
+	dir := filepath.Dir(path)
+	dirInfo, err := os.Lstat(dir)
+	if err != nil || !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return zero, fmt.Errorf("%w: update state parent must be a real directory", ErrInvalidState)
+	}
+	if err := validateStateDirInfo(dir, dirInfo); err != nil {
+		return zero, err
+	}
+	if err := validateStateFileInfo(path, info); err != nil {
 		return zero, err
 	}
 	data, err := os.ReadFile(path)
@@ -202,7 +210,7 @@ func ensurePrivateStateDir(dir string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%w: update state directory must be a real directory", ErrInvalidState)
 	}
-	if err := validateStateDirInfo(info); err != nil {
+	if err := validateStateDirInfo(dir, info); err != nil {
 		return err
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
