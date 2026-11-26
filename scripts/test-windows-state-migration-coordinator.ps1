@@ -860,22 +860,33 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
             }
         }
         $env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED = '1'
-        if ($fallbackRaceKind -ceq 'metadata') {
-            Write-WeDecentMigrationMetadata -Path $fallbackTarget -StatePath $fallbackRaceFixture.Destination
-        } else {
-            $fallbackJournal.phase = 'Copying'
-            Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
+        $failedClosed = $false
+        try {
+            if ($fallbackRaceKind -ceq 'metadata') {
+                Write-WeDecentMigrationMetadata -Path $fallbackTarget -StatePath $fallbackRaceFixture.Destination
+            } else {
+                $fallbackJournal.phase = 'Copying'
+                Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
+            }
+        } catch {
+            $failedClosed = $_.Exception.Message -like '*Injected unsupported handle-relative rename*'
+            if (-not $failedClosed) { throw }
         }
-        if (-not $global:WeDecentMigrationNativeRaceHookInvoked -or -not $global:WeDecentMigrationNativeRaceBlocked) {
-            throw "Absolute-path $fallbackRaceKind publication did not block destination substitution at the syscall boundary."
+        if (-not $global:WeDecentMigrationNativeRaceHookInvoked -or -not $global:WeDecentMigrationNativeRaceBlocked -or -not $failedClosed) {
+            throw "Handle-relative $fallbackRaceKind publication did not fail closed after blocking destination substitution."
         }
         if (Test-Path -LiteralPath $global:WeDecentMigrationNativeRaceBackup) {
-            throw "Absolute-path $fallbackRaceKind publication allowed the original target to be renamed."
+            throw "Fail-closed $fallbackRaceKind publication allowed the original target to be renamed."
         }
-        if ((Get-Content -LiteralPath $fallbackTarget -Raw | ConvertFrom-Json).attacker) {
-            throw "Absolute-path $fallbackRaceKind publication exposed attacker-controlled replacement content."
+        $unchanged = Get-Content -LiteralPath $fallbackTarget -Raw | ConvertFrom-Json
+        if ($fallbackRaceKind -ceq 'metadata') {
+            if ([IO.Path]::GetFullPath([string]$unchanged.state_dir) -ine [IO.Path]::GetFullPath($fallbackRaceFixture.Source)) {
+                throw 'Fail-closed metadata publication changed the original state directory.'
+            }
+        } elseif ([string]$unchanged.phase -cne 'Prepared') {
+            throw 'Fail-closed journal publication changed the original durable phase.'
         }
-        Write-Host "Migration absolute-fallback $fallbackRaceKind destination substitution blocked PASS"
+        Write-Host "Migration $fallbackRaceKind publication fails closed when handle-relative rename is unavailable PASS"
     } finally {
         [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
         $global:WeDecentMigrationNativeRaceTarget = $null
