@@ -237,9 +237,11 @@ func validateUpdateStateAncestorDACL(sddl, currentSID string) error {
 		currentSID: true, updateStateSystemSID: true,
 		updateStateAdminSID: true, updateStateTrustedInstallerSID: true,
 	}
-	const dangerous = uint32(0x00000002 | 0x00000004 | 0x00000010 | 0x00000040 |
-		0x00000100 | 0x00010000 | 0x00040000 | 0x00080000 |
-		0x10000000 | 0x40000000)
+	// Ancestors must not be replaceable or have their security descriptor
+	// changed by untrusted principals. Create-only rights are checked on the
+	// actual state directory and state file before any state I/O.
+	const dangerous = uint32(0x00000010 | 0x00000040 | 0x00000100 |
+		0x00010000 | 0x00040000 | 0x00080000 | 0x10000000)
 	for len(entries) > 0 {
 		if entries[0] != '(' {
 			return errors.New("ancestor DACL contains unsupported data")
