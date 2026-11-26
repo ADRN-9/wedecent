@@ -457,14 +457,16 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 				t.Helper()
 				fixture.keyset.Keys[0].Status = "revoked"
 				fixture.keyset.Keys[0].RevokedAt = fixture.now.Add(-time.Minute).UTC().Format(time.RFC3339)
-				fixture.keysetBody, err = EncodeCanonicalKeyset(fixture.keyset, fixture.now)
+				keysetBody, err := EncodeCanonicalKeyset(fixture.keyset, fixture.now)
 				if err != nil {
 					t.Fatal(err)
 				}
-				fixture.keysetSignature, err = EncodeSignature(ed25519.Sign(fixture.rootPrivate, fixture.keysetBody))
+				fixture.keysetBody = keysetBody
+				keysetSignature, err := EncodeSignature(ed25519.Sign(fixture.rootPrivate, keysetBody))
 				if err != nil {
 					t.Fatal(err)
 				}
+				fixture.keysetSignature = keysetSignature
 			},
 		},
 	}
@@ -472,7 +474,7 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fixture := newDiscoveryFixture(t)
-	var err error
+			var err error
 			_, archive := buildInstallerPackageFixture(t, nil)
 			fixture.manifest.InstallerSHA256 = sha256Hex(archive)
 			fixture.manifestBody, err = EncodeCanonical(fixture.manifest)
@@ -529,7 +531,7 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 	var err error
 	_, archive := buildInstallerPackageFixture(t, nil)
 	fixture.manifest.InstallerSHA256 = sha256Hex(archive)
-	fixture.manifestBody, err := EncodeCanonical(fixture.manifest)
+	fixture.manifestBody, err = EncodeCanonical(fixture.manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
