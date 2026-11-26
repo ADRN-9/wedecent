@@ -3,6 +3,8 @@ import os
 import re
 import subprocess
 import tempfile
+import uuid
+import shutil
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -153,6 +155,67 @@ def main() -> None:
                 "restricted publisher credential must permit publication")
         require(subprocess.run([str(publisher_adapter), "sign"], env=publisher_env, check=False).returncode != 0,
                 "publisher credential must not permit signing")
+
+    # Exercise the same boundary with two real, distinct ephemeral Linux UIDs
+    # and 0600 credential files. This proves the test runner's OS permission
+    # model, not the production self-hosted runner inventory.
+    sudo = shutil.which("sudo")
+    if sudo and subprocess.run([sudo, "-n", "true"], check=False).returncode == 0:
+        suffix = uuid.uuid4().hex[:10]
+        signer_user = "wdsgn" + suffix
+        publisher_user = "wdpub" + suffix
+        created_users = []
+        try:
+            for username in (signer_user, publisher_user):
+                subprocess.run(
+                    [sudo, "-n", "useradd", "--system", "--user-group", "--no-create-home",
+                     "--shell", "/usr/sbin/nologin", username],
+                    check=True,
+                )
+                created_users.append(username)
+            with tempfile.TemporaryDirectory() as temporary:
+                os.chmod(temporary, 0o755)
+                temp = Path(temporary)
+                signer_dir = temp / "signer"
+                publisher_dir = temp / "publisher"
+                signer_dir.mkdir(mode=0o700)
+                publisher_dir.mkdir(mode=0o700)
+                signer_secret = signer_dir / "ed25519-signing-key"
+                publisher_secret = publisher_dir / "r2-publisher-key"
+                signer_secret.write_text("test-only-ed25519-secret", encoding="utf-8")
+                publisher_secret.write_text("test-only-r2-publisher-secret", encoding="utf-8")
+                signer_secret.chmod(0o600)
+                publisher_secret.chmod(0o600)
+                subprocess.run([sudo, "-n", "chown", "-R", f"{signer_user}:{signer_user}", str(signer_dir)], check=True)
+                subprocess.run([sudo, "-n", "chown", "-R", f"{publisher_user}:{publisher_user}", str(publisher_dir)], check=True)
+                probe = (
+                    "import sys; op, own, other = sys.argv[1:]; "
+                    "open(own, 'r', encoding='utf-8').read(); "
+                    "try_access = True; "
+                    "try:\\n open(other, 'r', encoding='utf-8').read(); try_access = False\\n"
+                    "except (PermissionError, FileNotFoundError): pass\\n"
+                    "assert try_access, 'cross-role credential unexpectedly readable'\\n"
+                    "assert op in ('sign', 'publish')"
+                )
+                def as_user(username, operation, own, other):
+                    return subprocess.run(
+                        [sudo, "-n", "-u", username, "--", "python3", "-c", probe,
+                         operation, str(own), str(other)],
+                        check=False,
+                    ).returncode
+                require(as_user(signer_user, "sign", signer_secret, publisher_secret) == 0,
+                        "signer OS account must read its own key and not publisher credentials")
+                require(as_user(publisher_user, "publish", publisher_secret, signer_secret) == 0,
+                        "publisher OS account must read its own credential and not signer key")
+                require(as_user(signer_user, "publish", publisher_secret, signer_secret) != 0,
+                        "signer OS account must be unable to publish")
+                require(as_user(publisher_user, "sign", signer_secret, publisher_secret) != 0,
+                        "publisher OS account must be unable to sign")
+        finally:
+            for username in reversed(created_users):
+                subprocess.run([sudo, "-n", "userdel", username], check=False)
+    else:
+        require(not os.environ.get("CI"), "CI runner must support sudo for distinct-UID credential isolation tests")
 
     print("Production signing/verifier/publisher privilege-boundary regression tests passed.")
 
