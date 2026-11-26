@@ -500,7 +500,7 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 			})
 
 			calls := 0
-			_, err := client.ApplyStable(
+			_, err = client.ApplyStable(
 				context.Background(), "v1.2.2", 0,
 				InstallerClient{}, filepath.Join(t.TempDir(), "staging"), 0,
 				func(context.Context, string) error { return nil },
@@ -563,12 +563,12 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 		return nil
 	})
 	apply := func(client DiscoveryClient) error {
-		_, err := client.ApplyStable(
+		_, applyErr := client.ApplyStable(
 			context.Background(), "v1.2.2", 0, InstallerClient{},
 			filepath.Join(t.TempDir(), "staging"), 0,
 			func(context.Context, string) error { return nil }, executor,
 		)
-		return err
+		return applyErr
 	}
 
 	if err := apply(newClient()); err != nil {
