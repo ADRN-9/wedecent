@@ -809,7 +809,7 @@ try {
     if (-not (Get-LocalGroupMember -Group 'Users' | Where-Object { $_.SID.Value -eq $attackerSid })) {
         Add-LocalGroupMember -Group 'Users' -Member $attackerName
     }
-    $global:WeDecentMigrationAttackerCredential = [PSCredential]::new("$env:COMPUTERNAME\$attackerName", $attackerPassword)
+    $global:WeDecentMigrationAttackerCredential = [PSCredential]::new(".\$attackerName", $attackerPassword)
 foreach ($nativeRaceKind in @('metadata', 'journal')) {
     $nativeRaceFixture = New-MigrationFixture
     try {
