@@ -43,17 +43,20 @@ verify_pair() {
     --manifest "$manifest" --signature "$signature") > "$output"
 }
 
-candidate_output="$(mktemp)"
-old_output="$(mktemp)"
-old_keyset="$(mktemp)"
-old_keyset_signature="$(mktemp)"
-old_manifest="$(mktemp)"
-old_signature="$(mktemp)"
-trap 'rm -f -- "$candidate_output" "$old_output" "$old_keyset" "$old_keyset_signature" "$old_manifest" "$old_signature"' EXIT
 manifest_before="$(sha256sum "$MANIFEST" | awk '{print tolower($1)}')"
 signature_before="$(sha256sum "$SIGNATURE" | awk '{print tolower($1)}')"
 keyset_before="$(sha256sum "$KEYSET" | awk '{print tolower($1)}')"
 keyset_signature_before="$(sha256sum "$KEYSET_SIGNATURE" | awk '{print tolower($1)}')"
+candidate_output="$(mktemp)"
+old_output="$(mktemp)"
+old_pair="$(mktemp)"
+old_manifest="$(mktemp)"
+old_signature="$(mktemp)"
+old_keyset="$(mktemp)"
+old_keyset_signature="$(mktemp)"
+candidate_pair="${MANIFEST%/*}/current-v2.json"
+trap 'rm -f -- "$candidate_output" "$old_output" "$old_pair" "$old_manifest" "$old_signature" "$old_keyset" "$old_keyset_signature"' EXIT
+
 verify_pair "$KEYSET" "$KEYSET_SIGNATURE" "$MANIFEST" "$SIGNATURE" "$candidate_output" || die 'candidate root keyset or v2 manifest invalid'
 [[ "$(sha256sum "$MANIFEST" | awk '{print tolower($1)}')" == "$manifest_before" ]] || die 'verifier modified candidate manifest bytes'
 [[ "$(sha256sum "$SIGNATURE" | awk '{print tolower($1)}')" == "$signature_before" ]] || die 'verifier modified candidate signature bytes'
@@ -66,24 +69,19 @@ version="${candidate_fields[1]#version=}"
 keyset_epoch="${candidate_fields[2]#keyset_epoch=}"
 keyset_digest="${candidate_fields[3]#keyset_digest=}"
 
+(cd "$ROOT" && go run ./cmd/wd-update-manifest create-pair --manifest "$MANIFEST" --signature "$SIGNATURE" --out "$candidate_pair") >/dev/null || die 'cannot create canonical atomic stable-pair envelope'
+candidate_pair_sha="$(sha256sum "$candidate_pair" | awk '{print tolower($1)}')"
+
 base='https://downloads.wedecent.com/windows/stable'
-probe() {
-  local status
-  status="$(curl --disable -sS -I --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "$1")" || die "cannot determine stable object state: $1"
-  case "$status" in 200|404) printf '%s\n' "$status" ;; *) die "ambiguous stable object HTTP status $status" ;; esac
-}
-manifest_status="$(probe "$base/manifest-v2.json")"
-signature_status="$(probe "$base/manifest-v2.sig")"
-expected_manifest='-'
-expected_signature='-'
-expected_keyset='-'
-expected_keyset_signature='-'
-if [[ "$manifest_status" == 200 && "$signature_status" == 200 ]]; then
-  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v2.json" -o "$old_manifest" || die 'cannot fetch current stable manifest'
-  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v2.sig" -o "$old_signature" || die 'cannot fetch current stable signature'
-  old_epoch="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); e=d.get("keyset_epoch"); assert d.get("schema")==2 and isinstance(e,int) and e>0; print(e)' "$old_manifest")" || die 'current manifest does not identify a valid keyset epoch'
-  old_keyset_url="${base}/keysets/${old_epoch}/keyset.json"
-  old_keyset_signature_url="${base}/keysets/${old_epoch}/keyset.sig"
+status="$(curl --disable -sS --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "$base/current-v2.json")" || die 'cannot probe current stable-pair envelope'
+expected_pair='-'
+if [[ "$status" == 200 ]]; then
+  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/current-v2.json" -o "$old_pair" || die 'cannot fetch current stable-pair envelope'
+  old_pair_sha="$(sha256sum "$old_pair" | awk '{print tolower($1)}')"
+  (cd "$ROOT" && go run ./cmd/wd-update-manifest unpack-pair --pair "$old_pair" --manifest-out "$old_manifest" --signature-out "$old_signature") >/dev/null || die 'current stable-pair envelope is malformed'
+  old_epoch="$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1], encoding="utf-8")); e=d.get("keyset_epoch"); assert d.get("schema")==2 and isinstance(e,int) and e>0; print(e)' "$old_manifest")" || die 'current stable manifest has invalid keyset epoch'
+  old_keyset_url="$base/keysets/$old_epoch/keyset.json"
+  old_keyset_signature_url="$base/keysets/$old_epoch/keyset.sig"
   curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$old_keyset_url" -o "$old_keyset" || die 'cannot fetch current root-signed keyset'
   curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$old_keyset_signature_url" -o "$old_keyset_signature" || die 'cannot fetch current keyset signature'
   verify_pair "$old_keyset" "$old_keyset_signature" "$old_manifest" "$old_signature" "$old_output" || die 'existing stable v2 pair is invalid'
@@ -91,43 +89,23 @@ if [[ "$manifest_status" == 200 && "$signature_status" == 200 ]]; then
   [[ "${#old_fields[@]}" == 4 ]] || die 'existing verifier output malformed'
   old_sequence="${old_fields[0]#sequence=}"
   old_version="${old_fields[1]#version=}"
-  old_verified_epoch="${old_fields[2]#keyset_epoch=}"
-  old_verified_digest="${old_fields[3]#keyset_digest=}"
-  [[ "$old_verified_epoch" =~ ^[1-9][0-9]*$ && "$old_verified_digest" =~ ^[0-9a-f]{64}$ ]] || die 'existing keyset verification output malformed'
-  if ((keyset_epoch < old_verified_epoch)); then
-    die 'candidate keyset epoch rolls back the current stable channel'
-  fi
-  if ((keyset_epoch == old_verified_epoch)) && [[ "$keyset_digest" != "$old_verified_digest" ]]; then
-    die 'candidate keyset equivocates at the current stable epoch'
-  fi
-  if ((keyset_epoch > old_verified_epoch)) && [[ "$keyset_digest" == "$old_verified_digest" ]]; then
-    die 'new keyset epoch reuses the previous keyset digest'
-  fi
   (cd "$ROOT" && go run ./cmd/wd-update-manifest verify-v2 \
     --root-key-id "$ROOT_KEY_ID" --root-public-key "$ROOT_PUBLIC_KEY" \
     --keyset "$KEYSET" --keyset-signature "$KEYSET_SIGNATURE" \
     --manifest "$MANIFEST" --signature "$SIGNATURE" \
     --current-version "$old_version" --current-sequence "$old_sequence") >/dev/null || die 'candidate does not advance current stable version and sequence'
-  expected_manifest="$(sha256sum "$old_manifest" | awk '{print tolower($1)}')"
-  expected_signature="$(sha256sum "$old_signature" | awk '{print tolower($1)}')"
-  expected_keyset="$(sha256sum "$old_keyset" | awk '{print tolower($1)}')"
-  expected_keyset_signature="$(sha256sum "$old_keyset_signature" | awk '{print tolower($1)}')"
-elif [[ "$manifest_status" == 404 && "$signature_status" == 404 ]]; then
-  :
-else
-  die 'stable manifest/signature presence is inconsistent'
+  expected_pair="$old_pair_sha"
+elif [[ "$status" != 404 ]]; then
+  die "ambiguous stable-pair HTTP status $status"
 fi
 
-manifest_sha="$(sha256sum "$MANIFEST" | awk '{print tolower($1)}')"
-signature_sha="$(sha256sum "$SIGNATURE" | awk '{print tolower($1)}')"
+root_public_sha="$(sha256sum "$ROOT_PUBLIC_KEY" | awk '{print tolower($1)}')"
 keyset_sha="$(sha256sum "$KEYSET" | awk '{print tolower($1)}')"
 keyset_signature_sha="$(sha256sum "$KEYSET_SIGNATURE" | awk '{print tolower($1)}')"
-root_public_sha="$(sha256sum "$ROOT_PUBLIC_KEY" | awk '{print tolower($1)}')"
 (
   set -o noclobber
-  printf 'manifest_sha256=%s\nsignature_sha256=%s\nkeyset_sha256=%s\nkeyset_signature_sha256=%s\nroot_public_key_sha256=%s\nexpected_manifest_sha256=%s\nexpected_signature_sha256=%s\nexpected_keyset_sha256=%s\nexpected_keyset_signature_sha256=%s\nsequence=%s\nversion=%s\nkeyset_epoch=%s\nkeyset_digest=%s\n' \
-    "$manifest_sha" "$signature_sha" "$keyset_sha" "$keyset_signature_sha" "$root_public_sha" \
-    "$expected_manifest" "$expected_signature" "$expected_keyset" "$expected_keyset_signature" \
+  printf 'candidate_pair_sha256=%s\nexpected_pair_sha256=%s\nkeyset_sha256=%s\nkeyset_signature_sha256=%s\nroot_public_key_sha256=%s\nsequence=%s\nversion=%s\nkeyset_epoch=%s\nkeyset_digest=%s\n' \
+    "$candidate_pair_sha" "$expected_pair" "$keyset_sha" "$keyset_signature_sha" "$root_public_sha" \
     "$sequence" "$version" "$keyset_epoch" "$keyset_digest" > "$RECEIPT"
 ) || die 'cannot create exclusive verification receipt'
-printf 'Stable schema-v2 update candidate independently verified; root keyset and rollback policy passed.\n'
+printf 'Stable v2 manifest/signature envelope independently verified; current generation and rollback policy checked.\n'
