@@ -290,8 +290,6 @@ func parseUpdateStateAccessMask(value string) (uint32, error) {
 		}
 		return uint32(mask), nil
 	}
-	const tokens = "FAGRDWOS"
-	_ = tokens
 	var mask uint32
 	for len(value) > 0 {
 		if len(value) < 2 {
@@ -302,10 +300,20 @@ func parseUpdateStateAccessMask(value string) (uint32, error) {
 		switch token {
 		case "FA":
 			right = 0x001F01FF
+		case "FR":
+			right = 0x00020089
+		case "FW":
+			right = 0x00000116
+		case "FX":
+			right = 0x000200A0
 		case "GA":
 			right = 0x10000000
+		case "GR":
+			right = 0x80000000
 		case "GW":
 			right = 0x40000000
+		case "GX":
+			right = 0x20000000
 		case "WD":
 			right = 0x00040000
 		case "WO":
@@ -314,18 +322,8 @@ func parseUpdateStateAccessMask(value string) (uint32, error) {
 			right = 0x00000040
 		case "DE", "SD":
 			right = 0x00010000
-		case "FW":
-			right = 0x00000002
 		case "AD":
 			right = 0x00000004
-		case "FR", "GR":
-			right = 0x80000000
-		case "GA":
-			right = 0x10000000
-		case "GX":
-			right = 0x20000000
-		case "RC":
-			right = 0x00020000
 		case "CC":
 			right = 0x00000001
 		case "LC":
@@ -342,9 +340,8 @@ func parseUpdateStateAccessMask(value string) (uint32, error) {
 			right = 0x00000080
 		case "CR":
 			right = 0x00000100
-		case "FX":
-			right = 0x20000000
-		case "KA", "KR", "KW", "KX":
+		case "RC":
+			right = 0x00020000
 		default:
 			return 0, fmt.Errorf("ancestor DACL has unsupported access right %q", token)
 		}
