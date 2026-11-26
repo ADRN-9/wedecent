@@ -681,7 +681,7 @@ function New-MigrationAttackerWorkspace {
     return $path
 }
 
-$forwardFaults = @('Prepared','ServiceStopped','Copying','Copied','IdentityVerification','IdentityProtected','Verified','StatePublished','SCMTransition','ServiceReconfigured','MetadataUpdated','ServiceRestarted')
+$forwardFaults = @('Prepared','ServiceStopped','Copying','Copied','IdentityVerification','IdentityProtected','Verified','DestinationPublished','StatePublished','SCMTransition','ServiceReconfigured','MetadataUpdated','ServiceRestarted')
 foreach ($fault in $forwardFaults) {
     $fixture = New-MigrationFixture
     try {
@@ -1784,15 +1784,175 @@ try {
         if (-not $rejected) { throw }
     }
     if (-not $rejected) { throw 'Recovery accepted an overlapping source/staging path.' }
-    if ($global:WeDecentMigrationMockService.PathName -cne $recoverySeparationFixture.OriginalServicePath) {
-        throw 'Recovery path-separation rejection changed SCM configuration.'
-    }
-    if ($global:WeDecentMigrationMockStatus -cne 'Stopped') {
-        throw 'Recovery path-separation rejection restarted or otherwise changed the stopped service.'
-    }
-    Write-Host 'Migration recovery full path-separation rejection before SCM/service mutation PASS'
+    Assert-MigrationRecoveryNoSideEffects -Fixture $recoverySeparationFixture -Journal $journal -Before (Get-MigrationRecoverySideEffectSnapshot -Fixture $recoverySeparationFixture -Journal $journal) -Case 'overlapping source/staging path'
+    Write-Host 'Migration recovery full path-separation rejection before any side effect PASS'
 } finally {
     Remove-Item -LiteralPath $recoverySeparationFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+
+function Invoke-MigrationRecoveryInFreshPowerShell {
+    param([Parameter(Mandatory = $true)]$Fixture)
+    $childScript = Join-Path $Fixture.Root 'recover-in-independent-process.ps1'
+    $childBody = @'
+[CmdletBinding()]
+param([string]$ModulePath, [string]$JournalPath, [string]$AgentPath, [string]$MetadataPath, [string]$ServiceName)
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+Import-Module $ModulePath -Force
+$journal = Read-WeDecentMigrationJournal -Path $JournalPath
+$global:MigrationChildService = [pscustomobject]@{
+    Name = $journal.service_name
+    StartName = $journal.service_start_name
+    StartMode = $journal.service_start_mode
+    State = 'Stopped'
+    PathName = $journal.original_service_path
+}
+$global:MigrationChildStatus = 'Stopped'
+function global:Get-CimInstance {
+    param([string]$ClassName, [string]$Filter)
+    if ($ClassName -ne 'Win32_Service') { throw "Unexpected CIM class: $ClassName" }
+    return $global:MigrationChildService
+}
+function global:Get-Service {
+    param([string]$Name)
+    if ($Name -cne $global:MigrationChildService.Name) { throw "Unexpected service: $Name" }
+    $result = [pscustomobject]@{ Status = $global:MigrationChildStatus }
+    $result | Add-Member -MemberType ScriptMethod -Name WaitForStatus -Value {
+        param($Expected, $Timeout)
+        if ($global:MigrationChildStatus -cne $Expected) { throw "Mock service did not reach $Expected." }
+        $this.Status = $Expected
+    }
+    return $result
+}
+function global:Stop-Service {
+    param([string]$Name, [switch]$Force)
+    $global:MigrationChildStatus = 'Stopped'
+    $global:MigrationChildService.State = 'Stopped'
+}
+function global:Start-Service {
+    param([string]$Name)
+    $global:MigrationChildStatus = 'Running'
+    $global:MigrationChildService.State = 'Running'
+}
+function global:sc.exe {
+    param([string]$Verb, [string]$Name, [string]$Config)
+    if ($Verb -cne 'config' -or $Name -cne $global:MigrationChildService.Name -or $Config -notmatch '^binPath= ') {
+        $global:LASTEXITCODE = 1
+        return 'Unexpected mocked SCM command.'
+    }
+    $global:MigrationChildService.PathName = $Config.Substring('binPath= '.Length)
+    $global:LASTEXITCODE = 0
+    return 'SUCCESS'
+}
+if (-not (Recover-WeDecentStateMigration -JournalPath $JournalPath -AgentPath $AgentPath -MetadataPath $MetadataPath -ServiceName $ServiceName)) {
+    throw 'Fresh-process recovery did not resume the pending transaction.'
+}
+$terminal = Read-WeDecentMigrationJournal -Path $JournalPath
+if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in $($terminal.phase)." }
+'@
+    [IO.File]::WriteAllText($childScript, $childBody)
+    $child = [Diagnostics.ProcessStartInfo]::new()
+    $child.FileName = (Join-Path $PSHOME 'pwsh.exe')
+    $child.UseShellExecute = $false
+    $child.RedirectStandardOutput = $true
+    $child.RedirectStandardError = $true
+    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$Fixture.Journal,'-AgentPath',$agentPath,'-MetadataPath',$Fixture.MetadataPath,'-ServiceName',$Fixture.ServiceName)) {
+        [void]$child.ArgumentList.Add($argument)
+    }
+    $process = [Diagnostics.Process]::Start($child)
+    try {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Fresh-process recovery failed: $stderr $stdout" }
+    } finally {
+        $process.Dispose()
+    }
+}
+
+# Reject malformed but well-formed JSON recovery records without changing any transaction resource.
+$recoveryRejectedCases = @(
+    [pscustomobject]@{
+        Name = 'overlapping source/staging paths'
+        Mutate = { param($journal, $fixture) $journal.staging = Join-Path $fixture.Source 'nested' }
+    },
+    [pscustomobject]@{
+        Name = 'Verified phase without completed staging'
+        Mutate = { param($journal, $fixture) $journal.phase = 'Verified'; $journal.staging_complete = $false; $journal.destination_manifest_sha256 = '' }
+    },
+    [pscustomobject]@{
+        Name = 'non-Boolean service_was_running marker'
+        Mutate = { param($journal, $fixture) $journal.service_was_running = 'false' }
+    },
+    [pscustomobject]@{
+        Name = 'original metadata bound to a different source'
+        Mutate = {
+            param($journal, $fixture)
+            $metadata = ConvertFrom-Json -InputObject $journal.original_metadata_json
+            $metadata.state_dir = $fixture.Destination
+            $journal.original_metadata_json = ConvertTo-Json -InputObject $metadata -Depth 10
+        }
+    }
+)
+foreach ($case in $recoveryRejectedCases) {
+    $fixture = New-MigrationFixture
+    try {
+        $pendingRollback = $false
+        try {
+            Invoke-WeDecentStateMigration -Source $fixture.Source -Destination $fixture.Destination -AgentPath $agentPath -ServiceName $fixture.ServiceName -ServiceSid $fixture.ServiceSid -MetadataPath $fixture.MetadataPath -JournalPath $fixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+        } catch {
+            $pendingRollback = $_.Exception.Message -like '*durable rollback is pending*'
+            if (-not $pendingRollback) { throw }
+        }
+        if (-not $pendingRollback) { throw "Fixture did not reach pending rollback for $($case.Name)." }
+        $journal = Read-WeDecentMigrationJournal -Path $fixture.Journal
+        & $case.Mutate $journal $fixture
+        Write-WeDecentMigrationJournal -Path $fixture.Journal -Journal $journal
+        $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $fixture -Journal $journal
+        $rejected = $false
+        try {
+            [void](Recover-WeDecentStateMigration -JournalPath $fixture.Journal -AgentPath $agentPath -MetadataPath $fixture.MetadataPath -ServiceName $fixture.ServiceName)
+        } catch {
+            $rejected = $true
+        }
+        if (-not $rejected) { throw "Recovery accepted $($case.Name)." }
+        Assert-MigrationRecoveryNoSideEffects -Fixture $fixture -Journal $journal -Before $before -Case $case.Name
+        Write-Host "Migration recovery rejects $($case.Name) without filesystem, metadata, journal, or SCM mutation PASS"
+    } finally {
+        Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Model the crash window after same-parent destination rename but before StatePublished is journaled.
+$publishedCrashRecovery = New-MigrationFixture
+try {
+    $pendingRollback = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $publishedCrashRecovery.Source -Destination $publishedCrashRecovery.Destination -AgentPath $agentPath -ServiceName $publishedCrashRecovery.ServiceName -ServiceSid $publishedCrashRecovery.ServiceSid -MetadataPath $publishedCrashRecovery.MetadataPath -JournalPath $publishedCrashRecovery.Journal -FaultAt 'Verified,RollbackServiceStopped' | Out-Null
+    } catch {
+        $pendingRollback = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $pendingRollback) { throw }
+    }
+    if (-not $pendingRollback) { throw 'Did not preserve the Verified journal boundary for destination-publication recovery.' }
+    $pending = Read-WeDecentMigrationJournal -Path $publishedCrashRecovery.Journal
+    if ($pending.phase -cne 'Verified' -or -not $pending.staging_complete -or -not (Test-Path -LiteralPath $pending.staging -PathType Container)) {
+        throw 'Fixture did not retain the verified staging tree and pre-publication journal phase.'
+    }
+    [IO.Directory]::Move([string]$pending.staging, [string]$publishedCrashRecovery.Destination)
+    if (Test-Path -LiteralPath $pending.staging -or -not (Test-Path -LiteralPath $publishedCrashRecovery.Destination -PathType Container)) {
+        throw 'Could not model atomic destination publication before the StatePublished journal write.'
+    }
+    $afterRename = Read-WeDecentMigrationJournal -Path $publishedCrashRecovery.Journal
+    if ($afterRename.phase -cne 'Verified') { throw 'Synthetic crash-state unexpectedly advanced the durable journal phase.' }
+    Invoke-MigrationRecoveryInFreshPowerShell -Fixture $publishedCrashRecovery
+    $global:WeDecentMigrationMockStatus = 'Running'
+    $global:WeDecentMigrationMockService.State = 'Running'
+    $global:WeDecentMigrationMockService.PathName = $publishedCrashRecovery.OriginalServicePath
+    Assert-MigrationRolledBack -Fixture $publishedCrashRecovery -Fault 'fresh-process destination-publication recovery'
+    Write-Host 'Migration coordinator recovers destination publication before StatePublished journal write in fresh process PASS (synthetic crash-state; SCM mocked)'
+} finally {
+    Remove-Item -LiteralPath $publishedCrashRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 Write-Host 'Windows state migration coordinator integration PASS'
