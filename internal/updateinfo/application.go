@@ -65,8 +65,8 @@ func (s *StateStore) ApplyVerifiedInstallerForKeyset(
 	executor InstallerExecutor,
 	expectedKeysetEpoch uint64,
 ) error {
-	if expectedKeysetEpoch == 0 {
-		return fmt.Errorf("%w: expected keyset epoch is required", ErrInvalidState)
+	if expectedKeysetEpoch == 0 || manifest.Schema != ManifestSchemaV2 || manifest.KeysetEpoch != expectedKeysetEpoch {
+		return fmt.Errorf("%w: manifest and expected keyset epoch must match", ErrInvalidState)
 	}
 	return s.applyVerifiedInstaller(ctx, manifest, stagedPath, maxArchiveBytes, verifyAuthenticode, executor, &expectedKeysetEpoch)
 }
