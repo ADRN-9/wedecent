@@ -47,3 +47,5 @@ func replaceStateFile(tmpPath, path, dir string) error {
 	}
 	return nil
 }
+
+func validateStateDirAncestors(string) error { return nil }
