@@ -1058,6 +1058,126 @@ try {
     if ($attackerSid -in $adminSids) { throw 'Native publication attacker account unexpectedly belongs to Administrators.' }
     $userSids = @(Get-LocalGroupMember -Group 'Users' | ForEach-Object { $_.SID.Value })
     if ($attackerSid -notin $userSids) { throw 'Native publication attacker account is not a standard Users member.' }
+$mutationCases = @(
+    [pscustomobject]@{ Name='FILE_ADD_FILE'; Rights=[Security.AccessControl.FileSystemRights]::CreateFiles },
+    [pscustomobject]@{ Name='FILE_ADD_SUBDIRECTORY'; Rights=[Security.AccessControl.FileSystemRights]::CreateDirectories },
+    [pscustomobject]@{ Name='DELETE_CHILD'; Rights=[Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles },
+    [pscustomobject]@{ Name='DELETE'; Rights=[Security.AccessControl.FileSystemRights]::Delete },
+    [pscustomobject]@{ Name='WRITE_DAC'; Rights=[Security.AccessControl.FileSystemRights]::ChangePermissions },
+    [pscustomobject]@{ Name='WRITE_OWNER'; Rights=[Security.AccessControl.FileSystemRights]::TakeOwnership }
+)
+foreach ($mutationCase in $mutationCases) {
+    $aclFixture = New-MigrationFixture
+    try {
+        $ancestor = Join-Path $aclFixture.Root ('acl-ancestor-' + $mutationCase.Name)
+        New-Item -ItemType Directory -Path $ancestor | Out-Null
+        $admins = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-544'
+        $system = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-18'
+        $acl = [Security.AccessControl.DirectorySecurity]::new()
+        $acl.SetAccessRuleProtection($true, $false)
+        $acl.SetOwner($admins)
+        $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit
+        foreach ($sid in @($admins, $system)) {
+            $trustedRule = [Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance,
+                [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow
+            )
+            [void]$acl.AddAccessRule($trustedRule)
+        }
+        $untrustedRule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $usersSid, $mutationCase.Rights, $inheritance,
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($untrustedRule)
+        Set-Acl -LiteralPath $ancestor -AclObject $acl -ErrorAction Stop
+
+        $publication = Join-Path $ancestor 'publication'
+        New-Item -ItemType Directory -Path $publication | Out-Null
+        $inheritedRule = @( (Get-Acl -LiteralPath $publication).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+            Where-Object { $_.IdentityReference.Value -eq $usersSid.Value -and $_.IsInherited -and (($_.FileSystemRights -band $mutationCase.Rights) -ne 0) } )
+        if ($inheritedRule.Count -eq 0) {
+            throw "The $($mutationCase.Name) test fixture did not create an inherited effective ACE."
+        }
+
+        $metadataPath = Join-Path $publication 'installer.json'
+        [IO.File]::WriteAllText($metadataPath, [IO.File]::ReadAllText($aclFixture.MetadataPath))
+        Set-WeDecentMigrationAdminFileAcl -Path $metadataPath
+        $journalPath = Join-Path $publication 'migration.json'
+        $journal = [pscustomobject]@{
+            schema = 1
+            product = 'WeDecent'
+            phase = 'Prepared'
+            transaction_id = [Guid]::NewGuid().ToString('D')
+            updated_utc = [DateTime]::UtcNow.ToString('o')
+        }
+        [IO.File]::WriteAllText($journalPath, (ConvertTo-Json -InputObject $journal -Depth 10))
+        Set-WeDecentMigrationAdminFileAcl -Path $journalPath
+
+        foreach ($writer in @('metadata', 'journal')) {
+            $rejected = $false
+            try {
+                if ($writer -ceq 'metadata') {
+                    Write-WeDecentMigrationMetadata -Path $metadataPath -StatePath $aclFixture.Source
+                } else {
+                    $journal.phase = 'Copying'
+                    Write-WeDecentMigrationJournal -Path $journalPath -Journal $journal
+                }
+            } catch {
+                $rejected = $_.Exception.Message -like '*effective or inherited mutation rights*'
+                if (-not $rejected) { throw }
+            }
+            if (-not $rejected) {
+                throw "$writer writer accepted inherited $($mutationCase.Name) access in its publication ancestor chain."
+            }
+        }
+        Write-Host "Migration inherited $($mutationCase.Name) ACL rejected by metadata and journal writers PASS"
+    } finally {
+        Remove-Item -LiteralPath $aclFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+$controlFixture = New-MigrationFixture
+try {
+    $controlWorkspace = New-MigrationAttackerWorkspace -RootPath $controlFixture.Root -AttackerSid $attackerSid
+    $controlDirectory = Join-Path $controlWorkspace 'control'
+    New-Item -ItemType Directory -Path $controlDirectory | Out-Null
+    $controlTarget = Join-Path $controlDirectory 'target.json'
+    $controlSource = Join-Path $controlDirectory 'source.tmp'
+    [IO.File]::WriteAllText($controlTarget, '{"control":"original"}')
+    [IO.File]::WriteAllText($controlSource, '{"attacker":true}')
+    $controlOriginalIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($controlTarget)
+    $controlSourceIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($controlSource)
+    $global:WeDecentMigrationControlObservedSid = $null
+    $global:WeDecentMigrationControlTokenEvidence = $null
+    $global:WeDecentMigrationControlError = -1
+    [WeDecentMigrationTestLogon]::RunAs(
+        $attackerName, $env:COMPUTERNAME, $attackerPassword,
+        [Action] {
+            $global:WeDecentMigrationControlObservedSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+            $global:WeDecentMigrationControlTokenEvidence = [WeDecentMigrationTestLogon]::GetTokenEvidence()
+            $global:WeDecentMigrationControlError = [WeDecentMigrationTestLogon]::TryNativeReplace($controlSource, $controlTarget)
+        }
+    )
+    if ($global:WeDecentMigrationControlObservedSid -cne $attackerSid) {
+        throw 'Native replacement control did not execute under the distinct standard-user token.'
+    }
+    if ($global:WeDecentMigrationControlError -ne 0) {
+        throw "Native FILE_RENAME_INFO_EX POSIX replacement control failed (Win32=$global:WeDecentMigrationControlError)."
+    }
+    if ([WeDecentMigrationFileIdentityApi]::GetIdentity($controlTarget) -cne $controlSourceIdentity -or
+        [IO.File]::ReadAllText($controlTarget) -cne '{"attacker":true}' -or
+        (Test-Path -LiteralPath $controlSource)) {
+        throw 'Native replacement control did not replace the original object with the source object.'
+    }
+    if ([WeDecentMigrationFileIdentityApi]::GetIdentity($controlTarget) -ceq $controlOriginalIdentity) {
+        throw 'Native replacement control unexpectedly retained the original destination identity.'
+    }
+    Write-Host "Migration unprotected namespace native POSIX replacement control PASS: $global:WeDecentMigrationControlTokenEvidence"
+} finally {
+    Remove-Item -LiteralPath $controlFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 foreach ($nativeRaceKind in @('metadata', 'journal')) {
     $nativeRaceFixture = New-MigrationFixture
     try {
@@ -1074,18 +1194,18 @@ foreach ($nativeRaceKind in @('metadata', 'journal')) {
             }
             Write-WeDecentMigrationJournal -Path $nativeTarget -Journal $nativeJournal
         }
+        $nativeWorkspace = New-MigrationAttackerWorkspace -RootPath $nativeRaceFixture.Root -AttackerSid $attackerSid
+        $nativeSource = Join-Path $nativeWorkspace ("native-" + $nativeRaceKind + ".tmp")
+        [IO.File]::WriteAllText($nativeSource, '{"attacker":true}')
         $global:WeDecentMigrationNativeRaceTarget = $nativeTarget
-        $global:WeDecentMigrationNativeRaceBackup = $nativeTarget + '.native-race-original'
+        $global:WeDecentMigrationNativeRaceSource = $nativeSource
         $global:WeDecentMigrationNativeRaceBlocked = $false
         $global:WeDecentMigrationNativeRaceHookInvoked = $false
-        $global:WeDecentMigrationNativeRaceError = $null
         [WeDecentMigrationFileIdentityApi]::PublicationHook = [System.Action[string]] {
             param($targetPath)
             if ([string]::Equals($targetPath, $global:WeDecentMigrationNativeRaceTarget, [StringComparison]::OrdinalIgnoreCase)) {
                 $global:WeDecentMigrationNativeRaceHookInvoked = $true
-                $global:WeDecentMigrationNativeRaceBlocked = Invoke-MigrationUntrustedMutationAttempt `
-                    -TargetPath $global:WeDecentMigrationNativeRaceTarget `
-                    -BackupPath $global:WeDecentMigrationNativeRaceBackup
+                $global:WeDecentMigrationNativeRaceBlocked = Invoke-MigrationUntrustedMutationAttempt -TargetPath $global:WeDecentMigrationNativeRaceTarget -SourcePath $global:WeDecentMigrationNativeRaceSource
             }
         }
         if ($nativeRaceKind -ceq 'metadata') {
@@ -1094,42 +1214,33 @@ foreach ($nativeRaceKind in @('metadata', 'journal')) {
             $nativeJournal.phase = 'Copying'
             Write-WeDecentMigrationJournal -Path $nativeTarget -Journal $nativeJournal
         }
-        if (-not $global:WeDecentMigrationNativeRaceHookInvoked) {
-            throw "Native $nativeRaceKind publication did not execute the final-boundary substitution hook."
+        if (-not $global:WeDecentMigrationNativeRaceHookInvoked -or -not $global:WeDecentMigrationNativeRaceBlocked) {
+            throw "Native $nativeRaceKind publication did not block a standard-user FILE_RENAME_INFO_EX POSIX replacement."
         }
-        if (-not $global:WeDecentMigrationNativeRaceBlocked) {
-            throw "Native $nativeRaceKind publication did not prevent a delete/rename substitution at the syscall boundary (HRESULT=$global:WeDecentMigrationNativeRaceError)."
-        }
-        if (Test-Path -LiteralPath $global:WeDecentMigrationNativeRaceBackup) {
-            throw "Native $nativeRaceKind publication allowed the original target to be renamed during its publication guard."
+        if (-not (Test-Path -LiteralPath $nativeSource)) {
+            throw "Native $nativeRaceKind attack unexpectedly consumed its source file."
         }
         $nativePublishedContent = Get-Content -LiteralPath $nativeTarget -Raw | ConvertFrom-Json
         if ($null -ne $nativePublishedContent.PSObject.Properties['attacker']) {
             throw "Native $nativeRaceKind publication exposed attacker-controlled replacement content."
         }
         if ($nativeRaceKind -ceq 'metadata') {
-            $published = Get-Content -LiteralPath $nativeTarget -Raw | ConvertFrom-Json
-            if ([IO.Path]::GetFullPath([string]$published.state_dir) -ine [IO.Path]::GetFullPath($nativeRaceFixture.Destination)) {
+            if ([IO.Path]::GetFullPath([string]$nativePublishedContent.state_dir) -ine [IO.Path]::GetFullPath($nativeRaceFixture.Destination)) {
                 throw 'Native metadata publication did not publish the intended state directory.'
             }
-        } else {
-            $published = Get-Content -LiteralPath $nativeTarget -Raw | ConvertFrom-Json
-            if ([string]$published.phase -cne 'Copying') {
-                throw 'Native journal publication did not publish the intended journal phase.'
-            }
+        } elseif ([string]$nativePublishedContent.phase -cne 'Copying') {
+            throw 'Native journal publication did not publish the intended journal phase.'
         }
-        Write-Host "Migration native-boundary $nativeRaceKind substitution blocked by protected namespace and directory leases PASS"
+        Write-Host "Migration native-boundary $nativeRaceKind FILE_RENAME_INFO_EX POSIX substitution blocked PASS: $global:WeDecentMigrationAttackTokenEvidence"
     } finally {
         [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
         $global:WeDecentMigrationNativeRaceTarget = $null
-        $global:WeDecentMigrationNativeRaceBackup = $null
+        $global:WeDecentMigrationNativeRaceSource = $null
         $global:WeDecentMigrationNativeRaceBlocked = $false
         $global:WeDecentMigrationNativeRaceHookInvoked = $false
-        $global:WeDecentMigrationNativeRaceError = $null
         Remove-Item -LiteralPath $nativeRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
-
 
 foreach ($fallbackRaceKind in @('metadata', 'journal')) {
     $fallbackRaceFixture = New-MigrationFixture
@@ -1147,17 +1258,20 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
             }
             Write-WeDecentMigrationJournal -Path $fallbackTarget -Journal $fallbackJournal
         }
+        $fallbackWorkspace = New-MigrationAttackerWorkspace -RootPath $fallbackRaceFixture.Root -AttackerSid $attackerSid
+        $fallbackSource = Join-Path $fallbackWorkspace ("fallback-" + $fallbackRaceKind + ".tmp")
+        [IO.File]::WriteAllText($fallbackSource, '{"attacker":true}')
+        $fallbackOriginalIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($fallbackTarget)
+        $fallbackOriginalContent = [IO.File]::ReadAllText($fallbackTarget)
         $global:WeDecentMigrationNativeRaceTarget = $fallbackTarget
-        $global:WeDecentMigrationNativeRaceBackup = $fallbackTarget + '.absolute-race-original'
+        $global:WeDecentMigrationNativeRaceSource = $fallbackSource
         $global:WeDecentMigrationNativeRaceBlocked = $false
         $global:WeDecentMigrationNativeRaceHookInvoked = $false
         [WeDecentMigrationFileIdentityApi]::PublicationHook = [System.Action[string]] {
             param($targetPath)
             if ([string]::Equals($targetPath, $global:WeDecentMigrationNativeRaceTarget, [StringComparison]::OrdinalIgnoreCase)) {
                 $global:WeDecentMigrationNativeRaceHookInvoked = $true
-                $global:WeDecentMigrationNativeRaceBlocked = Invoke-MigrationUntrustedMutationAttempt `
-                    -TargetPath $global:WeDecentMigrationNativeRaceTarget `
-                    -BackupPath $global:WeDecentMigrationNativeRaceBackup
+                $global:WeDecentMigrationNativeRaceBlocked = Invoke-MigrationUntrustedMutationAttempt -TargetPath $global:WeDecentMigrationNativeRaceTarget -SourcePath $global:WeDecentMigrationNativeRaceSource
             }
         }
         $env:WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED = '1'
@@ -1173,31 +1287,27 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
             $failedClosed = $_.Exception.Message -like '*Injected unsupported native rename*'
             if (-not $failedClosed) { throw }
         }
-        if (-not $global:WeDecentMigrationNativeRaceHookInvoked -or -not $global:WeDecentMigrationNativeRaceBlocked -or -not $failedClosed) {
-            throw "Protected $fallbackRaceKind publication did not fail closed after blocking unprivileged mutation."
+        if (-not $global:WeDecentMigrationNativeRaceHookInvoked -or
+            -not $global:WeDecentMigrationNativeRaceBlocked -or -not $failedClosed) {
+            throw "Protected $fallbackRaceKind publication did not fail closed after blocking native unprivileged replacement."
         }
-        if (Test-Path -LiteralPath $global:WeDecentMigrationNativeRaceBackup) {
-            throw "Fail-closed $fallbackRaceKind publication allowed the original target to be renamed."
+        if ([WeDecentMigrationFileIdentityApi]::GetIdentity($fallbackTarget) -cne $fallbackOriginalIdentity -or
+            [IO.File]::ReadAllText($fallbackTarget) -cne $fallbackOriginalContent -or
+            -not (Test-Path -LiteralPath $fallbackSource)) {
+            throw "Fail-closed $fallbackRaceKind publication changed the original destination or consumed the attack source."
         }
-        $unchanged = Get-Content -LiteralPath $fallbackTarget -Raw | ConvertFrom-Json
-        if ($fallbackRaceKind -ceq 'metadata') {
-            if ([IO.Path]::GetFullPath([string]$unchanged.state_dir) -ine [IO.Path]::GetFullPath($fallbackRaceFixture.Source)) {
-                throw 'Fail-closed metadata publication changed the original state directory.'
-            }
-        } elseif ([string]$unchanged.phase -cne 'Prepared') {
-            throw 'Fail-closed journal publication changed the original durable phase.'
-        }
-        Write-Host "Migration $fallbackRaceKind publication fails closed when native rename is unavailable PASS"
+        Write-Host "Migration $fallbackRaceKind publication fails closed after native POSIX attack rejection PASS"
     } finally {
         [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
         $global:WeDecentMigrationNativeRaceTarget = $null
-        $global:WeDecentMigrationNativeRaceBackup = $null
+        $global:WeDecentMigrationNativeRaceSource = $null
         $global:WeDecentMigrationNativeRaceBlocked = $false
         $global:WeDecentMigrationNativeRaceHookInvoked = $false
         Remove-Item Env:WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $fallbackRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
+
 
 } finally {
     $global:WeDecentMigrationAttackerName = $null
