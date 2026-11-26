@@ -144,7 +144,7 @@ try {
         throw 'Journal parser fixture is not a valid completed-staging rollback record.'
     }
 
-    $duplicateJson = $validJournalJson -replace '^\s*\{', '{"Phase":"RolledBack",'
+    $duplicateJson = $validJournalJson -replace '^\s*\{', '{"phase":"RolledBack",'
     Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json $duplicateJson -Case 'case-insensitive duplicate JSON properties'
     Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json ($validJournalJson.TrimEnd() + [Environment]::NewLine + '{}') -Case 'trailing JSON documents'
     Assert-MigrationJournalRejected -Fixture $journalParserFixture -Json ($validJournalJson.TrimEnd() + ' unexpected') -Case 'unexpected trailing content'
