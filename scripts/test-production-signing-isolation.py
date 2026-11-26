@@ -82,6 +82,10 @@ def main() -> None:
             "signing script must invoke only the signing adapter")
     require("WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256" in sign_script and "sha256sum" in sign_script,
             "signing script must enforce the configured signer digest pin")
+    require("--schema 2" in sign_script and "verify-v2" in sign_script,
+            "production signer must explicitly create and verify schema-v2 manifests")
+    require("verifier modified candidate manifest bytes" in verify_script and "verifier modified candidate signature bytes" in verify_script,
+            "independent verifier must fail if signed input artifacts are modified")
     require(signer not in verify_script and publisher not in verify_script,
             "verification script must have no signing or publication adapter")
     require(signer not in publish_script and "AWS_ACCESS_KEY_ID" in publish_script,
