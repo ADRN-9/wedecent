@@ -144,25 +144,33 @@ func runVerify(args []string, stdout io.Writer) error {
 	return err
 }
 
-
-
 func runCreatePair(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("create-pair", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	manifestPath := flags.String("manifest", "", "canonical schema-v2 manifest")
 	signaturePath := flags.String("signature", "", "detached manifest signature")
 	out := flags.String("out", "", "exclusive output path")
-	if err := flags.Parse(args); err != nil { return err }
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
 	if flags.NArg() != 0 || *manifestPath == "" || *signaturePath == "" || *out == "" {
 		return errors.New("--manifest, --signature and --out are required")
 	}
 	manifest, err := readBoundedRegular(*manifestPath, updateinfo.MaxManifestBytes)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	signature, err := readBoundedRegular(*signaturePath, 128)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	encoded, err := updateinfo.EncodeCanonicalStablePair(manifest, signature)
-	if err != nil { return err }
-	if err := writeExclusive(*out, encoded, 0o600); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if err := writeExclusive(*out, encoded, 0o600); err != nil {
+		return err
+	}
 	_, err = fmt.Fprintf(stdout, "pair_sha256=%x\n", sha256.Sum256(encoded))
 	return err
 }
@@ -173,15 +181,23 @@ func runUnpackPair(args []string, stdout io.Writer) error {
 	pairPath := flags.String("pair", "", "canonical stable-pair envelope")
 	manifestOut := flags.String("manifest-out", "", "exclusive manifest output path")
 	signatureOut := flags.String("signature-out", "", "exclusive signature output path")
-	if err := flags.Parse(args); err != nil { return err }
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
 	if flags.NArg() != 0 || *pairPath == "" || *manifestOut == "" || *signatureOut == "" {
 		return errors.New("--pair, --manifest-out and --signature-out are required")
 	}
 	pair, err := readBoundedRegular(*pairPath, updateinfo.MaxStablePairBytes)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	manifest, signature, err := updateinfo.ParseCanonicalStablePair(pair)
-	if err != nil { return err }
-	if err := writeExclusive(*manifestOut, manifest, 0o600); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if err := writeExclusive(*manifestOut, manifest, 0o600); err != nil {
+		return err
+	}
 	if err := writeExclusive(*signatureOut, signature, 0o600); err != nil {
 		_ = os.Remove(*manifestOut)
 		return err
@@ -201,8 +217,12 @@ func runVerifyV2(args []string, stdout io.Writer) error {
 	signaturePath := flags.String("signature", "", "detached manifest signature")
 	currentVersion := flags.String("current-version", "", "optional current stable version")
 	currentSequenceText := flags.String("current-sequence", "", "optional highest accepted sequence")
-	if err := flags.Parse(args); err != nil { return err }
-	if flags.NArg() != 0 { return errors.New("verify-v2 accepts no positional arguments") }
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 {
+		return errors.New("verify-v2 accepts no positional arguments")
+	}
 	if *rootKeyID == "" || *rootPublicPath == "" || *keysetPath == "" ||
 		*keysetSignaturePath == "" || *manifestPath == "" || *signaturePath == "" {
 		return errors.New("--root-key-id, --root-public-key, --keyset, --keyset-signature, --manifest, and --signature are required")
@@ -211,27 +231,45 @@ func runVerifyV2(args []string, stdout io.Writer) error {
 		return errors.New("--current-version and --current-sequence must be provided together")
 	}
 	rootBytes, err := readBoundedRegular(*rootPublicPath, maxKeyFileBytes)
-	if err != nil { return fmt.Errorf("read root public key: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read root public key: %w", err)
+	}
 	rootPublic, err := updateinfo.DecodePublicKey(rootBytes)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	keysetBytes, err := readBoundedRegular(*keysetPath, updateinfo.MaxKeysetBytes)
-	if err != nil { return fmt.Errorf("read keyset: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read keyset: %w", err)
+	}
 	keysetSignature, err := readBoundedRegular(*keysetSignaturePath, 128)
-	if err != nil { return fmt.Errorf("read keyset signature: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read keyset signature: %w", err)
+	}
 	manifestBytes, err := readBoundedRegular(*manifestPath, updateinfo.MaxManifestBytes)
-	if err != nil { return fmt.Errorf("read manifest: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read manifest: %w", err)
+	}
 	manifestSignature, err := readBoundedRegular(*signaturePath, 128)
-	if err != nil { return fmt.Errorf("read manifest signature: %w", err) }
+	if err != nil {
+		return fmt.Errorf("read manifest signature: %w", err)
+	}
 	now := time.Now().UTC()
 	verified, err := updateinfo.VerifyKeyset(*rootKeyID, rootPublic, keysetBytes, keysetSignature, now, 0, "")
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	var currentSequence uint64
 	if *currentVersion != "" {
 		currentSequence, err = strconv.ParseUint(*currentSequenceText, 10, 64)
-		if err != nil { return fmt.Errorf("invalid --current-sequence: %w", err) }
+		if err != nil {
+			return fmt.Errorf("invalid --current-sequence: %w", err)
+		}
 	}
 	manifest, err := updateinfo.VerifyManifestV2(verified, manifestBytes, manifestSignature, now, *currentVersion, currentSequence)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	_, err = fmt.Fprintf(stdout, "sequence=%d\nversion=%s\nkeyset_epoch=%d\nkeyset_digest=%s\n",
 		manifest.Sequence, manifest.Version, verified.Epoch(), verified.Digest())
 	return err
