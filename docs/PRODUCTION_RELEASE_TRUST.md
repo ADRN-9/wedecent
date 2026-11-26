@@ -185,3 +185,81 @@ The ruleset is active and prevents deletion/non-fast-forward updates, but its cu
 The GitHub integration can read this repository ruleset but the branch-protection endpoint returned 403 and the available interface does not expose Actions environment reviewer settings, self-hosted runner inventory/administration, or secret provisioning. Required reviewers for `wedecent-production-release`, `wedecent-production-signing`, and `wedecent-production-publication`, plus actual signer/publisher runner readiness, remain **NOT ESTABLISHED**. Do not bypass these gates or treat an environment name/approval marker as evidence of provider-side protection.
 
 This is a repository-policy evidence update only. It does not change the ruleset, provision credentials, change production trust anchors, or run a production release.
+
+
+## C314 — update-signing trust hierarchy, rotation and emergency revocation
+
+### Security boundary and key roles
+
+The production update-signing design has three deliberately separate identities. They must not share private-key material or credentials:
+
+1. **Offline update trust root** — Ed25519 public key pinned in the shipped client build. Its private key is generated and held offline (or in an independently administered offline HSM); it is used only to authorize update-keyset metadata and root transitions. It is never present in GitHub Actions, the release runner, the publisher, or the update service.
+2. **Online stable-manifest signing key** — Ed25519 key held by an HSM/KMS-backed signing service. The release workflow sends canonical manifest bytes to a narrow signer adapter; it cannot read or export the private key. The signer authenticates the approved release workflow identity, environment, immutable source commit/tag, sequence and artifact digests before signing. The signer does not have publication credentials.
+3. **Independent verifier** — a separate implementation/identity that verifies signatures, keyset authorization, key status, manifest canonicality, sequence monotonicity, release provenance and artifact digests. It has read-only access to public trust material and cannot request signatures or publish objects. The client verifier is part of the application trust boundary; server-side release verification must not call the signing adapter as its verifier.
+
+The immutable-object publisher is a fourth isolated role. It receives already signed and verified bytes and has create-only publication permissions, but no signing permission or access to the signing key. The signer must not have R2 credentials; the publisher must not have signer credentials. GitHub OIDC identity should be audience- and repository/workflow-scoped, and the external signer must reject arbitrary workflow callers even if they can invoke the adapter.
+
+### Key provisioning ceremony — no development-key promotion
+
+Production key provisioning is a recorded, two-person ceremony performed outside the repository and ordinary CI:
+
+1. An independently named security owner and release owner approve the key algorithm (Ed25519), root/key roles, key IDs, validity window, rotation overlap, revocation SLA, HSM/KMS provider and recovery plan.
+2. Generate the offline root in its approved offline boundary and the online manifest key inside the HSM/KMS. Do not generate either in a developer checkout, test, hosted runner, or ordinary release job. The online private key must be non-exportable and its signer must expose only a constrained signing operation over canonical manifest bytes.
+3. Export only the root public key and online public key. Record their SHA-256 fingerprints, key IDs, HSM key handles/attestation, generation ceremony record, custodians, quorum policy, creation time, algorithm and validity. Never record private key bytes, recovery shares, PINs or secret material in GitHub issues, PRs, logs or this repository.
+4. The offline root signs a canonical keyset document containing a monotonically increasing keyset epoch, root key ID, each manifest key ID/public key/algorithm, not-before, not-after, status and optional revocation time. The keyset format is versioned and strict: canonical encoding, bounded size, no duplicate IDs, no unknown fields, no ambiguous key encodings, and explicit UTC times.
+5. Provision the offline root public key through a separately reviewed source change and release pipeline. The change must not be accepted solely because the new keyset or manifest contains its own key. Verify the shipped client binary's embedded root fingerprint from the exact reproducible release artifact.
+6. Publish the signed keyset before any manifest references a newly provisioned key. Verify the keyset signature with the independently pinned root and read it back from the fixed origin. Only then permit the manifest signer to use that key ID.
+
+No production root or online key has been generated or provisioned by this work. Existing test keys and CI-generated Ed25519 keys are test-only and must never be promoted.
+
+### Manifest key identification and verifier admission
+
+The current updateinfo DiscoveryClient accepts one explicitly provisioned Ed25519 public key and the current manifest signature is a detached signature over canonical manifest bytes. The current production public key path is an operator-supplied WEDECENT_UPDATE_PUBLIC_KEY_PATH; it is not yet a versioned, root-authorized keyset protocol. Do not silently interpret the existing single-key file as a trust root.
+
+Before production key activation, introduce a versioned manifest/keyset protocol (new schema, no in-place reinterpretation of v1):
+- Each signed manifest carries an explicit signing_key_id and keyset_epoch; the detached signature covers the complete canonical bytes, including these fields.
+- The client first verifies a separately fetched/cached keyset with the offline root pinned in the client. It then requires the manifest key ID to be present, currently authorized, within validity, and not revoked at the manifest publication time and the client's trusted current-time policy.
+- Keyset epochs and manifest sequences are monotonic and persisted with integrity protection. Lower epochs, stale keysets, unknown key IDs, duplicate key IDs, expired keysets, revoked keys and rollback attempts fail closed.
+- A manifest cannot introduce, replace, or reactivate a key. Key material from the manifest, TLS endpoint, DNS, artifact or unsigned config is never a trust anchor.
+- The first rollout must explicitly decide whether to support a temporary dual-verification window for a previously shipped v1 trust key. If no production v1 key has shipped, do not add a legacy fallback.
+
+The current v1 verifier must remain unchanged until a reviewed v2 implementation and migration tests are complete. No keyset is currently live, and this protocol is a design gate rather than an implemented feature.
+
+### Rotation, compromise and revocation
+
+**Planned rotation:** publish a root-signed keyset at epoch N+1 with the new manifest key marked active and the old key marked verify-only with a bounded not-after. Distribute the new keyset before signing manifests with the new key. Require clients to observe epoch N+1 before accepting new-key manifests. After the overlap, mark the old key revoked and stop signing with it. Retain the old public key and audit records for historical verification, but do not permit it to authorize new manifests.
+
+**Manifest-key compromise:** immediately disable the key in the external signer/HSM, revoke it in a new root-signed keyset, increment keyset epoch, block new publication, and publish the revocation through the fixed origin and an independent incident channel. Release a clean client/update policy that refuses the compromised key ID. Rebuild/sign affected releases with a new key only after the independent root authority approves. Do not rely on mutable CDN cache invalidation as the only revocation mechanism.
+
+**Root-key compromise:** stop update acceptance through the compromised root, invoke the offline recovery quorum, and ship a client trust-anchor update through an independently trusted application distribution channel. A root transition must be signed by the currently pinned root and independently cross-signed by the replacement root, with strictly increasing root epoch and explicit old-root retirement. A client that has no valid chain from its pinned root must fail closed; there is no trust-on-first-use or manifest-supplied replacement root.
+
+**Availability policy:** keysets should have a bounded validity interval and be refreshed before expiry. A client with an expired keyset cannot silently fall back to an older epoch or a key embedded in a manifest. The exact maximum staleness and offline grace policy must be approved by the security owner before production activation; default is no acceptance of newly discovered updates when authorization metadata is stale.
+
+Every rotation/revocation event must retain an auditable record: request/ticket, two approvers, key IDs and fingerprints (public only), old/new epochs, effective UTC time, signer disablement confirmation, keyset digest, release commit/tag, published object generation and independent read-back verification.
+
+### External signer/verifier and publication separation
+
+The production workflow's WEDECENT_UPDATE_MANIFEST_SIGNER and WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER are currently operator-supplied executable adapters. A path check is not proof of adapter provenance, identity, policy or key non-exportability. Before production use:
+- Pin signer/verifier adapter versions by immutable digest and validate ownership/permissions at runner startup; reject symlinks, writable-by-untrusted principals and mutable downloads.
+- Authenticate workload identity using GitHub OIDC with exact repository, workflow path/ref, environment and audience conditions. Do not accept long-lived GitHub secrets as the only caller authentication.
+- Have the signer independently validate the canonical manifest, key ID, keyset epoch, sequence, version, artifact URLs/digests, immutable source commit/tag and provenance attestations. Enforce sequence monotonicity inside the signing service, not only in the workflow.
+- Return signature bytes plus a public audit receipt (key ID, digest, signer policy version, UTC time, request ID); never return key handles with signing authority or private material.
+- Keep signer, verifier and publisher identities separate. Verify the signer's output with a public-key-only verifier process that has no signer socket, HSM session, publication credential or writable trust store.
+- The publisher performs immutable create-only writes or a real CAS/single-pointer generation commit, reads back the exact generation, and cannot alter existing immutable artifact objects. The stable manifest and signature must be one reader-visible generation; sequential independent mutable object writes are forbidden.
+- Preserve signed manifest bytes, signature, keyset, provenance, verifier output, publisher read-back and signer receipt as immutable release evidence.
+
+CI fake adapters are regression fixtures only. No production signer/verifier, public key, HSM handle, OIDC policy, immutable uploader or atomic stable-pair publisher has been established by this C314 work.
+
+### Live provider-policy evidence — 2026-11-26
+
+The current live Protect main ruleset (ID 21507567) is active and targets only the default branch. It currently requires eight contexts: route-capability-client, route-e2e, linux, windows-agent, windows-release, relay-worker, control-plane, and supabase-db. It omits macos-agent and the three Desktop contexts linux-tauri-check, windows-tauri-check, and macos-tauri-check. The pull-request rule requires zero approvals, no required reviewers and no code-owner review. No release-tag ruleset was returned by the live ruleset listing.
+
+Required production changes are therefore:
+1. Set independent approving review count to at least one (prefer two for trust-anchor/signing changes), require code-owner review, dismiss stale approvals on new commits, and require last-push approval for sensitive release changes.
+2. Require all nine CI contexts plus all three Desktop platform contexts, with strict up-to-date branch policy; confirm exact stable check names before writing.
+3. Create a tag-creation ruleset for refs/tags/v* with narrowly scoped release-operator bypass, and a separate update/deletion prohibition with no bypass actors.
+4. Configure each production Actions environment with independent reviewers, self-approval disabled, and v* deployment restriction. Read back settings through provider administration; workflow YAML is not evidence.
+5. Verify dedicated signing and publisher runner groups, ephemeral/isolated workload boundaries, runner labels, image provenance, patching and network egress restrictions.
+
+The GitHub integration available to this task can read rulesets but cannot write them or inspect environment reviewers/runner inventory. No policy update is claimed. These settings require a named repository administrator/security owner and provider-side administration.
+
