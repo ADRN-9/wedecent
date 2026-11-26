@@ -200,6 +200,9 @@ func encodeState(state State) ([]byte, error) {
 }
 
 func ensurePrivateStateDir(dir string) error {
+	if err := validateStateDirAncestors(dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("%w: create update state directory: %v", ErrInvalidState, err)
 	}
