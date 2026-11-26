@@ -111,8 +111,8 @@ def main() -> None:
             "legacy combined entrypoint must reject the production release workflow")
 
     # Test-only capability adapters model deliberately restricted credentials.
-    # The signer receives a signing token only; the publisher receives a publish
-    # token only. Cross-operations must fail closed.
+    # The signer receives a signing capability only; the publisher receives
+    # R2 write credentials only. Cross-operations must fail closed.
     with tempfile.TemporaryDirectory() as temporary:
         temp = Path(temporary)
         sign_token = temp / "sign.token"
@@ -134,7 +134,7 @@ def main() -> None:
             "#!/usr/bin/env python3\n"
             "import os,sys\n"
             "assert len(sys.argv)==2 and sys.argv[1]=='publish'\n"
-            "assert os.environ.get('PUBLISH_TOKEN') and not os.environ.get('SIGN_TOKEN')\n",
+            "assert os.environ.get('AWS_ACCESS_KEY_ID') and os.environ.get('AWS_SECRET_ACCESS_KEY') and not os.environ.get('SIGN_TOKEN')\n",
             encoding="utf-8",
         )
         signer_adapter.chmod(0o700)
