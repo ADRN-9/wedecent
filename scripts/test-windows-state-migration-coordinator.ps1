@@ -145,9 +145,11 @@ exit 1
 "@
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
     $pwsh = Join-Path $PSHOME 'pwsh.exe'
-    $process = Start-Process -FilePath $pwsh -Credential $global:WeDecentMigrationAttackerCredential `
-        -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) `
-        -WorkingDirectory (Join-Path $env:SystemRoot 'System32') -Wait -PassThru -WindowStyle Hidden
+    try {
+    $process = Start-Process -FilePath $pwsh -Credential $global:WeDecentMigrationAttackerCredential -ArgumentList "-NoProfile -NonInteractive -EncodedCommand $encoded" -Wait -PassThru
+} catch {
+    throw "Unable to launch unprivileged migration attacker process: $($_.Exception.Message) (HRESULT=$($_.Exception.HResult))."
+}
     if ($process.ExitCode -ne 0) {
         throw "Unprivileged publication mutation unexpectedly succeeded or failed for another reason (exit=$($process.ExitCode))."
     }
