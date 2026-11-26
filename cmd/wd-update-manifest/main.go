@@ -46,7 +46,7 @@ func run(args []string, stdout io.Writer) error {
 func runCreate(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
-	schema := flags.Int("schema", updateinfo.ManifestSchemaV2, "manifest schema (production stable updates require 2)")
+	schema := flags.Int("schema", updateinfo.ManifestSchemaV1, "manifest schema; production stable signing must explicitly select schema 2")
 	signingKeyID := flags.String("signing-key-id", "", "active key ID from the root-signed keyset")
 	keysetEpoch := flags.Uint64("keyset-epoch", 0, "root-signed keyset epoch")
 	sequence := flags.Uint64("sequence", 0, "stable manifest sequence")
