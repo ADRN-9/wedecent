@@ -1401,7 +1401,7 @@ function Assert-WeDecentMigrationPublicationNamespace {
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
-    $mutationRights = [Security.AccessControl.FileSystemRights]::CreateFiles -bor
+    $parentMutationRights = [Security.AccessControl.FileSystemRights]::CreateFiles -bor
         [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
         [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::Delete -bor
@@ -1411,6 +1411,10 @@ function Assert-WeDecentMigrationPublicationNamespace {
         [Security.AccessControl.FileSystemRights]::AppendData -bor
         [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
         [Security.AccessControl.FileSystemRights]::WriteAttributes
+    $ancestorMutationRights = [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
     $current = $full
     while (-not [string]::IsNullOrWhiteSpace($current)) {
         $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
@@ -1418,9 +1422,16 @@ function Assert-WeDecentMigrationPublicationNamespace {
         if ($owner -notin $trusted) {
             throw "Migration publication namespace has an untrusted ancestor owner: $current"
         }
-        # Inspect explicit and inherited ACEs. Deny ACEs never excuse an untrusted allow ACE.
+        $mutationRights = if ([string]::Equals($current, $full, [StringComparison]::OrdinalIgnoreCase)) {
+            $parentMutationRights
+        } else {
+            $ancestorMutationRights
+        }
+        # Explicit and inherited ACEs are inspected; inherit-only entries are not
+        # effective on this directory and are checked again on each descendant.
         foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+            if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+                ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
                 continue
             }
             if ($rule.IdentityReference.Value -notin $trusted -and
