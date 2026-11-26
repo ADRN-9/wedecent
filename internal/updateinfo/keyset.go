@@ -52,9 +52,12 @@ type Keyset struct {
 // VerifiedKeyset is returned only after root-signature, canonical encoding,
 // validity-window and anti-rollback checks have succeeded.
 type VerifiedKeyset struct {
-	Keyset Keyset
-	Digest string
+	keyset Keyset
+	digest string
 }
+
+func (v VerifiedKeyset) Epoch() uint64 { return v.keyset.Epoch }
+func (v VerifiedKeyset) Digest() string { return v.digest }
 
 func (k Keyset) Validate(now time.Time) error {
 	if k.Schema != KeysetSchemaV1 || k.Epoch == 0 || !keyIDPattern.MatchString(k.RootKeyID) {
@@ -191,12 +194,20 @@ func VerifyKeyset(rootKeyID string, rootPublicKey ed25519.PublicKey, keysetBytes
 	}
 	digestBytes := sha256.Sum256(keysetBytes)
 	digest := hex.EncodeToString(digestBytes[:])
-	if keyset.Epoch < highestEpoch ||
-		(keyset.Epoch == highestEpoch && (highestDigest == "" || digest != highestDigest)) ||
-		(keyset.Epoch > highestEpoch && highestDigest != "" && highestEpoch == 0) {
+	if highestEpoch == 0 {
+		if highestDigest != "" {
+			return zero, ErrKeysetRollback
+		}
+	} else if len(highestDigest) != 64 {
+		return zero, ErrKeysetRollback
+	} else if _, err := hex.DecodeString(highestDigest); err != nil {
 		return zero, ErrKeysetRollback
 	}
-	return VerifiedKeyset{Keyset: keyset, Digest: digest}, nil
+	if keyset.Epoch < highestEpoch ||
+		(keyset.Epoch == highestEpoch && digest != highestDigest) {
+		return zero, ErrKeysetRollback
+	}
+	return VerifiedKeyset{keyset: keyset, digest: digest}, nil
 }
 
 // VerifyManifestV2 requires a manifest key authorized by the verified keyset.
@@ -204,20 +215,20 @@ func VerifyKeyset(rootKeyID string, rootPublicKey ed25519.PublicKey, keysetBytes
 // for explicit historical verification and revoked keys are never accepted.
 func VerifyManifestV2(verified VerifiedKeyset, manifestBytes, signatureBytes []byte, now time.Time, currentVersion string, highestSequence uint64) (Manifest, error) {
 	var zero Manifest
-	if verified.Digest == "" || verified.Keyset.Epoch == 0 {
+	if verified.digest == "" || verified.keyset.Epoch == 0 {
 		return zero, fmt.Errorf("%w: unverified keyset", ErrInvalidKeyset)
 	}
 	manifest, err := ParseCanonical(manifestBytes)
 	if err != nil {
 		return zero, err
 	}
-	if manifest.Schema != ManifestSchemaV2 || manifest.KeysetEpoch != verified.Keyset.Epoch {
+	if manifest.Schema != ManifestSchemaV2 || manifest.KeysetEpoch != verified.keyset.Epoch {
 		return zero, fmt.Errorf("%w: manifest schema or keyset epoch mismatch", ErrInvalidManifest)
 	}
 	var selected *KeysetEntry
-	for i := range verified.Keyset.Keys {
-		if verified.Keyset.Keys[i].ID == manifest.SigningKeyID {
-			selected = &verified.Keyset.Keys[i]
+	for i := range verified.keyset.Keys {
+		if verified.keyset.Keys[i].ID == manifest.SigningKeyID {
+			selected = &verified.keyset.Keys[i]
 			break
 		}
 	}
