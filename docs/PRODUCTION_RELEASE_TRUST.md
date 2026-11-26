@@ -359,3 +359,36 @@ The repository regression fixture models immutable generation directories and an
 - The repository integration can create/update source files and inspect Actions runs, but cannot administer environment reviewers, runner groups, repository rulesets, external signer services or R2 policy.
 
 Human dependencies still require named owners: repository governance administrator, security owner/root custodians, HSM/KMS operator, signing runner administrator, verification runner administrator, publisher/R2 operator, and Windows infrastructure owner for Issue #204. No accountable individuals are established in the repository evidence currently available.
+
+
+## C316 — v2 discovery and immutable keyset publication wiring (2026-11-26)
+
+This section supersedes the earlier C315 statement that DiscoveryClient and the production scripts were still v1. The current PR #205 branch now contains the following implementation changes:
+
+- `DiscoveryClient.DiscoverStable` requires an explicitly supplied Ed25519 root key ID/public key and a protected `StateStore`. It fetches the stable schema-v2 manifest/signature first, strictly parses the canonical manifest only to obtain its keyset epoch, then fetches the root-signed keyset from the immutable epoch path `/windows/stable/keysets/{epoch}/keyset.json` and its detached signature. It verifies/persists the keyset before authorizing the manifest. There is no v1 fallback.
+- The epoch-specific immutable URL avoids a mutable keyset pointer race. The publisher uploads the new epoch keyset and signature with a create-only adapter before moving the stable manifest/signature generation. Existing stable manifests continue to reference their own immutable epoch keyset.
+- `StateStore.VerifyAndAdvanceKeyset` persists only root-verified keyset epoch/digest. The same cross-process updater lock protects keyset and sequence state writes. `ApplyVerifiedInstaller` commits the accepted manifest sequence after successful installer execution; discovery also consults the persisted sequence after restart.
+- `cmd/wd-update-manifest create` now defaults to schema v2 and requires signing key ID/keyset epoch through manifest validation. `verify-v2` verifies the root signature, immutable keyset, manifest key authorization, canonical bytes and optional prior version/sequence.
+- The signer workflow creates/signs `manifest-v2.json` and carries the signed keyset in the candidate artifact. The verifier consumes only public trust material, checks the candidate and existing stable generation, writes a digest-bound receipt and asserts that it did not modify the signed manifest/signature/keyset input bytes. The publisher rechecks receipt digests, uploads the epoch keyset immutably, then invokes the separate CAS adapter for `manifest-v2.json` and `manifest-v2.sig`, followed by read-back verification.
+- Test-only restricted adapter credentials exercise the negative signer-cannot-publish and publisher-cannot-sign paths. The verifier workflow has read-only repository/artifact permissions and receives neither signer nor publisher adapter configuration.
+
+These are repository-level implementation and regression-test claims. They do not prove live production credentials or infrastructure separation. The restricted adapter tests are deliberately test-only capability fixtures; they are not actual HSM/KMS or R2 credentials.
+
+### C316 verification and unresolved production gates
+
+- Exact-head CI/Desktop workflows are triggered for PR #205 and must complete successfully on the final head before the branch is considered verified.
+- Actual signer, verifier and publisher runner host IDs, operating-system accounts, credential-store ACLs, administrator membership, network egress and ephemeral/reimage policy remain **NOT ESTABLISHED**. The GitHub connector could inspect the active main-branch ruleset but its available interface does not expose runner groups/inventory or environment-reviewer configuration. Distinct labels and group names are scheduling requirements, not proof of separate hosts or accounts.
+- The external `WEDECENT_UPDATE_MANIFEST_SIGNER`, `WEDECENT_R2_CREATE_ONLY_UPLOADER`, and `WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER` binaries, their independently administered credential policies and pinned production digests have not been supplied or verified. Workflow preflights intentionally fail if they are missing.
+- The create-only uploader and stable pair publisher are external interfaces. No live R2 create-only write or real production CAS/generation-pointer race/read-back test has been executed. The publisher must guarantee that readers see one manifest/signature generation; two ordinary mutable object writes are not atomic.
+- The root key ID/public-key path, root-signed keyset/signature path, active signing key ID and keyset epoch are operator-provisioned inputs. No production root, manifest private key or trust anchor was generated or provisioned in C316. The root public key must still be pinned in a separately reviewed shipped-client trust configuration before stable v2 activation.
+- Existing clients that only understand state schema v1 cannot read state schema v2. Do not activate a production v2 keyset until the supported-client rollout/migration gate is complete; no client state reset or fallback is permitted.
+- The current PR branch contains the v2 DiscoveryClient API and its tests, but no live production installation/update invocation was demonstrated in this task. Treat runtime product wiring and a production update E2E as **NOT ESTABLISHED** until a supported client calls this discovery path with its shipped root pin and protected state store.
+
+The v2 stable channel uses these immutable object conventions:
+
+- `windows/stable/manifest-v2.json`
+- `windows/stable/manifest-v2.sig`
+- `windows/stable/keysets/{epoch}/keyset.json`
+- `windows/stable/keysets/{epoch}/keyset.sig`
+
+The epoch keyset must be fully uploaded and read back before the manifest CAS is attempted. Old epoch keysets remain immutable and available for existing manifests and historical verification.
