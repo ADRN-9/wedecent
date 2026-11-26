@@ -37,7 +37,7 @@ func resolvePairLocator(ctx context.Context, opts pairLocatorOptions, finder pai
 	if opts.DiscoverTimeout <= 0 || opts.DiscoverTimeout > time.Minute {
 		return "", errors.New("--discover-timeout must be greater than 0 and at most 1m")
 	}
-	if strings.TrimSpace(opts.Endpoint) != "" || strings.TrimSpace(opts.RFCOMM) != "" || strings.TrimSpace(opts.SerialDevice) != "" || strings.TrimSpace(opts.Relay) != "" || strings.TrimSpace(opts.WebRelay) != "" {
+	if opts.Endpoint != "" || opts.RFCOMM != "" || opts.SerialDevice != "" || opts.Relay != "" || opts.WebRelay != "" {
 		return "", errors.New("--discover-lan cannot be combined with --endpoint, --rfcomm, --serial, --relay, or --web-relay")
 	}
 	if finder == nil {
