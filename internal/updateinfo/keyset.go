@@ -11,6 +11,7 @@ import (
 	"io"
 	"regexp"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -92,6 +93,9 @@ func (k Keyset) Validate(now time.Time) error {
 		}
 		seenKeys[entry.ID] = struct{}{}
 
+		if strings.ContainsAny(entry.PublicKey, " \\t\\r\\n") {
+			return fmt.Errorf("%w: key %q public key whitespace", ErrInvalidKeyset, entry.ID)
+		}
 		publicKey, err := DecodePublicKey([]byte(entry.PublicKey))
 		if err != nil {
 			return fmt.Errorf("%w: key %q public key: %v", ErrInvalidKeyset, entry.ID, err)
