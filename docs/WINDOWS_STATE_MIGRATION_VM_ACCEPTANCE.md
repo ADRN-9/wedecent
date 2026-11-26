@@ -75,3 +75,72 @@ Provide an isolated persistent Windows 11 or supported Windows Server VM with:
 On receipt, run every step and negative case in this document against the exact candidate SHA and record redacted evidence. Hosted CI remains supplemental only.
 
 No code, trust policy, ACL rule, migration behavior, release workflow, or signing configuration is changed by this infrastructure note.
+
+
+## C289 — reproducible acceptance execution plan
+
+This section separates repository/hosted regression coverage from acceptance that must execute on the isolated persistent VM. The commands below are preparation instructions; none of the real-machine steps is evidence of execution until its redacted output and machine identifiers are attached to the acceptance record.
+
+### Candidate and artifact pinning
+
+Before each run, record:
+
+- PR #203 head commit SHA and confirm it is still the intended candidate.
+- Test-signed installer/package SHA-256 and the SHA-256 of the installed `wd-agent.exe`.
+- Windows edition/build, VM identifier, disk identifier, snapshot identifiers, UTC start/end times, and operator identity (non-secret).
+- Service name, service account name, resolved stable SID, start mode, binary path, and effective token groups.
+- Device ID, SHA-256 SPKI fingerprint, certificate SHA-256, and a digest of the DPAPI-protected key file. Never export the private key or copy DPAPI blobs into artifacts.
+
+Use an isolated test signing certificate and a test recovery authority with short-lived credentials. Do not use production signing keys, production recovery credentials, customer state, or the production signing/publishing runners.
+
+### Existing repository checks that can be reused
+
+Run these on a disposable Windows CI runner or the isolated acceptance VM from a clean checkout of the pinned candidate. The build step is required because the migration coordinator script expects `dist/wedecent-windows-amd64/wd-agent.exe`.
+
+From a Bash shell with the repository's pinned Go toolchain:
+
+```bash
+WEDECENT_BUILD_MODE=diagnostic ./scripts/build-windows-release.sh
+```
+
+From elevated 64-bit PowerShell on a disposable test host (the first three scripts do not require an installed service; the coordinator creates temporary fixtures and mocks SCM commands):
+
+```powershell
+pwsh -NoProfile -File .\scripts\test-windows-upgrade-preflight.ps1
+pwsh -NoProfile -File .\scripts\test-windows-service-installer-contract.ps1
+pwsh -NoProfile -File .\scripts\test-windows-state-migration-coordinator.ps1
+go test ./...
+go test ./cmd/wd-agent -run '^TestWindowsServiceStateDefaultLocationUsesProtectedProgramFilesAncestors$' -count=1 -v
+go test ./cmd/wd-agent -run '^(TestServiceStartupRejectsForeignAncestorOwnerBeforeLogIdentityOrRecoveryLoad|TestWindowsSDDLRightsMaskHandlesDirectoryServiceRightsFailClosed)$' -count=1 -v
+```
+
+For the distinct-SID provisioning regression, first create a disposable local non-admin account and set `WEDECENT_TEST_SERVICE_ACCOUNT` to its local account name, then run:
+
+```powershell
+go test ./cmd/wd-agent -run '^TestServiceProvisionDistinctConfiguredSIDNativeIntegration$' -count=1 -v
+```
+
+The CI workflow's Windows job (`.github/workflows/ci.yml`, `windows-agent`) is the canonical reference for the complete hosted sequence. It parses installer/hardware scripts, runs the upgrade preflight, installer credential contract, migration coordinator, replay-store regressions, native Go tests, protected-ancestor/hostile-owner tests, and the distinct-SID provisioning test. Its temporary service account is removed in an `always()` cleanup step.
+
+**Coverage boundary:** `scripts/test-windows-state-migration-coordinator.ps1` replaces `Get-CimInstance`, `Get-Service`, `Stop-Service`, `Start-Service`, and `sc.exe` with test doubles. It provides valuable software-level transaction, journal, path, ACL, file-identity, injected-failure, rollback, and fresh-process recovery coverage. It does not install or control a real SCM service. `TestServiceProvisionDistinctConfiguredSIDNativeIntegration` provisions and validates an empty state directory owned by a different SID; its own source comment explicitly requires subsequent SCM startup and DPAPI persistence testing under that account. `internal/identity/protect_windows_test.go` exercises machine-scope DPAPI behavior in the test process, not under the installed service token. These tests must not be reported as real-service acceptance.
+
+### Persistent-VM execution sequence (must be performed on the real machine)
+
+1. **Provision and isolate.** Restore a clean Windows 11 or supported Windows Server VM snapshot. Keep the elevated operator separate from the service account. Create a dedicated local standard account (for example, `WeDecentAcceptSvc`), resolve and record its SID, verify it is not an administrator, and grant only the service logon rights required by the installer. Keep credentials in the approved secret store.
+2. **Install a known baseline.** Install a test-signed baseline build using the documented installer flow in `installer/windows/README.md`. Use a test recovery-authority URL/pin/trust document and short-lived bearer delivered through the installer's secure prompt/secure-string input. Do not place bearer values in argv, environment variables, logs, or transcripts. Verify the actual service's `StartName`, SID, start mode, image path, running state, token groups, and state-directory ACL/owner before continuing.
+3. **Create the identity fixture.** Let the actual service provision/use its Ed25519 identity. Capture only the device ID, public fingerprint, certificate hash, and DPAPI-protected key-file digest. Confirm authorized terminal operation against a separately controlled test endpoint. Do not export or duplicate private-key material or DPAPI blobs.
+4. **Take the baseline snapshot.** Snapshot the VM after the baseline installation and identity enrollment. Record snapshot ID, VM/disk ID, service configuration, source state path, source manifest, identity evidence, and exact baseline artifact hashes.
+5. **Run the real installer migration.** From elevated PowerShell, invoke the candidate `installer/windows/Install-WeDecent.ps1` against the existing authenticated installation with the intended new `-StateDir` under the protected Program Files install tree. Follow the candidate's documented parameters and credential prompts; do not edit installer metadata or SCM configuration by hand. Capture before/after SCM `ImagePath`, `StartName`, start mode, service state, metadata, journal phases, state ACL/owner, and event logs. Confirm the original source remains available until the transaction is accepted.
+6. **Verify identity and service-token continuity.** After migration, query the actual SCM service and confirm it runs under the same dedicated non-admin SID. Verify the device ID, Ed25519 fingerprint, certificate bytes/hash, and DPAPI-protected key bytes are unchanged. Stop and start the service using SCM; verify the same identity is reopened without prompting or regeneration. Re-run authorized terminal operation.
+7. **Exercise interrupted recovery on disposable snapshots.** For each durable forward phase in the journal (`Prepared`, `ServiceStopped`, `Copying`, `Copied`, `IdentityVerification`, `IdentityProtected`, `Verified`, `StatePublished`, `SCMTransition`, `ServiceReconfigured`, `MetadataUpdated`, `ServiceRestarted`), restore the baseline snapshot and repeat the migration on a fresh disposable clone. Terminate only the test installer process at the selected phase using the VM operator's controlled process-termination mechanism; do not use a CI runner or signing runner. Start a fresh installer/recovery process and verify deterministic recovery, source preservation, correct SCM configuration, and no identity regeneration. Record the journal phase and exact outcome for every interruption point.
+8. **Exercise rollback and negative cases.** On separate restored snapshots, induce the documented failure cases (source/destination/staging substitution, malformed or substituted journal/metadata, reparse points, owner/DACL changes, missing authority, and native file-handle failures) using the harness where applicable. For real-machine checks, verify that rejected inputs do not restart the service, replace metadata, delete/overwrite the source, or weaken ACLs. A mock-driven test result is supplemental, not proof of real SCM behavior.
+9. **Exercise reboot recovery.** On a disposable snapshot, terminate the VM while a real migration transaction is durably pending, reboot the same persistent disk, and run recovery from a fresh process. Verify SCM path/account/start mode, service state, journal terminal phase, metadata, source preservation, ACLs, and unchanged identity evidence.
+10. **Close out evidence.** Preserve redacted PowerShell transcripts, SCM query output, service-token/SID and ACL reports, relevant Windows event logs, journal phase summaries, pre/post identity fingerprints and hashes, snapshot/VM/disk identifiers, exact source commit SHA, installer and binary SHA-256 values, and UTC timestamps. Review every file for passwords, bearer tokens, private-key material, DPAPI blobs, customer data, and other secrets before retention.
+
+### Pass criteria and reporting format
+
+A step is **PREPARED** when its procedure and inputs are documented; **EXECUTED** only when run on the named persistent VM and supported by retained evidence. Mark each result **PASS**, **FAIL**, or **NOT ESTABLISHED**. Hosted CI PASS must remain separately labelled and cannot satisfy the real-machine gate.
+
+The real-machine gate passes only when the actual SCM service uses the dedicated non-admin SID before and after migration; DPAPI reopening preserves the exact Ed25519 identity across service stop/start and reboot; all injected interruptions recover or roll back safely with the source retained; rejected cases fail closed without unsafe SCM/metadata/filesystem mutation; and authorized terminal operation succeeds after recovery.
+
+Do not run destructive interruption, rollback, or reboot tests on production infrastructure, a shared developer workstation, or either production signing/publishing runner. If the persistent VM or approved test signing/recovery fixtures are unavailable, stop before installation/mutation, report the precise missing prerequisite, and leave the real-machine steps **NOT ESTABLISHED**.
