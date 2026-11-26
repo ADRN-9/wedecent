@@ -1135,12 +1135,15 @@ public static class WeDecentMigrationFileIdentityApi {
         }
     }
     [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)]
-    private struct FILE_RENAME_INFO {
-        [MarshalAs(UnmanagedType.U1)] public bool ReplaceIfExists;
+    private struct FILE_RENAME_INFO_EX {
+        public uint Flags;
         public IntPtr RootDirectory;
         public uint FileNameLength;
         public char FileName;
     }
+    private const int FILE_RENAME_INFO_EX_CLASS=22;
+    private const uint FILE_RENAME_REPLACE_IF_EXISTS=0x1;
+    private const uint FILE_RENAME_POSIX_SEMANTICS=0x2;
     [DllImport("kernel32.dll", SetLastError=true)]
     private static extern bool SetFileInformationByHandle(IntPtr h, int infoClass, IntPtr info, uint size);
     public static string PublishByHandle(string temporaryPath, string parentPath, string targetName,
@@ -1166,7 +1169,7 @@ public static class WeDecentMigrationFileIdentityApi {
                 if (String.IsNullOrEmpty(expectedTargetIdentity))
                     throw new InvalidOperationException("Replacing an existing object requires its verified identity.");
                 // Keep the verified destination object open through publication; deny later delete-capable opens.
-                targetGuard=Open(targetPath, FILE_READ_ATTRIBUTES|DELETE_ACCESS, SHARE_READ_WRITE, BACKUP_SEMANTICS);
+                targetGuard=Open(targetPath, FILE_READ_ATTRIBUTES|DELETE_ACCESS, 1, BACKUP_SEMANTICS);
                 BY_HANDLE_FILE_INFORMATION targetInfo=Info(targetGuard);
                 if ((targetInfo.FileAttributes&0x400)!=0 ||
                     (sourceInfo.FileAttributes&0x10)!=(targetInfo.FileAttributes&0x10) ||
@@ -1184,54 +1187,26 @@ public static class WeDecentMigrationFileIdentityApi {
             }
             if (GetIdentity(parentPath)!=Id(parentInfo))
                 throw new InvalidOperationException("Publication parent identity changed before atomic publication.");
-            int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileName").ToInt32();
+            int nameOffset=Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileName").ToInt32();
             byte[] relativeName=System.Text.Encoding.Unicode.GetBytes(targetName);
-            int relativeSize=nameOffset+relativeName.Length+2;
+            int relativeSize=nameOffset+relativeName.Length;
             IntPtr relativeBuffer=Marshal.AllocHGlobal(relativeSize);
-            int renameError=0;
             try {
-                Marshal.WriteByte(relativeBuffer,0,replaceExisting?(byte)1:(byte)0);
-                Marshal.WriteIntPtr(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),parent);
-                Marshal.WriteInt32(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),relativeName.Length);
+                uint renameFlags=replaceExisting
+                    ? FILE_RENAME_REPLACE_IF_EXISTS|FILE_RENAME_POSIX_SEMANTICS
+                    : 0;
+                Marshal.WriteInt32(relativeBuffer,0,unchecked((int)renameFlags));
+                Marshal.WriteIntPtr(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"RootDirectory").ToInt32(),parent);
+                Marshal.WriteInt32(relativeBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO_EX),"FileNameLength").ToInt32(),relativeName.Length);
                 Marshal.Copy(relativeName,0,IntPtr.Add(relativeBuffer,nameOffset),relativeName.Length);
-                Marshal.WriteInt16(relativeBuffer,nameOffset+relativeName.Length,0);
-                if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED")=="1") {
-                    renameError=87;
-                } else {
-                    if (PublicationHook!=null) PublicationHook(targetPath);
-                    if (!SetFileInformationByHandle(source,3,relativeBuffer,(uint)relativeSize))
-                        renameError=Marshal.GetLastWin32Error();
-                }
+                if (Environment.GetEnvironmentVariable("WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED")=="1")
+                    throw new System.ComponentModel.Win32Exception(87,"Injected unsupported handle-relative rename; refusing pathname fallback.");
+                if (PublicationHook!=null) PublicationHook(targetPath);
+                if (GetIdentity(temporaryPath)!=sourceId)
+                    throw new InvalidOperationException("Publication source pathname changed before atomic publication.");
+                if (!SetFileInformationByHandle(source,FILE_RENAME_INFO_EX_CLASS,relativeBuffer,(uint)relativeSize))
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"Handle-relative atomic publication failed; refusing absolute-path fallback.");
             } finally { Marshal.FreeHGlobal(relativeBuffer); }
-            if (renameError!=0) {
-                if (renameError!=87) throw new System.ComponentModel.Win32Exception(renameError,"Handle-relative atomic rename failed.");
-                // The absolute fallback is safe only while the already-verified parent and target handles remain open.
-                if (GetIdentity(parentPath)!=Id(parentInfo))
-                    throw new InvalidOperationException("Publication parent identity changed before absolute fallback.");
-                if (replaceExisting) {
-                    BY_HANDLE_FILE_INFORMATION guardedTarget=Info(targetGuard);
-                    if (Id(guardedTarget)!=expectedTargetIdentity || (guardedTarget.FileAttributes&0x400)!=0)
-                        throw new InvalidOperationException("Publication target handle changed before absolute fallback.");
-                } else {
-                    IntPtr target=CreateFile(targetPath,FILE_READ_ATTRIBUTES,7,IntPtr.Zero,OPEN_EXISTING,BACKUP_SEMANTICS|OPEN_REPARSE_POINT,IntPtr.Zero);
-                    if (target!=new IntPtr(-1)) { CloseHandle(target); throw new System.IO.IOException("Publication destination appeared before absolute fallback."); }
-                    int error=Marshal.GetLastWin32Error();
-                    if (error!=2 && error!=3) throw new System.ComponentModel.Win32Exception(error);
-                }
-                byte[] absoluteName=System.Text.Encoding.Unicode.GetBytes(targetPath);
-                int absoluteSize=nameOffset+absoluteName.Length+2;
-                IntPtr absoluteBuffer=Marshal.AllocHGlobal(absoluteSize);
-                try {
-                    Marshal.WriteByte(absoluteBuffer,0,replaceExisting?(byte)1:(byte)0);
-                    Marshal.WriteIntPtr(absoluteBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"RootDirectory").ToInt32(),IntPtr.Zero);
-                    Marshal.WriteInt32(absoluteBuffer,Marshal.OffsetOf(typeof(FILE_RENAME_INFO),"FileNameLength").ToInt32(),absoluteName.Length);
-                    Marshal.Copy(absoluteName,0,IntPtr.Add(absoluteBuffer,nameOffset),absoluteName.Length);
-                    Marshal.WriteInt16(absoluteBuffer,nameOffset+absoluteName.Length,0);
-                    if (PublicationHook!=null) PublicationHook(targetPath);
-                    if (!SetFileInformationByHandle(source,3,absoluteBuffer,(uint)absoluteSize))
-                        throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(),"SetFileInformationByHandle(FileRenameInfo) absolute fallback failed.");
-                } finally { Marshal.FreeHGlobal(absoluteBuffer); }
-            }
             string published=GetIdentity(targetPath);
             if (published!=sourceId) throw new InvalidOperationException("Published object identity did not match the verified source.");
             return published;
