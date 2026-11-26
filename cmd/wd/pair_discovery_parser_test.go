@@ -111,7 +111,7 @@ func TestRunPairRejectsWhitespaceOnlyTransportFlags(t *testing.T) {
 }
 
 func TestRunPairRejectsConflictingTransportFlags(t *testing.T) {
-	_, err := runPair([]string{
+	err := runPair([]string{
 		"--fingerprint", pairParserTestFingerprint,
 		"--endpoint=192.0.2.10:7443",
 		"--rfcomm=01:23:45:67:89:AB/7",
