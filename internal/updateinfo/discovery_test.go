@@ -109,15 +109,16 @@ func response(status int, body []byte) *http.Response {
 func (f discoveryFixture) transport(mutate func(string, []byte) ([]byte, int)) http.RoundTripper {
 	return roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body []byte
-		switch req.URL.String() {
-		case StableKeysetURL:
-			body = f.keysetBody
-		case StableKeysetSignatureURL:
-			body = f.keysetSignature
+		keysetURL, keysetSignatureURL := stableKeysetURLs(f.keyset.Epoch)
+	switch req.URL.String() {
 		case StableManifestURL:
 			body = f.manifestBody
 		case StableSignatureURL:
 			body = f.manifestSignature
+		case keysetURL:
+			body = f.keysetBody
+		case keysetSignatureURL:
+			body = f.keysetSignature
 		default:
 			return nil, errors.New("unexpected URL: " + req.URL.String())
 		}
@@ -150,15 +151,16 @@ func TestDiscoverStableUsesRootKeysetAndV2Only(t *testing.T) {
 		mu.Lock()
 		requested = append(requested, req.URL.String())
 		mu.Unlock()
+		keysetURL, keysetSignatureURL := stableKeysetURLs(fixture.keyset.Epoch)
 		switch req.URL.String() {
-		case StableKeysetURL:
-			return response(http.StatusOK, fixture.keysetBody), nil
-		case StableKeysetSignatureURL:
-			return response(http.StatusOK, fixture.keysetSignature), nil
 		case StableManifestURL:
 			return response(http.StatusOK, fixture.manifestBody), nil
 		case StableSignatureURL:
 			return response(http.StatusOK, fixture.manifestSignature), nil
+		case keysetURL:
+			return response(http.StatusOK, fixture.keysetBody), nil
+		case keysetSignatureURL:
+			return response(http.StatusOK, fixture.keysetSignature), nil
 		default:
 			return nil, errors.New("unexpected URL: " + req.URL.String())
 		}
@@ -175,11 +177,12 @@ func TestDiscoverStableUsesRootKeysetAndV2Only(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
+	keysetURL, keysetSignatureURL := stableKeysetURLs(fixture.keyset.Epoch)
 	wantURLs := []string{
-		StableKeysetURL,
-		StableKeysetSignatureURL,
 		StableManifestURL,
 		StableSignatureURL,
+		keysetURL,
+		keysetSignatureURL,
 	}
 	if len(requested) != len(wantURLs) {
 		t.Fatalf("requested URLs = %#v", requested)
@@ -254,7 +257,8 @@ func TestDiscoverStableRejectsManifestV1AndBadSignatures(t *testing.T) {
 			return body, http.StatusOK
 		},
 		"bad root signature": func(url string, body []byte) ([]byte, int) {
-			if url == StableKeysetSignatureURL {
+			_, keysetSignatureURL := stableKeysetURLs(fixture.keyset.Epoch)
+			if url == keysetSignatureURL {
 				changed := append([]byte(nil), body...)
 				changed[0] ^= 1
 				return changed, http.StatusOK
