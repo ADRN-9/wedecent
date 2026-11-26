@@ -113,6 +113,7 @@ func TestValidateUpdateStateAncestorDACLRejectsNamespaceWriters(t *testing.T) {
 		{"inherited-authenticated-users-create", "D:AI(A;CI;0x00000004;;;AU)(A;;FA;;;" + user + ")", true},
 		{"inherited-world-write", "D:AI(A;OICI;0x00000002;;;WD)(A;;FA;;;" + user + ")", true},
 		{"inherited-only-world-generic-write", "D:AI(A;OICIIO;GW;;;WD)(A;;FA;;;" + user + ")", true},
+		{"inherit-only-object-write-does-not-modify-directory", "D:AI(A;OIIO;GW;;;WD)(A;;FA;;;" + user + ")", false},
 		{"broad-principal-read-execute", "D:AI(A;OICI;FRFX;;;BU)(A;;FA;;;" + user + ")", false},
 		{"list-children-read", "D:AI(A;;LC;;;BU)(A;;FA;;;" + user + ")", false},
 		{"trusted-system-admin-writers", "D:P(A;;FA;;;" + user + ")(A;;FA;;;SY)(A;;FA;;;BA)", false},
