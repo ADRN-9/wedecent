@@ -26,6 +26,8 @@ func TestRFCOMMLocatorCanonicalizesExplicitEndpoint(t *testing.T) {
 func TestRFCOMMLocatorRejectsMalformedEndpoint(t *testing.T) {
 	for _, endpoint := range []string{
 		"",
+		" 01:23:45:67:89:AB/7",
+		"01:23:45:67:89:AB/7 ",
 		"01:23:45:67:89:AB",
 		"01:23:45:67:89:AB/0",
 		"01:23:45:67:89:AB/01",
@@ -146,5 +148,33 @@ func TestConnectTransportOverrideNone(t *testing.T) {
 	}
 	if selected || got != "" {
 		t.Fatalf("selected=%v locator=%q", selected, got)
+	}
+}
+
+func TestPairTransportLocatorRejectsWhitespaceOnlyExplicitTransport(t *testing.T) {
+	for _, args := range [][]string{
+		{" ", "", "", "", ""},
+		{"", " ", "", "", ""},
+		{"", "", " ", "", ""},
+		{"", "", "", " ", ""},
+		{"", "", "", "", "", " "},
+	} {
+		if _, err := pairTransportLocator(args[0], args[1], args[2], args[3], args[4], args[5:]...); err == nil {
+			t.Fatalf("pairTransportLocator(%q) unexpectedly accepted whitespace-only transport", args)
+		}
+	}
+}
+
+func TestConnectTransportOverrideRejectsWhitespaceOnlyExplicitTransport(t *testing.T) {
+	for _, args := range [][]string{
+		{" ", "", "", "", "wd_aaaaaaaaaaaaaaaa"},
+		{"", " ", "", "", "wd_aaaaaaaaaaaaaaaa"},
+		{"", "", " ", "", "wd_aaaaaaaaaaaaaaaa"},
+		{"", "", "", " ", "wd_aaaaaaaaaaaaaaaa"},
+		{"", "", "", "", "wd_aaaaaaaaaaaaaaaa", " "},
+	} {
+		if _, selected, err := connectTransportOverride(args[0], args[1], args[2], args[3], args[4], args[5:]...); err == nil || selected {
+			t.Fatalf("connectTransportOverride(%q) = selected %v, err %v; want rejection", args, selected, err)
+		}
 	}
 }
