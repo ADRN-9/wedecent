@@ -65,6 +65,7 @@ func TestResolvePairLocatorDiscoveryRejectsExplicitTransport(t *testing.T) {
 		"serial":   {SerialDevice: "/dev/ttyACM0"},
 		"relay":    {Relay: "relay.example:443"},
 		"webRelay": {WebRelay: "https://relay.example"},
+		"whitespace rfcomm": {RFCOMM: " "},
 	} {
 		name, opts := name, opts
 		t.Run(name, func(t *testing.T) {
