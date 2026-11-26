@@ -545,7 +545,7 @@ function Assert-WeDecentMigrationJsonElement {
         $names = [Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
         foreach ($property in $Element.EnumerateObject()) {
             if (-not $names.Add($property.Name)) {
-                throw "Migration JSON contains a duplicate property at $Location: $($property.Name)"
+                throw "Migration JSON contains a duplicate property at ${Location}: $($property.Name)"
             }
             Assert-WeDecentMigrationJsonElement -Element $property.Value -Location ($Location + '.' + $property.Name)
         }
