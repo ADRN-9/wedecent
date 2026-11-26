@@ -332,7 +332,8 @@ function Assert-MigrationAttackerTokenEvidence {
         $enabledPrivileges = @($tokenFields.enabledPrivileges -split ',')
     }
     $allowedEnabledPrivileges = @('SeChangeNotifyPrivilege','SeIncreaseWorkingSetPrivilege','SeShutdownPrivilege','SeTimeZonePrivilege')
-    if (($enabledPrivileges | Select-Object -Unique).Count -ne $enabledPrivileges.Count) {
+    $uniqueEnabledPrivileges = @($enabledPrivileges | Select-Object -Unique)
+    if ($uniqueEnabledPrivileges.Count -ne $enabledPrivileges.Count) {
         throw 'Attacker token enabled privilege set contains duplicates.'
     }
     $unexpectedPrivileges = @($enabledPrivileges | Where-Object { $_ -notin $allowedEnabledPrivileges })
