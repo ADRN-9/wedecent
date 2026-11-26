@@ -12,8 +12,7 @@ import (
 
 const (
 	StableKeysetURLPrefix = "https://downloads.wedecent.com/windows/stable/keysets/"
-	StableManifestURL     = "https://downloads.wedecent.com/windows/stable/manifest-v2.json"
-	StableSignatureURL    = "https://downloads.wedecent.com/windows/stable/manifest-v2.sig"
+	StablePairURL         = "https://downloads.wedecent.com/windows/stable/current-v2.json"
 	MaxSignatureFileBytes = 128
 	DefaultFetchTimeout   = 10 * time.Second
 )
@@ -48,13 +47,13 @@ func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion stri
 		now = c.Now()
 	}
 
-	manifestBytes, err := c.fetch(ctx, StableManifestURL, MaxManifestBytes)
+	pairBytes, err := c.fetch(ctx, StablePairURL, MaxStablePairBytes)
 	if err != nil {
 		return zero, err
 	}
-	signatureBytes, err := c.fetch(ctx, StableSignatureURL, MaxSignatureFileBytes)
+	manifestBytes, signatureBytes, err := ParseCanonicalStablePair(pairBytes)
 	if err != nil {
-		return zero, err
+		return zero, fmt.Errorf("%w: parse stable pair: %w", ErrDiscovery, err)
 	}
 	untrustedManifest, err := ParseCanonical(manifestBytes)
 	if err != nil || untrustedManifest.Schema != ManifestSchemaV2 {
