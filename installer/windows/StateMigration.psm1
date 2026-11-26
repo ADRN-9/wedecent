@@ -1609,10 +1609,10 @@ function Invoke-WeDecentStateMigration {
     [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
 
-    $account = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $account = ([Security.Principal.NTAccount]::new($preflightServiceStartName)).Translate([Security.Principal.SecurityIdentifier]).Value
     if ($account -cne $ServiceSid) { throw 'SCM service account SID differs from the migration target SID.' }
     $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath $preflightServicePath -Source $sourceFull -Destination $destinationFull
-    if ($updatedPath -ceq [string]$service.PathName) { throw 'Could not construct an unambiguous destination SCM command line.' }
+    if ($updatedPath -ceq $preflightServicePath) { throw 'Could not construct an unambiguous destination SCM command line.' }
 
     Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
     [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
