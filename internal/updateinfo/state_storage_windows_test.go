@@ -330,7 +330,6 @@ func TestWindowsUpdateStateRejectsReparsePointSubstitution(t *testing.T) {
 	}
 }
 
-
 func TestWindowsUpdateStatePreflightRejectsHostileParentBeforeCreate(t *testing.T) {
 	root := t.TempDir()
 	parent := filepath.Join(root, "hostile")
@@ -377,7 +376,6 @@ func TestWindowsStateStoreRejectsAncestorACLBeforeReadOrAdvance(t *testing.T) {
 		t.Fatalf("failed ACL validation changed rollback state: %q", got)
 	}
 }
-
 
 func windowsTestCreateJunction(t *testing.T, link, target string) {
 	t.Helper()
