@@ -17,6 +17,7 @@ foreach ($required in @('Recover-WeDecentStateMigration','Test-WeDecentMetadataT
 Import-Module $modulePath -Force
 $global:WeDecentMigrationMockService = $null
 $global:WeDecentMigrationMockStatus = 'Running'
+$global:WeDecentMigrationStartCount = 0
 function global:Get-CimInstance {
     [CmdletBinding()]
     param([string]$ClassName, [string]$Filter)
@@ -45,6 +46,7 @@ function global:Start-Service {
     [CmdletBinding()]
     param([string]$Name)
     if ($Name -cne $global:WeDecentMigrationMockService.Name) { throw "Unexpected service start: $Name" }
+    $global:WeDecentMigrationStartCount++
     $global:WeDecentMigrationMockStatus = 'Running'
     $global:WeDecentMigrationMockService.State = 'Running'
 }
@@ -171,6 +173,94 @@ try {
     Write-Host 'Migration journal strict JSON and phase/digest regression suite PASS'
 } finally {
     Remove-Item -LiteralPath $journalParserFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$serviceBooleanFixture = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $serviceBooleanFixture.Source -Destination $serviceBooleanFixture.Destination -AgentPath $agentPath -ServiceName $serviceBooleanFixture.ServiceName -ServiceSid $serviceBooleanFixture.ServiceSid -MetadataPath $serviceBooleanFixture.MetadataPath -JournalPath $serviceBooleanFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Service Boolean fixture did not leave an interrupted rollback journal.' }
+    $pendingJson = Get-Content -LiteralPath $serviceBooleanFixture.Journal -Raw -ErrorAction Stop
+    $pending = Read-WeDecentMigrationJournal -Path $serviceBooleanFixture.Journal
+    if ($pending.phase -cne 'RollingBack' -or $pending.service_was_running -isnot [bool] -or -not $pending.service_was_running) {
+        throw 'Running-service recovery fixture did not preserve a true JSON Boolean.'
+    }
+    $global:WeDecentMigrationMockStatus = 'Stopped'
+    $global:WeDecentMigrationMockService.State = 'Stopped'
+
+    $malformedServiceStates = @(
+        @{ Name = 'string true'; Fields = @{ service_was_running = 'true' } },
+        @{ Name = 'string false'; Fields = @{ service_was_running = 'false' } },
+        @{ Name = 'numeric one'; Fields = @{ service_was_running = 1 } },
+        @{ Name = 'numeric zero'; Fields = @{ service_was_running = 0 } },
+        @{ Name = 'array'; Fields = @{ service_was_running = @($true) } },
+        @{ Name = 'object'; Fields = @{ service_was_running = @{ value = $true } } },
+        @{ Name = 'null'; Fields = @{ service_was_running = $null } },
+        @{ Name = 'missing'; Fields = @{}; Remove = @('service_was_running') }
+    )
+    foreach ($malformed in $malformedServiceStates) {
+        $caseJson = Set-MigrationJournalJsonForTest -Json $pendingJson -Fields $malformed.Fields -RemoveFields $malformed.Remove
+        [IO.File]::WriteAllText($serviceBooleanFixture.Journal, $caseJson, [Text.UTF8Encoding]::new($false))
+        $startCount = $global:WeDecentMigrationStartCount
+        $rejected = $false
+        try {
+            [void](Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName)
+        } catch { $rejected = $true }
+        if (-not $rejected) { throw "Recovery accepted malformed service_was_running representation: $($malformed.Name)." }
+        if ($global:WeDecentMigrationStartCount -ne $startCount -or $global:WeDecentMigrationMockStatus -cne 'Stopped') {
+            throw "Malformed service_was_running representation '$($malformed.Name)' triggered service startup."
+        }
+        Write-Host "Migration recovery rejects service_was_running $($malformed.Name) without service startup PASS"
+    }
+
+    [IO.File]::WriteAllText($serviceBooleanFixture.Journal, $pendingJson, [Text.UTF8Encoding]::new($false))
+    $validTrue = Read-WeDecentMigrationJournal -Path $serviceBooleanFixture.Journal
+    if ($validTrue.service_was_running -isnot [bool] -or -not $validTrue.service_was_running) {
+        throw 'Reader did not preserve service_was_running=true as a Boolean.'
+    }
+    $startCount = $global:WeDecentMigrationStartCount
+    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName)) {
+        throw 'Recovery did not resume valid true service_was_running journal.'
+    }
+    if ($global:WeDecentMigrationStartCount -ne ($startCount + 1) -or $global:WeDecentMigrationMockStatus -cne 'Running') {
+        throw 'Valid true service_was_running did not restart the previously running service exactly once.'
+    }
+    Write-Host 'Migration recovery preserves true Boolean and restarts originally running service PASS'
+} finally {
+    Remove-Item -LiteralPath $serviceBooleanFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$serviceStoppedBooleanFixture = New-MigrationFixture
+try {
+    $global:WeDecentMigrationMockStatus = 'Stopped'
+    $global:WeDecentMigrationMockService.State = 'Stopped'
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $serviceStoppedBooleanFixture.Source -Destination $serviceStoppedBooleanFixture.Destination -AgentPath $agentPath -ServiceName $serviceStoppedBooleanFixture.ServiceName -ServiceSid $serviceStoppedBooleanFixture.ServiceSid -MetadataPath $serviceStoppedBooleanFixture.MetadataPath -JournalPath $serviceStoppedBooleanFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch {
+        $interrupted = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $interrupted) { throw }
+    }
+    if (-not $interrupted) { throw 'Stopped-service Boolean fixture did not leave an interrupted rollback journal.' }
+    $pending = Read-WeDecentMigrationJournal -Path $serviceStoppedBooleanFixture.Journal
+    if ($pending.service_was_running -isnot [bool] -or $pending.service_was_running) {
+        throw 'Stopped-service journal did not preserve false as a JSON Boolean.'
+    }
+    $startCount = $global:WeDecentMigrationStartCount
+    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceStoppedBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceStoppedBooleanFixture.MetadataPath -ServiceName $serviceStoppedBooleanFixture.ServiceName)) {
+        throw 'Recovery did not resume valid false service_was_running journal.'
+    }
+    if ($global:WeDecentMigrationStartCount -ne $startCount -or $global:WeDecentMigrationMockStatus -cne 'Stopped') {
+        throw 'Valid false service_was_running unexpectedly started the service.'
+    }
+    Write-Host 'Migration recovery preserves false Boolean and keeps originally stopped service stopped PASS'
+} finally {
+    Remove-Item -LiteralPath $serviceStoppedBooleanFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 $namespaceFixture = New-MigrationFixture
