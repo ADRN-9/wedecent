@@ -8,14 +8,14 @@ import (
 	"syscall"
 )
 
-func validateStateFileInfo(info os.FileInfo) error {
+func validateStateFileInfo(_ string, info os.FileInfo) error {
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%w: update state permissions are too broad: %o (want 600)", ErrInvalidState, info.Mode().Perm())
 	}
 	return validateEffectiveOwner(info, "update state")
 }
 
-func validateStateDirInfo(info os.FileInfo) error {
+func validateStateDirInfo(_ string, info os.FileInfo) error {
 	if info.Mode().Perm()&0o077 != 0 {
 		return fmt.Errorf("%w: update state directory permissions are too broad: %o (want 700)", ErrInvalidState, info.Mode().Perm())
 	}
