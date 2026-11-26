@@ -125,17 +125,17 @@ def main() -> None:
         signer_adapter = temp / "signer"
         publisher_adapter = temp / "publisher"
         signer_adapter.write_text(
-            "#!/usr/bin/env python3\\n"
-            "import os,sys\\n"
-            "assert len(sys.argv)==3 and sys.argv[1]=='sign'\\n"
-            "assert os.environ.get('SIGN_TOKEN') and not os.environ.get('PUBLISH_TOKEN')\\n",
+            "#!/usr/bin/env python3\n"
+            "import os,sys\n"
+            "assert len(sys.argv)==3 and sys.argv[1]=='sign'\n"
+            "assert os.environ.get('SIGN_TOKEN') and not os.environ.get('PUBLISH_TOKEN')\n",
             encoding="utf-8",
         )
         publisher_adapter.write_text(
-            "#!/usr/bin/env python3\\n"
-            "import os,sys\\n"
-            "assert len(sys.argv)==2 and sys.argv[1]=='publish'\\n"
-            "assert os.environ.get('PUBLISH_TOKEN') and not os.environ.get('SIGN_TOKEN')\\n",
+            "#!/usr/bin/env python3\n"
+            "import os,sys\n"
+            "assert len(sys.argv)==2 and sys.argv[1]=='publish'\n"
+            "assert os.environ.get('PUBLISH_TOKEN') and not os.environ.get('SIGN_TOKEN')\n",
             encoding="utf-8",
         )
         signer_adapter.chmod(0o700)
