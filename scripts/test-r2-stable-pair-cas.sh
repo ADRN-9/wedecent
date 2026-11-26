@@ -94,6 +94,9 @@ elif action == "put-object":
         metadata_value = value("--metadata")
         if metadata_value.startswith("writeid="):
             pathlib.Path(str(obj) + ".writeid").write_text(metadata_value.split("=", 1)[1], encoding="utf-8")
+    if os.environ.get("MOCK_R2_AMBIGUOUS") == "1" and key == "windows/stable/current-v2.json":
+        print("simulated connection loss after R2 committed the object", file=sys.stderr)
+        raise SystemExit(1)
     print("{}")
 else:
     raise SystemExit(f"unsupported mock operation: {action}")
@@ -141,7 +144,13 @@ cmp -s "$FIXTURES/candidate-42.pair" "$STABLE" || {
   exit 1
 }
 
-if MOCK_R2_RACE=1 publish 43; then
+MOCK_R2_AMBIGUOUS=1 publish 43
+cmp -s "$FIXTURES/candidate-43.pair" "$STABLE" || {
+  printf 'ambiguous committed write was not reconciled by its write ID\n' >&2
+  exit 1
+}
+
+if MOCK_R2_RACE=1 publish 44; then
   printf 'concurrent R2 writer conflict was not rejected\n' >&2
   exit 1
 fi
@@ -150,4 +159,4 @@ cmp -s "$TMP/expected-concurrent.json" "$STABLE" || {
   printf 'CAS conflict overwrote the concurrent writer\n' >&2
   exit 1
 }
-printf 'R2 stable-pair CAS tests passed: create-only, If-Match conflict and concurrent-writer preservation.\n'
+printf 'R2 stable-pair CAS tests passed: create-only, ambiguous-write reconciliation, If-Match conflict and concurrent-writer preservation.\n'
