@@ -257,8 +257,13 @@ func VerifyManifestV2(verified VerifiedKeyset, manifestBytes, signatureBytes []b
 		return zero, ErrUnknownSigningKey
 	}
 	publishedAt, err := parseKeysetTime(manifest.PublishedAt)
-	if err != nil || publishedAt.Before(notBefore) || !publishedAt.Before(notAfter) || publishedAt.After(now.Add(MaxKeysetClockSkew)) {
-		return zero, fmt.Errorf("%w: manifest publication time is outside signing-key validity", ErrInvalidManifest)
+	keysetIssuedAt, issuedErr := parseKeysetTime(verified.keyset.IssuedAt)
+	keysetExpiresAt, expiresErr := parseKeysetTime(verified.keyset.ExpiresAt)
+	if err != nil || issuedErr != nil || expiresErr != nil ||
+		publishedAt.Before(notBefore) || !publishedAt.Before(notAfter) ||
+		publishedAt.Before(keysetIssuedAt) || !publishedAt.Before(keysetExpiresAt) ||
+		publishedAt.After(now.Add(MaxKeysetClockSkew)) {
+		return zero, fmt.Errorf("%w: manifest publication time is outside key/keyset validity", ErrInvalidManifest)
 	}
 	publicKey, err := DecodePublicKey([]byte(selected.PublicKey))
 	if err != nil {
