@@ -172,14 +172,15 @@ func runVerifyV2(args []string, stdout io.Writer) error {
 	if err != nil { return fmt.Errorf("read manifest: %w", err) }
 	manifestSignature, err := readBoundedRegular(*signaturePath, 128)
 	if err != nil { return fmt.Errorf("read manifest signature: %w", err) }
-	verified, err := updateinfo.VerifyKeyset(*rootKeyID, rootPublic, keysetBytes, keysetSignature, time.Now().UTC(), 0, "")
+	now := time.Now().UTC()
+	verified, err := updateinfo.VerifyKeyset(*rootKeyID, rootPublic, keysetBytes, keysetSignature, now, 0, "")
 	if err != nil { return err }
 	var currentSequence uint64
 	if *currentVersion != "" {
 		currentSequence, err = strconv.ParseUint(*currentSequenceText, 10, 64)
 		if err != nil { return fmt.Errorf("invalid --current-sequence: %w", err) }
 	}
-	manifest, err := updateinfo.VerifyManifestV2(verified, manifestBytes, manifestSignature, time.Now().UTC(), *currentVersion, currentSequence)
+	manifest, err := updateinfo.VerifyManifestV2(verified, manifestBytes, manifestSignature, now, *currentVersion, currentSequence)
 	if err != nil { return err }
 	_, err = fmt.Fprintf(stdout, "sequence=%d\nversion=%s\nkeyset_epoch=%d\nkeyset_digest=%s\n",
 		manifest.Sequence, manifest.Version, verified.Epoch(), verified.Digest())
