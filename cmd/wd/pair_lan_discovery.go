@@ -13,16 +13,16 @@ import (
 type pairLANFinder func(context.Context, string, string) (discovery.Result, error)
 
 type pairLocatorOptions struct {
-	Endpoint        string
-	RFCOMM          string
-	SerialDevice    string
-	Relay           string
-	WebRelay        string
+	Endpoint               string
+	RFCOMM                 string
+	SerialDevice           string
+	Relay                  string
+	WebRelay               string
 	ExplicitTransportFlags []string
-	DeviceID        string
-	Fingerprint     string
-	DiscoverLAN     bool
-	DiscoverTimeout time.Duration
+	DeviceID               string
+	Fingerprint            string
+	DiscoverLAN            bool
+	DiscoverTimeout        time.Duration
 }
 
 func resolvePairLocator(ctx context.Context, opts pairLocatorOptions, finder pairLANFinder) (string, error) {
