@@ -24,6 +24,8 @@ func TestValidateUpdateStateDACLFailClosed(t *testing.T) {
 		{"inherited-world-read-execute", "D:AI(A;;FA;;;" + owner + ")(A;OICI;FRFX;;;WD)", true},
 		{"inherit-only-world-file-write", "D:AI(A;;FA;;;" + owner + ")(A;OIIO;GW;;;WD)", false},
 		{"world-access", "D:P(A;;FA;;;" + owner + ")(A;;FA;;;WD)", false},
+		{"world-generic-write", "D:P(A;;FA;;;" + owner + ")(A;;GW;;;WD)", false},
+		{"world-add-subdirectory", "D:P(A;;FA;;;" + owner + ")(A;;0x00000004;;;WD)", false},
 		{"authenticated-users", "D:P(A;;FA;;;" + owner + ")(A;;FA;;;AU)", false},
 		{"builtin-users", "D:P(A;;FA;;;" + owner + ")(A;;FA;;;BU)", false},
 		{"partial-rights", "D:P(A;;FR;;;" + owner + ")", false},
