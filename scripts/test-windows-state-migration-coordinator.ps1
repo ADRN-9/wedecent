@@ -884,7 +884,7 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
                 }
             }
         }
-        $env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED = '1'
+        $env:WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED = '1'
         $failedClosed = $false
         try {
             if ($fallbackRaceKind -ceq 'metadata') {
@@ -911,14 +911,14 @@ foreach ($fallbackRaceKind in @('metadata', 'journal')) {
         } elseif ([string]$unchanged.phase -cne 'Prepared') {
             throw 'Fail-closed journal publication changed the original durable phase.'
         }
-        Write-Host "Migration $fallbackRaceKind publication fails closed when handle-relative rename is unavailable PASS"
+        Write-Host "Migration $fallbackRaceKind publication fails closed when native rename is unavailable PASS"
     } finally {
         [WeDecentMigrationFileIdentityApi]::PublicationHook = $null
         $global:WeDecentMigrationNativeRaceTarget = $null
         $global:WeDecentMigrationNativeRaceBackup = $null
         $global:WeDecentMigrationNativeRaceBlocked = $false
         $global:WeDecentMigrationNativeRaceHookInvoked = $false
-        Remove-Item Env:WEDECENT_MIGRATION_TEST_FORCE_RELATIVE_RENAME_UNSUPPORTED -ErrorAction SilentlyContinue
+        Remove-Item Env:WEDECENT_MIGRATION_TEST_FORCE_RENAME_UNSUPPORTED -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $fallbackRaceFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
     }
 }
