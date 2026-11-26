@@ -488,7 +488,9 @@ jobs:
 
   publish-windows-downloads:
     needs: windows-signing
-    runs-on: [self-hosted, linux, wedecent-release-publisher]
+    runs-on:
+      group: wedecent-release-publishers
+      labels: [self-hosted, linux, wedecent-release-publisher]
     timeout-minutes: 30
     permissions:
       actions: read
@@ -578,7 +580,9 @@ jobs:
 
   sign-stable-update:
     needs: publish-windows-downloads
-    runs-on: [self-hosted, linux, wedecent-update-signer]
+    runs-on:
+      group: wedecent-update-signers
+      labels: [self-hosted, linux, wedecent-update-signer]
     timeout-minutes: 20
     permissions:
       contents: read
@@ -643,7 +647,9 @@ jobs:
 
   verify-stable-update:
     needs: sign-stable-update
-    runs-on: [self-hosted, linux, wedecent-update-verifier]
+    runs-on:
+      group: wedecent-update-verifiers
+      labels: [self-hosted, linux, wedecent-update-verifier]
     timeout-minutes: 15
     permissions:
       contents: read
@@ -687,7 +693,9 @@ jobs:
 
   publish-stable-update:
     needs: verify-stable-update
-    runs-on: [self-hosted, linux, wedecent-release-publisher]
+    runs-on:
+      group: wedecent-release-publishers
+      labels: [self-hosted, linux, wedecent-release-publisher]
     timeout-minutes: 20
     permissions:
       contents: read
