@@ -277,13 +277,28 @@ public static class WeDecentMigrationTestLogon {
 '@
 }
 
+function Read-MigrationFileShared {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.FileStream]::new(
+        $Path, [IO.FileMode]::Open, [IO.FileAccess]::Read,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
+    )
+    $reader = $null
+    try {
+        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+        return $reader.ReadToEnd()
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() } else { $stream.Dispose() }
+    }
+}
+
 function Invoke-MigrationUntrustedMutationAttempt {
     param(
         [Parameter(Mandatory = $true)][string]$TargetPath,
         [Parameter(Mandatory = $true)][string]$SourcePath
     )
     $beforeIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($TargetPath)
-    $beforeContent = [IO.File]::ReadAllText($TargetPath)
+    $beforeContent = Read-MigrationFileShared -Path $TargetPath
     $sourceIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($SourcePath)
     $global:WeDecentMigrationAttackTarget = $TargetPath
     $global:WeDecentMigrationAttackSource = $SourcePath
@@ -311,7 +326,7 @@ function Invoke-MigrationUntrustedMutationAttempt {
         throw "Unprivileged FILE_RENAME_INFO_EX POSIX replacement/write was not denied (rename=$global:WeDecentMigrationAttackMoveError, write=$global:WeDecentMigrationAttackWriteError)."
     }
     if ([WeDecentMigrationFileIdentityApi]::GetIdentity($TargetPath) -cne $beforeIdentity -or
-        [IO.File]::ReadAllText($TargetPath) -cne $beforeContent) {
+        (Read-MigrationFileShared -Path $TargetPath) -cne $beforeContent) {
         throw 'Unprivileged native replacement changed the original destination identity or contents.'
     }
     if ([WeDecentMigrationFileIdentityApi]::GetIdentity($SourcePath) -cne $sourceIdentity) {
