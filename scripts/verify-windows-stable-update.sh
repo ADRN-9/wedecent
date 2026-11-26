@@ -48,7 +48,7 @@ version="${candidate_fields[1]#version=}"
 base='https://downloads.wedecent.com/windows/stable'
 probe() {
   local status
-  status="$(curl -sS -I --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "$1")" || die "cannot determine stable object state: $1"
+  status="$(curl --disable -sS -I --connect-timeout 10 --max-time 30 -o /dev/null -w '%{http_code}' "$1")" || die "cannot determine stable object state: $1"
   case "$status" in 200|404) printf '%s\n' "$status" ;; *) die "ambiguous stable object HTTP status $status" ;; esac
 }
 manifest_status="$(probe "$base/manifest-v1.json")"
@@ -57,8 +57,8 @@ expected_manifest='-'
 expected_signature='-'
 
 if [[ "$manifest_status" == 200 && "$signature_status" == 200 ]]; then
-  curl -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.json" -o "$old_manifest" || die 'cannot fetch current stable manifest'
-  curl -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.sig" -o "$old_signature" || die 'cannot fetch current stable signature'
+  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.json" -o "$old_manifest" || die 'cannot fetch current stable manifest'
+  curl --disable -fsS --retry 3 --retry-all-errors --proto '=https' "$base/manifest-v1.sig" -o "$old_signature" || die 'cannot fetch current stable signature'
   verify_pair "$old_manifest" "$old_signature" "$old_output" || die 'existing stable pair is invalid'
   mapfile -t old_fields < "$old_output"
   [[ "${#old_fields[@]}" == 2 && "${old_fields[0]}" =~ ^sequence=[1-9][0-9]*$ && "${old_fields[1]}" =~ ^version=v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die 'existing verifier output malformed'
