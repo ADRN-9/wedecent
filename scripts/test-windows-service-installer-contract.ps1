@@ -261,6 +261,8 @@ try {
         'ServiceReconfigured', 'Committed', 'RollingBack', 'RolledBack'
     )) {
         $journal.phase = $phase
+        $journal.staging_complete = $phase -notin @('Prepared', 'Copying')
+        $journal.destination_manifest_sha256 = if ($journal.staging_complete) { $destinationManifest } else { '' }
         Write-WeDecentMigrationJournal -Path $journalPath -Journal $journal
         $recovered = Read-WeDecentMigrationJournal -Path $journalPath
         if ($recovered.phase -cne $phase -or
