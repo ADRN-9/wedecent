@@ -474,6 +474,7 @@ function Write-WeDecentMigrationJournal {
     }
     $fullPath = [IO.Path]::GetFullPath($Path)
     $directory = Split-Path -Parent $fullPath
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $directory)
     $parentLease = New-WeDecentMigrationMutationLease -Directories @($directory)
     $temporary = Join-Path $directory ('.migration-journal-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     $stream = $null
@@ -512,7 +513,9 @@ function Read-WeDecentMigrationJournal {
     [CmdletBinding()]
     param([Parameter(Mandatory = $true)][string]$Path)
 
-    $parentLease = New-WeDecentMigrationMutationLease -Directories @((Split-Path -Parent $Path))
+    $journalDirectory = Split-Path -Parent $Path
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $journalDirectory)
+    $parentLease = New-WeDecentMigrationMutationLease -Directories @($journalDirectory)
     try {
     [WeDecentMigrationFileIdentityApi]::AssertDirectoryLease($parentLease)
     $journalIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($Path)
@@ -715,6 +718,7 @@ function Assert-WeDecentMigrationMetadataAcl {
     if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Installer metadata must be a regular non-reparse file.'
     }
+    [void](Assert-WeDecentMigrationPublicationNamespace -Path (Split-Path -Parent $Path))
     $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
     $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
     $allowed = @('S-1-5-18', 'S-1-5-32-544')
