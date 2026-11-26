@@ -234,7 +234,6 @@ func storeStateWithoutLock(path string) (State, error) {
 	return loadState(path)
 }
 
-
 func TestApplyVerifiedInstallerForKeysetRejectsConcurrentKeysetRotation(t *testing.T) {
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
