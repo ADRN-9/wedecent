@@ -25,6 +25,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 type discoveryFixture struct {
 	now               time.Time
 	rootPublic        ed25519.PublicKey
+	rootPrivate       ed25519.PrivateKey
 	manifestPrivate   ed25519.PrivateKey
 	keyset            Keyset
 	keysetBody        []byte
@@ -96,6 +97,7 @@ func newDiscoveryFixture(t *testing.T) discoveryFixture {
 	return discoveryFixture{
 		now:               now,
 		rootPublic:        rootPublic,
+		rootPrivate:       rootPrivate,
 		manifestPrivate:   manifestPrivate,
 		keyset:            keyset,
 		keysetBody:        keysetBody,
@@ -411,5 +413,174 @@ func TestDiscoverStablePreservesCancellationAndRejectsNegativeTimeout(t *testing
 	client.Timeout = -time.Second
 	if _, err := client.DiscoverStable(context.Background(), "v1.2.2", 0); !errors.Is(err, ErrDiscovery) {
 		t.Fatalf("negative timeout error = %v", err)
+	}
+}
+
+
+func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*testing.T, *discoveryFixture, *DiscoveryClient)
+	}{
+		{
+			name: "untrusted manifest signature",
+			mutate: func(t *testing.T, fixture *discoveryFixture, _ *DiscoveryClient) {
+				t.Helper()
+				manifestBytes, signatureBytes, err := ParseCanonicalStablePair(fixture.pairBody)
+				if err != nil {
+					t.Fatal(err)
+				}
+				signature, err := DecodeSignature(signatureBytes)
+				if err != nil {
+					t.Fatal(err)
+				}
+				signature[0] ^= 1
+				encoded, err := EncodeSignature(signature)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixture.pairBody, err = EncodeCanonicalStablePair(manifestBytes, encoded)
+				if err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+		{
+			name: "expired keyset",
+			mutate: func(_ *testing.T, _ *discoveryFixture, client *DiscoveryClient) {
+				client.Now = func() time.Time { return time.Now().Add(48 * time.Hour) }
+			},
+		},
+		{
+			name: "revoked signing key",
+			mutate: func(t *testing.T, fixture *discoveryFixture, _ *DiscoveryClient) {
+				t.Helper()
+				fixture.keyset.Keys[0].Status = "revoked"
+				fixture.keyset.Keys[0].RevokedAt = fixture.now.Add(-time.Minute).UTC().Format(time.RFC3339)
+				fixture.keysetBody, err = EncodeCanonicalKeyset(fixture.keyset, fixture.now)
+				if err != nil {
+					t.Fatal(err)
+				}
+				fixture.keysetSignature, err = EncodeSignature(ed25519.Sign(fixture.rootPrivate, fixture.keysetBody))
+				if err != nil {
+					t.Fatal(err)
+				}
+			},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newDiscoveryFixture(t)
+			_, archive := buildInstallerPackageFixture(t, nil)
+			fixture.manifest.InstallerSHA256 = sha256Hex(archive)
+			fixture.manifestBody, err = EncodeCanonical(fixture.manifest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.manifestSignature, err = EncodeSignature(ed25519.Sign(fixture.manifestPrivate, fixture.manifestBody))
+			if err != nil {
+				t.Fatal(err)
+			}
+			fixture.pairBody, err = EncodeCanonicalStablePair(fixture.manifestBody, fixture.manifestSignature)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			client, store := newDiscoveryClient(t, fixture, nil)
+			test.mutate(t, &fixture, &client)
+			client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.String() == fixture.manifest.InstallerURL {
+					return response(http.StatusOK, archive), nil
+				}
+				return fixture.transport(nil).RoundTrip(req)
+			})
+
+			calls := 0
+			_, err := client.ApplyStable(
+				context.Background(), "v1.2.2", 0,
+				InstallerClient{}, filepath.Join(t.TempDir(), "staging"), 0,
+				func(context.Context, string) error { return nil },
+				InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+					calls++
+					return nil
+				}),
+			)
+			if err == nil {
+				t.Fatal("untrusted update reached successful installation")
+			}
+			if calls != 0 {
+				t.Fatalf("installer executor calls = %d, want 0", calls)
+			}
+			state, loadErr := store.Load()
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			if state.StableSequence != 0 {
+				t.Fatalf("rejected update advanced stable sequence to %d", state.StableSequence)
+			}
+		})
+	}
+}
+
+func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
+	fixture := newDiscoveryFixture(t)
+	_, archive := buildInstallerPackageFixture(t, nil)
+	fixture.manifest.InstallerSHA256 = sha256Hex(archive)
+	fixture.manifestBody, err := EncodeCanonical(fixture.manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.manifestSignature, err = EncodeSignature(ed25519.Sign(fixture.manifestPrivate, fixture.manifestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.pairBody, err = EncodeCanonicalStablePair(fixture.manifestBody, fixture.manifestSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	statePath := StatePath(filepath.Join(t.TempDir(), "client"))
+	newClient := func() DiscoveryClient {
+		return DiscoveryClient{
+			RootKeyID: fixture.keyset.RootKeyID, RootPublicKey: fixture.rootPublic,
+			State: NewStateStore(statePath), Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				if req.URL.String() == fixture.manifest.InstallerURL {
+					return response(http.StatusOK, archive), nil
+				}
+				return fixture.transport(nil).RoundTrip(req)
+			}),
+			Now: func() time.Time { return fixture.now },
+		}
+	}
+	calls := 0
+	executor := InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+		calls++
+		return nil
+	})
+	apply := func(client DiscoveryClient) error {
+		_, err := client.ApplyStable(
+			context.Background(), "v1.2.2", 0, InstallerClient{},
+			filepath.Join(t.TempDir(), "staging"), 0,
+			func(context.Context, string) error { return nil }, executor,
+		)
+		return err
+	}
+
+	if err := apply(newClient()); err != nil {
+		t.Fatalf("first verified update failed: %v", err)
+	}
+	if err := apply(newClient()); !errors.Is(err, ErrRollback) {
+		t.Fatalf("replayed update error = %v, want ErrRollback", err)
+	}
+	if calls != 1 {
+		t.Fatalf("installer executor calls = %d, want exactly 1", calls)
+	}
+	state, err := NewStateStore(statePath).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != fixture.manifest.Sequence {
+		t.Fatalf("persisted sequence = %d, want %d", state.StableSequence, fixture.manifest.Sequence)
 	}
 }
