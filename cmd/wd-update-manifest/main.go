@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"wedecent.com/wedecent/internal/updateinfo"
 )
@@ -30,6 +31,8 @@ func run(args []string, stdout io.Writer) error {
 		return runCreate(args[1:], stdout)
 	case "verify":
 		return runVerify(args[1:], stdout)
+	case "verify-v2":
+		return runVerifyV2(args[1:], stdout)
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
@@ -38,6 +41,9 @@ func run(args []string, stdout io.Writer) error {
 func runCreate(args []string, stdout io.Writer) error {
 	flags := flag.NewFlagSet("create", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
+	schema := flags.Int("schema", updateinfo.ManifestSchemaV2, "manifest schema (production stable updates require 2)")
+	signingKeyID := flags.String("signing-key-id", "", "active key ID from the root-signed keyset")
+	keysetEpoch := flags.Uint64("keyset-epoch", 0, "root-signed keyset epoch")
 	sequence := flags.Uint64("sequence", 0, "stable manifest sequence")
 	version := flags.String("version", "", "stable version, including v prefix")
 	publishedAt := flags.String("published-at", "", "canonical UTC RFC3339 timestamp")
@@ -55,7 +61,9 @@ func runCreate(args []string, stdout io.Writer) error {
 	}
 
 	manifest := updateinfo.Manifest{
-		Schema:          updateinfo.ManifestSchemaV1,
+		Schema:          *schema,
+		SigningKeyID:    *signingKeyID,
+		KeysetEpoch:     *keysetEpoch,
 		Channel:         updateinfo.StableChannel,
 		Sequence:        *sequence,
 		Version:         *version,
@@ -128,6 +136,53 @@ func runVerify(args []string, stdout io.Writer) error {
 		}
 	}
 	_, err = fmt.Fprintf(stdout, "sequence=%d\nversion=%s\n", manifest.Sequence, manifest.Version)
+	return err
+}
+
+
+func runVerifyV2(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("verify-v2", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	rootKeyID := flags.String("root-key-id", "", "pinned Ed25519 root key ID")
+	rootPublicPath := flags.String("root-public-key", "", "pinned Ed25519 root public key file")
+	keysetPath := flags.String("keyset", "", "canonical root-signed keyset")
+	keysetSignaturePath := flags.String("keyset-signature", "", "detached root keyset signature")
+	manifestPath := flags.String("manifest", "", "canonical schema-v2 manifest")
+	signaturePath := flags.String("signature", "", "detached manifest signature")
+	currentVersion := flags.String("current-version", "", "optional current stable version")
+	currentSequenceText := flags.String("current-sequence", "", "optional highest accepted sequence")
+	if err := flags.Parse(args); err != nil { return err }
+	if flags.NArg() != 0 { return errors.New("verify-v2 accepts no positional arguments") }
+	if *rootKeyID == "" || *rootPublicPath == "" || *keysetPath == "" ||
+		*keysetSignaturePath == "" || *manifestPath == "" || *signaturePath == "" {
+		return errors.New("--root-key-id, --root-public-key, --keyset, --keyset-signature, --manifest, and --signature are required")
+	}
+	if (*currentVersion == "") != (*currentSequenceText == "") {
+		return errors.New("--current-version and --current-sequence must be provided together")
+	}
+	rootBytes, err := readBoundedRegular(*rootPublicPath, maxKeyFileBytes)
+	if err != nil { return fmt.Errorf("read root public key: %w", err) }
+	rootPublic, err := updateinfo.DecodePublicKey(rootBytes)
+	if err != nil { return err }
+	keysetBytes, err := readBoundedRegular(*keysetPath, updateinfo.MaxKeysetBytes)
+	if err != nil { return fmt.Errorf("read keyset: %w", err) }
+	keysetSignature, err := readBoundedRegular(*keysetSignaturePath, 128)
+	if err != nil { return fmt.Errorf("read keyset signature: %w", err) }
+	manifestBytes, err := readBoundedRegular(*manifestPath, updateinfo.MaxManifestBytes)
+	if err != nil { return fmt.Errorf("read manifest: %w", err) }
+	manifestSignature, err := readBoundedRegular(*signaturePath, 128)
+	if err != nil { return fmt.Errorf("read manifest signature: %w", err) }
+	verified, err := updateinfo.VerifyKeyset(*rootKeyID, rootPublic, keysetBytes, keysetSignature, time.Now().UTC(), 0, "")
+	if err != nil { return err }
+	var currentSequence uint64
+	if *currentVersion != "" {
+		currentSequence, err = strconv.ParseUint(*currentSequenceText, 10, 64)
+		if err != nil { return fmt.Errorf("invalid --current-sequence: %w", err) }
+	}
+	manifest, err := updateinfo.VerifyManifestV2(verified, manifestBytes, manifestSignature, time.Now().UTC(), *currentVersion, currentSequence)
+	if err != nil { return err }
+	_, err = fmt.Fprintf(stdout, "sequence=%d\nversion=%s\nkeyset_epoch=%d\nkeyset_digest=%s\n",
+		manifest.Sequence, manifest.Version, verified.Epoch(), verified.Digest())
 	return err
 }
 
