@@ -100,12 +100,11 @@ func TestWindowsUpdateStateDACLUsesNativeSIDIdentity(t *testing.T) {
 	}
 }
 
-
 func TestValidateUpdateStateAncestorDACLRejectsNamespaceWriters(t *testing.T) {
 	const user = "S-1-5-21-1234-5678-9012-1001"
 	for _, tc := range []struct {
-		name string
-		sddl string
+		name    string
+		sddl    string
 		wantErr bool
 	}{
 		{"broad-principal-delete-child", "D:P(A;;FA;;;" + user + ")(A;;0x00000040;;;WD)", true},
@@ -212,7 +211,7 @@ func TestWindowsUpdateStateRejectsInheritedBroadAncestorACE(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(childSD.String(), "S-1-1-0") {
+	if !strings.Contains(childSD.String(), "WD") {
 		t.Fatalf("test child did not inherit the broad-principal ACE: %s", childSD.String())
 	}
 	if _, err := validateUpdateStateAncestorChain(grandchild, user); err == nil || !errors.Is(err, ErrInvalidState) {
