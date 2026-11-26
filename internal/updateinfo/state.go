@@ -107,7 +107,8 @@ func (s *StateStore) AdvanceKeyset(epoch uint64, digest string) error {
 		return err
 	}
 	if epoch < current.KeysetEpoch ||
-		(epoch == current.KeysetEpoch && current.KeysetDigest != digest) {
+		(epoch == current.KeysetEpoch && current.KeysetDigest != digest) ||
+		(epoch > current.KeysetEpoch && current.KeysetDigest != "" && current.KeysetDigest == digest) {
 		return ErrKeysetRollback
 	}
 	if epoch == current.KeysetEpoch {
