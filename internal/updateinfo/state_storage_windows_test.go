@@ -498,7 +498,7 @@ func TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock(t *testing.T) {
 	// during directory preflight, before state reads, temp files, or lock files.
 	windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;0x00000004;;;WD)")
 	path := StatePath(dir)
-	original := []byte("{\\"version\\":1,\\"stable_sequence\\":41}\\n")
+	original := []byte("{\"version\":1,\"stable_sequence\":41}\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
 		t.Fatal(err)
 	}
