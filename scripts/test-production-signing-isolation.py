@@ -39,10 +39,11 @@ def main() -> None:
     require(publisher not in signing, "signing job must not receive publisher credentials")
     require(signer not in verification and publisher not in verification,
             "verification job must receive neither privileged adapter")
-    require(publisher in publication, "publication job must receive the publisher adapter")
-    require("WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256" in publication,
-            "publisher adapter must be pinned by an independently configured digest")
+    require("AWS_ACCESS_KEY_ID" in publication and "AWS_SECRET_ACCESS_KEY" in publication,
+            "publication job must receive only the R2 write credential pair")
     require(signer not in publication, "publication job must not receive signing credentials")
+    require("AWS_ACCESS_KEY_ID" not in signing and "AWS_SECRET_ACCESS_KEY" not in signing,
+            "signing job must not receive R2 publication credentials")
 
     require("group: wedecent-update-signers" in signing, "signer must use its isolated runner group")
     require("group: wedecent-update-verifiers" in verification, "verifier must use its isolated runner group")
@@ -61,8 +62,8 @@ def main() -> None:
             "signer must use the provisioned root key and signed keyset")
     require("WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH" in verification and "WEDECENT_UPDATE_KEYSET_PATH" not in verification,
             "verifier must consume candidate keyset but must not receive signer-side keyset path credentials")
-    require("WEDECENT_R2_CREATE_ONLY_UPLOADER" not in signing and "WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER" not in verification,
-            "signer and verifier must not receive publication credentials")
+    require("WEDECENT_R2_CREATE_ONLY_UPLOADER" not in signing and "AWS_ACCESS_KEY_ID" not in verification,
+            "signer and verifier must not receive R2 publication credentials")
     require("manifest-v2.json" in verification and "manifest-v2.sig" in verification,
             "independent verifier must verify only schema-v2 stable manifests")
     require("manifest-v1.json" not in verification and "manifest-v1.sig" not in verification,
@@ -83,21 +84,19 @@ def main() -> None:
             "signing script must enforce the configured signer digest pin")
     require(signer not in verify_script and publisher not in verify_script,
             "verification script must have no signing or publication adapter")
-    require(publisher in publish_script and signer not in publish_script,
-            "publication script must invoke only the publication adapter")
-    require("WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER_SHA256" in publish_script and "sha256sum" in publish_script,
-            "publication script must enforce the configured publisher digest pin")
+    require(signer not in publish_script and "AWS_ACCESS_KEY_ID" in publish_script,
+            "publication script must use R2 publisher credentials and no signer")
+    require("--if-match" in publish_script and "--if-none-match" in publish_script and "put-object" in publish_script,
+            "publication script must use conditional R2 PutObject CAS")
 
-    require("WEDECENT_R2_CREATE_ONLY_UPLOADER_SHA256" in publish_script,
-            "publisher must pin the immutable keyset uploader executable")
-    require("keysets/$epoch/keyset.json" in publish_script and "manifest-v2.json" in publish_script,
-            "publisher must create immutable epoch keysets before the atomic v2 manifest pointer")
-    require("verification.receipt" in publish_script and "keyset_sha256" in publish_script,
-            "publisher must bind root-keyset bytes to the independent verifier receipt")
+    require("keysets/" in publish_script and "current-v2.json" in publish_script,
+            "publisher must create immutable epoch keysets before the atomic v2 pair object")
+    require("verification.receipt" in publish_script and "candidate_pair_sha256" in publish_script,
+            "publisher must bind the single pair object to the independent verifier receipt")
     require("WEDECENT_UPDATE_MANIFEST_SIGNER" not in publish_script,
             "publisher must not access signing credentials")
-    require("WEDECENT_UPDATE_STABLE_PAIR_PUBLISHER" not in verify_script and "WEDECENT_R2_CREATE_ONLY_UPLOADER" not in verify_script,
-            "verifier must not access publication credentials")
+    require("AWS_ACCESS_KEY_ID" not in verify_script and "AWS_SECRET_ACCESS_KEY" not in verify_script,
+            "verifier must not access R2 publication credentials")
 
     require("wedecent-stable-update-candidate-" in verification,
             "verification must consume the immutable signed-candidate artifact")
@@ -117,9 +116,9 @@ def main() -> None:
     with tempfile.TemporaryDirectory() as temporary:
         temp = Path(temporary)
         sign_token = temp / "sign.token"
-        publish_token = temp / "publish.token"
+        publish_token = temp / "r2-write.token"
         sign_token.write_text("test-sign-only", encoding="utf-8")
-        publish_token.write_text("test-publish-only", encoding="utf-8")
+        publish_token.write_text("test-r2-write-only", encoding="utf-8")
         sign_token.chmod(0o600)
         publish_token.chmod(0o600)
         signer_adapter = temp / "signer"
@@ -141,7 +140,7 @@ def main() -> None:
         signer_adapter.chmod(0o700)
         publisher_adapter.chmod(0o700)
         signer_env = {"PATH": os.environ.get("PATH", ""), "SIGN_TOKEN": str(sign_token)}
-        publisher_env = {"PATH": os.environ.get("PATH", ""), "PUBLISH_TOKEN": str(publish_token)}
+        publisher_env = {"PATH": os.environ.get("PATH", ""), "AWS_ACCESS_KEY_ID": "test-access", "AWS_SECRET_ACCESS_KEY": str(publish_token)}
         require(subprocess.run([str(signer_adapter), "sign", "manifest"], env=signer_env, check=False).returncode == 0,
                 "restricted signer credential must permit signing")
         require(subprocess.run([str(signer_adapter), "publish", "object"], env=signer_env, check=False).returncode != 0,
