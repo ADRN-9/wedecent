@@ -35,6 +35,9 @@ func acquireUpdateLock(ctx context.Context, statePath string) (func(), error) {
 	if err != nil || linked.Mode()&os.ModeSymlink != 0 || !linked.Mode().IsRegular() || !os.SameFile(opened, linked) {
 		return fail(fmt.Errorf("%w: update lock path is not stable", ErrInvalidState))
 	}
+	if err := validateStateFileInfo(path, linked); err != nil {
+		return fail(err)
+	}
 
 	handle := windows.Handle(file.Fd())
 	var overlapped windows.Overlapped
