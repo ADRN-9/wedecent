@@ -67,6 +67,8 @@ jobs:
           cache: true
       - name: Validate production release workflow syntax
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/production-release-build.yml
+      - name: Parse isolated production update scripts
+        run: bash -n ./scripts/sign-windows-stable-update.sh ./scripts/verify-windows-stable-update.sh ./scripts/publish-windows-stable-update-pair.sh
       - name: Test production signing and publication privilege separation
         run: python3 ./scripts/test-production-signing-isolation.py
       - name: Test immutable live release tags
