@@ -400,6 +400,9 @@ func validateUpdateStateDACL(sddl, currentSID, rootSID string, isAdmin bool) err
 	if err != nil {
 		return fmt.Errorf("resolve Administrators SID: %w", err)
 	}
+	const dangerous = uint32(0x00000002 | 0x00000004 | 0x00000010 | 0x00000040 |
+		0x00000100 | 0x00010000 | 0x00040000 | 0x00080000 |
+		0x10000000 | 0x40000000)
 	grantsCurrent, grantsRoot := false, false
 	for {
 		open := strings.IndexByte(entries, '(')
@@ -418,21 +421,34 @@ func validateUpdateStateDACL(sddl, currentSID, rootSID string, isAdmin bool) err
 		}
 		end += open + 1
 		parts := strings.Split(entries[open+1:end], ";")
-		if len(parts) != 6 || parts[5] == "" || parts[0] != "A" || parts[3] != "" || parts[4] != "" {
+		if len(parts) != 6 || parts[0] != "A" || parts[5] == "" || parts[3] != "" || parts[4] != "" {
 			return errors.New("unsupported update state ACE representation")
 		}
 		trustee, err := windows.StringToSid(parts[5])
 		if err != nil || trustee == nil || !trustee.IsValid() {
 			return errors.New("update state ACE trustee SID is invalid")
 		}
-		if !trustee.Equals(current) && !trustee.Equals(root) &&
-			!trustee.Equals(system) && !trustee.Equals(administrators) {
-			return fmt.Errorf("update state grants access to unauthorized SID %s", parts[5])
+		flags, err := parseUpdateStateACEFlags(parts[1])
+		if err != nil {
+			return err
 		}
-		if parts[2] != "FA" && parts[2] != "GA" && parts[2] != "0x1f01ff" && parts[2] != "0x001f01ff" {
-			return errors.New("update state ACE must grant full control")
+		mask, err := parseUpdateStateAccessMask(parts[2])
+		if err != nil {
+			return err
 		}
-		if !strings.Contains(parts[1], "IO") {
+		trusted := trustee.Equals(current) || trustee.Equals(root) ||
+			trustee.Equals(system) || trustee.Equals(administrators)
+		if !trusted {
+			if mask&dangerous != 0 {
+				return fmt.Errorf("update state grants namespace or data modification rights to unauthorized SID %s", trustee.String())
+			}
+			entries = entries[end+1:]
+			continue
+		}
+		if mask != 0x001F01FF && mask != 0x10000000 {
+			return errors.New("trusted update state ACE must grant full control")
+		}
+		if flags&updateStateACEInheritOnly == 0 {
 			if trustee.Equals(current) || (isAdmin && trustee.Equals(administrators)) {
 				grantsCurrent = true
 			}
