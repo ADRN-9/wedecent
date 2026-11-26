@@ -26,8 +26,8 @@ var (
 )
 
 const (
-	updateStateSystemSID = "S-1-5-18"
-	updateStateAdminSID  = "S-1-5-32-544"
+	updateStateSystemSID           = "S-1-5-18"
+	updateStateAdminSID            = "S-1-5-32-544"
 	updateStateTrustedInstallerSID = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464"
 )
 
