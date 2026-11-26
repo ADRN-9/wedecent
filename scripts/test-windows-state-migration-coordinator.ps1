@@ -78,13 +78,22 @@ function Get-MigrationTreeSnapshot {
         if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
             $digest = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
         }
+        $isReparsePoint = ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0
+        $kind = if ($isReparsePoint) { 'ReparsePoint' } elseif ($item.PSIsContainer) { 'Directory' } else { 'File' }
+        $length = if ($item.PSIsContainer) { $null } else { [long]$item.Length }
+        $linkType = $null
+        $target = $null
+        if ($isReparsePoint) {
+            $linkType = [string]$item.LinkType
+            $target = [string]$item.Target
+        }
         $record = [ordered]@{
             Path = $relative
-            Kind = if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { 'ReparsePoint' } elseif ($item.PSIsContainer) { 'Directory' } else { 'File' }
-            Length = if ($item.PSIsContainer) { $null } else { [long]$item.Length }
+            Kind = $kind
+            Length = $length
             Digest = $digest
-            LinkType = [string]$item.LinkType
-            Target = [string]$item.Target
+            LinkType = $linkType
+            Target = $target
             Attributes = [int]$item.Attributes
             Owner = [string]$acl.Owner
             Sddl = [string]$acl.Sddl
