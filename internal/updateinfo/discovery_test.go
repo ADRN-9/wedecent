@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -29,6 +31,7 @@ type discoveryFixture struct {
 	manifest           Manifest
 	manifestBody       []byte
 	manifestSignature  []byte
+	pairBody           []byte
 }
 
 func newDiscoveryFixture(t *testing.T) discoveryFixture {
@@ -84,6 +87,10 @@ func newDiscoveryFixture(t *testing.T) discoveryFixture {
 	if err != nil {
 		t.Fatal(err)
 	}
+	pairBody, err := EncodeCanonicalStablePair(manifestBody, manifestSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	return discoveryFixture{
 		now:               now,
@@ -94,6 +101,7 @@ func newDiscoveryFixture(t *testing.T) discoveryFixture {
 		manifest:          manifest,
 		manifestBody:      manifestBody,
 		manifestSignature: manifestSignature,
+		pairBody:          pairBody,
 	}
 }
 
@@ -111,10 +119,8 @@ func (f discoveryFixture) transport(mutate func(string, []byte) ([]byte, int)) h
 		var body []byte
 		keysetURL, keysetSignatureURL := stableKeysetURLs(f.keyset.Epoch)
 		switch req.URL.String() {
-		case StableManifestURL:
-			body = f.manifestBody
-		case StableSignatureURL:
-			body = f.manifestSignature
+		case StablePairURL:
+			body = f.pairBody
 		case keysetURL:
 			body = f.keysetBody
 		case keysetSignatureURL:
@@ -153,10 +159,8 @@ func TestDiscoverStableUsesRootKeysetAndV2Only(t *testing.T) {
 		mu.Unlock()
 		keysetURL, keysetSignatureURL := stableKeysetURLs(fixture.keyset.Epoch)
 		switch req.URL.String() {
-		case StableManifestURL:
-			return response(http.StatusOK, fixture.manifestBody), nil
-		case StableSignatureURL:
-			return response(http.StatusOK, fixture.manifestSignature), nil
+		case StablePairURL:
+			return response(http.StatusOK, fixture.pairBody), nil
 		case keysetURL:
 			return response(http.StatusOK, fixture.keysetBody), nil
 		case keysetSignatureURL:
@@ -178,12 +182,7 @@ func TestDiscoverStableUsesRootKeysetAndV2Only(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	keysetURL, keysetSignatureURL := stableKeysetURLs(fixture.keyset.Epoch)
-	wantURLs := []string{
-		StableManifestURL,
-		StableSignatureURL,
-		keysetURL,
-		keysetSignatureURL,
-	}
+	wantURLs := []string{StablePairURL, keysetURL, keysetSignatureURL}
 	if len(requested) != len(wantURLs) {
 		t.Fatalf("requested URLs = %#v", requested)
 	}
@@ -248,11 +247,19 @@ func TestDiscoverStableRejectsManifestV1AndBadSignatures(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	v1Signature := ed25519.Sign(fixture.manifestPrivate, v1Body)
+	v1Envelope, err := json.Marshal(StablePairEnvelope{
+		Schema: StablePairSchema,
+		Manifest: base64.RawURLEncoding.EncodeToString(v1Body),
+		Signature: base64.RawURLEncoding.EncodeToString(v1Signature),
+	})
+	if err != nil { t.Fatal(err) }
+	v1Envelope = append(v1Envelope, '\n')
 
 	tests := map[string]func(string, []byte) ([]byte, int){
 		"v1 downgrade": func(url string, body []byte) ([]byte, int) {
-			if url == StableManifestURL {
-				return v1Body, http.StatusOK
+			if url == StablePairURL {
+				return v1Envelope, http.StatusOK
 			}
 			return body, http.StatusOK
 		},
@@ -266,9 +273,16 @@ func TestDiscoverStableRejectsManifestV1AndBadSignatures(t *testing.T) {
 			return body, http.StatusOK
 		},
 		"bad manifest signature": func(url string, body []byte) ([]byte, int) {
-			if url == StableSignatureURL {
-				changed := append([]byte(nil), body...)
-				changed[0] ^= 1
+			if url == StablePairURL {
+				manifestBytes, signatureBytes, err := ParseCanonicalStablePair(body)
+				if err != nil { t.Fatal(err) }
+				signature, err := DecodeSignature(signatureBytes)
+				if err != nil { t.Fatal(err) }
+				signature[0] ^= 1
+				changedSignature, err := EncodeSignature(signature)
+				if err != nil { t.Fatal(err) }
+				changed, err := EncodeCanonicalStablePair(manifestBytes, changedSignature)
+				if err != nil { t.Fatal(err) }
 				return changed, http.StatusOK
 			}
 			return body, http.StatusOK
