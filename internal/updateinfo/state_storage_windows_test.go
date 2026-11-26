@@ -558,7 +558,6 @@ func TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock(t *testing.T) {
 	}
 }
 
-
 func windowsTestSetFileDACL(t *testing.T, path, sddl string) {
 	t.Helper()
 	sd, err := windows.SecurityDescriptorFromString(sddl)
