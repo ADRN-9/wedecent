@@ -265,8 +265,10 @@ func validateUpdateStateAncestorDACL(sddl, currentSID string) error {
 		if err != nil {
 			return err
 		}
+		// Inherit-only object ACEs do not grant directory namespace rights;
+		// the final state-file DACL is checked separately for those file grants.
 		canAffectDescendants := flags&updateStateACEInheritOnly == 0 ||
-			flags&(updateStateACEObjectInherit|updateStateACEContainerInherit) != 0
+			flags&updateStateACEContainerInherit != 0
 		isCreatorOwnerInheritance := trustee.String() == "S-1-3-0" &&
 			flags&updateStateACEInheritOnly != 0 &&
 			flags&(updateStateACEObjectInherit|updateStateACEContainerInherit) != 0
