@@ -830,7 +830,7 @@ try {
 
 
 
-$usersSid = ConvertTo-WeDecentMigrationSid -Sid 'S-1-5-32-545'
+$usersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
 $metadataDaclFixture = New-MigrationFixture
 try {
     $metadataAcl = Get-Acl -LiteralPath $metadataDaclFixture.MetadataPath
