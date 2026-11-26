@@ -11,7 +11,12 @@ PUBLISHED_AT=""
 OUT_DIR=""
 SIGNER="${WEDECENT_UPDATE_MANIFEST_SIGNER:-}"
 SIGNER_SHA_EXPECTED="${WEDECENT_UPDATE_MANIFEST_SIGNER_SHA256:-}"
-PUBLIC_KEY="${WEDECENT_UPDATE_PUBLIC_KEY_PATH:-}"
+ROOT_KEY_ID="${WEDECENT_UPDATE_ROOT_KEY_ID:-}"
+ROOT_PUBLIC_KEY="${WEDECENT_UPDATE_ROOT_PUBLIC_KEY_PATH:-}"
+KEYSET="${WEDECENT_UPDATE_KEYSET_PATH:-}"
+KEYSET_SIGNATURE="${WEDECENT_UPDATE_KEYSET_SIGNATURE_PATH:-}"
+SIGNING_KEY_ID="${WEDECENT_UPDATE_SIGNING_KEY_ID:-}"
+KEYSET_EPOCH="${WEDECENT_UPDATE_KEYSET_EPOCH:-}"
 
 die() { printf 'sign-windows-stable-update: %s\n' "$*" >&2; exit 1; }
 
@@ -38,7 +43,12 @@ SIGNER_SHA_ACTUAL="$(sha256sum "$SIGNER" | awk '{print tolower($1)}')"
 SIGNER_MODE="$(stat -c '%a' "$SIGNER")"
 [[ "$SIGNER_MODE" =~ ^[0-7]{3,4}$ ]] || die 'invalid signer file mode'
 [[ ! "$SIGNER_MODE" =~ [2367][0-7]$ && ! "$SIGNER_MODE" =~ [0-7][2367]$ ]] || die 'signer executable is group/world writable'
-[[ "$PUBLIC_KEY" == /* && -f "$PUBLIC_KEY" && ! -L "$PUBLIC_KEY" ]] || die 'public key path must be an absolute regular file'
+[[ "$ROOT_KEY_ID" =~ ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]] || die 'root key ID is required'
+[[ "$ROOT_PUBLIC_KEY" == /* && -f "$ROOT_PUBLIC_KEY" && ! -L "$ROOT_PUBLIC_KEY" ]] || die 'root public key must be an absolute regular file'
+[[ "$KEYSET" == /* && -f "$KEYSET" && ! -L "$KEYSET" ]] || die 'root-signed keyset must be an absolute regular file'
+[[ "$KEYSET_SIGNATURE" == /* && -f "$KEYSET_SIGNATURE" && ! -L "$KEYSET_SIGNATURE" ]] || die 'keyset signature must be an absolute regular file'
+[[ "$SIGNING_KEY_ID" =~ ^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$ ]] || die 'active manifest signing key ID is required'
+[[ "$KEYSET_EPOCH" =~ ^[1-9][0-9]*$ ]] || die 'root-signed keyset epoch is required'
 
 wedecent_require_production_release_context "${VERSION#v}" || die 'release context validation failed'
 wedecent_require_approved_replay_trust || die 'replay trust validation failed'
@@ -72,14 +82,18 @@ remote_sha256() {
 RELEASE_SHA="$(remote_sha256 "$RELEASE_URL")"
 INSTALLER_SHA="$(remote_sha256 "$INSTALLER_URL")"
 mkdir -m 0700 -- "$OUT_DIR"
-MANIFEST="$OUT_DIR/manifest-v1.json"
-SIGNATURE="$OUT_DIR/manifest-v1.sig"
+MANIFEST="$OUT_DIR/manifest-v2.json"
+SIGNATURE="$OUT_DIR/manifest-v2.sig"
+cp -- "$KEYSET" "$OUT_DIR/keyset-v1.json"
+cp -- "$KEYSET_SIGNATURE" "$OUT_DIR/keyset-v1.sig"
+chmod 0600 "$OUT_DIR/keyset-v1.json" "$OUT_DIR/keyset-v1.sig"
 
 "$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
   die 'release tag changed before manifest creation'
 (
   cd "$ROOT"
   go run ./cmd/wd-update-manifest create \
+    --schema 2 --signing-key-id "$SIGNING_KEY_ID" --keyset-epoch "$KEYSET_EPOCH" \
     --sequence "$SEQUENCE" --version "$VERSION" --published-at "$PUBLISHED_AT" \
     --release-sha256 "$RELEASE_SHA" --installer-sha256 "$INSTALLER_SHA" --out "$MANIFEST" >/dev/null
 ) || die 'canonical manifest creation failed'
@@ -88,7 +102,7 @@ SIGNATURE="$OUT_DIR/manifest-v1.sig"
 [[ -f "$SIGNATURE" && ! -L "$SIGNATURE" ]] || die 'signer did not produce a regular signature file'
 (
   cd "$ROOT"
-  go run ./cmd/wd-update-manifest verify --public-key "$PUBLIC_KEY" --manifest "$MANIFEST" --signature "$SIGNATURE" >/dev/null
+  go run ./cmd/wd-update-manifest verify-v2 --root-key-id "$ROOT_KEY_ID" --root-public-key "$ROOT_PUBLIC_KEY" --keyset "$OUT_DIR/keyset-v1.json" --keyset-signature "$OUT_DIR/keyset-v1.sig" --manifest "$MANIFEST" --signature "$SIGNATURE" >/dev/null
 ) || die 'signer output failed local public-key verification'
 
 "$ROOT/scripts/verify-live-release-tag.sh" "$ROOT" "$GITHUB_REF_NAME" "$GITHUB_SHA" ||
