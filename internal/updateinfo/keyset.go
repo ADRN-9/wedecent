@@ -16,20 +16,20 @@ import (
 )
 
 const (
-	KeysetSchemaV1       = 1
-	ManifestSchemaV2     = 2
-	MaxKeysetBytes       = 32 << 10
-	MaxKeysetEntries     = 64
-	MaxKeysetValidity    = 90 * 24 * time.Hour
-	MaxKeysetClockSkew   = 5 * time.Minute
+	KeysetSchemaV1     = 1
+	ManifestSchemaV2   = 2
+	MaxKeysetBytes     = 32 << 10
+	MaxKeysetEntries   = 64
+	MaxKeysetValidity  = 90 * 24 * time.Hour
+	MaxKeysetClockSkew = 5 * time.Minute
 )
 
 var (
-	ErrInvalidKeyset       = errors.New("updateinfo: invalid update keyset")
-	ErrKeysetRollback      = errors.New("updateinfo: keyset rollback or equivocation rejected")
-	ErrUnknownSigningKey   = errors.New("updateinfo: manifest signing key is not authorized")
-	ErrRevokedSigningKey   = errors.New("updateinfo: manifest signing key is revoked")
-	keyIDPattern           = regexp.MustCompile("^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
+	ErrInvalidKeyset     = errors.New("updateinfo: invalid update keyset")
+	ErrKeysetRollback    = errors.New("updateinfo: keyset rollback or equivocation rejected")
+	ErrUnknownSigningKey = errors.New("updateinfo: manifest signing key is not authorized")
+	ErrRevokedSigningKey = errors.New("updateinfo: manifest signing key is revoked")
+	keyIDPattern         = regexp.MustCompile("^[a-z0-9]([a-z0-9-]{0,62}[a-z0-9])?$")
 )
 
 type KeysetEntry struct {
@@ -57,7 +57,7 @@ type VerifiedKeyset struct {
 	digest string
 }
 
-func (v VerifiedKeyset) Epoch() uint64 { return v.keyset.Epoch }
+func (v VerifiedKeyset) Epoch() uint64  { return v.keyset.Epoch }
 func (v VerifiedKeyset) Digest() string { return v.digest }
 
 func (k Keyset) Validate(now time.Time) error {
