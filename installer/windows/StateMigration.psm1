@@ -474,6 +474,7 @@ function Write-WeDecentMigrationJournal {
     }
     $fullPath = [IO.Path]::GetFullPath($Path)
     $directory = Split-Path -Parent $fullPath
+    [void](Assert-WeDecentMigrationPublicationNamespace -Path $directory)
     [void](Assert-WeDecentMigrationAdminDirectory -Path $directory)
     $parentLease = New-WeDecentMigrationMutationLease -Directories @($directory)
     $temporary = Join-Path $directory ('.migration-journal-' + [Guid]::NewGuid().ToString('N') + '.tmp')
@@ -766,6 +767,8 @@ function Write-WeDecentMigrationMetadata {
         [Parameter(Mandatory = $true)][string]$StatePath
     )
     $parent = Split-Path -Parent $Path
+    [void](Assert-WeDecentMigrationPublicationNamespace -Path $parent)
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $parent)
     $parentLease = New-WeDecentMigrationMutationLease -Directories @($parent)
     $temp = Join-Path $parent ('.installer-migration-' + [Guid]::NewGuid().ToString('N') + '.tmp')
     try {
@@ -1398,16 +1401,14 @@ function Assert-WeDecentMigrationPublicationNamespace {
         'S-1-5-32-544',
         'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464'
     )
-    $namespaceMutationRights = [Security.AccessControl.FileSystemRights]::Write -bor
-        [Security.AccessControl.FileSystemRights]::Modify -bor
+    $mutationRights = [Security.AccessControl.FileSystemRights]::CreateFiles -bor
+        [Security.AccessControl.FileSystemRights]::CreateDirectories -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::Delete -bor
-        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [Security.AccessControl.FileSystemRights]::TakeOwnership
-    $ancestorMutationRights = [Security.AccessControl.FileSystemRights]::Delete -bor
-        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [Security.AccessControl.FileSystemRights]::TakeOwnership
+        [Security.AccessControl.FileSystemRights]::TakeOwnership -bor
+        [Security.AccessControl.FileSystemRights]::Write -bor
+        [Security.AccessControl.FileSystemRights]::Modify
     $current = $full
     while (-not [string]::IsNullOrWhiteSpace($current)) {
         $acl = Get-Acl -LiteralPath $current -ErrorAction Stop
@@ -1415,19 +1416,15 @@ function Assert-WeDecentMigrationPublicationNamespace {
         if ($owner -notin $trusted) {
             throw "Migration publication namespace has an untrusted ancestor owner: $current"
         }
-        $mutationRights = if ([string]::Equals($current, $full, [StringComparison]::OrdinalIgnoreCase)) {
-            $namespaceMutationRights
-        } else {
-            $ancestorMutationRights
-        }
-        foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        # Inspect explicit and inherited ACEs. Deny ACEs never excuse an untrusted allow ACE.
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
             if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
                 ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) {
                 continue
             }
             if ($rule.IdentityReference.Value -notin $trusted -and
                 ($rule.FileSystemRights -band $mutationRights) -ne 0) {
-                throw "Migration publication namespace grants mutation rights to an untrusted principal: $current ($($rule.IdentityReference.Value))"
+                throw "Migration publication namespace grants effective or inherited mutation rights to an untrusted principal: $current ($($rule.IdentityReference.Value))"
             }
         }
         $parent = [IO.Path]::GetDirectoryName($current)
