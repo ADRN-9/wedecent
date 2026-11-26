@@ -566,7 +566,7 @@ function Assert-WeDecentMigrationStrictJson {
 
     $document = $null
     try {
-        $document = [System.Text.Json.JsonDocument]::Parse($Json)
+        $document = [System.Text.Json.JsonDocument]::Parse($Json, [System.Text.Json.JsonDocumentOptions]::new())
         if ($document.RootElement.ValueKind -ne [System.Text.Json.JsonValueKind]::Object) {
             throw "$Description root must be a JSON object."
         }
