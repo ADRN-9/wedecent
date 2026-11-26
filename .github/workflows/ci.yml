@@ -74,6 +74,8 @@ jobs:
           done
       - name: Test production signing and publication privilege separation
         run: python3 ./scripts/test-production-signing-isolation.py
+      - name: Test single-object R2 stable-pair conditional CAS
+        run: bash ./scripts/test-r2-stable-pair-cas.sh
       - name: Test immutable live release tags
         run: bash ./scripts/test-release-tags.sh
       - name: Test production release trust and output containment
