@@ -163,7 +163,7 @@ put_create_only "$KEYSET_PREFIX/keyset.sig" "$KEYSET_SIGNATURE" 'text/plain'
 # conditional-write token. R2 evaluates If-Match/If-None-Match atomically at
 # object commit, so competing writers cannot both replace this single envelope.
 current="$tmpdir/current-v2.json"
-etag="$(head_etag "$STABLE_KEY" unused)"
+etag="$(head_etag "$STABLE_KEY")"
 expected="${fields[expected_pair_sha256]}"
 if [[ "$etag" == '-' ]]; then
   [[ "$expected" == '-' ]] || die 'stable pair disappeared after independent verification'
