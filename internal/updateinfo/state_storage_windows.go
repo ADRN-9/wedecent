@@ -351,7 +351,8 @@ func parseUpdateStateAccessMask(value string) (uint32, error) {
 		case "AD":
 			right = 0x00000004
 		case "LC":
-			right = 0x00000001
+			// On filesystem directories, mask 0x4 can add a child directory.
+			right = 0x00000004
 		case "RC":
 			right = 0x00020000
 		default:
