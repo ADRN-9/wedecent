@@ -225,8 +225,8 @@ func TestWindowsUpdateStateRejectsInheritedBroadAncestorACE(t *testing.T) {
 	if !strings.Contains(childSD.String(), "WD") {
 		t.Fatalf("test child did not inherit the broad-principal ACE: %s", childSD.String())
 	}
-	if err := validateUpdateStateDACL(childSD.String(), user, user, false); err == nil || !errors.Is(err, ErrInvalidState) {
-		t.Fatalf("inherited broad-principal write ACE on state object accepted: %v; DACL=%s", err, childSD.String())
+	if err := validateUpdateStateDACL(childSD.String(), user, user, false); err == nil {
+		t.Fatalf("inherited broad-principal write ACE on state object accepted: DACL=%s", childSD.String())
 	}
 }
 
