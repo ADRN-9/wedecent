@@ -60,11 +60,11 @@ func TestResolvePairLocatorDiscoveryRejectsExplicitTransport(t *testing.T) {
 	t.Parallel()
 
 	for name, opts := range map[string]pairLocatorOptions{
-		"endpoint": {Endpoint: "192.0.2.10:7443"},
-		"rfcomm":   {RFCOMM: "01:23:45:67:89:AB/7"},
-		"serial":   {SerialDevice: "/dev/ttyACM0"},
-		"relay":    {Relay: "relay.example:443"},
-		"webRelay": {WebRelay: "https://relay.example"},
+		"endpoint":          {Endpoint: "192.0.2.10:7443"},
+		"rfcomm":            {RFCOMM: "01:23:45:67:89:AB/7"},
+		"serial":            {SerialDevice: "/dev/ttyACM0"},
+		"relay":             {Relay: "relay.example:443"},
+		"webRelay":          {WebRelay: "https://relay.example"},
 		"whitespace rfcomm": {RFCOMM: " "},
 	} {
 		name, opts := name, opts
