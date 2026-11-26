@@ -507,7 +507,11 @@ func TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("actual updater-state directory DACL before state operations: %s", dirSD.String())
+	dirDACL := dirSD.String()
+	t.Logf("actual updater-state directory DACL before state operations: %s", dirDACL)
+	if !strings.Contains(dirDACL, "WD") && !strings.Contains(dirDACL, "S-1-1-0") {
+		t.Fatalf("updater-state directory did not retain the inherited broad-principal ACE: %s", dirDACL)
+	}
 	path := StatePath(dir)
 	original := []byte("{\"version\":1,\"stable_sequence\":41}\n")
 	if err := os.WriteFile(path, original, 0o600); err != nil {
