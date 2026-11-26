@@ -488,6 +488,7 @@ function Write-WeDecentMigrationJournal {
                 throw 'Migration journal path is not a regular file.'
             }
             $targetIdentity = [WeDecentMigrationFileIdentityApi]::GetIdentity($fullPath)
+            [void](Assert-WeDecentMigrationJournalAcl -Path $fullPath)
         } elseif (Test-Path -LiteralPath $fullPath) {
             throw 'Migration journal destination exists but is not a regular file.'
         }
@@ -507,6 +508,30 @@ function Write-WeDecentMigrationJournal {
         if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force -ErrorAction SilentlyContinue }
         $parentLease.Dispose()
     }
+}
+
+function Assert-WeDecentMigrationJournalAcl {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Migration journal must be a regular non-reparse file.'
+    }
+    [void](Assert-WeDecentMigrationPublicationNamespace -Path (Split-Path -Parent $Path))
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    $allowed = @('S-1-5-18', 'S-1-5-32-544')
+    if ($owner -notin $allowed -or -not $acl.AreAccessRulesProtected) {
+        throw 'Migration journal owner or DACL is not trusted.'
+    }
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference.Value -notin $allowed -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw 'Migration journal contains an unexpected access rule.'
+        }
+    }
+    return $acl
 }
 
 function Read-WeDecentMigrationJournal {
