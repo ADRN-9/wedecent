@@ -1776,6 +1776,7 @@ try {
     $journal = Read-WeDecentMigrationJournal -Path $recoverySeparationFixture.Journal
     $journal.staging = Join-Path $recoverySeparationFixture.Source 'nested'
     Write-WeDecentMigrationJournal -Path $recoverySeparationFixture.Journal -Journal $journal
+    $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $recoverySeparationFixture -Journal $journal
     $rejected = $false
     try {
         [void](Recover-WeDecentStateMigration -JournalPath $recoverySeparationFixture.Journal -AgentPath $agentPath -MetadataPath $recoverySeparationFixture.MetadataPath -ServiceName $recoverySeparationFixture.ServiceName)
@@ -1784,7 +1785,7 @@ try {
         if (-not $rejected) { throw }
     }
     if (-not $rejected) { throw 'Recovery accepted an overlapping source/staging path.' }
-    Assert-MigrationRecoveryNoSideEffects -Fixture $recoverySeparationFixture -Journal $journal -Before (Get-MigrationRecoverySideEffectSnapshot -Fixture $recoverySeparationFixture -Journal $journal) -Case 'overlapping source/staging path'
+    Assert-MigrationRecoveryNoSideEffects -Fixture $recoverySeparationFixture -Journal $journal -Before $before -Case 'overlapping source/staging path'
     Write-Host 'Migration recovery full path-separation rejection before any side effect PASS'
 } finally {
     Remove-Item -LiteralPath $recoverySeparationFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
