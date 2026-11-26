@@ -655,7 +655,6 @@ func TestWindowsUpdateLockRejectsHostileLockFileACLBeforeLocking(t *testing.T) {
 	}
 }
 
-
 // A writable hostile sibling may be created under a parent that permits
 // additive child creation. If it is later substituted at the protected state
 // name, the state store must reject its DACL before reading or changing data.
