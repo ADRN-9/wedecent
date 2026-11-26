@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestStateStoreMissingAndAdvance(t *testing.T) {
@@ -189,31 +190,50 @@ func TestStateStoreRequiresPath(t *testing.T) {
 	}
 }
 
-func TestStateStorePersistsKeysetEpochAndDigestWithoutLosingSequence(t *testing.T) {
+func TestStateStorePersistsVerifiedKeysetAndSequenceAtomically(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
+	body, signature := signKeyset(t, keyset, rootPrivate, now)
+
 	path := StatePath(filepath.Join(t.TempDir(), "client"))
 	store := NewStateStore(path)
 	if err := store.Advance(41); err != nil {
 		t.Fatal(err)
 	}
-	firstDigest := strings.Repeat("a", 64)
-	if err := store.AdvanceKeyset(7, firstDigest); err != nil {
+	verified, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, body, signature, now)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.AdvanceKeyset(7, firstDigest); err != nil {
-		t.Fatalf("idempotent keyset persistence failed: %v", err)
+	if verified.Epoch() != keyset.Epoch {
+		t.Fatalf("verified keyset epoch = %d, want %d", verified.Epoch(), keyset.Epoch)
 	}
-	if err := store.AdvanceKeyset(6, strings.Repeat("b", 64)); !errors.Is(err, ErrKeysetRollback) {
+	if _, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, body, signature, now); err != nil {
+		t.Fatalf("idempotent keyset verification failed: %v", err)
+	}
+
+	lower := keyset
+	lower.Epoch--
+	lowerBody, lowerSignature := signKeyset(t, lower, rootPrivate, now)
+	if _, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, lowerBody, lowerSignature, now); !errors.Is(err, ErrKeysetRollback) {
 		t.Fatalf("lower keyset epoch error = %v, want ErrKeysetRollback", err)
 	}
-	if err := store.AdvanceKeyset(7, strings.Repeat("b", 64)); !errors.Is(err, ErrKeysetRollback) {
+
+	equivocation := keyset
+	equivocation.ExpiresAt = now.Add(23 * time.Hour).UTC().Format(time.RFC3339)
+	equivocationBody, equivocationSignature := signKeyset(t, equivocation, rootPrivate, now)
+	if _, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, equivocationBody, equivocationSignature, now); !errors.Is(err, ErrKeysetRollback) {
 		t.Fatalf("same-epoch equivocation error = %v, want ErrKeysetRollback", err)
 	}
-	if err := store.AdvanceKeyset(8, firstDigest); !errors.Is(err, ErrKeysetRollback) {
-		t.Fatalf("reused digest at newer epoch error = %v, want ErrKeysetRollback", err)
-	}
-	secondDigest := strings.Repeat("c", 64)
-	if err := store.AdvanceKeyset(8, secondDigest); err != nil {
+
+	next := keyset
+	next.Epoch++
+	nextBody, nextSignature := signKeyset(t, next, rootPrivate, now)
+	rotated, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, nextBody, nextSignature, now)
+	if err != nil {
 		t.Fatalf("monotonic keyset rotation failed: %v", err)
+	}
+	if rotated.Epoch() != next.Epoch {
+		t.Fatalf("rotated keyset epoch = %d, want %d", rotated.Epoch(), next.Epoch)
 	}
 	if err := store.Advance(42); err != nil {
 		t.Fatal(err)
@@ -223,23 +243,25 @@ func TestStateStorePersistsKeysetEpochAndDigestWithoutLosingSequence(t *testing.
 		t.Fatal(err)
 	}
 	if state.Version != UpdateStateVersionWithKeyset || state.StableSequence != 42 ||
-		state.KeysetEpoch != 8 || state.KeysetDigest != secondDigest {
+		state.KeysetEpoch != next.Epoch || state.KeysetDigest != rotated.Digest() {
 		t.Fatalf("persisted update state = %#v", state)
 	}
 }
 
 func TestStateStoreKeysetStateCanPrecedeFirstUpdate(t *testing.T) {
-	path := StatePath(filepath.Join(t.TempDir(), "client"))
-	store := NewStateStore(path)
-	digest := strings.Repeat("d", 64)
-	if err := store.AdvanceKeyset(1, digest); err != nil {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
+	body, signature := signKeyset(t, keyset, rootPrivate, now)
+	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
+	verified, err := store.VerifyAndAdvanceKeyset(keyset.RootKeyID, rootPublic, body, signature, now)
+	if err != nil {
 		t.Fatal(err)
 	}
 	state, err := store.Load()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.StableSequence != 0 || state.KeysetEpoch != 1 || state.KeysetDigest != digest {
+	if state.StableSequence != 0 || state.KeysetEpoch != keyset.Epoch || state.KeysetDigest != verified.Digest() {
 		t.Fatalf("initial keyset state = %#v", state)
 	}
 	if err := store.Advance(1); err != nil {
@@ -249,24 +271,15 @@ func TestStateStoreKeysetStateCanPrecedeFirstUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if state.StableSequence != 1 || state.KeysetEpoch != 1 || state.KeysetDigest != digest {
+	if state.StableSequence != 1 || state.KeysetEpoch != keyset.Epoch || state.KeysetDigest != verified.Digest() {
 		t.Fatalf("sequence advancement lost keyset state: %#v", state)
 	}
 }
 
-func TestStateStoreRejectsInvalidKeysetStateInputs(t *testing.T) {
+func TestStateStoreRejectsInvalidKeysetVerification(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
-	for _, test := range []struct {
-		epoch  uint64
-		digest string
-	}{
-		{0, strings.Repeat("a", 64)},
-		{1, ""},
-		{1, strings.Repeat("A", 64)},
-		{1, strings.Repeat("g", 64)},
-	} {
-		if err := store.AdvanceKeyset(test.epoch, test.digest); !errors.Is(err, ErrInvalidState) {
-			t.Fatalf("AdvanceKeyset(%d, %q) error = %v, want ErrInvalidState", test.epoch, test.digest, err)
-		}
+	if _, err := store.VerifyAndAdvanceKeyset("root-1", nil, []byte("{}"), []byte("invalid"), now); !errors.Is(err, ErrInvalidKeyset) {
+		t.Fatalf("invalid keyset verification error = %v, want ErrInvalidKeyset", err)
 	}
 }
