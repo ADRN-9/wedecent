@@ -416,7 +416,6 @@ func TestDiscoverStablePreservesCancellationAndRejectsNegativeTimeout(t *testing
 	}
 }
 
-
 func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 	tests := []struct {
 		name   string
