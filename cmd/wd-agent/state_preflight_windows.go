@@ -17,6 +17,7 @@ import (
 
 type windowsStateProvisionHooks struct {
 	afterCreate func(string) error
+	ownerSID    *windows.SID
 }
 
 type windowsStateComponent struct {
@@ -42,7 +43,11 @@ func preflightWindowsAgentState(dir string, hooks windowsStateProvisionHooks) (r
 	if err != nil || current == nil || current.User.Sid == nil {
 		return fmt.Errorf("agent state security preflight: resolve active Windows SID: %v", err)
 	}
-	sid := current.User.Sid.String()
+	ownerSID := current.User.Sid
+	if hooks.ownerSID != nil {
+		ownerSID = hooks.ownerSID
+	}
+	sid := ownerSID.String()
 	sd, err := windows.SecurityDescriptorFromString(
 		"O:" + sid + "D:P(A;OICI;FA;;;" + sid + ")(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)")
 	if err != nil {
@@ -118,7 +123,7 @@ func preflightWindowsAgentState(dir string, hooks windowsStateProvisionHooks) (r
 	// Dedicated service identities are accepted when actually executing under
 	// that SID. Elevated installers use winservice.RestrictDirectory to
 	// provision a different account, never an arbitrary foreign state owner.
-	if err := verifyWindowsAgentStateOwner(at, current.User.Sid); err != nil {
+	if err := verifyWindowsAgentStateOwner(at, ownerSID); err != nil {
 		return fmt.Errorf("agent state security preflight: %w", err)
 	}
 	for _, item := range seen {
@@ -241,4 +246,54 @@ func windowsAgentStateOwnerAllowed(owner, active *windows.SID) bool {
 		return false
 	}
 	return owner.Equals(active) || owner.Equals(system) || owner.Equals(admins)
+}
+
+func verifyMigrationStateParent(path string) error {
+	return verifyWindowsServiceStateParent(path)
+}
+
+func verifyMigrationStateForSID(path, serviceSID string) error {
+	sid, err := windows.StringToSid(serviceSID)
+	if err != nil || sid == nil || !sid.IsValid() {
+		return errors.New("migration service SID is invalid")
+	}
+	return verifyWindowsStateForSID(path, sid)
+}
+
+func verifyMigrationParentForProvisioning(path string) error {
+	root, components, err := windowsStatePathComponents(path)
+	if err != nil {
+		return err
+	}
+	if len(components) < 2 {
+		return errors.New("migration parent path is too close to the volume root")
+	}
+	if err := requireLocalNTFS(root); err != nil {
+		return err
+	}
+	if err := verifyWindowsStateAncestors(root, components[:len(components)-1], nil); err != nil {
+		return fmt.Errorf("verify migration parent ancestors: %w", err)
+	}
+	parent := filepath.Clean(filepath.Dir(path))
+	if _, err := inspectWindowsStateDirectory(parent); err != nil {
+		return fmt.Errorf("inspect migration parent: %w", err)
+	}
+	owner, err := windowsServiceOwner(parent)
+	if err != nil {
+		return err
+	}
+	active, err := activeWindowsSID()
+	if err != nil {
+		return err
+	}
+	allowed := map[string]bool{
+		active.String(): true,
+		"S-1-5-18":      true,
+		"S-1-5-32-544":  true,
+		"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464": true,
+	}
+	if !allowed[owner.String()] {
+		return fmt.Errorf("migration parent owner %s is not trusted for protected ACL provisioning", owner)
+	}
+	return nil
 }

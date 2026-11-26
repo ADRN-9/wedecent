@@ -2,13 +2,17 @@
 param(
     [string]$BundlePath,
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'WeDecent'),
-    [string]$StateDir = (Join-Path $env:ProgramData 'WeDecent\agent'),
+    [string]$StateDir = (Join-Path $InstallDir 'data\agent'),
     [ValidatePattern('^[A-Za-z0-9_.-]{1,128}$')]
     [string]$ServiceName = 'WeDecentAgent',
     [string]$DisplayName = 'WeDecent Agent',
     [ValidatePattern('^[A-Za-z0-9_.-]{1,64}$')]
     [string]$ServiceAccountName = 'WeDecentSvc',
     [string]$WebRelay = 'https://relay.wedecent.com',
+    [string]$RecoveryAuthorityUrl = $env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL,
+    [string]$RecoveryAuthoritySPKISHA256 = $env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256,
+    [string]$RecoveryAuthorityTrustFile,
+    [Security.SecureString]$RecoveryAuthorityBearerToken,
     [ValidateRange(1, 32)]
     [int]$RelaySlots = 4,
     [string]$DeviceName = $env:COMPUTERNAME,
@@ -296,13 +300,60 @@ function New-ServiceAccountPassword {
     return -join $chars
 }
 
-function ConvertFrom-SecureStringTransient {
-    param([Parameter(Mandatory = $true)][Security.SecureString]$SecureString)
-    $ptr = [Runtime.InteropServices.Marshal]::SecureStringToBSTR($SecureString)
+function Assert-SecureStringLine {
+    param(
+        [Parameter(Mandatory = $true)][Security.SecureString]$SecureString,
+        [Parameter(Mandatory = $true)][int]$MinimumLength,
+        [Parameter(Mandatory = $true)][int]$MaximumLength,
+        [Parameter(Mandatory = $true)][string]$Label,
+        [switch]$RejectEdgeWhitespace
+    )
+    if ($SecureString.Length -lt $MinimumLength -or $SecureString.Length -gt $MaximumLength) {
+        throw "$Label length must be between $MinimumLength and $MaximumLength characters."
+    }
+    $pointer = [IntPtr]::Zero
+    $characters = $null
     try {
-        return [Runtime.InteropServices.Marshal]::PtrToStringBSTR($ptr)
+        $pointer = [Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($SecureString)
+        $characters = New-Object char[] $SecureString.Length
+        for ($i = 0; $i -lt $characters.Length; $i++) {
+            $characters[$i] = [char][Runtime.InteropServices.Marshal]::ReadInt16($pointer, $i * 2)
+            if ($characters[$i] -eq [char]10 -or $characters[$i] -eq [char]13) {
+                throw "$Label must not contain newline characters."
+            }
+        }
+        if ($RejectEdgeWhitespace -and
+            ([char]::IsWhiteSpace($characters[0]) -or [char]::IsWhiteSpace($characters[$characters.Length - 1]))) {
+            throw "$Label must not contain leading or trailing whitespace."
+        }
     } finally {
-        [Runtime.InteropServices.Marshal]::ZeroFreeBSTR($ptr)
+        if ($characters) { [Array]::Clear($characters, 0, $characters.Length) }
+        if ($pointer -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($pointer)
+        }
+    }
+}
+
+function Write-SecureStringLine {
+    param(
+        [Parameter(Mandatory = $true)][IO.StreamWriter]$Writer,
+        [Parameter(Mandatory = $true)][Security.SecureString]$SecureString
+    )
+    $pointer = [IntPtr]::Zero
+    $characters = $null
+    try {
+        $pointer = [Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($SecureString)
+        $characters = New-Object char[] $SecureString.Length
+        for ($i = 0; $i -lt $characters.Length; $i++) {
+            $characters[$i] = [char][Runtime.InteropServices.Marshal]::ReadInt16($pointer, $i * 2)
+        }
+        $Writer.Write($characters)
+        $Writer.WriteLine()
+    } finally {
+        if ($characters) { [Array]::Clear($characters, 0, $characters.Length) }
+        if ($pointer -ne [IntPtr]::Zero) {
+            [Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($pointer)
+        }
     }
 }
 
@@ -424,7 +475,8 @@ function Quote-WindowsArgument {
 function Invoke-AgentServiceInstall {
     param(
         [Parameter(Mandatory = $true)][string]$AgentPath,
-        [Parameter(Mandatory = $true)][Security.SecureString]$Password
+        [Parameter(Mandatory = $true)][Security.SecureString]$Password,
+        [Parameter(Mandatory = $true)][Security.SecureString]$RecoveryBearerToken
     )
     $arguments = @(
         'service', 'install',
@@ -438,6 +490,10 @@ function Invoke-AgentServiceInstall {
         "--web-relay=$WebRelay",
         "--relay-slots=$RelaySlots",
         "--shell=$Shell",
+        "--pairing-recovery-authority-url=$RecoveryAuthorityUrl",
+        "--pairing-recovery-authority-spki-sha256=$RecoveryAuthoritySPKISHA256",
+        "--pairing-recovery-trust=$RecoveryAuthorityTrustFile",
+        '--pairing-recovery-authority-token-stdin',
         '--automatic=true',
         '--start=true'
     )
@@ -449,15 +505,18 @@ function Invoke-AgentServiceInstall {
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $psi
     if (-not $process.Start()) { throw 'Failed to start wd-agent.exe service installer' }
-    $plain = $null
     try {
-        $plain = ConvertFrom-SecureStringTransient $Password
-        $process.StandardInput.WriteLine($plain)
+        Write-SecureStringLine -Writer $process.StandardInput -SecureString $Password
+        Write-SecureStringLine -Writer $process.StandardInput -SecureString $RecoveryBearerToken
         $process.StandardInput.Close()
         $process.WaitForExit()
         $exitCode = $process.ExitCode
     } finally {
-        $plain = $null
+        if (-not $process.HasExited) {
+            try { $process.StandardInput.Close() } catch {}
+            try { $process.Kill() } catch {}
+            $process.WaitForExit()
+        }
         $process.Dispose()
     }
     if ($exitCode -ne 0) {
@@ -624,6 +683,50 @@ function Remove-EmptyDirectory {
     }
 }
 
+function Test-DirectoryExistsStrict {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+        if (-not $item.PSIsContainer -or
+            ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Expected a real, non-reparse directory at '$Path'."
+        }
+        return $true
+    } catch {
+        if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -and
+            $_.FullyQualifiedErrorId -match 'PathNotFound|ItemNotFound') {
+            return $false
+        }
+        throw
+    }
+}
+
+function Test-ServiceStateSafeForAccountRemoval {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    try {
+        $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    } catch {
+        if ($_.CategoryInfo.Category -eq [System.Management.Automation.ErrorCategory]::ObjectNotFound -and
+            $_.FullyQualifiedErrorId -match 'PathNotFound|ItemNotFound') {
+            return $true
+        }
+        return $false
+    }
+    if (-not $item.PSIsContainer -or
+        ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        return $false
+    }
+
+    try {
+        $remainingState = @(Get-ChildItem -LiteralPath $Path -Force -ErrorAction Stop)
+        return $remainingState.Count -eq 0
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-RollbackStep {
     param(
         [Parameter(Mandatory = $true)][string]$Description,
@@ -641,24 +744,55 @@ if ([string]::IsNullOrWhiteSpace($BundlePath)) { $BundlePath = $PSScriptRoot }
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { throw 'Cannot determine installer bundle path.' }
 $BundlePath = (Resolve-Path -LiteralPath $BundlePath).Path
 $InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -Label 'InstallDir'
-$StateDir = Assert-SafeChildPath -Path $StateDir -Root (Join-Path $env:ProgramData 'WeDecent') -Label 'StateDir'
+$StateDir = Assert-SafeChildPath -Path $StateDir -Root $InstallDir -Label 'StateDir'
 $version = Assert-ReleaseBundle
 $metadataPath = Get-WeDecentMetadataPath
+$migrationModule = Join-Path $PSScriptRoot 'StateMigration.psm1'
+Import-Module $migrationModule -Force -ErrorAction Stop
+$migrationJournalPath = Join-Path $InstallDir 'migration\state-migration.json'
+$migrationAgentPath = Join-Path $BundlePath 'wd-agent.exe'
 $metadata = Read-WeDecentMetadata
 $metadataTrusted = $false
 if ($metadata) {
     $metadataTrusted = Test-WeDecentMetadataTrusted $metadataPath
     if (-not $metadataTrusted) {
-        Write-Warning 'Existing installer metadata is not ACL-trusted; installer ownership claims will not be preserved.'
+        throw 'Existing installer metadata is not ACL-trusted; refusing migration recovery or installer state changes.'
     }
 }
+if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
+    [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $migrationJournalPath) -AgentPath $migrationAgentPath)
+    [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName)
+}
+$metadata = Read-WeDecentMetadata
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+if (-not $service) {
+    if ($metadata) {
+        if (-not $metadataTrusted) {
+            throw 'Installer metadata exists but is not ACL-authenticated; refusing a fresh identity over potentially existing state.'
+        }
+        throw 'Authenticated installer metadata exists but the service is absent; refusing fresh identity creation until the existing installation state is recovered or explicitly retired.'
+    }
+    $legacyDefaultStateDir = Join-Path $env:ProgramData 'WeDecent\agent'
+    if (Test-DirectoryExistsStrict -Path $legacyDefaultStateDir) {
+        throw 'Legacy ProgramData service state exists; refusing to create a replacement identity at the Program Files location.'
+    }
+}
 $binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
 Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
 $wdDestination = $binaryDestinations['wd.exe']
 $agentDestination = $binaryDestinations['wd-agent.exe']
 
 if ($service) {
+    if (-not $metadataTrusted -or [string]::IsNullOrWhiteSpace([string]$metadata.state_dir)) {
+        throw 'Existing service state location is not authenticated by protected installer metadata; refusing upgrade until an operator performs an identity-preserving offline migration.'
+    }
+    $recordedStateDir = [IO.Path]::GetFullPath([string]$metadata.state_dir)
+    $requestedStateDir = [IO.Path]::GetFullPath($StateDir)
+    $needsStateMigration = -not [string]::Equals($recordedStateDir.TrimEnd('\'), $requestedStateDir.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
+    $stateArg = [regex]::Escape('--state=' + $recordedStateDir)
+    if ($service.PathName -notmatch ('(?i)(?:^|\s)"?' + $stateArg + '"?(?:\s|$)')) {
+        throw 'Existing SCM command line does not match the authenticated state_dir metadata; refusing upgrade.'
+    }
     if ($service.StartName -match '^(LocalSystem|LocalService|NetworkService|NT AUTHORITY\\(SYSTEM|LocalService|NetworkService))$') {
         throw "Refusing to upgrade service running as built-in identity $($service.StartName)"
     }
@@ -679,6 +813,27 @@ if ($service) {
 
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Upgrade WeDecent to $version")) { return }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    if ($needsStateMigration) {
+        $journalParent = Split-Path -Parent $migrationJournalPath
+        if (-not (Test-Path -LiteralPath $journalParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $journalParent -Force | Out-Null
+        }
+        [void](Set-WeDecentMigrationAdminDirectory -Path $journalParent -AgentPath $migrationAgentPath)
+        $destinationParent = Split-Path -Parent $requestedStateDir
+        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+            Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $migrationAgentPath
+        } else {
+            [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $migrationAgentPath)
+        }
+        Write-Host "Migrating authenticated service state from '$recordedStateDir' to '$requestedStateDir'."
+        [void](Invoke-WeDecentStateMigration -Source $recordedStateDir -Destination $requestedStateDir -AgentPath $migrationAgentPath -ServiceName $ServiceName -ServiceSid $accountSid -MetadataPath $metadataPath -JournalPath $migrationJournalPath)
+        $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        $metadata = Read-WeDecentMetadata
+        if ([IO.Path]::GetFullPath([string]$metadata.state_dir) -ine $requestedStateDir) {
+            throw 'Authenticated installer metadata did not commit the migrated state path.'
+        }
+    }
     Write-Host "Upgrading existing $ServiceName service; state and service account will be preserved."
     if ($service.State -ne 'Stopped') {
         Stop-Service -Name $ServiceName -Force
@@ -712,10 +867,41 @@ if ($service) {
 
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Install WeDecent $version")) { return }
 
+    if ([string]::IsNullOrWhiteSpace($RecoveryAuthorityUrl)) {
+        throw 'A recovery-authority HTTPS origin is required through -RecoveryAuthorityUrl or WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL.'
+    }
+    $authorityUri = $null
+    if (-not [Uri]::TryCreate($RecoveryAuthorityUrl, [UriKind]::Absolute, [ref]$authorityUri) -or
+        $authorityUri.Scheme -ne 'https' -or [string]::IsNullOrEmpty($authorityUri.Host) -or
+        $authorityUri.UserInfo -or $authorityUri.Query -or $authorityUri.Fragment -or
+        ($authorityUri.AbsolutePath -ne '' -and $authorityUri.AbsolutePath -ne '/')) {
+        throw 'RecoveryAuthorityUrl must be an origin-only HTTPS URL.'
+    }
+    if ($RecoveryAuthoritySPKISHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw 'RecoveryAuthoritySPKISHA256 must contain exactly 64 hexadecimal characters.'
+    }
+    if ([string]::IsNullOrWhiteSpace($RecoveryAuthorityTrustFile)) {
+        throw 'RecoveryAuthorityTrustFile is required.'
+    }
+    $trustItem = Get-Item -LiteralPath $RecoveryAuthorityTrustFile -Force -ErrorAction Stop
+    if ($trustItem.PSIsContainer -or
+        ($trustItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'RecoveryAuthorityTrustFile must be a regular, non-reparse file.'
+    }
+    $RecoveryAuthorityTrustFile = $trustItem.FullName
+    if ($null -eq $RecoveryAuthorityBearerToken) {
+        $RecoveryAuthorityBearerToken = Read-Host -Prompt 'Short-lived recovery-authority bearer token' -AsSecureString
+    }
+    if ($null -eq $RecoveryAuthorityBearerToken -or $RecoveryAuthorityBearerToken.Length -lt 32 -or
+        $RecoveryAuthorityBearerToken.Length -gt 4096) {
+        throw 'RecoveryAuthorityBearerToken must contain 32 to 4096 characters.'
+    }
+    Assert-SecureStringLine -SecureString $RecoveryAuthorityBearerToken -MinimumLength 32 -MaximumLength 4096 -Label 'RecoveryAuthorityBearerToken' -RejectEdgeWhitespace
+
     $installDirExisted = Test-Path -LiteralPath $InstallDir -PathType Container
     $stateParent = Split-Path -Parent $StateDir
-    $stateParentExisted = Test-Path -LiteralPath $stateParent -PathType Container
-    $stateExisted = Test-Path -LiteralPath $StateDir -PathType Container
+    $stateParentExisted = Test-DirectoryExistsStrict -Path $stateParent
+    $stateExisted = Test-DirectoryExistsStrict -Path $StateDir
     $createdAccount = $false
     $hadLogonRight = $false
     $originalMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
@@ -762,12 +948,13 @@ if ($service) {
         }
 
         Assert-StandardLocalAccount $localUser
+        Assert-SecureStringLine -SecureString $password -MinimumLength 1 -MaximumLength 4096 -Label 'Service account password'
         $hadLogonRight = Test-ServiceLogonRight -Sid $localUser.SID.Value
         if (-not $hadLogonRight) { Set-ServiceLogonRight -Sid $localUser.SID.Value -Present $true }
 
         Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
         Assert-InstalledBinaries -Destinations $binaryDestinations
-        Invoke-AgentServiceInstall -AgentPath $agentDestination -Password $password
+        Invoke-AgentServiceInstall -AgentPath $agentDestination -Password $password -RecoveryBearerToken $RecoveryAuthorityBearerToken
 
         $finalService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
         if (-not $finalService -or $finalService.State -ne 'Running') {
@@ -800,12 +987,18 @@ if ($service) {
             }
         }
         if (-not $stateExisted) {
-            Invoke-RollbackStep 'remove installer-created state directory' {
-                Remove-Item -LiteralPath $StateDir -Recurse -Force -ErrorAction Stop
+            Invoke-RollbackStep 'remove only an empty installer-created state directory' {
+                Remove-EmptyDirectory -Path $StateDir
             }
             if (-not $stateParentExisted) {
                 Invoke-RollbackStep 'remove empty installer-created state parent' {
                     Remove-EmptyDirectory -Path $stateParent
+                }
+            }
+            if (Test-Path -LiteralPath $StateDir -PathType Container) {
+                $remainingState = @(Get-ChildItem -LiteralPath $StateDir -Force -ErrorAction Stop)
+                if ($remainingState.Count -gt 0) {
+                    Write-Warning "Preserving non-empty protected service state after interrupted installation. Do not delete or repair identity/trust material; use the documented offline recovery and re-enrollment procedure. State: $StateDir"
                 }
             }
         }
@@ -820,8 +1013,12 @@ if ($service) {
             }
         }
         if ($createdAccount) {
-            Invoke-RollbackStep 'remove installer-created service account' {
-                Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
+            Invoke-RollbackStep 'remove installer-created service account only when protected state is empty' {
+                if (Test-ServiceStateSafeForAccountRemoval -Path $StateDir) {
+                    Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
+                } else {
+                    Write-Warning "Retaining installer-created service account '$ServiceAccountName': protected state is non-empty, non-directory, or could not be inspected. Preserve the account for offline recovery."
+                }
             }
         }
         throw "Fresh installation failed; rollback was attempted: $($failed.Exception.Message)"

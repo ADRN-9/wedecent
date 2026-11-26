@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 )
@@ -164,5 +165,48 @@ func writeLegacyWindowsKey(t *testing.T, dir string, priv ed25519.PrivateKey) {
 	defer zeroBytes(pemBytes)
 	if err := os.WriteFile(filepath.Join(dir, legacyIdentityPrivateKeyFile), pemBytes, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestEnsureDPAPIIdentityPersistsAcrossProcessRestart(t *testing.T) {
+	const helperDirEnv = "WEDECENT_DPAPI_RESTART_HELPER_DIR"
+	if dir := os.Getenv(helperDirEnv); dir != "" {
+		id, err := Ensure(dir, "service-restart-device")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "restart-id"), []byte(id.ID), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	dir := t.TempDir()
+	first, err := Ensure(dir, "service-restart-device")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(identityPrivateKeyPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestEnsureDPAPIIdentityPersistsAcrossProcessRestart$")
+	cmd.Env = append(os.Environ(), helperDirEnv+"="+dir)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fresh process could not reopen machine-scoped DPAPI identity: %v: %s", err, output)
+	}
+	restartedID, err := os.ReadFile(filepath.Join(dir, "restart-id"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := os.ReadFile(identityPrivateKeyPath(dir))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(restartedID) != first.ID {
+		t.Fatalf("identity after process restart = %q, want %q", restartedID, first.ID)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatal("DPAPI-protected identity blob changed across process restart")
 	}
 }

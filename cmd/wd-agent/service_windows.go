@@ -484,14 +484,16 @@ func runServiceRun(args []string) error {
 			stateDir = strings.TrimPrefix(serveArgs[i], "--state=")
 		}
 	}
-	if err := verifyWindowsServiceState(stateDir); err != nil {
-		return fmt.Errorf("verify service state before loading recovery credentials: %w", err)
-	}
+	// Acquire non-delete-sharing handles before trusting the pathname's ACL
+	// and owner. This closes the verify-then-guard substitution window.
 	stateGuard, err := guardWindowsServiceState(stateDir)
 	if err != nil {
 		return err
 	}
 	defer stateGuard()
+	if err := verifyWindowsServiceState(stateDir); err != nil {
+		return fmt.Errorf("verify guarded service state before loading recovery credentials: %w", err)
+	}
 	cfg, err := parseServeConfig(serveArgs)
 	if err != nil {
 		return err
@@ -591,11 +593,11 @@ func extractServiceName(args []string) (string, []string, error) {
 }
 
 func defaultServiceStateDir() string {
-	base := strings.TrimSpace(os.Getenv("ProgramData"))
+	base := strings.TrimSpace(os.Getenv("ProgramFiles"))
 	if base == "" {
-		base = `C:\ProgramData`
+		base = `C:\Program Files`
 	}
-	return filepath.Join(base, "WeDecent", "agent")
+	return filepath.Join(base, "WeDecent", "data", "agent")
 }
 
 func openServiceLog(stateDir string) (*os.File, error) {

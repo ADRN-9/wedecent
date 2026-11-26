@@ -107,8 +107,61 @@ func openReplayLockAnchor(path, statePath string) (*os.File, bool, error) {
 		}
 		initialized = initialized || exists
 	}
-	if !anchorExists && !lockExists && initialized {
-		return nil, false, errors.New("persistent replay lock anchor is missing after initialization")
+	// The first initializer publishes the anchor and its two hard-link aliases
+	// in separate filesystem operations. A peer can observe an initialized
+	// snapshot before those names become visible, or observe a just-created
+	// anchor after its initial Lstat. Wait for an in-flight publication rather
+	// than misclassifying that narrow window as hostile deletion.
+	if initialized && !anchorExists && !lockExists {
+		for attempt := 0; attempt < replayInitializationRetryLimit; attempt++ {
+			anchorExists, err = replayPathExistsForLock(anchorPath)
+			if err != nil {
+				return nil, false, err
+			}
+			lockExists, err = replayPathExistsForLock(lockPath)
+			if err != nil {
+				return nil, false, err
+			}
+			markerExists, err = replayPathExistsForLock(markerPath)
+			if err != nil {
+				return nil, false, err
+			}
+			if anchorExists || lockExists {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !anchorExists && !lockExists {
+			return nil, false, errors.New("persistent replay lock anchor is missing after initialization")
+		}
+	}
+
+	// An existing anchor can be visible just before its lock and marker hard
+	// links are published by the process that created it. Re-read both aliases
+	// before classifying an absent lock as deletion; never recreate an alias on
+	// an already initialized store. A missing marker after the bounded window
+	// remains a hard failure.
+	if anchorExists && (!lockExists || !markerExists) {
+		for attempt := 0; attempt < replayInitializationRetryLimit; attempt++ {
+			lockExists, err = replayPathExistsForLock(lockPath)
+			if err != nil {
+				return nil, false, err
+			}
+			markerExists, err = replayPathExistsForLock(markerPath)
+			if err != nil {
+				return nil, false, err
+			}
+			if markerExists && !lockExists {
+				return nil, false, errors.New("persistent replay lock path is missing while its marker remains")
+			}
+			if lockExists && markerExists {
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		if !lockExists || !markerExists {
+			return nil, false, errors.New("persistent replay lock aliases were not completely published")
+		}
 	}
 
 	var file *os.File

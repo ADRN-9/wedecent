@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'WeDecent'),
-    [string]$StateDir = (Join-Path $env:ProgramData 'WeDecent\agent'),
+    [string]$StateDir = (Join-Path $InstallDir 'data\agent'),
     [ValidatePattern('^[A-Za-z0-9_.-]{1,128}$')]
     [string]$ServiceName = 'WeDecentAgent',
     [string]$WebRelay = 'https://relay.wedecent.com',
@@ -96,9 +96,16 @@ foreach ($name in $binaryNames) {
 $wd = $binaryPaths['wd.exe']
 $agent = $binaryPaths['wd-agent.exe']
 $metadataPath = Join-Path (Join-Path $env:ProgramData 'WeDecent') 'installer.json'
-Assert-True (Test-Path -LiteralPath $StateDir -PathType Container) "Missing state directory $StateDir"
 Assert-True (Test-Path -LiteralPath $metadataPath -PathType Leaf) "Missing installer metadata $metadataPath"
 Assert-True (Test-MetadataTrusted $metadataPath) 'Installer metadata ACL/owner is not trusted'
+$metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+$metadataStateDir = [IO.Path]::GetFullPath([string]$metadata.state_dir)
+if ($PSBoundParameters.ContainsKey('StateDir') -and
+    ([IO.Path]::GetFullPath($StateDir) -ine $metadataStateDir)) {
+    throw 'Requested validation state path does not match authenticated installer metadata.'
+}
+$StateDir = $metadataStateDir
+Assert-True (Test-Path -LiteralPath $StateDir -PathType Container) "Missing state directory $StateDir"
 
 foreach ($name in $binaryNames) {
     & $binaryPaths[$name] version
@@ -116,6 +123,12 @@ Assert-True ($service.PathName -match $expectedAgent) 'Service binary path does 
 Assert-True ($service.PathName -match [Regex]::Escape('--listen=')) 'Service is missing explicit outbound-only --listen= configuration'
 Assert-True ($service.PathName -match [Regex]::Escape("--web-relay=$WebRelay")) "Service is not configured for expected web relay $WebRelay"
 
+Assert-True ($service.PathName -match [Regex]::Escape('--pairing-recovery-authority-url=')) 'Service is missing the recovery-authority HTTPS origin'
+Assert-True ($service.PathName -match [Regex]::Escape('--pairing-recovery-authority-spki-sha256=')) 'Service is missing the recovery-authority SPKI pin'
+Assert-True ($service.PathName -match [Regex]::Escape('--pairing-recovery-trust=')) 'Service is missing the protected recovery trust-file path'
+Assert-True ($service.PathName -match [Regex]::Escape('--pairing-recovery-authority-token-file=')) 'Service is missing the protected recovery bearer-file path'
+Assert-True ($service.PathName -notmatch '--pairing-recovery-authority-token=(?:"[^"]+"|\S+)') 'Service command line must never contain the bearer secret'
+
 foreach ($name in @('wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')) {
     $pathPattern = '^(?:"' + [Regex]::Escape($binaryPaths[$name]) + '"|' + [Regex]::Escape($binaryPaths[$name]) + ')(?:\s|$)'
     $unexpected = @($services | Where-Object { $_.PathName -match $pathPattern })
@@ -126,6 +139,24 @@ $localName = Get-LocalAccountName $service.StartName
 Assert-True (-not [string]::IsNullOrWhiteSpace($localName)) 'Service does not run as a dedicated local account'
 Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction Stop
 $localUser = Get-LocalUser -Name $localName -ErrorAction Stop
+
+$recoveryTrustPath = Join-Path $StateDir 'recovery-authority-trust.json'
+$recoveryTokenPath = Join-Path $StateDir 'recovery-authority.token'
+Assert-True (Test-Path -LiteralPath $recoveryTrustPath -PathType Leaf) 'Protected recovery trust copy is missing'
+Assert-True (Test-Path -LiteralPath $recoveryTokenPath -PathType Leaf) 'Protected recovery bearer file is missing'
+$trustedCredentialSids = @($localUser.SID.Value, 'S-1-5-18', 'S-1-5-32-544')
+foreach ($credentialPath in @($recoveryTrustPath, $recoveryTokenPath)) {
+    $credentialAcl = Get-Acl -LiteralPath $credentialPath
+    foreach ($rule in @($credentialAcl.Access)) {
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) { continue }
+        try {
+            $ruleSid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
+        } catch {
+            throw "Credential ACL contains an unresolvable trustee: $credentialPath"
+        }
+        Assert-True ($trustedCredentialSids -contains $ruleSid) "Credential file grants access to an untrusted SID $ruleSid : $credentialPath"
+    }
+}
 $adminMembers = @(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction Stop)
 $isAdmin = [bool]($adminMembers | Where-Object { $_.SID -and $_.SID.Value -eq $localUser.SID.Value })
 Assert-True (-not $isAdmin) 'Service account is a member of the local Administrators group'

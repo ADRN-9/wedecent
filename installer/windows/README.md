@@ -32,6 +32,9 @@ This current-user setting is owned by `wd-ui`, not by the elevated installer. On
 - Every installed binary is checksum-verified after copy and before the installation transaction is committed.
 - Fresh installs create a dedicated standard local account named `WeDecentSvc` by default.
 - The service-account password is cryptographically random and is never written to disk, an environment variable, or a process command line. It is sent to `wd-agent.exe service install --account-password-stdin` through an inherited anonymous pipe.
+- Fresh service state defaults to `C:\\Program Files\\WeDecent\\data\\agent`, beneath the protected Program Files hierarchy. The installer refuses state paths outside the selected installation directory; it does not fall back to ProgramData when ancestor ACL validation fails. Existing installations retain their recorded state path until an explicit identity-preserving migration has been completed.\n- Fresh service installation requires an origin-only HTTPS recovery-authority URL, its exact 64-hex SPKI pin, a protected public trust file, and a short-lived bearer. URL/pin may be supplied as non-secret parameters or environment configuration; the trust file is passed by path. The bearer is prompted as a `SecureString` (or supplied as one) and streamed after the account password through stdin; it is never placed in argv or environment variables. SecureString characters are copied through a zeroed character buffer and zeroed unmanaged allocation.
+- The service installer copies the trust anchors and bearer into create-exclusive files in the protected service state directory, then validates their ACLs. The bearer file is plaintext at rest protected by the NTFS DACL; Local Administrators and LocalSystem remain trusted.
+- Service-state provisioning also requires the immediate parent directory to have a protected owner/DACL owned by the installer, SYSTEM, Administrators, or TrustedInstaller. It refuses broad existing parents rather than changing ancestor ACLs. Windows permits the same directory owner to rename an open directory; the handle guard is not a substitute for the parent ACL. A same-identity rename makes the old pathname fail closed on subsequent verification.
 - The installer rejects service accounts that are members of the local Administrators group and grants `SeServiceLogonRight` when needed.
 - `wd-agent.exe` performs the existing identity initialization, state-directory ACL restriction, SCM registration, and service startup.
 - Before any install/upgrade mutation, the installer checks for running installed `wd-ui.exe` and `wd-core.exe` images. If either is active, it fails before stopping the agent service or replacing files and instructs the operator to close the user processes. It never terminates those interactive processes itself.
@@ -85,6 +88,18 @@ Do not weaken execution policy or Defender to run unsigned, invalidly signed, or
 
 ## Install or upgrade
 
+Fresh installation requires recovery-authority provisioning. Stage the independently administered public trust JSON in a file whose ACL is restricted to the installer, SYSTEM and Administrators; supply the HTTPS origin and exact 64-hex leaf-SPKI SHA-256 pin. The bearer is prompted securely if not supplied as a `SecureString`.
+
+```powershell
+$env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL = 'https://recovery.example.invalid'
+$env:WEDECENT_PAIRING_RECOVERY_AUTHORITY_SPKI_SHA256 = '<64-hex-leaf-SPKI-pin>'
+$recoveryBearer = Read-Host 'Short-lived recovery-authority bearer token' -AsSecureString
+.\Install-WeDecent.ps1 -RecoveryAuthorityTrustFile 'C:\ProgramData\WeDecent\recovery-authority-trust.json' -RecoveryAuthorityBearerToken $recoveryBearer
+.\Test-WeDecentInstall.ps1
+```
+
+The trust file must be a valid primary/witness public trust document and pass the repository's protected-file ACL check. Never put the bearer in a command-line argument or environment variable. The installer streams the account password first and bearer second through the child process's inherited stdin pipe.
+
 ```powershell
 .\Install-WeDecent.ps1
 .\Test-WeDecentInstall.ps1
@@ -108,10 +123,12 @@ The default paths are:
 
 ```text
 C:\Program Files\WeDecent
-C:\ProgramData\WeDecent\agent
+C:\Program Files\WeDecent\data\agent
 ```
 
-On an already-installed host, running `Install-WeDecent.ps1` again performs an in-place binary upgrade and preserves the existing SCM configuration and machine identity.
+`C:\ProgramData\WeDecent\agent` is the legacy state location used by older installations; it is not the current fresh-install default. Existing installations keep their authenticated recorded `state_dir` and must not be redirected to Program Files until the identity-preserving migration described below has passed privileged acceptance. The installer refuses a legacy ProgramData state directory on a fresh install rather than creating a replacement identity, and invokes the explicit migration coordinator only when an authenticated existing installation requests a different state path. The migration implementation has software-level rollback and fresh-process recovery coverage; actual dedicated-service-SID SCM and reboot acceptance remain outstanding.
+
+On an already-installed host, running `Install-WeDecent.ps1` again performs an in-place binary upgrade and preserves the existing SCM configuration and machine identity only when the authenticated recorded state path is unchanged.
 
 If a local account named `WeDecentSvc` already exists but was not created by this installer, the installer refuses to take it over by default. Explicit adoption requires an in-memory `PSCredential`:
 
@@ -150,7 +167,7 @@ Never use the purge form for a normal upgrade or temporary uninstall. Deleting t
 
 ## Silent use
 
-A default fresh install is non-interactive: the installer generates the dedicated account password internally. An upgrade is also non-interactive when no installed UI/Core process is active. A running installed user-side process is an intentional fail-fast condition rather than something a silent installer kills automatically. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
+A default fresh install prompts securely for the short-lived recovery bearer unless a `SecureString` is supplied programmatically; the installer generates the dedicated account password internally. An upgrade is non-interactive when no installed UI/Core process is active. A running installed user-side process is an intentional fail-fast condition rather than something a silent installer kills automatically. Pre-existing unmanaged accounts require an explicit credential and are intentionally not silently reset.
 
 The installer does not silently opt an interactive user into UI autostart. That choice must be made from the target user's context with `wd-ui.exe autostart enable`.
 
@@ -161,3 +178,21 @@ pairing can obtain a connection grant. Use the challenge/proof bridge documented
 `docs/WINDOWS_INSTALLER.md`: the authenticated `wd` client requests/completes the
 challenge, while `wd-agent enrollment-proof` signs it on the agent machine. The account
 session stays on the client and the agent private key stays on the agent.
+
+
+If a fresh installation is interrupted after the service installer has created recovery files or identity state, rollback removes only an empty newly created state directory. It preserves non-empty protected state and reports that explicit offline recovery/re-enrollment is required; it never recursively deletes newly created identity, trust, audit or pairing material.
+
+
+## Windows service-state location and migration
+
+Fresh installations use:
+
+```text
+%ProgramFiles%\WeDecent\data\agent
+```
+
+The state directory is created with a protected DACL and then assigned to the dedicated service account. Normal service startup retains strict ancestor owner and DACL validation; it does not inherit the legacy migration exception. ProgramData is not a fresh-install fallback: if the Program Files hierarchy does not pass strict validation, installation must fail.
+
+Existing installations must not be silently redirected to the new default. The installer metadata records the existing `state_dir`; upgrade logic preserves that recorded location until an explicit migration is executed. The migration coordinator stops the service, validates the protected source directory and its complete tree, and applies a migration-only ancestor policy: inherited create-child rights may be tolerated, but untrusted delete, delete-child, write-DACL, write-owner, or generic-all rights on any ancestor are rejected. Ancestor owners must be on the explicit Windows trusted-principal allowlist. The source directory itself must retain its dedicated service SID owner and protected DACL. This exception is used only by the migration source verifier; normal service startup continues to enforce its original strict ancestor policy. The coordinator resolves existing Windows path components through the filesystem long-name API (including extension-bearing 8.3 aliases), rejects reparse-point components, and rejects source/destination/staging/journal/metadata overlaps before filesystem mutation. Recovery recursively revalidates every source file and directory owner and effective explicit/inherited ACL, in addition to the source manifest and cryptographic device identity. The service is stopped before rollback source validation; validation runs again immediately before SCM restoration and again before service restart. Nested ACL broadening, nested owner substitution, changed manifests, or unverifiable source state fail closed without changing SCM configuration or restarting the service. The source remains untouched. No recursive overwrite or identity regeneration is permitted.
+
+**Migration status:** the installer-integrated migration coordinator, protected journal, staging/commit/rollback flow, fresh-process recovery, scoped legacy-source validation, path-overlap rejection, and source-integrity revalidation are implemented with Windows CI regression coverage. These software tests do not establish privileged runtime acceptance. Actual SCM migration under a distinct dedicated service SID, DPAPI identity continuity across service restart and machine reboot, process-termination recovery on a real Windows installation, and privileged interrupted-migration rollback remain outstanding. Do not treat repository/CI readiness as production acceptance; retain the original state and service account until the privileged acceptance procedure passes.

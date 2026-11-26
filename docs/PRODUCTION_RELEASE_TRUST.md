@@ -166,3 +166,22 @@ The repository workflow and scripts do not provision these provider-side inputs:
 - Linux/macOS external signing identities and signing pipeline, if required by the distribution policy.
 
 Until those dependencies are provisioned and a real tag-triggered workflow completes, no production signing, publication, stable-manifest activation, or production release should be claimed. Repository CI and successful diagnostic tests are not production release evidence.
+
+
+## C313 — live branch-ruleset verification
+
+On 2026-11-26, the active repository ruleset `Protect main` (ID `21507567`, target `branch`, enforcement `active`) was read from the GitHub repository rulesets API. The returned rule configuration is concrete evidence of the current main-branch policy, not a statement about tag rules or Actions environment protection.
+
+Observed configuration:
+- Required status contexts: `route-capability-client`, `route-e2e`, `linux`, `windows-agent`, `windows-release`, `relay-worker`, `control-plane`, and `supabase-db`.
+- `macos-agent` is not required.
+- Desktop contexts `linux-tauri-check`, `windows-tauri-check`, and `macos-tauri-check` are not required.
+- Pull-request rule has `required_approving_review_count: 0`, `required_reviewers: []`, and `require_code_owner_review: false`; it does require resolution of review threads.
+- The ruleset targets the default branch only. It does not protect `refs/tags/v*`.
+- Ruleset `updated_at`: 2026-09-22T12:36:01.399-04:00.
+
+The ruleset is active and prevents deletion/non-fast-forward updates, but its current review/status policy is weaker than the production release evidence requirements. Before production release authorization is exercised, an authorized repository administrator must update the policy to require the stable macOS and all three Desktop contexts, require an appropriate independent approval (and code-owner review where ownership is configured), and create a separate immutable release-tag ruleset for `refs/tags/v*`. Confirm the resulting rule configuration by reading it back; do not infer success from workflow declarations.
+
+The GitHub integration can read this repository ruleset but the branch-protection endpoint returned 403 and the available interface does not expose Actions environment reviewer settings, self-hosted runner inventory/administration, or secret provisioning. Required reviewers for `wedecent-production-release`, `wedecent-production-signing`, and `wedecent-production-publication`, plus actual signer/publisher runner readiness, remain **NOT ESTABLISHED**. Do not bypass these gates or treat an environment name/approval marker as evidence of provider-side protection.
+
+This is a repository-policy evidence update only. It does not change the ruleset, provision credentials, change production trust anchors, or run a production release.

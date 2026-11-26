@@ -177,8 +177,8 @@ func TestFileReplayConsumptionIsAtomicAcrossInstances(t *testing.T) {
 }
 
 func TestFileReplayConcurrentInitializationAcrossProcesses(t *testing.T) {
-	const rounds = 3
-	const workers = 8
+	const rounds = 10
+	const workers = 12
 
 	type childProcess struct {
 		cmd    *exec.Cmd
