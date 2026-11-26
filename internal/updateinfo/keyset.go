@@ -218,8 +218,8 @@ func VerifyKeyset(rootKeyID string, rootPublicKey ed25519.PublicKey, keysetBytes
 }
 
 // VerifyManifestV2 requires a manifest key authorized by the verified keyset.
-// New stable discovery accepts only active keys; verify-only keys are retained
-// for explicit historical verification and revoked keys are never accepted.
+// New stable discovery accepts only active keys; verify-only and revoked keys
+// cannot authorize a newly discovered stable manifest.
 func VerifyManifestV2(verified VerifiedKeyset, manifestBytes, signatureBytes []byte, now time.Time, currentVersion string, highestSequence uint64) (Manifest, error) {
 	var zero Manifest
 	if verified.digest == "" || verified.keyset.Epoch == 0 {
