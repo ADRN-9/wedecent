@@ -25,6 +25,7 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 type discoveryFixture struct {
 	now                time.Time
 	rootPublic         ed25519.PublicKey
+	manifestPrivate    ed25519.PrivateKey
 	keyset             Keyset
 	keysetBody         []byte
 	keysetSignature    []byte
@@ -95,6 +96,7 @@ func newDiscoveryFixture(t *testing.T) discoveryFixture {
 	return discoveryFixture{
 		now:               now,
 		rootPublic:        rootPublic,
+		manifestPrivate:   manifestPrivate,
 		keyset:            keyset,
 		keysetBody:        keysetBody,
 		keysetSignature:   keysetSignature,
