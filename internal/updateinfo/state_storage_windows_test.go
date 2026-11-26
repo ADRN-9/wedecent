@@ -206,7 +206,7 @@ func TestWindowsUpdateStateRejectsInheritedBroadAncestorACE(t *testing.T) {
 		t.Fatal(err)
 	}
 	user := windowsTestCurrentSID(t)
-	windowsTestSetDACL(t, parent, "D:P(A;OICI;FA;;;"+user+")(A;OICIIO;0x00000004;;;WD)")
+	windowsTestSetDACL(t, parent, "D:P(A;OICI;FA;;;"+user+")(A;OICI;0x00000004;;;WD)")
 	if err := os.Mkdir(child, 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestWindowsUpdateStateRejectsInheritedBroadAncestorACE(t *testing.T) {
 		t.Fatalf("test child did not inherit the broad-principal ACE: %s", childSD.String())
 	}
 	if err := validateUpdateStateDACL(childSD.String(), user, user, false); err == nil || !errors.Is(err, ErrInvalidState) {
-		t.Fatalf("inherited broad-principal write ACE on state object accepted: %v", err)
+		t.Fatalf("inherited broad-principal write ACE on state object accepted: %v; DACL=%s", err, childSD.String())
 	}
 }
 
