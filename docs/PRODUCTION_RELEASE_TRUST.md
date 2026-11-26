@@ -322,7 +322,7 @@ The new Python regression checks:
 - signed candidate and verifier-approved artifacts are separate handoff stages;
 - the legacy combined script is absent from the production workflow and refuses the production workflow context.
 
-The regression is wired into the Linux CI job immediately after actionlint. This proves the repository's workflow/configuration boundary, not actual infrastructure isolation. The three runner labels must be backed by three separate, appropriately restricted runner groups/hosts; a label alone does not prove host or credential isolation. GitHub environment reviewer settings, runner-group membership, runner ephemerality and network egress restrictions remain provider-side NOT ESTABLISHED.
+The regression is wired into the Linux CI job immediately after actionlint. This proves the repository's workflow/configuration boundary, not actual infrastructure isolation. The workflow now requires explicit runner groups `wedecent-update-signers`, `wedecent-update-verifiers` and `wedecent-release-publishers`, in addition to distinct runner labels. The immutable Windows download publisher and stable-pair publisher both use the publication group; neither shares the signer or verifier group. These groups must exist and be restricted to this repository with separate hosts/service accounts, ephemeral or reimaged workers, no cross-group credentials and narrow network egress. If a group is absent, the production job cannot be scheduled, which fails closed. Actual group membership, host separation, environment reviewers, runner ephemerality and egress policy remain provider-side NOT ESTABLISHED.
 
 ### Versioned Ed25519 keyset verification API
 
