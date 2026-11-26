@@ -21,12 +21,18 @@ func main() {
 	if err := os.MkdirAll(dir, 0o700); err != nil { fail("mkdir: %v", err) }
 	now := time.Now().UTC().Truncate(time.Second)
 	rootPublic, rootPrivate, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { fail("root key: %v", err) }
+	if err != nil {
+		fail("root key: %v", err)
+	}
 	manifestPublic, manifestPrivate, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil { fail("manifest key: %v", err) }
+	if err != nil {
+		fail("manifest key: %v", err)
+	}
 	rootID, signingID := "test-root-1", "stable-test-1"
 	encodedManifestPublic, err := updateinfo.EncodePublicKey(manifestPublic)
-	if err != nil { fail("encode manifest public key: %v", err) }
+	if err != nil {
+		fail("encode manifest public key: %v", err)
+	}
 	keyset := updateinfo.Keyset{
 		Schema: updateinfo.KeysetSchemaV1,
 		Epoch: 1,
@@ -42,16 +48,24 @@ func main() {
 		}},
 	}
 	keysetBody, err := updateinfo.EncodeCanonicalKeyset(keyset, now)
-	if err != nil { fail("encode keyset: %v", err) }
+	if err != nil {
+		fail("encode keyset: %v", err)
+	}
 	keysetSignature, err := updateinfo.EncodeSignature(ed25519.Sign(rootPrivate, keysetBody))
-	if err != nil { fail("sign keyset: %v", err) }
+	if err != nil {
+		fail("sign keyset: %v", err)
+	}
 	rootPublicBytes, err := updateinfo.EncodePublicKey(rootPublic)
-	if err != nil { fail("encode root public key: %v", err) }
+	if err != nil {
+		fail("encode root public key: %v", err)
+	}
 	write(filepath.Join(dir, "root.pub"), rootPublicBytes)
 	write(filepath.Join(dir, "keyset.json"), keysetBody)
 	write(filepath.Join(dir, "keyset.sig"), keysetSignature)
 	verified, err := updateinfo.VerifyKeyset(rootID, rootPublic, keysetBody, keysetSignature, now, 0, "")
-	if err != nil { fail("verify fixture keyset: %v", err) }
+	if err != nil {
+		fail("verify fixture keyset: %v", err)
+	}
 
 	var firstPair []byte
 	for _, sequence := range []uint64{42, 43} {
@@ -69,11 +83,17 @@ func main() {
 			InstallerSHA256: strings.Repeat("b", 64),
 		}
 		manifestBody, err := updateinfo.EncodeCanonical(manifest)
-		if err != nil { fail("encode manifest: %v", err) }
+		if err != nil {
+			fail("encode manifest: %v", err)
+		}
 		manifestSignature, err := updateinfo.EncodeSignature(ed25519.Sign(manifestPrivate, manifestBody))
-		if err != nil { fail("sign manifest: %v", err) }
+		if err != nil {
+			fail("sign manifest: %v", err)
+		}
 		pair, err := updateinfo.EncodeCanonicalStablePair(manifestBody, manifestSignature)
-		if err != nil { fail("encode pair: %v", err) }
+		if err != nil {
+			fail("encode pair: %v", err)
+		}
 		prefix := fmt.Sprintf("candidate-%d", sequence)
 		write(filepath.Join(dir, prefix+".json"), manifestBody)
 		write(filepath.Join(dir, prefix+".sig"), manifestSignature)
@@ -98,7 +118,9 @@ func main() {
 }
 
 func write(path string, data []byte) {
-	if err := os.WriteFile(path, data, 0o600); err != nil { fail("write %s: %v", path, err) }
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		fail("write %s: %v", path, err)
+	}
 }
 
 func fail(format string, args ...any) {
