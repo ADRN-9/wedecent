@@ -1044,7 +1044,25 @@ try {
 }
 
 $attackerName = 'WDA' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
-$attackerPassword = ConvertTo-SecureString -String ('WDecent-' + [Guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
+$attackerPassword = [Security.SecureString]::new()
+$passwordBytes = New-Object byte[] 32
+$passwordRandom = [Security.Cryptography.RandomNumberGenerator]::Create()
+try {
+    $passwordRandom.GetBytes($passwordBytes)
+    $attackerPassword.AppendChar([char](97 + ($passwordBytes[0] % 26)))
+    $attackerPassword.AppendChar([char](65 + ($passwordBytes[1] % 26)))
+    $attackerPassword.AppendChar([char](48 + ($passwordBytes[2] % 10)))
+    $specialPasswordChars = '!@#$%^&*()-_=+[]{}:,.?'.ToCharArray()
+    $attackerPassword.AppendChar($specialPasswordChars[$passwordBytes[3] % $specialPasswordChars.Length])
+    $passwordAlphabet = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^&*()-_=+[]{}:,.?'.ToCharArray()
+    for ($passwordIndex = 4; $passwordIndex -lt $passwordBytes.Length; $passwordIndex++) {
+        $attackerPassword.AppendChar($passwordAlphabet[$passwordBytes[$passwordIndex] % $passwordAlphabet.Length])
+    }
+    $attackerPassword.MakeReadOnly()
+} finally {
+    [Array]::Clear($passwordBytes, 0, $passwordBytes.Length)
+    $passwordRandom.Dispose()
+}
 try {
     New-LocalUser -Name $attackerName -Password $attackerPassword -PasswordNeverExpires -AccountNeverExpires | Out-Null
     $attackerSid = (Get-LocalUser -Name $attackerName).SID.Value
@@ -1142,6 +1160,13 @@ try {
     $controlWorkspace = New-MigrationAttackerWorkspace -RootPath $controlFixture.Root -AttackerSid $attackerSid
     $controlDirectory = Join-Path $controlWorkspace 'control'
     New-Item -ItemType Directory -Path $controlDirectory | Out-Null
+    $controlNamespaceRejected = $false
+    try { [void](Assert-WeDecentMigrationPublicationNamespace -Path $controlDirectory) }
+    catch {
+        $controlNamespaceRejected = $_.Exception.Message -like '*effective or inherited mutation rights*'
+        if (-not $controlNamespaceRejected) { throw }
+    }
+    if (-not $controlNamespaceRejected) { throw 'Native replacement control directory was unexpectedly accepted as a protected publication namespace.' }
     $controlTarget = Join-Path $controlDirectory 'target.json'
     $controlSource = Join-Path $controlDirectory 'source.tmp'
     [IO.File]::WriteAllText($controlTarget, '{"control":"original"}')
