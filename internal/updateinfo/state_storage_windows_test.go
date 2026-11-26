@@ -268,3 +268,63 @@ func TestWindowsUpdateStateAcceptsLegitimateNestedPath(t *testing.T) {
 		t.Fatalf("legitimate protected installation path rejected: %v", err)
 	}
 }
+
+
+func TestWindowsUpdateStateRejectsNativeHostileAncestorOwner(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "foreign-owner")
+	stateDir := filepath.Join(parent, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	user := windowsTestCurrentSID(t)
+	sd, err := windows.SecurityDescriptorFromString("O:BUG:BAD:P(A;;FA;;;" + user + ")")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := windows.UTF16PtrFromString(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h, err := windows.CreateFile(name,
+		windows.READ_CONTROL|windows.WRITE_OWNER,
+		windows.FILE_SHARE_READ|windows.FILE_SHARE_WRITE|windows.FILE_SHARE_DELETE,
+		nil, windows.OPEN_EXISTING, windows.FILE_FLAG_BACKUP_SEMANTICS, 0)
+	if err != nil {
+		t.Fatalf("open parent to set test owner: %v", err)
+	}
+	defer windows.CloseHandle(h)
+	if err := windows.SetKernelObjectSecurity(h, windows.OWNER_SECURITY_INFORMATION, sd); err != nil {
+		t.Skipf("runner cannot assign an alternate directory owner: %v", err)
+	}
+	if _, err := validateUpdateStateAncestorChain(stateDir, user, false); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("directory with hostile native owner accepted: %v", err)
+	}
+}
+
+func TestWindowsUpdateStateRejectsReparsePointSubstitution(t *testing.T) {
+	root := t.TempDir()
+	parent := filepath.Join(root, "parent")
+	stateDir := filepath.Join(parent, "state")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	user := windowsTestCurrentSID(t)
+	if err := validateStateDirAncestors(stateDir); err != nil {
+		t.Fatalf("initial trusted ancestor validation failed: %v", err)
+	}
+	moved := filepath.Join(root, "moved-parent")
+	if err := os.Rename(parent, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(moved, parent); err != nil {
+		t.Skipf("creating a Windows directory symlink requires unavailable privilege: %v", err)
+	}
+	info, err := os.Lstat(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := validateStateDirInfo(stateDir, info); err == nil || !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("reparse-point substitution of a validated ancestor was accepted: %v", err)
+	}
+}
