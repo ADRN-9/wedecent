@@ -77,6 +77,22 @@ func loadState(path string) (State, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			dir := filepath.Dir(path)
+			dirInfo, dirErr := os.Lstat(dir)
+			if dirErr == nil {
+				if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+					return zero, fmt.Errorf("%w: update state parent must be a real directory", ErrInvalidState)
+				}
+				if err := validateStateDirInfo(dir, dirInfo); err != nil {
+					return zero, err
+				}
+			} else if errors.Is(dirErr, os.ErrNotExist) {
+				if err := validateStateDirAncestors(dir); err != nil {
+					return zero, err
+				}
+			} else {
+				return zero, fmt.Errorf("%w: stat update state parent: %v", ErrInvalidState, dirErr)
+			}
 			return State{Version: UpdateStateVersion}, nil
 		}
 		return zero, fmt.Errorf("%w: stat update state: %v", ErrInvalidState, err)
