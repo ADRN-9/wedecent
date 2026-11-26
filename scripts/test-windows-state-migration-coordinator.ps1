@@ -801,10 +801,13 @@ try {
 
 $attackerName = 'WDA' + [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $attackerPassword = ConvertTo-SecureString -String ('WDecent-' + [Guid]::NewGuid().ToString('N') + 'aA1!') -AsPlainText -Force
-New-LocalUser -Name $attackerName -Password $attackerPassword -PasswordNeverExpires -AccountNeverExpires | Out-Null
-Add-LocalGroupMember -Group 'Users' -Member $attackerName
-$global:WeDecentMigrationAttackerCredential = [PSCredential]::new("$env:COMPUTERNAME\$attackerName", $attackerPassword)
 try {
+    New-LocalUser -Name $attackerName -Password $attackerPassword -PasswordNeverExpires -AccountNeverExpires | Out-Null
+    $attackerSid = (Get-LocalUser -Name $attackerName).SID.Value
+    if (-not (Get-LocalGroupMember -Group 'Users' | Where-Object { $_.SID.Value -eq $attackerSid })) {
+        Add-LocalGroupMember -Group 'Users' -Member $attackerName
+    }
+    $global:WeDecentMigrationAttackerCredential = [PSCredential]::new("$env:COMPUTERNAME\$attackerName", $attackerPassword)
 foreach ($nativeRaceKind in @('metadata', 'journal')) {
     $nativeRaceFixture = New-MigrationFixture
     try {
