@@ -65,16 +65,33 @@ function Get-MigrationTreeSnapshot {
     if (-not (Test-Path -LiteralPath $Path -PathType Container)) { return '<missing>' }
     $root = [IO.Path]::GetFullPath($Path).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
     $entries = [Collections.Generic.List[string]]::new()
-    foreach ($item in @(Get-ChildItem -LiteralPath $root -Force -Recurse | Sort-Object -Property FullName)) {
-        $relative = $item.FullName.Substring($root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
-        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            $entries.Add("R|$relative|$($item.LinkType)|$($item.Target)")
-        } elseif ($item.PSIsContainer) {
-            $entries.Add("D|$relative")
+    $items = @((Get-Item -LiteralPath $root -Force -ErrorAction Stop)) +
+        @(Get-ChildItem -LiteralPath $root -Force -Recurse -ErrorAction Stop | Sort-Object -Property FullName)
+    foreach ($item in $items) {
+        $relative = if ([string]::Equals($item.FullName, $root, [StringComparison]::OrdinalIgnoreCase)) {
+            '.'
         } else {
-            $digest = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256).Hash
-            $entries.Add("F|$relative|$($item.Length)|$digest")
+            $item.FullName.Substring($root.Length).TrimStart([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
         }
+        $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+        $digest = $null
+        if (-not $item.PSIsContainer -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0) {
+            $digest = (Get-FileHash -LiteralPath $item.FullName -Algorithm SHA256 -ErrorAction Stop).Hash
+        }
+        $record = [ordered]@{
+            Path = $relative
+            Kind = if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { 'ReparsePoint' } elseif ($item.PSIsContainer) { 'Directory' } else { 'File' }
+            Length = if ($item.PSIsContainer) { $null } else { [long]$item.Length }
+            Digest = $digest
+            LinkType = [string]$item.LinkType
+            Target = [string]$item.Target
+            Attributes = [int]$item.Attributes
+            Owner = [string]$acl.Owner
+            Sddl = [string]$acl.Sddl
+            CreationTimeUtcTicks = [long]$item.CreationTimeUtc.Ticks
+            LastWriteTimeUtcTicks = [long]$item.LastWriteTimeUtc.Ticks
+        }
+        $entries.Add((ConvertTo-Json -InputObject $record -Compress -Depth 4))
     }
     return [string]::Join("`n", $entries.ToArray())
 }
@@ -87,6 +104,7 @@ function Get-MigrationRecoverySideEffectSnapshot {
     }
     return [pscustomobject]@{
         Trees = $trees
+        PublicationParent = Get-MigrationTreeSnapshot -Path $Fixture.Root
         MetadataBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Fixture.MetadataPath))
         JournalBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Fixture.Journal))
         ServicePath = [string]$global:WeDecentMigrationMockService.PathName
@@ -102,6 +120,9 @@ function Assert-MigrationRecoveryNoSideEffects {
     $after = Get-MigrationRecoverySideEffectSnapshot -Fixture $Fixture -Journal $Journal
     if ($after.MetadataBytes -cne $Before.MetadataBytes) { throw "Rejected $Case changed installer metadata bytes." }
     if ($after.JournalBytes -cne $Before.JournalBytes) { throw "Rejected $Case changed migration journal bytes." }
+    if ($after.PublicationParent -cne $Before.PublicationParent) {
+        throw "Rejected $Case changed publication-parent files, ACLs, ownership, or timestamps."
+    }
     foreach ($treePath in $Before.Trees.Keys) {
         if ($after.Trees[$treePath] -cne $Before.Trees[$treePath]) { throw "Rejected $Case changed migration filesystem tree: $treePath" }
     }
