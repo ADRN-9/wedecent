@@ -468,7 +468,7 @@ func TestWindowsUpdateStateRejectsInheritedFileWritePermissions(t *testing.T) {
 			}
 			// OI-only makes this ACE apply to files, not as an effective
 			// permission on the containing directory.
-			windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;"+tc.mask+";;;WD)")
+			windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;FA;;;"+user+")(A;OI;"+tc.mask+";;;WD)")
 			dirSD, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 			if err != nil {
 				t.Fatal(err)
@@ -502,7 +502,7 @@ func TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock(t *testing.T) {
 	}
 	// The append-data mask is inherited by files only. This must be rejected
 	// during directory preflight, before state reads, temp files, or lock files.
-	windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;0x00000004;;;WD)")
+	windowsTestSetDACL(t, dir, "D:P(A;;FA;;;"+user+")(A;OI;FA;;;"+user+")(A;OI;0x00000004;;;WD)")
 	dirSD, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		t.Fatal(err)
@@ -556,4 +556,3 @@ func TestWindowsStateStoreRejectsInheritedFileACLBeforeIOAndLock(t *testing.T) {
 		t.Fatalf("unsafe temporary state files were created: %v", temps)
 	}
 }
-
