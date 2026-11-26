@@ -52,9 +52,14 @@ BASE_URL='https://downloads.wedecent.com'
 RELEASE_URL="$BASE_URL/windows/$VERSION/wedecent-$VERSION-windows-amd64.zip"
 INSTALLER_URL="$BASE_URL/windows/$VERSION/wedecent-$VERSION-windows-installer.zip"
 remote_sha256() {
-  local hash
-  hash="$(curl -fsS --retry 3 --retry-all-errors --proto '=https' "$1" | sha256sum | awk '{print tolower($1)}')" ||
-    die "cannot fetch/hash immutable artifact: $1"
+  local url="$1"
+  local tmp status hash
+  tmp="$(mktemp)"
+  status="$(curl --disable -sS --connect-timeout 10 --max-time 120 --proto '=https' -o "$tmp" -w '%{http_code}' "$url")" ||
+    die "cannot fetch immutable artifact: $url"
+  [[ "$status" == 200 ]] || die "unexpected HTTP $status for immutable artifact: $url"
+  hash="$(sha256sum "$tmp" | awk '{print tolower($1)}')"
+  rm -f -- "$tmp"
   [[ "$hash" =~ ^[0-9a-f]{64}$ ]] || die 'invalid artifact SHA-256'
   printf '%s\n' "$hash"
 }
