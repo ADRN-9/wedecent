@@ -284,3 +284,49 @@ func TestStateStoreRejectsInvalidKeysetVerification(t *testing.T) {
 		t.Fatalf("invalid keyset verification error = %v, want ErrInvalidKeyset", err)
 	}
 }
+
+
+func TestStateStoreKeysetAntiRollbackSurvivesRestartAndRejectsCorruption(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
+	body, signature := signKeyset(t, keyset, rootPrivate, now)
+
+	path := StatePath(filepath.Join(t.TempDir(), "client"))
+	first := NewStateStore(path)
+	verified, err := first.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, body, signature, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A new store models a fresh process reopening the protected state.
+	restarted := NewStateStore(path)
+	state, err := restarted.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Version != UpdateStateVersionWithKeyset ||
+		state.KeysetEpoch != keyset.Epoch || state.KeysetDigest != verified.Digest() {
+		t.Fatalf("reopened keyset state = %#v", state)
+	}
+
+	lower := keyset
+	lower.Epoch--
+	lowerBody, lowerSignature := signKeyset(t, lower, rootPrivate, now)
+	if _, err := restarted.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, lowerBody, lowerSignature, now); !errors.Is(err, ErrKeysetRollback) {
+		t.Fatalf("restarted lower-epoch verification error = %v, want ErrKeysetRollback", err)
+	}
+
+	equivocation := keyset
+	equivocation.ExpiresAt = now.Add(23 * time.Hour).UTC().Format(time.RFC3339)
+	equivocationBody, equivocationSignature := signKeyset(t, equivocation, rootPrivate, now)
+	if _, err := restarted.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, equivocationBody, equivocationSignature, now); !errors.Is(err, ErrKeysetRollback) {
+		t.Fatalf("restarted same-epoch equivocation error = %v, want ErrKeysetRollback", err)
+	}
+
+	if err := os.WriteFile(path, []byte("{\\"version\\":2,\\"stable_sequence\\":0,\\"keyset_epoch\\":7,\\"keyset_digest\\":\\"broken\\"}\\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewStateStore(path).Load(); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("corrupt persisted keyset state error = %v, want ErrInvalidState", err)
+	}
+}
