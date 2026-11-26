@@ -130,6 +130,22 @@ func TestKeysetRejectsDuplicateAndUnsortedKeys(t *testing.T) {
 	if _, err := EncodeCanonicalKeyset(keyset, now); !errors.Is(err, ErrInvalidKeyset) {
 		t.Fatalf("duplicate key ID error = %v, want ErrInvalidKeyset", err)
 	}
+	badID := keyset
+	badID.Keys = append([]KeysetEntry(nil), keyset.Keys...)
+	badID.Keys[0].ID = "trailing-"
+	if _, err := EncodeCanonicalKeyset(badID, now); !errors.Is(err, ErrInvalidKeyset) {
+		t.Fatalf("malformed key ID error = %v, want ErrInvalidKeyset", err)
+	}
+	duplicatePublic := keyset
+	duplicatePublic.Keys = append([]KeysetEntry(nil), keyset.Keys...)
+	duplicatePublic.Keys = append(duplicatePublic.Keys, KeysetEntry{
+		ID: "stable-2026-02", PublicKey: keyset.Keys[0].PublicKey,
+		NotBefore: keyset.Keys[0].NotBefore, NotAfter: keyset.Keys[0].NotAfter, Status: "active",
+	})
+	SortKeysetEntries(duplicatePublic.Keys)
+	if _, err := EncodeCanonicalKeyset(duplicatePublic, now); !errors.Is(err, ErrInvalidKeyset) {
+		t.Fatalf("duplicate public key error = %v, want ErrInvalidKeyset", err)
+	}
 	_ = rootPublic
 	_ = rootPrivate
 }
