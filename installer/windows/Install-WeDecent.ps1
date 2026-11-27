@@ -1119,6 +1119,7 @@ function Recover-InterruptedInstallerTransactions {
                 }
                 Remove-Item -LiteralPath "$destination.$($journal.transaction_id).new" -Force -ErrorAction SilentlyContinue
             }
+            Restore-TransactionRecoveryScript -Journal $journal
             Restore-TransactionMetadata -Journal $journal
             $journal.phase = 'rolled-back'
             Write-InstallJournal -Journal $journal
@@ -1620,6 +1621,12 @@ if ($service) {
         $binariesRestored = Invoke-RollbackStep 'restore installed binaries' {
             Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
         }
+        $recoveryScriptRestored = $true
+        if ($script:InstallJournal) {
+            $recoveryScriptRestored = Invoke-RollbackStep 'restore previous recovery script' {
+                Restore-TransactionRecoveryScript -Journal $script:InstallJournal
+            }
+        }
         $metadataRestored = $true
         if ($script:InstallJournal) {
             $metadataRestored = Invoke-RollbackStep 'restore previous installer metadata' {
@@ -1627,13 +1634,13 @@ if ($service) {
             }
         }
         $journalPersisted = $true
-        if ($binariesRestored -and $metadataRestored -and $script:InstallJournal) {
+        if ($binariesRestored -and $recoveryScriptRestored -and $metadataRestored -and $script:InstallJournal) {
             $script:InstallJournal.phase = 'rolled-back'
             $journalPersisted = Invoke-RollbackStep 'persist completed rollback journal' {
                 Write-InstallJournal -Journal $script:InstallJournal
             }
         }
-        if ($binariesRestored -and $metadataRestored -and $journalPersisted) {
+        if ($binariesRestored -and $recoveryScriptRestored -and $metadataRestored -and $journalPersisted) {
             Invoke-RollbackStep 'restart previous agent service' {
                 try {
                     Start-Service -Name $ServiceName -ErrorAction Stop
@@ -1647,7 +1654,7 @@ if ($service) {
                 }
             } | Out-Null
         } else {
-            Write-Warning 'Previous binaries, metadata, or rollback journal could not be fully restored; the agent service is intentionally left stopped for recovery.'
+            Write-Warning 'Previous binaries, recovery script, metadata, or rollback journal could not be fully restored; the agent service is intentionally left stopped for recovery.'
         }
         throw "Upgrade failed; rollback was attempted: $($failed.Exception.Message)"
     }
