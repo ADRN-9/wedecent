@@ -44,8 +44,25 @@ function Get-Sha256FileHash {
     return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
 }
 
-function Assert-TrustedAcl {
+function Set-TrustedAcl {
     param([Parameter(Mandatory = $true)][string]$Path)
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+    foreach ($sidText in $TrustedSids) {
+        $sid = [Security.Principal.SecurityIdentifier]::new($sidText)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, [Security.AccessControl.FileSystemRights]::FullControl,
+            [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$acl.AddAccessRule($rule)
+    }
+    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Assert-TrustedAcl {
+    param([Parameter(Mandatory = $true)][string]$Path, [switch]$AllowServiceSid)
     $acl = Get-Acl -LiteralPath $Path
     if (-not $acl.AreAccessRulesProtected) {
         throw "Recovery trust path has an inheriting DACL: $Path"
@@ -56,8 +73,9 @@ function Assert-TrustedAcl {
     }
     foreach ($rule in @($acl.Access)) {
         $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-        if ($TrustedSids -notcontains $sid -or
-            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+        $trusted = $TrustedSids -contains $sid
+        if ($AllowServiceSid -and $sid -like 'S-1-5-80-*') { $trusted = $true }
+        if (-not $trusted -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
             throw "Recovery trust path has an untrusted ACL entry: $Path"
         }
     }
@@ -76,6 +94,7 @@ function Write-TransactionJournal {
     } finally {
         $stream.Dispose()
     }
+    Set-TrustedAcl -Path $temp
     Assert-TrustedAcl -Path $temp
     [IO.File]::Replace($temp, $Path, $null, $true)
     Assert-TrustedAcl -Path $Path
@@ -171,7 +190,7 @@ $stateItem = Get-Item -LiteralPath $statePath -Force
 if ($stateItem.PSIsContainer -or ($stateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw 'Updater state is not a regular file.'
 }
-Assert-TrustedAcl -Path $statePath
+Assert-TrustedAcl -Path $statePath -AllowServiceSid
 $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
 $committed = [UInt64]$state.stable_sequence -ge $Sequence -and
     $null -eq $state.pending_install -and [string]$state.installed_version -ceq $TargetVersion
