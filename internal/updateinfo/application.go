@@ -11,6 +11,7 @@ var (
 	ErrInstallerApply       = errors.New("updateinfo: installer application failed")
 	ErrSequenceCommit       = errors.New("updateinfo: update installed but sequence commit failed")
 	ErrInstallerUnavailable = errors.New("updateinfo: installer executor is required")
+	ErrInstallRecoveryRequired = errors.New("updateinfo: interrupted installation requires recovery")
 )
 
 type InstallerExecutor interface {
@@ -55,6 +56,7 @@ func (s *StateStore) ApplyVerifiedManifest(ctx context.Context, verified Verifie
 
 	current, err := loadState(s.Path)
 	if err != nil { return err }
+	if current.PendingInstall != nil { return ErrInstallRecoveryRequired }
 	if current.KeysetEpoch != verified.keysetEpoch || current.KeysetDigest != verified.keysetDigest {
 		return fmt.Errorf("%w: verified signer keyset is no longer current", ErrKeysetRollback)
 	}
@@ -66,6 +68,11 @@ func (s *StateStore) ApplyVerifiedManifest(ctx context.Context, verified Verifie
 	err = WithVerifiedInstallerPackage(ctx, manifest, stagedPath, maxArchiveBytes, verifyAuthenticode,
 		func(_ context.Context, pkg VerifiedInstallerPackage) error {
 			if err := ctx.Err(); err != nil { return err }
+			transaction, err := newInstallTransaction(verified, pkg)
+			if err != nil { return err }
+			pendingState := current
+			pendingState.PendingInstall = &transaction
+			if err := saveState(s.Path, pendingState); err != nil { return fmt.Errorf("%w: persist pending install intent", ErrInvalidState) }
 			mutated = true
 			if err := executor.Execute(context.WithoutCancel(ctx), pkg); err != nil { return ErrInstallerApply }
 			return nil
