@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 func TestUpdateWorkerWaitsForBothAuthenticatedLaunchers(t *testing.T) {
