@@ -840,14 +840,6 @@ function Recover-InterruptedInstallerTransactions {
             $stableSequence -ge [UInt64]$journal.sequence -and
             $null -ne $state -and
             ($null -eq $state.pending_install -or [UInt64]$state.pending_install.sequence -gt [UInt64]$journal.sequence)
-        if ($superseded) {
-            foreach ($entry in @($journal.entries)) {
-                if (Test-Path -LiteralPath ([string]$entry.backup_path) -PathType Leaf) {
-                    throw "Superseded committed transaction has unfinished backup cleanup: $($entry.backup_path)"
-                }
-            }
-        }
-
         $seenNames = @{}
         foreach ($entry in @($journal.entries)) {
             $name = [string]$entry.name
@@ -889,6 +881,13 @@ function Recover-InterruptedInstallerTransactions {
         }
         if ($seenNames.Count -ne $expectedNames.Count) {
             throw "Installer transaction journal does not cover the exact five approved binaries: $($file.FullName)"
+        }
+        if ($superseded) {
+            foreach ($entry in @($journal.entries)) {
+                if (Test-Path -LiteralPath ([string]$entry.backup_path) -PathType Leaf) {
+                    throw "Superseded committed transaction has unfinished backup cleanup: $($entry.backup_path)"
+                }
+            }
         }
 
         if ($superseded) {
