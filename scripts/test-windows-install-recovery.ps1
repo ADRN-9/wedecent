@@ -22,8 +22,24 @@ if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
     throw 'Installer contains duplicate top-level function definitions.'
 }
 if (-not $installerText.Contains("'removal-pending'") -or
-    -not $installerText.Contains('Persist intent before deletion so recovery can safely repeat the removal.')) {
-    throw 'Fresh-install rollback must durably journal recovery-script removal intent before deleting the published script.'
+    -not $installerText.Contains('Persist a valid removal identity before deleting the file.') -or
+    -not $installerText.Contains("if ($state -eq 'absent')")) {
+    throw 'Fresh-install rollback must preserve an already-absent state and authenticate removal intent before deleting the published script.'
+}
+$installBinariesStart = $installerText.IndexOf('function Install-Binaries')
+$firstServiceStop = $installerText.IndexOf('Stop-Service -Name $ServiceName -Force -ErrorAction Stop', $installBinariesStart)
+$firstReplacement = $installerText.IndexOf('Install-Binary (Join-Path $SourceDirectory $name)', $installBinariesStart)
+$lastDurableJournalBeforeStop = $installerText.LastIndexOf('Write-InstallJournal -Journal $script:InstallJournal', $firstServiceStop)
+if ($installBinariesStart -lt 0 -or $firstServiceStop -lt 0 -or $firstReplacement -lt 0 -or
+    $lastDurableJournalBeforeStop -lt $installBinariesStart -or
+    $lastDurableJournalBeforeStop -ge $firstServiceStop -or $firstServiceStop -ge $firstReplacement) {
+    throw 'Installer must durably journal the transaction and verify original backups before stopping SCM or replacing binaries.'
+}
+$upgradeStart = $installerText.IndexOf('Upgrading existing $ServiceName service')
+$upgradeInstallCall = $installerText.IndexOf('Install-Binaries -SourceDirectory $BundlePath', $upgradeStart)
+$prematureUpgradeStop = $installerText.IndexOf('Stop-Service -Name $ServiceName -Force', $upgradeStart, $upgradeInstallCall - $upgradeStart)
+if ($upgradeStart -lt 0 -or $upgradeInstallCall -lt 0 -or $prematureUpgradeStop -ge 0) {
+    throw 'Managed upgrade must not stop the service before the durable installer transaction exists.'
 }
 $removalIntent = $installerText.IndexOf("recovery_script_state = 'removal-pending'")
 $removalAction = $installerText.IndexOf('Remove-Item -LiteralPath $target -Force -ErrorAction Stop', $removalIntent)
