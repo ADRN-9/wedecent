@@ -24,7 +24,9 @@ type InstallerExecutor interface {
 type InstallerExecutorFunc func(context.Context, InstallTransaction, VerifiedInstallerPackage) error
 
 func (f InstallerExecutorFunc) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
-	if f == nil { return ErrInstallerUnavailable }
+	if f == nil {
+		return ErrInstallerUnavailable
+	}
 	return f(ctx, transaction, pkg)
 }
 
@@ -36,22 +38,40 @@ func (s *StateStore) applyVerifiedManifest(
 	verifyAuthenticode AuthenticodeVerifier,
 	executor InstallerExecutor,
 ) error {
-	if s == nil || s.Path == "" { return fmt.Errorf("%w: state path is required", ErrInvalidState) }
-	if ctx == nil { return fmt.Errorf("%w: context is required", ErrInvalidState) }
-	if executor == nil { return ErrInstallerUnavailable }
-	if err := verified.validate(); err != nil { return err }
-	if verifyAuthenticode == nil { return fmt.Errorf("%w: Authenticode policy is required", ErrInstallerPackage) }
-	if err := ctx.Err(); err != nil { return err }
+	if s == nil || s.Path == "" {
+		return fmt.Errorf("%w: state path is required", ErrInvalidState)
+	}
+	if ctx == nil {
+		return fmt.Errorf("%w: context is required", ErrInvalidState)
+	}
+	if executor == nil {
+		return ErrInstallerUnavailable
+	}
+	if err := verified.validate(); err != nil {
+		return err
+	}
+	if verifyAuthenticode == nil {
+		return fmt.Errorf("%w: Authenticode policy is required", ErrInstallerPackage)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, err := acquireUpdateLock(ctx, s.Path)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer release()
 
 	current, err := loadState(s.Path)
-	if err != nil { return err }
-	if current.PendingInstall != nil { return ErrInstallRecoveryRequired }
+	if err != nil {
+		return err
+	}
+	if current.PendingInstall != nil {
+		return ErrInstallRecoveryRequired
+	}
 	if current.KeysetEpoch != verified.keysetEpoch || current.KeysetDigest != verified.keysetDigest {
 		return fmt.Errorf("%w: verified manifest keyset is stale or revoked", ErrKeysetRollback)
 	}
@@ -65,9 +85,13 @@ func (s *StateStore) applyVerifiedManifest(
 	return WithVerifiedInstallerPackage(
 		ctx, verified.manifest, stagedPath, maxArchiveBytes, verifyAuthenticode,
 		func(_ context.Context, pkg VerifiedInstallerPackage) error {
-			if err := ctx.Err(); err != nil { return err }
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			transaction, err := newInstallTransaction(verified, pkg)
-			if err != nil { return err }
+			if err != nil {
+				return err
+			}
 
 			pending := current
 			pending.Version = UpdateStateVersionWithInstall
@@ -109,29 +133,45 @@ func (s *StateStore) applyVerifiedManifest(
 // block subsequent updates. Recovery adapters must be idempotent and preserve
 // the last known-good backup until target verification succeeds.
 func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery InstallerRecovery) error {
-	if s == nil || s.Path == "" || ctx == nil || recovery == nil { return ErrInstallRecoveryRequired }
+	if s == nil || s.Path == "" || ctx == nil || recovery == nil {
+		return ErrInstallRecoveryRequired
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, err := acquireUpdateLock(ctx, s.Path)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer release()
 	current, err := loadState(s.Path)
-	if err != nil { return err }
-	if current.PendingInstall == nil { return nil }
-	if err := ctx.Err(); err != nil { return err }
+	if err != nil {
+		return err
+	}
+	if current.PendingInstall == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	transaction := *current.PendingInstall
 	transaction.Phase = InstallPhaseRecoveryRequired
 	current.PendingInstall = &transaction
-	if err := saveState(s.Path, current); err != nil { return ErrInstallRecoveryRequired }
+	if err := saveState(s.Path, current); err != nil {
+		return ErrInstallRecoveryRequired
+	}
 
 	result, err := recovery.Recover(context.WithoutCancel(ctx), transaction)
-	if err != nil || result == InstallRecoveryUnknown { return ErrInstallRecoveryRequired }
+	if err != nil || result == InstallRecoveryUnknown {
+		return ErrInstallRecoveryRequired
+	}
 
 	next := current
 	switch result {
 	case InstallRecoveryApplied:
-		if transaction.Sequence <= current.StableSequence { return ErrInstallRecoveryRequired }
+		if transaction.Sequence <= current.StableSequence {
+			return ErrInstallRecoveryRequired
+		}
 		next.StableSequence = transaction.Sequence
 	case InstallRecoveryNotApplied:
 		// Adapter has verified restoration of PreviousVersion; sequence stays unchanged.
@@ -139,7 +179,9 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 		return ErrInstallRecoveryRequired
 	}
 	next.PendingInstall = nil
-	if err := saveState(s.Path, next); err != nil { return ErrInstallRecoveryRequired }
+	if err := saveState(s.Path, next); err != nil {
+		return ErrInstallRecoveryRequired
+	}
 	return nil
 }
 
