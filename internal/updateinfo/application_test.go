@@ -506,6 +506,7 @@ func TestInstallerRecoveryNotAppliedClearsJournalOnlyAfterRepair(t *testing.T) {
 
 func TestProcessTerminationDuringInstallerLeavesDurableIntent(t *testing.T) {
 	statePath := StatePath(privateTempDir(t))
+	defer os.Remove(statePath + ".staged")
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperCrashDuringInstaller$")
 	cmd.Env = append(os.Environ(),
 		"WEDECENT_CRASH_INSTALLER_TEST=1",
@@ -536,7 +537,10 @@ func TestHelperCrashDuringInstaller(t *testing.T) {
 	manifest, archive := buildInstallerPackageFixture(t, nil)
 	manifest.Sequence = 104
 	manifest.InstallerSHA256 = sha256Hex(archive)
-	path := writeStagedArchive(t, archive)
+	path := statePath + ".staged"
+	if err := os.WriteFile(path, archive, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	store := NewStateStore(statePath)
 	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
 	err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
