@@ -329,6 +329,9 @@ func (s State) validatePersisted() error {
 			if s.PendingInstall.Sequence <= s.StableSequence {
 				return fmt.Errorf("%w: pending install sequence is stale", ErrInvalidState)
 			}
+			if s.PendingInstall.PreviousVersion != s.InstalledVersion {
+				return fmt.Errorf("%w: pending install previous version disagrees with protected installed version", ErrInvalidState)
+			}
 		}
 	default:
 		return fmt.Errorf("%w: unsupported state version %d", ErrInvalidState, s.Version)
