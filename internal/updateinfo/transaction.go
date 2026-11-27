@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 var ErrInstallTransaction = errors.New("updateinfo: invalid installer transaction")
@@ -29,6 +30,7 @@ func (t InstallTransaction) validate() error {
 		return ErrInstallTransaction
 	}
 	for _, value := range []string{t.ID, t.ManifestDigest, t.PackageDigest} {
+		if strings.ToLower(value) != value { return ErrInstallTransaction }
 		if _, err := hex.DecodeString(value); err != nil { return ErrInstallTransaction }
 	}
 	if _, err := parseStableVersion(t.PreviousVersion); err != nil { return ErrInstallTransaction }
