@@ -19,8 +19,8 @@ The code checkout `68a8c37956146528cc2548de2191da5ab9d53600` passed the complete
 
 | Item | Verified value |
 |---|---|
-| Current source HEAD | `68a8c37956146528cc2548de2191da5ab9d53600` |
-| Current tree SHA | `67baac2349a63a1173e139a068a82b04f7cf83dc` |
+| Verified code/test checkout HEAD | `68a8c37956146528cc2548de2191da5ab9d53600` |
+| Code checkout tree SHA | `67baac2349a63a1173e139a068a82b04f7cf83dc` |
 | Parent | `897f81e0fb0a4330be32330e4550b80acc1851c7` |
 | C341 report commit / comparison base | `0eae549edb6d05c64c616e7ef2c72aeef7cdcb55` |
 | Merge base | `0eae549edb6d05c64c616e7ef2c72aeef7cdcb55` |
@@ -146,7 +146,7 @@ All workflow results below are tied to the exact source checkout `68a8c379561465
 |---|---:|---|
 | Full repository CI | `46066222157` | **All 9 jobs passed** |
 | Updater security | `46066222172` | Job `140732063117`: **passed** |
-| Desktop shell | `46066222280` | Linux job `140732179135`: **passed**; macOS job `140732179491`: **passed**; Windows job `140732179392`: **in progress at report publication** |
+| Desktop shell | `46066222280` | Linux job `140732179135`: **passed**; macOS job `140732179491`: **passed**; Windows job `140732179392`: **passed** |
 
 Full CI jobs that passed:
 - `windows-agent` — `140732176033`
@@ -198,7 +198,6 @@ Linux CI additionally passed:
 Recommended C343:
 1. Obtain a persistent privileged Windows VM and name the accountable operator.
 2. Run the actual packaged installer clean-install, upgrade, service replacement, restart/reboot, interrupted transaction and rollback scenarios on that VM; retain logs and exact artifact digests.
-3. Finish Windows Desktop shell validation at the exact source checkout and record the result.
 4. Continue production update trust-anchor provisioning and external signing preparation through the required human-controlled credential path.
 5. Keep PR #209 open, draft and unmerged until those remaining acceptance gates are evidenced.
 
