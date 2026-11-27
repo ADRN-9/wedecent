@@ -72,7 +72,7 @@ function Assert-TrustedAcl {
         throw "Recovery trust path has an inheriting DACL: $Path"
     }
     $ownerSid = (New-Object Security.Principal.NTAccount -ArgumentList $acl.Owner).Translate([Security.Principal.SecurityIdentifier]).Value
-    if ($TrustedSids -notcontains $ownerSid) {
+    if ($TrustedSids -notcontains $ownerSid -and $AdditionalTrustedSids -notcontains $ownerSid) {
         throw "Recovery trust path has an untrusted owner: $Path"
     }
     foreach ($rule in @($acl.Access)) {
