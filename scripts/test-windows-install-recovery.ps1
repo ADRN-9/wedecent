@@ -636,7 +636,10 @@ try {
     if ($metadataFunctions.Count -ne 2) { throw 'Could not locate both installer metadata transaction helpers.' }
     foreach ($functionAst in $metadataFunctions) { Invoke-Expression $functionAst.Extent.Text }
     $env:ProgramData = $helperProgramData
-    $targetMetadata = $helperOriginalMetadata.Clone()
+    $targetMetadata = [ordered]@{}
+    foreach ($metadataKey in $helperOriginalMetadata.Keys) {
+        $targetMetadata[$metadataKey] = $helperOriginalMetadata[$metadataKey]
+    }
     $targetMetadata.version = 'v0.4.0'
     Write-TestJson -Path $helperMetadataPath -Value $targetMetadata
     Set-TestTrustedAcl -Path $helperMetadataPath
