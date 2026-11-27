@@ -1532,7 +1532,7 @@ public static class WeDecentIdentityProcess
         transaction_id = $pendingFreshId
         phase = 'replacing'
         recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "\${recoveryTarget}.\${pendingFreshId}.previous"
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
         recovery_script_had_original = $false
         recovery_script_original_sha256 = ''
         recovery_script_sha256 = Get-TestHash $recoveryTarget
@@ -1601,7 +1601,7 @@ public static class WeDecentIdentityProcess
         transaction_id = $interruptedFreshId
         phase = 'replacing'
         recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "\${recoveryTarget}.\${interruptedFreshId}.previous"
+        recovery_script_backup_path = ($recoveryTarget + '.' + $interruptedFreshId + '.previous')
         recovery_script_had_original = $false
         recovery_script_original_sha256 = ''
         recovery_script_sha256 = Get-TestHash $recoveryTarget
