@@ -41,7 +41,7 @@ func TestWindowsUpdateRootStrictSchema(t *testing.T) {
 	if err := decodeStrictJSON(append(data, []byte(`{"unexpected":true}`)...), &decoded); err == nil {
 		t.Fatal("accepted trailing JSON value")
 	}
-	unknown := strings.TrimSuffix(string(data), "}") + ","unexpected":true}"
+	unknown := strings.TrimSuffix(string(data), "}") + ",\"unexpected\":true}"
 	if err := decodeStrictJSON([]byte(unknown), &decoded); err == nil {
 		t.Fatal("accepted unknown trust-root field")
 	}
