@@ -826,10 +826,24 @@ function Recover-InterruptedInstallerTransactions {
 
         $statePath = Join-Path $StateDir 'update-state.json'
         $committed = $false
+        $stableSequence = [UInt64]0
+        $installedVersion = ''
         if (Test-Path -LiteralPath $statePath -PathType Leaf) {
             $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-            $committed = [UInt64]$state.stable_sequence -ge [UInt64]$journal.sequence -and
-                $null -eq $state.pending_install -and [string]$state.installed_version -ceq [string]$journal.version
+            $stableSequence = [UInt64]$state.stable_sequence
+            $installedVersion = [string]$state.installed_version
+            $committed = $stableSequence -ge [UInt64]$journal.sequence -and
+                $null -eq $state.pending_install -and $installedVersion -ceq [string]$journal.version
+        }
+        $superseded = $journal.phase -eq 'committed' -and
+            $stableSequence -gt [UInt64]$journal.sequence -and
+            $null -ne $state -and $null -eq $state.pending_install
+        if ($superseded) {
+            foreach ($entry in @($journal.entries)) {
+                if (Test-Path -LiteralPath ([string]$entry.backup_path) -PathType Leaf) {
+                    throw "Superseded committed transaction has unfinished backup cleanup: $($entry.backup_path)"
+                }
+            }
         }
 
         $seenNames = @{}
@@ -863,8 +877,8 @@ function Recover-InterruptedInstallerTransactions {
                         (Get-Sha256FileHash $expectedDestination) -ne [string]$entry.replacement_sha256) {
                         throw "Committed transaction has neither its backup nor the verified replacement: $expectedDestination"
                     }
-                } elseif (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
-                    (Get-Sha256FileHash $expectedDestination) -ne $expectedOriginal) {
+                } elseif (-not $superseded -and (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
+                    (Get-Sha256FileHash $expectedDestination) -ne $expectedOriginal)) {
                     throw "Original binary and verified transaction backup are both unavailable: $expectedDestination"
                 }
             } elseif (-not [string]::IsNullOrEmpty([string]$entry.original_sha256)) {
@@ -875,6 +889,9 @@ function Recover-InterruptedInstallerTransactions {
             throw "Installer transaction journal does not cover the exact five approved binaries: $($file.FullName)"
         }
 
+        if ($superseded) {
+            continue
+        }
         if ($journal.phase -eq 'committed' -and -not $committed) {
             throw 'Installer journal claims commit but protected updater state does not confirm it.'
         }
@@ -893,11 +910,7 @@ function Recover-InterruptedInstallerTransactions {
         if ($committed) {
             $journal.phase = 'committed'
             Write-InstallJournal -Journal $journal
-            try {
-                Remove-CommittedTransactionBackups -Journal $journal
-            } catch {
-                Write-Warning "Committed installation is valid; backup cleanup will be retried later. Cause: $($_.Exception.Message)"
-            }
+            Remove-CommittedTransactionBackups -Journal $journal
             continue
         }
 
