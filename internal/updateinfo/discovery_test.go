@@ -543,12 +543,12 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 			client, store := newDiscoveryClient(t, fixture, nil)
 			protected, loadErr := store.Load()
 			if loadErr != nil {
-		t.Fatal(loadErr)
-	}
+				t.Fatal(loadErr)
+			}
 			protected.InstalledVersion = "v0.3.9"
 			if err := saveState(store.Path, protected); err != nil {
-		t.Fatal(err)
-	}
+				t.Fatal(err)
+			}
 			test.mutate(t, &fixture, &client)
 			client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.URL.String() == fixture.manifest.InstallerURL {
@@ -611,7 +611,9 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	initialState, err := initialStore.Load()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	initialState.InstalledVersion = "v0.3.9"
 	if err := saveState(statePath, initialState); err != nil {
 		t.Fatal(err)
