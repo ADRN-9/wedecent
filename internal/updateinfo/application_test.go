@@ -22,7 +22,9 @@ func testVerifiedUpdate(t *testing.T, store *StateStore, manifest Manifest, arch
 		t.Fatalf("persist trusted keyset: %v", err)
 	}
 	protected, err := store.Load()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	protected.InstalledVersion = "v0.0.0"
 	if err := saveState(store.Path, protected); err != nil { t.Fatal(err) }
 	manifest.Schema = ManifestSchemaV2
