@@ -550,12 +550,9 @@ if ($env:WEDECENT_AUTHENTICODE_SUBJECT) {
 		"WEDECENT_AUTHENTICODE_THUMBPRINT="+strings.ToUpper(expectedThumbprint),
 		"WEDECENT_AUTHENTICODE_SUBJECT="+expectedSubject,
 	)
-	if err := command.Run(); err != nil {
-		var exitError *exec.ExitError
-		if errors.As(err, &exitError) {
-			return fmt.Errorf("Authenticode publisher check failed with status %d", exitError.ExitCode())
-		}
-		return fmt.Errorf("Authenticode publisher check failed: %w", err)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("Authenticode publisher check failed: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
