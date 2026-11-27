@@ -1430,16 +1430,21 @@ function Install-Binaries {
     if ($script:InstallServiceExisted) {
         $serviceBeforeReplacement = Get-Service -Name $ServiceName -ErrorAction Stop
         if ($script:InstallServiceWasRunning) {
+            # Mark the stop attempt before calling SCM so rollback can reconcile a partial stop.
+            $script:InstallServiceStoppedForTransaction = $true
             if ($serviceBeforeReplacement.Status -ne 'Stopped') {
                 Stop-Service -Name $ServiceName -Force -ErrorAction Stop
             }
             $serviceBeforeReplacement = Get-Service -Name $ServiceName -ErrorAction Stop
             $serviceBeforeReplacement.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        } elseif ($serviceBeforeReplacement.Status -ne 'Stopped') {
+            throw 'SCM service started after installer preflight; refusing to stop an originally stopped service.'
+        } else {
+            $script:InstallServiceStoppedForTransaction = $true
         }
         if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
             throw 'SCM did not confirm the service stopped after durable transaction and backup publication.'
         }
-        $script:InstallServiceStoppedForTransaction = $true
     }
 
     foreach ($entry in $script:InstallJournal.entries) {
@@ -1899,8 +1904,14 @@ if ($service) {
             Invoke-RollbackStep 'restore previous agent service state' {
                 try {
                     if ($script:InstallServiceWasRunning) {
-                        Start-Service -Name $ServiceName -ErrorAction Stop
-                        (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+                        $serviceAfterRollback = Get-Service -Name $ServiceName -ErrorAction Stop
+                        if ($serviceAfterRollback.Status -ne 'Running') {
+                            if ($serviceAfterRollback.Status -ne 'Stopped') {
+                                $serviceAfterRollback.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+                            }
+                            Start-Service -Name $ServiceName -ErrorAction Stop
+                            (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+                        }
                         if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
                             throw 'SCM did not confirm the previously running agent service was restored.'
                         }
