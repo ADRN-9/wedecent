@@ -131,3 +131,12 @@ func cloneInstallTransaction(transaction *InstallTransaction) *InstallTransactio
 	copy := *transaction
 	return &copy
 }
+
+
+func TestPersistedPendingInstallMustMatchInstalledVersion(t *testing.T) {
+	state := transactionStateFixture()
+	state.PendingInstall.PreviousVersion = "v0.9.9"
+	if err := state.validatePersisted(); err == nil {
+		t.Fatal("persisted transaction with mismatched previous version was accepted")
+	}
+}
