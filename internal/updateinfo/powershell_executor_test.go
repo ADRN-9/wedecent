@@ -85,6 +85,39 @@ func TestPowerShellInstallerExecutorRunsPreflightInstallPostflight(t *testing.T)
 	}
 }
 
+func TestPowerShellInstallerExecutorRejectsNonElevatedCallerBeforeProcessStart(t *testing.T) {
+	root := t.TempDir()
+	powershell := filepath.Join(root, "powershell.exe")
+	if err := os.WriteFile(powershell, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pkgDir := filepath.Join(root, "pkg")
+	if err := os.Mkdir(pkgDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"Install-WeDecent.ps1", "Test-WeDecentInstall.ps1"} {
+		if err := os.WriteFile(filepath.Join(pkgDir, name), []byte("fixture"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	calls := 0
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: powershell,
+		isElevated:     func() bool { return false },
+		run: func(context.Context, string, string, []string) error {
+			calls++
+			return nil
+		},
+	}
+	err := executor.Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0"))
+	if err == nil || !strings.Contains(err.Error(), "already elevated") {
+		t.Fatalf("non-elevated Execute() error = %v, want fail-closed elevation error", err)
+	}
+	if calls != 0 {
+		t.Fatalf("installer commands started for non-elevated caller: %d", calls)
+	}
+}
+
 func TestPowerShellInstallerExecutorPreflightFailurePreventsMutation(t *testing.T) {
 	root := privateTempDir(t)
 	powershell := filepath.Join(root, "powershell.exe")
