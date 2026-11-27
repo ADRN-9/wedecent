@@ -26,9 +26,12 @@ jobs:
           go-version: '1.27.0'
           cache: true
       - name: Print updateinfo formatting diff
-        run: gofmt -d internal/updateinfo
+        run: gofmt -d internal/updateinfo || true
       - name: Check updateinfo formatting
-        run: test -z "$(gofmt -l internal/updateinfo)"
+        run: |
+          unformatted="$(gofmt -l internal/updateinfo)"
+          printf "%s\\n" "$unformatted"
+          test -z "$unformatted"
       - name: Run updater admission and recovery tests
         run: go test ./internal/updateinfo -count=1
       - name: Vet updater package
