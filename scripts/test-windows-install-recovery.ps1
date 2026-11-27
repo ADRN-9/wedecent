@@ -95,8 +95,8 @@ if (-not $installerText.Contains('Legacy committed journals predate recovery-scr
 }
 if (-not $installerText.Contains('function Assert-TransactionRecoveryScript') -or
     -not $installerText.Contains('Assert-TransactionRecoveryScript -Journal $journal') -or
-    -not $installerText.Contains('Previous recovery-script backup is unsafe or corrupted.') -or
-    -not $installerText.Contains('Refusing committed cleanup because the installed recovery script identity is invalid.')) {
+    -not $installerText.Contains('Previous recovery-script backup is unsafe, ACL-untrusted, or corrupted.') -or
+    -not $installerText.Contains('Refusing committed cleanup because the installed recovery script identity or ACL is invalid.')) {
     throw 'Installer recovery must authenticate the recovery script and its backup before rollback or committed cleanup.'
 }
 $publicationCalls = [regex]::Matches($installerText, 'Publish-WeDecentRecoveryScript').Count - 1
@@ -899,6 +899,8 @@ try {
             $node.Name -eq 'Assert-TransactionRecoveryScript'
     }, $true)
     if ($recoveryFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script admission helper.' }
+    $script:recoveryTestAclTrusted = $true
+    function Test-WeDecentMetadataTrusted { param([string]$Path) return [bool]$script:recoveryTestAclTrusted }
     Invoke-Expression $recoveryFunction[0].Extent.Text
     $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
     New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
@@ -925,6 +927,11 @@ try {
     Assert-TransactionRecoveryScript -Journal $recoveryJournal
     $customJournal = [pscustomobject]$recoveryJournal
     Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
     [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
     $newRecoveryHash = Get-TestHash $recoveryTarget
     $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
