@@ -1245,7 +1245,7 @@ if ($service) {
     try {
         Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
         Publish-WeDecentRecoveryScript
-        Publish-WeDecentRecoveryScript
+
         Assert-InstalledBinaries -Destinations $binaryDestinations
         Start-Service -Name $ServiceName
         (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
