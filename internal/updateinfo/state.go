@@ -149,11 +149,14 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 		return verified, nil
 	}
 	next := State{
-		Version: UpdateStateVersionWithInstalled,
+		Version: UpdateStateVersionWithKeyset,
 		StableSequence: current.StableSequence,
 		KeysetEpoch: verified.Epoch(),
 		KeysetDigest: verified.Digest(),
-		InstalledVersion: current.InstalledVersion,
+	}
+	if current.InstalledVersion != "" {
+		next.Version = UpdateStateVersionWithInstalled
+		next.InstalledVersion = current.InstalledVersion
 	}
 	if err := saveState(s.Path, next); err != nil {
 		return zero, fmt.Errorf("%w: persist verified keyset: %v", ErrInvalidState, err)
