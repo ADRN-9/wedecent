@@ -143,6 +143,7 @@ func (f discoveryFixture) transport(mutate func(string, []byte) ([]byte, int)) h
 func newDiscoveryClient(t *testing.T, f discoveryFixture, transport http.RoundTripper) (DiscoveryClient, *StateStore) {
 	t.Helper()
 	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
+	store.readInstalledVersion = func() (string, error) { return "v0.3.9", nil }
 	client := DiscoveryClient{
 		RootKeyID:     f.keyset.RootKeyID,
 		RootPublicKey: f.rootPublic,
@@ -175,7 +176,7 @@ func TestDiscoverStableUsesRootKeysetAndV2Only(t *testing.T) {
 	})
 
 	client, store := newDiscoveryClient(t, fixture, transport)
-	got, err := client.DiscoverStable(context.Background(), "v1.2.2", 41)
+	got, err := client.DiscoverStable(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +232,7 @@ func TestDiscoverStableRequiresPinnedRootAndProtectedState(t *testing.T) {
 	}
 	for name, client := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := client.DiscoverStable(context.Background(), "v1.2.2", 0); !errors.Is(err, ErrDiscovery) {
+			if _, err := client.DiscoverStable(context.Background()); !errors.Is(err, ErrDiscovery) {
 				t.Fatalf("error = %v, want ErrDiscovery", err)
 			}
 		})
@@ -305,7 +306,7 @@ func TestDiscoverStableRejectsManifestV1AndBadSignatures(t *testing.T) {
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
 			client, _ := newDiscoveryClient(t, fixture, fixture.transport(mutate))
-			if _, err := client.DiscoverStable(context.Background(), "v1.2.2", 41); err == nil {
+			if _, err := client.DiscoverStable(context.Background()); err == nil {
 				t.Fatal("downgrade or invalid signature was accepted")
 			}
 		})
@@ -328,7 +329,7 @@ func TestDiscoverStableUsesPersistedSequenceAfterRestart(t *testing.T) {
 		Transport:     fixture.transport(nil),
 		Now:           func() time.Time { return fixture.now },
 	}
-	if _, err := client.DiscoverStable(context.Background(), "v1.2.2", 0); !errors.Is(err, ErrRollback) {
+	if _, err := client.DiscoverStable(context.Background()); !errors.Is(err, ErrRollback) {
 		t.Fatalf("restart rollback error = %v, want ErrRollback", err)
 	}
 	state, err := restarted.Load()
@@ -344,7 +345,7 @@ func TestDiscoverStableRejectsExpiredKeyset(t *testing.T) {
 	fixture := newDiscoveryFixture(t)
 	client, _ := newDiscoveryClient(t, fixture, fixture.transport(nil))
 	client.Now = func() time.Time { return fixture.now.Add(48 * time.Hour) }
-	if _, err := client.DiscoverStable(context.Background(), "v1.2.2", 41); !errors.Is(err, ErrInvalidKeyset) {
+	if _, err := client.DiscoverStable(context.Background()); !errors.Is(err, ErrInvalidKeyset) {
 		t.Fatalf("expired keyset error = %v, want ErrInvalidKeyset", err)
 	}
 }
@@ -360,7 +361,7 @@ func TestDiscoverStableRejectsRedirectWithoutFollowing(t *testing.T) {
 		return resp, nil
 	})
 	client, _ := newDiscoveryClient(t, fixture, transport)
-	if _, err := client.DiscoverStable(context.Background(), "v1.2.2", 0); !errors.Is(err, ErrDiscovery) {
+	if _, err := client.DiscoverStable(context.Background()); !errors.Is(err, ErrDiscovery) {
 		t.Fatalf("error = %v, want ErrDiscovery", err)
 	}
 	if requests != 1 {
@@ -389,7 +390,7 @@ func TestDiscoverStableRejectsBadHTTPAndOversizedBodies(t *testing.T) {
 	for name, transport := range tests {
 		t.Run(name, func(t *testing.T) {
 			client, _ := newDiscoveryClient(t, fixture, transport)
-			if _, err := client.DiscoverStable(context.Background(), "v1.2.2", 0); !errors.Is(err, ErrDiscovery) {
+			if _, err := client.DiscoverStable(context.Background()); !errors.Is(err, ErrDiscovery) {
 				t.Fatalf("error = %v, want ErrDiscovery", err)
 			}
 		})
@@ -405,13 +406,13 @@ func TestDiscoverStablePreservesCancellationAndRejectsNegativeTimeout(t *testing
 		return nil, req.Context().Err()
 	})
 	client, _ := newDiscoveryClient(t, fixture, transport)
-	if _, err := client.DiscoverStable(ctx, "v1.2.2", 0); !errors.Is(err, ErrDiscovery) || !errors.Is(err, context.Canceled) {
+	if _, err := client.DiscoverStable(ctx); !errors.Is(err, ErrDiscovery) || !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancellation error = %v", err)
 	}
 
 	client.Transport = fixture.transport(nil)
 	client.Timeout = -time.Second
-	if _, err := client.DiscoverStable(context.Background(), "v1.2.2", 0); !errors.Is(err, ErrDiscovery) {
+	if _, err := client.DiscoverStable(context.Background()); !errors.Is(err, ErrDiscovery) {
 		t.Fatalf("negative timeout error = %v", err)
 	}
 }
@@ -503,7 +504,7 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 
 			calls := 0
 			_, err = client.ApplyStable(
-				context.Background(), "v0.3.9", 0,
+				context.Background(),
 				InstallerClient{}, filepath.Join(t.TempDir(), "staging"), 0,
 				func(context.Context, string) error { return nil },
 				InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
@@ -569,7 +570,7 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 	})
 	apply := func(client DiscoveryClient) error {
 		_, applyErr := client.ApplyStable(
-			context.Background(), "v0.3.9", 0, InstallerClient{},
+			context.Background(), InstallerClient{},
 			filepath.Join(t.TempDir(), "staging"), 0,
 			func(context.Context, string) error { return nil }, executor,
 		)
