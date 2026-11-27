@@ -5,13 +5,15 @@ package updateinfo
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/rand"
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 )
 
 func TestWindowsUpdateRootStrictSchema(t *testing.T) {
-	_, publicKey, err := ed25519.GenerateKey(nil)
+	_, publicKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +62,7 @@ func TestWindowsPowerShellUsesTrustedSystemBinaryAndPublisher(t *testing.T) {
 }
 
 func TestWindowsPowerShellRejectsSubstitutedExecutablePath(t *testing.T) {
-	if _, err := verifyWindowsPowerShellExecutable(context.Background(), `C:Temppowershell.exe`); err == nil {
+	if _, err := verifyWindowsPowerShellExecutable(context.Background(), filepath.Join(t.TempDir(), "powershell.exe")); err == nil {
 		t.Fatal("accepted caller-controlled PowerShell path")
 	}
 }
