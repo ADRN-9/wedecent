@@ -906,8 +906,9 @@ function Assert-TransactionRecoveryScript {
             throw 'Recovery-script transaction journal fields are invalid.'
         }
         $targetInfo = Get-Item -LiteralPath $expectedTarget -Force -ErrorAction Stop
-        if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw 'Installed recovery script must be a regular non-reparse file.'
+        if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not (Test-WeDecentMetadataTrusted -Path $expectedTarget)) {
+            throw 'Installed recovery script must be a regular, ACL-trusted non-reparse file.'
         }
         $currentHash = Get-Sha256FileHash $expectedTarget
         switch ($state) {
@@ -918,8 +919,10 @@ function Assert-TransactionRecoveryScript {
         }
         if (Test-Path -LiteralPath $expectedBackup) {
             $backupInfo = Get-Item -LiteralPath $expectedBackup -Force -ErrorAction Stop
-            if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-Sha256FileHash $expectedBackup) -ne $originalHash) {
-                throw 'Previous recovery-script backup is unsafe or corrupted.'
+            if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                -not (Test-WeDecentMetadataTrusted -Path $expectedBackup) -or
+                (Get-Sha256FileHash $expectedBackup) -ne $originalHash) {
+                throw 'Previous recovery-script backup is unsafe, ACL-untrusted, or corrupted.'
             }
         } elseif (-not $Committed -and $state -ne 'original') {
             throw 'Previous recovery-script backup is missing before durable commit.'
@@ -932,8 +935,9 @@ function Assert-TransactionRecoveryScript {
         $targetExists = Test-Path -LiteralPath $expectedTarget
         if ($targetExists) {
             $targetInfo = Get-Item -LiteralPath $expectedTarget -Force -ErrorAction Stop
-            if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-                throw 'New-install recovery script must be a regular non-reparse file.'
+            if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                -not (Test-WeDecentMetadataTrusted -Path $expectedTarget)) {
+                throw 'New-install recovery script must be a regular, ACL-trusted non-reparse file.'
             }
             $currentHash = Get-Sha256FileHash $expectedTarget
         } else {
@@ -1024,14 +1028,18 @@ function Remove-CommittedTransactionBackups {
         throw 'Refusing committed cleanup because the recovery-script transaction binding is invalid.'
     }
     $recoveryInfo = Get-Item -LiteralPath $recoveryTarget -Force -ErrorAction Stop
-    if ($recoveryInfo.PSIsContainer -or ($recoveryInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-Sha256FileHash $recoveryTarget) -ne [string]$Journal.recovery_script_sha256) {
-        throw 'Refusing committed cleanup because the installed recovery script identity is invalid.'
+    if ($recoveryInfo.PSIsContainer -or ($recoveryInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        -not (Test-WeDecentMetadataTrusted -Path $recoveryTarget) -or
+        (Get-Sha256FileHash $recoveryTarget) -ne [string]$Journal.recovery_script_sha256) {
+        throw 'Refusing committed cleanup because the installed recovery script identity or ACL is invalid.'
     }
     if ([bool]$Journal.recovery_script_had_original) {
         if (Test-Path -LiteralPath $recoveryBackup) {
             $recoveryBackupInfo = Get-Item -LiteralPath $recoveryBackup -Force -ErrorAction Stop
-            if ($recoveryBackupInfo.PSIsContainer -or ($recoveryBackupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-Sha256FileHash $recoveryBackup) -ne [string]$Journal.recovery_script_original_sha256) {
-                throw 'Refusing to clean an unsafe or corrupted previous recovery-script backup.'
+            if ($recoveryBackupInfo.PSIsContainer -or ($recoveryBackupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                -not (Test-WeDecentMetadataTrusted -Path $recoveryBackup) -or
+                (Get-Sha256FileHash $recoveryBackup) -ne [string]$Journal.recovery_script_original_sha256) {
+                throw 'Refusing to clean an unsafe, ACL-untrusted, or corrupted previous recovery-script backup.'
             }
             Remove-Item -LiteralPath $recoveryBackup -Force -ErrorAction Stop
         }
@@ -1585,7 +1593,13 @@ function Restore-TransactionRecoveryScript {
                 Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue
                 throw 'Previous recovery script restore copy failed integrity verification.'
             }
+            Protect-WeDecentMetadataAcl $restore
+            if (-not (Test-WeDecentMetadataTrusted -Path $restore)) {
+                Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue
+                throw 'Previous recovery script restore copy failed ACL verification.'
+            }
             Move-Item -LiteralPath $restore -Destination $target -Force
+            Protect-WeDecentMetadataAcl $target
         } elseif (-not (Test-Path -LiteralPath $target -PathType Leaf) -or
             (Get-Sha256FileHash $target) -ne $expected) {
             throw 'Previous recovery script and its transaction backup are both unavailable.'
