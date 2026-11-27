@@ -8,4 +8,4 @@ func runUpdateCommand([]string) error {
 	return errors.New("the privileged stable updater is supported only on Windows")
 }
 
-func showUpdateError(error) {}
+func showUpdateError(err error) {}
