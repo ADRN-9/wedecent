@@ -24,7 +24,7 @@ var ErrUnverifiedManifest = errors.New("updateinfo: manifest lacks verified upda
 func (v VerifiedManifest) Manifest() Manifest { return v.manifest }
 
 // VerifyManifestV2Capability is the only capability constructor exposed to
- // callers. It delegates to the full v2 signature/keyset verifier first.
+// callers. It delegates to the full v2 signature/keyset verifier first.
 func VerifyManifestV2Capability(verified VerifiedKeyset, manifestBytes, signatureBytes []byte, now time.Time, currentVersion string, highestSequence uint64) (VerifiedManifest, error) {
 	manifest, err := VerifyManifestV2(verified, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
 	if err != nil {
