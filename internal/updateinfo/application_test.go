@@ -26,7 +26,7 @@ func TestApplyVerifiedInstallerCommitsSequenceAfterSuccess(t *testing.T) {
 	err := store.ApplyVerifiedManifest(
 		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(_ context.Context, pkg VerifiedInstallerPackage) error {
+		InstallerExecutorFunc(func(_ context.Context, _ InstallTransaction, pkg VerifiedInstallerPackage) error {
 			called = true
 			if pkg.Version != manifest.Version {
 				t.Fatalf("executor version = %q, want %q", pkg.Version, manifest.Version)
@@ -73,7 +73,7 @@ func TestApplyVerifiedInstallerFailureDoesNotCommitSequence(t *testing.T) {
 	err := store.ApplyVerifiedManifest(
 		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 			return errors.New("secret privileged stderr")
 		}),
 	)
@@ -110,7 +110,7 @@ func TestApplyVerifiedInstallerRejectsRollbackBeforeExecution(t *testing.T) {
 	err := store.ApplyVerifiedManifest(
 		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 			called = true
 			return nil
 		}),
@@ -136,7 +136,7 @@ func TestApplyVerifiedInstallerIgnoresCancellationAfterMutationStarts(t *testing
 	err := store.ApplyVerifiedManifest(
 		ctx, verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(execCtx context.Context, _ VerifiedInstallerPackage) error {
+		InstallerExecutorFunc(func(execCtx context.Context, _ InstallTransaction, _ VerifiedInstallerPackage) error {
 			cancel()
 			if execCtx.Err() != nil {
 				t.Fatalf("executor context inherited caller cancellation: %v", execCtx.Err())
@@ -170,7 +170,7 @@ func TestApplyVerifiedInstallerReportsSequenceCommitFailureAfterInstall(t *testi
 	err := store.ApplyVerifiedManifest(
 		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 			called = true
 			if err := os.Remove(statePath); err != nil {
 				t.Fatalf("remove update state before blocker: %v", err)
@@ -199,7 +199,7 @@ func TestApplyVerifiedInstallerSerializesSameSequence(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
-	executor := InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 		if calls.Add(1) == 1 {
 			close(started)
 			<-release
@@ -269,7 +269,7 @@ func TestApplyVerifiedManifestRejectsConcurrentKeysetRotation(t *testing.T) {
 	err := store.ApplyVerifiedManifest(
 		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 			called = true
 			return nil
 		}),
@@ -333,7 +333,7 @@ func TestUnverifiedManifestCannotInvokeInstallerOrAdvanceSequence(t *testing.T) 
 	path := writeStagedArchive(t, archive)
 	store := NewStateStore(StatePath(privateTempDir(t)))
 	var calls atomic.Int32
-	executor := InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 		calls.Add(1)
 		return nil
 	})
@@ -383,7 +383,7 @@ func TestInterruptedInstallerIsJournaledAndRecoveredAfterRestart(t *testing.T) {
 
 	err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 			return errors.New("simulated interrupted installer")
 		}))
 	if !errors.Is(err, ErrInstallerApply) {
@@ -405,7 +405,7 @@ func TestInterruptedInstallerIsJournaledAndRecoveredAfterRestart(t *testing.T) {
 
 	err = restarted.ApplyVerifiedManifest(context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error { return nil }))
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error { return nil }))
 	if !errors.Is(err, ErrInstallRecoveryRequired) {
 		t.Fatalf("second apply error = %v, want ErrInstallRecoveryRequired", err)
 	}
@@ -438,7 +438,7 @@ func TestUnknownInstallerRecoveryRemainsFailClosed(t *testing.T) {
 	verified, rootPublic, rootPrivate, keyset := testVerifiedManifest(t, manifest, store)
 	if err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error { return errors.New("interrupted") })); !errors.Is(err, ErrInstallerApply) {
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error { return errors.New("interrupted") })); !errors.Is(err, ErrInstallerApply) {
 		t.Fatalf("apply error = %v, want ErrInstallerApply", err)
 	}
 	if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
