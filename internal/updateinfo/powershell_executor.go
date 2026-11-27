@@ -336,7 +336,7 @@ func verifyRecoveryScriptAdmission(installDir, script string, transaction Instal
 			return fmt.Errorf("interrupted recovery script publication has an unknown digest")
 		}
 	case "published":
-		if currentDigest != journal.RecoveryScriptSHA256 {
+		if currentDigest != journal.RecoveryScriptSHA256 && currentDigest != journal.RecoveryScriptOriginalSHA256 {
 			return fmt.Errorf("published recovery script digest mismatch")
 		}
 	default:
