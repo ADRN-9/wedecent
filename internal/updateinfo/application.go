@@ -72,6 +72,9 @@ func (s *StateStore) applyVerifiedManifest(
 	if current.PendingInstall != nil {
 		return ErrInstallRecoveryRequired
 	}
+	if current.InstalledVersion == "" || current.InstalledVersion != verified.previousVersion {
+		return fmt.Errorf("%w: protected installed version changed or is unavailable", ErrRollback)
+	}
 	if current.KeysetEpoch != verified.keysetEpoch || current.KeysetDigest != verified.keysetDigest {
 		return fmt.Errorf("%w: verified manifest keyset is stale or revoked", ErrKeysetRollback)
 	}
@@ -119,6 +122,7 @@ func (s *StateStore) applyVerifiedManifest(
 			}
 			next := pending
 			next.StableSequence = verified.manifest.Sequence
+			next.InstalledVersion = transaction.TargetVersion
 			next.PendingInstall = nil
 			if err := s.persist(next); err != nil {
 				return ErrSequenceCommit
@@ -173,6 +177,7 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 			return ErrInstallRecoveryRequired
 		}
 		next.StableSequence = transaction.Sequence
+		next.InstalledVersion = transaction.TargetVersion
 	case InstallRecoveryNotApplied:
 		// Adapter has verified restoration of PreviousVersion; sequence stays unchanged.
 	default:
