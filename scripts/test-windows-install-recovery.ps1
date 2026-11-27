@@ -244,7 +244,11 @@ try {
     New-Service -Name $serviceName -BinaryPathName $serviceImage -Credential $serviceCredential -StartupType Manual -ErrorAction Stop | Out-Null
     $serviceCheck = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
     if ($null -eq $serviceCheck -or $serviceCheck.State -ne 'Stopped') { throw 'SCM service fixture was not created stopped.' }
-    $actualServiceSid = (New-Object Security.Principal.NTAccount -ArgumentList ([string]$serviceCheck.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $actualServiceStartName = ([string]$serviceCheck.StartName).Trim()
+    if ($actualServiceStartName.StartsWith('.\', [StringComparison]::Ordinal)) {
+        $actualServiceStartName = "$env:COMPUTERNAME\$($actualServiceStartName.Substring(2))"
+    }
+    $actualServiceSid = (New-Object Security.Principal.NTAccount -ArgumentList $actualServiceStartName).Translate([Security.Principal.SecurityIdentifier]).Value
     if (-not [string]::Equals($actualServiceSid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
         throw "SCM test service account SID does not match its provisioned local account ($actualServiceSid != $serviceSid)."
     }
