@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -47,6 +48,31 @@ type AuthenticodeVerifier func(context.Context, string) error
 type VerifiedInstallerPackage struct {
 	Dir     string
 	Version string
+
+	archiveDigest string
+	seal          [sha256.Size]byte
+}
+
+func newVerifiedInstallerPackage(dir, version, archiveDigest string) VerifiedInstallerPackage {
+	pkg := VerifiedInstallerPackage{Dir: dir, Version: version, archiveDigest: archiveDigest}
+	pkg.seal = pkg.expectedSeal()
+	return pkg
+}
+
+func (p VerifiedInstallerPackage) expectedSeal() [sha256.Size]byte {
+	return sha256.Sum256([]byte("WeDecent verified installer package v1\x00" + p.Dir + "\x00" + p.Version + "\x00" + p.archiveDigest))
+}
+
+func (p VerifiedInstallerPackage) validate() error {
+	expected := p.expectedSeal()
+	if p.Dir == "" || p.Version == "" || len(p.archiveDigest) != sha256.Size*2 ||
+		!hmac.Equal(p.seal[:], expected[:]) {
+		return fmt.Errorf("%w: package verification capability is invalid", ErrInstallerPackage)
+	}
+	if _, err := hex.DecodeString(p.archiveDigest); err != nil {
+		return fmt.Errorf("%w: package digest is invalid", ErrInstallerPackage)
+	}
+	return nil
 }
 
 // WithVerifiedInstallerPackage revalidates the staged archive and opens the
@@ -121,7 +147,7 @@ func WithVerifiedInstallerPackage(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := consumer(ctx, VerifiedInstallerPackage{Dir: tmpDir, Version: manifest.Version}); err != nil {
+	if err := consumer(ctx, newVerifiedInstallerPackage(tmpDir, manifest.Version, manifest.InstallerSHA256)); err != nil {
 		return err
 	}
 	return nil
