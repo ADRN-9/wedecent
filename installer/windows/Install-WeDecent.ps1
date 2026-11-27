@@ -219,7 +219,9 @@ function Initialize-WeDecentUpdateState {
     $stateOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $stateOwner).Translate([Security.Principal.SecurityIdentifier]).Value
     Set-WeDecentUpdateStateAcl -Path $temp -TrustedSids @('S-1-5-18', 'S-1-5-32-544', $ServiceSid, $stateOwnerSid)
     if (Test-Path -LiteralPath $path -PathType Leaf) {
-        [IO.File]::Replace($temp, $path, $null, $true)
+        $backup = Join-Path $StateDir ('.update-state-' + [Guid]::NewGuid().ToString('N') + '.previous')
+        [IO.File]::Replace($temp, $path, $backup, $true)
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
     } else {
         [IO.File]::Move($temp, $path)
     }
@@ -747,8 +749,13 @@ function Write-InstallJournal {
     $stream = [IO.File]::Open($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
     Protect-WeDecentMetadataAcl $temp
-    if (Test-Path -LiteralPath $path -PathType Leaf) { [IO.File]::Replace($temp, $path, $null, $true) }
-    else { [IO.File]::Move($temp, $path) }
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        $backup = Join-Path $root ('.' + [Guid]::NewGuid().ToString('N') + '.previous')
+        [IO.File]::Replace($temp, $path, $backup, $true)
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+    } else {
+        [IO.File]::Move($temp, $path)
+    }
     Protect-WeDecentMetadataAcl $path
 }
 
@@ -1109,7 +1116,9 @@ function Publish-WeDecentRecoveryScript {
     }
     Protect-WeDecentMetadataAcl $temp
     if (Test-Path -LiteralPath $target -PathType Leaf) {
-        [IO.File]::Replace($temp, $target, $null, $true)
+        $backup = Join-Path $InstallDir ('.recovery-script-' + [Guid]::NewGuid().ToString('N') + '.previous')
+        [IO.File]::Replace($temp, $target, $backup, $true)
+        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
     } else {
         [IO.File]::Move($temp, $target)
     }
