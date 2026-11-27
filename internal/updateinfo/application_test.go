@@ -160,9 +160,7 @@ func main() {
 	if err != nil {
 		t.Fatalf("read executor process log: %v", err)
 	}
-	calls := strings.Split(strings.TrimSpace(string(log)), "
---CALL--
-")
+	calls := strings.Split(strings.TrimSpace(string(log)), "\n--CALL--\n")
 	if len(calls) != 3 {
 		t.Fatalf("PowerShell process calls = %d, want preflight/install/postflight; log=%q", len(calls), log)
 	}
@@ -170,10 +168,8 @@ func main() {
 	for i, call := range calls {
 		if !strings.Contains(call, "-NoProfile") ||
 			!strings.Contains(call, "-NonInteractive") ||
-			!strings.Contains(call, "-ExecutionPolicy
-AllSigned") ||
-			!strings.Contains(call, "-File
-") ||
+			!strings.Contains(call, "-ExecutionPolicy\nAllSigned") ||
+			!strings.Contains(call, "-File\n") ||
 			!strings.Contains(call, wantScripts[i]) {
 			t.Fatalf("executor process call %d does not contain the required script policy/order: %q", i, call)
 		}
