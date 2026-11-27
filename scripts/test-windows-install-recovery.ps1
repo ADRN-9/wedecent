@@ -34,7 +34,7 @@ if ($initialPublish -lt 0 -or $initialPublish -gt $initialServiceInstall -or
     $initialCommit -lt $freshFailure) {
     throw 'Fresh installation must publish and roll back its recovery script, and commit only after rollback handling has completed.'
 }
-if (-not $installerText.Contains('recovery_script_state = if ($recoveryScriptHadOriginal) { ''original'' } else { ''absent'' }') -or
+if (-not $installerText.Contains('recovery_script_state = $recoveryScriptState') -or
     -not $installerText.Contains('Unexpected recovery script appeared after the initial-install transaction snapshot.') -or
     -not $installerText.Contains('Unexpected previous recovery-script backup exists for a new installation.')) {
     throw 'Fresh-install recovery-script publication must handle absent prior script state and reject unexpected files.'
