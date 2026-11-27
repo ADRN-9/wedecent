@@ -490,7 +490,7 @@ func verifyWindowsPowerShellExecutable(ctx context.Context, path string) (string
 	}
 	if ctx != nil {
 		if err := verifyAuthenticodePublisher(ctx, expected, expected, "Microsoft Windows", ""); err != nil {
-			return "", fmt.Errorf("Windows PowerShell publisher identity is invalid")
+			return "", fmt.Errorf("Windows PowerShell publisher identity is invalid: %w", err)
 		}
 	}
 	after, err := hashRegularFile(expected)
@@ -551,7 +551,11 @@ if ($env:WEDECENT_AUTHENTICODE_SUBJECT) {
 		"WEDECENT_AUTHENTICODE_SUBJECT="+expectedSubject,
 	)
 	if err := command.Run(); err != nil {
-		return fmt.Errorf("Authenticode publisher check failed")
+		var exitError *exec.ExitError
+		if errors.As(err, &exitError) {
+			return fmt.Errorf("Authenticode publisher check failed with status %d", exitError.ExitCode())
+		}
+		return fmt.Errorf("Authenticode publisher check failed: %w", err)
 	}
 	return nil
 }
