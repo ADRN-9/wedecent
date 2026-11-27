@@ -48,6 +48,7 @@ func main() {
 		showFatal(err)
 		os.Exit(1)
 	}
+	defer stopSiblingCore()
 	controller, err := guiapp.New(uiCore)
 	if err != nil {
 		showFatal(err)
