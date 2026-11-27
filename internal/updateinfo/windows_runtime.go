@@ -319,6 +319,7 @@ func ApplyInstalledWindowsStable(ctx context.Context) error {
 		InstallDir:     metadata.InstallDir,
 		StateDir:       metadata.StateDir,
 		ServiceName:    metadata.ServiceName,
+		WebRelay:       "https://relay.wedecent.com",
 		verifyExecutable: func(ctx context.Context, path string) (string, error) {
 			return verifyWindowsPowerShellExecutable(ctx, path)
 		},
@@ -349,8 +350,7 @@ func ApplyInstalledWindowsStable(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("stable update failed closed: %w", err)
 	}
-	fmt.Fprintf(os.Stdout, "WeDecent updated to %s (stable sequence %d).
-", manifest.Version, manifest.Sequence)
+	fmt.Fprintf(os.Stdout, "WeDecent updated to %s (stable sequence %d).\\n", manifest.Version, manifest.Sequence)
 	return nil
 }
 
