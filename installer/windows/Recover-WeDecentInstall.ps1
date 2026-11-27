@@ -63,6 +63,10 @@ function Set-TrustedAcl {
 
 function Assert-TrustedAcl {
     param([Parameter(Mandatory = $true)][string]$Path, [string[]]$AdditionalTrustedSids = @())
+    $item = Get-Item -LiteralPath $Path -Force
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Recovery trust path must not be a reparse point: $Path"
+    }
     $acl = Get-Acl -LiteralPath $Path
     if (-not $acl.AreAccessRulesProtected) {
         throw "Recovery trust path has an inheriting DACL: $Path"
@@ -125,6 +129,13 @@ if (-not $InstallDir.StartsWith([IO.Path]::GetFullPath($env:ProgramFiles) + [IO.
 }
 if (-not $StateDir.StartsWith($InstallDir + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
     throw 'Recovery state directory is outside the install directory.'
+}
+$installItem = Get-Item -LiteralPath $InstallDir -Force
+$stateDirectoryItem = Get-Item -LiteralPath $StateDir -Force
+if (-not $installItem.PSIsContainer -or -not $stateDirectoryItem.PSIsContainer -or
+    (($installItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) -or
+    (($stateDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
+    throw 'Install or state directory is unavailable or a reparse point.'
 }
 $journalRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
 $journalPath = Join-Path $journalRoot ($TransactionId + '.json')
