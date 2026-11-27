@@ -14,6 +14,10 @@ This gate remains open until an operator records a real-hardware/VM run covering
 - Exercise corrupted/missing backup, malformed or mismatched journal, replayed transaction ID, stale sequence, forged package, and downgrade attempts; each must fail closed without deleting the only recoverable original.
 - Record VM image/build, Windows version, privilege context, test script revision, exact repository SHA, timestamps, logs, and final binary digests.
 
+## Operational wiring boundary
+
+`DiscoveryClient.ApplyStable` now invokes the `InstallerRecovery` capability before another update discovery, and `PowerShellInstallerExecutor` provides the journal-backed Windows recovery adapter. This is still library-level wiring: inspection of `cmd/wd-agent/main.go`, `cmd/wd-core/main.go`, and `cmd/wd/main.go` found no production caller constructing the executor or invoking `ApplyStable`. A privileged updater host must still provide the protected state store, Authenticode verifier, install/state paths, service identity, and elevated execution context. Until that entry point is wired and exercised, the recovery adapter is not an operational update path in the shipped product.
+
 ## Accountable ownership
 
 **Accountable repository owner:** ADRN-9, as the repository maintainer currently authoring the updater branch. ADRN-9 must name the operator responsible for provisioning and retaining the persistent privileged Windows VM and attach the resulting evidence to PR #209 before the gate can be accepted.
