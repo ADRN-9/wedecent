@@ -259,15 +259,27 @@ func TestPowerShellInstallerExecutorRecoveryMapsDurableJournalOutcome(t *testing
 				t.Fatal(err)
 			}
 			script := filepath.Join(installDir, "Recover-WeDecentInstall.ps1")
-			if err := os.WriteFile(script, []byte("fixture"), 0o600); err != nil {
+			scriptBytes := []byte("fixture")
+			if err := os.WriteFile(script, scriptBytes, 0o600); err != nil {
 				t.Fatal(err)
 			}
 			transaction := executorTestTransaction("v0.4.0")
 			transaction.Phase = InstallPhaseRecoveryRequired
+			backup := script + "." + transaction.ID + ".previous"
+			if err := os.WriteFile(backup, scriptBytes, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			scriptDigest, err := hashInstallerFile(script)
+			if err != nil {
+				t.Fatal(err)
+			}
 			journal := windowsInstallJournal{
 				TransactionID: transaction.ID, PackageSHA256: transaction.PackageDigest,
 				ManifestSHA256: transaction.ManifestDigest, PreviousVersion: transaction.PreviousVersion,
 				Sequence: transaction.Sequence, Version: transaction.TargetVersion, Phase: test.phase,
+				RecoveryScriptPath: script, RecoveryScriptHadOriginal: true,
+				RecoveryScriptOriginalSHA256: scriptDigest, RecoveryScriptBackupPath: backup,
+				RecoveryScriptSHA256: scriptDigest, RecoveryScriptState: "original",
 			}
 			journalDir := filepath.Join(root, "WeDecent", "install-transactions")
 			if err := os.MkdirAll(journalDir, 0o700); err != nil {
