@@ -3,7 +3,7 @@
 **Repository:** ADRN-9/wedecent  
 **PR:** #209 — open, draft, unmerged  
 **Branch:** `security/c324-verified-update-admission-recovery`  
-**Report HEAD:** `5fbb3ea3f8830ccbda62efd0b1306f5f8a5d65df`  
+**Report HEAD:** `bab5eb3be14ddb84c9db5550f01716558291bfda`  
 **Date:** 2026-11-27
 
 ## Disposition
@@ -54,7 +54,7 @@ Earlier full-CI and Desktop runs are not substitutes for exact-head validation. 
 
 ## Outstanding blockers
 
-1. **Recovery script integrity implementation is not accepted.** The previously malformed 146,510-byte recovery script was restored to its canonical 591-line baseline. A transaction-bound recovery-script validation/restore helper was then added: it validates the installed path, original digest, backup path and backup contents before rollback, restores the previous script, and persists the restored digest/state in the journal. This source repair is not yet accepted: the finalizer backup-cleanup path and Windows PowerShell adversarial suite still need exact-head validation.
+1. **Recovery script integrity implementation is not accepted.** The previously malformed 146,510-byte recovery script was restored to its canonical 591-line baseline (commit `c666124aa2cc888a21ad281bc6c84f70ff268297`). A transaction-bound recovery-script validation/restore helper was added (commit `5fbb3ea3f8830ccbda62efd0b1306f5f8a5d65df`): it validates the installed path, original digest, backup path and backup contents before rollback, restores the previous script, and persists the restored digest/state in the journal. The existing PowerShell recovery test fixture already includes interrupted/corrupted recovery-script backup cases. This source repair is not yet accepted: the finalizer backup-cleanup path and Windows PowerShell adversarial suite still need exact-head validation.
 2. Add and pass adversarial interruption/corruption tests proving: backup is transaction-bound; recovery script digest is checked before elevated execution; failed installation restores the previous script; corrupted/missing backup fails before mutation; rollback failure leaves service stopped and retains the backup.
 3. Add full process-authentication tests for wrong SID, wrong logon session, malformed/ambiguous token information, invalid caller image, UAC cancellation, and an elevated helper launched without the intended original caller.
 4. Verify staged-worker publisher mismatch and path substitution negatives on Windows. Hosted source tests are not actual privileged install acceptance.
