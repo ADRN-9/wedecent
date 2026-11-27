@@ -48,7 +48,7 @@ type verifiedInstallerPackageToken struct {
 	version        string
 	manifestDigest string
 	packageDigest  string
-	files map[string]string
+	files          map[string]string
 }
 
 // VerifiedInstallerPackage is an opaque, callback-scoped capability. Its zero
@@ -58,12 +58,16 @@ type VerifiedInstallerPackage struct {
 }
 
 func (p VerifiedInstallerPackage) Directory() string {
-	if p.token == nil { return "" }
+	if p.token == nil {
+		return ""
+	}
 	return p.token.dir
 }
 
 func (p VerifiedInstallerPackage) Version() string {
-	if p.token == nil { return "" }
+	if p.token == nil {
+		return ""
+	}
 	return p.token.version
 }
 
@@ -72,7 +76,9 @@ func (p VerifiedInstallerPackage) validateFor(transaction InstallTransaction) er
 		p.token.manifestDigest == "" || p.token.packageDigest == "" {
 		return fmt.Errorf("%w: installer package capability is missing", ErrInstallerPackage)
 	}
-	if err := transaction.validate(); err != nil { return err }
+	if err := transaction.validate(); err != nil {
+		return err
+	}
 	if p.token.version != transaction.TargetVersion ||
 		p.token.manifestDigest != transaction.ManifestDigest ||
 		p.token.packageDigest != transaction.PackageDigest {
@@ -87,9 +93,13 @@ func (p VerifiedInstallerPackage) validateFor(transaction InstallTransaction) er
 		return fmt.Errorf("%w: verified package contents changed", ErrInstallerPackage)
 	}
 	expected := make(map[string]bool, len(installerFiles))
-	for _, name := range installerFiles { expected[name] = true }
+	for _, name := range installerFiles {
+		expected[name] = true
+	}
 	for _, entry := range entries {
-		if !expected[entry.Name()] || entry.IsDir() { return fmt.Errorf("%w: verified package contents changed", ErrInstallerPackage) }
+		if !expected[entry.Name()] || entry.IsDir() {
+			return fmt.Errorf("%w: verified package contents changed", ErrInstallerPackage)
+		}
 		actual, err := hashRegularFile(filepath.Join(p.token.dir, entry.Name()))
 		if err != nil || actual != p.token.files[entry.Name()] {
 			return fmt.Errorf("%w: verified package member changed", ErrInstallerPackage)
@@ -171,19 +181,23 @@ func WithVerifiedInstallerPackage(
 		return err
 	}
 	canonicalManifest, err := EncodeCanonical(manifest)
-	if err != nil { return fmt.Errorf("%w: canonicalize manifest capability", ErrInstallerPackage) }
+	if err != nil {
+		return fmt.Errorf("%w: canonicalize manifest capability", ErrInstallerPackage)
+	}
 	manifestDigest := sha256.Sum256(canonicalManifest)
 	fileDigests := make(map[string]string, len(installerFiles))
 	for _, name := range installerFiles {
 		digest, err := hashRegularFile(filepath.Join(tmpDir, name))
-		if err != nil { return fmt.Errorf("%w: seal verified package contents", ErrInstallerPackage) }
+		if err != nil {
+			return fmt.Errorf("%w: seal verified package contents", ErrInstallerPackage)
+		}
 		fileDigests[name] = digest
 	}
 	pkg := VerifiedInstallerPackage{token: &verifiedInstallerPackageToken{
 		dir: tmpDir, version: manifest.Version,
 		manifestDigest: hex.EncodeToString(manifestDigest[:]),
-		packageDigest: manifest.InstallerSHA256,
-		files: fileDigests,
+		packageDigest:  manifest.InstallerSHA256,
+		files:          fileDigests,
 	}}
 	if err := consumer(ctx, pkg); err != nil {
 		return err
