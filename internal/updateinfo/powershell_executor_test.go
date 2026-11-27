@@ -354,3 +354,72 @@ func containsArgPair(args []string, key, value string) bool {
 	}
 	return false
 }
+
+
+func TestPowerShellInstallerExecutorFinalizesOnlyCommittedState(t *testing.T) {
+	root := privateTempDir(t)
+	powershell := filepath.Join(root, "powershell.exe")
+	if err := os.WriteFile(powershell, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(root, "install")
+	stateDir := filepath.Join(installDir, "data", "agent")
+	if err := os.MkdirAll(installDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(installDir, "Recover-WeDecentInstall.ps1")
+	if err := os.WriteFile(script, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var command recordedInstallerCommand
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: powershell,
+		InstallDir: installDir,
+		StateDir: stateDir,
+		ServiceName: "WeDecentAgent",
+		run: func(_ context.Context, gotPowerShell, gotScript string, args []string) error {
+			if gotPowerShell != powershell || gotScript != script {
+				t.Fatalf("finalizer command paths = %q, %q", gotPowerShell, gotScript)
+			}
+			command = recordedInstallerCommand{script: filepath.Base(gotScript), args: append([]string(nil), args...)}
+			return nil
+		},
+	}
+	state := State{
+		Version: UpdateStateVersionWithInstall,
+		StableSequence: 91,
+		KeysetEpoch: 1,
+		KeysetDigest: strings.Repeat("a", 64),
+		InstalledVersion: "v0.4.0",
+	}
+	if err := executor.FinalizeCommitted(context.Background(), state); err != nil {
+		t.Fatalf("FinalizeCommitted() error = %v", err)
+	}
+	for _, arg := range []string{
+		"-FinalizeCommitted",
+		"-InstallDir", installDir,
+		"-StateDir", stateDir,
+		"-ServiceName", "WeDecentAgent",
+		"-ExpectedStableSequence", "91",
+		"-ExpectedInstalledVersion", "v0.4.0",
+	} {
+		if !containsString(command.args, arg) {
+			t.Fatalf("finalizer args %v missing %q", command.args, arg)
+		}
+	}
+	if err := executor.FinalizeCommitted(context.Background(), State{
+		Version: UpdateStateVersionWithInstall,
+		PendingInstall: &InstallTransaction{Phase: InstallPhaseExecuting},
+	}); err == nil {
+		t.Fatal("finalizer accepted state with a pending installation")
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
