@@ -449,3 +449,77 @@ func TestInstallProcessTerminationAtDurableBoundaries(t *testing.T) {
 		})
 	}
 }
+
+
+type testCommitFinalizerExecutor struct {
+	called bool
+	fail   bool
+}
+
+func (e *testCommitFinalizerExecutor) Execute(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
+	return nil
+}
+
+func (e *testCommitFinalizerExecutor) FinalizeCommitted(_ context.Context, state State) error {
+	e.called = true
+	if state.PendingInstall != nil || state.StableSequence == 0 || state.InstalledVersion == "" {
+		return errors.New("finalizer received uncommitted updater state")
+	}
+	if e.fail {
+		return errors.New("simulated cleanup interruption")
+	}
+	return nil
+}
+
+func TestApplyFinalizesBackupsOnlyAfterDurableCommit(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 91
+	path := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
+	executor := &testCommitFinalizerExecutor{}
+
+	if err := store.applyVerifiedManifest(context.Background(), verified, path, 0,
+		func(context.Context, string) error { return nil }, executor); err != nil {
+		t.Fatalf("apply error = %v", err)
+	}
+	if !executor.called {
+		t.Fatal("committed backup finalizer was not invoked")
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != manifest.Sequence || state.InstalledVersion != manifest.Version || state.PendingInstall != nil {
+		t.Fatalf("finalizer ran without durable commit: %#v", state)
+	}
+}
+
+func TestCleanupInterruptionKeepsCommittedStateAndBlocksNextUpdate(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 92
+	path := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
+	executor := &testCommitFinalizerExecutor{fail: true}
+
+	if err := store.applyVerifiedManifest(context.Background(), verified, path, 0,
+		func(context.Context, string) error { return nil }, executor); !errors.Is(err, ErrInstallCleanupPending) {
+		t.Fatalf("apply error = %v, want ErrInstallCleanupPending", err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != manifest.Sequence || state.InstalledVersion != manifest.Version || state.PendingInstall != nil {
+		t.Fatalf("cleanup failure damaged committed updater state: %#v", state)
+	}
+
+	retry := &testCommitFinalizerExecutor{}
+	if err := store.finalizeCommittedInstalls(context.Background(), retry); err != nil {
+		t.Fatalf("committed cleanup retry failed: %v", err)
+	}
+	if !retry.called {
+		t.Fatal("committed cleanup retry did not run")
+	}
+}
