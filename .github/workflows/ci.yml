@@ -134,6 +134,8 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Run Windows updater executor integration tests
+        run: go test ./internal/updateinfo -count=1
       - name: Build diagnostic Windows release bundle
         shell: bash
         run: WEDECENT_BUILD_MODE=diagnostic ./scripts/build-windows-release.sh
