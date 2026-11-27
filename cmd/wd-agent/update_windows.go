@@ -120,6 +120,9 @@ func runUpdateCommand(args []string) error {
 		}
 		err = updateinfo.ApplyInstalledWindowsStable(context.Background())
 		writeUpdateApplyResult(err)
+		if err == nil {
+			showUpdateSuccess()
+		}
 		return err
 	}
 	return errors.New("update apply accepts no caller-supplied paths or trust material")
@@ -296,4 +299,25 @@ func writeUpdateApplyResult(err error) {
 
 func currentAgentProcessElevated() bool {
 	return windows.GetCurrentProcessToken().IsElevated()
+}
+
+func showUpdateError(err error) {
+	if err == nil {
+		return
+	}
+	message := "WeDecent could not apply the update. No update was committed.\n\n" + err.Error()
+	title, _ := syscall.UTF16PtrFromString("WeDecent update")
+	body, convErr := syscall.UTF16PtrFromString(message)
+	if convErr != nil {
+		body, _ = syscall.UTF16PtrFromString("WeDecent could not apply the update. No update was committed.")
+	}
+	proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+	_, _, _ = proc.Call(0, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(title)), 0x10)
+}
+
+func showUpdateSuccess() {
+	title, _ := syscall.UTF16PtrFromString("WeDecent update")
+	body, _ := syscall.UTF16PtrFromString("WeDecent has been updated successfully. Reopen the desktop application.")
+	proc := syscall.NewLazyDLL("user32.dll").NewProc("MessageBoxW")
+	_, _, _ = proc.Call(0, uintptr(unsafe.Pointer(body)), uintptr(unsafe.Pointer(title)), 0x40)
 }
