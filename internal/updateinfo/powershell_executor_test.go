@@ -96,7 +96,7 @@ func TestPowerShellInstallerExecutorPreflightFailurePreventsMutation(t *testing.
 			return errors.New("preflight failed")
 		},
 	}
-	if err := executor.Execute(context.Background(), executorTestTransaction("v0.4.0"), newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))); err == nil {
+	if err := executor.Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")); err == nil {
 		t.Fatal("Execute() unexpectedly succeeded")
 	}
 	if calls != 1 {
@@ -117,7 +117,7 @@ func TestPowerShellInstallerExecutorRejectsUntrustedExecutablePath(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if err := (PowerShellInstallerExecutor{PowerShellPath: "powershell.exe"}).Execute(context.Background(), executorTestTransaction("v0.4.0"), newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))); err == nil || !strings.Contains(err.Error(), "absolute") {
+	if err := (PowerShellInstallerExecutor{PowerShellPath: "powershell.exe"}).Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("relative PowerShell error = %v", err)
 	}
 
@@ -127,7 +127,7 @@ func TestPowerShellInstallerExecutorRejectsUntrustedExecutablePath(t *testing.T)
 	}
 	link := filepath.Join(root, "powershell.exe")
 	if err := os.Symlink(target, link); err == nil {
-		if err := (PowerShellInstallerExecutor{PowerShellPath: link}).Execute(context.Background(), executorTestTransaction("v0.4.0"), newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))); err == nil || !strings.Contains(err.Error(), "non-symlink") {
+		if err := (PowerShellInstallerExecutor{PowerShellPath: link}).Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")); err == nil || !strings.Contains(err.Error(), "non-symlink") {
 			t.Fatalf("symlink PowerShell error = %v", err)
 		}
 	}
@@ -161,7 +161,7 @@ func TestPowerShellInstallerExecutorRejectsForgedPackageAndTransactionMismatch(t
 	if err := executor.Execute(context.Background(), transaction, forged); !errors.Is(err, ErrInstallerPackage) {
 		t.Fatalf("forged package error = %v, want ErrInstallerPackage", err)
 	}
-	valid := newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))
+	valid := verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")
 	mismatch := transaction
 	mismatch.PackageDigest = strings.Repeat("c", 64)
 	if err := executor.Execute(context.Background(), mismatch, valid); !errors.Is(err, ErrInstallerPackage) {
