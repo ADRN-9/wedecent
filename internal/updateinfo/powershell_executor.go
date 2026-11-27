@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -117,7 +118,7 @@ func (e PowerShellInstallerExecutor) FinalizeCommitted(ctx context.Context, stat
 		return err
 	}
 	script := filepath.Join(e.InstallDir, "Recover-WeDecentInstall.ps1")
-	if e.run == nil {
+	if e.run == nil && runtime.GOOS == "windows" {
 		if err := verifyCommittedRecoveryScriptAdmission(e.InstallDir, script, state); err != nil {
 			return fmt.Errorf("%w: installed recovery script failed committed transaction authentication: %v", ErrInstallCleanupPending, err)
 		}
@@ -154,7 +155,7 @@ func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction In
 		return InstallRecoveryUnknown, err
 	}
 	script := filepath.Join(e.InstallDir, "Recover-WeDecentInstall.ps1")
-	if e.run == nil {
+	if e.run == nil && runtime.GOOS == "windows" {
 		if err := verifyRecoveryScriptAdmission(e.InstallDir, script, transaction); err != nil {
 			return InstallRecoveryUnknown, fmt.Errorf("%w: installed recovery script failed transaction authentication: %v", ErrInstallRecoveryRequired, err)
 		}
