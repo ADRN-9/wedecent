@@ -28,10 +28,19 @@ func testExecutorTransaction() InstallTransaction {
 }
 
 func testVerifiedPackage(dir string, transaction InstallTransaction) VerifiedInstallerPackage {
+	files := make(map[string]string, len(installerFiles))
+	for _, name := range installerFiles {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("verified fixture: "+name), 0o600); err != nil { panic(err) }
+		digest, err := hashRegularFile(path)
+		if err != nil { panic(err) }
+		files[name] = digest
+	}
 	return VerifiedInstallerPackage{token: &verifiedInstallerPackageToken{
 		dir: dir, version: transaction.TargetVersion,
 		manifestDigest: transaction.ManifestDigest,
 		packageDigest: transaction.PackageDigest,
+		files: files,
 	}}
 }
 
