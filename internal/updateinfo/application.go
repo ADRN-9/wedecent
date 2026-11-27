@@ -104,22 +104,25 @@ func (s *StateStore) applyVerifiedManifest(
 			}
 
 			executing := pending
-			transaction.Phase = InstallPhaseExecuting
-			executing.PendingInstall = &transaction
+			executingTransaction := transaction
+			executingTransaction.Phase = InstallPhaseExecuting
+			executing.PendingInstall = &executingTransaction
 			if err := s.persistInstallTransition(pending, executing); err != nil {
 				return fmt.Errorf("%w: persist executing installer state", ErrInvalidState)
 			}
-			if err := executor.Execute(context.WithoutCancel(ctx), transaction, pkg); err != nil {
+			if err := executor.Execute(context.WithoutCancel(ctx), executingTransaction, pkg); err != nil {
 				recoveryRequired := executing
-				transaction.Phase = InstallPhaseRecoveryRequired
-				recoveryRequired.PendingInstall = &transaction
+				recoveryTransaction := executingTransaction
+				recoveryTransaction.Phase = InstallPhaseRecoveryRequired
+				recoveryRequired.PendingInstall = &recoveryTransaction
 				_ = s.persistInstallTransition(executing, recoveryRequired)
 				return ErrInstallerApply
 			}
 
 			committed := executing
-			transaction.Phase = InstallPhaseCommitted
-			committed.PendingInstall = &transaction
+			committedTransaction := executingTransaction
+			committedTransaction.Phase = InstallPhaseCommitted
+			committed.PendingInstall = &committedTransaction
 			if err := s.persistInstallTransition(executing, committed); err != nil {
 				return ErrSequenceCommit
 			}
