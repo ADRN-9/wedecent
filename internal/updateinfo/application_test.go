@@ -519,3 +519,4 @@ func TestCleanupInterruptionKeepsCommittedStateAndBlocksNextUpdate(t *testing.T)
 		t.Fatalf("committed cleanup retry failed: %v", err)
 	}
 }
+
