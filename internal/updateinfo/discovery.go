@@ -33,8 +33,8 @@ type DiscoveryClient struct {
 // DiscoverStable verifies and persists the root-authorized keyset before
 // verifying a v2 manifest. Sequence rollback is checked against both caller
 // state and the protected persisted sequence, which is committed after install.
-func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion string, highestSequence uint64) (Manifest, error) {
-	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
+func (c DiscoveryClient) DiscoverStable(ctx context.Context) (Manifest, error) {
+	verified, err := c.DiscoverStableVerified(ctx)
 	if err != nil {
 		return Manifest{}, err
 	}
@@ -43,7 +43,7 @@ func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion stri
 
 // DiscoverStableVerified authenticates the keyset and exact manifest bytes and
 // returns the only capability accepted by the installer admission boundary.
-func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, currentVersion string, highestSequence uint64) (VerifiedManifest, error) {
+func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context) (VerifiedManifest, error) {
 	var zero VerifiedManifest
 	if ctx == nil || c.State == nil || c.State.Path == "" ||
 		len(c.RootPublicKey) != ed25519.PublicKeySize || !keyIDPattern.MatchString(c.RootKeyID) {
@@ -51,6 +51,10 @@ func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, currentVers
 	}
 	if c.Timeout < 0 {
 		return zero, fmt.Errorf("%w: timeout must not be negative", ErrDiscovery)
+	}
+	currentVersion, highestSequence, err := c.State.installedSnapshot(ctx)
+	if err != nil {
+		return zero, fmt.Errorf("%w: obtain protected installed version and sequence: %w", ErrDiscovery, err)
 	}
 	now := time.Now()
 	if c.Now != nil {

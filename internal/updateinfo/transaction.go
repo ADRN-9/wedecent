@@ -59,7 +59,7 @@ func newInstallTransaction(verified VerifiedManifest, pkg VerifiedInstallerPacka
 	if err := verified.validate(); err != nil {
 		return InstallTransaction{}, err
 	}
-	if pkg.Version != verified.manifest.Version {
+	if pkg.Version() != verified.manifest.Version {
 		return InstallTransaction{}, ErrInstallTransaction
 	}
 	var raw [16]byte

@@ -32,12 +32,12 @@ func TestWithVerifiedInstallerPackageAcceptsExactPackage(t *testing.T) {
 			return nil
 		},
 		func(_ context.Context, pkg VerifiedInstallerPackage) error {
-			callbackDir = pkg.Dir
-			if pkg.Version != manifest.Version {
-				t.Fatalf("consumer version = %q, want %q", pkg.Version, manifest.Version)
+			callbackDir = pkg.Directory()
+			if pkg.Version() != manifest.Version {
+				t.Fatalf("consumer version = %q, want %q", pkg.Version(), manifest.Version)
 			}
 			for _, name := range installerFiles {
-				if _, err := os.Stat(filepath.Join(pkg.Dir, name)); err != nil {
+				if _, err := os.Stat(filepath.Join(pkg.Directory(), name)); err != nil {
 					t.Fatalf("consumer missing %s: %v", name, err)
 				}
 			}
