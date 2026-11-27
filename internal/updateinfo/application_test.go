@@ -335,10 +335,11 @@ func privateTempDir(t *testing.T) string {
 
 func storeStateWithoutLock(path string) (State, error) { return loadState(path) }
 
-
 func TestInstallCrashHelper(t *testing.T) {
 	phase := os.Getenv("WEDECENT_TEST_INSTALL_CRASH_PHASE")
-	if phase == "" { return }
+	if phase == "" {
+		return
+	}
 	stateDir := os.Getenv("WEDECENT_TEST_INSTALL_STATE_DIR")
 	store := NewStateStore(StatePath(stateDir))
 	manifest, archive := buildInstallerPackageFixture(t, nil)
@@ -346,13 +347,21 @@ func TestInstallCrashHelper(t *testing.T) {
 	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
 	staged := writeStagedArchive(t, archive)
 	store.persistState = func(state State) error {
-		if err := saveState(store.Path, state); err != nil { return err }
-		if state.PendingInstall != nil && state.PendingInstall.Phase == phase { os.Exit(77) }
-		if phase == "final" && state.PendingInstall == nil && state.StableSequence == manifest.Sequence { os.Exit(77) }
+		if err := saveState(store.Path, state); err != nil {
+			return err
+		}
+		if state.PendingInstall != nil && state.PendingInstall.Phase == phase {
+			os.Exit(77)
+		}
+		if phase == "final" && state.PendingInstall == nil && state.StableSequence == manifest.Sequence {
+			os.Exit(77)
+		}
 		return nil
 	}
 	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
-		if phase == "executor" { os.Exit(78) }
+		if phase == "executor" {
+			os.Exit(78)
+		}
 		return nil
 	})
 	_ = store.applyVerifiedManifest(context.Background(), verified, staged, 0,
@@ -371,14 +380,22 @@ func TestInstallProcessTerminationAtDurableBoundaries(t *testing.T) {
 			)
 			err := cmd.Run()
 			exitErr, ok := err.(*exec.ExitError)
-			if !ok { t.Fatalf("child error = %v, want process termination", err) }
+			if !ok {
+				t.Fatalf("child error = %v, want process termination", err)
+			}
 			wantExit := 77
-			if phase == "executor" { wantExit = 78 }
-			if exitErr.ExitCode() != wantExit { t.Fatalf("child exit = %d, want %d", exitErr.ExitCode(), wantExit) }
+			if phase == "executor" {
+				wantExit = 78
+			}
+			if exitErr.ExitCode() != wantExit {
+				t.Fatalf("child exit = %d, want %d", exitErr.ExitCode(), wantExit)
+			}
 
 			store := NewStateStore(StatePath(stateDir))
 			state, err := store.Load()
-			if err != nil { t.Fatal(err) }
+			if err != nil {
+				t.Fatal(err)
+			}
 			if phase == "final" {
 				if state.PendingInstall != nil || state.StableSequence != 90 {
 					t.Fatalf("final commit recovery state = %#v", state)
@@ -389,22 +406,32 @@ func TestInstallProcessTerminationAtDurableBoundaries(t *testing.T) {
 				t.Fatalf("crash did not preserve pending journal without advancing sequence: %#v", state)
 			}
 			want := InstallRecoveryNotApplied
-			if phase == "executing" || phase == "committed" { want = InstallRecoveryApplied }
+			if phase == "executing" || phase == "committed" {
+				want = InstallRecoveryApplied
+			}
 			if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
 				func(_ context.Context, transaction InstallTransaction) (InstallRecoveryResult, error) {
 					if transaction.PreviousVersion != "v0.0.0" || transaction.TargetVersion == "" {
 						t.Fatalf("recovery transaction lacks version/backup binding: %#v", transaction)
 					}
 					return want, nil
-				})); err != nil { t.Fatalf("recovery: %v", err) }
+				})); err != nil {
+				t.Fatalf("recovery: %v", err)
+			}
 			if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
 				func(context.Context, InstallTransaction) (InstallRecoveryResult, error) {
 					t.Fatal("completed recovery must be idempotent and must not call adapter again")
 					return InstallRecoveryUnknown, nil
-				})); err != nil { t.Fatalf("second recovery: %v", err) }
+				})); err != nil {
+				t.Fatalf("second recovery: %v", err)
+			}
 			state, err = store.Load()
-			if err != nil { t.Fatal(err) }
-			if state.PendingInstall != nil { t.Fatalf("recovery left pending journal: %#v", state) }
+			if err != nil {
+				t.Fatal(err)
+			}
+			if state.PendingInstall != nil {
+				t.Fatalf("recovery left pending journal: %#v", state)
+			}
 			if want == InstallRecoveryApplied && state.StableSequence != 90 {
 				t.Fatalf("applied recovery sequence = %d, want 90", state.StableSequence)
 			}
