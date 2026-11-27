@@ -80,6 +80,9 @@ func (s *StateStore) applyVerifiedManifest(
 	if current.PendingInstall != nil {
 		return ErrInstallRecoveryRequired
 	}
+	if current.InstalledVersion == "" || current.InstalledVersion != verified.previousVersion {
+		return fmt.Errorf("%w: installed version changed since manifest verification", ErrRollback)
+	}
 	if current.KeysetEpoch != verified.keysetEpoch || current.KeysetDigest != verified.keysetDigest {
 		return fmt.Errorf("%w: verified manifest keyset is stale or revoked", ErrKeysetRollback)
 	}
@@ -232,8 +235,6 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 // and an executor running in the required trusted privilege context.
 func (c DiscoveryClient) ApplyStable(
 	ctx context.Context,
-	currentVersion string,
-	highestSequence uint64,
 	installerClient InstallerClient,
 	stagingDir string,
 	maxArchiveBytes int64,
@@ -250,7 +251,7 @@ func (c DiscoveryClient) ApplyStable(
 	if executor == nil {
 		return zero, ErrInstallerUnavailable
 	}
-	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
+	verified, err := c.DiscoverStableVerified(ctx)
 	if err != nil {
 		return zero, err
 	}
