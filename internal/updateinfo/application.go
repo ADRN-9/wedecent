@@ -8,10 +8,10 @@ import (
 )
 
 var (
-	ErrInstallerApply       = errors.New("updateinfo: installer application failed")
-	ErrSequenceCommit       = errors.New("updateinfo: update installed but sequence commit failed")
+	ErrInstallerApply        = errors.New("updateinfo: installer application failed")
+	ErrSequenceCommit        = errors.New("updateinfo: update installed but sequence commit failed")
 	ErrInstallCleanupPending = errors.New("updateinfo: update committed; transaction backup cleanup pending")
-	ErrInstallerUnavailable = errors.New("updateinfo: installer executor is required")
+	ErrInstallerUnavailable  = errors.New("updateinfo: installer executor is required")
 )
 
 // InstallerExecutor is the privileged mutation boundary. It receives the
