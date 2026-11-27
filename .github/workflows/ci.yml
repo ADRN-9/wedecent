@@ -9,6 +9,7 @@ on:
       - security/c298-transport-override-fail-closed
       - security/c298-transport-override-fail-closed
       - security/c324-verified-update-admission-recovery
+      - security/c326-transactional-update-recovery
   pull_request:
     branches:
       - main
