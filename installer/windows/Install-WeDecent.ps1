@@ -597,7 +597,11 @@ function Rollback-Binary {
     } elseif (-not $HadOriginal) {
         Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
     } else {
-        throw "Required transaction backup is missing for $Destination"
+        $entry = @($script:InstallJournal.entries | Where-Object { $_.destination -eq [IO.Path]::GetFullPath($Destination) })[0]
+        if (-not (Test-Path -LiteralPath $Destination -PathType Leaf) -or
+            (Get-Sha256FileHash $Destination) -ne [string]$entry.original_sha256) {
+            throw "Required transaction backup is missing for changed binary $Destination"
+        }
     }
     Remove-Item -LiteralPath "$Destination.$($script:InstallTransactionId).new" -Force -ErrorAction SilentlyContinue
 }
@@ -660,6 +664,7 @@ function Write-InstallJournal {
     param([Parameter(Mandatory = $true)]$Journal)
     $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
     New-Item -ItemType Directory -Force -Path $root | Out-Null
+    Protect-WeDecentMetadataAcl $root
     $path = Join-Path $root ([string]$Journal.transaction_id + '.json')
     $temp = Join-Path $root ('.' + [Guid]::NewGuid().ToString('N') + '.tmp')
     $Journal.updated_at = [DateTime]::UtcNow.ToString('o')
