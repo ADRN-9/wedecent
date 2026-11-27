@@ -447,3 +447,32 @@ func TestInstallProcessTerminationAtDurableBoundaries(t *testing.T) {
 		})
 	}
 }
+
+
+func TestApplyVerifiedManifestRejectsStaleInstalledVersionUnderLock(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 91
+	staged := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
+	state, err := store.Load()
+	if err != nil { t.Fatal(err) }
+	state.InstalledVersion = "v0.1.0"
+	if err := saveState(store.Path, state); err != nil { t.Fatal(err) }
+
+	called := false
+	err = store.applyVerifiedManifest(context.Background(), verified, staged, 0,
+		func(context.Context, string) error { return nil },
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
+			called = true
+			return nil
+		}))
+	if !errors.Is(err, ErrRollback) || called {
+		t.Fatalf("stale installed version error=%v executor_called=%v", err, called)
+	}
+	state, err = store.Load()
+	if err != nil { t.Fatal(err) }
+	if state.StableSequence != 0 || state.PendingInstall != nil {
+		t.Fatalf("stale capability changed protected state: %#v", state)
+	}
+}
