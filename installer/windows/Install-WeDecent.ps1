@@ -893,35 +893,60 @@ function Assert-TransactionRecoveryScript {
     $expectedBackup = "$expectedTarget.$($Journal.transaction_id).previous"
     if (-not [IO.Path]::GetFullPath([string]$Journal.recovery_script_path).Equals($expectedTarget, [StringComparison]::OrdinalIgnoreCase) -or
         -not [IO.Path]::GetFullPath([string]$Journal.recovery_script_backup_path).Equals($expectedBackup, [StringComparison]::OrdinalIgnoreCase) -or
-        $Journal.recovery_script_had_original -isnot [bool] -or -not [bool]$Journal.recovery_script_had_original -or
-        [string]$Journal.recovery_script_original_sha256 -notmatch '^[a-f0-9]{64}$' -or
-        [string]$Journal.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$' -or
-        [string]$Journal.recovery_script_state -notin @('original', 'publishing', 'published')) {
+        $Journal.recovery_script_had_original -isnot [bool]) {
         throw 'Recovery-script transaction journal fields are invalid.'
     }
-    $targetInfo = Get-Item -LiteralPath $expectedTarget -Force -ErrorAction Stop
-    if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'Installed recovery script must be a regular non-reparse file.'
-    }
-    $currentHash = Get-Sha256FileHash $expectedTarget
+    $hadOriginal = [bool]$Journal.recovery_script_had_original
     $originalHash = [string]$Journal.recovery_script_original_sha256
     $publishedHash = [string]$Journal.recovery_script_sha256
-    switch ([string]$Journal.recovery_script_state) {
-        'original' { if ($currentHash -ne $originalHash -or $publishedHash -ne $originalHash) { throw 'Original recovery script digest mismatch.' } }
-        'publishing' { if ($currentHash -ne $originalHash -and $currentHash -ne $publishedHash) { throw 'Interrupted recovery script digest mismatch.' } }
-        'published' { if ($currentHash -ne $publishedHash -and $currentHash -ne $originalHash) { throw 'Published recovery script digest mismatch.' } }
-        default { throw 'Unknown recovery-script publication state.' }
-    }
-    if (Test-Path -LiteralPath $expectedBackup) {
-        $backupInfo = Get-Item -LiteralPath $expectedBackup -Force -ErrorAction Stop
-        if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-Sha256FileHash $expectedBackup) -ne $originalHash) {
-            throw 'Previous recovery-script backup is unsafe or corrupted.'
+    $state = [string]$Journal.recovery_script_state
+    if ($hadOriginal) {
+        if ($originalHash -notmatch '^[a-f0-9]{64}$' -or $publishedHash -notmatch '^[a-f0-9]{64}$' -or
+            $state -notin @('original', 'publishing', 'published')) {
+            throw 'Recovery-script transaction journal fields are invalid.'
         }
-    } elseif (-not $Committed -and [string]$Journal.recovery_script_state -ne 'original') {
-        throw 'Previous recovery-script backup is missing before durable commit.'
+        $targetInfo = Get-Item -LiteralPath $expectedTarget -Force -ErrorAction Stop
+        if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Installed recovery script must be a regular non-reparse file.'
+        }
+        $currentHash = Get-Sha256FileHash $expectedTarget
+        switch ($state) {
+            'original' { if ($currentHash -ne $originalHash -or $publishedHash -ne $originalHash) { throw 'Original recovery script digest mismatch.' } }
+            'publishing' { if ($currentHash -ne $originalHash -and $currentHash -ne $publishedHash) { throw 'Interrupted recovery script digest mismatch.' } }
+            'published' { if ($currentHash -ne $publishedHash -and $currentHash -ne $originalHash) { throw 'Published recovery script digest mismatch.' } }
+            default { throw 'Unknown recovery-script publication state.' }
+        }
+        if (Test-Path -LiteralPath $expectedBackup) {
+            $backupInfo = Get-Item -LiteralPath $expectedBackup -Force -ErrorAction Stop
+            if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-Sha256FileHash $expectedBackup) -ne $originalHash) {
+                throw 'Previous recovery-script backup is unsafe or corrupted.'
+            }
+        } elseif (-not $Committed -and $state -ne 'original') {
+            throw 'Previous recovery-script backup is missing before durable commit.'
+        }
+    } else {
+        if (-not [string]::IsNullOrEmpty($originalHash) -or $state -notin @('absent', 'publishing', 'published') -or
+            (Test-Path -LiteralPath $expectedBackup)) {
+            throw 'New-install recovery-script journal state is invalid.'
+        }
+        $targetExists = Test-Path -LiteralPath $expectedTarget
+        if ($targetExists) {
+            $targetInfo = Get-Item -LiteralPath $expectedTarget -Force -ErrorAction Stop
+            if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'New-install recovery script must be a regular non-reparse file.'
+            }
+            $currentHash = Get-Sha256FileHash $expectedTarget
+        } else {
+            $currentHash = ''
+        }
+        switch ($state) {
+            'absent' { if ($targetExists -or -not [string]::IsNullOrEmpty($publishedHash)) { throw 'Recovery script appeared before its transaction publication.' } }
+            'publishing' { if ($publishedHash -notmatch '^[a-f0-9]{64}$' -or ($targetExists -and $currentHash -ne $publishedHash)) { throw 'Interrupted new-install recovery script publication is invalid.' } }
+            'published' { if ($publishedHash -notmatch '^[a-f0-9]{64}$' -or -not $targetExists -or $currentHash -ne $publishedHash) { throw 'Published new-install recovery script failed integrity verification.' } }
+            default { throw 'Unknown new-install recovery-script publication state.' }
+        }
     }
 }
-
 function Restore-TransactionMetadata {
     param([Parameter(Mandatory = $true)]$Journal)
     Assert-TransactionMetadataSnapshot -Journal $Journal
@@ -1002,12 +1027,16 @@ function Remove-CommittedTransactionBackups {
     if ($recoveryInfo.PSIsContainer -or ($recoveryInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-Sha256FileHash $recoveryTarget) -ne [string]$Journal.recovery_script_sha256) {
         throw 'Refusing committed cleanup because the installed recovery script identity is invalid.'
     }
-    if (Test-Path -LiteralPath $recoveryBackup) {
-        $recoveryBackupInfo = Get-Item -LiteralPath $recoveryBackup -Force -ErrorAction Stop
-        if ($recoveryBackupInfo.PSIsContainer -or ($recoveryBackupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-Sha256FileHash $recoveryBackup) -ne [string]$Journal.recovery_script_original_sha256) {
-            throw 'Refusing to clean an unsafe or corrupted previous recovery-script backup.'
+    if ([bool]$Journal.recovery_script_had_original) {
+        if (Test-Path -LiteralPath $recoveryBackup) {
+            $recoveryBackupInfo = Get-Item -LiteralPath $recoveryBackup -Force -ErrorAction Stop
+            if ($recoveryBackupInfo.PSIsContainer -or ($recoveryBackupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or (Get-Sha256FileHash $recoveryBackup) -ne [string]$Journal.recovery_script_original_sha256) {
+                throw 'Refusing to clean an unsafe or corrupted previous recovery-script backup.'
+            }
+            Remove-Item -LiteralPath $recoveryBackup -Force -ErrorAction Stop
         }
-        Remove-Item -LiteralPath $recoveryBackup -Force -ErrorAction Stop
+    } elseif (Test-Path -LiteralPath $recoveryBackup) {
+        throw 'Unexpected previous recovery-script backup exists for a new installation.'
     }
     } elseif ([string]$Journal.phase -ne 'committed') {
         throw 'Legacy installer transaction cannot clean backups before durable commit.'
@@ -1271,11 +1300,19 @@ function Install-Binaries {
         Protect-WeDecentMetadataAcl $metadataBackupPath
     }
     $recoveryScriptPath = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
-    $recoveryScriptInfo = Get-Item -LiteralPath $recoveryScriptPath -Force -ErrorAction Stop
-    if ($recoveryScriptInfo.PSIsContainer -or ($recoveryScriptInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'Previous installed recovery script must be a regular non-reparse file.'
+    $recoveryScriptInfo = Get-Item -LiteralPath $recoveryScriptPath -Force -ErrorAction SilentlyContinue
+    $recoveryScriptExists = Test-Path -LiteralPath $recoveryScriptPath
+    if ($recoveryScriptExists -and $null -eq $recoveryScriptInfo) {
+        throw 'Existing recovery script cannot be inspected safely.'
     }
-    $recoveryScriptOriginalHash = Get-Sha256FileHash $recoveryScriptPath
+    $recoveryScriptHadOriginal = $null -ne $recoveryScriptInfo
+    $recoveryScriptOriginalHash = ''
+    if ($recoveryScriptHadOriginal) {
+        if ($recoveryScriptInfo.PSIsContainer -or ($recoveryScriptInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Previous installed recovery script must be a regular non-reparse file.'
+        }
+        $recoveryScriptOriginalHash = Get-Sha256FileHash $recoveryScriptPath
+    }
     $recoveryScriptBackupPath = "$recoveryScriptPath.$($script:InstallTransactionId).previous"
     if (Test-Path -LiteralPath $recoveryScriptBackupPath) {
         throw 'Transaction-specific recovery script backup path already exists.'
@@ -1293,11 +1330,11 @@ function Install-Binaries {
         metadata_original_sha256 = $metadataOriginalHash
         metadata_backup_path = $metadataBackupPath
         recovery_script_path = $recoveryScriptPath
-        recovery_script_had_original = $true
+        recovery_script_had_original = [bool]$recoveryScriptHadOriginal
         recovery_script_original_sha256 = $recoveryScriptOriginalHash
         recovery_script_backup_path = $recoveryScriptBackupPath
         recovery_script_sha256 = $recoveryScriptOriginalHash
-        recovery_script_state = 'original'
+        recovery_script_state = if ($recoveryScriptHadOriginal) { 'original' } else { 'absent' }
         version = $script:InstallTargetVersion
         phase = 'prepared'
         entries = @($entries.ToArray())
@@ -1488,6 +1525,10 @@ function Publish-WeDecentRecoveryScript {
             throw 'Previous recovery script backup failed integrity verification.'
         }
         Protect-WeDecentMetadataAcl $backup
+    } elseif (Test-Path -LiteralPath $target) {
+        throw 'Unexpected recovery script appeared after the initial-install transaction snapshot.'
+    } elseif (Test-Path -LiteralPath $backup) {
+        throw 'Unexpected recovery script backup exists for a new installation.'
     }
     $script:InstallJournal.recovery_script_sha256 = $newHash
     $script:InstallJournal.recovery_script_state = 'publishing'
@@ -1830,6 +1871,7 @@ if ($service) {
         if (-not $hadLogonRight) { Set-ServiceLogonRight -Sid $localUser.SID.Value -Present $true }
 
         Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
+        Publish-WeDecentRecoveryScript
         Assert-InstalledBinaries -Destinations $binaryDestinations
         Invoke-AgentServiceInstall -AgentPath $agentDestination -Password $password -RecoveryBearerToken $RecoveryAuthorityBearerToken
 
@@ -1846,11 +1888,6 @@ if ($service) {
         Write-WeDecentMetadata -AccountSid $localUser.SID.Value -ManagedAccount $managed -AccountName $ServiceAccountName -Version $version
         Write-WeDecentUpdateRoot
         Initialize-WeDecentUpdateState -Version $version -ServiceSid $localUser.SID.Value
-        if (-not $script:IsManagedUpdate -and $script:InstallJournal) {
-        $script:InstallJournal.phase = 'committed'
-        Write-InstallJournal -Journal $script:InstallJournal
-        Remove-CommittedTransactionBackups -Journal $script:InstallJournal
-    }
     } catch {
         $failed = $_
         Invoke-RollbackStep 'remove partially created service' {
@@ -1863,6 +1900,11 @@ if ($service) {
         }
         Invoke-RollbackStep 'restore installed binaries' {
             Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
+        }
+        if ($script:InstallJournal) {
+            Invoke-RollbackStep 'restore installer recovery script' {
+                Restore-TransactionRecoveryScript -Journal $script:InstallJournal
+            }
         }
         if ($AddToMachinePath) {
             Invoke-RollbackStep 'restore machine PATH' {
@@ -1905,6 +1947,11 @@ if ($service) {
             }
         }
         throw "Fresh installation failed; rollback was attempted: $($failed.Exception.Message)"
+    }
+    if (-not $script:IsManagedUpdate -and $script:InstallJournal) {
+        $script:InstallJournal.phase = 'committed'
+        Write-InstallJournal -Journal $script:InstallJournal
+        Remove-CommittedTransactionBackups -Journal $script:InstallJournal
     }
 }
 
