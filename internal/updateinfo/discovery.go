@@ -43,7 +43,7 @@ func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion stri
 
 // DiscoverStableVerified authenticates the keyset and exact manifest bytes and
 // returns the only capability accepted by the installer admission boundary.
-func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, currentVersion string, highestSequence uint64) (VerifiedManifest, error) {
+func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, _ string, highestSequence uint64) (VerifiedManifest, error) {
 	var zero VerifiedManifest
 	if ctx == nil || c.State == nil || c.State.Path == "" ||
 		len(c.RootPublicKey) != ed25519.PublicKeySize || !keyIDPattern.MatchString(c.RootKeyID) {
@@ -90,10 +90,13 @@ func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, currentVers
 	if persisted.KeysetEpoch != verifiedKeyset.Epoch() || persisted.KeysetDigest != verifiedKeyset.Digest() {
 		return zero, fmt.Errorf("%w: verified keyset does not match persisted trust state", ErrDiscovery)
 	}
+	if persisted.InstalledVersion == "" {
+		return zero, fmt.Errorf("%w: protected installed version is not provisioned", ErrDiscovery)
+	}
 	if persisted.StableSequence > highestSequence {
 		highestSequence = persisted.StableSequence
 	}
-	capability, err := VerifyManifestV2Capability(verifiedKeyset, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
+	capability, err := VerifyManifestV2Capability(verifiedKeyset, manifestBytes, signatureBytes, now, persisted.InstalledVersion, highestSequence)
 	if err != nil {
 		return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err)
 	}
