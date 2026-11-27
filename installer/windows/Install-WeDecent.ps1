@@ -1615,7 +1615,7 @@ function Publish-WeDecentRecoveryScript {
 }
 
 function Restore-TransactionRecoveryScript {
-    param([Parameter(Mandatory = $true)]$Journal)
+    param([Parameter(Mandatory = $true)]$Journal, [scriptblock]$CrashHook)
     if ([string]::IsNullOrWhiteSpace([string]$Journal.recovery_script_path)) {
         return
     }
@@ -1676,26 +1676,43 @@ function Restore-TransactionRecoveryScript {
         if (Test-Path -LiteralPath $backup) {
             throw 'Unexpected previous recovery-script backup exists for a new installation.'
         }
-        if (Test-Path -LiteralPath $target) {
-            $targetInfo = Get-Item -LiteralPath $target -Force -ErrorAction Stop
-            $newHash = [string]$Journal.recovery_script_sha256
-            if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-                $newHash -notmatch '^[a-f0-9]{64}$' -or (Get-Sha256FileHash $target) -ne $newHash) {
-                throw 'Refusing to remove a recovery script not published by this transaction.'
+        $state = [string]$Journal.recovery_script_state
+        $publishedHash = [string]$Journal.recovery_script_sha256
+        $targetExists = Test-Path -LiteralPath $target
+        if ($state -eq 'absent') {
+            if ($targetExists -or -not [string]::IsNullOrEmpty($publishedHash)) {
+                throw 'Absent recovery-script state conflicts with a published file or digest.'
             }
+        } else {
+            if ($state -notin @('publishing', 'published', 'removal-pending') -or
+                $publishedHash -notmatch '^[a-f0-9]{64}$') {
+                throw 'Fresh-install rollback has no valid published recovery-script identity.'
+            }
+            if ($targetExists) {
+                $targetInfo = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+                if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    (Get-Sha256FileHash $target) -ne $publishedHash) {
+                    throw 'Refusing to remove a recovery script not published by this transaction.'
+                }
+            } elseif ($state -eq 'published') {
+                throw 'Published recovery script disappeared before durable removal intent.'
+            }
+            # Persist a valid removal identity before deleting the file.
+            $Journal.recovery_script_state = 'removal-pending'
+            $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
+            Write-InstallJournal -Journal $Journal -Path $journalPath
+            if ($CrashHook) { & $CrashHook 'after-removal-intent' }
+            if (Test-Path -LiteralPath $target) {
+                Remove-Item -LiteralPath $target -Force -ErrorAction Stop
+            }
+            if ($CrashHook) { & $CrashHook 'after-script-delete' }
+            $Journal.recovery_script_sha256 = ''
+            $Journal.recovery_script_state = 'absent'
         }
-        # Persist intent before deletion so recovery can safely repeat the removal.
-        $Journal.recovery_script_state = 'removal-pending'
-        $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
-        Write-InstallJournal -Journal $Journal -Path $journalPath
-        if (Test-Path -LiteralPath $target) {
-            Remove-Item -LiteralPath $target -Force -ErrorAction Stop
-        }
-        $Journal.recovery_script_sha256 = ''
-        $Journal.recovery_script_state = 'absent'
     }
     $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
     Write-InstallJournal -Journal $Journal -Path $journalPath
+    if ($CrashHook) { & $CrashHook 'after-terminal-journal' }
     if ([bool]$Journal.recovery_script_had_original -and (Test-Path -LiteralPath $backup)) {
         $backupInfo = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
         if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
