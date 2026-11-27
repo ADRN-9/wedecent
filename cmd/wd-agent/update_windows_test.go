@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -123,6 +124,37 @@ func TestUpdateWorkerWaitsForBothAuthenticatedLaunchers(t *testing.T) {
 		time.Sleep(25 * time.Millisecond)
 	}
 	t.Fatal("worker did not start after both authenticated launcher processes exited")
+}
+
+// TestUpdateProcessIdentityRealProcessProbe is invoked by the privileged installer
+// harness under a distinct Windows account. It exercises openExpectedProcess and
+// verifyProcessLogonIdentity against the actual harness process token.
+func TestUpdateProcessIdentityRealProcessProbe(t *testing.T) {
+	if os.Getenv("WEDECENT_IDENTITY_PROBE") != "1" {
+		return
+	}
+	pid, err := strconv.ParseUint(os.Getenv("WEDECENT_IDENTITY_PROBE_TARGET_PID"), 10, 32)
+	if err != nil || pid == 0 {
+		t.Fatal("invalid target process ID")
+	}
+	expectedImage := os.Getenv("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE")
+	evidencePath := os.Getenv("WEDECENT_IDENTITY_PROBE_EVIDENCE")
+	if expectedImage == "" || evidencePath == "" {
+		t.Fatal("missing process identity probe configuration")
+	}
+	handle, err := openExpectedProcess(uint32(pid), expectedImage)
+	if handle != 0 {
+		_ = windows.CloseHandle(handle)
+	}
+	if err == nil {
+		t.Fatal("wd-agent process validator accepted a different Windows user or logon session")
+	}
+	if !strings.Contains(err.Error(), "different Windows user or logon session") {
+		t.Fatalf("wd-agent process validator did not reach the identity rejection boundary: %v", err)
+	}
+	if err := os.WriteFile(evidencePath, []byte(err.Error()), 0o600); err != nil {
+		t.Fatalf("write process identity evidence: %v", err)
+	}
 }
 
 func TestUpdateProcessIdentityRejectsCrossUserAndLogonSession(t *testing.T) {
