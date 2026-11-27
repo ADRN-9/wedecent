@@ -84,19 +84,19 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction In
 }
 
 type windowsInstallJournal struct {
-	TransactionID                  string `json:"transaction_id"`
-	PackageSHA256                  string `json:"package_sha256"`
-	ManifestSHA256                 string `json:"manifest_sha256"`
-	PreviousVersion                string `json:"previous_version"`
-	Sequence                       uint64 `json:"sequence"`
-	Version                        string `json:"version"`
-	Phase                          string `json:"phase"`
-	RecoveryScriptPath             string `json:"recovery_script_path"`
-	RecoveryScriptHadOriginal      bool   `json:"recovery_script_had_original"`
-	RecoveryScriptOriginalSHA256   string `json:"recovery_script_original_sha256"`
-	RecoveryScriptBackupPath       string `json:"recovery_script_backup_path"`
-	RecoveryScriptSHA256           string `json:"recovery_script_sha256"`
-	RecoveryScriptState            string `json:"recovery_script_state"`
+	TransactionID                string `json:"transaction_id"`
+	PackageSHA256                string `json:"package_sha256"`
+	ManifestSHA256               string `json:"manifest_sha256"`
+	PreviousVersion              string `json:"previous_version"`
+	Sequence                     uint64 `json:"sequence"`
+	Version                      string `json:"version"`
+	Phase                        string `json:"phase"`
+	RecoveryScriptPath           string `json:"recovery_script_path"`
+	RecoveryScriptHadOriginal    bool   `json:"recovery_script_had_original"`
+	RecoveryScriptOriginalSHA256 string `json:"recovery_script_original_sha256"`
+	RecoveryScriptBackupPath     string `json:"recovery_script_backup_path"`
+	RecoveryScriptSHA256         string `json:"recovery_script_sha256"`
+	RecoveryScriptState          string `json:"recovery_script_state"`
 }
 
 func (e PowerShellInstallerExecutor) FinalizeCommitted(ctx context.Context, state State) error {
@@ -205,8 +205,6 @@ func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction In
 		return InstallRecoveryUnknown, fmt.Errorf("%w: Windows recovery outcome remains ambiguous", ErrInstallRecoveryRequired)
 	}
 }
-
-
 
 func verifyCommittedRecoveryScriptAdmission(installDir, script string, state State) error {
 	programData := os.Getenv("ProgramData")
