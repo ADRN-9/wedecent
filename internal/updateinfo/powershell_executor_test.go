@@ -185,8 +185,8 @@ func TestPowerShellInstallerExecutorRejectsForgedPackageAndTransactionMismatch(t
 func executorTestTransaction(version string) InstallTransaction {
 	return InstallTransaction{
 		ID: strings.Repeat("1", 32), Sequence: 1,
-		ManifestDigest: strings.Repeat("b", 64),
-		PackageDigest: strings.Repeat("a", 64),
+		ManifestDigest:  strings.Repeat("b", 64),
+		PackageDigest:   strings.Repeat("a", 64),
 		PreviousVersion: "v0.3.9", TargetVersion: version,
 		Phase: InstallPhaseExecuting,
 	}
