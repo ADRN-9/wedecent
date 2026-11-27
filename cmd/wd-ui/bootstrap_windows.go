@@ -133,7 +133,7 @@ func stopInstalledCoreProcesses() error {
 		return errors.New("resolve installed Local Core path")
 	}
 	snapshot, _, callErr := createToolhelpSnapshotCore.Call(th32csSnapProcess, 0)
-	if windows.Handle(snapshot) == windows.InvalidHandle {
+	if snapshot == ^uintptr(0) {
 		return fmt.Errorf("enumerate Local Core processes: %w", callErr)
 	}
 	defer windows.CloseHandle(windows.Handle(snapshot))
@@ -142,7 +142,13 @@ func stopInstalledCoreProcesses() error {
 		return errors.New("read desktop user identity")
 	}
 	entry := processEntry32Core{Size: uint32(unsafe.Sizeof(processEntry32Core{}))}
-	ok, _, _ := process32FirstCore.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+	ok, _, enumErr := process32FirstCore.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+	if ok == 0 {
+		if enumErr != syscall.Errno(18) {
+			return errors.New("cannot enumerate running Local Core processes")
+		}
+		return nil
+	}
 	for ok != 0 {
 		if strings.EqualFold(syscall.UTF16ToString(entry.ExeFile[:]), "wd-core.exe") && entry.ProcessID != uint32(os.Getpid()) {
 			process, openErr := windows.OpenProcess(
@@ -194,7 +200,10 @@ func stopInstalledCoreProcesses() error {
 			}
 		}
 		entry = processEntry32Core{Size: uint32(unsafe.Sizeof(processEntry32Core{}))}
-		ok, _, _ = process32NextCore.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+		ok, _, enumErr = process32NextCore.Call(snapshot, uintptr(unsafe.Pointer(&entry)))
+		if ok == 0 && enumErr != syscall.Errno(18) {
+			return errors.New("Local Core process enumeration ended unexpectedly")
+		}
 	}
 	return nil
 }
