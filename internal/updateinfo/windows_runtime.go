@@ -186,9 +186,18 @@ func PrepareWindowsUpdateWorker(ctx context.Context) (string, error) {
 		_ = os.Remove(destination)
 		return "", err
 	}
+	psDigest, err := verifyWindowsPowerShellExecutable(ctx, powershell)
+	if err != nil {
+		_ = os.Remove(destination)
+		return "", err
+	}
 	if err := verifyAuthenticodePublisher(ctx, powershell, destination, "", root.AuthenticodeThumbprint); err != nil {
 		_ = os.Remove(destination)
 		return "", fmt.Errorf("verify copied update worker publisher: %w", err)
+	}
+	if after, err := hashRegularFile(powershell); err != nil || after != psDigest {
+		_ = os.Remove(destination)
+		return "", fmt.Errorf("Windows PowerShell changed during update worker verification")
 	}
 	workerInfo, err := os.Lstat(destination)
 	if err != nil || workerInfo.Mode()&os.ModeSymlink != 0 || !workerInfo.Mode().IsRegular() ||
@@ -370,8 +379,13 @@ func loadWindowsUpdateRoot(path string) (WindowsUpdateRoot, error) {
 		!windowsPublisherPattern.MatchString(root.AuthenticodeThumbprint) {
 		return zero, fmt.Errorf("stable update trust root is malformed")
 	}
-	if _, err := DecodePublicKey([]byte(root.RootPublicKey)); err != nil {
+	publicKey, err := DecodePublicKey([]byte(root.RootPublicKey))
+	if err != nil {
 		return zero, fmt.Errorf("stable update root public key is invalid")
+	}
+	canonicalKey, err := EncodePublicKey(publicKey)
+	if err != nil || string(canonicalKey) != root.RootPublicKey {
+		return zero, fmt.Errorf("stable update root public key encoding is not canonical")
 	}
 	root.AuthenticodeThumbprint = strings.ToUpper(root.AuthenticodeThumbprint)
 	return root, nil
