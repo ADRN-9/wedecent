@@ -26,12 +26,12 @@ const createNoWindow = 0x08000000
 const th32csSnapProcess = 0x00000002
 
 var (
-	kernel32Core                = syscall.NewLazyDLL("kernel32.dll")
-	toolhelp32Core              = syscall.NewLazyDLL("kernel32.dll")
-	createToolhelpSnapshotCore  = toolhelp32Core.NewProc("CreateToolhelp32Snapshot")
-	process32FirstCore          = toolhelp32Core.NewProc("Process32FirstW")
-	process32NextCore           = toolhelp32Core.NewProc("Process32NextW")
-	queryProcessImageCore       = kernel32Core.NewProc("QueryFullProcessImageNameW")
+	kernel32Core               = syscall.NewLazyDLL("kernel32.dll")
+	toolhelp32Core             = syscall.NewLazyDLL("kernel32.dll")
+	createToolhelpSnapshotCore = toolhelp32Core.NewProc("CreateToolhelp32Snapshot")
+	process32FirstCore         = toolhelp32Core.NewProc("Process32FirstW")
+	process32NextCore          = toolhelp32Core.NewProc("Process32NextW")
+	queryProcessImageCore      = kernel32Core.NewProc("QueryFullProcessImageNameW")
 )
 
 type processEntry32Core struct {
