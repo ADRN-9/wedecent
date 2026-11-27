@@ -693,6 +693,18 @@ try {
         entries = $finalizeEntries
         updated_at = [DateTime]::UtcNow.ToString('o')
     }
+    $finalizeRecoveryScriptPath = Join-Path $finalizeInstallDir 'Recover-WeDecentInstall.ps1'
+    $finalizeRecoveryBackup = "$finalizeRecoveryScriptPath.$finalizeTransactionId.previous"
+    [IO.File]::WriteAllText($finalizeRecoveryScriptPath, 'current published recovery script')
+    [IO.File]::WriteAllText($finalizeRecoveryBackup, 'prior recovery script')
+    Set-TestTrustedAcl -Path $finalizeRecoveryScriptPath
+    Set-TestTrustedAcl -Path $finalizeRecoveryBackup
+    $finalizeJournal.recovery_script_path = $finalizeRecoveryScriptPath
+    $finalizeJournal.recovery_script_backup_path = $finalizeRecoveryBackup
+    $finalizeJournal.recovery_script_had_original = $true
+    $finalizeJournal.recovery_script_original_sha256 = Get-TestHash $finalizeRecoveryBackup
+    $finalizeJournal.recovery_script_sha256 = Get-TestHash $finalizeRecoveryScriptPath
+    $finalizeJournal.recovery_script_state = 'published'
     Write-TestJson -Path $finalizeJournalPath -Value $finalizeJournal
     $finalizeMetadataPath = Join-Path $finalizeWeDecent 'installer.json'
     Write-TestJson -Path $finalizeMetadataPath -Value ([ordered]@{
@@ -746,6 +758,15 @@ try {
         metadata_backup_path = $olderMetadataBackup
         updated_at = [DateTime]::UtcNow.ToString('o')
     }
+    $olderRecoveryBackup = "$finalizeRecoveryScriptPath.$olderTransactionId.previous"
+    [IO.File]::WriteAllText($olderRecoveryBackup, 'older prior recovery script')
+    Set-TestTrustedAcl -Path $olderRecoveryBackup
+    $olderJournal.recovery_script_path = $finalizeRecoveryScriptPath
+    $olderJournal.recovery_script_backup_path = $olderRecoveryBackup
+    $olderJournal.recovery_script_had_original = $true
+    $olderJournal.recovery_script_original_sha256 = Get-TestHash $olderRecoveryBackup
+    $olderJournal.recovery_script_sha256 = Get-TestHash $olderRecoveryBackup
+    $olderJournal.recovery_script_state = 'published'
     $olderJournalPath = Join-Path $finalizeJournalRoot ($olderTransactionId + '.json')
     Write-TestJson -Path $olderJournalPath -Value $olderJournal
 
@@ -810,6 +831,8 @@ try {
         throw 'Multi-journal finalizer did not preserve the older committed journal and clean its associated metadata snapshot.'
     }
     if (Test-Path -LiteralPath $rolledBackMetadataBackup) { throw 'Rolled-back journal metadata snapshot was not cleaned.' }
+    if (Test-Path -LiteralPath $finalizeRecoveryBackup) { throw 'Current committed recovery-script backup was not cleaned.' }
+    if (Test-Path -LiteralPath $olderRecoveryBackup) { throw 'Superseded committed recovery-script backup was not cleaned.' }
     foreach ($entry in $rolledBackEntries) {
         if (-not (Test-Path -LiteralPath $entry.backup_path -PathType Leaf) -or
             (Get-TestHash $entry.backup_path) -ne $rolledBackBackupHashes[$entry.name]) {
@@ -825,8 +848,14 @@ try {
     # Recreate only the superseded metadata snapshot to simulate interruption after binary cleanup.
     Copy-Item -LiteralPath $finalizeMetadataPath -Destination $olderMetadataBackup
     Set-TestTrustedAcl -Path $olderMetadataBackup
+    [IO.File]::WriteAllText($finalizeRecoveryBackup, 'prior recovery script')
+    [IO.File]::WriteAllText($olderRecoveryBackup, 'older prior recovery script')
+    Set-TestTrustedAcl -Path $finalizeRecoveryBackup
+    Set-TestTrustedAcl -Path $olderRecoveryBackup
     & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
     if (Test-Path -LiteralPath $olderMetadataBackup) { throw 'Interrupted superseded metadata cleanup was not resumed.' }
+    if (Test-Path -LiteralPath $finalizeRecoveryBackup) { throw 'Interrupted current recovery-script backup cleanup was not resumed.' }
+    if (Test-Path -LiteralPath $olderRecoveryBackup) { throw 'Interrupted superseded recovery-script backup cleanup was not resumed.' }
 
     # A second pass simulates process termination after only some backups were deleted.
     foreach ($entry in $finalizeEntries) {
@@ -846,6 +875,9 @@ try {
         [IO.File]::WriteAllBytes([string]$entry.backup_path, [Text.Encoding]::UTF8.GetBytes("original:$($entry.name)"))
     }
     [IO.File]::WriteAllText([string]$finalizeEntries[2].destination, 'tampered committed target')
+    [IO.File]::WriteAllText($finalizeRecoveryScriptPath, 'tampered committed recovery script')
+    [IO.File]::WriteAllText($finalizeRecoveryBackup, 'prior recovery script')
+    Set-TestTrustedAcl -Path $finalizeRecoveryBackup
     $rejected = $false
     try {
         & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
@@ -855,6 +887,9 @@ try {
         if (-not (Test-Path -LiteralPath $entry.backup_path -PathType Leaf)) {
             throw "Changed target caused premature backup deletion: $($entry.name)"
         }
+    }
+    if (-not (Test-Path -LiteralPath $finalizeRecoveryBackup -PathType Leaf)) {
+        throw 'Changed recovery-script target caused premature transaction backup deletion.'
     }
 
     # Execute the installer's metadata transaction helpers against an isolated ACL-protected fixture.
