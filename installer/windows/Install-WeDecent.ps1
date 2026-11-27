@@ -984,11 +984,21 @@ function Recover-InterruptedInstallerTransactions {
             continue
         }
 
-        $serviceBefore = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
-        $restartService = $null -ne $serviceBefore -and $serviceBefore.Status -eq 'Running'
-        if ($restartService) {
-            & (Get-Command -Name Stop-Service -CommandType Cmdlet) -Name $ServiceName -Force
-            (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        $serviceBefore = Get-Service -Name $ServiceName -ErrorAction Stop
+        $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        $expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
+        $expectedServicePath = '"' + $expectedAgent + '"'
+        $stateArgumentPattern = '(?:^|\\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\\s|$)'
+        if ($null -eq $serviceConfig -or
+            -not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+            throw 'SCM service identity does not match the authenticated installer paths.'
+        }
+        $restartService = [bool]$journal.service_was_running
+        if ($serviceBefore.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force -ErrorAction Stop }
+        (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+            throw 'SCM did not confirm the service stopped before interrupted-install recovery.'
         }
         try {
             for ($i = @($journal.entries).Count - 1; $i -ge 0; $i--) {
@@ -1019,14 +1029,23 @@ function Recover-InterruptedInstallerTransactions {
                 }
                 Remove-Item -LiteralPath "$destination.$($journal.transaction_id).new" -Force -ErrorAction SilentlyContinue
             }
+            Restore-TransactionMetadata -Journal $journal
             $journal.phase = 'rolled-back'
             Write-InstallJournal -Journal $journal
         } catch {
             throw "Interrupted installer rollback failed closed; service remains stopped and backups are retained. Cause: $($_.Exception.Message)"
         }
-        if ($restartService) {
-            Start-Service -Name $ServiceName
-            (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        try {
+            if ($restartService) {
+                Start-Service -Name $ServiceName -ErrorAction Stop
+                (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+                if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') { throw 'SCM did not confirm the previous service returned to Running.' }
+            } elseif ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+                throw 'SCM service was expected to remain stopped after recovery.'
+            }
+        } catch {
+            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+            throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; service was left stopped. Cause: $($_.Exception.Message)"
         }
     }
 }
