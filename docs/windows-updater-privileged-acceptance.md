@@ -22,6 +22,8 @@ This gate remains open until an operator records a real-hardware/VM run covering
 
 **Accountable repository owner:** ADRN-9, as the repository maintainer currently authoring the updater branch. ADRN-9 must name the operator responsible for provisioning and retaining the persistent privileged Windows VM and attach the resulting evidence to PR #209 before the gate can be accepted.
 
+**Accountable infrastructure owner:** ADRN-9 is the accountable repository/infrastructure owner for provisioning the privileged Windows VM and retaining its evidence. An individual VM operator has not yet been designated in the inspected repository records; naming that operator and recording the persistent VM identifier remain open acceptance actions.
+
 **Execution status:** No persistent privileged Windows VM identity, provisioned machine, named VM operator, or real privileged restart/reboot acceptance evidence was found in the repository evidence inspected for this task. The hosted Windows Actions runner is ephemeral CI and is not a substitute.
 
 ## Evidence classification
