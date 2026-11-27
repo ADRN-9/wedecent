@@ -80,6 +80,7 @@ func (s *StateStore) Advance(sequence uint64) error {
 	if err != nil {
 		return err
 	}
+	if current.PendingInstall != nil { return ErrInstallRecoveryRequired }
 	if sequence <= current.StableSequence {
 		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, sequence, current.StableSequence)
 	}
@@ -124,6 +125,7 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 	if err != nil {
 		return zero, err
 	}
+	if current.PendingInstall != nil { return zero, ErrInstallRecoveryRequired }
 	verified, err := VerifyKeyset(
 		rootKeyID, rootPublicKey, keysetBytes, signatureBytes, now,
 		current.KeysetEpoch, current.KeysetDigest,
