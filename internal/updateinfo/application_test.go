@@ -95,6 +95,98 @@ func TestApplyVerifiedManifestCommitsSequenceAfterSuccess(t *testing.T) {
 	}
 }
 
+func TestApplyVerifiedManifestInvokesPowerShellExecutorProcess(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 17
+	staged := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
+
+	root := t.TempDir()
+	helperSource := filepath.Join(root, "fake-powershell.go")
+	helperBinary := filepath.Join(root, "fake-powershell")
+	if os.PathSeparator == '\\' {
+		helperBinary += ".exe"
+	}
+	logPath := filepath.Join(root, "executor-argv.log")
+	helper := `package main
+
+import (
+	"os"
+	"strings"
+)
+
+func main() {
+	path := os.Getenv("WEDECENT_TEST_EXECUTOR_LOG")
+	if path == "" {
+		os.Exit(2)
+	}
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		os.Exit(3)
+	}
+	defer file.Close()
+	_, err = file.WriteString(strings.Join(os.Args[1:], "\n") + "\n--CALL--\n")
+	if err != nil {
+		os.Exit(4)
+	}
+}
+`;
+	if err := os.WriteFile(helperSource, []byte(helper), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	build := exec.Command("go", "build", "-o", helperBinary, helperSource)
+	if output, err := build.CombinedOutput(); err != nil {
+		t.Fatalf("build executor process fixture: %v: %s", err, output)
+	}
+	t.Setenv("WEDECENT_TEST_EXECUTOR_LOG", logPath)
+
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: helperBinary,
+		InstallDir:     filepath.Join(root, "installed"),
+		StateDir:       filepath.Join(root, "state"),
+		ServiceName:    "WeDecentAgent",
+		WebRelay:       "https://relay.wedecent.com",
+	}
+	if err := store.applyVerifiedManifest(
+		context.Background(), verified, staged, 0,
+		func(context.Context, string) error { return nil },
+		executor,
+	); err != nil {
+		t.Fatalf("apply verified manifest through PowerShell executor: %v", err)
+	}
+
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read executor process log: %v", err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(log)), "
+--CALL--
+")
+	if len(calls) != 3 {
+		t.Fatalf("PowerShell process calls = %d, want preflight/install/postflight; log=%q", len(calls), log)
+	}
+	wantScripts := []string{"Test-WeDecentInstall.ps1", "Install-WeDecent.ps1", "Test-WeDecentInstall.ps1"}
+	for i, call := range calls {
+		if !strings.Contains(call, "-NoProfile") ||
+			!strings.Contains(call, "-NonInteractive") ||
+			!strings.Contains(call, "-ExecutionPolicy
+AllSigned") ||
+			!strings.Contains(call, "-File
+") ||
+			!strings.Contains(call, wantScripts[i]) {
+			t.Fatalf("executor process call %d does not contain the required script policy/order: %q", i, call)
+		}
+	}
+	transaction, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if transaction.StableSequence != manifest.Sequence || transaction.PendingInstall != nil {
+		t.Fatalf("update state was not committed after executor success: %#v", transaction)
+	}
+}
+
 func TestForgedVerifiedManifestCannotInvokeExecutorOrAdvanceSequence(t *testing.T) {
 	manifest, archive := buildInstallerPackageFixture(t, nil)
 	manifest.Sequence = 8
