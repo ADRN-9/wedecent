@@ -23,7 +23,7 @@ if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
 }
 if (-not $installerText.Contains("'removal-pending'") -or
     -not $installerText.Contains('Persist a valid removal identity before deleting the file.') -or
-    -not $installerText.Contains("if ($state -eq 'absent')")) {
+    -not $installerText.Contains("if (`$state -eq 'absent')")) {
     throw 'Fresh-install rollback must preserve an already-absent state and authenticate removal intent before deleting the published script.'
 }
 $installBinariesStart = $installerText.IndexOf('function Install-Binaries')
