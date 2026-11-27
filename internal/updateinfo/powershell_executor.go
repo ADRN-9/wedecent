@@ -34,6 +34,9 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction In
 	if err := e.runScript(ctx, powershell, validate, e.validationArgs()...); err != nil {
 		return fmt.Errorf("installed WeDecent preflight failed")
 	}
+	if err := pkg.validateFor(transaction); err != nil {
+		return err
+	}
 	args := []string{
 		"-BundlePath", pkgDir,
 		"-UpdateTransactionId", transaction.ID,
