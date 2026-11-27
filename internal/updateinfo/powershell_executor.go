@@ -29,15 +29,16 @@ type PowerShellInstallerExecutor struct {
 	run            installerCommandRunner
 }
 
-func (e PowerShellInstallerExecutor) Execute(ctx context.Context, pkg VerifiedInstallerPackage) error {
+func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
+	if err := pkg.validateFor(transaction); err != nil { return err }
 	powershell, err := strictExecutablePath(e.PowerShellPath)
 	if err != nil {
 		return err
 	}
-	if pkg.Dir == "" {
+	if pkg.Directory() == "" {
 		return fmt.Errorf("verified package directory is required")
 	}
-	pkgDir, err := filepath.Abs(pkg.Dir)
+	pkgDir, err := filepath.Abs(pkg.Directory())
 	if err != nil {
 		return fmt.Errorf("resolve verified package directory")
 	}
@@ -51,7 +52,7 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, pkg VerifiedIn
 	if err := e.runScript(ctx, powershell, validate, e.validationArgs()...); err != nil {
 		return fmt.Errorf("installed WeDecent preflight failed")
 	}
-	installArgs := []string{"-BundlePath", pkgDir}
+	installArgs := []string{"-BundlePath", pkgDir, "-UpdateTransactionId", transaction.ID, "-ExpectedPreviousVersion", transaction.PreviousVersion, "-ExpectedTargetVersion", transaction.TargetVersion, "-ExpectedPackageSHA256", transaction.PackageDigest}
 	installArgs = append(installArgs, e.commonArgs()...)
 	if err := e.runScript(ctx, powershell, install, installArgs...); err != nil {
 		return fmt.Errorf("WeDecent installer failed")
@@ -59,6 +60,25 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, pkg VerifiedIn
 	if err := e.runScript(ctx, powershell, validate, e.validationArgs()...); err != nil {
 		return fmt.Errorf("installed WeDecent postflight failed")
 	}
+	return nil
+}
+
+// Commit finalizes the transaction only after the updater has durably
+// committed the target sequence. The transaction backup is not deleted by
+// Execute or by the PowerShell install phase.
+func (e PowerShellInstallerExecutor) Commit(ctx context.Context, transaction InstallTransaction) error {
+	if err := transaction.validate(); err != nil { return err }
+	powershell, err := strictExecutablePath(e.PowerShellPath)
+	if err != nil { return err }
+	if e.InstallDir == "" { return fmt.Errorf("installation directory is required for transaction commit") }
+	script := filepath.Join(e.InstallDir, "update-recovery", "Install-WeDecent.ps1")
+	if err := e.runScript(ctx, powershell, script,
+		"-UpdateTransactionAction", "Commit",
+		"-UpdateTransactionId", transaction.ID,
+		"-ExpectedPreviousVersion", transaction.PreviousVersion,
+		"-ExpectedTargetVersion", transaction.TargetVersion,
+		"-ExpectedPackageSHA256", transaction.PackageDigest,
+	); err != nil { return fmt.Errorf("installer transaction finalization failed") }
 	return nil
 }
 
