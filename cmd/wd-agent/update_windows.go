@@ -6,6 +6,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -111,10 +112,6 @@ func launchStagedUpdateWorker() error {
 	if err != nil {
 		return err
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return errors.New("resolve elevated updater launcher")
-	}
 	cmd := exec.Command(worker, "update", "apply", "--worker", "--parent-pid", strconv.Itoa(os.Getpid()))
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -129,7 +126,6 @@ func launchStagedUpdateWorker() error {
 		_ = cmd.Process.Kill()
 		return errors.New("protected update worker did not authenticate its launcher")
 	}
-	_ = executable
 	return nil
 }
 
