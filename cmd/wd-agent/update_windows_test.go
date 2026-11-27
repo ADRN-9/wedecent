@@ -125,6 +125,36 @@ func TestUpdateWorkerWaitsForBothAuthenticatedLaunchers(t *testing.T) {
 	t.Fatal("worker did not start after both authenticated launcher processes exited")
 }
 
+func TestUpdateProcessIdentityRejectsCrossUserAndLogonSession(t *testing.T) {
+	base := updateProcessIdentity{
+		UserSID: "S-1-5-21-1000",
+		LogonID: updateLUID{LowPart: 42, HighPart: 1},
+	}
+	if !sameUpdateProcessIdentity(base, base) {
+		t.Fatal("rejected identical Windows process identity")
+	}
+	crossUser := base
+	crossUser.UserSID = "S-1-5-21-2000"
+	if sameUpdateProcessIdentity(base, crossUser) {
+		t.Fatal("accepted a different Windows user SID")
+	}
+	crossSession := base
+	crossSession.LogonID.LowPart++
+	if sameUpdateProcessIdentity(base, crossSession) {
+		t.Fatal("accepted a different Windows logon session")
+	}
+	missingIdentity := updateProcessIdentity{LogonID: base.LogonID}
+	if sameUpdateProcessIdentity(base, missingIdentity) {
+		t.Fatal("accepted an ambiguous process identity without a user SID")
+	}
+}
+
+func TestOpenExpectedProcessRejectsSubstitutedImage(t *testing.T) {
+	if _, err := openExpectedProcess(uint32(os.Getpid()), filepath.Join(t.TempDir(), "wd-agent.exe")); err == nil {
+		t.Fatal("accepted a process whose image path did not match the installed updater")
+	}
+}
+
 func TestUpdateCommandRejectsCallerSuppliedTrustAndPaths(t *testing.T) {
 	if err := runUpdateCommand([]string{"apply", "--install-dir", `C:Temp`}); err == nil {
 		t.Fatal("accepted caller-supplied install path")
