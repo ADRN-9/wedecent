@@ -38,13 +38,15 @@ type State struct {
 }
 
 type StateStore struct {
-	Path string
-	mu sync.Mutex
+	Path         string
+	mu           sync.Mutex
 	persistState func(State) error
 }
 
 func (s *StateStore) persist(state State) error {
-	if s.persistState != nil { return s.persistState(state) }
+	if s.persistState != nil {
+		return s.persistState(state)
+	}
 	return saveState(s.Path, state)
 }
 
