@@ -15,6 +15,16 @@ if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).b
     -not $installerText.Contains('$stream.Flush($true)')) {
     throw 'Installer transaction-specific backup, durable journal, or sequence-commit boundary is missing.'
 }
+$cleanupHelper = $installerText.IndexOf('function Remove-CommittedTransactionBackups')
+$cleanupCommit = $installerText.IndexOf('Remove-CommittedTransactionBackups -Journal $journal')
+$cleanupGate = $installerText.IndexOf('Cannot clean transaction backups before the exact transaction is durably committed.')
+if ($cleanupHelper -lt 0 -or $cleanupCommit -lt 0 -or $cleanupGate -lt 0 -or
+    $cleanupHelper -ge $cleanupGate -or $cleanupGate -ge $cleanupCommit) {
+    throw 'Committed backup cleanup must be gated by durable updater state and invoked from committed recovery.'
+}
+if (-not $installerText.Contains('Committed installation is valid; backup cleanup will be retried later.')) {
+    throw 'Interrupted post-commit cleanup must preserve a durable retry path.'
+}
 if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
     -not $installerText.Contains('if ($binariesRestored)') -or
     -not $installerText.Contains('service is intentionally left stopped for recovery')) {
@@ -293,12 +303,34 @@ try {
     }
 
     $committed = New-TransactionFixture -Committed $true
+    # Simulate cleanup being interrupted after deleting only part of the backups.
+    Remove-Item -LiteralPath $committed.journal.entries[0].backup_path -Force
+    Remove-Item -LiteralPath $committed.journal.entries[2].backup_path -Force
     Invoke-TestRecovery -Fixture $committed | Out-Null
     $committedJournal = Get-Content -LiteralPath $committed.journalPath -Raw | ConvertFrom-Json
     if ($committedJournal.phase -ne 'committed') { throw 'Recovery did not recognize a committed sequence.' }
     foreach ($entry in $committed.journal.entries) {
         if ((Get-TestHash $entry.destination) -ne $entry.replacement_sha256) {
             throw "Committed recovery replaced a target binary: $($entry.name)"
+        }
+        if (Test-Path -LiteralPath $entry.backup_path) {
+            throw "Committed backup cleanup left a stale backup: $($entry.name)"
+        }
+    }
+    # Repeated recovery after complete cleanup must remain idempotent.
+    Invoke-TestRecovery -Fixture $committed | Out-Null
+    $replayedCommitted = Get-Content -LiteralPath $committed.journalPath -Raw | ConvertFrom-Json
+    if ($replayedCommitted.phase -ne 'committed') { throw 'Repeated committed recovery changed the committed phase.' }
+
+    $tamperedCommitted = New-TransactionFixture -Committed $true
+    [IO.File]::WriteAllText([string]$tamperedCommitted.journal.entries[0].destination, 'tampered target')
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $tamperedCommitted | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Committed recovery accepted a changed installed binary.' }
+    foreach ($entry in $tamperedCommitted.journal.entries) {
+        if (-not (Test-Path -LiteralPath $entry.backup_path -PathType Leaf) -or
+            (Get-TestHash $entry.backup_path) -ne $entry.original_sha256) {
+            throw "Unverified committed target caused premature backup cleanup: $($entry.name)"
         }
     }
 
