@@ -2,6 +2,7 @@ package updateinfo
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -63,7 +64,7 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction In
 	if err := e.runScript(ctx, powershell, validate, e.validationArgs()...); err != nil {
 		return fmt.Errorf("installed WeDecent preflight failed")
 	}
-	installArgs := []string{"-BundlePath", pkgDir, "-TransactionId", transaction.ID, "-ExpectedPackageSHA256", transaction.PackageDigest, "-TransactionSequence", fmt.Sprintf("%d", transaction.Sequence)}
+	installArgs := []string{"-BundlePath", pkgDir, "-TransactionId", transaction.ID, "-ExpectedPackageSHA256", transaction.PackageDigest, "-ExpectedManifestSHA256", transaction.ManifestDigest, "-PreviousVersion", transaction.PreviousVersion, "-TransactionSequence", fmt.Sprintf("%d", transaction.Sequence)}
 	installArgs = append(installArgs, e.commonArgs()...)
 	if err := e.runScript(ctx, powershell, install, installArgs...); err != nil {
 		return fmt.Errorf("WeDecent installer failed")
@@ -72,6 +73,78 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction In
 		return fmt.Errorf("installed WeDecent postflight failed")
 	}
 	return nil
+}
+
+type windowsInstallJournal struct {
+	TransactionID   string `json:"transaction_id"`
+	PackageSHA256   string `json:"package_sha256"`
+	ManifestSHA256  string `json:"manifest_sha256"`
+	PreviousVersion string `json:"previous_version"`
+	Sequence        uint64 `json:"sequence"`
+	Version         string `json:"version"`
+	Phase           string `json:"phase"`
+}
+
+func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction InstallTransaction) (InstallRecoveryResult, error) {
+	if ctx == nil {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: recovery context is required", ErrInstallTransaction)
+	}
+	if err := transaction.validate(); err != nil || transaction.Phase != InstallPhaseRecoveryRequired {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: recovery transaction is not authorized", ErrInstallTransaction)
+	}
+	if !filepath.IsAbs(e.InstallDir) || !filepath.IsAbs(e.StateDir) || e.ServiceName == "" {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: absolute install and state directories plus service name are required", ErrInstallTransaction)
+	}
+	powershell, err := strictExecutablePath(e.PowerShellPath)
+	if err != nil {
+		return InstallRecoveryUnknown, err
+	}
+	script := filepath.Join(e.InstallDir, "Recover-WeDecentInstall.ps1")
+	args := []string{
+		"-TransactionId", transaction.ID,
+		"-InstallDir", filepath.Clean(e.InstallDir),
+		"-StateDir", filepath.Clean(e.StateDir),
+		"-ServiceName", e.ServiceName,
+		"-ExpectedManifestSHA256", transaction.ManifestDigest,
+		"-ExpectedPackageSHA256", transaction.PackageDigest,
+		"-Sequence", fmt.Sprintf("%d", transaction.Sequence),
+		"-PreviousVersion", transaction.PreviousVersion,
+		"-TargetVersion", transaction.TargetVersion,
+	}
+	if err := e.runScript(ctx, powershell, script, args...); err != nil {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: privileged Windows recovery failed", ErrInstallRecoveryRequired)
+	}
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: ProgramData is unavailable", ErrInstallRecoveryRequired)
+	}
+	journalPath := filepath.Join(programData, "WeDecent", "install-transactions", transaction.ID+".json")
+	info, err := os.Lstat(journalPath)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: recovered transaction journal is unavailable", ErrInstallRecoveryRequired)
+	}
+	data, err := os.ReadFile(journalPath)
+	if err != nil {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: recovered transaction journal cannot be read", ErrInstallRecoveryRequired)
+	}
+	var journal windowsInstallJournal
+	if err := json.Unmarshal(data, &journal); err != nil ||
+		journal.TransactionID != transaction.ID ||
+		journal.PackageSHA256 != transaction.PackageDigest ||
+		journal.ManifestSHA256 != transaction.ManifestDigest ||
+		journal.PreviousVersion != transaction.PreviousVersion ||
+		journal.Sequence != transaction.Sequence ||
+		journal.Version != transaction.TargetVersion {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: recovered journal does not match transaction", ErrInstallRecoveryRequired)
+	}
+	switch journal.Phase {
+	case "committed":
+		return InstallRecoveryApplied, nil
+	case "rolled-back":
+		return InstallRecoveryNotApplied, nil
+	default:
+		return InstallRecoveryUnknown, fmt.Errorf("%w: Windows recovery outcome remains ambiguous", ErrInstallRecoveryRequired)
+	}
 }
 
 func (e PowerShellInstallerExecutor) commonArgs() []string {
