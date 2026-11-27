@@ -180,10 +180,10 @@ func TestApplyVerifiedManifestInvokesPowerShellExecutorProcess(t *testing.T) {
 		t.Fatalf("read executor process log: %v", err)
 	}
 	calls := strings.Split(strings.TrimSpace(string(log)), "\n--CALL--\n")
-	if len(calls) != 3 {
-		t.Fatalf("PowerShell process calls = %d, want preflight/install/postflight; log=%q", len(calls), log)
+	if len(calls) != 4 {
+		t.Fatalf("PowerShell process calls = %d, want preflight/install/postflight/committed-cleanup; log=%q", len(calls), log)
 	}
-	wantScripts := []string{"Test-WeDecentInstall.ps1", "Install-WeDecent.ps1", "Test-WeDecentInstall.ps1"}
+	wantScripts := []string{"Test-WeDecentInstall.ps1", "Install-WeDecent.ps1", "Test-WeDecentInstall.ps1", "Recover-WeDecentInstall.ps1"}
 	for i, call := range calls {
 		if !strings.Contains(call, "-NoProfile") ||
 			!strings.Contains(call, "-NonInteractive") ||
