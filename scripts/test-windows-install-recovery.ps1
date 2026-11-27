@@ -582,6 +582,7 @@ try {
     Set-TestTrustedAcl -Path $finalizeMetadataBackup
     $finalizeJournal.metadata_original_sha256 = Get-TestHash $finalizeMetadataBackup
     $finalizeJournal.metadata_path = $finalizeMetadataPath
+    $finalizeJournal.metadata_had_original = $true
     $finalizeJournal.metadata_backup_path = $finalizeMetadataBackup
     Write-TestJson -Path $finalizeJournalPath -Value $finalizeJournal
 
