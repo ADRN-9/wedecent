@@ -31,7 +31,7 @@ $recoveryText = Get-Content -LiteralPath $recoveryScript -Raw
 if (-not $recoveryText.Contains('FinalizeCommitted') -or
     -not $recoveryText.Contains('Protected updater state changed before committed backup cleanup.') -or
     -not $recoveryText.Contains('Backup disappeared before durable committed journal publication') -or
-    -not $recoveryText.Contains('Refusing to clean a corrupted or unauthenticated committed metadata snapshot.') -or
+    -not $recoveryText.Contains('Refusing to clean a corrupted committed metadata snapshot:') -or
     -not $recoveryText.Contains('metadata_backup_path') -or
     -not $recoveryText.Contains('SCM service identity does not match authenticated prior installer metadata.') -or
     -not $recoveryText.Contains('SCM service account SID does not match protected installer metadata') -or
