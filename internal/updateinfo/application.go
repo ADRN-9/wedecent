@@ -15,16 +15,16 @@ var (
 )
 
 type InstallerExecutor interface {
-	Execute(context.Context, VerifiedInstallerPackage) error
+	Execute(context.Context, InstallTransaction, VerifiedInstallerPackage) error
 }
 
-type InstallerExecutorFunc func(context.Context, VerifiedInstallerPackage) error
+type InstallerExecutorFunc func(context.Context, InstallTransaction, VerifiedInstallerPackage) error
 
-func (f InstallerExecutorFunc) Execute(ctx context.Context, pkg VerifiedInstallerPackage) error {
+func (f InstallerExecutorFunc) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
 	if f == nil {
 		return ErrInstallerUnavailable
 	}
-	return f(ctx, pkg)
+	return f(ctx, transaction, pkg)
 }
 
 // ApplyVerifiedInstaller is retained as a fail-closed compatibility shim.
@@ -100,7 +100,7 @@ func (s *StateStore) ApplyVerifiedManifest(ctx context.Context, verified Verifie
 				return fmt.Errorf("%w: persist pending install intent", ErrInvalidState)
 			}
 			mutated = true
-			if err := executor.Execute(context.WithoutCancel(ctx), pkg); err != nil {
+			if err := executor.Execute(context.WithoutCancel(ctx), transaction, pkg); err != nil {
 				return ErrInstallerApply
 			}
 			return nil
