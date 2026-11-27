@@ -216,6 +216,30 @@ func TestDiscoverStableUsesRootKeysetAndV2Only(t *testing.T) {
 	}
 }
 
+func TestDiscoverStableUsesProtectedInstalledVersionNotCallerArgument(t *testing.T) {
+	fixture := newDiscoveryFixture(t)
+	client, store := newDiscoveryClient(t, fixture, fixture.transport(nil))
+	state, err := store.Load()
+	if err != nil { t.Fatal(err) }
+	state.InstalledVersion = "v2.0.0"
+	if err := saveState(store.Path, state); err != nil { t.Fatal(err) }
+	if _, err := client.DiscoverStable(context.Background(), "v0.1.0", 0); !errors.Is(err, ErrRollback) {
+		t.Fatalf("caller-supplied downgrade baseline was trusted: %v", err)
+	}
+}
+
+func TestDiscoverStableRejectsMissingProtectedInstalledVersion(t *testing.T) {
+	fixture := newDiscoveryFixture(t)
+	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
+	client := DiscoveryClient{
+		RootKeyID: fixture.keyset.RootKeyID, RootPublicKey: fixture.rootPublic,
+		State: store, Transport: fixture.transport(nil), Now: func() time.Time { return fixture.now },
+	}
+	if _, err := client.DiscoverStable(context.Background(), "v0.0.0", 0); !errors.Is(err, ErrDiscovery) {
+		t.Fatalf("missing protected installed version error = %v, want ErrDiscovery", err)
+	}
+}
+
 func TestDiscoverStableRequiresPinnedRootAndProtectedState(t *testing.T) {
 	fixture := newDiscoveryFixture(t)
 	called := false
