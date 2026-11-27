@@ -461,3 +461,80 @@ func containsString(values []string, want string) bool {
 	}
 	return false
 }
+
+
+func TestRecoveryScriptAdmissionRejectsTamperingAndAllowsVerifiedRollback(t *testing.T) {
+	root := privateTempDir(t)
+	t.Setenv("ProgramData", root)
+	installDir := filepath.Join(root, "install")
+	if err := os.MkdirAll(installDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	transaction := executorTestTransaction("v0.4.0")
+	transaction.Phase = InstallPhaseRecoveryRequired
+	script := filepath.Join(installDir, "Recover-WeDecentInstall.ps1")
+	backup := script + "." + transaction.ID + ".previous"
+	published := []byte("published recovery script")
+	original := []byte("previous recovery script")
+	if err := os.WriteFile(script, published, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	publishedHash, err := hashInstallerFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalHash, err := hashInstallerFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := windowsInstallJournal{
+		TransactionID: transaction.ID, PackageSHA256: transaction.PackageDigest,
+		ManifestSHA256: transaction.ManifestDigest, PreviousVersion: transaction.PreviousVersion,
+		Sequence: transaction.Sequence, Version: transaction.TargetVersion,
+		RecoveryScriptPath: script, RecoveryScriptHadOriginal: true,
+		RecoveryScriptOriginalSHA256: originalHash, RecoveryScriptBackupPath: backup,
+		RecoveryScriptSHA256: publishedHash, RecoveryScriptState: "published",
+	}
+	journalDir := filepath.Join(root, "WeDecent", "install-transactions")
+	if err := os.MkdirAll(journalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(journalDir, transaction.ID+".json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRecoveryScriptAdmission(installDir, script, transaction); err != nil {
+		t.Fatalf("valid recovery script admission: %v", err)
+	}
+
+	if err := os.WriteFile(script, []byte("tampered recovery script"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRecoveryScriptAdmission(installDir, script, transaction); err == nil {
+		t.Fatal("accepted a tampered installed recovery script")
+	}
+	if err := os.WriteFile(script, published, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup, []byte("corrupted previous script"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRecoveryScriptAdmission(installDir, script, transaction); err == nil {
+		t.Fatal("accepted a corrupted transaction recovery-script backup")
+	}
+	if err := os.WriteFile(backup, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(script, original, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyRecoveryScriptAdmission(installDir, script, transaction); err != nil {
+		t.Fatalf("verified prior script should be admitted for rollback retry: %v", err)
+	}
+}
