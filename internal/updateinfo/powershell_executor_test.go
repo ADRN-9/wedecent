@@ -46,7 +46,7 @@ func TestPowerShellInstallerExecutorRunsPreflightInstallPostflight(t *testing.T)
 			return nil
 		},
 	}
-	if err := executor.Execute(context.Background(), executorTestTransaction("v0.4.0"), newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))); err != nil {
+	if err := executor.Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if len(commands) != 3 {
@@ -180,6 +180,25 @@ func TestPowerShellInstallerExecutorRejectsForgedPackageAndTransactionMismatch(t
 	if calls != 0 {
 		t.Fatalf("PowerShell commands = %d, want 0", calls)
 	}
+}
+
+func verifiedInstallerPackageForTest(t *testing.T, dir, version string) VerifiedInstallerPackage {
+	t.Helper()
+	for _, name := range installerFiles {
+		path := filepath.Join(dir, name)
+		if _, err := os.Lstat(path); errors.Is(err, os.ErrNotExist) {
+			if err := os.WriteFile(path, []byte("verified fixture: "+name), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		} else if err != nil {
+			t.Fatal(err)
+		}
+	}
+	pkg, err := newVerifiedInstallerPackage(dir, version, strings.Repeat("a", 64))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return pkg
 }
 
 func executorTestTransaction(version string) InstallTransaction {
