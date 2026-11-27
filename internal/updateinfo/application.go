@@ -102,7 +102,7 @@ func (s *StateStore) applyVerifiedManifest(
 			}
 
 			pending := current
-			pending.Version = UpdateStateVersionWithInstall
+			pending.Version = UpdateStateVersionWithInstalled
 			pending.PendingInstall = &transaction
 			if err := s.persist(pending); err != nil {
 				return fmt.Errorf("%w: persist pending installer intent", ErrInvalidState)
@@ -123,6 +123,7 @@ func (s *StateStore) applyVerifiedManifest(
 			transaction.Phase = InstallPhaseCommitted
 			committed := pending
 			committed.StableSequence = verified.manifest.Sequence
+			committed.InstalledVersion = verified.manifest.Version
 			committed.PendingInstall = &transaction
 			if err := s.persist(committed); err != nil {
 				return ErrSequenceCommit
@@ -196,6 +197,7 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 		if transaction.Sequence <= current.StableSequence { return ErrInstallRecoveryRequired }
 		transaction.Phase = InstallPhaseCommitted
 		next.StableSequence = transaction.Sequence
+		next.InstalledVersion = transaction.TargetVersion
 		next.PendingInstall = &transaction
 		if err := s.persist(next); err != nil { return ErrInstallRecoveryRequired }
 		committer, ok := recovery.(InstallerCommitter)
@@ -203,6 +205,9 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 		if err := committer.Commit(context.WithoutCancel(ctx), transaction); err != nil { return ErrInstallRecoveryRequired }
 	case InstallRecoveryNotApplied:
 		// Adapter has verified restoration of PreviousVersion; sequence stays unchanged.
+		committer, ok := recovery.(InstallerCommitter)
+		if !ok { return ErrInstallRecoveryRequired }
+		if err := committer.Commit(context.WithoutCancel(ctx), transaction); err != nil { return ErrInstallRecoveryRequired }
 	default:
 		return ErrInstallRecoveryRequired
 	}
