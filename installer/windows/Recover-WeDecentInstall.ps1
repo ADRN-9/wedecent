@@ -156,7 +156,7 @@ foreach ($entry in @($journal.entries)) {
     $expectedDestination = [IO.Path]::GetFullPath((Join-Path $InstallDir $name))
     $expectedBackup = "$expectedDestination.$TransactionId.bak"
     if (-not $destination.Equals($expectedDestination, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [IO.Path]::GetFullPath([string]$entry.backup_path).Equals($expectedBackup, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([IO.Path]::GetFullPath([string]$entry.backup_path)).Equals($expectedBackup, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$entry.original_sha256 -notmatch '^(?:[a-f0-9]{64})?$' -or
         [string]$entry.replacement_sha256 -notmatch '^[a-f0-9]{64}$') {
         throw "Transaction journal entry is invalid for $name"
