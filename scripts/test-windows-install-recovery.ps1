@@ -41,6 +41,11 @@ if ($cleanupHelper -lt 0 -or $cleanupCommit -lt 0 -or $cleanupGate -lt 0 -or
     $cleanupHelper -ge $cleanupGate -or $cleanupGate -ge $cleanupCommit) {
     throw 'Committed backup cleanup must be gated by durable updater state and invoked from committed recovery.'
 }
+if (-not $installerText.Contains('$historical = $superseded -or $journal.phase -eq ''rolled-back''') -or
+    -not $installerText.Contains('$journal.phase -ne ''rolled-back'' -and') -or
+    -not $installerText.Contains("if (`$journal.phase -eq 'rolled-back') {`n            continue")) {
+    throw 'Installer must treat completed rollback journals as historical and never replay them over a later installation.'
+}
 if (-not $installerText.Contains('$stableSequence -gt [UInt64]$journal.sequence') -or
     -not $installerText.Contains('Superseded committed transaction has unfinished backup cleanup:')) {
     throw 'Installer must finish cleanup for the current committed journal and fail closed on superseded journals with retained backups.'
@@ -890,6 +895,19 @@ try {
     $rejected = $false
     try { Assert-TransactionMetadataSnapshot -Journal $helperJournal } catch { $rejected = $true }
     if (-not $rejected) { throw 'Installer metadata helper accepted missing snapshot plus corrupted current metadata.' }
+    $helperJournal.phase = 'rolled-back'
+    Write-TestJson -Path $helperMetadataPath -Value $helperOriginalMetadata
+    Set-TestTrustedAcl -Path $helperMetadataPath
+    Remove-Item -LiteralPath $helperBackupPath -Force -ErrorAction SilentlyContinue
+    $laterMetadata = [ordered]@{}
+    foreach ($metadataKey in $helperOriginalMetadata.Keys) { $laterMetadata[$metadataKey] = $helperOriginalMetadata[$metadataKey] }
+    $laterMetadata.version = 'v0.4.1'
+    Write-TestJson -Path $helperMetadataPath -Value $laterMetadata
+    Set-TestTrustedAcl -Path $helperMetadataPath
+    Assert-TransactionMetadataSnapshot -Journal $helperJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionMetadataSnapshot -Journal $helperJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Historical metadata admission compared a rolled-back journal against a later installation.' }
     $env:ProgramData = $root
 
     # Exercise recovery-script admission for upgrades, fresh installs, and legacy journals.
@@ -940,6 +958,26 @@ try {
     Assert-TransactionRecoveryScript -Journal $recoveryJournal
     $recoveryJournal.recovery_script_state = 'published'
     Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
     [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
     $rejected = $false
     try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
@@ -966,6 +1004,19 @@ try {
     Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
     $freshRecoveryJournal.recovery_script_state = 'published'
     Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
     [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
     $rejected = $false
     try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
@@ -974,6 +1025,8 @@ try {
 
     $legacyJournal = [ordered]@{ phase = 'committed' }
     Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
     $legacyJournal.phase = 'prepared'
     $rejected = $false
     try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
