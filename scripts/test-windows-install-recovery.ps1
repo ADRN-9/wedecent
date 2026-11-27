@@ -1040,6 +1040,7 @@ try {
         throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
     }
     $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
     $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
     & go test -c -o $identityProbeExe ./cmd/wd-agent
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
@@ -1232,7 +1233,8 @@ public static class WeDecentIdentityProcess
         $env:WEDECENT_IDENTITY_PROBE = '1'
         $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
         $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
-        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $EvidencePath
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
         try {
             $validatorExit = [WeDecentIdentityProcess]::Run(
                 $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
@@ -1526,7 +1528,7 @@ public static class WeDecentIdentityProcess
         if ($validatorExit -ne 0) {
             throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
         }
-        $validatorEvidence = [IO.File]::ReadAllText($EvidencePath)
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
         if ($validatorEvidence -notmatch 'different Windows user or logon session') {
             throw 'The actual wd-agent process validator did not report the expected cross-user/session rejection.'
         }
