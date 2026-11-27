@@ -109,6 +109,7 @@ func newExecutorProcessFixture(t *testing.T) (string, string, string) {
 
 import (
 	"os"
+	"strconv"
 	"strings"
 )
 
@@ -125,6 +126,9 @@ func main() {
 	_, err = file.WriteString(strings.Join(os.Args[1:], "\n") + "\n--CALL--\n")
 	if err != nil {
 		os.Exit(4)
+	}
+	if code, parseErr := strconv.Atoi(os.Getenv("WEDECENT_TEST_EXECUTOR_EXIT")); parseErr == nil && code != 0 {
+		os.Exit(code)
 	}
 }
 `;
@@ -188,6 +192,37 @@ func TestApplyVerifiedManifestInvokesPowerShellExecutorProcess(t *testing.T) {
 	}
 	if transaction.StableSequence != manifest.Sequence || transaction.PendingInstall != nil {
 		t.Fatalf("update state was not committed after executor success: %#v", transaction)
+	}
+}
+
+func TestApplyVerifiedManifestExecutorProcessFailureRetainsRecoveryState(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 19
+	staged := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
+	_, helperBinary, _ := newExecutorProcessFixture(t)
+	t.Setenv("WEDECENT_TEST_EXECUTOR_EXIT", "13")
+
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: helperBinary,
+		isElevated:     func() bool { return true },
+	}
+	err := store.applyVerifiedManifest(
+		context.Background(), verified, staged, 0,
+		func(context.Context, string) error { return nil },
+		executor,
+	)
+	if !errors.Is(err, ErrInstallerApply) {
+		t.Fatalf("executor process failure = %v, want ErrInstallerApply", err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != 0 || state.PendingInstall == nil ||
+		state.PendingInstall.Phase != InstallPhaseRecoveryRequired {
+		t.Fatalf("failed executor did not retain a fail-closed recovery transaction: %#v", state)
 	}
 }
 
