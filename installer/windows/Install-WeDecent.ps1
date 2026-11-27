@@ -784,7 +784,7 @@ function Recover-InterruptedInstallerTransactions {
         $serviceBefore = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
         $restartService = $null -ne $serviceBefore -and $serviceBefore.Status -eq 'Running'
         if ($restartService) {
-            & 'Microsoft.PowerShell.Management\\Stop-Service' -Name $ServiceName -Force
+            & (Get-Command -Name Stop-Service -CommandType Cmdlet) -Name $ServiceName -Force
             (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
         try {
