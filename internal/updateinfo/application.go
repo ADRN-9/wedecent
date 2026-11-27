@@ -96,31 +96,31 @@ func (s *StateStore) applyVerifiedManifest(
 			pending := current
 			pending.Version = UpdateStateVersionWithInstall
 			pending.PendingInstall = &transaction
-			if err := saveState(s.Path, pending); err != nil {
+			if err := s.persist(pending); err != nil {
 				return fmt.Errorf("%w: persist pending installer intent", ErrInvalidState)
 			}
 
 			transaction.Phase = InstallPhaseExecuting
 			pending.PendingInstall = &transaction
-			if err := saveState(s.Path, pending); err != nil {
+			if err := s.persist(pending); err != nil {
 				return fmt.Errorf("%w: persist executing installer state", ErrInvalidState)
 			}
 			if err := executor.Execute(context.WithoutCancel(ctx), transaction, pkg); err != nil {
 				transaction.Phase = InstallPhaseRecoveryRequired
 				pending.PendingInstall = &transaction
-				_ = saveState(s.Path, pending)
+				_ = s.persist(pending)
 				return ErrInstallerApply
 			}
 
 			transaction.Phase = InstallPhaseCommitted
 			pending.PendingInstall = &transaction
-			if err := saveState(s.Path, pending); err != nil {
+			if err := s.persist(pending); err != nil {
 				return ErrSequenceCommit
 			}
 			next := pending
 			next.StableSequence = verified.manifest.Sequence
 			next.PendingInstall = nil
-			if err := saveState(s.Path, next); err != nil {
+			if err := s.persist(next); err != nil {
 				return ErrSequenceCommit
 			}
 			return nil
@@ -157,7 +157,7 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 	transaction := *current.PendingInstall
 	transaction.Phase = InstallPhaseRecoveryRequired
 	current.PendingInstall = &transaction
-	if err := saveState(s.Path, current); err != nil {
+	if err := s.persist(current); err != nil {
 		return ErrInstallRecoveryRequired
 	}
 
@@ -179,7 +179,7 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 		return ErrInstallRecoveryRequired
 	}
 	next.PendingInstall = nil
-	if err := saveState(s.Path, next); err != nil {
+	if err := s.persist(next); err != nil {
 		return ErrInstallRecoveryRequired
 	}
 	return nil
