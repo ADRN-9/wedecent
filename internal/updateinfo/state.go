@@ -97,10 +97,10 @@ func (s *StateStore) Advance(sequence uint64) error {
 		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, sequence, current.StableSequence)
 	}
 	next := State{
-		Version:        current.Version,
-		StableSequence: sequence,
-		KeysetEpoch:    current.KeysetEpoch,
-		KeysetDigest:   current.KeysetDigest,
+		Version:          current.Version,
+		StableSequence:   sequence,
+		KeysetEpoch:      current.KeysetEpoch,
+		KeysetDigest:     current.KeysetDigest,
 		InstalledVersion: current.InstalledVersion,
 	}
 	if next.Version == 0 {
@@ -152,10 +152,10 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 		return verified, nil
 	}
 	next := State{
-		Version:        UpdateStateVersionWithKeyset,
-		StableSequence: current.StableSequence,
-		KeysetEpoch:    verified.Epoch(),
-		KeysetDigest:   verified.Digest(),
+		Version:          UpdateStateVersionWithKeyset,
+		StableSequence:   current.StableSequence,
+		KeysetEpoch:      verified.Epoch(),
+		KeysetDigest:     verified.Digest(),
 		InstalledVersion: current.InstalledVersion,
 	}
 	if err := saveState(s.Path, next); err != nil {
