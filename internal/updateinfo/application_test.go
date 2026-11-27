@@ -147,6 +147,7 @@ func main() {
 		StateDir:       filepath.Join(root, "state"),
 		ServiceName:    "WeDecentAgent",
 		WebRelay:       "https://relay.wedecent.com",
+		isElevated:     func() bool { return true },
 	}
 	if err := store.applyVerifiedManifest(
 		context.Background(), verified, staged, 0,
