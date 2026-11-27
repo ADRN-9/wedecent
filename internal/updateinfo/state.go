@@ -29,10 +29,10 @@ var ErrInvalidState = errors.New("updateinfo: invalid update state")
 // signed stable-channel sequence explicitly accepted after a successful update
 // boundary; merely fetching a manifest must not advance it.
 type State struct {
-	Version        int    `json:"version"`
-	StableSequence uint64 `json:"stable_sequence"`
-	KeysetEpoch    uint64 `json:"keyset_epoch,omitempty"`
-	KeysetDigest   string `json:"keyset_digest,omitempty"`
+	Version        int                 `json:"version"`
+	StableSequence uint64              `json:"stable_sequence"`
+	KeysetEpoch    uint64              `json:"keyset_epoch,omitempty"`
+	KeysetDigest   string              `json:"keyset_digest,omitempty"`
 	PendingInstall *InstallTransaction `json:"pending_install,omitempty"`
 }
 
@@ -80,7 +80,9 @@ func (s *StateStore) Advance(sequence uint64) error {
 	if err != nil {
 		return err
 	}
-	if current.PendingInstall != nil { return ErrInstallRecoveryRequired }
+	if current.PendingInstall != nil {
+		return ErrInstallRecoveryRequired
+	}
 	if sequence <= current.StableSequence {
 		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, sequence, current.StableSequence)
 	}
@@ -125,7 +127,9 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 	if err != nil {
 		return zero, err
 	}
-	if current.PendingInstall != nil { return zero, ErrInstallRecoveryRequired }
+	if current.PendingInstall != nil {
+		return zero, ErrInstallRecoveryRequired
+	}
 	verified, err := VerifyKeyset(
 		rootKeyID, rootPublicKey, keysetBytes, signatureBytes, now,
 		current.KeysetEpoch, current.KeysetDigest,
@@ -280,8 +284,12 @@ func saveState(path string, state State) error {
 
 func (s State) validatePersisted() error {
 	if s.PendingInstall != nil {
-		if err := s.PendingInstall.validate(); err != nil { return err }
-		if s.Version != UpdateStateVersionWithKeyset { return fmt.Errorf("%w: pending install requires keyset state", ErrInvalidState) }
+		if err := s.PendingInstall.validate(); err != nil {
+			return err
+		}
+		if s.Version != UpdateStateVersionWithKeyset {
+			return fmt.Errorf("%w: pending install requires keyset state", ErrInvalidState)
+		}
 	}
 	switch s.Version {
 	case UpdateStateVersion:
