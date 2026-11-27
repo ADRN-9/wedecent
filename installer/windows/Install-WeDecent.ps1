@@ -768,7 +768,12 @@ function Recover-InterruptedInstallerTransactions {
         if ([int]$journal.schema -ne 1 -or
             [string]$journal.transaction_id -notmatch '^[a-f0-9]{32}$' -or
             [string]$file.BaseName -cne [string]$journal.transaction_id -or
-            ($managedJournal -and ([string]$journal.package_sha256 -notmatch '^[a-f0-9]{64}$' -or $journalSequence -eq 0)) -or
+            ($managedJournal -and ([string]$journal.package_sha256 -notmatch '^[a-f0-9]{64}$' -or
+                [string]$journal.manifest_sha256 -notmatch '^[a-f0-9]{64}$' -or
+                [string]$journal.previous_version -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or $journalSequence -eq 0)) -or
+            (-not $managedJournal -and (-not [string]::IsNullOrEmpty([string]$journal.manifest_sha256) -or
+                -not [string]::IsNullOrEmpty([string]$journal.previous_version))) -or
+            $journal.service_was_running -isnot [bool] -or
             [string]$journal.version -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or
             @($journal.entries).Count -ne $script:BinaryNames.Count -or
             [string]$journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back')) {
@@ -787,6 +792,7 @@ function Recover-InterruptedInstallerTransactions {
             $expectedBackup = "$expectedDestination.$($journal.transaction_id).bak"
             if (-not [string]::Equals($destination, $expectedDestination, [StringComparison]::OrdinalIgnoreCase) -or
                 -not [string]::Equals([IO.Path]::GetFullPath([string]$entry.backup_path), $expectedBackup, [StringComparison]::OrdinalIgnoreCase) -or
+                $entry.had_original -isnot [bool] -or
                 [string]$entry.replacement_sha256 -notmatch '^[a-f0-9]{64}$' -or
                 [string]$entry.state -notin @('planned', 'backup-verified', 'replacing', 'replaced')) {
                 throw "Installer transaction journal entry is invalid for $name"
@@ -812,20 +818,26 @@ function Recover-InterruptedInstallerTransactions {
             throw "Installer transaction journal does not cover the exact five approved binaries: $($file.FullName)"
         }
 
-        if ($journal.phase -in @('committed', 'rolled-back')) { continue }
         $statePath = Join-Path $StateDir 'update-state.json'
         $committed = $false
-        if ($journal.phase -eq 'installed-awaiting-sequence-commit' -and (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+        if (Test-Path -LiteralPath $statePath -PathType Leaf) {
             $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
             $committed = [UInt64]$state.stable_sequence -ge [UInt64]$journal.sequence -and
                 $null -eq $state.pending_install -and [string]$state.installed_version -ceq [string]$journal.version
-            if ($committed) {
-                foreach ($entry in @($journal.entries)) {
-                    $destination = [string]$entry.destination
-                    if (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
-                        (Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
-                        throw "Sequence is committed but installed binary does not match the transaction: $destination"
-                    }
+        }
+        if ($journal.phase -eq 'committed' -and -not $committed) {
+            throw 'Installer journal claims commit but protected updater state does not confirm it.'
+        }
+        if ($journal.phase -eq 'rolled-back') {
+            if ($committed) { throw 'Installer journal claims rollback but protected updater state confirms commit.' }
+            continue
+        }
+        if ($committed) {
+            foreach ($entry in @($journal.entries)) {
+                $destination = [string]$entry.destination
+                if (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+                    (Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
+                    throw "Sequence is committed but installed binary does not match the transaction: $destination"
                 }
             }
         }
