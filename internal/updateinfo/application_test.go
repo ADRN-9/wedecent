@@ -131,7 +131,7 @@ func main() {
 		os.Exit(code)
 	}
 }
-`;
+`
 	if err := os.WriteFile(helperSource, []byte(helper), 0o600); err != nil {
 		t.Fatal(err)
 	}
