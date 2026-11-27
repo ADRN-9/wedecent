@@ -1214,7 +1214,12 @@ public static class WeDecentIdentityProcess
             StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
             if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
                 IntPtr.Zero, workingDirectory, ref startup, out target))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not start first-session target process.");
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
             Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
             Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
             Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
@@ -1223,7 +1228,12 @@ public static class WeDecentIdentityProcess
             StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
             if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
                 IntPtr.Zero, workingDirectory, ref startup, out probe))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not start second-session wd-agent validator.");
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
             uint wait = WaitForSingleObject(probe.hProcess, 120000);
             if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
             uint exitCode;
