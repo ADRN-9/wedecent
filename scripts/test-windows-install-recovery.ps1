@@ -64,6 +64,9 @@ if (-not $installerText.Contains('Committed installation remains valid; refusing
 }
 $recoveryText = Get-Content -LiteralPath $recoveryScript -Raw
 if (-not $recoveryText.Contains('FinalizeCommitted') -or
+    -not $recoveryText.Contains('function Get-TransactionRecoveryScriptBackupForCleanup') -or
+    -not $recoveryText.Contains('Recovery-script backup disappeared before durable committed journal publication.') -or
+    -not $recoveryText.Contains('Transaction recovery-script backup failed its original digest check.') -or
     -not $recoveryText.Contains('Protected updater state changed before committed backup cleanup.') -or
     -not $recoveryText.Contains('Backup disappeared before durable committed journal publication') -or
     -not $recoveryText.Contains('Refusing to clean a corrupted committed metadata snapshot:') -or
@@ -870,6 +873,18 @@ try {
         }
     }
 
+    # A corrupted transaction-specific recovery-script backup must fail closed and remain for diagnosis.
+    [IO.File]::WriteAllText($finalizeRecoveryBackup, 'corrupted prior recovery script')
+    Set-TestTrustedAcl -Path $finalizeRecoveryBackup
+    $rejectedRecoveryBackup = $false
+    try {
+        & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
+    } catch { $rejectedRecoveryBackup = $true }
+    if (-not $rejectedRecoveryBackup -or -not (Test-Path -LiteralPath $finalizeRecoveryBackup)) {
+        throw 'Committed cleanup did not fail closed and retain a corrupted recovery-script backup.'
+    }
+    Remove-Item -LiteralPath $finalizeRecoveryBackup -Force
+
     # Changed target bytes must prevent every remaining backup from being deleted.
     foreach ($entry in $finalizeEntries) {
         [IO.File]::WriteAllBytes([string]$entry.backup_path, [Text.Encoding]::UTF8.GetBytes("original:$($entry.name)"))
@@ -1034,7 +1049,7 @@ try {
     $currentLogonSid = @($currentIdentity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like 'S-1-5-5-*' } | Select-Object -First 1)
     if ($currentLogonSid.Count -ne 1) { throw 'Current Windows token did not expose a logon-session SID for isolation testing.' }
     $encodedIdentityProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($identityProbe))
-    $powershellExe = Join-Path $PSHOME 'powershell.exe'
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $identityProcess = Start-Process -FilePath $powershellExe -Credential $serviceCredential -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedIdentityProbe) -Wait -PassThru -WindowStyle Hidden
     if ($identityProcess.ExitCode -ne 42) {
         throw "Separate service-identity process did not receive the expected journal ACL denial (exit $($identityProcess.ExitCode))."
