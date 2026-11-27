@@ -140,6 +140,7 @@ func launchStagedUpdateWorker(launcherPID uint32) error {
 		return errors.New("create update worker readiness pipe")
 	}
 	cmd.Stderr = io.Discard
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: 0x08000000}
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start protected update worker: %w", err)
 	}
