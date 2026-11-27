@@ -212,6 +212,33 @@ try {
         }
     }
 
+    $rollbackFailure = New-TransactionFixture
+    $blockedDestination = [string]$rollbackFailure.journal.entries[4].destination
+    Remove-Item -LiteralPath $blockedDestination -Force
+    New-Item -ItemType Directory -Path $blockedDestination | Out-Null
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $rollbackFailure | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery unexpectedly succeeded with a non-file destination blocking rollback.' }
+    $failedJournal = Get-Content -LiteralPath $rollbackFailure.journalPath -Raw | ConvertFrom-Json
+    if ($failedJournal.phase -ne 'replacing') { throw 'Failed rollback incorrectly advanced its durable journal phase.' }
+    $failedState = Get-Content -LiteralPath $rollbackFailure.statePath -Raw | ConvertFrom-Json
+    if ($null -eq $failedState.pending_install -or $failedState.stable_sequence -ne 41) {
+        throw 'Failed rollback cleared pending authorization or advanced the stable sequence.'
+    }
+    foreach ($entry in $rollbackFailure.journal.entries) {
+        if (-not (Test-Path -LiteralPath $entry.backup_path -PathType Leaf) -or
+            (Get-TestHash $entry.backup_path) -ne $entry.original_sha256) {
+            throw "Failed rollback did not retain the verified original backup: $($entry.name)"
+        }
+    }
+    Remove-Item -LiteralPath $blockedDestination -Recurse -Force
+    Invoke-TestRecovery -Fixture $rollbackFailure | Out-Null
+    foreach ($entry in $rollbackFailure.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $entry.original_sha256) {
+            throw "Recovery retry did not restore the original binary: $($entry.name)"
+        }
+    }
+
     $mismatched = New-TransactionFixture
     $forgedJournal = Get-Content -LiteralPath $mismatched.journalPath -Raw | ConvertFrom-Json
     $forgedJournal.package_sha256 = 'd' * 64
