@@ -50,29 +50,60 @@ type VerifiedInstallerPackage struct {
 	Version string
 
 	archiveDigest string
+	contentDigest [sha256.Size]byte
 	seal          [sha256.Size]byte
 }
 
-func newVerifiedInstallerPackage(dir, version, archiveDigest string) VerifiedInstallerPackage {
-	pkg := VerifiedInstallerPackage{Dir: dir, Version: version, archiveDigest: archiveDigest}
+func newVerifiedInstallerPackage(dir, version, archiveDigest string) (VerifiedInstallerPackage, error) {
+	contentDigest, err := installerPackageContentDigest(dir)
+	if err != nil {
+		return VerifiedInstallerPackage{}, err
+	}
+	pkg := VerifiedInstallerPackage{
+		Dir: dir, Version: version, archiveDigest: archiveDigest, contentDigest: contentDigest,
+	}
 	pkg.seal = pkg.expectedSeal()
-	return pkg
+	return pkg, nil
 }
 
 func (p VerifiedInstallerPackage) expectedSeal() [sha256.Size]byte {
-	return sha256.Sum256([]byte("WeDecent verified installer package v1\x00" + p.Dir + "\x00" + p.Version + "\x00" + p.archiveDigest))
+	contentDigest := hex.EncodeToString(p.contentDigest[:])
+	return sha256.Sum256([]byte("WeDecent verified installer package v2\x00" + p.Dir + "\x00" + p.Version + "\x00" + p.archiveDigest + "\x00" + contentDigest))
 }
 
 func (p VerifiedInstallerPackage) validate() error {
-	expected := p.expectedSeal()
-	if p.Dir == "" || p.Version == "" || len(p.archiveDigest) != sha256.Size*2 ||
-		!hmac.Equal(p.seal[:], expected[:]) {
-		return fmt.Errorf("%w: package verification capability is invalid", ErrInstallerPackage)
+	if p.Dir == "" || p.Version == "" || len(p.archiveDigest) != sha256.Size*2 {
+		return fmt.Errorf("%w: package verification capability is incomplete", ErrInstallerPackage)
 	}
 	if _, err := hex.DecodeString(p.archiveDigest); err != nil {
 		return fmt.Errorf("%w: package digest is invalid", ErrInstallerPackage)
 	}
+	contentDigest, err := installerPackageContentDigest(p.Dir)
+	if err != nil || !hmac.Equal(contentDigest[:], p.contentDigest[:]) {
+		return fmt.Errorf("%w: verified package contents changed after verification", ErrInstallerPackage)
+	}
+	expected := p.expectedSeal()
+	if !hmac.Equal(p.seal[:], expected[:]) {
+		return fmt.Errorf("%w: package verification capability is invalid", ErrInstallerPackage)
+	}
 	return nil
+}
+
+func installerPackageContentDigest(dir string) ([sha256.Size]byte, error) {
+	var zero [sha256.Size]byte
+	digest := sha256.New()
+	for _, name := range installerFiles {
+		fileDigest, err := hashRegularFile(filepath.Join(dir, name))
+		if err != nil {
+			return zero, err
+		}
+		if _, err := io.WriteString(digest, name+"\x00"+fileDigest+"\x00"); err != nil {
+			return zero, fmt.Errorf("%w: hash verified package contents", ErrInstallerPackage)
+		}
+	}
+	var result [sha256.Size]byte
+	copy(result[:], digest.Sum(nil))
+	return result, nil
 }
 
 // WithVerifiedInstallerPackage revalidates the staged archive and opens the
@@ -147,7 +178,11 @@ func WithVerifiedInstallerPackage(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := consumer(ctx, newVerifiedInstallerPackage(tmpDir, manifest.Version, manifest.InstallerSHA256)); err != nil {
+	pkg, err := newVerifiedInstallerPackage(tmpDir, manifest.Version, manifest.InstallerSHA256)
+	if err != nil {
+		return err
+	}
+	if err := consumer(ctx, pkg); err != nil {
 		return err
 	}
 	return nil
