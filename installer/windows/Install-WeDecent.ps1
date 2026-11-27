@@ -874,7 +874,7 @@ function Assert-TransactionMetadataSnapshot {
 }
 
 function Assert-TransactionRecoveryScript {
-    param([Parameter(Mandatory = $true)]$Journal, [bool]$Committed = $false)
+    param([Parameter(Mandatory = $true)]$Journal, [bool]$Committed = $false, [bool]$Historical = $false)
     $recoveryFields = @('recovery_script_path', 'recovery_script_backup_path', 'recovery_script_had_original', 'recovery_script_original_sha256', 'recovery_script_sha256', 'recovery_script_state')
     if ($Journal -is [System.Collections.IDictionary]) {
         $presentRecoveryFields = @($recoveryFields | Where-Object { $Journal.Contains($_) })
@@ -882,8 +882,8 @@ function Assert-TransactionRecoveryScript {
         $presentRecoveryFields = @($recoveryFields | Where-Object { $null -ne $Journal.PSObject.Properties[$_] })
     }
     if ($presentRecoveryFields.Count -eq 0) {
-        # Legacy committed journals predate recovery-script transaction fields.
-        if ($Committed -and [string]$Journal.phase -eq 'committed') { return }
+        # Legacy committed and rolled-back journals predate recovery-script transaction fields.
+        if ([string]$Journal.phase -in @('committed', 'rolled-back')) { return }
         throw 'Uncommitted legacy transaction is missing recovery-script authentication fields.'
     }
     if ($presentRecoveryFields.Count -ne $recoveryFields.Count) {
@@ -900,11 +900,29 @@ function Assert-TransactionRecoveryScript {
     $originalHash = [string]$Journal.recovery_script_original_sha256
     $publishedHash = [string]$Journal.recovery_script_sha256
     $state = [string]$Journal.recovery_script_state
+    if ($Historical) {
+        if ([string]$Journal.phase -notin @('committed', 'rolled-back') -or
+            ([string]$Journal.phase -eq 'committed' -and $state -ne 'published') -or
+            ([string]$Journal.phase -eq 'rolled-back' -and $state -ne $(if ($hadOriginal) { 'original' } else { 'absent' }))) {
+            throw 'Historical recovery-script journal state does not match its terminal transaction phase.'
+        }
+    }
     if ($hadOriginal) {
         if ($originalHash -notmatch '^[a-f0-9]{64}$' -or $publishedHash -notmatch '^[a-f0-9]{64}$' -or
             $state -notin @('original', 'publishing', 'published')) {
             throw 'Recovery-script transaction journal fields are invalid.'
         }
+        if (Test-Path -LiteralPath $expectedBackup) {
+            $backupInfo = Get-Item -LiteralPath $expectedBackup -Force -ErrorAction Stop
+            if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                -not (Test-WeDecentMetadataTrusted -Path $expectedBackup) -or
+                (Get-Sha256FileHash $expectedBackup) -ne $originalHash) {
+                throw 'Previous recovery-script backup is unsafe, ACL-untrusted, or corrupted.'
+            }
+        } elseif (-not $Committed -and $state -ne 'original') {
+            throw 'Previous recovery-script backup is missing before durable commit.'
+        }
+        if ($Historical) { return }
         $targetInfo = Get-Item -LiteralPath $expectedTarget -Force -ErrorAction Stop
         if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
             -not (Test-WeDecentMetadataTrusted -Path $expectedTarget)) {
@@ -917,21 +935,12 @@ function Assert-TransactionRecoveryScript {
             'published' { if ($currentHash -ne $publishedHash -and $currentHash -ne $originalHash) { throw 'Published recovery script digest mismatch.' } }
             default { throw 'Unknown recovery-script publication state.' }
         }
-        if (Test-Path -LiteralPath $expectedBackup) {
-            $backupInfo = Get-Item -LiteralPath $expectedBackup -Force -ErrorAction Stop
-            if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-                -not (Test-WeDecentMetadataTrusted -Path $expectedBackup) -or
-                (Get-Sha256FileHash $expectedBackup) -ne $originalHash) {
-                throw 'Previous recovery-script backup is unsafe, ACL-untrusted, or corrupted.'
-            }
-        } elseif (-not $Committed -and $state -ne 'original') {
-            throw 'Previous recovery-script backup is missing before durable commit.'
-        }
     } else {
         if (-not [string]::IsNullOrEmpty($originalHash) -or $state -notin @('absent', 'publishing', 'published') -or
             (Test-Path -LiteralPath $expectedBackup)) {
             throw 'New-install recovery-script journal state is invalid.'
         }
+        if ($Historical) { return }
         $targetExists = Test-Path -LiteralPath $expectedTarget
         if ($targetExists) {
             $targetInfo = Get-Item -LiteralPath $expectedTarget -Force -ErrorAction Stop
@@ -1087,7 +1096,6 @@ function Recover-InterruptedInstallerTransactions {
             [string]$journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back')) {
             throw "Installer transaction journal is malformed: $($file.FullName)"
         }
-        Assert-TransactionRecoveryScript -Journal $journal -Committed ($journal.phase -eq 'committed')
         Assert-TransactionMetadataSnapshot -Journal $journal -Committed ($journal.phase -eq 'committed')
 
         $statePath = Join-Path $StateDir 'update-state.json'
@@ -1099,13 +1107,16 @@ function Recover-InterruptedInstallerTransactions {
             $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
             $stableSequence = [UInt64]$state.stable_sequence
             $installedVersion = [string]$state.installed_version
-            $committed = $stableSequence -ge [UInt64]$journal.sequence -and
+            $committed = $journal.phase -ne 'rolled-back' -and
+                $stableSequence -ge [UInt64]$journal.sequence -and
                 $null -eq $state.pending_install -and $installedVersion -ceq [string]$journal.version
         }
         $superseded = $journal.phase -eq 'committed' -and
             $null -ne $state -and
             ($stableSequence -gt [UInt64]$journal.sequence -or
                 ($null -ne $state.pending_install -and [UInt64]$state.pending_install.sequence -gt [UInt64]$journal.sequence))
+        $historical = $superseded -or $journal.phase -eq 'rolled-back'
+        Assert-TransactionRecoveryScript -Journal $journal -Committed ($journal.phase -eq 'committed') -Historical $historical
         $seenNames = @{}
         foreach ($entry in @($journal.entries)) {
             $name = [string]$entry.name
@@ -1132,12 +1143,12 @@ function Recover-InterruptedInstallerTransactions {
                     if ((Get-Sha256FileHash $expectedBackup) -ne $expectedOriginal) {
                         throw "Interrupted-install backup integrity failure: $expectedBackup"
                     }
-                } elseif ($committed) {
+                } elseif ($committed -and -not $superseded) {
                     if (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
                         (Get-Sha256FileHash $expectedDestination) -ne [string]$entry.replacement_sha256) {
                         throw "Committed transaction has neither its backup nor the verified replacement: $expectedDestination"
                     }
-                } elseif (-not $superseded -and (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
+                } elseif (-not $historical -and (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
                     (Get-Sha256FileHash $expectedDestination) -ne $expectedOriginal)) {
                     throw "Original binary and verified transaction backup are both unavailable: $expectedDestination"
                 }
@@ -1156,6 +1167,9 @@ function Recover-InterruptedInstallerTransactions {
             }
         }
 
+        if ($journal.phase -eq 'rolled-back') {
+            continue
+        }
         if ($superseded) {
             continue
         }
