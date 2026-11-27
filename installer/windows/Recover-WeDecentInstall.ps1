@@ -490,14 +490,37 @@ try {
         }
         Remove-Item -LiteralPath "$destination.$TransactionId.new" -Force -ErrorAction SilentlyContinue
     }
-    if ($restartService -and $service) {
-        Start-Service -Name $ServiceName
-        (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    $metadataTemp = "$metadataPath.$TransactionId.restore"
+    Copy-Item -LiteralPath $metadataBackupPath -Destination $metadataTemp -Force
+    if ((Get-Sha256FileHash $metadataTemp) -ne [string]$journal.metadata_original_sha256) {
+        Remove-Item -LiteralPath $metadataTemp -Force -ErrorAction SilentlyContinue
+        throw 'Restored installer metadata failed its original digest check.'
+    }
+    Set-TrustedAcl -Path $metadataTemp
+    Move-Item -LiteralPath $metadataTemp -Destination $metadataPath -Force
+    Set-TrustedAcl -Path $metadataPath
+    if ((Get-Sha256FileHash $metadataPath) -ne [string]$journal.metadata_original_sha256) {
+        throw 'Final restored installer metadata failed verification.'
     }
     $journal.phase = 'rolled-back'
     Write-TransactionJournal -Journal $journal -Path $journalPath
 } catch {
     $failure = $_
-    throw "Windows transaction recovery failed closed; pending authorization and backups were retained. Cause: $($failure.Exception.Message)"
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    throw "Windows transaction recovery failed closed; service was left stopped and pending authorization/backups were retained. Cause: $($failure.Exception.Message)"
+}
+try {
+    if ($restartService) {
+        Start-Service -Name $ServiceName -ErrorAction Stop
+        (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
+            throw 'SCM did not confirm the previous service returned to Running.'
+        }
+    } elseif ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+        throw 'SCM service was expected to remain stopped after recovery.'
+    }
+} catch {
+    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+    throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; service was left stopped. Cause: $($_.Exception.Message)"
 }
 Write-Output 'not-applied'
