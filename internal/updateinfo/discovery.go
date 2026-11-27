@@ -35,7 +35,9 @@ type DiscoveryClient struct {
 // state and the protected persisted sequence, which is committed after install.
 func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion string, highestSequence uint64) (Manifest, error) {
 	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
-	if err != nil { return Manifest{}, err }
+	if err != nil {
+		return Manifest{}, err
+	}
 	return verified.Manifest(), nil
 }
 
@@ -51,32 +53,50 @@ func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, currentVers
 		return zero, fmt.Errorf("%w: timeout must not be negative", ErrDiscovery)
 	}
 	now := time.Now()
-	if c.Now != nil { now = c.Now() }
+	if c.Now != nil {
+		now = c.Now()
+	}
 
 	pairBytes, err := c.fetch(ctx, StablePairURL, MaxStablePairBytes)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	manifestBytes, signatureBytes, err := ParseCanonicalStablePair(pairBytes)
-	if err != nil { return zero, fmt.Errorf("%w: parse stable pair: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: parse stable pair: %w", ErrDiscovery, err)
+	}
 	untrustedManifest, err := ParseCanonical(manifestBytes)
 	if err != nil || untrustedManifest.Schema != ManifestSchemaV2 {
 		return zero, fmt.Errorf("%w: stable channel requires a canonical schema-v2 manifest", ErrDiscovery)
 	}
 	keysetURL, keysetSignatureURL := stableKeysetURLs(untrustedManifest.KeysetEpoch)
 	keysetBytes, err := c.fetch(ctx, keysetURL, MaxKeysetBytes)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	keysetSignature, err := c.fetch(ctx, keysetSignatureURL, MaxSignatureFileBytes)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	verifiedKeyset, err := c.State.VerifyAndAdvanceKeyset(ctx, c.RootKeyID, c.RootPublicKey, keysetBytes, keysetSignature, now)
-	if err != nil { return zero, fmt.Errorf("%w: verify keyset: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: verify keyset: %w", ErrDiscovery, err)
+	}
 
 	persisted, err := c.State.Load()
-	if err != nil { return zero, fmt.Errorf("%w: load protected update state: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: load protected update state: %w", ErrDiscovery, err)
+	}
 	if persisted.KeysetEpoch != verifiedKeyset.Epoch() || persisted.KeysetDigest != verifiedKeyset.Digest() {
 		return zero, fmt.Errorf("%w: verified keyset does not match persisted trust state", ErrDiscovery)
 	}
-	if persisted.StableSequence > highestSequence { highestSequence = persisted.StableSequence }
+	if persisted.StableSequence > highestSequence {
+		highestSequence = persisted.StableSequence
+	}
 	capability, err := VerifyManifestV2Capability(verifiedKeyset, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
-	if err != nil { return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err)
+	}
 	return capability, nil
 }
 
