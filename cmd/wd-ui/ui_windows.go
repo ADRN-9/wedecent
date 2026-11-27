@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -485,11 +486,21 @@ func (a *winApp) applyUpdateAsync() {
 			return
 		}
 		command := exec.Command(agentPath, "update", "apply", "--wait-for-ui", strconv.Itoa(os.Getpid()))
-		command.Stdout = io.Discard
+		stdout, err := command.StdoutPipe()
+		if err != nil {
+			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "Could not establish the updater handoff."})
+			return
+		}
 		command.Stderr = io.Discard
 		command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
 		if err := command.Start(); err != nil {
 			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "Could not start the verified Windows updater."})
+			return
+		}
+		line, err := bufio.NewReader(stdout).ReadString('\\n')
+		if err != nil || line != "READY\\n" {
+			_ = command.Process.Kill()
+			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "The updater could not authenticate the desktop shutdown handoff."})
 			return
 		}
 		a.postEvent(uiEvent{kind: eventExitReady})
