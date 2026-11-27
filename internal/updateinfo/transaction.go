@@ -55,6 +55,81 @@ func (t InstallTransaction) validate() error {
 	return nil
 }
 
+func validateInstallStateTransition(current, next State) error {
+	if err := current.validatePersisted(); err != nil {
+		return fmt.Errorf("%w: current transaction state is invalid", ErrInstallTransaction)
+	}
+	if err := next.validatePersisted(); err != nil {
+		return fmt.Errorf("%w: next transaction state is invalid", ErrInstallTransaction)
+	}
+	if current.StableSequence != next.StableSequence ||
+		current.KeysetEpoch != next.KeysetEpoch ||
+		current.KeysetDigest != next.KeysetDigest {
+		if current.PendingInstall == nil || next.PendingInstall != nil ||
+			current.PendingInstall.Sequence != next.StableSequence {
+			return fmt.Errorf("%w: transaction cannot change trust baseline", ErrInstallTransaction)
+		}
+	}
+
+	previous := current.PendingInstall
+	candidate := next.PendingInstall
+	if previous == nil {
+		if candidate == nil || candidate.Phase != InstallPhasePending ||
+			candidate.Sequence <= current.StableSequence ||
+			candidate.PreviousVersion != current.InstalledVersion ||
+			next.InstalledVersion != current.InstalledVersion {
+			return fmt.Errorf("%w: new transaction must begin as pending without changing installed state", ErrInstallTransaction)
+		}
+		return nil
+	}
+
+	if candidate == nil {
+		switch previous.Phase {
+		case InstallPhaseCommitted:
+			if next.StableSequence != previous.Sequence || next.InstalledVersion != previous.TargetVersion {
+				return fmt.Errorf("%w: committed transaction must atomically advance sequence and installed version", ErrInstallTransaction)
+			}
+		case InstallPhaseRecoveryRequired:
+			applied := next.StableSequence == previous.Sequence && next.InstalledVersion == previous.TargetVersion
+			restored := next.StableSequence == current.StableSequence && next.InstalledVersion == previous.PreviousVersion
+			if !applied && !restored {
+				return fmt.Errorf("%w: recovery must prove applied or restored installation", ErrInstallTransaction)
+			}
+		default:
+			return fmt.Errorf("%w: transaction cannot be cleared before commit or recovery", ErrInstallTransaction)
+		}
+		return nil
+	}
+
+	if previous.ID != candidate.ID ||
+		previous.Sequence != candidate.Sequence ||
+		previous.ManifestDigest != candidate.ManifestDigest ||
+		previous.PackageDigest != candidate.PackageDigest ||
+		previous.PreviousVersion != candidate.PreviousVersion ||
+		previous.TargetVersion != candidate.TargetVersion ||
+		current.InstalledVersion != candidate.PreviousVersion ||
+		next.InstalledVersion != current.InstalledVersion ||
+		next.StableSequence != current.StableSequence {
+		return fmt.Errorf("%w: transaction identity or protected baseline changed", ErrInstallTransaction)
+	}
+
+	allowed := false
+	switch previous.Phase {
+	case InstallPhasePending:
+		allowed = candidate.Phase == InstallPhaseExecuting || candidate.Phase == InstallPhaseRecoveryRequired
+	case InstallPhaseExecuting:
+		allowed = candidate.Phase == InstallPhaseCommitted || candidate.Phase == InstallPhaseRecoveryRequired
+	case InstallPhaseCommitted:
+		allowed = candidate.Phase == InstallPhaseRecoveryRequired
+	case InstallPhaseRecoveryRequired:
+		allowed = candidate.Phase == InstallPhaseRecoveryRequired
+	}
+	if !allowed {
+		return fmt.Errorf("%w: invalid transaction phase transition %q -> %q", ErrInstallTransaction, previous.Phase, candidate.Phase)
+	}
+	return nil
+}
+
 func newInstallTransaction(verified VerifiedManifest, pkg VerifiedInstallerPackage) (InstallTransaction, error) {
 	if err := verified.validate(); err != nil {
 		return InstallTransaction{}, err
