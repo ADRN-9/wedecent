@@ -1525,7 +1525,7 @@ public static class WeDecentIdentityProcess
         throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
     }
 
-    # Simulate termination after durable intent but before deleting the published script.
+    # Reconstruct the durable crash state after intent persistence but before deletion.
     $pendingFreshId = [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
     $pendingFreshJournal = [ordered]@{
@@ -1594,7 +1594,7 @@ public static class WeDecentIdentityProcess
         $persistedFreshRestore.recovery_script_state -ne 'absent') {
         throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
     }
-    # Simulate termination after durable removal intent and after the published file was deleted.
+    # Reconstruct the durable crash state after removal intent and file deletion.
     $interruptedFreshId = [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
     $interruptedFreshJournal = [ordered]@{
