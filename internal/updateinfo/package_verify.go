@@ -41,12 +41,47 @@ var (
 // policy. Verification errors must not expose certificate or file contents.
 type AuthenticodeVerifier func(context.Context, string) error
 
-// VerifiedInstallerPackage is valid only for the duration of the consumer
-// callback passed to WithVerifiedInstallerPackage. Dir is removed immediately
-// after the callback returns.
+// verifiedInstallerPackageToken is created only after archive, metadata,
+// checksum and Authenticode verification have completed.
+type verifiedInstallerPackageToken struct {
+	dir            string
+	version        string
+	manifestDigest string
+	packageDigest  string
+}
+
+// VerifiedInstallerPackage is an opaque, callback-scoped capability. Its zero
+// value and caller-created values are invalid at every privileged boundary.
 type VerifiedInstallerPackage struct {
-	Dir     string
-	Version string
+	token *verifiedInstallerPackageToken
+}
+
+func (p VerifiedInstallerPackage) Directory() string {
+	if p.token == nil { return "" }
+	return p.token.dir
+}
+
+func (p VerifiedInstallerPackage) Version() string {
+	if p.token == nil { return "" }
+	return p.token.version
+}
+
+func (p VerifiedInstallerPackage) validateFor(transaction InstallTransaction) error {
+	if p.token == nil || p.token.dir == "" || p.token.version == "" ||
+		p.token.manifestDigest == "" || p.token.packageDigest == "" {
+		return fmt.Errorf("%w: installer package capability is missing", ErrInstallerPackage)
+	}
+	if err := transaction.validate(); err != nil { return err }
+	if p.token.version != transaction.TargetVersion ||
+		p.token.manifestDigest != transaction.ManifestDigest ||
+		p.token.packageDigest != transaction.PackageDigest {
+		return fmt.Errorf("%w: package and installation transaction do not match", ErrInstallerPackage)
+	}
+	info, err := os.Lstat(p.token.dir)
+	if err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("%w: verified package directory is unavailable", ErrInstallerPackage)
+	}
+	return nil
 }
 
 // WithVerifiedInstallerPackage revalidates the staged archive and opens the
@@ -121,7 +156,15 @@ func WithVerifiedInstallerPackage(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if err := consumer(ctx, VerifiedInstallerPackage{Dir: tmpDir, Version: manifest.Version}); err != nil {
+	canonicalManifest, err := EncodeCanonical(manifest)
+	if err != nil { return fmt.Errorf("%w: canonicalize manifest capability", ErrInstallerPackage) }
+	manifestDigest := sha256.Sum256(canonicalManifest)
+	pkg := VerifiedInstallerPackage{token: &verifiedInstallerPackageToken{
+		dir: tmpDir, version: manifest.Version,
+		manifestDigest: hex.EncodeToString(manifestDigest[:]),
+		packageDigest: manifest.InstallerSHA256,
+	}}
+	if err := consumer(ctx, pkg); err != nil {
 		return err
 	}
 	return nil
