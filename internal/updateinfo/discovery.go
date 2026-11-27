@@ -65,10 +65,8 @@ func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, currentVers
 		return zero, fmt.Errorf("%w: verified keyset does not match persisted trust state", ErrDiscovery)
 	}
 	if persisted.StableSequence > highestSequence { highestSequence = persisted.StableSequence }
-	manifest, err := VerifyManifestV2(keyset, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
+	capability, err := VerifyManifestV2Capability(keyset, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
 	if err != nil { return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err) }
-	capability, err := verifiedManifestFrom(keyset, manifest, manifestBytes)
-	if err != nil { return zero, fmt.Errorf("%w: construct verified manifest capability: %w", ErrDiscovery, err) }
 	return capability, nil
 }
 
