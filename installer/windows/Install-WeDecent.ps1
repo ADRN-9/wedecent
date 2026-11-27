@@ -901,9 +901,11 @@ function Assert-TransactionRecoveryScript {
     $publishedHash = [string]$Journal.recovery_script_sha256
     $state = [string]$Journal.recovery_script_state
     if ($Historical) {
+        $expectedHistoricalState = 'absent'
+        if ($hadOriginal) { $expectedHistoricalState = 'original' }
         if ([string]$Journal.phase -notin @('committed', 'rolled-back') -or
             ([string]$Journal.phase -eq 'committed' -and $state -ne 'published') -or
-            ([string]$Journal.phase -eq 'rolled-back' -and $state -ne $(if ($hadOriginal) { 'original' } else { 'absent' }))) {
+            ([string]$Journal.phase -eq 'rolled-back' -and $state -ne $expectedHistoricalState)) {
             throw 'Historical recovery-script journal state does not match its terminal transaction phase.'
         }
     }
