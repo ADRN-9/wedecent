@@ -22,14 +22,14 @@ type installerCommandRunner func(context.Context, string, string, []string) erro
 // success. Install-WeDecent.ps1 owns binary/service rollback for failures that
 // occur inside its transaction.
 type PowerShellInstallerExecutor struct {
-	PowerShellPath string
-	InstallDir     string
-	StateDir       string
-	ServiceName    string
-	WebRelay       string
-	run            installerCommandRunner
-	isElevated     func() bool
-	verifyExecutable func(context.Context, string) (string, error)
+	PowerShellPath    string
+	InstallDir        string
+	StateDir          string
+	ServiceName       string
+	WebRelay          string
+	run               installerCommandRunner
+	isElevated        func() bool
+	verifyExecutable  func(context.Context, string) (string, error)
 }
 
 func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
