@@ -939,11 +939,12 @@ try {
 
     Remove-Item -LiteralPath $recoveryTarget -Force
     Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
     $freshRecoveryJournal = [ordered]@{
-        transaction_id = [Guid]::NewGuid().ToString('N')
+        transaction_id = $freshRecoveryTransactionId
         phase = 'prepared'
         recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "$recoveryTarget.$([Guid]::NewGuid().ToString('N')).previous"
+        recovery_script_backup_path = "$recoveryTarget.$freshRecoveryTransactionId.previous"
         recovery_script_had_original = $false
         recovery_script_original_sha256 = ''
         recovery_script_sha256 = ''
