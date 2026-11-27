@@ -217,18 +217,29 @@ try {
     for ($i = 0; $i -lt $partialJournal.entries.Count; $i++) {
         $entry = $partialJournal.entries[$i]
         [IO.File]::WriteAllBytes([string]$entry.destination, [Text.Encoding]::UTF8.GetBytes("original:$($entry.name)"))
-        $entry.state = if ($i -lt 2) { 'backup-verified' } else { 'planned' }
+        if ($i -lt 2) {
+            $entry.state = 'backup-verified'
+        } else {
+            $entry.state = 'planned'
+            Remove-Item -LiteralPath $entry.backup_path -Force
+        }
     }
     Write-TestJson -Path $partialStage.journalPath -Value $partialJournal
     Invoke-TestRecovery -Fixture $partialStage | Out-Null
     $partialRecovered = Get-Content -LiteralPath $partialStage.journalPath -Raw | ConvertFrom-Json
     if ($partialRecovered.phase -ne 'rolled-back') { throw 'Partial staging recovery did not persist the rolled-back phase.' }
-    foreach ($entry in $partialRecovered.entries) {
-        $expectedOriginal = [Text.Encoding]::UTF8.GetBytes("original:$($entry.name)")
-        if ((Get-TestHash $entry.destination) -ne $entry.original_sha256 -or
-            -not (Test-Path -LiteralPath $entry.backup_path -PathType Leaf) -or
-            (Get-TestHash $entry.backup_path) -ne $entry.original_sha256) {
-            throw "Partial staging recovery lost an original binary or backup: $($entry.name)"
+    for ($i = 0; $i -lt $partialRecovered.entries.Count; $i++) {
+        $entry = $partialRecovered.entries[$i]
+        if ((Get-TestHash $entry.destination) -ne $entry.original_sha256) {
+            throw "Partial staging recovery changed the original binary: $($entry.name)"
+        }
+        if ($i -lt 2) {
+            if (-not (Test-Path -LiteralPath $entry.backup_path -PathType Leaf) -or
+                (Get-TestHash $entry.backup_path) -ne $entry.original_sha256) {
+                throw "Partial staging recovery lost a verified backup: $($entry.name)"
+            }
+        } elseif (Test-Path -LiteralPath $entry.backup_path) {
+            throw "Partial staging fixture unexpectedly retained an uncreated backup: $($entry.name)"
         }
     }
 
