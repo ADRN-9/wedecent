@@ -48,7 +48,7 @@ if ($recoveryMarker -lt 0 -or $recoveryStart -lt 0 -or $recoveryMarker -ge $reco
     throw 'Recovery must persist the rolled-back journal before attempting to restart the service.'
 }
 if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
-    -not $installerText.Contains('if ($binariesRestored -and $metadataRestored -and $journalPersisted)') -or
+    -not $installerText.Contains('if ($binariesRestored -and $recoveryScriptRestored -and $metadataRestored -and $journalPersisted)') -or
     -not $installerText.Contains('service is intentionally left stopped for recovery')) {
     throw 'Upgrade rollback must not restart unless binary, metadata and journal restoration all succeed.'
 }
