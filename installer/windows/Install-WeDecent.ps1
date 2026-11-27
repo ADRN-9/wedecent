@@ -1488,6 +1488,9 @@ function Restore-TransactionRecoveryScript {
         if ((Get-Sha256FileHash $target) -ne $expected) {
             throw 'Restored previous recovery script failed integrity verification.'
         }
+        $Journal.recovery_script_sha256 = $expected
+        $Journal.recovery_script_state = 'original'
+        Write-InstallJournal -Journal $Journal
     } elseif (Test-Path -LiteralPath $target -PathType Leaf) {
         $newHash = [string]$Journal.recovery_script_sha256
         if ($newHash -notmatch '^[a-f0-9]{64}$' -or (Get-Sha256FileHash $target) -ne $newHash) {
