@@ -348,7 +348,7 @@ func TestPowerShellInstallerExecutorRecoveryRejectsMismatchedJournal(t *testing.
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell, InstallDir: installDir, StateDir: stateDir, ServiceName: "WeDecentAgent",
 		isElevated: func() bool { return true },
-		run: func(context.Context, string, string, []string) error { return nil },
+		run:        func(context.Context, string, string, []string) error { return nil },
 	}
 	if got, err := executor.Recover(context.Background(), transaction); !errors.Is(err, ErrInstallRecoveryRequired) || got != InstallRecoveryUnknown {
 		t.Fatalf("Recover() = %v, %v; want unknown recovery error", got, err)
