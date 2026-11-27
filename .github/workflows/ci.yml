@@ -142,6 +142,7 @@ jobs:
         run: |
           $files = @(
             'installer/windows/Install-WeDecent.ps1',
+            'installer/windows/Recover-WeDecentInstall.ps1',
             'installer/windows/Uninstall-WeDecent.ps1',
             'installer/windows/Test-WeDecentInstall.ps1',
             'installer/windows/StateMigration.psm1',
