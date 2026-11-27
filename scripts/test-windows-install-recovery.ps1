@@ -27,6 +27,12 @@ if (-not $installerText.Contains('Committed installation remains valid; refusing
     -not $installerText.Contains('Superseded committed transaction has unfinished backup cleanup')) {
     throw 'Interrupted post-commit cleanup must fail closed and recognize only fully cleaned historical transactions.'
 }
+$recoveryText = Get-Content -LiteralPath $recoveryScript -Raw
+if (-not $recoveryText.Contains('FinalizeCommitted') -or
+    -not $recoveryText.Contains('Protected updater state changed before committed backup cleanup.') -or
+    -not $recoveryText.Contains('Backup disappeared before durable committed journal publication')) {
+    throw 'Committed backup finalization must require exact durable state, exact target hashes, and a durable journal marker.'
+}
 if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
     -not $installerText.Contains('if ($binariesRestored)') -or
     -not $installerText.Contains('service is intentionally left stopped for recovery')) {
@@ -336,7 +342,111 @@ try {
         }
     }
 
-    Write-Host 'Windows transaction recovery synthetic adversarial tests passed.'
+    # Exercise the dedicated post-commit finalizer in an isolated ProgramData/install root.
+    $finalizeProgramData = Join-Path $root 'finalizer-programdata'
+    $finalizeWeDecent = Join-Path $finalizeProgramData 'WeDecent'
+    $finalizeJournalRoot = Join-Path $finalizeWeDecent 'install-transactions'
+    $finalizeInstallDir = Join-Path $env:ProgramFiles ('WeDecent-C334-Finalizer-' + [Guid]::NewGuid().ToString('N'))
+    $finalizeStateDir = Join-Path $finalizeInstallDir 'data\agent'
+    New-Item -ItemType Directory -Force -Path $finalizeJournalRoot, $finalizeInstallDir, (Join-Path $finalizeInstallDir 'data'), $finalizeStateDir | Out-Null
+    Set-TestTrustedAcl -Path $finalizeProgramData
+    Set-TestTrustedAcl -Path $finalizeWeDecent
+    Set-TestTrustedAcl -Path $finalizeJournalRoot
+    Set-TestTrustedAcl -Path $finalizeInstallDir
+    Set-TestTrustedAcl -Path (Join-Path $finalizeInstallDir 'data')
+    Set-TestTrustedAcl -Path $finalizeStateDir
+
+    $finalizeTransactionId = [Guid]::NewGuid().ToString('N')
+    $finalizeEntries = @()
+    foreach ($name in $binaryNames) {
+        $destination = Join-Path $finalizeInstallDir $name
+        $backup = "$destination.$finalizeTransactionId.bak"
+        [IO.File]::WriteAllBytes($destination, [Text.Encoding]::UTF8.GetBytes("target:$name"))
+        [IO.File]::WriteAllBytes($backup, [Text.Encoding]::UTF8.GetBytes("original:$name"))
+        $finalizeEntries += [ordered]@{
+            name = $name
+            destination = $destination
+            had_original = $true
+            original_sha256 = Get-TestHash $backup
+            replacement_sha256 = Get-TestHash $destination
+            backup_path = $backup
+            state = 'replaced'
+        }
+    }
+    $finalizeJournalPath = Join-Path $finalizeJournalRoot ($finalizeTransactionId + '.json')
+    $finalizeJournal = [ordered]@{
+        schema = 1
+        transaction_id = $finalizeTransactionId
+        package_sha256 = 'b' * 64
+        manifest_sha256 = 'a' * 64
+        previous_version = 'v0.3.9'
+        sequence = [UInt64]42
+        service_was_running = $false
+        version = 'v0.4.0'
+        phase = 'installed-awaiting-sequence-commit'
+        entries = $finalizeEntries
+        updated_at = [DateTime]::UtcNow.ToString('o')
+    }
+    Write-TestJson -Path $finalizeJournalPath -Value $finalizeJournal
+    $finalizeMetadataPath = Join-Path $finalizeWeDecent 'installer.json'
+    Write-TestJson -Path $finalizeMetadataPath -Value ([ordered]@{
+        schema = 1
+        product = 'WeDecent'
+        service_name = $serviceName
+        service_account_sid = $serviceSid
+        install_dir = $finalizeInstallDir
+        state_dir = $finalizeStateDir
+    })
+    $finalizeStatePath = Join-Path $finalizeStateDir 'update-state.json'
+    Write-TestJson -Path $finalizeStatePath -Value ([ordered]@{
+        version = 3
+        stable_sequence = [UInt64]42
+        keyset_epoch = 1
+        keyset_digest = ('c' * 64)
+        installed_version = 'v0.4.0'
+        pending_install = $null
+    }) -ExtraSids @($serviceSid)
+
+    $env:ProgramData = $finalizeProgramData
+    & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
+    $finalizedJournal = Get-Content -LiteralPath $finalizeJournalPath -Raw | ConvertFrom-Json
+    if ($finalizedJournal.phase -ne 'committed') { throw 'Post-commit finalizer did not durably mark the journal committed.' }
+    foreach ($entry in $finalizeEntries) {
+        if (Test-Path -LiteralPath $entry.backup_path) {
+            throw "Post-commit finalizer did not remove a verified backup: $($entry.name)"
+        }
+    }
+
+    # A second pass simulates process termination after only some backups were deleted.
+    foreach ($entry in $finalizeEntries) {
+        [IO.File]::WriteAllBytes([string]$entry.backup_path, [Text.Encoding]::UTF8.GetBytes("original:$($entry.name)"))
+    }
+    Remove-Item -LiteralPath $finalizeEntries[0].backup_path -Force
+    Remove-Item -LiteralPath $finalizeEntries[3].backup_path -Force
+    & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
+    foreach ($entry in $finalizeEntries) {
+        if (Test-Path -LiteralPath $entry.backup_path) {
+            throw "Interrupted post-commit cleanup was not resumed: $($entry.name)"
+        }
+    }
+
+    # Changed target bytes must prevent every remaining backup from being deleted.
+    foreach ($entry in $finalizeEntries) {
+        [IO.File]::WriteAllBytes([string]$entry.backup_path, [Text.Encoding]::UTF8.GetBytes("original:$($entry.name)"))
+    }
+    [IO.File]::WriteAllText([string]$finalizeEntries[2].destination, 'tampered committed target')
+    $rejected = $false
+    try {
+        & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
+    } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Post-commit finalizer accepted a changed target binary.' }
+    foreach ($entry in $finalizeEntries) {
+        if (-not (Test-Path -LiteralPath $entry.backup_path -PathType Leaf)) {
+            throw "Changed target caused premature backup deletion: $($entry.name)"
+        }
+    }
+
+    Write-Host 'Windows transaction recovery and committed cleanup synthetic adversarial tests passed.'
 } finally {
     $env:ProgramData = $originalProgramData
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
