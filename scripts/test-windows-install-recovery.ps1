@@ -34,7 +34,11 @@ if (-not $recoveryText.Contains('FinalizeCommitted') -or
     -not $recoveryText.Contains('Refusing to clean a corrupted or unauthenticated committed metadata snapshot.') -or
     -not $recoveryText.Contains('metadata_backup_path') -or
     -not $recoveryText.Contains('SCM service identity does not match authenticated prior installer metadata.') -or
+    -not $recoveryText.Contains('SCM service account SID does not match protected installer metadata') -or
+    -not $recoveryText.Contains('$serviceConfig.StartName') -or
     -not $recoveryText.Contains('SCM did not confirm the service stopped before recovery.') -or
+    -not $recoveryText.Contains('journalMetadataBackup') -or
+    -not $recoveryText.Contains('Older transaction journal is not durably committed.') -or
     -not $recoveryText.Contains('Restored installer metadata failed its original digest check.')) {
     throw 'Committed cleanup and interrupted recovery must authenticate metadata and verify SCM before restart.'
 }
@@ -576,6 +580,43 @@ try {
     $finalizeJournal.metadata_path = $finalizeMetadataPath
     $finalizeJournal.metadata_backup_path = $finalizeMetadataBackup
     Write-TestJson -Path $finalizeJournalPath -Value $finalizeJournal
+
+    # A superseded committed journal may retain only its metadata snapshot after binary cleanup.
+    $olderTransactionId = [Guid]::NewGuid().ToString('N')
+    $olderEntries = @()
+    foreach ($entry in $finalizeEntries) {
+        $olderEntries += [ordered]@{
+            name = $entry.name
+            destination = $entry.destination
+            had_original = $true
+            original_sha256 = $entry.original_sha256
+            replacement_sha256 = $entry.replacement_sha256
+            backup_path = "$($entry.destination).$olderTransactionId.bak"
+            state = 'replaced'
+        }
+    }
+    $olderMetadataBackup = "$finalizeMetadataPath.$olderTransactionId.metadata.bak"
+    Copy-Item -LiteralPath $finalizeMetadataPath -Destination $olderMetadataBackup
+    Set-TestTrustedAcl -Path $olderMetadataBackup
+    $olderJournal = [ordered]@{
+        schema = 1
+        transaction_id = $olderTransactionId
+        package_sha256 = 'd' * 64
+        manifest_sha256 = 'e' * 64
+        previous_version = 'v0.3.8'
+        sequence = [UInt64]41
+        service_was_running = $false
+        version = 'v0.3.9'
+        phase = 'committed'
+        entries = $olderEntries
+        metadata_path = $finalizeMetadataPath
+        metadata_had_original = $true
+        metadata_original_sha256 = Get-TestHash $olderMetadataBackup
+        metadata_backup_path = $olderMetadataBackup
+        updated_at = [DateTime]::UtcNow.ToString('o')
+    }
+    $olderJournalPath = Join-Path $finalizeJournalRoot ($olderTransactionId + '.json')
+    Write-TestJson -Path $olderJournalPath -Value $olderJournal
     $finalizeStatePath = Join-Path $finalizeStateDir 'update-state.json'
     Write-TestJson -Path $finalizeStatePath -Value ([ordered]@{
         version = 3
@@ -591,11 +632,21 @@ try {
     $finalizedJournal = Get-Content -LiteralPath $finalizeJournalPath -Raw | ConvertFrom-Json
     if ($finalizedJournal.phase -ne 'committed') { throw 'Post-commit finalizer did not durably mark the journal committed.' }
     if (Test-Path -LiteralPath $finalizeMetadataBackup) { throw 'Post-commit finalizer did not remove the verified metadata snapshot.' }
+    $olderFinalizedJournal = Get-Content -LiteralPath $olderJournalPath -Raw | ConvertFrom-Json
+    if ($olderFinalizedJournal.phase -ne 'committed' -or (Test-Path -LiteralPath $olderMetadataBackup)) {
+        throw 'Multi-journal finalizer did not preserve the older committed journal and clean its associated metadata snapshot.'
+    }
     foreach ($entry in $finalizeEntries) {
         if (Test-Path -LiteralPath $entry.backup_path) {
             throw "Post-commit finalizer did not remove a verified backup: $($entry.name)"
         }
     }
+
+    # Recreate only the superseded metadata snapshot to simulate interruption after binary cleanup.
+    Copy-Item -LiteralPath $finalizeMetadataPath -Destination $olderMetadataBackup
+    Set-TestTrustedAcl -Path $olderMetadataBackup
+    & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
+    if (Test-Path -LiteralPath $olderMetadataBackup) { throw 'Interrupted superseded metadata cleanup was not resumed.' }
 
     # A second pass simulates process termination after only some backups were deleted.
     foreach ($entry in $finalizeEntries) {
