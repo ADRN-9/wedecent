@@ -88,8 +88,12 @@ func (s *StateStore) applyVerifiedManifest(
 				return ErrInstallerApply
 			}
 
-			next := current
-			next.Version = UpdateStateVersionWithInstall
+			transaction.Phase = InstallPhaseCommitted
+			pending.PendingInstall = &transaction
+			if err := saveState(s.Path, pending); err != nil {
+				return ErrSequenceCommit
+			}
+			next := pending
 			next.StableSequence = verified.manifest.Sequence
 			next.PendingInstall = nil
 			if err := saveState(s.Path, next); err != nil {
