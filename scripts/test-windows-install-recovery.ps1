@@ -30,8 +30,17 @@ if (-not $installerText.Contains('Committed installation remains valid; refusing
 $recoveryText = Get-Content -LiteralPath $recoveryScript -Raw
 if (-not $recoveryText.Contains('FinalizeCommitted') -or
     -not $recoveryText.Contains('Protected updater state changed before committed backup cleanup.') -or
-    -not $recoveryText.Contains('Backup disappeared before durable committed journal publication')) {
-    throw 'Committed backup finalization must require exact durable state, exact target hashes, and a durable journal marker.'
+    -not $recoveryText.Contains('Backup disappeared before durable committed journal publication') -or
+    -not $recoveryText.Contains('metadata_backup_path') -or
+    -not $recoveryText.Contains('SCM service identity does not match authenticated prior installer metadata.') -or
+    -not $recoveryText.Contains('SCM did not confirm the service stopped before recovery.') -or
+    -not $recoveryText.Contains('Restored installer metadata failed its original digest check.')) {
+    throw 'Committed cleanup and interrupted recovery must authenticate metadata and verify SCM before restart.'
+}
+$recoveryMarker = $recoveryText.IndexOf('$journal.phase = ''rolled-back''')
+$recoveryStart = $recoveryText.LastIndexOf('Start-Service -Name $ServiceName')
+if ($recoveryMarker -lt 0 -or $recoveryStart -lt 0 -or $recoveryMarker -ge $recoveryStart) {
+    throw 'Recovery must persist the rolled-back journal before attempting to restart the service.'
 }
 if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
     -not $installerText.Contains('if ($binariesRestored -and $metadataRestored -and $journalPersisted)') -or
@@ -249,6 +258,62 @@ try {
         if ((Get-TestHash $entry.destination) -ne $entry.original_sha256) {
             throw "Repeated recovery changed the restored original binary: $($entry.name)"
         }
+    }
+    $metadataOriginalBytes = [IO.File]::ReadAllBytes($metadataPath)
+
+    $corruptMetadata = New-TransactionFixture
+    $beforeCorruptMetadata = @{}
+    foreach ($entry in $corruptMetadata.journal.entries) { $beforeCorruptMetadata[$entry.name] = Get-TestHash $entry.destination }
+    [IO.File]::WriteAllText($corruptMetadata.metadataBackupPath, 'corrupt metadata snapshot')
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $corruptMetadata | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted a corrupted metadata snapshot.' }
+    foreach ($entry in $corruptMetadata.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeCorruptMetadata[$entry.name]) { throw 'Corrupt metadata rejection mutated a binary.' }
+    }
+
+    $missingMetadata = New-TransactionFixture
+    Remove-Item -LiteralPath $missingMetadata.metadataBackupPath -Force
+    [IO.File]::WriteAllText($metadataPath, 'incomplete current metadata')
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $missingMetadata | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted missing snapshot plus corrupt current metadata.' }
+    [IO.File]::WriteAllBytes($metadataPath, $metadataOriginalBytes)
+    Set-TestTrustedAcl -Path $metadataPath
+
+    $inconsistentMetadata = New-TransactionFixture
+    $inconsistentJournal = Get-Content -LiteralPath $inconsistentMetadata.journalPath -Raw | ConvertFrom-Json
+    $inconsistentJournal.metadata_path = (Join-Path $root 'forged-installer.json')
+    Write-TestJson -Path $inconsistentMetadata.journalPath -Value $inconsistentJournal
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $inconsistentMetadata | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted an inconsistent metadata journal path.' }
+
+    $missingScm = New-TransactionFixture
+    & sc.exe delete $serviceName | Out-Null
+    Start-Sleep -Seconds 1
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $missingScm | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted a missing SCM service.' }
+    & sc.exe create $serviceName binPath= $serviceImage start= demand | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not recreate the SCM service fixture.' }
+
+    $mismatchedScm = New-TransactionFixture
+    & sc.exe config $serviceName binPath= 'C:\Windows\System32\svchost.exe -k netsvcs' | Out-Null
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $mismatchedScm | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted an SCM service with a mismatched image path.' }
+    & sc.exe config $serviceName binPath= $serviceImage | Out-Null
+
+    $restartFailure = New-TransactionFixture -ServiceWasRunning $true
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $restartFailure | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery reported success when SCM could not restart the previous service.' }
+    if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'Failed SCM restart did not leave the service stopped.' }
+    $restartJournal = Get-Content -LiteralPath $restartFailure.journalPath -Raw | ConvertFrom-Json
+    if ($restartJournal.phase -ne 'rolled-back') { throw 'Rollback journal was not persisted before failed service restart.' }
+    foreach ($entry in $restartFailure.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $entry.original_sha256) { throw "Restart failure lost previous binary $($entry.name)." }
     }
 
     $partialStage = New-TransactionFixture
