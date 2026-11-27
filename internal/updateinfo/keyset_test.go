@@ -279,3 +279,43 @@ func keysetFixtureActive(t *testing.T, now time.Time, rootPrivate ed25519.Privat
 	}
 	return verified
 }
+
+func TestVerifiedManifestCapabilityRejectsWrongSigner(t *testing.T) {
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
+	manifestPublic, manifestPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, wrongPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedPublic, err := EncodePublicKey(manifestPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyset.Keys[0].PublicKey = string(bytesTrimLine(encodedPublic))
+	keysetBytes, keysetSignature := signKeyset(t, keyset, rootPrivate, now)
+	verifiedKeyset, err := VerifyKeyset(keyset.RootKeyID, rootPublic, keysetBytes, keysetSignature, now, 0, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := validManifest()
+	manifest.Schema = ManifestSchemaV2
+	manifest.SigningKeyID = keyset.Keys[0].ID
+	manifest.KeysetEpoch = keyset.Epoch
+	manifest.PublishedAt = now.Add(-30 * time.Minute).UTC().Format(time.RFC3339)
+	manifestBytes, err := EncodeCanonical(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSignature, err := EncodeSignature(ed25519.Sign(wrongPrivate, manifestBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := VerifyManifestV2Capability(verifiedKeyset, manifestBytes, wrongSignature, now, "v1.2.2", 41); !errors.Is(err, ErrInvalidSignature) {
+		t.Fatalf("wrong signer error = %v, want ErrInvalidSignature", err)
+	}
+	_ = manifestPrivate
+}
