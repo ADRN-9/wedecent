@@ -7924,7 +7924,7 @@ Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the in
     $backup = Join-Path $directory 'backup'
     foreach ($name in $script:BinaryNames) {
         $destination = [string]$Destinations[$name]
-        if (Test-Path -LiteralPath "$destination.bak" -or Test-Path -LiteralPath "$destination.new") {
+        if ((Test-Path -LiteralPath "$destination.bak") -or (Test-Path -LiteralPath "$destination.new")) {
             throw "Unresolved binary replacement artifacts exist for $name; refusing a new transaction."
         }
     }
