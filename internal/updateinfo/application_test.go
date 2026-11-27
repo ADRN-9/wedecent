@@ -470,3 +470,35 @@ func TestUnknownInstallerRecoveryRemainsFailClosed(t *testing.T) {
 		t.Fatalf("unknown recovery changed durable state: %#v", state)
 	}
 }
+
+func TestInstallerRecoveryNotAppliedClearsJournalOnlyAfterRepair(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 103
+	manifest.InstallerSHA256 = sha256Hex(archive)
+	path := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+	if err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
+		func(context.Context, string) error { return nil },
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
+			return errors.New("interrupted")
+		})); !errors.Is(err, ErrInstallerApply) {
+		t.Fatalf("apply error = %v, want ErrInstallerApply", err)
+	}
+	if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
+		func(_ context.Context, transaction InstallTransaction) (InstallRecoveryResult, error) {
+			if transaction.RecoveryState != "recovery-required" {
+				t.Fatalf("recovery state = %q, want recovery-required", transaction.RecoveryState)
+			}
+			return InstallRecoveryNotApplied, nil
+		})); err != nil {
+		t.Fatalf("RecoverPendingInstall() error = %v", err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PendingInstall != nil || state.StableSequence != 0 {
+		t.Fatalf("not-applied recovery state = %#v", state)
+	}
+}
