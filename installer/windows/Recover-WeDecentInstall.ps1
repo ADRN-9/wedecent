@@ -108,9 +108,9 @@ function Assert-NoRunningUserBinaries {
     foreach ($name in $BinaryNames) {
         $destinations[$name] = [IO.Path]::GetFullPath((Join-Path $InstallDir $name))
     }
-    $processes = @(Get-CimInstance Win32_Process -Filter "Name='wd-core.exe' OR Name='wd-ui.exe'" -ErrorAction Stop)
+    $processes = @(Get-CimInstance Win32_Process -Filter "Name='wd.exe' OR Name='wd-routerctl.exe' OR Name='wd-core.exe' OR Name='wd-ui.exe'" -ErrorAction Stop)
     foreach ($process in $processes) {
-        if (@('wd-core.exe', 'wd-ui.exe') -notcontains [string]$process.Name) { continue }
+        if (@('wd.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe') -notcontains [string]$process.Name) { continue }
         if ([string]::IsNullOrWhiteSpace([string]$process.ExecutablePath)) {
             throw "Cannot authenticate running $($process.Name) executable path; recovery will not terminate it."
         }
