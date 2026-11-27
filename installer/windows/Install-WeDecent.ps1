@@ -819,25 +819,56 @@ function Assert-InstalledUserBinariesStopped {
 }
 
 function Write-InstallJournal {
-    param([Parameter(Mandatory = $true)]$Journal)
-    $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
-    New-Item -ItemType Directory -Force -Path $root | Out-Null
-    Protect-WeDecentMetadataAcl $root
-    $path = Join-Path $root ([string]$Journal.transaction_id + '.json')
-    $temp = Join-Path $root ('.' + [Guid]::NewGuid().ToString('N') + '.tmp')
-    $Journal.updated_at = [DateTime]::UtcNow.ToString('o')
-    $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($Journal | ConvertTo-Json -Depth 8 -Compress) + "`n")
-    $stream = [IO.File]::Open($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
-    Protect-WeDecentMetadataAcl $temp
-    if (Test-Path -LiteralPath $path -PathType Leaf) {
-        $backup = Join-Path $root ('.' + [Guid]::NewGuid().ToString('N') + '.previous')
-        [IO.File]::Replace($temp, $path, $backup, $true)
-        Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
-    } else {
-        [IO.File]::Move($temp, $path)
+    param([Parameter(Mandatory = $true)]$Journal, [string]$Path)
+    $transactionId = [string]$Journal.transaction_id
+    $transactionGuid = [Guid]::Empty
+    if (-not [Guid]::TryParseExact($transactionId, 'N', [ref]$transactionGuid)) {
+        throw 'Installer journal transaction ID must be a canonical GUID.'
     }
-    Protect-WeDecentMetadataAcl $path
+    $root = [IO.Path]::GetFullPath((Join-Path $env:ProgramData 'WeDecent\install-transactions'))
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $rootInfo = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (-not $rootInfo.PSIsContainer -or ($rootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Installer transaction journal directory must be a regular non-reparse directory.'
+    }
+    Protect-WeDecentMetadataAcl $root
+    $expectedPath = [IO.Path]::GetFullPath((Join-Path $root ($transactionId + '.json')))
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        $path = $expectedPath
+    } else {
+        $path = [IO.Path]::GetFullPath($Path)
+        if (-not $path.Equals($expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Installer journal path must match its transaction ID inside the protected journal directory.'
+        }
+    }
+    if (Test-Path -LiteralPath $path) {
+        $existing = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($existing.PSIsContainer -or ($existing.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not (Test-WeDecentMetadataTrusted -Path $path)) {
+            throw 'Existing installer transaction journal is not a trusted regular file.'
+        }
+    }
+    $temp = Join-Path $root ('.' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    try {
+        $Journal.updated_at = [DateTime]::UtcNow.ToString('o')
+        $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($Journal | ConvertTo-Json -Depth 8 -Compress) + "`n")
+        $stream = [IO.File]::Open($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        Protect-WeDecentMetadataAcl $temp
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            $backup = Join-Path $root ('.' + [Guid]::NewGuid().ToString('N') + '.previous')
+            [IO.File]::Replace($temp, $path, $backup, $true)
+            Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
+        } else {
+            [IO.File]::Move($temp, $path)
+        }
+        Protect-WeDecentMetadataAcl $path
+        if (-not (Test-WeDecentMetadataTrusted -Path $path)) {
+            throw 'Published installer transaction journal failed ACL verification.'
+        }
+    } finally {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Assert-TransactionMetadataSnapshot {
@@ -1598,12 +1629,22 @@ function Restore-TransactionRecoveryScript {
         if ($expected -notmatch '^[a-f0-9]{64}$') {
             throw 'Previous recovery script digest is invalid.'
         }
-        if (Test-Path -LiteralPath $backup -PathType Leaf) {
-            if ((Get-Sha256FileHash $backup) -ne $expected) {
-                throw 'Previous recovery script backup is corrupted; retaining it and refusing rollback.'
+        if (Test-Path -LiteralPath $backup) {
+            $backupInfo = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
+            if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                -not (Test-WeDecentMetadataTrusted -Path $backup) -or
+                (Get-Sha256FileHash $backup) -ne $expected) {
+                throw 'Previous recovery script backup is unsafe, ACL-untrusted, or corrupted; retaining it and refusing rollback.'
             }
             $restore = "$target.$($Journal.transaction_id).restore"
-            Copy-Item -LiteralPath $backup -Destination $restore -Force
+            if (Test-Path -LiteralPath $restore) {
+                $restoreInfo = Get-Item -LiteralPath $restore -Force -ErrorAction Stop
+                if ($restoreInfo.PSIsContainer -or ($restoreInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw 'Interrupted recovery-script restore path is not a regular file.'
+                }
+                Remove-Item -LiteralPath $restore -Force -ErrorAction Stop
+            }
+            Copy-Item -LiteralPath $backup -Destination $restore
             if ((Get-Sha256FileHash $restore) -ne $expected) {
                 Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue
                 throw 'Previous recovery script restore copy failed integrity verification.'
@@ -1619,7 +1660,9 @@ function Restore-TransactionRecoveryScript {
             (Get-Sha256FileHash $target) -ne $expected) {
             throw 'Previous recovery script and its transaction backup are both unavailable.'
         }
-        if ((Get-Sha256FileHash $target) -ne $expected) {
+        $targetInfo = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+        if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            (Get-Sha256FileHash $target) -ne $expected) {
             throw 'Restored previous recovery script failed integrity verification.'
         }
         Protect-WeDecentMetadataAcl $target
@@ -1628,9 +1671,10 @@ function Restore-TransactionRecoveryScript {
         }
         $Journal.recovery_script_sha256 = $expected
         $Journal.recovery_script_state = 'original'
-        $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
-        Write-InstallJournal -Journal $Journal -Path $journalPath
     } else {
+        if (Test-Path -LiteralPath $backup) {
+            throw 'Unexpected previous recovery-script backup exists for a new installation.'
+        }
         if (Test-Path -LiteralPath $target) {
             $targetInfo = Get-Item -LiteralPath $target -Force -ErrorAction Stop
             $newHash = [string]$Journal.recovery_script_sha256
@@ -1638,16 +1682,23 @@ function Restore-TransactionRecoveryScript {
                 $newHash -notmatch '^[a-f0-9]{64}$' -or (Get-Sha256FileHash $target) -ne $newHash) {
                 throw 'Refusing to remove a recovery script not published by this transaction.'
             }
-            Remove-Item -LiteralPath $target -Force
+            Remove-Item -LiteralPath $target -Force -ErrorAction Stop
         }
         $Journal.recovery_script_sha256 = ''
         $Journal.recovery_script_state = 'absent'
-        $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
-        Write-InstallJournal -Journal $Journal -Path $journalPath
+    }
+    $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
+    Write-InstallJournal -Journal $Journal -Path $journalPath
+    if ([bool]$Journal.recovery_script_had_original -and (Test-Path -LiteralPath $backup)) {
+        $backupInfo = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
+        if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not (Test-WeDecentMetadataTrusted -Path $backup) -or
+            (Get-Sha256FileHash $backup) -ne [string]$Journal.recovery_script_original_sha256) {
+            throw 'Restored recovery script journal is durable, but its transaction backup failed final cleanup verification.'
+        }
+        Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
     }
 }
-
-
 function Invoke-RollbackStep {
     param(
         [Parameter(Mandatory = $true)][string]$Description,
