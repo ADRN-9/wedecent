@@ -990,13 +990,14 @@ try {
     $restoreTransactionId = [Guid]::NewGuid().ToString('N')
     $restoreOriginalContent = 'original recovery script bytes'
     $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
-    [IO.File]::WriteAllText($recoveryBackup, $restoreOriginalContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
     $restoreJournal = [ordered]@{
         transaction_id = $restoreTransactionId
         phase = 'prepared'
         recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "${recoveryTarget}.${restoreTransactionId}.previous"
+        recovery_script_backup_path = $restoreBackup
         recovery_script_had_original = $true
         recovery_script_original_sha256 = Get-TestHash $recoveryBackup
         recovery_script_sha256 = Get-TestHash $recoveryTarget
@@ -1008,7 +1009,7 @@ try {
         $script:recoveryRestoreJournalState -ne 'original') {
         throw 'Installer rollback did not restore and durably mark the prior recovery script.'
     }
-    Remove-Item -LiteralPath $recoveryBackup -Force
+    Remove-Item -LiteralPath $restoreBackup -Force
 
     $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
