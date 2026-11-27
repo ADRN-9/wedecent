@@ -155,10 +155,8 @@ func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction In
 		return InstallRecoveryUnknown, err
 	}
 	script := filepath.Join(e.InstallDir, "Recover-WeDecentInstall.ps1")
-	if e.run == nil && runtime.GOOS == "windows" {
-		if err := verifyRecoveryScriptAdmission(e.InstallDir, script, transaction); err != nil {
-			return InstallRecoveryUnknown, fmt.Errorf("%w: installed recovery script failed transaction authentication: %v", ErrInstallRecoveryRequired, err)
-		}
+	if err := verifyRecoveryScriptAdmission(e.InstallDir, script, transaction); err != nil {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: installed recovery script failed transaction authentication: %v", ErrInstallRecoveryRequired, err)
 	}
 	args := []string{
 		"-TransactionId", transaction.ID,
