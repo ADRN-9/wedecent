@@ -1029,6 +1029,7 @@ try {
         throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
     }
     $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $processCredential = [pscredential]::new(".\$serviceAccountName", $servicePassword)
     function Invoke-ServiceIdentityIsolationProbe {
         param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
         [IO.File]::WriteAllText($EvidencePath, '')
@@ -1052,7 +1053,7 @@ try {
             '}'
         ) -join [Environment]::NewLine
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
-        $process = Start-Process -FilePath $powershellExe -Credential $serviceCredential -WorkingDirectory (Join-Path $env:SystemRoot 'System32') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Wait -PassThru -WindowStyle Hidden
+        $process = Start-Process -FilePath $powershellExe -Credential $processCredential -WorkingDirectory (Join-Path $env:SystemRoot 'System32') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Wait -PassThru
         if ($process.ExitCode -ne 42) {
             throw "Separate service-identity process did not receive the expected journal ACL denial (exit $($process.ExitCode))."
         }
