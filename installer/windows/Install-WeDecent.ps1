@@ -812,7 +812,7 @@ function Recover-InterruptedInstallerTransactions {
                 throw "Unexpected original digest for new binary $name"
             }
         }
-        if (@($seenNames.Keys | Sort-Object -CaseSensitive) -cne $expectedNames) {
+        if ($seenNames.Count -ne $expectedNames.Count) {
             throw "Installer transaction journal does not cover the exact five approved binaries: $($file.FullName)"
         }
 
@@ -909,6 +909,10 @@ function Install-Binaries {
             backup_path = "$destination.$($script:InstallTransactionId).bak"
             state = 'planned'
         })
+    }
+    $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($script:InstallTransactionId + '.json')
+    if (Test-Path -LiteralPath $journalPath) {
+        throw 'Installer transaction ID has already been used; refusing replay.'
     }
     $script:InstallJournal = [ordered]@{
         schema = 1
