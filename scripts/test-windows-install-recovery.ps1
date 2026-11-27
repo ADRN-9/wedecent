@@ -110,6 +110,13 @@ function New-TransactionFixture {
             state = 'replaced'
         }
     }
+    $metadataPath = Join-Path $root 'WeDecent\installer.json'
+    $metadataBackupPath = "$metadataPath.$Id.metadata.bak"
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw 'Recovery fixture prior metadata is missing.' }
+    $metadataOriginalHash = Get-TestHash $metadataPath
+    Copy-Item -LiteralPath $metadataPath -Destination $metadataBackupPath
+    Set-TestTrustedAcl -Path $metadataBackupPath
+    if ((Get-TestHash $metadataBackupPath) -ne $metadataOriginalHash) { throw 'Recovery fixture metadata snapshot failed integrity verification.' }
     $journal = [ordered]@{
         schema = 1
         transaction_id = $Id
@@ -118,6 +125,10 @@ function New-TransactionFixture {
         previous_version = $previousVersion
         sequence = $sequence
         service_was_running = $false
+        metadata_path = $metadataPath
+        metadata_had_original = $true
+        metadata_original_sha256 = $metadataOriginalHash
+        metadata_backup_path = $metadataBackupPath
         version = $targetVersion
         phase = 'replacing'
         entries = $entries
@@ -155,6 +166,9 @@ function New-TransactionFixture {
         sequence = $sequence
         previousVersion = $previousVersion
         targetVersion = $targetVersion
+        metadataPath = $metadataPath
+        metadataBackupPath = $metadataBackupPath
+        metadataOriginalHash = $metadataOriginalHash
     }
 }
 
@@ -192,7 +206,18 @@ try {
     })
 
     $successful = New-TransactionFixture
+    $agentPath = Join-Path $installDir 'wd-agent.exe'
+    $serviceImage = '"' + $agentPath + '" --service --state="' + $stateDir + '"'
+    & sc.exe create $serviceName binPath= $serviceImage start= demand | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated stopped SCM service fixture.' }
+    $serviceCheck = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    if ($null -eq $serviceCheck -or $serviceCheck.State -ne 'Stopped') { throw 'SCM service fixture was not created in the stopped state.' }
+    $metadataBefore = Get-TestHash $successful.metadataBackupPath
+    $targetMetadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+    $targetMetadata.version = $successful.targetVersion
+    Write-TestJson -Path $metadataPath -Value $targetMetadata
     Invoke-TestRecovery -Fixture $successful | Out-Null
+    if ((Get-TestHash $metadataPath) -ne $metadataBefore) { throw 'Recovery did not restore exact prior installer metadata bytes.' }
     $recovered = Get-Content -LiteralPath $successful.journalPath -Raw | ConvertFrom-Json
     if ($recovered.phase -ne 'rolled-back') { throw 'Recovery did not persist the rolled-back phase.' }
     foreach ($entry in $successful.journal.entries) {
@@ -405,6 +430,9 @@ try {
             state = 'replaced'
         }
     }
+    $finalizeMetadataBackup = Join-Path $finalizeWeDecent ("installer.json.$finalizeTransactionId.metadata.bak")
+    Copy-Item -LiteralPath (Join-Path $root 'WeDecent\installer.json') -Destination $finalizeMetadataBackup
+    Set-TestTrustedAcl -Path $finalizeMetadataBackup
     $finalizeJournalPath = Join-Path $finalizeJournalRoot ($finalizeTransactionId + '.json')
     $finalizeJournal = [ordered]@{
         schema = 1
@@ -414,6 +442,10 @@ try {
         previous_version = 'v0.3.9'
         sequence = [UInt64]42
         service_was_running = $false
+        metadata_path = $metadataPath
+        metadata_had_original = $true
+        metadata_original_sha256 = (Get-TestHash $metadataPath)
+        metadata_backup_path = "$metadataPath.$finalizeTransactionId.metadata.bak"
         version = 'v0.4.0'
         phase = 'installed-awaiting-sequence-commit'
         entries = $finalizeEntries
