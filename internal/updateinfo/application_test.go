@@ -57,10 +57,10 @@ func TestApplyVerifiedManifestCommitsSequenceAfterSuccess(t *testing.T) {
 				transaction.ManifestDigest != verified.ManifestDigest() || transaction.PackageDigest != verified.Manifest().InstallerSHA256 {
 				t.Fatalf("executor transaction does not bind verified update: %#v", transaction)
 			}
-			if pkg.Version != manifest.Version {
-				t.Fatalf("executor version = %q, want %q", pkg.Version, manifest.Version)
+			if pkg.Version() != manifest.Version {
+				t.Fatalf("executor version = %q, want %q", pkg.Version(), manifest.Version)
 			}
-			if _, err := os.Stat(filepath.Join(pkg.Dir, "Install-WeDecent.ps1")); err != nil {
+			if _, err := os.Stat(filepath.Join(pkg.Directory(), "Install-WeDecent.ps1")); err != nil {
 				t.Fatalf("verified installer missing inside callback: %v", err)
 			}
 			state, err := storeStateWithoutLock(store.Path)
@@ -181,6 +181,8 @@ type testInstallerRecovery func(context.Context, InstallTransaction) (InstallRec
 func (f testInstallerRecovery) Recover(ctx context.Context, transaction InstallTransaction) (InstallRecoveryResult, error) {
 	return f(ctx, transaction)
 }
+
+func (f testInstallerRecovery) Commit(context.Context, InstallTransaction) error { return nil }
 
 func TestInterruptedInstallRestartRecoveryApplied(t *testing.T) {
 	manifest, archive := buildInstallerPackageFixture(t, nil)
