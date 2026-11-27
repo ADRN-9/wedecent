@@ -206,8 +206,7 @@ if ($PSCmdlet.ParameterSetName -eq 'FinalizeCommitted') {
         }
         if ($journal.phase -eq 'rolled-back') { continue }
         if ($journalSequence -gt $ExpectedStableSequence) {
-            if ($journal.phase -eq 'committed') { throw 'A committed journal is ahead of protected updater sequence.' }
-            continue
+            throw 'An unresolved transaction journal is ahead of protected updater sequence.'
         }
 
         $seen = @{}
