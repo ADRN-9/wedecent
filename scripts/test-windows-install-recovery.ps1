@@ -118,18 +118,7 @@ function New-TransactionFixture {
 
 function Invoke-TestRecovery {
     param($Fixture)
-    $arguments = @(
-        '-TransactionId', $Fixture.id,
-        '-InstallDir', $installDir,
-        '-StateDir', $stateDir,
-        '-ServiceName', $serviceName,
-        '-ExpectedManifestSHA256', $Fixture.manifestDigest,
-        '-ExpectedPackageSHA256', $Fixture.packageDigest,
-        '-Sequence', [string]$Fixture.sequence,
-        '-PreviousVersion', $Fixture.previousVersion,
-        '-TargetVersion', $Fixture.targetVersion
-    )
-    & $recoveryScript @arguments
+    & $recoveryScript -TransactionId $Fixture.id -InstallDir $installDir -StateDir $stateDir -ServiceName $serviceName -ExpectedManifestSHA256 $Fixture.manifestDigest -ExpectedPackageSHA256 $Fixture.packageDigest -Sequence $Fixture.sequence -PreviousVersion $Fixture.previousVersion -TargetVersion $Fixture.targetVersion
 }
 
 try {
