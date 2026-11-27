@@ -760,10 +760,14 @@ if ($UpdateTransactionAction -ne 'Apply') {
             if (-not (Test-WeDecentUpdatePrevious -Journal $journal -Destinations $destinations)) {
                 throw 'Previous installation is not independently verified; refusing to delete rollback backups.'
             }
+            Remove-BinaryBackups -Destinations $destinations
         } elseif ($journal.phase -ne 'committed') {
             throw 'Transaction is not in a finalizable state.'
         }
-        Remove-Item -LiteralPath (Join-Path $directory 'backup') -Force -Recurse -ErrorAction Stop
+        $backupDirectory = Join-Path $directory 'backup'
+        if (Test-Path -LiteralPath $backupDirectory) {
+            Remove-Item -LiteralPath $backupDirectory -Force -Recurse -ErrorAction Stop
+        }
         Write-Output 'committed'
         return
     }
