@@ -114,6 +114,11 @@ func (e PowerShellInstallerExecutor) FinalizeCommitted(ctx context.Context, stat
 		return err
 	}
 	script := filepath.Join(e.InstallDir, "Recover-WeDecentInstall.ps1")
+	if e.run == nil {
+		if err := verifyCommittedRecoveryScriptAdmission(e.InstallDir, script, state); err != nil {
+			return fmt.Errorf("%w: installed recovery script failed committed transaction authentication: %v", ErrInstallCleanupPending, err)
+		}
+	}
 	args := []string{
 		"-FinalizeCommitted",
 		"-InstallDir", filepath.Clean(e.InstallDir),
@@ -198,6 +203,80 @@ func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction In
 	}
 }
 
+
+
+func verifyCommittedRecoveryScriptAdmission(installDir, script string, state State) error {
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		return fmt.Errorf("ProgramData is unavailable")
+	}
+	root := filepath.Join(programData, "WeDecent", "install-transactions")
+	files, err := filepath.Glob(filepath.Join(root, "*.json"))
+	if err != nil {
+		return fmt.Errorf("enumerate committed transaction journals")
+	}
+	var match *windowsInstallJournal
+	for _, path := range files {
+		info, err := os.Lstat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("transaction journal is not a regular file")
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read transaction journal")
+		}
+		var candidate windowsInstallJournal
+		if err := json.Unmarshal(data, &candidate); err != nil {
+			return fmt.Errorf("decode transaction journal")
+		}
+		if candidate.Sequence == state.StableSequence {
+			if match != nil {
+				return fmt.Errorf("multiple journals claim the committed stable sequence")
+			}
+			match = &candidate
+		}
+	}
+	if match == nil || match.Version != state.InstalledVersion ||
+		match.Phase != "installed-awaiting-sequence-commit" && match.Phase != "committed" {
+		return fmt.Errorf("committed update journal does not uniquely match protected updater state")
+	}
+	expectedScript, err := filepath.Abs(filepath.Join(installDir, "Recover-WeDecentInstall.ps1"))
+	if err != nil {
+		return fmt.Errorf("resolve recovery script path")
+	}
+	actualScript, err := filepath.Abs(script)
+	if err != nil || !strings.EqualFold(filepath.Clean(actualScript), filepath.Clean(expectedScript)) ||
+		!strings.EqualFold(filepath.Clean(match.RecoveryScriptPath), filepath.Clean(expectedScript)) {
+		return fmt.Errorf("committed recovery script path does not match its journal")
+	}
+	if !match.RecoveryScriptHadOriginal ||
+		match.RecoveryScriptState != "published" ||
+		len(match.RecoveryScriptOriginalSHA256) != 64 ||
+		len(match.RecoveryScriptSHA256) != 64 {
+		return fmt.Errorf("committed recovery script backup binding is malformed")
+	}
+	currentDigest, err := hashInstallerFile(expectedScript)
+	if err != nil || currentDigest != match.RecoveryScriptSHA256 {
+		return fmt.Errorf("committed recovery script digest mismatch")
+	}
+	expectedBackup := expectedScript + "." + match.TransactionID + ".previous"
+	if !strings.EqualFold(filepath.Clean(match.RecoveryScriptBackupPath), filepath.Clean(expectedBackup)) {
+		return fmt.Errorf("committed recovery script backup path mismatch")
+	}
+	backupInfo, backupErr := os.Lstat(expectedBackup)
+	if backupErr == nil {
+		if !backupInfo.Mode().IsRegular() || backupInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("previous recovery script backup is not a regular file")
+		}
+		backupDigest, err := hashInstallerFile(expectedBackup)
+		if err != nil || backupDigest != match.RecoveryScriptOriginalSHA256 {
+			return fmt.Errorf("previous recovery script backup digest mismatch")
+		}
+	} else if match.Phase != "committed" {
+		return fmt.Errorf("previous recovery script backup disappeared before committed journal")
+	}
+	return nil
+}
 
 func verifyRecoveryScriptAdmission(installDir, script string, transaction InstallTransaction) error {
 	programData := os.Getenv("ProgramData")
