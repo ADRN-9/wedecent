@@ -29,7 +29,19 @@ type PowerShellInstallerExecutor struct {
 	run            installerCommandRunner
 }
 
-func (e PowerShellInstallerExecutor) Execute(ctx context.Context, pkg VerifiedInstallerPackage) error {
+func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
+	if ctx == nil {
+		return fmt.Errorf("installer context is required")
+	}
+	if err := transaction.validate(); err != nil || transaction.Phase != InstallPhaseExecuting {
+		return fmt.Errorf("%w: installer transaction is not authorized for execution", ErrInstallTransaction)
+	}
+	if err := pkg.validate(); err != nil {
+		return err
+	}
+	if pkg.Version != transaction.TargetVersion || pkg.archiveDigest != transaction.PackageDigest {
+		return fmt.Errorf("%w: verified package does not match installer transaction", ErrInstallerPackage)
+	}
 	powershell, err := strictExecutablePath(e.PowerShellPath)
 	if err != nil {
 		return err
@@ -51,7 +63,7 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, pkg VerifiedIn
 	if err := e.runScript(ctx, powershell, validate, e.validationArgs()...); err != nil {
 		return fmt.Errorf("installed WeDecent preflight failed")
 	}
-	installArgs := []string{"-BundlePath", pkgDir}
+	installArgs := []string{"-BundlePath", pkgDir, "-TransactionId", transaction.ID, "-ExpectedPackageSHA256", transaction.PackageDigest}
 	installArgs = append(installArgs, e.commonArgs()...)
 	if err := e.runScript(ctx, powershell, install, installArgs...); err != nil {
 		return fmt.Errorf("WeDecent installer failed")
