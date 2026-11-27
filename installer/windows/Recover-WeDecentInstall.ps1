@@ -475,6 +475,29 @@ if ($null -eq $serviceConfig -or
     -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
     throw 'SCM service identity does not match authenticated prior installer metadata.'
 }
+$metadataServiceSid = [Security.Principal.SecurityIdentifier]::new([string]$metadata.service_account_sid).Value
+$serviceStartName = ([string]$serviceConfig.StartName).Trim()
+if ([string]::IsNullOrWhiteSpace($serviceStartName)) {
+    throw 'SCM service account is empty; refusing recovery.'
+}
+switch -Regex ($serviceStartName) {
+    '^(?i:LocalSystem|NT AUTHORITY\\SYSTEM)$' { $serviceAccountSid = 'S-1-5-18'; break }
+    '^(?i:NT AUTHORITY\\LOCAL SERVICE)$' { $serviceAccountSid = 'S-1-5-19'; break }
+    '^(?i:NT AUTHORITY\\NETWORK SERVICE)$' { $serviceAccountSid = 'S-1-5-20'; break }
+    default {
+        if ($serviceStartName.StartsWith('.\\', [StringComparison]::Ordinal)) {
+            $serviceStartName = "$env:COMPUTERNAME\\$($serviceStartName.Substring(2))"
+        }
+        try {
+            $serviceAccountSid = (New-Object Security.Principal.NTAccount -ArgumentList $serviceStartName).Translate([Security.Principal.SecurityIdentifier]).Value
+        } catch {
+            throw "SCM service account could not be resolved to a SID; refusing recovery. Cause: $($_.Exception.Message)"
+        }
+    }
+}
+if (-not [string]::Equals($serviceAccountSid, $metadataServiceSid, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "SCM service account SID does not match protected installer metadata (SCM=$serviceAccountSid, metadata=$metadataServiceSid)."
+}
 $restartService = [bool]$journal.service_was_running
 if ($service.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force -ErrorAction Stop }
 (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
