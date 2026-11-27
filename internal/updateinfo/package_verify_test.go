@@ -203,6 +203,7 @@ func buildInstallerPackageFixture(t *testing.T, mutate func(map[string][]byte)) 
 		"Install-WeDecent.ps1":     []byte("Write-Output install\n"),
 		"Uninstall-WeDecent.ps1":   []byte("Write-Output uninstall\n"),
 		"Test-WeDecentInstall.ps1": []byte("Write-Output test\n"),
+		"Recover-WeDecentInstall.ps1": []byte("Write-Output recovery\n"),
 		"README.md":                []byte("installer readme\n"),
 	}
 	files["SHA256SUMS.txt"] = checksumManifest(files, installerBinaries)
