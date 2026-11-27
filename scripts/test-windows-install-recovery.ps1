@@ -22,8 +22,10 @@ if ($cleanupHelper -lt 0 -or $cleanupCommit -lt 0 -or $cleanupGate -lt 0 -or
     $cleanupHelper -ge $cleanupGate -or $cleanupGate -ge $cleanupCommit) {
     throw 'Committed backup cleanup must be gated by durable updater state and invoked from committed recovery.'
 }
-if (-not $installerText.Contains('Committed installation is valid; backup cleanup will be retried later.')) {
-    throw 'Interrupted post-commit cleanup must preserve a durable retry path.'
+if (-not $installerText.Contains('Committed installation remains valid; refusing another installation until backup cleanup completes.') -or
+    -not $installerText.Contains('$superseded') -or
+    -not $installerText.Contains('Superseded committed transaction has unfinished backup cleanup')) {
+    throw 'Interrupted post-commit cleanup must fail closed and recognize only fully cleaned historical transactions.'
 }
 if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
     -not $installerText.Contains('if ($binariesRestored)') -or
@@ -321,6 +323,18 @@ try {
     Invoke-TestRecovery -Fixture $committed | Out-Null
     $replayedCommitted = Get-Content -LiteralPath $committed.journalPath -Raw | ConvertFrom-Json
     if ($replayedCommitted.phase -ne 'committed') { throw 'Repeated committed recovery changed the committed phase.' }
+
+    # A fully cleaned committed journal remains harmless after a later sequence commits.
+    $supersededState = Get-Content -LiteralPath $committed.statePath -Raw | ConvertFrom-Json
+    $supersededState.stable_sequence = 43
+    $supersededState.installed_version = 'v0.5.0'
+    Write-TestJson -Path $committed.statePath -Value $supersededState -ExtraSids @($serviceSid)
+    Invoke-TestRecovery -Fixture $committed | Out-Null
+    foreach ($entry in $committed.journal.entries) {
+        if (Test-Path -LiteralPath $entry.backup_path) {
+            throw "Superseded committed journal unexpectedly recreated a backup: $($entry.name)"
+        }
+    }
 
     $tamperedCommitted = New-TransactionFixture -Committed $true
     [IO.File]::WriteAllText([string]$tamperedCommitted.journal.entries[0].destination, 'tampered target')
