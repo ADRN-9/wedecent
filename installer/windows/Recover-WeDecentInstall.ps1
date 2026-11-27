@@ -99,7 +99,9 @@ function Write-TransactionJournal {
     }
     Set-TrustedAcl -Path $temp
     Assert-TrustedAcl -Path $temp
-    [IO.File]::Replace($temp, $Path, $null, $true)
+    $backup = Join-Path $directory ('.' + [Guid]::NewGuid().ToString('N') + '.previous')
+    [IO.File]::Replace($temp, $Path, $backup, $true)
+    Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
     Assert-TrustedAcl -Path $Path
 }
 
