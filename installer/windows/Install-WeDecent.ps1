@@ -4,6 +4,7 @@ param(
     [string]$TransactionId,
     [string]$ExpectedPackageSHA256,
     [UInt64]$TransactionSequence = 0,
+    [switch]$RecoverOnly,
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'WeDecent'),
     [string]$StateDir = (Join-Path $InstallDir 'data\agent'),
     [ValidatePattern('^[A-Za-z0-9_.-]{1,128}$')]
@@ -29,10 +30,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:BinaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
 $script:VerifiedBinaryHashes = @{}
-if ($TransactionId -and ($TransactionId -notmatch '^[a-f0-9]{32}$' -or $ExpectedPackageSHA256 -notmatch '^[a-f0-9]{64}$' -or $TransactionSequence -eq 0)) {
+if (-not $RecoverOnly -and $TransactionId -and ($TransactionId -notmatch '^[a-f0-9]{32}$' -or $ExpectedPackageSHA256 -notmatch '^[a-f0-9]{64}$' -or $TransactionSequence -eq 0)) {
     throw 'The installer transaction ID, package digest and sequence are invalid or incomplete.'
 }
-if (-not $TransactionId -and ($ExpectedPackageSHA256 -or $TransactionSequence -ne 0)) {
+if (-not $RecoverOnly -and -not $TransactionId -and ($ExpectedPackageSHA256 -or $TransactionSequence -ne 0)) {
     throw 'Installer transaction parameters must be supplied together.'
 }
 $script:IsManagedUpdate = -not [string]::IsNullOrWhiteSpace($TransactionId)
@@ -751,12 +752,15 @@ function Write-InstallJournal {
 }
 
 function Recover-InterruptedInstallerTransactions {
-    param([Parameter(Mandatory = $true)][hashtable]$Destinations)
+    param(
+        [Parameter(Mandatory = $true)][hashtable]$Destinations,
+        [string]$OnlyTransactionId
+    )
     $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { return }
 
     $expectedNames = @($script:BinaryNames | Sort-Object -CaseSensitive)
-    foreach ($file in @(Get-ChildItem -LiteralPath $root -Filter '*.json' -File)) {
+    foreach ($file in @(Get-ChildItem -LiteralPath $root -Filter '*.json' -File | Where-Object { -not $OnlyTransactionId -or $_.BaseName -ceq $OnlyTransactionId })) {
         if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Installer transaction journal must not be a reparse point: $($file.FullName)"
         }
@@ -1080,6 +1084,27 @@ function Test-ServiceStateSafeForAccountRemoval {
     }
 }
 
+function Publish-WeDecentRecoveryScript {
+    if ([string]::IsNullOrWhiteSpace($PSCommandPath) -or
+        -not (Test-Path -LiteralPath $PSCommandPath -PathType Leaf)) {
+        throw 'Cannot persist the verified installer recovery entry point.'
+    }
+    $target = Join-Path $InstallDir 'Install-WeDecent.ps1'
+    $temp = "$target.$($script:InstallTransactionId).new"
+    Copy-Item -LiteralPath $PSCommandPath -Destination $temp -Force
+    $sourceHash = Get-Sha256FileHash $PSCommandPath
+    if ((Get-Sha256FileHash $temp) -ne $sourceHash) {
+        throw 'Persisted installer recovery entry point failed integrity verification.'
+    }
+    Protect-WeDecentMetadataAcl $temp
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        [IO.File]::Replace($temp, $target, $null, $true)
+    } else {
+        [IO.File]::Move($temp, $target)
+    }
+    Protect-WeDecentMetadataAcl $target
+}
+
 function Invoke-RollbackStep {
     param(
         [Parameter(Mandatory = $true)][string]$Description,
@@ -1093,6 +1118,328 @@ function Invoke-RollbackStep {
 }
 
 Assert-Administrator
+$InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -Label 'InstallDir'
+$StateDir = Assert-SafeChildPath -Path $StateDir -Root $InstallDir -Label 'StateDir'
+if ($RecoverOnly) {
+    if ([string]$TransactionId -notmatch '^[a-f0-9]{32}
+if ([string]::IsNullOrWhiteSpace($BundlePath)) { throw 'Cannot determine installer bundle path.' }
+$BundlePath = (Resolve-Path -LiteralPath $BundlePath).Path
+$InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -Label 'InstallDir'
+$StateDir = Assert-SafeChildPath -Path $StateDir -Root $InstallDir -Label 'StateDir'
+$version = Assert-ReleaseBundle
+$script:InstallTargetVersion = $version
+$metadataPath = Get-WeDecentMetadataPath
+$migrationModule = Join-Path $PSScriptRoot 'StateMigration.psm1'
+Import-Module $migrationModule -Force -ErrorAction Stop
+$migrationJournalPath = Join-Path $InstallDir 'migration\state-migration.json'
+$migrationAgentPath = Join-Path $BundlePath 'wd-agent.exe'
+$metadata = Read-WeDecentMetadata
+$metadataTrusted = $false
+if ($metadata) {
+    $metadataTrusted = Test-WeDecentMetadataTrusted $metadataPath
+    if (-not $metadataTrusted) {
+        throw 'Existing installer metadata is not ACL-trusted; refusing migration recovery or installer state changes.'
+    }
+}
+if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
+    [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $migrationJournalPath) -AgentPath $migrationAgentPath)
+    [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName)
+}
+$metadata = Read-WeDecentMetadata
+$service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+if (-not $service) {
+    if ($metadata) {
+        if (-not $metadataTrusted) {
+            throw 'Installer metadata exists but is not ACL-authenticated; refusing a fresh identity over potentially existing state.'
+        }
+        throw 'Authenticated installer metadata exists but the service is absent; refusing fresh identity creation until the existing installation state is recovered or explicitly retired.'
+    }
+    $legacyDefaultStateDir = Join-Path $env:ProgramData 'WeDecent\agent'
+    if (Test-DirectoryExistsStrict -Path $legacyDefaultStateDir) {
+        throw 'Legacy ProgramData service state exists; refusing to create a replacement identity at the Program Files location.'
+    }
+}
+$binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
+Recover-InterruptedInstallerTransactions -Destinations $binaryDestinations
+Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
+$wdDestination = $binaryDestinations['wd.exe']
+$agentDestination = $binaryDestinations['wd-agent.exe']
+
+if ($service) {
+    if (-not $metadataTrusted -or [string]::IsNullOrWhiteSpace([string]$metadata.state_dir)) {
+        throw 'Existing service state location is not authenticated by protected installer metadata; refusing upgrade until an operator performs an identity-preserving offline migration.'
+    }
+    $recordedStateDir = [IO.Path]::GetFullPath([string]$metadata.state_dir)
+    $requestedStateDir = [IO.Path]::GetFullPath($StateDir)
+    $needsStateMigration = -not [string]::Equals($recordedStateDir.TrimEnd('\'), $requestedStateDir.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)
+    $stateArg = [regex]::Escape('--state=' + $recordedStateDir)
+    if ($service.PathName -notmatch ('(?i)(?:^|\s)"?' + $stateArg + '"?(?:\s|$)')) {
+        throw 'Existing SCM command line does not match the authenticated state_dir metadata; refusing upgrade.'
+    }
+    if ($service.StartName -match '^(LocalSystem|LocalService|NetworkService|NT AUTHORITY\\(SYSTEM|LocalService|NetworkService))$') {
+        throw "Refusing to upgrade service running as built-in identity $($service.StartName)"
+    }
+    $expectedAgent = '^(?:"' + [Regex]::Escape($agentDestination) + '"|' + [Regex]::Escape($agentDestination) + ')(?:\s|$)'
+    if ($service.PathName -notmatch $expectedAgent) {
+        throw "Existing service binary path is not $agentDestination; refusing to rewrite an unrelated service"
+    }
+    $localName = Get-LocalAccountName $service.StartName
+    if (-not $localName) { throw "Installer-managed services must use a dedicated local account; got '$($service.StartName)'." }
+    Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction Stop
+    $localUser = Get-LocalUser -Name $localName -ErrorAction Stop
+    Assert-StandardLocalAccount $localUser
+    $accountSid = $localUser.SID.Value
+    $managed = $false
+    if ($metadataTrusted -and $metadata.service_account_sid -eq $accountSid) {
+        $managed = [bool]$metadata.managed_service_account
+    }
+
+    if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Upgrade WeDecent to $version")) { return }
+    New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+    if ($needsStateMigration) {
+        $journalParent = Split-Path -Parent $migrationJournalPath
+        if (-not (Test-Path -LiteralPath $journalParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $journalParent -Force | Out-Null
+        }
+        [void](Set-WeDecentMigrationAdminDirectory -Path $journalParent -AgentPath $migrationAgentPath)
+        $destinationParent = Split-Path -Parent $requestedStateDir
+        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
+            Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $migrationAgentPath
+        } else {
+            [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $migrationAgentPath)
+        }
+        Write-Host "Migrating authenticated service state from '$recordedStateDir' to '$requestedStateDir'."
+        [void](Invoke-WeDecentStateMigration -Source $recordedStateDir -Destination $requestedStateDir -AgentPath $migrationAgentPath -ServiceName $ServiceName -ServiceSid $accountSid -MetadataPath $metadataPath -JournalPath $migrationJournalPath)
+        $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        $metadata = Read-WeDecentMetadata
+        if ([IO.Path]::GetFullPath([string]$metadata.state_dir) -ine $requestedStateDir) {
+            throw 'Authenticated installer metadata did not commit the migrated state path.'
+        }
+    }
+    Write-Host "Upgrading existing $ServiceName service; state and service account will be preserved."
+    if ($service.State -ne 'Stopped') {
+        Stop-Service -Name $ServiceName -Force
+        (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    }
+    $attemptedBinaryNames = [System.Collections.Generic.List[string]]::new()
+    $binaryOriginalState = @{}
+    try {
+        Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
+        Assert-InstalledBinaries -Destinations $binaryDestinations
+        Start-Service -Name $ServiceName
+        (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        Publish-WeDecentRecoveryScript
+        Write-WeDecentMetadata -AccountSid $accountSid -ManagedAccount $managed -AccountName $localName -Version $version
+        Initialize-WeDecentUpdateState -Version $version -ServiceSid $accountSid
+    } catch {
+        $failed = $_
+        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        Invoke-RollbackStep 'restore installed binaries' {
+            Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
+        }
+        Invoke-RollbackStep 'restart previous agent service' {
+            Start-Service -Name $ServiceName
+            (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        }
+        throw "Upgrade failed; rollback was attempted: $($failed.Exception.Message)"
+    }
+    if (-not $script:IsManagedUpdate -and $script:InstallJournal) { $script:InstallJournal.phase = 'committed'; Write-InstallJournal -Journal $script:InstallJournal }
+} else {
+    Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction Stop
+    $localUser = Get-LocalUser -Name $ServiceAccountName -ErrorAction SilentlyContinue
+    if ($localUser) { Assert-StandardLocalAccount $localUser }
+
+    if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Install WeDecent $version")) { return }
+
+    if ([string]::IsNullOrWhiteSpace($RecoveryAuthorityUrl)) {
+        throw 'A recovery-authority HTTPS origin is required through -RecoveryAuthorityUrl or WEDECENT_PAIRING_RECOVERY_AUTHORITY_URL.'
+    }
+    $authorityUri = $null
+    if (-not [Uri]::TryCreate($RecoveryAuthorityUrl, [UriKind]::Absolute, [ref]$authorityUri) -or
+        $authorityUri.Scheme -ne 'https' -or [string]::IsNullOrEmpty($authorityUri.Host) -or
+        $authorityUri.UserInfo -or $authorityUri.Query -or $authorityUri.Fragment -or
+        ($authorityUri.AbsolutePath -ne '' -and $authorityUri.AbsolutePath -ne '/')) {
+        throw 'RecoveryAuthorityUrl must be an origin-only HTTPS URL.'
+    }
+    if ($RecoveryAuthoritySPKISHA256 -notmatch '^[0-9A-Fa-f]{64}$') {
+        throw 'RecoveryAuthoritySPKISHA256 must contain exactly 64 hexadecimal characters.'
+    }
+    if ([string]::IsNullOrWhiteSpace($RecoveryAuthorityTrustFile)) {
+        throw 'RecoveryAuthorityTrustFile is required.'
+    }
+    $trustItem = Get-Item -LiteralPath $RecoveryAuthorityTrustFile -Force -ErrorAction Stop
+    if ($trustItem.PSIsContainer -or
+        ($trustItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'RecoveryAuthorityTrustFile must be a regular, non-reparse file.'
+    }
+    $RecoveryAuthorityTrustFile = $trustItem.FullName
+    if ($null -eq $RecoveryAuthorityBearerToken) {
+        $RecoveryAuthorityBearerToken = Read-Host -Prompt 'Short-lived recovery-authority bearer token' -AsSecureString
+    }
+    if ($null -eq $RecoveryAuthorityBearerToken -or $RecoveryAuthorityBearerToken.Length -lt 32 -or
+        $RecoveryAuthorityBearerToken.Length -gt 4096) {
+        throw 'RecoveryAuthorityBearerToken must contain 32 to 4096 characters.'
+    }
+    Assert-SecureStringLine -SecureString $RecoveryAuthorityBearerToken -MinimumLength 32 -MaximumLength 4096 -Label 'RecoveryAuthorityBearerToken' -RejectEdgeWhitespace
+
+    $installDirExisted = Test-Path -LiteralPath $InstallDir -PathType Container
+    $stateParent = Split-Path -Parent $StateDir
+    $stateParentExisted = Test-DirectoryExistsStrict -Path $stateParent
+    $stateExisted = Test-DirectoryExistsStrict -Path $StateDir
+    $createdAccount = $false
+    $hadLogonRight = $false
+    $originalMachinePath = [Environment]::GetEnvironmentVariable('Path', 'Machine')
+    $managed = $false
+    $password = $null
+    $attemptedBinaryNames = [System.Collections.Generic.List[string]]::new()
+    $binaryOriginalState = @{}
+
+    try {
+        New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+        if ($localUser) {
+            $metadataManaged = $metadataTrusted -and [bool]$metadata.managed_service_account -and $metadata.service_account_sid -eq $localUser.SID.Value
+            if ($metadataManaged) {
+                $plainGenerated = New-ServiceAccountPassword
+                try {
+                    $password = ConvertTo-SecureString $plainGenerated -AsPlainText -Force
+                    Set-LocalUser -Name $ServiceAccountName -Password $password
+                } finally {
+                    $plainGenerated = $null
+                }
+                $managed = $true
+            } elseif ($AdoptExistingServiceAccount) {
+                if (-not $ServiceAccountCredential) {
+                    throw '-AdoptExistingServiceAccount requires -ServiceAccountCredential for a pre-existing account.'
+                }
+                $password = $ServiceAccountCredential.Password
+            } else {
+                throw "Local account $ServiceAccountName already exists but is not recorded as trusted installer-managed. Use -AdoptExistingServiceAccount with an in-memory PSCredential, or choose another account name."
+            }
+        } else {
+            if ($ServiceAccountCredential) {
+                $password = $ServiceAccountCredential.Password
+            } else {
+                $plainGenerated = New-ServiceAccountPassword
+                try {
+                    $password = ConvertTo-SecureString $plainGenerated -AsPlainText -Force
+                } finally {
+                    $plainGenerated = $null
+                }
+            }
+            $localUser = New-LocalUser -Name $ServiceAccountName -Password $password -AccountNeverExpires -PasswordNeverExpires -UserMayNotChangePassword -Description 'WeDecent dedicated terminal service account'
+            $createdAccount = $true
+            $managed = $true
+        }
+
+        Assert-StandardLocalAccount $localUser
+        Assert-SecureStringLine -SecureString $password -MinimumLength 1 -MaximumLength 4096 -Label 'Service account password'
+        $hadLogonRight = Test-ServiceLogonRight -Sid $localUser.SID.Value
+        if (-not $hadLogonRight) { Set-ServiceLogonRight -Sid $localUser.SID.Value -Present $true }
+
+        Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
+        Assert-InstalledBinaries -Destinations $binaryDestinations
+        Invoke-AgentServiceInstall -AgentPath $agentDestination -Password $password -RecoveryBearerToken $RecoveryAuthorityBearerToken
+
+        $finalService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+        if (-not $finalService -or $finalService.State -ne 'Running') {
+            throw "$ServiceName is not running after installation"
+        }
+        $finalSid = Resolve-AccountSid $finalService.StartName
+        if ($finalSid -ne $localUser.SID.Value) {
+            throw 'Installed service account SID does not match the expected local account.'
+        }
+
+        if ($AddToMachinePath) { Add-MachinePathEntry $InstallDir }
+        Publish-WeDecentRecoveryScript
+        Write-WeDecentMetadata -AccountSid $localUser.SID.Value -ManagedAccount $managed -AccountName $ServiceAccountName -Version $version
+        Initialize-WeDecentUpdateState -Version $version -ServiceSid $localUser.SID.Value
+        if (-not $script:IsManagedUpdate -and $script:InstallJournal) { $script:InstallJournal.phase = 'committed'; Write-InstallJournal -Journal $script:InstallJournal }
+    } catch {
+        $failed = $_
+        Invoke-RollbackStep 'remove partially created service' {
+            $createdService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+            if ($createdService) {
+                Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+                & sc.exe delete $ServiceName | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
+            }
+        }
+        Invoke-RollbackStep 'restore installed binaries' {
+            Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
+        }
+        if ($AddToMachinePath) {
+            Invoke-RollbackStep 'restore machine PATH' {
+                [Environment]::SetEnvironmentVariable('Path', $originalMachinePath, 'Machine')
+            }
+        }
+        if (-not $stateExisted) {
+            Invoke-RollbackStep 'remove only an empty installer-created state directory' {
+                Remove-EmptyDirectory -Path $StateDir
+            }
+            if (-not $stateParentExisted) {
+                Invoke-RollbackStep 'remove empty installer-created state parent' {
+                    Remove-EmptyDirectory -Path $stateParent
+                }
+            }
+            if (Test-Path -LiteralPath $StateDir -PathType Container) {
+                $remainingState = @(Get-ChildItem -LiteralPath $StateDir -Force -ErrorAction Stop)
+                if ($remainingState.Count -gt 0) {
+                    Write-Warning "Preserving non-empty protected service state after interrupted installation. Do not delete or repair identity/trust material; use the documented offline recovery and re-enrollment procedure. State: $StateDir"
+                }
+            }
+        }
+        if (-not $installDirExisted) {
+            Invoke-RollbackStep 'remove empty installer-created install directory' {
+                Remove-EmptyDirectory -Path $InstallDir
+            }
+        }
+        if ($localUser -and -not $hadLogonRight) {
+            Invoke-RollbackStep 'remove SeServiceLogonRight' {
+                Set-ServiceLogonRight -Sid $localUser.SID.Value -Present $false
+            }
+        }
+        if ($createdAccount) {
+            Invoke-RollbackStep 'remove installer-created service account only when protected state is empty' {
+                if (Test-ServiceStateSafeForAccountRemoval -Path $StateDir) {
+                    Remove-LocalUser -Name $ServiceAccountName -ErrorAction Stop
+                } else {
+                    Write-Warning "Retaining installer-created service account '$ServiceAccountName': protected state is non-empty, non-directory, or could not be inspected. Preserve the account for offline recovery."
+                }
+            }
+        }
+        throw "Fresh installation failed; rollback was attempted: $($failed.Exception.Message)"
+    }
+}
+
+if ($service -and $AddToMachinePath) { Add-MachinePathEntry $InstallDir }
+
+$finalService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'"
+if (-not $finalService -or $finalService.State -ne 'Running') { throw "$ServiceName is not running after installation" }
+
+Write-Host "WeDecent $version installed successfully."
+Write-Host "Client:    $wdDestination"
+Write-Host "Agent:     $agentDestination"
+Write-Host "RouterCtl: $($binaryDestinations['wd-routerctl.exe'])"
+Write-Host "Core:      $($binaryDestinations['wd-core.exe'])"
+Write-Host "UI:        $($binaryDestinations['wd-ui.exe'])"
+Write-Host "State:     $StateDir"
+Write-Host "Service:   $ServiceName ($($finalService.StartName))"
+Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the installer does not register them as services or autostart entries.') {
+        throw 'Recovery requires the exact 32-character transaction ID.'
+    }
+    $binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
+    Recover-InterruptedInstallerTransactions -Destinations $binaryDestinations -OnlyTransactionId $TransactionId
+    $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($TransactionId + '.json')
+    if (-not (Test-Path -LiteralPath $journalPath -PathType Leaf)) {
+        throw 'Recovery transaction journal is unavailable.'
+    }
+    $recovered = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json
+    if ($recovered.phase -notin @('committed', 'rolled-back')) {
+        throw 'Recovery outcome is ambiguous; refusing to continue.'
+    }
+    exit 0
+}
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { $BundlePath = $PSScriptRoot }
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { throw 'Cannot determine installer bundle path.' }
 $BundlePath = (Resolve-Path -LiteralPath $BundlePath).Path
