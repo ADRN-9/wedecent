@@ -355,7 +355,6 @@ func containsArgPair(args []string, key, value string) bool {
 	return false
 }
 
-
 func TestPowerShellInstallerExecutorFinalizesOnlyCommittedState(t *testing.T) {
 	root := privateTempDir(t)
 	powershell := filepath.Join(root, "powershell.exe")
@@ -374,9 +373,9 @@ func TestPowerShellInstallerExecutorFinalizesOnlyCommittedState(t *testing.T) {
 	var command recordedInstallerCommand
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell,
-		InstallDir: installDir,
-		StateDir: stateDir,
-		ServiceName: "WeDecentAgent",
+		InstallDir:     installDir,
+		StateDir:       stateDir,
+		ServiceName:    "WeDecentAgent",
 		run: func(_ context.Context, gotPowerShell, gotScript string, args []string) error {
 			if gotPowerShell != powershell || gotScript != script {
 				t.Fatalf("finalizer command paths = %q, %q", gotPowerShell, gotScript)
@@ -386,10 +385,10 @@ func TestPowerShellInstallerExecutorFinalizesOnlyCommittedState(t *testing.T) {
 		},
 	}
 	state := State{
-		Version: UpdateStateVersionWithInstall,
-		StableSequence: 91,
-		KeysetEpoch: 1,
-		KeysetDigest: strings.Repeat("a", 64),
+		Version:          UpdateStateVersionWithInstall,
+		StableSequence:   91,
+		KeysetEpoch:      1,
+		KeysetDigest:     strings.Repeat("a", 64),
 		InstalledVersion: "v0.4.0",
 	}
 	if err := executor.FinalizeCommitted(context.Background(), state); err != nil {
@@ -408,7 +407,7 @@ func TestPowerShellInstallerExecutorFinalizesOnlyCommittedState(t *testing.T) {
 		}
 	}
 	if err := executor.FinalizeCommitted(context.Background(), State{
-		Version: UpdateStateVersionWithInstall,
+		Version:        UpdateStateVersionWithInstall,
 		PendingInstall: &InstallTransaction{Phase: InstallPhaseExecuting},
 	}); err == nil {
 		t.Fatal("finalizer accepted state with a pending installation")
