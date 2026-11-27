@@ -1611,12 +1611,20 @@ function Restore-TransactionRecoveryScript {
         if (-not (Test-WeDecentMetadataTrusted -Path $target)) {
             throw 'Restored previous recovery script failed final ACL verification.'
         }
-    } elseif (Test-Path -LiteralPath $target -PathType Leaf) {
-        $newHash = [string]$Journal.recovery_script_sha256
-        if ($newHash -notmatch '^[a-f0-9]{64}$' -or (Get-Sha256FileHash $target) -ne $newHash) {
-            throw 'Refusing to remove a recovery script not published by this transaction.'
+    } else {
+        if (Test-Path -LiteralPath $target) {
+            $targetInfo = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+            $newHash = [string]$Journal.recovery_script_sha256
+            if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                $newHash -notmatch '^[a-f0-9]{64}$' -or (Get-Sha256FileHash $target) -ne $newHash) {
+                throw 'Refusing to remove a recovery script not published by this transaction.'
+            }
+            Remove-Item -LiteralPath $target -Force
         }
-        Remove-Item -LiteralPath $target -Force
+        $Journal.recovery_script_sha256 = ''
+        $Journal.recovery_script_state = 'absent'
+        $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
+        Write-InstallJournal -Journal $Journal -Path $journalPath
     }
 }
 
