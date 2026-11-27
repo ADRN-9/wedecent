@@ -166,6 +166,9 @@ func TestApplyVerifiedManifestInvokesPowerShellExecutorProcess(t *testing.T) {
 		ServiceName:    "WeDecentAgent",
 		WebRelay:       "https://relay.wedecent.com",
 		isElevated:     func() bool { return true },
+		verifyExecutable: func(_ context.Context, path string) (string, error) {
+			return hashRegularFile(path)
+		},
 	}
 	if err := store.applyVerifiedManifest(
 		context.Background(), verified, staged, 0,
