@@ -147,6 +147,7 @@ jobs:
             'installer/windows/Test-WeDecentInstall.ps1',
             'installer/windows/StateMigration.psm1',
             'scripts/test-windows-upgrade-preflight.ps1',
+            'scripts/test-windows-install-recovery.ps1',
             'scripts/test-windows-service-installer-contract.ps1',
             'scripts/test-windows-state-migration-coordinator.ps1',
             'scripts/test-windows-rfcomm-hardware.ps1'
@@ -167,6 +168,9 @@ jobs:
       - name: Verify Windows upgrade user-process preflight
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
+
+      - name: Test Windows installer recovery and backup integrity
+        run: .\scripts\test-windows-install-recovery.ps1
       - name: Verify Windows service installer recovery credential contract
         shell: pwsh
         run: .\scripts\test-windows-service-installer-contract.ps1
