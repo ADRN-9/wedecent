@@ -3,7 +3,7 @@
 **Repository:** ADRN-9/wedecent  
 **PR:** #209 — open, draft, unmerged  
 **Branch:** `security/c324-verified-update-admission-recovery`  
-**Report HEAD:** `f94f51c9419bc4df237ca9bc31225e221511fe7d`  
+**Report HEAD:** `5fbb3ea3f8830ccbda62efd0b1306f5f8a5d65df`  
 **Date:** 2026-11-27
 
 ## Disposition
@@ -48,13 +48,13 @@ The following runs are real GitHub Actions results, but they target earlier inte
 | `46056972721` | C324 updater security | Failed | Process fixture expected the pre-cleanup call; sequence-zero skip suppressed it |
 | `46057123217` | C324 updater security | Failed | Windows cross-compilation found missing `currentProcessElevated` and a public/private Ed25519 test-key mix-up |
 
-At run `46057123217`, `gofmt -l internal/updateinfo` passed and `go test ./internal/updateinfo -count=1` passed; Windows cross-compilation then failed. The missing Windows elevation wrapper and test-key ordering were corrected in commits `9f9257fc55e6990dbb30e4da7490ddd371b9617e` and `f94f51c9419bc4df237ca9bc31225e221511fe7d`. **Those fixes have not yet been validated by a fresh workflow at the report HEAD.**
+At run `46057123217`, `gofmt -l internal/updateinfo` passed and `go test ./internal/updateinfo -count=1` passed; Windows cross-compilation then failed. The missing Windows elevation wrapper and test-key ordering were corrected in commits `9f9257fc55e6990dbb30e4da7490ddd371b9617e` and `f94f51c9419bc4df237ca9bc31225e221511fe7d`. The later process-fixture call-count regression was corrected in `b1e61d1db12f5a9541d21e6cf356b571a516fe93`. **These fixes and the recovery-script repair have not yet been validated by a fresh workflow at the report HEAD.**
 
 Earlier full-CI and Desktop runs are not substitutes for exact-head validation. No successful exact-head workflow IDs or job outcomes are claimed here.
 
 ## Outstanding blockers
 
-1. **Recovery script integrity implementation is not accepted.** The current branch's `installer/windows/Recover-WeDecentInstall.ps1` is 146,510 bytes / 2,494 lines and contains malformed concatenated fragments, including an invalid recovery-script digest condition. Restore a single canonical script, integrate the transaction-bound backup validation/restore/cleanup once, and run the PowerShell recovery adversarial suite. Do not execute or ship the malformed script.
+1. **Recovery script integrity implementation is not accepted.** The previously malformed 146,510-byte recovery script was restored to its canonical 591-line baseline. A transaction-bound recovery-script validation/restore helper was then added: it validates the installed path, original digest, backup path and backup contents before rollback, restores the previous script, and persists the restored digest/state in the journal. This source repair is not yet accepted: the finalizer backup-cleanup path and Windows PowerShell adversarial suite still need exact-head validation.
 2. Add and pass adversarial interruption/corruption tests proving: backup is transaction-bound; recovery script digest is checked before elevated execution; failed installation restores the previous script; corrupted/missing backup fails before mutation; rollback failure leaves service stopped and retains the backup.
 3. Add full process-authentication tests for wrong SID, wrong logon session, malformed/ambiguous token information, invalid caller image, UAC cancellation, and an elevated helper launched without the intended original caller.
 4. Verify staged-worker publisher mismatch and path substitution negatives on Windows. Hosted source tests are not actual privileged install acceptance.
