@@ -828,9 +828,8 @@ function Recover-InterruptedInstallerTransactions {
         if ($journal.phase -eq 'committed' -and -not $committed) {
             throw 'Installer journal claims commit but protected updater state does not confirm it.'
         }
-        if ($journal.phase -eq 'rolled-back') {
-            if ($committed) { throw 'Installer journal claims rollback but protected updater state confirms commit.' }
-            continue
+        if ($journal.phase -eq 'rolled-back' -and $committed) {
+            throw 'Installer journal claims rollback but protected updater state confirms commit.'
         }
         if ($committed) {
             foreach ($entry in @($journal.entries)) {
