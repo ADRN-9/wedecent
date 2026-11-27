@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -341,35 +342,188 @@ func privateTempDir(t *testing.T) string {
 
 func storeStateWithoutLock(path string) (State, error) { return loadState(path) }
 
+type filesystemInstallJournal struct {
+	TransactionID string            `json:"transaction_id"`
+	PreviousVersion string          `json:"previous_version"`
+	TargetVersion string            `json:"target_version"`
+	OriginalHashes map[string]string `json:"original_hashes"`
+	TargetHashes map[string]string   `json:"target_hashes"`
+}
+
+type filesystemInstallerExecutor struct {
+	root string
+	backupRoot string
+	statePath string
+	crashAfterFirstReplacement bool
+}
+
+func (e filesystemInstallerExecutor) Execute(_ context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
+	if _, err := os.Stat(e.backupRoot); err == nil { return errors.New("transaction backup already exists") }
+	if err := os.MkdirAll(e.backupRoot, 0o700); err != nil { return err }
+	journal := filesystemInstallJournal{
+		TransactionID: transaction.ID,
+		PreviousVersion: transaction.PreviousVersion,
+		TargetVersion: transaction.TargetVersion,
+		OriginalHashes: map[string]string{},
+		TargetHashes: map[string]string{},
+	}
+	if err := copyTestFile(filepath.Join(e.root, "version.txt"), filepath.Join(e.backupRoot, "version.txt")); err != nil { return err }
+	for _, name := range installerBinaries {
+		source := filepath.Join(e.root, name)
+		backup := filepath.Join(e.backupRoot, name)
+		if err := copyTestFile(source, backup); err != nil { return err }
+		journal.OriginalHashes[name] = sha256Hex(mustReadTestFile(source))
+		journal.TargetHashes[name] = sha256Hex(mustReadTestFile(filepath.Join(pkg.Directory(), name)))
+	}
+	data, err := json.Marshal(journal)
+	if err != nil { return err }
+	if err := os.WriteFile(filepath.Join(e.backupRoot, "transaction.json"), append(data, '\n'), 0o600); err != nil { return err }
+
+	for i, name := range installerBinaries {
+		if err := replaceTestFile(filepath.Join(pkg.Directory(), name), filepath.Join(e.root, name)); err != nil { return err }
+		if e.crashAfterFirstReplacement && i == 0 { os.Exit(78) }
+	}
+	return os.WriteFile(filepath.Join(e.root, "version.txt"), []byte(transaction.TargetVersion+"\n"), 0o600)
+}
+
+func (e filesystemInstallerExecutor) Commit(_ context.Context, transaction InstallTransaction) error {
+	state, err := loadState(e.statePath)
+	if err != nil { return err }
+	if state.PendingInstall == nil || state.PendingInstall.ID != transaction.ID { return ErrInstallRecoveryRequired }
+	switch state.PendingInstall.Phase {
+	case InstallPhaseCommitted:
+		if state.StableSequence != transaction.Sequence || state.InstalledVersion != transaction.TargetVersion || !e.verifyTarget(transaction) {
+			return ErrInstallRecoveryRequired
+		}
+	case InstallPhaseRecoveryRequired:
+		if state.StableSequence >= transaction.Sequence || state.InstalledVersion != transaction.PreviousVersion || !e.verifyPrevious(transaction) {
+			return ErrInstallRecoveryRequired
+		}
+	default:
+		return ErrInstallRecoveryRequired
+	}
+	return os.RemoveAll(e.backupRoot)
+}
+
+func (e filesystemInstallerExecutor) Recover(_ context.Context, transaction InstallTransaction) (InstallRecoveryResult, error) {
+	if _, err := os.Stat(e.backupRoot); errors.Is(err, os.ErrNotExist) {
+		if e.verifyPrevious(transaction) { return InstallRecoveryNotApplied, nil }
+		return InstallRecoveryUnknown, ErrInstallRecoveryRequired
+	} else if err != nil { return InstallRecoveryUnknown, err }
+
+	var journal filesystemInstallJournal
+	data, err := os.ReadFile(filepath.Join(e.backupRoot, "transaction.json"))
+	if err != nil || json.Unmarshal(data, &journal) != nil ||
+		journal.TransactionID != transaction.ID ||
+		journal.PreviousVersion != transaction.PreviousVersion ||
+		journal.TargetVersion != transaction.TargetVersion {
+		return InstallRecoveryUnknown, ErrInstallRecoveryRequired
+	}
+	if e.verifyTargetWithJournal(journal) { return InstallRecoveryApplied, nil }
+	for _, name := range installerBinaries {
+		source := filepath.Join(e.backupRoot, name)
+		if sha256Hex(mustReadTestFile(source)) != journal.OriginalHashes[name] {
+			return InstallRecoveryUnknown, ErrInstallRecoveryRequired
+		}
+		if err := replaceTestFile(source, filepath.Join(e.root, name)); err != nil { return InstallRecoveryUnknown, err }
+	}
+	if err := replaceTestFile(filepath.Join(e.backupRoot, "version.txt"), filepath.Join(e.root, "version.txt")); err != nil {
+		return InstallRecoveryUnknown, err
+	}
+	if !e.verifyPreviousWithJournal(journal) { return InstallRecoveryUnknown, ErrInstallRecoveryRequired }
+	return InstallRecoveryNotApplied, nil
+}
+
+func (e filesystemInstallerExecutor) verifyTarget(transaction InstallTransaction) bool {
+	data, err := os.ReadFile(filepath.Join(e.backupRoot, "transaction.json"))
+	if err != nil { return false }
+	var journal filesystemInstallJournal
+	if json.Unmarshal(data, &journal) != nil || journal.TransactionID != transaction.ID { return false }
+	return e.verifyTargetWithJournal(journal)
+}
+
+func (e filesystemInstallerExecutor) verifyTargetWithJournal(journal filesystemInstallJournal) bool {
+	version, err := os.ReadFile(filepath.Join(e.root, "version.txt"))
+	if err != nil || strings.TrimSpace(string(version)) != journal.TargetVersion { return false }
+	for _, name := range installerBinaries {
+		data, err := os.ReadFile(filepath.Join(e.root, name))
+		if err != nil || sha256Hex(data) != journal.TargetHashes[name] { return false }
+	}
+	return true
+}
+
+func (e filesystemInstallerExecutor) verifyPrevious(transaction InstallTransaction) bool {
+	version, err := os.ReadFile(filepath.Join(e.root, "version.txt"))
+	if err != nil || strings.TrimSpace(string(version)) != transaction.PreviousVersion { return false }
+	for _, name := range installerBinaries {
+		data, err := os.ReadFile(filepath.Join(e.root, name))
+		if err != nil || string(data) != "previous:"+name { return false }
+	}
+	return true
+}
+
+func (e filesystemInstallerExecutor) verifyPreviousWithJournal(journal filesystemInstallJournal) bool {
+	version, err := os.ReadFile(filepath.Join(e.root, "version.txt"))
+	if err != nil || strings.TrimSpace(string(version)) != journal.PreviousVersion { return false }
+	for _, name := range installerBinaries {
+		data, err := os.ReadFile(filepath.Join(e.root, name))
+		if err != nil || sha256Hex(data) != journal.OriginalHashes[name] { return false }
+	}
+	return true
+}
+
+func copyTestFile(source, destination string) error {
+	data, err := os.ReadFile(source)
+	if err != nil { return err }
+	return os.WriteFile(destination, data, 0o600)
+}
+
+func replaceTestFile(source, destination string) error {
+	data, err := os.ReadFile(source)
+	if err != nil { return err }
+	temp := destination + ".replace"
+	if err := os.WriteFile(temp, data, 0o600); err != nil { return err }
+	return os.Rename(temp, destination)
+}
+
+func mustReadTestFile(path string) []byte {
+	data, err := os.ReadFile(path)
+	if err != nil { panic(err) }
+	return data
+}
+
+func preparePreviousInstallation(t *testing.T, root string) {
+	t.Helper()
+	if err := os.MkdirAll(root, 0o700); err != nil { t.Fatal(err) }
+	for _, name := range installerBinaries {
+		if err := os.WriteFile(filepath.Join(root, name), []byte("previous:"+name), 0o600); err != nil { t.Fatal(err) }
+	}
+	if err := os.WriteFile(filepath.Join(root, "version.txt"), []byte("v0.0.0\n"), 0o600); err != nil { t.Fatal(err) }
+}
+
 func TestInstallCrashHelper(t *testing.T) {
 	phase := os.Getenv("WEDECENT_TEST_INSTALL_CRASH_PHASE")
-	if phase == "" {
-		return
-	}
+	if phase == "" { return }
 	stateDir := os.Getenv("WEDECENT_TEST_INSTALL_STATE_DIR")
+	installDir := filepath.Join(stateDir, "install")
+	preparePreviousInstallation(t, installDir)
 	store := NewStateStore(StatePath(stateDir))
 	manifest, archive := buildInstallerPackageFixture(t, nil)
 	manifest.Sequence = 90
 	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
 	staged := writeStagedArchive(t, archive)
+	executor := filesystemInstallerExecutor{
+		root: installDir,
+		backupRoot: filepath.Join(stateDir, "install-transactions", verified.Manifest().Version),
+		statePath: store.Path,
+		crashAfterFirstReplacement: phase == "executor",
+	}
 	store.persistState = func(state State) error {
-		if err := saveState(store.Path, state); err != nil {
-			return err
-		}
-		if state.PendingInstall != nil && state.PendingInstall.Phase == phase {
-			os.Exit(77)
-		}
-		if phase == "final" && state.PendingInstall == nil && state.StableSequence == manifest.Sequence {
-			os.Exit(77)
-		}
+		if err := saveState(store.Path, state); err != nil { return err }
+		if state.PendingInstall != nil && state.PendingInstall.Phase == phase { os.Exit(77) }
+		if phase == "final" && state.PendingInstall == nil && state.StableSequence == manifest.Sequence { os.Exit(77) }
 		return nil
 	}
-	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
-		if phase == "executor" {
-			os.Exit(78)
-		}
-		return nil
-	})
 	_ = store.applyVerifiedManifest(context.Background(), verified, staged, 0,
 		func(context.Context, string) error { return nil }, executor)
 	t.Fatalf("crash helper unexpectedly returned for phase %q", phase)
@@ -379,71 +533,46 @@ func TestInstallProcessTerminationAtDurableBoundaries(t *testing.T) {
 	for _, phase := range []string{"pending", "executing", "executor", "committed", "final"} {
 		t.Run(phase, func(t *testing.T) {
 			stateDir := filepath.Join(t.TempDir(), "state")
+			installDir := filepath.Join(stateDir, "install")
+			preparePreviousInstallation(t, installDir)
+			childPhase := phase
+			if phase == "executor" { childPhase = "executor" }
 			cmd := exec.Command(os.Args[0], "-test.run=^TestInstallCrashHelper$")
 			cmd.Env = append(os.Environ(),
-				"WEDECENT_TEST_INSTALL_CRASH_PHASE="+phase,
+				"WEDECENT_TEST_INSTALL_CRASH_PHASE="+childPhase,
 				"WEDECENT_TEST_INSTALL_STATE_DIR="+stateDir,
 			)
 			err := cmd.Run()
 			exitErr, ok := err.(*exec.ExitError)
-			if !ok {
-				t.Fatalf("child error = %v, want process termination", err)
-			}
+			if !ok { t.Fatalf("child error = %v, want process termination", err) }
 			wantExit := 77
-			if phase == "executor" {
-				wantExit = 78
-			}
-			if exitErr.ExitCode() != wantExit {
-				t.Fatalf("child exit = %d, want %d", exitErr.ExitCode(), wantExit)
-			}
+			if phase == "executor" { wantExit = 78 }
+			if exitErr.ExitCode() != wantExit { t.Fatalf("child exit = %d, want %d", exitErr.ExitCode(), wantExit) }
 
 			store := NewStateStore(StatePath(stateDir))
 			state, err := store.Load()
-			if err != nil {
-				t.Fatal(err)
-			}
+			if err != nil { t.Fatal(err) }
+			backupRoot := filepath.Join(stateDir, "install-transactions", "v0.4.0")
+			executor := filesystemInstallerExecutor{root: installDir, backupRoot: backupRoot, statePath: store.Path}
 			if phase == "final" {
-				if state.PendingInstall != nil || state.StableSequence != 90 {
-					t.Fatalf("final commit recovery state = %#v", state)
+				if state.PendingInstall != nil || state.StableSequence != 90 || !executor.verifyPrevious(InstallTransaction{PreviousVersion:"v0.0.0"}) && strings.TrimSpace(string(mustReadTestFile(filepath.Join(installDir, "version.txt")))) != "v0.4.0" {
+					t.Fatalf("final transaction state = %#v", state)
 				}
+				if _, err := os.Stat(backupRoot); !errors.Is(err, os.ErrNotExist) { t.Fatalf("backup remains after durable finalization: %v", err) }
 				return
 			}
 			if state.PendingInstall == nil || state.StableSequence != 0 {
 				t.Fatalf("crash did not preserve pending journal without advancing sequence: %#v", state)
 			}
-			want := InstallRecoveryNotApplied
-			if phase == "executing" || phase == "committed" {
-				want = InstallRecoveryApplied
+			if phase == "executor" {
+				if _, err := os.Stat(backupRoot); err != nil { t.Fatalf("transaction backup missing after interrupted replacement: %v", err) }
 			}
-			if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
-				func(_ context.Context, transaction InstallTransaction) (InstallRecoveryResult, error) {
-					if transaction.PreviousVersion != "v0.0.0" || transaction.TargetVersion == "" {
-						t.Fatalf("recovery transaction lacks version/backup binding: %#v", transaction)
-					}
-					return want, nil
-				})); err != nil {
-				t.Fatalf("recovery: %v", err)
-			}
-			if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
-				func(context.Context, InstallTransaction) (InstallRecoveryResult, error) {
-					t.Fatal("completed recovery must be idempotent and must not call adapter again")
-					return InstallRecoveryUnknown, nil
-				})); err != nil {
-				t.Fatalf("second recovery: %v", err)
-			}
+			if err := store.RecoverPendingInstall(context.Background(), executor); err != nil { t.Fatalf("recover interrupted filesystem transaction: %v", err) }
 			state, err = store.Load()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if state.PendingInstall != nil {
-				t.Fatalf("recovery left pending journal: %#v", state)
-			}
-			if want == InstallRecoveryApplied && state.StableSequence != 90 {
-				t.Fatalf("applied recovery sequence = %d, want 90", state.StableSequence)
-			}
-			if want == InstallRecoveryNotApplied && state.StableSequence != 0 {
-				t.Fatalf("rollback recovery advanced sequence to %d", state.StableSequence)
-			}
+			if err != nil { t.Fatal(err) }
+			if state.PendingInstall != nil || state.StableSequence != 0 { t.Fatalf("rollback state = %#v", state) }
+			if !executor.verifyPrevious(InstallTransaction{PreviousVersion:"v0.0.0"}) { t.Fatal("previous installation was not restored and verified") }
+			if _, err := os.Stat(backupRoot); !errors.Is(err, os.ErrNotExist) { t.Fatalf("backup not finalized after verified rollback: %v", err) }
 		})
 	}
 }
