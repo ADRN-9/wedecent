@@ -34,5 +34,7 @@ jobs:
           test -z "$unformatted"
       - name: Run updater admission and recovery tests
         run: go test ./internal/updateinfo -count=1
+      - name: Compile Windows updater security package
+        run: GOOS=windows GOARCH=amd64 go test -c -o "$RUNNER_TEMP/updateinfo-windows.test.exe" ./internal/updateinfo
       - name: Vet updater package
         run: go vet ./internal/updateinfo
