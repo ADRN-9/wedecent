@@ -311,7 +311,11 @@ func (s State) validatePersisted() error {
 			if err := s.PendingInstall.validate(); err != nil {
 				return fmt.Errorf("%w: pending install journal: %v", ErrInvalidState, err)
 			}
-			if s.PendingInstall.Sequence <= s.StableSequence {
+			if s.PendingInstall.Phase == InstallPhaseCommitted {
+				if s.PendingInstall.Sequence != s.StableSequence {
+					return fmt.Errorf("%w: committed transaction sequence does not match stable sequence", ErrInvalidState)
+				}
+			} else if s.PendingInstall.Sequence <= s.StableSequence {
 				return fmt.Errorf("%w: pending install sequence is stale", ErrInvalidState)
 			}
 		}
