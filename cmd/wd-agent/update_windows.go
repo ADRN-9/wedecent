@@ -67,7 +67,7 @@ func runUpdateCommand(args []string) error {
 			return errors.New("resolve installed updater executable")
 		}
 		installDir := filepath.Dir(executable)
-		if err := waitForProductProcess(uint32(pid), filepath.Join(installDir, "wd-ui.exe"), false); err != nil {
+		if err := waitForProductProcess(uint32(pid), filepath.Join(installDir, "wd-ui.exe")); err != nil {
 			return fmt.Errorf("wait for desktop shutdown: %w", err)
 		}
 		if currentAgentProcessElevated() {
@@ -201,7 +201,7 @@ func launchElevatedStableUpdate(launcherPID uint32) error {
 	return nil
 }
 
-func waitForProductProcess(pid uint32, expectedImage string, _ bool) error {
+func waitForProductProcess(pid uint32, expectedImage string) error {
 	handle, err := openExpectedProcess(pid, expectedImage)
 	if err != nil {
 		return err
@@ -252,10 +252,8 @@ func openExpectedProcess(pid uint32, expectedImage string) (windows.Handle, erro
 	buffer := make([]uint16, 32768)
 	size := uint32(len(buffer))
 	query := syscall.NewLazyDLL("kernel32.dll").NewProc("QueryFullProcessImageNameW")
-	ok, _, _ := query.Call(
-		uintptr(process), 0,
-		uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&size)),
-	)
+	ok, _, _ := query.Call(uintptr(process), 0,
+		uintptr(unsafe.Pointer(&buffer[0])), uintptr(unsafe.Pointer(&size)))
 	if ok == 0 {
 		_ = windows.CloseHandle(process)
 		return 0, errors.New("query expected WeDecent process image")
@@ -268,6 +266,14 @@ func openExpectedProcess(pid uint32, expectedImage string) (windows.Handle, erro
 		return 0, errors.New("process image does not match installed WeDecent executable")
 	}
 	return process, nil
+}
+
+func validateProcessImage(pid uint32, expectedImage string) error {
+	handle, err := openExpectedProcess(pid, expectedImage)
+	if err != nil {
+		return err
+	}
+	return windows.CloseHandle(handle)
 }
 
 func writeUpdateApplyResult(err error) {
@@ -286,14 +292,6 @@ func writeUpdateApplyResult(err error) {
 		return
 	}
 	_, _ = fmt.Fprintln(file, "stable update completed")
-}
-
-func validateProcessImage(pid uint32, expectedImage string) error {
-	handle, err := openExpectedProcess(pid, expectedImage)
-	if err != nil {
-		return err
-	}
-	return windows.CloseHandle(handle)
 }
 
 func currentAgentProcessElevated() bool {
