@@ -860,13 +860,13 @@ function Assert-TransactionMetadataSnapshot {
             if ((Get-Sha256FileHash $expectedBackup) -ne [string]$Journal.metadata_original_sha256) {
                 throw 'Installer metadata snapshot backup is corrupted.'
             }
+        } elseif ($Committed -and $Journal.phase -ne 'committed') {
+            throw 'Committed metadata snapshot disappeared before the durable commit marker.'
         } elseif (-not $Committed -and -not $Historical) {
             if (-not (Test-Path -LiteralPath $expectedPath -PathType Leaf) -or
                 (Get-Sha256FileHash $expectedPath) -ne [string]$Journal.metadata_original_sha256) {
                 throw 'Previous installer metadata and its verified snapshot are both unavailable.'
             }
-        } elseif (-not $Committed -and -not $Historical -and $Journal.phase -ne 'committed') {
-            throw 'Committed metadata snapshot disappeared before the durable commit marker.'
         }
     } elseif (-not [string]::IsNullOrEmpty([string]$Journal.metadata_original_sha256) -or $backupExists) {
         throw 'Unexpected installer metadata snapshot for a transaction without prior metadata.'
