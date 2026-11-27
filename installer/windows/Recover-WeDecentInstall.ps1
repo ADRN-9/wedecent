@@ -485,8 +485,8 @@ switch -Regex ($serviceStartName) {
     '^(?i:NT AUTHORITY\\LOCAL SERVICE)$' { $serviceAccountSid = 'S-1-5-19'; break }
     '^(?i:NT AUTHORITY\\NETWORK SERVICE)$' { $serviceAccountSid = 'S-1-5-20'; break }
     default {
-        if ($serviceStartName.StartsWith('.\\', [StringComparison]::Ordinal)) {
-            $serviceStartName = "$env:COMPUTERNAME\\$($serviceStartName.Substring(2))"
+        if ($serviceStartName.StartsWith('.\', [StringComparison]::Ordinal)) {
+            $serviceStartName = "$env:COMPUTERNAME\$($serviceStartName.Substring(2))"
         }
         try {
             $serviceAccountSid = (New-Object Security.Principal.NTAccount -ArgumentList $serviceStartName).Translate([Security.Principal.SecurityIdentifier]).Value
