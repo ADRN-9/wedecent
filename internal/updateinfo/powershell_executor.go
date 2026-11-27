@@ -28,6 +28,7 @@ type PowerShellInstallerExecutor struct {
 	ServiceName    string
 	WebRelay       string
 	run            installerCommandRunner
+	isElevated     func() bool
 }
 
 func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
@@ -42,6 +43,9 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction In
 	}
 	if pkg.Version != transaction.TargetVersion || pkg.archiveDigest != transaction.PackageDigest {
 		return fmt.Errorf("%w: verified package does not match installer transaction", ErrInstallerPackage)
+	}
+	if err := e.requireElevatedContext(); err != nil {
+		return err
 	}
 	powershell, err := strictExecutablePath(e.PowerShellPath)
 	if err != nil {
@@ -92,6 +96,9 @@ func (e PowerShellInstallerExecutor) FinalizeCommitted(ctx context.Context, stat
 	if !filepath.IsAbs(e.InstallDir) || !filepath.IsAbs(e.StateDir) || e.ServiceName == "" {
 		return fmt.Errorf("%w: absolute install and state directories plus service name are required", ErrInstallCleanupPending)
 	}
+	if err := e.requireElevatedContext(); err != nil {
+		return fmt.Errorf("%w: %v", ErrInstallCleanupPending, err)
+	}
 	powershell, err := strictExecutablePath(e.PowerShellPath)
 	if err != nil {
 		return err
@@ -120,6 +127,9 @@ func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction In
 	}
 	if !filepath.IsAbs(e.InstallDir) || !filepath.IsAbs(e.StateDir) || e.ServiceName == "" {
 		return InstallRecoveryUnknown, fmt.Errorf("%w: absolute install and state directories plus service name are required", ErrInstallTransaction)
+	}
+	if err := e.requireElevatedContext(); err != nil {
+		return InstallRecoveryUnknown, fmt.Errorf("%w: %v", ErrInstallRecoveryRequired, err)
 	}
 	powershell, err := strictExecutablePath(e.PowerShellPath)
 	if err != nil {
@@ -171,6 +181,17 @@ func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction In
 	default:
 		return InstallRecoveryUnknown, fmt.Errorf("%w: Windows recovery outcome remains ambiguous", ErrInstallRecoveryRequired)
 	}
+}
+
+func (e PowerShellInstallerExecutor) requireElevatedContext() error {
+	elevated := currentProcessElevated()
+	if e.isElevated != nil {
+		elevated = e.isElevated()
+	}
+	if !elevated {
+		return fmt.Errorf("Windows installer executor requires an already elevated process; implicit UAC elevation is not supported")
+	}
+	return nil
 }
 
 func (e PowerShellInstallerExecutor) commonArgs() []string {
