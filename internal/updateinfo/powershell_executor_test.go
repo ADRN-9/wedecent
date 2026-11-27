@@ -104,7 +104,6 @@ func TestPowerShellInstallerExecutorRejectsNonElevatedCallerBeforeProcessStart(t
 	calls := 0
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell,
-		isElevated:     func() bool { return true },
 		isElevated:     func() bool { return false },
 		run: func(context.Context, string, string, []string) error {
 			calls++
