@@ -358,6 +358,23 @@ try {
     }
     $metadataOriginalBytes = [IO.File]::ReadAllBytes($metadataPath)
 
+    # Simulate recovery interrupted after the original recovery-script state was journaled but before backup deletion.
+    $interruptedCleanup = New-TransactionFixture
+    $interruptedJournal = Get-Content -LiteralPath $interruptedCleanup.journalPath -Raw | ConvertFrom-Json
+    [IO.File]::Copy($interruptedCleanup.recoveryScriptBackupPath, $interruptedCleanup.recoveryScriptPath, $true)
+    Set-TestTrustedAcl -Path $interruptedCleanup.recoveryScriptPath
+    $interruptedJournal.recovery_script_state = 'original'
+    $interruptedJournal.recovery_script_sha256 = $interruptedJournal.recovery_script_original_sha256
+    Write-TestJson -Path $interruptedCleanup.journalPath -Value $interruptedJournal
+    Invoke-TestRecovery -Fixture $interruptedCleanup | Out-Null
+    if (Test-Path -LiteralPath $interruptedCleanup.recoveryScriptBackupPath) {
+        throw 'Interrupted recovery did not finish cleanup after the original recovery-script state was already durable.'
+    }
+    Invoke-TestRecovery -Fixture $interruptedCleanup | Out-Null
+    if (Test-Path -LiteralPath $interruptedCleanup.recoveryScriptBackupPath) {
+        throw 'Repeated interrupted recovery recreated a cleaned recovery-script backup.'
+    }
+
     $corruptRecoveryScript = New-TransactionFixture
     $beforeCorruptRecovery = @{}
     foreach ($entry in $corruptRecoveryScript.journal.entries) { $beforeCorruptRecovery[$entry.name] = Get-TestHash $entry.destination }
@@ -987,7 +1004,7 @@ try {
     if ($identityProcess.ExitCode -ne 42) {
         throw "Separate service-identity process did not receive the expected journal ACL denial (exit $($identityProcess.ExitCode))."
     }
-    $identityEvidence = [IO.File]::ReadAllText($identityEvidencePath).Split('|')
+    $identityEvidence = [IO.File]::ReadAllText($identityEvidencePath) -split '\|'
     if ($identityEvidence.Count -ne 2 -or $identityEvidence[0] -ne $serviceSid -or
         [string]::Equals($identityEvidence[1], $currentLogonSid[0], [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Separate process did not prove a distinct authenticated Windows user and logon session.'
