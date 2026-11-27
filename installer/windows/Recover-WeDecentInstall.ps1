@@ -148,10 +148,16 @@ Assert-TrustedAcl -Path $journalPath
 $journal = Get-Content -LiteralPath $journalPath -Raw | ConvertFrom-Json
 if ([int]$journal.schema -ne 1 -or [string]$journal.transaction_id -cne $TransactionId -or
     [string]$journal.manifest_sha256 -cne $ExpectedManifestSHA256 -or
+    [string]$journal.manifest_sha256 -notmatch '^[a-f0-9]{64}$' -or
     [string]$journal.package_sha256 -cne $ExpectedPackageSHA256 -or
-    [UInt64]$journal.sequence -ne $Sequence -or
+    [string]$journal.package_sha256 -notmatch '^[a-f0-9]{64}$' -or
+    [UInt64]$journal.sequence -ne $Sequence -or $Sequence -eq 0 -or
     [string]$journal.previous_version -cne $PreviousVersion -or
+    [string]$journal.previous_version -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or
     [string]$journal.version -cne $TargetVersion -or
+    [string]$journal.version -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or
+    $journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back') -or
+    $journal.service_was_running -isnot [bool] -or
     @($journal.entries).Count -ne $BinaryNames.Count) {
     throw 'Transaction journal does not match the authenticated Go transaction.'
 }
@@ -168,6 +174,8 @@ foreach ($entry in @($journal.entries)) {
     $expectedBackup = "$expectedDestination.$TransactionId.bak"
     if (-not $destination.Equals($expectedDestination, [StringComparison]::OrdinalIgnoreCase) -or
         -not ([IO.Path]::GetFullPath([string]$entry.backup_path)).Equals($expectedBackup, [StringComparison]::OrdinalIgnoreCase) -or
+        $entry.had_original -isnot [bool] -or
+        [string]$entry.state -notin @('planned', 'backup-verified', 'replacing', 'replaced') -or
         [string]$entry.original_sha256 -notmatch '^(?:[a-f0-9]{64})?$' -or
         [string]$entry.replacement_sha256 -notmatch '^[a-f0-9]{64}$') {
         throw "Transaction journal entry is invalid for $name"
@@ -220,6 +228,12 @@ Assert-TrustedAcl -Path $statePath -AdditionalTrustedSids @([string]$metadata.se
 $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
 $committed = [UInt64]$state.stable_sequence -ge $Sequence -and
     $null -eq $state.pending_install -and [string]$state.installed_version -ceq $TargetVersion
+if ($journal.phase -eq 'committed' -and -not $committed) {
+    throw 'Journal claims commit but protected updater state does not confirm it.'
+}
+if ($journal.phase -eq 'rolled-back' -and $committed) {
+    throw 'Journal claims rollback but protected updater state confirms commit.'
+}
 if ($committed) {
     foreach ($entry in @($journal.entries)) {
         if ((Get-Sha256FileHash ([string]$entry.destination)) -ne [string]$entry.replacement_sha256) {
