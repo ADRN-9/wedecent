@@ -745,6 +745,8 @@ function Get-WeDecentUpdateTransactionDirectory {
 
 Assert-Administrator
 if ($UpdateTransactionAction -ne 'Apply') {
+    $InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -Label 'InstallDir'
+    $StateDir = Assert-SafeChildPath -Path $StateDir -Root $InstallDir -Label 'StateDir'
     $directory = Get-WeDecentUpdateTransactionDirectory
     $journal = Read-WeDecentUpdateJournal -Directory $directory
     $destinations = Get-BinaryDestinations -Directory $InstallDir
@@ -7920,6 +7922,12 @@ Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the in
     New-Item -ItemType Directory -Path $directory | Out-Null
     Protect-WeDecentMetadataAcl $directory
     $backup = Join-Path $directory 'backup'
+    foreach ($name in $script:BinaryNames) {
+        $destination = [string]$Destinations[$name]
+        if (Test-Path -LiteralPath "$destination.bak" -or Test-Path -LiteralPath "$destination.new") {
+            throw "Unresolved binary replacement artifacts exist for $name; refusing a new transaction."
+        }
+    }
     New-Item -ItemType Directory -Path $backup | Out-Null
     Protect-WeDecentMetadataAcl $backup
     $originalHashes = @{}
@@ -7983,7 +7991,8 @@ function Test-WeDecentUpdatePrevious {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or
             (Get-Sha256FileHash $path) -ne [string]$Journal.original_hashes.$name) { return $false }
     }
-    return $true
+    $service = Get-Service -Name ([string]$Journal.service_name) -ErrorAction SilentlyContinue
+    return ($null -ne $service -and $service.Status -eq 'Running')
 }
 
 function Restore-WeDecentUpdateTransaction {
@@ -7992,7 +8001,11 @@ function Restore-WeDecentUpdateTransaction {
     $Journal.phase = 'recovery-required'
     Write-WeDecentUpdateJournal -Directory $Directory -Journal $Journal
     $backup = [string]$Journal.backup_dir
-    Stop-Service -Name ([string]$Journal.service_name) -Force -ErrorAction SilentlyContinue
+    $service = Get-Service -Name ([string]$Journal.service_name) -ErrorAction Stop
+    if ($service.Status -ne 'Stopped') {
+        Stop-Service -Name ([string]$Journal.service_name) -Force -ErrorAction Stop
+        (Get-Service -Name ([string]$Journal.service_name)).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    }
     foreach ($name in $script:BinaryNames) {
         $source = Join-Path $backup $name
         if (-not (Test-Path -LiteralPath $source -PathType Leaf) -or
@@ -8015,11 +8028,11 @@ function Restore-WeDecentUpdateTransaction {
     Protect-WeDecentMetadataAcl $metadataTemp
     [IO.File]::Replace($metadataTemp, $metadataPath, $null, $true)
     Protect-WeDecentMetadataAcl $metadataPath
+    Start-Service -Name ([string]$Journal.service_name)
+    (Get-Service -Name ([string]$Journal.service_name)).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
     if (-not (Test-WeDecentUpdatePrevious -Journal $Journal -Destinations $Destinations)) {
         throw 'Previous installation did not verify after rollback.'
     }
-    Start-Service -Name ([string]$Journal.service_name)
-    (Get-Service -Name ([string]$Journal.service_name)).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
     $Journal.phase = 'rolled-back'
     Write-WeDecentUpdateJournal -Directory $Directory -Journal $Journal
 }
