@@ -10,6 +10,7 @@ on:
       - security/c228-windows-service-e2e-hardening
       - security/c298-transport-override-fail-closed
       - security/c324-verified-update-admission-recovery
+      - security/c324-verified-update-admission-recovery
 
 permissions:
   contents: read
