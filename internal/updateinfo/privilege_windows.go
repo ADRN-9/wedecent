@@ -2,8 +2,19 @@
 
 package updateinfo
 
-import "golang.org/x/sys/windows"
+import (
+	"context"
+
+	"golang.org/x/sys/windows"
+)
 
 func windowsCurrentProcessElevated() bool {
 	return windows.GetCurrentProcessToken().IsElevated()
+}
+
+func (e PowerShellInstallerExecutor) verifyExecutableDigest(ctx context.Context, path string) (string, error) {
+	if e.verifyExecutable != nil {
+		return e.verifyExecutable(ctx, path)
+	}
+	return verifyWindowsPowerShellExecutable(ctx, path)
 }
