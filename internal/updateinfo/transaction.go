@@ -17,13 +17,15 @@ type InstallTransaction struct {
 	PackageDigest   string
 	PreviousVersion string
 	TargetVersion   string
+	RecoveryState   string
 }
 
 func (t InstallTransaction) validate() error {
 	if len(t.ID) != 32 || t.Sequence == 0 ||
 		len(t.ManifestDigest) != 64 || len(t.PackageDigest) != 64 ||
 		t.PreviousVersion == "" || t.TargetVersion == "" ||
-		t.PreviousVersion == t.TargetVersion {
+		t.PreviousVersion == t.TargetVersion ||
+		(t.RecoveryState != "pending" && t.RecoveryState != "recovery-required") {
 		return ErrInstallTransaction
 	}
 	for _, value := range []string{t.ID, t.ManifestDigest, t.PackageDigest} {
@@ -44,6 +46,7 @@ func newInstallTransaction(verified VerifiedManifest, _ VerifiedInstallerPackage
 		PackageDigest: verified.manifest.InstallerSHA256,
 		PreviousVersion: verified.previousVersion,
 		TargetVersion: verified.manifest.Version,
+		RecoveryState: "pending",
 	}
 	if err := transaction.validate(); err != nil { return InstallTransaction{}, err }
 	return transaction, nil
@@ -74,7 +77,11 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 	if err != nil { return err }
 	if current.PendingInstall == nil { return nil }
 	if err := ctx.Err(); err != nil { return err }
-	result, err := recovery.Recover(context.WithoutCancel(ctx), *current.PendingInstall)
+	pending := *current.PendingInstall
+	pending.RecoveryState = "recovery-required"
+	current.PendingInstall = &pending
+	if err := saveState(s.Path, current); err != nil { return ErrInstallRecoveryRequired }
+	result, err := recovery.Recover(context.WithoutCancel(ctx), pending)
 	if err != nil || result == InstallRecoveryUnknown { return ErrInstallRecoveryRequired }
 	next := current
 	transaction := *current.PendingInstall
