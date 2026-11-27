@@ -21,7 +21,7 @@ func TestApplyVerifiedInstallerSerializesIndependentStores(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
-	executor := InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 		if calls.Add(1) == 1 {
 			close(started)
 			<-release
