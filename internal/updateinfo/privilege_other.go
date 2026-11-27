@@ -2,6 +2,13 @@
 
 package updateinfo
 
-// The PowerShell executor is exercised with process fixtures on non-Windows
-// hosts; Windows production builds use the real token elevation check.
+import "context"
+
 func currentProcessElevated() bool { return false }
+
+func (e PowerShellInstallerExecutor) verifyExecutableDigest(ctx context.Context, path string) (string, error) {
+	if e.verifyExecutable != nil {
+		return e.verifyExecutable(ctx, path)
+	}
+	return hashRegularFile(path)
+}
