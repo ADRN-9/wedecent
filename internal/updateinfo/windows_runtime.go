@@ -116,6 +116,111 @@ func ValidateInstalledUpdateLauncher() error {
 }
 
 // ApplyInstalledWindowsStable is the elevated, argument-free update entrypoint.
+// PrepareWindowsUpdateWorker creates a separately mapped copy so the updater
+// never attempts to replace the wd-agent.exe image that launched the UAC flow.
+func PrepareWindowsUpdateWorker(ctx context.Context) (string, error) {
+	if ctx == nil || !currentProcessElevated() {
+		return "", fmt.Errorf("preparing the update worker requires an elevated process")
+	}
+	if err := ValidateInstalledUpdateLauncher(); err != nil {
+		return "", err
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		return "", fmt.Errorf("resolve updater executable")
+	}
+	installDir := filepath.Dir(executable)
+	stagingDir := filepath.Join(installDir, "update-staging")
+	if err := ensurePrivateStateDir(stagingDir); err != nil {
+		return "", fmt.Errorf("prepare protected update worker directory: %w", err)
+	}
+	destination := filepath.Join(stagingDir, "wd-agent-update.exe")
+	if info, err := os.Lstat(destination); err == nil {
+		if !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return "", fmt.Errorf("existing update worker path is unsafe")
+		}
+		if err := os.Remove(destination); err != nil {
+			return "", fmt.Errorf("remove stale update worker")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", fmt.Errorf("inspect update worker path")
+	}
+	sourceDigest, err := hashRegularFile(executable)
+	if err != nil {
+		return "", fmt.Errorf("hash installed updater executable")
+	}
+	source, err := os.Open(executable)
+	if err != nil {
+		return "", fmt.Errorf("open installed updater executable")
+	}
+	defer source.Close()
+	target, err := os.OpenFile(destination, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o700)
+	if err != nil {
+		return "", fmt.Errorf("create protected update worker")
+	}
+	_, copyErr := io.Copy(target, source)
+	syncErr := target.Sync()
+	closeErr := target.Close()
+	if copyErr != nil || syncErr != nil || closeErr != nil {
+		_ = os.Remove(destination)
+		return "", fmt.Errorf("copy update worker failed")
+	}
+	copiedDigest, err := hashRegularFile(destination)
+	if err != nil || copiedDigest != sourceDigest {
+		_ = os.Remove(destination)
+		return "", fmt.Errorf("copied update worker digest mismatch")
+	}
+	root, err := loadWindowsUpdateRoot(filepath.Join(installDir, windowsUpdateRootFilename))
+	if err != nil {
+		_ = os.Remove(destination)
+		return "", err
+	}
+	powershell, err := windowsPowerShellPath()
+	if err != nil {
+		_ = os.Remove(destination)
+		return "", err
+	}
+	if err := verifyAuthenticodePublisher(ctx, powershell, destination, "", root.AuthenticodeThumbprint); err != nil {
+		_ = os.Remove(destination)
+		return "", fmt.Errorf("verify copied update worker publisher: %w", err)
+	}
+	if err := validateTrustedSystemPath(destination); err != nil {
+		_ = os.Remove(destination)
+		return "", fmt.Errorf("validate protected update worker path: %w", err)
+	}
+	return destination, nil
+}
+
+func ValidateInstalledUpdateWorker() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve update worker executable")
+	}
+	if !strings.EqualFold(filepath.Base(executable), "wd-agent-update.exe") ||
+		!strings.EqualFold(filepath.Base(filepath.Dir(executable)), "update-staging") {
+		return fmt.Errorf("update worker is not running from protected update staging")
+	}
+	installDir := filepath.Dir(filepath.Dir(executable))
+	if !strings.EqualFold(filepath.Base(installDir), "WeDecent") {
+		return fmt.Errorf("update worker install directory is invalid")
+	}
+	if err := validateTrustedSystemPath(executable); err != nil {
+		return err
+	}
+	root, err := loadWindowsUpdateRoot(filepath.Join(installDir, windowsUpdateRootFilename))
+	if err != nil {
+		return err
+	}
+	powershell, err := windowsPowerShellPath()
+	if err != nil {
+		return err
+	}
+	if err := verifyAuthenticodePublisher(context.Background(), powershell, executable, "", root.AuthenticodeThumbprint); err != nil {
+		return fmt.Errorf("verify staged update worker publisher: %w", err)
+	}
+	return nil
+}
+
 func ApplyInstalledWindowsStable(ctx context.Context) error {
 	if ctx == nil || !currentProcessElevated() {
 		return fmt.Errorf("stable updater requires an elevated Windows process")
@@ -129,9 +234,14 @@ func ApplyInstalledWindowsStable(ctx context.Context) error {
 		return fmt.Errorf("resolve updater executable path")
 	}
 	installDir := filepath.Dir(executable)
-	if !strings.EqualFold(filepath.Base(executable), "wd-agent.exe") ||
-		!strings.EqualFold(filepath.Base(installDir), "WeDecent") {
-		return fmt.Errorf("updater must run from the installed WeDecent directory")
+	if strings.EqualFold(filepath.Base(executable), "wd-agent-update.exe") &&
+		strings.EqualFold(filepath.Base(installDir), "update-staging") {
+		installDir = filepath.Dir(installDir)
+	}
+	if !strings.EqualFold(filepath.Base(installDir), "WeDecent") ||
+		(!strings.EqualFold(filepath.Base(executable), "wd-agent.exe") &&
+			!strings.EqualFold(filepath.Base(executable), "wd-agent-update.exe")) {
+		return fmt.Errorf("updater must run from the installed WeDecent directory or protected update worker")
 	}
 	if err := validateTrustedSystemPath(executable); err != nil {
 		return err
