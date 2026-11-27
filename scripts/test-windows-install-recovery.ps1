@@ -38,6 +38,20 @@ if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
     -not $installerText.Contains('service is intentionally left stopped for recovery')) {
     throw 'Upgrade rollback must not restart the service when binary restoration fails.'
 }
+if (-not $installerText.Contains('metadata_original_sha256') -or
+    -not $installerText.Contains('Restore-TransactionMetadata -Journal') -or
+    -not $installerText.Contains('persist completed rollback journal') -or
+    -not $installerText.Contains('$journalPersisted')) {
+    throw 'Installer rollback must snapshot/restore prior metadata and durably journal completion before service restart.'
+}
+$recoveryRollbackMarker = $recoveryText.IndexOf('$journal.phase = ''rolled-back''')
+$recoveryRestart = $recoveryText.LastIndexOf('Start-Service -Name $ServiceName')
+if ($recoveryRollbackMarker -lt 0 -or $recoveryRestart -lt 0 -or $recoveryRollbackMarker -ge $recoveryRestart -or
+    -not $recoveryText.Contains('SCM did not confirm the service stopped before recovery.') -or
+    -not $recoveryText.Contains('SCM did not confirm the previous service returned to Running.')) {
+    throw 'Recovery must verify SCM state and persist the rollback journal before attempting service restart.'
+}
+
 if ($installerText -match '(?s)\$journal\.phase = ''rolled-back''.*?finally\s*\{\s*if \(\$restartService\)') {
     throw 'Interrupted transaction recovery must not restart the service from a finally block after rollback failure.'
 }
@@ -52,7 +66,7 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('wedecent-recovery-' + [Guid]::New
 $installDir = Join-Path $env:ProgramFiles ('WeDecent-Recovery-' + [Guid]::NewGuid().ToString('N'))
 $stateDir = Join-Path $installDir 'data\agent'
 $journalRoot = Join-Path $root 'WeDecent\install-transactions'
-$serviceName = 'WeDecentRecoveryTestSvc' + [Guid]::NewGuid().ToString('N')
+$serviceName = 'WeDecentRecoveryTestSvc' + [Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N')
 
 function Set-TestTrustedAcl {
     param([Parameter(Mandatory = $true)][string]$Path, [string[]]$ExtraSids = @())
