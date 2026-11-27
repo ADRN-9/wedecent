@@ -4,16 +4,25 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
+	"time"
 
 	coreclient "wedecent.com/wedecent/internal/coreapi/client"
 	"wedecent.com/wedecent/internal/guiapp"
 )
 
 const createNoWindow = 0x08000000
+
+var (
+	localCoreProcessMu sync.Mutex
+	localCoreProcess *exec.Cmd
+	localCoreDone chan error
+)
 
 func prepareLocalCore(ctx context.Context, core *coreclient.Client) (guiapp.Core, error) {
 	if err := ensureLocalCore(ctx, core, launchSiblingCore, defaultCoreBootstrapConfig); err != nil {
@@ -46,9 +55,43 @@ func launchSiblingCore() (<-chan error, error) {
 	}
 
 	done := make(chan error, 1)
+	localCoreProcessMu.Lock()
+	localCoreProcess = cmd
+	localCoreDone = done
+	localCoreProcessMu.Unlock()
 	go func() {
-		done <- cmd.Wait()
+		err := cmd.Wait()
+		done <- err
 		close(done)
+		localCoreProcessMu.Lock()
+		if localCoreProcess == cmd {
+			localCoreProcess = nil
+			localCoreDone = nil
+		}
+		localCoreProcessMu.Unlock()
 	}()
 	return done, nil
+}
+
+func stopSiblingCore() error {
+	localCoreProcessMu.Lock()
+	cmd, done := localCoreProcess, localCoreDone
+	localCoreProcessMu.Unlock()
+	if cmd == nil || cmd.Process == nil {
+		return nil
+	}
+	if cmd.ProcessState != nil {
+		return nil
+	}
+	if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+		return fmt.Errorf("stop Local Core before update: %w", err)
+	}
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			return errors.New("Local Core did not stop before update")
+		}
+	}
+	return nil
 }
