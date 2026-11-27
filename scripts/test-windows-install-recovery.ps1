@@ -348,6 +348,23 @@ try {
         if ((Get-TestHash $entry.destination) -ne $beforeSyntheticMismatch[$entry.name]) { throw 'Metadata SID mismatch mutated a previous binary.' }
     }
 
+    $malformedMetadata = New-TransactionFixture
+    $malformedMetadataObject = Get-Content -LiteralPath $malformedMetadata.metadataBackupPath -Raw | ConvertFrom-Json
+    $malformedMetadataObject.service_account_sid = 'not-a-sid'
+    Write-TestJson -Path $malformedMetadata.metadataBackupPath -Value $malformedMetadataObject
+    $malformedMetadataJournal = Get-Content -LiteralPath $malformedMetadata.journalPath -Raw | ConvertFrom-Json
+    $malformedMetadataJournal.metadata_original_sha256 = Get-TestHash $malformedMetadata.metadataBackupPath
+    Write-TestJson -Path $malformedMetadata.journalPath -Value $malformedMetadataJournal
+    $beforeMalformedMetadata = @{}
+    foreach ($entry in $malformedMetadata.journal.entries) { $beforeMalformedMetadata[$entry.name] = Get-TestHash $entry.destination }
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $malformedMetadata | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted a malformed protected service account SID.' }
+    if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'Malformed metadata SID changed the stopped service state.' }
+    foreach ($entry in $malformedMetadata.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeMalformedMetadata[$entry.name]) { throw 'Malformed metadata SID mutated a previous binary.' }
+    }
+
     $restartFailure = New-TransactionFixture -ServiceWasRunning $true
     $rejected = $false
     try { Invoke-TestRecovery -Fixture $restartFailure | Out-Null } catch { $rejected = $true }
@@ -622,6 +639,48 @@ try {
     }
     $olderJournalPath = Join-Path $finalizeJournalRoot ($olderTransactionId + '.json')
     Write-TestJson -Path $olderJournalPath -Value $olderJournal
+
+    # A completed rollback is unrelated to this committed transaction; its binary backups must survive cleanup.
+    $rolledBackTransactionId = [Guid]::NewGuid().ToString('N')
+    $rolledBackEntries = @()
+    $rolledBackBackupHashes = @{}
+    foreach ($entry in $finalizeEntries) {
+        $unrelatedBackup = "$($entry.destination).$rolledBackTransactionId.bak"
+        [IO.File]::WriteAllBytes($unrelatedBackup, [Text.Encoding]::UTF8.GetBytes("unrelated:$($entry.name)"))
+        Set-TestTrustedAcl -Path $unrelatedBackup
+        $rolledBackBackupHashes[$entry.name] = Get-TestHash $unrelatedBackup
+        $rolledBackEntries += [ordered]@{
+            name = $entry.name
+            destination = $entry.destination
+            had_original = $true
+            original_sha256 = $rolledBackBackupHashes[$entry.name]
+            replacement_sha256 = $entry.replacement_sha256
+            backup_path = $unrelatedBackup
+            state = 'replaced'
+        }
+    }
+    $rolledBackMetadataBackup = "$finalizeMetadataPath.$rolledBackTransactionId.metadata.bak"
+    Copy-Item -LiteralPath $finalizeMetadataPath -Destination $rolledBackMetadataBackup
+    Set-TestTrustedAcl -Path $rolledBackMetadataBackup
+    $rolledBackJournal = [ordered]@{
+        schema = 1
+        transaction_id = $rolledBackTransactionId
+        package_sha256 = 'f' * 64
+        manifest_sha256 = '9' * 64
+        previous_version = 'v0.3.7'
+        sequence = [UInt64]40
+        service_was_running = $false
+        version = 'v0.3.8'
+        phase = 'rolled-back'
+        entries = $rolledBackEntries
+        metadata_path = $finalizeMetadataPath
+        metadata_had_original = $true
+        metadata_original_sha256 = Get-TestHash $rolledBackMetadataBackup
+        metadata_backup_path = $rolledBackMetadataBackup
+        updated_at = [DateTime]::UtcNow.ToString('o')
+    }
+    $rolledBackJournalPath = Join-Path $finalizeJournalRoot ($rolledBackTransactionId + '.json')
+    Write-TestJson -Path $rolledBackJournalPath -Value $rolledBackJournal
     $finalizeStatePath = Join-Path $finalizeStateDir 'update-state.json'
     Write-TestJson -Path $finalizeStatePath -Value ([ordered]@{
         version = 3
@@ -640,6 +699,13 @@ try {
     $olderFinalizedJournal = Get-Content -LiteralPath $olderJournalPath -Raw | ConvertFrom-Json
     if ($olderFinalizedJournal.phase -ne 'committed' -or (Test-Path -LiteralPath $olderMetadataBackup)) {
         throw 'Multi-journal finalizer did not preserve the older committed journal and clean its associated metadata snapshot.'
+    }
+    if (Test-Path -LiteralPath $rolledBackMetadataBackup) { throw 'Rolled-back journal metadata snapshot was not cleaned.' }
+    foreach ($entry in $rolledBackEntries) {
+        if (-not (Test-Path -LiteralPath $entry.backup_path -PathType Leaf) -or
+            (Get-TestHash $entry.backup_path) -ne $rolledBackBackupHashes[$entry.name]) {
+            throw "Finalizer deleted or changed an unrelated rolled-back transaction backup: $($entry.name)"
+        }
     }
     foreach ($entry in $finalizeEntries) {
         if (Test-Path -LiteralPath $entry.backup_path) {
