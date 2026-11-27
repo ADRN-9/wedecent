@@ -10,6 +10,7 @@ import (
 var (
 	ErrInstallerApply       = errors.New("updateinfo: installer application failed")
 	ErrSequenceCommit       = errors.New("updateinfo: update installed but sequence commit failed")
+	ErrInstallCleanupPending = errors.New("updateinfo: update committed; transaction backup cleanup pending")
 	ErrInstallerUnavailable = errors.New("updateinfo: installer executor is required")
 )
 
@@ -28,6 +29,27 @@ func (f InstallerExecutorFunc) Execute(ctx context.Context, transaction InstallT
 		return ErrInstallerUnavailable
 	}
 	return f(ctx, transaction, pkg)
+}
+
+func (s *StateStore) finalizeCommittedInstalls(ctx context.Context, finalizer InstallerCommitFinalizer) error {
+	if s == nil || s.Path == "" || ctx == nil || finalizer == nil {
+		return ErrInstallCleanupPending
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := acquireUpdateLock(ctx, s.Path)
+	if err != nil {
+		return err
+	}
+	defer release()
+	state, err := loadState(s.Path)
+	if err != nil {
+		return err
+	}
+	if state.PendingInstall != nil {
+		return ErrInstallRecoveryRequired
+	}
+	return finalizer.FinalizeCommitted(ctx, state)
 }
 
 func (s *StateStore) applyVerifiedManifest(
@@ -133,6 +155,11 @@ func (s *StateStore) applyVerifiedManifest(
 			if err := s.persistInstallTransition(committed, next); err != nil {
 				return ErrSequenceCommit
 			}
+			if finalizer, ok := executor.(InstallerCommitFinalizer); ok {
+				if err := finalizer.FinalizeCommitted(context.WithoutCancel(ctx), next); err != nil {
+					return fmt.Errorf("%w: %v", ErrInstallCleanupPending, err)
+				}
+			}
 			return nil
 		},
 	)
@@ -226,6 +253,11 @@ func (c DiscoveryClient) ApplyStable(
 	if recovery, ok := executor.(InstallerRecovery); ok {
 		if err := c.State.RecoverPendingInstall(ctx, recovery); err != nil {
 			return zero, err
+		}
+	}
+	if finalizer, ok := executor.(InstallerCommitFinalizer); ok {
+		if err := c.State.finalizeCommittedInstalls(ctx, finalizer); err != nil {
+			return zero, fmt.Errorf("%w: %v", ErrInstallCleanupPending, err)
 		}
 	}
 	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
