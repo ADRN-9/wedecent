@@ -96,6 +96,15 @@ func TestApplyVerifiedManifestCommitsSequenceAfterSuccess(t *testing.T) {
 	}
 }
 
+func runExecutorProcessFixture(ctx context.Context, powershell, script string, args []string) error {
+	commandArgs := []string{
+		"-NoLogo", "-NoProfile", "-NonInteractive",
+		"-ExecutionPolicy", "AllSigned", "-File", script,
+	}
+	commandArgs = append(commandArgs, args...)
+	return exec.CommandContext(ctx, powershell, commandArgs...).Run()
+}
+
 func newExecutorProcessFixture(t *testing.T) (string, string, string) {
 	t.Helper()
 	root := t.TempDir()
@@ -164,6 +173,7 @@ func TestApplyVerifiedManifestInvokesPowerShellExecutorProcess(t *testing.T) {
 		InstallDir:     installDir,
 		StateDir:       filepath.Join(root, "state"),
 		ServiceName:    "WeDecentAgent",
+		run:            runExecutorProcessFixture,
 		WebRelay:       "https://relay.wedecent.com",
 		isElevated:     func() bool { return true },
 		verifyExecutable: func(_ context.Context, path string) (string, error) {
@@ -286,6 +296,7 @@ func TestApplyStableInvokesPowerShellExecutorProcess(t *testing.T) {
 		InstallDir:     installDir,
 		StateDir:       filepath.Join(root, "state"),
 		ServiceName:    "WeDecentAgent",
+		run:            runExecutorProcessFixture,
 		isElevated:     func() bool { return true },
 	}
 	_, err = client.ApplyStable(
