@@ -875,6 +875,9 @@ function Recover-InterruptedInstallerTransactions {
                         }
                         Move-Item -LiteralPath $restore -Destination $destination -Force
                     }
+                    if ((Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
+                        throw "Interrupted-install rollback verification failure: $destination"
+                    }
                 } else {
                     if (Test-Path -LiteralPath $destination -PathType Leaf) {
                         if ((Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
@@ -887,11 +890,12 @@ function Recover-InterruptedInstallerTransactions {
             }
             $journal.phase = 'rolled-back'
             Write-InstallJournal -Journal $journal
-        } finally {
-            if ($restartService) {
-                Start-Service -Name $ServiceName
-                (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-            }
+        } catch {
+            throw "Interrupted installer rollback failed closed; service remains stopped and backups are retained. Cause: $($_.Exception.Message)"
+        }
+        if ($restartService) {
+            Start-Service -Name $ServiceName
+            (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         }
     }
 }
