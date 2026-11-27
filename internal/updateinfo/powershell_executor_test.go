@@ -177,6 +177,13 @@ func TestPowerShellInstallerExecutorRejectsForgedPackageAndTransactionMismatch(t
 	if err := executor.Execute(context.Background(), transaction, tampered); !errors.Is(err, ErrInstallerPackage) {
 		t.Fatalf("tampered package error = %v, want ErrInstallerPackage", err)
 	}
+	contentBound := verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")
+	if err := os.WriteFile(filepath.Join(pkgDir, "wd.exe"), []byte("modified after verification"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := executor.Execute(context.Background(), transaction, contentBound); !errors.Is(err, ErrInstallerPackage) {
+		t.Fatalf("modified package content error = %v, want ErrInstallerPackage", err)
+	}
 	if calls != 0 {
 		t.Fatalf("PowerShell commands = %d, want 0", calls)
 	}
