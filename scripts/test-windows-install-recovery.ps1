@@ -485,7 +485,72 @@ try {
         }
     }
 
-    Write-Host 'Windows transaction recovery and committed cleanup synthetic adversarial tests passed.'
+    # Execute the installer's metadata transaction helpers against an isolated ACL-protected fixture.
+    $helperProgramData = Join-Path $root 'metadata-helper-programdata'
+    $helperWeDecent = Join-Path $helperProgramData 'WeDecent'
+    New-Item -ItemType Directory -Force -Path $helperWeDecent | Out-Null
+    $helperMetadataPath = Join-Path $helperWeDecent 'installer.json'
+    $helperTransactionId = [Guid]::NewGuid().ToString('N')
+    $helperBackupPath = "$helperMetadataPath.$helperTransactionId.metadata.bak"
+    $helperOriginalMetadata = [ordered]@{
+        schema = 1
+        product = 'WeDecent'
+        version = 'v0.3.9'
+        service_name = $serviceName
+        service_account_sid = $serviceSid
+        install_dir = $installDir
+        state_dir = $stateDir
+    }
+    Write-TestJson -Path $helperMetadataPath -Value $helperOriginalMetadata
+    Set-TestTrustedAcl -Path $helperMetadataPath
+    $helperOriginalHash = Get-TestHash $helperMetadataPath
+    Copy-Item -LiteralPath $helperMetadataPath -Destination $helperBackupPath
+    Set-TestTrustedAcl -Path $helperBackupPath
+    $helperJournal = [ordered]@{
+        transaction_id = $helperTransactionId
+        version = 'v0.4.0'
+        metadata_path = $helperMetadataPath
+        metadata_had_original = $true
+        metadata_original_sha256 = $helperOriginalHash
+        metadata_backup_path = $helperBackupPath
+    }
+    $tokens = $null
+    $parseErrors = $null
+    $installerAst = [System.Management.Automation.Language.Parser]::ParseFile($installerScript, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -ne 0) { throw 'Installer source did not parse for metadata helper tests.' }
+    function Get-WeDecentMetadataPath { Join-Path $env:ProgramData 'WeDecent\installer.json' }
+    function Get-Sha256FileHash { param([string]$Path) Get-TestHash $Path }
+    function Protect-WeDecentMetadataAcl { param([string]$Path) Set-TestTrustedAcl -Path $Path }
+    $metadataFunctions = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -in @('Assert-TransactionMetadataSnapshot', 'Restore-TransactionMetadata')
+    }, $true)
+    if ($metadataFunctions.Count -ne 2) { throw 'Could not locate both installer metadata transaction helpers.' }
+    foreach ($functionAst in $metadataFunctions) { Invoke-Expression $functionAst.Extent.Text }
+    $env:ProgramData = $helperProgramData
+    $targetMetadata = $helperOriginalMetadata.Clone()
+    $targetMetadata.version = 'v0.4.0'
+    Write-TestJson -Path $helperMetadataPath -Value $targetMetadata
+    Set-TestTrustedAcl -Path $helperMetadataPath
+    [IO.File]::WriteAllText("$helperMetadataPath.$helperTransactionId.restore", 'interrupted restore temp')
+    Restore-TransactionMetadata -Journal $helperJournal
+    if ((Get-TestHash $helperMetadataPath) -ne $helperOriginalHash) { throw 'Installer metadata helper did not restore exact prior metadata bytes.' }
+    Restore-TransactionMetadata -Journal $helperJournal
+    if ((Get-TestHash $helperMetadataPath) -ne $helperOriginalHash) { throw 'Repeated installer metadata restoration was not idempotent.' }
+
+    [IO.File]::WriteAllText($helperBackupPath, 'corrupted metadata backup')
+    $rejected = $false
+    try { Assert-TransactionMetadataSnapshot -Journal $helperJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Installer metadata helper accepted a corrupted snapshot.' }
+    Remove-Item -LiteralPath $helperBackupPath -Force
+    [IO.File]::WriteAllText($helperMetadataPath, 'incomplete current metadata')
+    $rejected = $false
+    try { Assert-TransactionMetadataSnapshot -Journal $helperJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Installer metadata helper accepted missing snapshot plus corrupted current metadata.' }
+    $env:ProgramData = $root
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
 } finally {
     $env:ProgramData = $originalProgramData
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
