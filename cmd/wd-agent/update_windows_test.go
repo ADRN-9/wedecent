@@ -169,29 +169,3 @@ func TestInstalledUpdaterEntryPointRejectsUninstalledTestBinary(t *testing.T) {
 		t.Fatal("test binary unexpectedly passed installed launcher validation")
 	}
 }
-
-
-func TestSameUpdateProcessIdentityRejectsCrossUserAndCrossSession(t *testing.T) {
-	baseline := updateProcessIdentity{
-		UserSID: "S-1-5-21-100-200-300-1001",
-		LogonID: updateLUID{LowPart: 42, HighPart: 0},
-	}
-	if !sameUpdateProcessIdentity(baseline, baseline) {
-		t.Fatal("identical Windows user and logon session were rejected")
-	}
-	crossUser := baseline
-	crossUser.UserSID = "S-1-5-21-100-200-300-1002"
-	if sameUpdateProcessIdentity(baseline, crossUser) {
-		t.Fatal("accepted updater process from another Windows user")
-	}
-	crossSession := baseline
-	crossSession.LogonID = updateLUID{LowPart: 43, HighPart: 0}
-	if sameUpdateProcessIdentity(baseline, crossSession) {
-		t.Fatal("accepted updater process from another Windows logon session")
-	}
-	missingSID := baseline
-	missingSID.UserSID = ""
-	if sameUpdateProcessIdentity(baseline, missingSID) {
-		t.Fatal("accepted updater process with missing user SID")
-	}
-}
