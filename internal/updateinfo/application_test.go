@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -501,4 +502,48 @@ func TestInstallerRecoveryNotAppliedClearsJournalOnlyAfterRepair(t *testing.T) {
 	if state.PendingInstall != nil || state.StableSequence != 0 {
 		t.Fatalf("not-applied recovery state = %#v", state)
 	}
+}
+
+func TestProcessTerminationDuringInstallerLeavesDurableIntent(t *testing.T) {
+	statePath := StatePath(privateTempDir(t))
+	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperCrashDuringInstaller$")
+	cmd.Env = append(os.Environ(),
+		"WEDECENT_CRASH_INSTALLER_TEST=1",
+		"WEDECENT_CRASH_STATE_PATH="+statePath,
+	)
+	err := cmd.Run()
+	exitErr, ok := err.(*exec.ExitError)
+	if !ok || exitErr.ExitCode() != 77 {
+		t.Fatalf("installer child exit = %v, want controlled exit 77", err)
+	}
+	state, err := NewStateStore(statePath).Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != 0 || state.PendingInstall == nil {
+		t.Fatalf("process termination lost pending intent or advanced sequence: %#v", state)
+	}
+}
+
+func TestHelperCrashDuringInstaller(t *testing.T) {
+	if os.Getenv("WEDECENT_CRASH_INSTALLER_TEST") != "1" {
+		return
+	}
+	statePath := os.Getenv("WEDECENT_CRASH_STATE_PATH")
+	if statePath == "" {
+		t.Fatal("crash test state path is required")
+	}
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 104
+	manifest.InstallerSHA256 = sha256Hex(archive)
+	path := writeStagedArchive(t, archive)
+	store := NewStateStore(statePath)
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+	err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
+		func(context.Context, string) error { return nil },
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
+			os.Exit(77)
+			return nil
+		}))
+	t.Fatalf("installer child unexpectedly returned: %v", err)
 }
