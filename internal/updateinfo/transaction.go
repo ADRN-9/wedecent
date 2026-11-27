@@ -12,13 +12,13 @@ import (
 var ErrInstallTransaction = errors.New("updateinfo: invalid installer transaction")
 
 type InstallTransaction struct {
-	ID              string
-	Sequence        uint64
-	ManifestDigest  string
-	PackageDigest   string
-	PreviousVersion string
-	TargetVersion   string
-	RecoveryState   string
+	ID              string `json:"id"`
+	Sequence        uint64 `json:"sequence"`
+	ManifestDigest  string `json:"manifest_digest"`
+	PackageDigest   string `json:"package_digest"`
+	PreviousVersion string `json:"previous_version"`
+	TargetVersion   string `json:"target_version"`
+	RecoveryState   string `json:"recovery_state"`
 }
 
 func (t InstallTransaction) validate() error {
