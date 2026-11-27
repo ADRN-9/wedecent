@@ -68,13 +68,19 @@ func TestStateStoreBootstrapsAndPreservesProtectedInstalledVersion(t *testing.T)
 	path := StatePath(filepath.Join(t.TempDir(), "client"))
 	store := NewStateStore(path)
 	initial := State{Version: UpdateStateVersion, InstalledVersion: "v1.2.3"}
-	if err := saveState(path, initial); err != nil { t.Fatal(err) }
+	if err := saveState(path, initial); err != nil {
+		t.Fatal(err)
+	}
 	state, err := store.Load()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if state.StableSequence != 0 || state.InstalledVersion != "v1.2.3" {
 		t.Fatalf("bootstrapped state = %#v", state)
 	}
-	if err := store.Advance(1); err != nil { t.Fatal(err) }
+	if err := store.Advance(1); err != nil {
+		t.Fatal(err)
+	}
 	state, err = store.Load()
 	if err != nil { t.Fatal(err) }
 	if state.InstalledVersion != "v1.2.3" || state.StableSequence != 1 {
