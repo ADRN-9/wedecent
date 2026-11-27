@@ -28,13 +28,14 @@ foreach ($forbidden in @('Stop-Process', 'taskkill', '.Terminate(', 'Terminate()
 }
 
 $call = $content.IndexOf($callMarker, [StringComparison]::Ordinal)
+$recoveryCall = $content.IndexOf('Recover-InterruptedInstallerTransactions -Destinations $binaryDestinations', [StringComparison]::Ordinal)
 $serviceBranch = $content.IndexOf($serviceBranchMarker, [StringComparison]::Ordinal)
-$stop = $content.IndexOf($stopMarker, [StringComparison]::Ordinal)
-if ($call -lt 0 -or $serviceBranch -lt 0 -or $stop -lt 0) {
+$stop = if ($serviceBranch -ge 0) { $content.IndexOf($stopMarker, $serviceBranch, [StringComparison]::Ordinal) } else { -1 }
+if ($call -lt 0 -or $recoveryCall -lt 0 -or $serviceBranch -lt 0 -or $stop -lt 0) {
     throw 'Installer preflight ordering markers are missing.'
 }
-if ($call -ge $serviceBranch -or $call -ge $stop) {
-    throw 'Installer must run the user-process preflight before service mutation.'
+if ($call -ge $recoveryCall -or $call -ge $serviceBranch -or $call -ge $stop) {
+    throw 'Installer must run the user-process preflight before recovery or service mutation.'
 }
 
 $tokens = $null
