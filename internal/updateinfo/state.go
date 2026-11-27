@@ -17,12 +17,12 @@ import (
 )
 
 const (
-	UpdateStateVersion            = 1
-	UpdateStateVersionWithKeyset  = 2
-	UpdateStateVersionWithInstall = 3
+	UpdateStateVersion              = 1
+	UpdateStateVersionWithKeyset    = 2
+	UpdateStateVersionWithInstall   = 3
 	UpdateStateVersionWithInstalled = 4
-	UpdateStateFilename           = "update-state.json"
-	MaxUpdateStateBytes           = 4 << 10
+	UpdateStateFilename             = "update-state.json"
+	MaxUpdateStateBytes             = 4 << 10
 )
 
 var ErrInvalidState = errors.New("updateinfo: invalid update state")
@@ -31,18 +31,18 @@ var ErrInvalidState = errors.New("updateinfo: invalid update state")
 // signed stable-channel sequence explicitly accepted after a successful update
 // boundary; merely fetching a manifest must not advance it.
 type State struct {
-	Version        int                 `json:"version"`
-	StableSequence uint64              `json:"stable_sequence"`
-	KeysetEpoch    uint64              `json:"keyset_epoch,omitempty"`
-	KeysetDigest   string              `json:"keyset_digest,omitempty"`
-	PendingInstall *InstallTransaction `json:"pending_install,omitempty"`
-	InstalledVersion string `json:"installed_version,omitempty"`
+	Version          int                 `json:"version"`
+	StableSequence   uint64              `json:"stable_sequence"`
+	KeysetEpoch      uint64              `json:"keyset_epoch,omitempty"`
+	KeysetDigest     string              `json:"keyset_digest,omitempty"`
+	PendingInstall   *InstallTransaction `json:"pending_install,omitempty"`
+	InstalledVersion string              `json:"installed_version,omitempty"`
 }
 
 type StateStore struct {
-	Path         string
-	mu           sync.Mutex
-	persistState func(State) error
+	Path                 string
+	mu                   sync.Mutex
+	persistState         func(State) error
 	readInstalledVersion func() (string, error)
 }
 
@@ -149,10 +149,10 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 		return verified, nil
 	}
 	next := State{
-		Version: UpdateStateVersionWithKeyset,
+		Version:        UpdateStateVersionWithKeyset,
 		StableSequence: current.StableSequence,
-		KeysetEpoch: verified.Epoch(),
-		KeysetDigest: verified.Digest(),
+		KeysetEpoch:    verified.Epoch(),
+		KeysetDigest:   verified.Digest(),
 	}
 	if current.InstalledVersion != "" {
 		next.Version = UpdateStateVersionWithInstalled
@@ -167,24 +167,40 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 var ErrInstalledVersionUnavailable = errors.New("updateinfo: protected installed version is unavailable")
 
 func (s *StateStore) installedSnapshot(ctx context.Context) (string, uint64, error) {
-	if s == nil || s.Path == "" || ctx == nil { return "", 0, ErrInvalidState }
+	if s == nil || s.Path == "" || ctx == nil {
+		return "", 0, ErrInvalidState
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	release, err := acquireUpdateLock(ctx, s.Path)
-	if err != nil { return "", 0, err }
+	if err != nil {
+		return "", 0, err
+	}
 	defer release()
 	current, err := loadState(s.Path)
-	if err != nil { return "", 0, err }
-	if current.PendingInstall != nil { return "", 0, ErrInstallRecoveryRequired }
+	if err != nil {
+		return "", 0, err
+	}
+	if current.PendingInstall != nil {
+		return "", 0, ErrInstallRecoveryRequired
+	}
 	if current.InstalledVersion == "" {
 		reader := s.readInstalledVersion
-		if reader == nil { return "", 0, ErrInstalledVersionUnavailable }
+		if reader == nil {
+			return "", 0, ErrInstalledVersionUnavailable
+		}
 		version, err := reader()
-		if err != nil { return "", 0, fmt.Errorf("%w: %v", ErrInstalledVersionUnavailable, err) }
-		if _, err := parseStableVersion(version); err != nil { return "", 0, ErrInstalledVersionUnavailable }
+		if err != nil {
+			return "", 0, fmt.Errorf("%w: %v", ErrInstalledVersionUnavailable, err)
+		}
+		if _, err := parseStableVersion(version); err != nil {
+			return "", 0, ErrInstalledVersionUnavailable
+		}
 		current.Version = UpdateStateVersionWithInstalled
 		current.InstalledVersion = version
-		if err := s.persist(current); err != nil { return "", 0, err }
+		if err := s.persist(current); err != nil {
+			return "", 0, err
+		}
 	}
 	return current.InstalledVersion, current.StableSequence, nil
 }
@@ -341,7 +357,9 @@ func (s State) validatePersisted() error {
 			}
 		}
 		if s.PendingInstall != nil {
-			if err := s.PendingInstall.validate(); err != nil { return fmt.Errorf("%w: pending install journal: %v", ErrInvalidState, err) }
+			if err := s.PendingInstall.validate(); err != nil {
+				return fmt.Errorf("%w: pending install journal: %v", ErrInvalidState, err)
+			}
 			if s.PendingInstall.Phase == InstallPhaseCommitted {
 				if s.PendingInstall.Sequence != s.StableSequence || s.InstalledVersion != s.PendingInstall.TargetVersion {
 					return fmt.Errorf("%w: committed transaction does not match protected installed state", ErrInvalidState)
