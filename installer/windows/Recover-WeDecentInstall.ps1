@@ -125,30 +125,58 @@ function Restore-TransactionRecoveryScript {
     if ($expected -notmatch '^[a-f0-9]{64}$') {
         throw 'Previous recovery script digest is invalid.'
     }
-    if (Test-Path -LiteralPath $backup -PathType Leaf) {
+    if (Test-Path -LiteralPath $backup) {
+        $backupInfo = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
+        if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Previous recovery script backup is not a regular file; retaining it and refusing rollback.'
+        }
         Assert-TrustedAcl -Path $backup
         if ((Get-Sha256FileHash $backup) -ne $expected) {
             throw 'Previous recovery script backup is corrupted; retaining it and refusing rollback.'
         }
         $restore = "$target.$($Journal.transaction_id).restore"
-        Copy-Item -LiteralPath $backup -Destination $restore -Force
+        if (Test-Path -LiteralPath $restore) {
+            $restoreInfo = Get-Item -LiteralPath $restore -Force -ErrorAction Stop
+            if ($restoreInfo.PSIsContainer -or ($restoreInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Interrupted recovery-script restore path is not a regular file.'
+            }
+            Remove-Item -LiteralPath $restore -Force -ErrorAction Stop
+        }
+        Copy-Item -LiteralPath $backup -Destination $restore
         if ((Get-Sha256FileHash $restore) -ne $expected) {
             Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue
             throw 'Previous recovery script restore copy failed integrity verification.'
         }
         Set-TrustedAcl -Path $restore
+        Assert-TrustedAcl -Path $restore
         Move-Item -LiteralPath $restore -Destination $target -Force
+        Set-TrustedAcl -Path $target
     } elseif (-not (Test-Path -LiteralPath $target -PathType Leaf) -or
         (Get-Sha256FileHash $target) -ne $expected) {
         throw 'Previous recovery script and its transaction backup are both unavailable.'
     }
-    if ((Get-Sha256FileHash $target) -ne $expected) {
+    $targetInfo = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+    if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        (Get-Sha256FileHash $target) -ne $expected) {
         throw 'Restored previous recovery script failed integrity verification.'
     }
+    Set-TrustedAcl -Path $target
+    Assert-TrustedAcl -Path $target
     $Journal.recovery_script_sha256 = $expected
     $Journal.recovery_script_state = 'original'
     $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
     Write-TransactionJournal -Journal $Journal -Path $journalPath
+    if (Test-Path -LiteralPath $backup) {
+        $backupInfo = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
+        if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Restored recovery script journal is durable, but its transaction backup is not a regular file.'
+        }
+        Assert-TrustedAcl -Path $backup
+        if ((Get-Sha256FileHash $backup) -ne $expected) {
+            throw 'Restored recovery script journal is durable, but its transaction backup failed cleanup verification.'
+        }
+        Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+    }
 }
 
 function Write-TransactionJournal {
