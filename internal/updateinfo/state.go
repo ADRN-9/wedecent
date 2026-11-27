@@ -35,6 +35,7 @@ type State struct {
 	KeysetEpoch    uint64              `json:"keyset_epoch,omitempty"`
 	KeysetDigest   string              `json:"keyset_digest,omitempty"`
 	PendingInstall *InstallTransaction `json:"pending_install,omitempty"`
+	InstalledVersion string `json:"installed_version,omitempty"`
 }
 
 type StateStore struct {
@@ -100,6 +101,7 @@ func (s *StateStore) Advance(sequence uint64) error {
 		StableSequence: sequence,
 		KeysetEpoch:    current.KeysetEpoch,
 		KeysetDigest:   current.KeysetDigest,
+		InstalledVersion: current.InstalledVersion,
 	}
 	if next.Version == 0 {
 		next.Version = UpdateStateVersion
@@ -154,6 +156,7 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 		StableSequence: current.StableSequence,
 		KeysetEpoch:    verified.Epoch(),
 		KeysetDigest:   verified.Digest(),
+		InstalledVersion: current.InstalledVersion,
 	}
 	if err := saveState(s.Path, next); err != nil {
 		return zero, fmt.Errorf("%w: persist verified keyset: %v", ErrInvalidState, err)
@@ -306,6 +309,11 @@ func (s State) validatePersisted() error {
 		}
 		if s.Version == UpdateStateVersionWithKeyset && s.PendingInstall != nil {
 			return fmt.Errorf("%w: pending install requires state version 3", ErrInvalidState)
+		}
+		if s.InstalledVersion != "" {
+			if _, err := parseStableVersion(s.InstalledVersion); err != nil {
+				return fmt.Errorf("%w: installed version is invalid", ErrInvalidState)
+			}
 		}
 		if s.PendingInstall != nil {
 			if err := s.PendingInstall.validate(); err != nil {
