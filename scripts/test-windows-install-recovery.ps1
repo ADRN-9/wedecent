@@ -70,6 +70,10 @@ if (-not $installerText.Contains('metadata_original_sha256') -or
 if ($installerText -match '(?s)\$journal\.phase = ''rolled-back''.*?finally\s*\{\s*if \(\$restartService\)') {
     throw 'Interrupted transaction recovery must not restart the service from a finally block after rollback failure.'
 }
+if (-not $installerText.Contains('Legacy committed journals predate recovery-script transaction fields.') -or
+    -not $installerText.Contains('Legacy installer transaction cannot clean backups before durable commit.')) {
+    throw 'Installer must accept only fully committed legacy journals and fail closed for incomplete legacy transactions.'
+}
 if (-not $installerText.Contains('function Assert-TransactionRecoveryScript') -or
     -not $installerText.Contains('Assert-TransactionRecoveryScript -Journal $journal') -or
     -not $installerText.Contains('Previous recovery-script backup is unsafe or corrupted.') -or
