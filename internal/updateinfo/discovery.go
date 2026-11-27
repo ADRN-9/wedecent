@@ -53,7 +53,9 @@ func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context) (VerifiedMa
 		return zero, fmt.Errorf("%w: timeout must not be negative", ErrDiscovery)
 	}
 	currentVersion, highestSequence, err := c.State.installedSnapshot(ctx)
-	if err != nil { return zero, fmt.Errorf("%w: obtain protected installed version and sequence: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: obtain protected installed version and sequence: %w", ErrDiscovery, err)
+	}
 	now := time.Now()
 	if c.Now != nil {
 		now = c.Now()
