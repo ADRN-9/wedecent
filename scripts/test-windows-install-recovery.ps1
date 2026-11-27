@@ -892,6 +892,85 @@ try {
     if (-not $rejected) { throw 'Installer metadata helper accepted missing snapshot plus corrupted current metadata.' }
     $env:ProgramData = $root
 
+    # Exercise recovery-script admission for upgrades, fresh installs, and legacy journals.
+    $recoveryFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Assert-TransactionRecoveryScript'
+    }, $true)
+    if ($recoveryFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script admission helper.' }
+    Invoke-Expression $recoveryFunction[0].Extent.Text
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "$recoveryTarget.$recoveryTransactionId.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = [Guid]::NewGuid().ToString('N')
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "$recoveryTarget.$([Guid]::NewGuid().ToString('N')).previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $InstallDir = $savedInstallDir
+
     Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
 } finally {
     $env:ProgramData = $originalProgramData
