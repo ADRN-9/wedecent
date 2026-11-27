@@ -62,7 +62,7 @@ function Set-TrustedAcl {
 }
 
 function Assert-TrustedAcl {
-    param([Parameter(Mandatory = $true)][string]$Path, [switch]$AllowServiceSid)
+    param([Parameter(Mandatory = $true)][string]$Path, [string[]]$AdditionalTrustedSids = @())
     $acl = Get-Acl -LiteralPath $Path
     if (-not $acl.AreAccessRulesProtected) {
         throw "Recovery trust path has an inheriting DACL: $Path"
@@ -73,9 +73,8 @@ function Assert-TrustedAcl {
     }
     foreach ($rule in @($acl.Access)) {
         $sid = $rule.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value
-        $trusted = $TrustedSids -contains $sid
-        if ($AllowServiceSid -and $sid -like 'S-1-5-80-*') { $trusted = $true }
-        if (-not $trusted -or $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
+        if (($TrustedSids -notcontains $sid -and $AdditionalTrustedSids -notcontains $sid) -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow) {
             throw "Recovery trust path has an untrusted ACL entry: $Path"
         }
     }
@@ -182,6 +181,22 @@ if ($seen.Count -ne $BinaryNames.Count) {
     throw 'Transaction journal does not cover all five approved binaries.'
 }
 
+$metadataPath = Join-Path $env:ProgramData 'WeDecent\installer.json'
+if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+    throw 'Authenticated installer metadata is unavailable; recovery outcome is unknown.'
+}
+Assert-TrustedAcl -Path $metadataPath
+$metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+if ([string]$metadata.install_dir -ine $InstallDir -or
+    [string]$metadata.state_dir -ine $StateDir -or
+    [string]$metadata.service_name -cne $ServiceName -or
+    [string]$metadata.service_account_sid -notmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') {
+    throw 'Installer metadata does not authenticate the requested service and state paths.'
+}
+$installOwner = (Get-Acl -LiteralPath $InstallDir).Owner
+$installOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $installOwner).Translate([Security.Principal.SecurityIdentifier]).Value
+$stateOwner = (Get-Acl -LiteralPath $StateDir).Owner
+$stateOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $stateOwner).Translate([Security.Principal.SecurityIdentifier]).Value
 $statePath = Join-Path $StateDir 'update-state.json'
 if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
     throw 'Protected updater state is unavailable; recovery outcome is unknown.'
@@ -190,7 +205,7 @@ $stateItem = Get-Item -LiteralPath $statePath -Force
 if ($stateItem.PSIsContainer -or ($stateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
     throw 'Updater state is not a regular file.'
 }
-Assert-TrustedAcl -Path $statePath -AllowServiceSid
+Assert-TrustedAcl -Path $statePath -AdditionalTrustedSids @([string]$metadata.service_account_sid, $installOwnerSid, $stateOwnerSid)
 $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
 $committed = [UInt64]$state.stable_sequence -ge $Sequence -and
     $null -eq $state.pending_install -and [string]$state.installed_version -ceq $TargetVersion
