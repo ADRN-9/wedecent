@@ -66,7 +66,6 @@ func TestApplyVerifiedManifestSerializesIndependentStores(t *testing.T) {
 	}
 }
 
-
 func TestUpdateLockHelperProcess(t *testing.T) {
 	if os.Getenv("WEDECENT_UPDATE_LOCK_HELPER") != "1" {
 		return
