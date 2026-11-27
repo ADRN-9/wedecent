@@ -143,6 +143,87 @@ function Assert-WeDecentMetadataShape {
     }
 }
 
+function Set-WeDecentUpdateStateAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$TrustedSids,
+        [bool]$Directory = $false
+    )
+    $acl = Get-Acl -LiteralPath $Path
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRuleSpecific($rule) }
+    foreach ($sidText in @($TrustedSids | Sort-Object -Unique)) {
+        $sid = [Security.Principal.SecurityIdentifier]::new($sidText)
+        if ($Directory) {
+            $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance,
+                [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow
+            )
+        } else {
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                $sid, [Security.AccessControl.FileSystemRights]::FullControl,
+                [Security.AccessControl.AccessControlType]::Allow
+            )
+        }
+        [void]$acl.AddAccessRule($rule)
+    }
+    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Initialize-WeDecentUpdateState {
+    param(
+        [Parameter(Mandatory = $true)][string]$Version,
+        [Parameter(Mandatory = $true)][string]$ServiceSid
+    )
+    if ($script:IsManagedUpdate) { return }
+    New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+    $installOwner = (Get-Acl -LiteralPath $InstallDir).Owner
+    $installOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $installOwner).Translate([Security.Principal.SecurityIdentifier]).Value
+    $stateDirectorySids = @('S-1-5-18', 'S-1-5-32-544', $ServiceSid, $installOwnerSid)
+    Set-WeDecentUpdateStateAcl -Path $StateDir -TrustedSids $stateDirectorySids -Directory $true
+
+    $path = Join-Path $StateDir 'update-state.json'
+    $state = $null
+    if (Test-Path -LiteralPath $path) {
+        $item = Get-Item -LiteralPath $path -Force
+        if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Existing update state must be a regular non-reparse file.'
+        }
+        $state = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        if ($null -ne $state.pending_install) {
+            throw 'An interrupted verified update must be recovered before installer state initialization.'
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$state.installed_version) -and
+            [string]$state.installed_version -ne $Version) {
+            throw 'Installed-version authority does not match the requested installer; use the verified updater path.'
+        }
+        if ([string]::IsNullOrWhiteSpace([string]$state.installed_version)) {
+            $state | Add-Member -NotePropertyName installed_version -NotePropertyValue $Version
+        }
+    } else {
+        $state = [ordered]@{
+            version = 1
+            stable_sequence = 0
+            installed_version = $Version
+        }
+    }
+
+    $temp = Join-Path $StateDir ('.update-state-' + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $json = ($state | ConvertTo-Json -Depth 8 -Compress) + "`n"
+    [IO.File]::WriteAllText($temp, $json, (New-Object Text.UTF8Encoding($false)))
+    $stateOwner = (Get-Acl -LiteralPath $StateDir).Owner
+    $stateOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $stateOwner).Translate([Security.Principal.SecurityIdentifier]).Value
+    Set-WeDecentUpdateStateAcl -Path $temp -TrustedSids @('S-1-5-18', 'S-1-5-32-544', $ServiceSid, $stateOwnerSid)
+    if (Test-Path -LiteralPath $path -PathType Leaf) {
+        [IO.File]::Replace($temp, $path, $null, $true)
+    } else {
+        [IO.File]::Move($temp, $path)
+    }
+    Set-WeDecentUpdateStateAcl -Path $path -TrustedSids @('S-1-5-18', 'S-1-5-32-544', $ServiceSid, $stateOwnerSid)
+}
+
 function Read-WeDecentMetadata {
     $path = Get-WeDecentMetadataPath
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
@@ -1011,6 +1092,7 @@ if ($service) {
         Start-Service -Name $ServiceName
         (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         Write-WeDecentMetadata -AccountSid $accountSid -ManagedAccount $managed -AccountName $localName -Version $version
+        Initialize-WeDecentUpdateState -Version $version -ServiceSid $accountSid
     } catch {
         $failed = $_
         Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
@@ -1131,6 +1213,7 @@ if ($service) {
 
         if ($AddToMachinePath) { Add-MachinePathEntry $InstallDir }
         Write-WeDecentMetadata -AccountSid $localUser.SID.Value -ManagedAccount $managed -AccountName $ServiceAccountName -Version $version
+        Initialize-WeDecentUpdateState -Version $version -ServiceSid $localUser.SID.Value
         if (-not $script:IsManagedUpdate -and $script:InstallJournal) { $script:InstallJournal.phase = 'committed'; Write-InstallJournal -Journal $script:InstallJournal }
     } catch {
         $failed = $_
