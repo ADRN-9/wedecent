@@ -1029,7 +1029,6 @@ try {
         throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
     }
     $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $processCredential = [pscredential]::new(".\$serviceAccountName", $servicePassword)
     function Invoke-ServiceIdentityIsolationProbe {
         param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
         [IO.File]::WriteAllText($EvidencePath, '')
