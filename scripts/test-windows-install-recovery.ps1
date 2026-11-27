@@ -34,7 +34,7 @@ if (-not $recoveryText.Contains('FinalizeCommitted') -or
     throw 'Committed backup finalization must require exact durable state, exact target hashes, and a durable journal marker.'
 }
 if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
-    -not $installerText.Contains('if ($binariesRestored)') -or
+    -not $installerText.Contains('if ($binariesRestored -and $metadataRestored -and $journalPersisted)') -or
     -not $installerText.Contains('service is intentionally left stopped for recovery')) {
     throw 'Upgrade rollback must not restart the service when binary restoration fails.'
 }
