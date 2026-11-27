@@ -151,10 +151,17 @@ func TestApplyVerifiedManifestInvokesPowerShellExecutorProcess(t *testing.T) {
 	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
 
 	root, helperBinary, logPath := newExecutorProcessFixture(t)
+	installDir := filepath.Join(root, "installed")
+	if err := os.MkdirAll(installDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "Recover-WeDecentInstall.ps1"), []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: helperBinary,
-		InstallDir:     filepath.Join(root, "installed"),
+		InstallDir:     installDir,
 		StateDir:       filepath.Join(root, "state"),
 		ServiceName:    "WeDecentAgent",
 		WebRelay:       "https://relay.wedecent.com",
