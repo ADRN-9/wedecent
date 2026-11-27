@@ -39,7 +39,11 @@ if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
     throw 'Upgrade rollback must not restart unless binary, metadata and journal restoration all succeed.'
 }
 if (-not $installerText.Contains('metadata_original_sha256') -or
+    -not $installerText.Contains('metadata_path = $metadataPath') -or
+    -not $installerText.Contains('metadata_backup_path = $metadataBackupPath') -or
+    -not $installerText.Contains('Assert-TransactionMetadataSnapshot -Journal $journal') -or
     -not $installerText.Contains('Restore-TransactionMetadata -Journal') -or
+    -not $installerText.Contains('metadataBackup = [string]$Journal.metadata_backup_path') -or
     -not $installerText.Contains('persist completed rollback journal') -or
     -not $installerText.Contains('SCM service identity does not match the authenticated installer paths.') -or
     -not $installerText.Contains('SCM did not confirm the service stopped before interrupted-install recovery.')) {
