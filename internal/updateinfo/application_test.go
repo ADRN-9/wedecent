@@ -66,9 +66,6 @@ func TestApplyVerifiedInstallerFailureDoesNotCommitSequence(t *testing.T) {
 	path := writeStagedArchive(t, archive)
 	store := NewStateStore(StatePath(privateTempDir(t)))
 	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
-	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
-	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
-	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
 
 	err := store.ApplyVerifiedManifest(
 		context.Background(), verified, path, 0,
@@ -101,6 +98,7 @@ func TestApplyVerifiedInstallerRejectsRollbackBeforeExecution(t *testing.T) {
 	if err := store.Advance(10); err != nil {
 		t.Fatal(err)
 	}
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
 
 	called := false
 	err := store.ApplyVerifiedManifest(
@@ -125,6 +123,7 @@ func TestApplyVerifiedInstallerIgnoresCancellationAfterMutationStarts(t *testing
 	manifest.InstallerSHA256 = sha256Hex(archive)
 	path := writeStagedArchive(t, archive)
 	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -190,6 +189,7 @@ func TestApplyVerifiedInstallerSerializesSameSequence(t *testing.T) {
 	manifest.InstallerSHA256 = sha256Hex(archive)
 	path := writeStagedArchive(t, archive)
 	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
@@ -205,7 +205,7 @@ func TestApplyVerifiedInstallerSerializesSameSequence(t *testing.T) {
 	defer cancelFirst()
 	first := make(chan error, 1)
 	go func() {
-		first <- store.ApplyVerifiedManifest(firstCtx, manifest, path, 0, func(context.Context, string) error { return nil }, executor)
+		first <- store.ApplyVerifiedManifest(firstCtx, verified, path, 0, func(context.Context, string) error { return nil }, executor)
 	}()
 	select {
 	case <-started:
