@@ -141,8 +141,38 @@ func TestUpdateProcessIdentityRealProcessProbe(t *testing.T) {
 	}
 	expectedImage := os.Getenv("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE")
 	evidencePath := os.Getenv("WEDECENT_IDENTITY_PROBE_EVIDENCE")
-	if expectedImage == "" || evidencePath == "" {
+	expectedBoundary := os.Getenv("WEDECENT_IDENTITY_PROBE_BOUNDARY")
+	if expectedImage == "" || evidencePath == "" || (expectedBoundary != "user" && expectedBoundary != "session") {
 		t.Fatal("missing process identity probe configuration")
+	}
+	target, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_QUERY_INFORMATION, false, uint32(pid))
+	if err != nil {
+		t.Fatalf("open target process for identity evidence: %v", err)
+	}
+	var targetToken windows.Token
+	if err := windows.OpenProcessToken(target, windows.TOKEN_QUERY, &targetToken); err != nil {
+		_ = windows.CloseHandle(target)
+		t.Fatalf("open target process token: %v", err)
+	}
+	targetIdentity, targetErr := updateIdentityFromToken(targetToken)
+	_ = targetToken.Close()
+	_ = windows.CloseHandle(target)
+	if targetErr != nil {
+		t.Fatalf("read target process identity: %v", targetErr)
+	}
+	currentIdentity, err := currentUpdateProcessIdentity()
+	if err != nil {
+		t.Fatalf("read probe process identity: %v", err)
+	}
+	switch expectedBoundary {
+	case "user":
+		if strings.EqualFold(targetIdentity.UserSID, currentIdentity.UserSID) {
+			t.Fatal("cross-user probe did not use distinct user SIDs")
+		}
+	case "session":
+		if !strings.EqualFold(targetIdentity.UserSID, currentIdentity.UserSID) || targetIdentity.LogonID == currentIdentity.LogonID {
+			t.Fatal("cross-session probe did not use the same user SID and distinct logon LUIDs")
+		}
 	}
 	handle, err := openExpectedProcess(uint32(pid), expectedImage)
 	if handle != 0 {
@@ -154,7 +184,7 @@ func TestUpdateProcessIdentityRealProcessProbe(t *testing.T) {
 	if !strings.Contains(err.Error(), "different Windows user or logon session") {
 		t.Fatalf("wd-agent process validator did not reach the identity rejection boundary: %v", err)
 	}
-	if err := os.WriteFile(evidencePath, []byte(err.Error()), 0o600); err != nil {
+	if err := os.WriteFile(evidencePath, []byte(expectedBoundary+"|"+err.Error()), 0o600); err != nil {
 		t.Fatalf("write process identity evidence: %v", err)
 	}
 }
