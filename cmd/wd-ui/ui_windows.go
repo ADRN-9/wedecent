@@ -497,8 +497,8 @@ func (a *winApp) applyUpdateAsync() {
 			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "Could not start the verified Windows updater."})
 			return
 		}
-		line, err := bufio.NewReader(stdout).ReadString('\\n')
-		if err != nil || line != "READY\\n" {
+		line, err := bufio.NewReader(stdout).ReadString('\n')
+		if err != nil || line != "READY\n" {
 			_ = command.Process.Kill()
 			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "The updater could not authenticate the desktop shutdown handoff."})
 			return
