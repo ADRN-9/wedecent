@@ -57,6 +57,9 @@ func TestApplyVerifiedInstallerCommitsSequenceAfterSuccess(t *testing.T) {
 	if state.StableSequence != manifest.Sequence {
 		t.Fatalf("stable sequence = %d, want %d", state.StableSequence, manifest.Sequence)
 	}
+	if state.PendingInstall != nil {
+		t.Fatalf("successful install left pending transaction: %#v", state.PendingInstall)
+	}
 }
 
 func TestApplyVerifiedInstallerFailureDoesNotCommitSequence(t *testing.T) {
@@ -86,6 +89,9 @@ func TestApplyVerifiedInstallerFailureDoesNotCommitSequence(t *testing.T) {
 	}
 	if state.StableSequence != 0 {
 		t.Fatalf("failed installer advanced sequence to %d", state.StableSequence)
+	}
+	if state.PendingInstall == nil {
+		t.Fatal("failed installer did not leave a durable recovery journal")
 	}
 }
 
