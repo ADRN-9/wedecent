@@ -538,3 +538,65 @@ func TestRecoveryScriptAdmissionRejectsTamperingAndAllowsVerifiedRollback(t *tes
 		t.Fatalf("verified prior script should be admitted for rollback retry: %v", err)
 	}
 }
+
+
+func TestCommittedRecoveryScriptAdmissionRejectsTampering(t *testing.T) {
+	root := privateTempDir(t)
+	t.Setenv("ProgramData", root)
+	installDir := filepath.Join(root, "install")
+	if err := os.MkdirAll(installDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(installDir, "Recover-WeDecentInstall.ps1")
+	backup := script + "." + strings.Repeat("1", 32) + ".previous"
+	if err := os.WriteFile(script, []byte("committed recovery script"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup, []byte("previous recovery script"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	currentHash, err := hashInstallerFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	previousHash, err := hashInstallerFile(backup)
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := windowsInstallJournal{
+		TransactionID: strings.Repeat("1", 32), Sequence: 1, Version: "v0.4.0", Phase: "committed",
+		RecoveryScriptPath: script, RecoveryScriptHadOriginal: true,
+		RecoveryScriptOriginalSHA256: previousHash, RecoveryScriptBackupPath: backup,
+		RecoveryScriptSHA256: currentHash, RecoveryScriptState: "published",
+	}
+	journalDir := filepath.Join(root, "WeDecent", "install-transactions")
+	if err := os.MkdirAll(journalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(journal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(journalDir, journal.TransactionID+".json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := State{StableSequence: 1, InstalledVersion: "v0.4.0"}
+	if err := verifyCommittedRecoveryScriptAdmission(installDir, script, state); err != nil {
+		t.Fatalf("valid committed recovery script: %v", err)
+	}
+	if err := os.WriteFile(script, []byte("tampered committed recovery script"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyCommittedRecoveryScriptAdmission(installDir, script, state); err == nil {
+		t.Fatal("accepted tampered committed recovery script")
+	}
+	if err := os.WriteFile(script, []byte("committed recovery script"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(backup, []byte("corrupt backup"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyCommittedRecoveryScriptAdmission(installDir, script, state); err == nil {
+		t.Fatal("accepted corrupted committed recovery-script backup")
+	}
+}
