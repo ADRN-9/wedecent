@@ -16,6 +16,7 @@ type VerifiedManifest struct {
 	keysetEpoch    uint64
 	keysetDigest   string
 	manifestDigest string
+	previousVersion string
 }
 
 var ErrUnverifiedManifest = errors.New("updateinfo: manifest lacks verified update authority")
@@ -30,10 +31,10 @@ func VerifyManifestV2Capability(verified VerifiedKeyset, manifestBytes, signatur
 	if err != nil {
 		return VerifiedManifest{}, err
 	}
-	return verifiedManifestFrom(verified, manifest, manifestBytes)
+	return verifiedManifestFrom(verified, manifest, manifestBytes, currentVersion)
 }
 
-func verifiedManifestFrom(keyset VerifiedKeyset, manifest Manifest, canonicalBytes []byte) (VerifiedManifest, error) {
+func verifiedManifestFrom(keyset VerifiedKeyset, manifest Manifest, canonicalBytes []byte, previousVersion string) (VerifiedManifest, error) {
 	if keyset.digest == "" || keyset.keyset.Epoch == 0 ||
 		manifest.Schema != ManifestSchemaV2 ||
 		manifest.SigningKeyID == "" || manifest.KeysetEpoch != keyset.keyset.Epoch {
@@ -46,12 +47,12 @@ func verifiedManifestFrom(keyset VerifiedKeyset, manifest Manifest, canonicalByt
 	return VerifiedManifest{
 		manifest: manifest, signerID: manifest.SigningKeyID,
 		keysetEpoch: keyset.Epoch(), keysetDigest: keyset.Digest(),
-		manifestDigest: hex.EncodeToString(digest[:]),
+		manifestDigest: hex.EncodeToString(digest[:]), previousVersion: previousVersion,
 	}, nil
 }
 
 func (v VerifiedManifest) validate() error {
-	if v.signerID == "" || v.keysetEpoch == 0 ||
+	if v.signerID == "" || v.keysetEpoch == 0 || v.previousVersion == "" ||
 		len(v.keysetDigest) != 64 || len(v.manifestDigest) != 64 ||
 		v.manifest.Schema != ManifestSchemaV2 ||
 		v.manifest.SigningKeyID != v.signerID ||
