@@ -875,6 +875,20 @@ function Assert-TransactionMetadataSnapshot {
 
 function Assert-TransactionRecoveryScript {
     param([Parameter(Mandatory = $true)]$Journal, [bool]$Committed = $false)
+    $recoveryFields = @('recovery_script_path', 'recovery_script_backup_path', 'recovery_script_had_original', 'recovery_script_original_sha256', 'recovery_script_sha256', 'recovery_script_state')
+    if ($Journal -is [System.Collections.IDictionary]) {
+        $presentRecoveryFields = @($recoveryFields | Where-Object { $Journal.Contains($_) })
+    } else {
+        $presentRecoveryFields = @($recoveryFields | Where-Object { $null -ne $Journal.PSObject.Properties[$_] })
+    }
+    if ($presentRecoveryFields.Count -eq 0) {
+        # Legacy committed journals predate recovery-script transaction fields.
+        if ($Committed -and [string]$Journal.phase -eq 'committed') { return }
+        throw 'Uncommitted legacy transaction is missing recovery-script authentication fields.'
+    }
+    if ($presentRecoveryFields.Count -ne $recoveryFields.Count) {
+        throw 'Recovery-script transaction journal contains partial authentication fields.'
+    }
     $expectedTarget = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
     $expectedBackup = "$expectedTarget.$($Journal.transaction_id).previous"
     if (-not [IO.Path]::GetFullPath([string]$Journal.recovery_script_path).Equals($expectedTarget, [StringComparison]::OrdinalIgnoreCase) -or
@@ -975,6 +989,8 @@ function Remove-CommittedTransactionBackups {
         $destination = [string]$entry.destination
         Remove-Item -LiteralPath "$destination.$($Journal.transaction_id).new" -Force -ErrorAction SilentlyContinue
     }
+    $hasRecoveryScriptRecord = if ($Journal -is [System.Collections.IDictionary]) { $Journal.Contains('recovery_script_path') } else { $null -ne $Journal.PSObject.Properties['recovery_script_path'] }
+    if ($hasRecoveryScriptRecord) {
     $recoveryTarget = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
     $recoveryBackup = "$recoveryTarget.$($Journal.transaction_id).previous"
     if (-not [IO.Path]::GetFullPath([string]$Journal.recovery_script_path).Equals($recoveryTarget, [StringComparison]::OrdinalIgnoreCase) -or
@@ -992,6 +1008,9 @@ function Remove-CommittedTransactionBackups {
             throw 'Refusing to clean an unsafe or corrupted previous recovery-script backup.'
         }
         Remove-Item -LiteralPath $recoveryBackup -Force -ErrorAction Stop
+    }
+    } elseif ([string]$Journal.phase -ne 'committed') {
+        throw 'Legacy installer transaction cannot clean backups before durable commit.'
     }
 
     $metadataBackup = [string]$Journal.metadata_backup_path
