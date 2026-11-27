@@ -506,7 +506,7 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 				context.Background(), "v0.3.9", 0,
 				InstallerClient{}, filepath.Join(t.TempDir(), "staging"), 0,
 				func(context.Context, string) error { return nil },
-				InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+				InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 					calls++
 					return nil
 				}),
@@ -563,7 +563,7 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 		}
 	}
 	calls := 0
-	executor := InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 		calls++
 		return nil
 	})
