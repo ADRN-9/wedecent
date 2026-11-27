@@ -2,6 +2,8 @@ package updateinfo
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
@@ -18,10 +20,11 @@ func TestApplyVerifiedInstallerCommitsSequenceAfterSuccess(t *testing.T) {
 	path := writeStagedArchive(t, archive)
 	stateDir := privateTempDir(t)
 	store := NewStateStore(StatePath(stateDir))
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
 
 	called := false
-	err := store.ApplyVerifiedInstaller(
-		context.Background(), manifest, path, 0,
+	err := store.ApplyVerifiedManifest(
+		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
 		InstallerExecutorFunc(func(_ context.Context, pkg VerifiedInstallerPackage) error {
 			called = true
@@ -62,9 +65,13 @@ func TestApplyVerifiedInstallerFailureDoesNotCommitSequence(t *testing.T) {
 	manifest.InstallerSHA256 = sha256Hex(archive)
 	path := writeStagedArchive(t, archive)
 	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
 
-	err := store.ApplyVerifiedInstaller(
-		context.Background(), manifest, path, 0,
+	err := store.ApplyVerifiedManifest(
+		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
 		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
 			return errors.New("secret privileged stderr")
@@ -96,8 +103,8 @@ func TestApplyVerifiedInstallerRejectsRollbackBeforeExecution(t *testing.T) {
 	}
 
 	called := false
-	err := store.ApplyVerifiedInstaller(
-		context.Background(), manifest, path, 0,
+	err := store.ApplyVerifiedManifest(
+		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
 		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
 			called = true
@@ -121,8 +128,8 @@ func TestApplyVerifiedInstallerIgnoresCancellationAfterMutationStarts(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	err := store.ApplyVerifiedInstaller(
-		ctx, manifest, path, 0,
+	err := store.ApplyVerifiedManifest(
+		ctx, verified, path, 0,
 		func(context.Context, string) error { return nil },
 		InstallerExecutorFunc(func(execCtx context.Context, _ VerifiedInstallerPackage) error {
 			cancel()
@@ -152,13 +159,17 @@ func TestApplyVerifiedInstallerReportsSequenceCommitFailureAfterInstall(t *testi
 	stateDir := privateTempDir(t)
 	statePath := StatePath(stateDir)
 	store := NewStateStore(statePath)
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
 	called := false
 
-	err := store.ApplyVerifiedInstaller(
-		context.Background(), manifest, path, 0,
+	err := store.ApplyVerifiedManifest(
+		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
 		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
 			called = true
+			if err := os.Remove(statePath); err != nil {
+				t.Fatalf("remove update state before blocker: %v", err)
+			}
 			if err := os.Mkdir(statePath, 0o700); err != nil {
 				t.Fatalf("create state-path blocker: %v", err)
 			}
@@ -194,7 +205,7 @@ func TestApplyVerifiedInstallerSerializesSameSequence(t *testing.T) {
 	defer cancelFirst()
 	first := make(chan error, 1)
 	go func() {
-		first <- store.ApplyVerifiedInstaller(firstCtx, manifest, path, 0, func(context.Context, string) error { return nil }, executor)
+		first <- store.ApplyVerifiedManifest(firstCtx, manifest, path, 0, func(context.Context, string) error { return nil }, executor)
 	}()
 	select {
 	case <-started:
@@ -207,7 +218,7 @@ func TestApplyVerifiedInstallerSerializesSameSequence(t *testing.T) {
 
 	second := make(chan error, 1)
 	go func() {
-		second <- store.ApplyVerifiedInstaller(context.Background(), manifest, path, 0, func(context.Context, string) error { return nil }, executor)
+		second <- store.ApplyVerifiedManifest(context.Background(), verified, path, 0, func(context.Context, string) error { return nil }, executor)
 	}()
 	close(release)
 	if err := <-first; err != nil {
@@ -234,33 +245,28 @@ func storeStateWithoutLock(path string) (State, error) {
 	return loadState(path)
 }
 
-func TestApplyVerifiedInstallerForKeysetRejectsConcurrentKeysetRotation(t *testing.T) {
+func TestApplyVerifiedManifestRejectsConcurrentKeysetRotation(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 17
+	manifest.InstallerSHA256 = sha256Hex(archive)
+	path := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified, rootPublic, rootPrivate, keyset := testVerifiedManifest(t, manifest, store)
+
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
-	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
 	keyset.Epoch++
 	keysetBody, keysetSignature := signKeyset(t, keyset, rootPrivate, now)
-	store := NewStateStore(StatePath(privateTempDir(t)))
 	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, keysetBody, keysetSignature, now); err != nil {
 		t.Fatal(err)
 	}
-
-	manifest, archive := buildInstallerPackageFixture(t, nil)
-	manifest.Schema = ManifestSchemaV2
-	manifest.SigningKeyID = keyset.Keys[0].ID
-	manifest.PublishedAt = now.Format(time.RFC3339)
-	manifest.Sequence = 17
-	manifest.KeysetEpoch = keyset.Epoch - 1
-	manifest.InstallerSHA256 = sha256Hex(archive)
-	path := writeStagedArchive(t, archive)
 	called := false
-	err := store.ApplyVerifiedInstallerForKeyset(
-		context.Background(), manifest, path, 0,
+	err := store.ApplyVerifiedManifest(
+		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
 		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
 			called = true
 			return nil
 		}),
-		keyset.Epoch-1,
 	)
 	if !errors.Is(err, ErrKeysetRollback) {
 		t.Fatalf("changed keyset epoch error = %v, want ErrKeysetRollback", err)
@@ -275,4 +281,45 @@ func TestApplyVerifiedInstallerForKeysetRejectsConcurrentKeysetRotation(t *testi
 	if state.StableSequence != 0 || state.KeysetEpoch != keyset.Epoch {
 		t.Fatalf("state after rejected stale signer = %#v", state)
 	}
+}
+
+func testVerifiedManifest(t *testing.T, manifest Manifest, store *StateStore) (VerifiedManifest, ed25519.PublicKey, ed25519.PrivateKey, Keyset) {
+	t.Helper()
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
+	manifestPublic, manifestPrivate, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedPublic, err := EncodePublicKey(manifestPublic)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyset.Keys[0].PublicKey = strings.TrimSuffix(string(encodedPublic), "\n")
+	keysetBody, keysetSignature := signKeyset(t, keyset, rootPrivate, now)
+	verifiedKeyset, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, keysetBody, keysetSignature, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest.Schema = ManifestSchemaV2
+	manifest.SigningKeyID = keyset.Keys[0].ID
+	manifest.KeysetEpoch = keyset.Epoch
+	manifest.PublishedAt = now.Format(time.RFC3339)
+	manifestBytes, err := EncodeCanonical(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	signature, err := EncodeSignature(ed25519.Sign(manifestPrivate, manifestBytes))
+	if err != nil {
+		t.Fatal(err)
+	}
+	verifiedManifest, err := VerifyManifestV2(verifiedKeyset, manifestBytes, signature, now, "", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capability, err := verifiedManifestFrom(verifiedKeyset, verifiedManifest, manifestBytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return capability, rootPublic, rootPrivate, keyset
 }
