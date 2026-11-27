@@ -284,6 +284,7 @@ func TestPowerShellInstallerExecutorRecoveryMapsDurableJournalOutcome(t *testing
 			called := false
 			executor := PowerShellInstallerExecutor{
 				PowerShellPath: powershell, InstallDir: installDir, StateDir: stateDir, ServiceName: "WeDecentAgent",
+				isElevated: func() bool { return true },
 				run: func(_ context.Context, gotPowerShell, gotScript string, args []string) error {
 					called = true
 					if gotPowerShell != powershell || gotScript != script {
@@ -346,6 +347,7 @@ func TestPowerShellInstallerExecutorRecoveryRejectsMismatchedJournal(t *testing.
 	}
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell, InstallDir: installDir, StateDir: stateDir, ServiceName: "WeDecentAgent",
+		isElevated: func() bool { return true },
 		run: func(context.Context, string, string, []string) error { return nil },
 	}
 	if got, err := executor.Recover(context.Background(), transaction); !errors.Is(err, ErrInstallRecoveryRequired) || got != InstallRecoveryUnknown {
