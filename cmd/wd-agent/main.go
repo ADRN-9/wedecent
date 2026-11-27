@@ -67,6 +67,8 @@ func main() {
 		err = runEnrollmentProof(os.Args[2:])
 	case "service":
 		err = runServiceCommand(os.Args[2:])
+	case "update":
+		err = runUpdateCommand(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -1079,5 +1081,6 @@ Commands:
   pairing-secret   Rotate and print a one-time pairing secret
   clients          List or revoke paired terminal clients
   serve            Run the terminal agent (direct, RFCOMM, serial, relay, or routing)
-  service          Install and manage the native Windows service`)
+  service          Install and manage the native Windows service
+  update           Apply the signed stable update (Windows; UAC consent required)`)
 }
