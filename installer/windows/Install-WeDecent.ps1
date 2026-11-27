@@ -3,6 +3,8 @@ param(
     [string]$BundlePath,
     [string]$TransactionId,
     [string]$ExpectedPackageSHA256,
+    [string]$ExpectedManifestSHA256,
+    [string]$PreviousVersion,
     [UInt64]$TransactionSequence = 0,
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'WeDecent'),
     [string]$StateDir = (Join-Path $InstallDir 'data\agent'),
@@ -29,10 +31,10 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $script:BinaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
 $script:VerifiedBinaryHashes = @{}
-if ($TransactionId -and ($TransactionId -notmatch '^[a-f0-9]{32}$' -or $ExpectedPackageSHA256 -notmatch '^[a-f0-9]{64}$' -or $TransactionSequence -eq 0)) {
+if ($TransactionId -and ($TransactionId -notmatch '^[a-f0-9]{32}$' -or $ExpectedPackageSHA256 -notmatch '^[a-f0-9]{64}$' -or $ExpectedManifestSHA256 -notmatch '^[a-f0-9]{64}$' -or $PreviousVersion -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or $TransactionSequence -eq 0)) {
     throw 'The installer transaction ID, package digest and sequence are invalid or incomplete.'
 }
-if (-not $TransactionId -and ($ExpectedPackageSHA256 -or $TransactionSequence -ne 0)) {
+if (-not $TransactionId -and ($ExpectedPackageSHA256 -or $ExpectedManifestSHA256 -or $PreviousVersion -or $TransactionSequence -ne 0)) {
     throw 'Installer transaction parameters must be supplied together.'
 }
 $script:IsManagedUpdate = -not [string]::IsNullOrWhiteSpace($TransactionId)
@@ -917,6 +919,8 @@ function Install-Binaries {
         schema = 1
         transaction_id = $script:InstallTransactionId
         package_sha256 = $ExpectedPackageSHA256
+        manifest_sha256 = $ExpectedManifestSHA256
+        previous_version = $PreviousVersion
         sequence = [UInt64]$script:InstallTransactionSequence
         version = $script:InstallTargetVersion
         phase = 'prepared'
@@ -1080,6 +1084,26 @@ function Test-ServiceStateSafeForAccountRemoval {
     }
 }
 
+function Publish-WeDecentRecoveryScript {
+    $source = Join-Path $BundlePath 'Recover-WeDecentInstall.ps1'
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+        throw 'Verified installer recovery script is missing from the package.'
+    }
+    $target = Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'
+    $temp = "$target.$($script:InstallTransactionId).new"
+    Copy-Item -LiteralPath $source -Destination $temp -Force
+    if ((Get-Sha256FileHash $temp) -ne (Get-Sha256FileHash $source)) {
+        throw 'Persisted installer recovery script failed integrity verification.'
+    }
+    Protect-WeDecentMetadataAcl $temp
+    if (Test-Path -LiteralPath $target -PathType Leaf) {
+        [IO.File]::Replace($temp, $target, $null, $true)
+    } else {
+        [IO.File]::Move($temp, $target)
+    }
+    Protect-WeDecentMetadataAcl $target
+}
+
 function Invoke-RollbackStep {
     param(
         [Parameter(Mandatory = $true)][string]$Description,
@@ -1198,6 +1222,8 @@ if ($service) {
     $binaryOriginalState = @{}
     try {
         Install-Binaries -SourceDirectory $BundlePath -Destinations $binaryDestinations -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState
+        Publish-WeDecentRecoveryScript
+        Publish-WeDecentRecoveryScript
         Assert-InstalledBinaries -Destinations $binaryDestinations
         Start-Service -Name $ServiceName
         (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
