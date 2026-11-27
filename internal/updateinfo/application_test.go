@@ -323,3 +323,43 @@ func testVerifiedManifest(t *testing.T, manifest Manifest, store *StateStore) (V
 	}
 	return capability, rootPublic, rootPrivate, keyset
 }
+
+func TestUnverifiedManifestCannotInvokeInstallerOrAdvanceSequence(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 99
+	manifest.InstallerSHA256 = sha256Hex(archive)
+	path := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	var calls atomic.Int32
+	executor := InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+		calls.Add(1)
+		return nil
+	})
+	err := store.ApplyVerifiedInstaller(context.Background(), manifest, path, 0,
+		func(context.Context, string) error { return nil }, executor)
+	if !errors.Is(err, ErrUnverifiedManifest) {
+		t.Fatalf("unverified admission error = %v, want ErrUnverifiedManifest", err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("executor calls = %d, want 0", calls.Load())
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != 0 {
+		t.Fatalf("unverified manifest advanced sequence to %d", state.StableSequence)
+	}
+}
+
+func TestVerifiedManifestCapabilityRejectsMutation(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 100
+	manifest.InstallerSHA256 = sha256Hex(archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+	verified.manifest.Sequence++
+	if err := verified.validate(); !errors.Is(err, ErrUnverifiedManifest) {
+		t.Fatalf("mutated capability validation error = %v, want ErrUnverifiedManifest", err)
+	}
+}
