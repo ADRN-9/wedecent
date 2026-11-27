@@ -1131,9 +1131,11 @@ function Invoke-RollbackStep {
         [Parameter(Mandatory = $true)][scriptblock]$Action
     )
     try {
-        & $Action
+        $null = & $Action
+        return $true
     } catch {
         Write-Warning "Rollback step failed ($Description): $($_.Exception.Message)"
+        return $false
     }
 }
 
@@ -1254,12 +1256,16 @@ if ($service) {
     } catch {
         $failed = $_
         Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-        Invoke-RollbackStep 'restore installed binaries' {
+        $binariesRestored = Invoke-RollbackStep 'restore installed binaries' {
             Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
         }
-        Invoke-RollbackStep 'restart previous agent service' {
-            Start-Service -Name $ServiceName
-            (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        if ($binariesRestored) {
+            Invoke-RollbackStep 'restart previous agent service' {
+                Start-Service -Name $ServiceName
+                (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+            }
+        } else {
+            Write-Warning 'Previous binaries could not be fully restored; the agent service is intentionally left stopped for recovery.'
         }
         throw "Upgrade failed; rollback was attempted: $($failed.Exception.Message)"
     }
