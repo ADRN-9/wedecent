@@ -4,21 +4,21 @@ import "testing"
 
 func transactionStateFixture() State {
 	transaction := &InstallTransaction{
-		ID: "0123456789abcdef0123456789abcdef",
-		Sequence: 11,
-		ManifestDigest: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-		PackageDigest: "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		ID:              "0123456789abcdef0123456789abcdef",
+		Sequence:        11,
+		ManifestDigest:  "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		PackageDigest:   "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
 		PreviousVersion: "v1.0.0",
-		TargetVersion: "v1.1.0",
-		Phase: InstallPhasePending,
+		TargetVersion:   "v1.1.0",
+		Phase:           InstallPhasePending,
 	}
 	return State{
-		Version: UpdateStateVersionWithInstall,
-		StableSequence: 10,
-		KeysetEpoch: 1,
-		KeysetDigest: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		Version:          UpdateStateVersionWithInstall,
+		StableSequence:   10,
+		KeysetEpoch:      1,
+		KeysetDigest:     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		InstalledVersion: "v1.0.0",
-		PendingInstall: transaction,
+		PendingInstall:   transaction,
 	}
 }
 
@@ -36,8 +36,8 @@ func TestInstallStateTransitionsRequireAtomicCommit(t *testing.T) {
 	final.InstalledVersion = "v1.1.0"
 
 	for name, pair := range map[string][2]State{
-		"pending to executing": {pending, executing},
-		"executing to committed": {executing, committed},
+		"pending to executing":          {pending, executing},
+		"executing to committed":        {executing, committed},
 		"committed to final atomically": {committed, final},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -131,7 +131,6 @@ func cloneInstallTransaction(transaction *InstallTransaction) *InstallTransactio
 	copy := *transaction
 	return &copy
 }
-
 
 func TestPersistedPendingInstallMustMatchInstalledVersion(t *testing.T) {
 	state := transactionStateFixture()
