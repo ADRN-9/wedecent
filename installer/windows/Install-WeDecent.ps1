@@ -1365,8 +1365,8 @@ if (-not $service) {
     }
 }
 $binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
-Recover-InterruptedInstallerTransactions -Destinations $binaryDestinations
 Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
+Recover-InterruptedInstallerTransactions -Destinations $binaryDestinations
 $wdDestination = $binaryDestinations['wd.exe']
 $agentDestination = $binaryDestinations['wd-agent.exe']
 
