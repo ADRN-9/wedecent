@@ -216,6 +216,11 @@ func (c DiscoveryClient) ApplyStable(
 	if executor == nil {
 		return zero, ErrInstallerUnavailable
 	}
+	if recovery, ok := executor.(InstallerRecovery); ok {
+		if err := c.State.RecoverPendingInstall(ctx, recovery); err != nil {
+			return zero, err
+		}
+	}
 	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
 	if err != nil {
 		return zero, err
