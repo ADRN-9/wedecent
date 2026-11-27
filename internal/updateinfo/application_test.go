@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"errors"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -95,13 +96,8 @@ func TestApplyVerifiedManifestCommitsSequenceAfterSuccess(t *testing.T) {
 	}
 }
 
-func TestApplyVerifiedManifestInvokesPowerShellExecutorProcess(t *testing.T) {
-	manifest, archive := buildInstallerPackageFixture(t, nil)
-	manifest.Sequence = 17
-	staged := writeStagedArchive(t, archive)
-	store := NewStateStore(StatePath(privateTempDir(t)))
-	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
-
+func newExecutorProcessFixture(t *testing.T) (string, string, string) {
+	t.Helper()
 	root := t.TempDir()
 	helperSource := filepath.Join(root, "fake-powershell.go")
 	helperBinary := filepath.Join(root, "fake-powershell")
@@ -140,6 +136,17 @@ func main() {
 		t.Fatalf("build executor process fixture: %v: %s", err, output)
 	}
 	t.Setenv("WEDECENT_TEST_EXECUTOR_LOG", logPath)
+	return root, helperBinary, logPath
+}
+
+func TestApplyVerifiedManifestInvokesPowerShellExecutorProcess(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 17
+	staged := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
+
+	root, helperBinary, logPath := newExecutorProcessFixture(t)
 
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: helperBinary,
@@ -181,6 +188,107 @@ func main() {
 	}
 	if transaction.StableSequence != manifest.Sequence || transaction.PendingInstall != nil {
 		t.Fatalf("update state was not committed after executor success: %#v", transaction)
+	}
+}
+
+func TestApplyStableInvokesPowerShellExecutorProcess(t *testing.T) {
+	fixture := newDiscoveryFixture(t)
+	packageManifest, archive := buildInstallerPackageFixture(t, nil)
+	fixture.manifest.Version = packageManifest.Version
+	fixture.manifest.ReleaseURL = packageManifest.ReleaseURL
+	fixture.manifest.InstallerURL = packageManifest.InstallerURL
+	fixture.manifest.InstallerSHA256 = sha256Hex(archive)
+	var err error
+	fixture.manifestBody, err = EncodeCanonical(fixture.manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.manifestSignature, err = EncodeSignature(ed25519.Sign(fixture.manifestPrivate, fixture.manifestBody))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.pairBody, err = EncodeCanonicalStablePair(fixture.manifestBody, fixture.manifestSignature)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	client, store := newDiscoveryClient(t, fixture, nil)
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.InstalledVersion = "v0.3.9"
+	if err := saveState(store.Path, state); err != nil {
+		t.Fatal(err)
+	}
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.String() == fixture.manifest.InstallerURL {
+			return response(http.StatusOK, archive), nil
+		}
+		return fixture.transport(nil).RoundTrip(req)
+	})
+
+	root, helperBinary, logPath := newExecutorProcessFixture(t)
+	installDir := filepath.Join(root, "installed")
+	if err := os.MkdirAll(installDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "Recover-WeDecentInstall.ps1"), []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: helperBinary,
+		InstallDir:     installDir,
+		StateDir:       filepath.Join(root, "state"),
+		ServiceName:    "WeDecentAgent",
+		isElevated:     func() bool { return true },
+	}
+	_, err = client.ApplyStable(
+		context.Background(), "v0.3.9", 0, InstallerClient{},
+		filepath.Join(root, "staging"), 0,
+		func(context.Context, string) error { return nil },
+		executor,
+	)
+	if err != nil {
+		t.Fatalf("ApplyStable() through PowerShellInstallerExecutor: %v", err)
+	}
+
+	log, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read executor process log: %v", err)
+	}
+	calls := strings.Split(strings.TrimSpace(string(log)), "\n--CALL--\n")
+	if len(calls) != 5 {
+		t.Fatalf("PowerShell process calls = %d, want pre-cleanup, preflight, install, postflight, post-cleanup; log=%q", len(calls), log)
+	}
+	wantScripts := []string{
+		"Recover-WeDecentInstall.ps1", "Test-WeDecentInstall.ps1",
+		"Install-WeDecent.ps1", "Test-WeDecentInstall.ps1", "Recover-WeDecentInstall.ps1",
+	}
+	for i, call := range calls {
+		if !strings.Contains(call, "-NoProfile") ||
+			!strings.Contains(call, "-NonInteractive") ||
+			!strings.Contains(call, "-ExecutionPolicy\nAllSigned") ||
+			!strings.Contains(call, "-File\n") ||
+			!strings.Contains(call, wantScripts[i]) {
+			t.Fatalf("ApplyStable executor process call %d has wrong script/policy/order: %q", i, call)
+		}
+	}
+	if !strings.Contains(calls[0], "-FinalizeCommitted") || !strings.Contains(calls[4], "-FinalizeCommitted") {
+		t.Fatal("committed cleanup was not invoked before discovery and after sequence commit")
+	}
+	if !strings.Contains(calls[2], "-TransactionId") ||
+		!strings.Contains(calls[2], "-ExpectedPackageSHA256") ||
+		!strings.Contains(calls[2], "-ExpectedManifestSHA256") ||
+		!strings.Contains(calls[2], "-TransactionSequence") {
+		t.Fatalf("installer process omitted transaction authorization bindings: %q", calls[2])
+	}
+	state, err = store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != fixture.manifest.Sequence || state.InstalledVersion != fixture.manifest.Version || state.PendingInstall != nil {
+		t.Fatalf("ApplyStable state after executor process success = %#v", state)
 	}
 }
 
