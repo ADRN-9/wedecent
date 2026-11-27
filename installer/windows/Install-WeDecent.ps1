@@ -45,6 +45,8 @@ if (-not $TransactionId) { $TransactionId = [Guid]::NewGuid().ToString('N') }
 $script:InstallTransactionId = $TransactionId
 $script:InstallTransactionSequence = $TransactionSequence
 $script:InstallJournal = $null
+$script:InstallServiceStoppedForTransaction = $false
+$script:InstallServiceExisted = $false
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -1424,6 +1426,22 @@ function Install-Binaries {
         Write-InstallJournal -Journal $script:InstallJournal
     }
 
+    # The authenticated transaction journal and every original backup are durable before stopping SCM.
+    if ($script:InstallServiceExisted) {
+        $serviceBeforeReplacement = Get-Service -Name $ServiceName -ErrorAction Stop
+        if ($script:InstallServiceWasRunning) {
+            if ($serviceBeforeReplacement.Status -ne 'Stopped') {
+                Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+            }
+            $serviceBeforeReplacement = Get-Service -Name $ServiceName -ErrorAction Stop
+            $serviceBeforeReplacement.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        }
+        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+            throw 'SCM did not confirm the service stopped after durable transaction and backup publication.'
+        }
+        $script:InstallServiceStoppedForTransaction = $true
+    }
+
     foreach ($entry in $script:InstallJournal.entries) {
         $AttemptedNames.Add([string]$entry.name)
     }
@@ -1836,10 +1854,8 @@ if ($service) {
         }
     }
     Write-Host "Upgrading existing $ServiceName service; state and service account will be preserved."
-    if ($service.State -ne 'Stopped') {
-        Stop-Service -Name $ServiceName -Force
-        (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-    }
+    $script:InstallServiceExisted = $true
+    $script:InstallServiceStoppedForTransaction = $false
     $attemptedBinaryNames = [System.Collections.Generic.List[string]]::new()
     $binaryOriginalState = @{}
     try {
@@ -1854,7 +1870,9 @@ if ($service) {
         Initialize-WeDecentUpdateState -Version $version -ServiceSid $accountSid
     } catch {
         $failed = $_
-        Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        if ($script:InstallServiceStoppedForTransaction) {
+            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+        }
         $binariesRestored = Invoke-RollbackStep 'restore installed binaries' {
             Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
         }
@@ -1877,20 +1895,24 @@ if ($service) {
                 Write-InstallJournal -Journal $script:InstallJournal
             }
         }
-        if ($binariesRestored -and $recoveryScriptRestored -and $metadataRestored -and $journalPersisted) {
-            Invoke-RollbackStep 'restart previous agent service' {
+        if ($binariesRestored -and $recoveryScriptRestored -and $metadataRestored -and $journalPersisted -and $script:InstallServiceStoppedForTransaction) {
+            Invoke-RollbackStep 'restore previous agent service state' {
                 try {
-                    Start-Service -Name $ServiceName -ErrorAction Stop
-                    (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-                    if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
-                        throw 'SCM did not confirm the previous agent service is running.'
+                    if ($script:InstallServiceWasRunning) {
+                        Start-Service -Name $ServiceName -ErrorAction Stop
+                        (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+                        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
+                            throw 'SCM did not confirm the previously running agent service was restored.'
+                        }
+                    } elseif ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+                        throw 'SCM did not preserve the previously stopped agent service state.'
                     }
                 } catch {
                     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
                     throw
                 }
             } | Out-Null
-        } else {
+        } elseif (-not $binariesRestored -or -not $recoveryScriptRestored -or -not $metadataRestored -or -not $journalPersisted) {
             Write-Warning 'Previous binaries, recovery script, metadata, or rollback journal could not be fully restored; the agent service is intentionally left stopped for recovery.'
         }
         throw "Upgrade failed; rollback was attempted: $($failed.Exception.Message)"
