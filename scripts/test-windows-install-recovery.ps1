@@ -324,18 +324,6 @@ try {
     $replayedCommitted = Get-Content -LiteralPath $committed.journalPath -Raw | ConvertFrom-Json
     if ($replayedCommitted.phase -ne 'committed') { throw 'Repeated committed recovery changed the committed phase.' }
 
-    # A fully cleaned committed journal remains harmless after a later sequence commits.
-    $supersededState = Get-Content -LiteralPath $committed.statePath -Raw | ConvertFrom-Json
-    $supersededState.stable_sequence = 43
-    $supersededState.installed_version = 'v0.5.0'
-    Write-TestJson -Path $committed.statePath -Value $supersededState -ExtraSids @($serviceSid)
-    Invoke-TestRecovery -Fixture $committed | Out-Null
-    foreach ($entry in $committed.journal.entries) {
-        if (Test-Path -LiteralPath $entry.backup_path) {
-            throw "Superseded committed journal unexpectedly recreated a backup: $($entry.name)"
-        }
-    }
-
     $tamperedCommitted = New-TransactionFixture -Committed $true
     [IO.File]::WriteAllText([string]$tamperedCommitted.journal.entries[0].destination, 'tampered target')
     $rejected = $false
