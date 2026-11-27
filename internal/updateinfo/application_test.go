@@ -359,3 +359,93 @@ func TestVerifiedManifestCapabilityRejectsMutation(t *testing.T) {
 		t.Fatalf("mutated capability validation error = %v, want ErrUnverifiedManifest", err)
 	}
 }
+
+type testInstallerRecovery func(context.Context, InstallTransaction) (InstallRecoveryResult, error)
+
+func (f testInstallerRecovery) Recover(ctx context.Context, transaction InstallTransaction) (InstallRecoveryResult, error) {
+	return f(ctx, transaction)
+}
+
+func TestInterruptedInstallerIsJournaledAndRecoveredAfterRestart(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 101
+	manifest.InstallerSHA256 = sha256Hex(archive)
+	path := writeStagedArchive(t, archive)
+	statePath := StatePath(privateTempDir(t))
+	store := NewStateStore(statePath)
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+
+	err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
+		func(context.Context, string) error { return nil },
+		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+			return errors.New("simulated interrupted installer")
+		}))
+	if !errors.Is(err, ErrInstallerApply) {
+		t.Fatalf("apply error = %v, want ErrInstallerApply", err)
+	}
+	restarted := NewStateStore(statePath)
+	state, err := restarted.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.StableSequence != 0 || state.PendingInstall == nil {
+		t.Fatalf("interrupted state = %#v; want pending transaction and unchanged sequence", state)
+	}
+	pending := *state.PendingInstall
+	if pending.Sequence != manifest.Sequence || pending.TargetVersion != manifest.Version ||
+		pending.PackageDigest != manifest.InstallerSHA256 || pending.ManifestDigest == "" {
+		t.Fatalf("pending transaction does not bind update: %#v", pending)
+	}
+
+	err = restarted.ApplyVerifiedManifest(context.Background(), verified, path, 0,
+		func(context.Context, string) error { return nil },
+		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error { return nil }))
+	if !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("second apply error = %v, want ErrInstallRecoveryRequired", err)
+	}
+
+	err = restarted.RecoverPendingInstall(context.Background(), testInstallerRecovery(
+		func(_ context.Context, got InstallTransaction) (InstallRecoveryResult, error) {
+			if got.ID != pending.ID {
+				t.Fatalf("recovery transaction ID = %q, want %q", got.ID, pending.ID)
+			}
+			return InstallRecoveryApplied, nil
+		}))
+	if err != nil {
+		t.Fatalf("RecoverPendingInstall() error = %v", err)
+	}
+	state, err = restarted.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PendingInstall != nil || state.StableSequence != manifest.Sequence {
+		t.Fatalf("recovered state = %#v", state)
+	}
+}
+
+func TestUnknownInstallerRecoveryRemainsFailClosed(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 102
+	manifest.InstallerSHA256 = sha256Hex(archive)
+	path := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+	if err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
+		func(context.Context, string) error { return nil },
+		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error { return errors.New("interrupted") })); !errors.Is(err, ErrInstallerApply) {
+		t.Fatalf("apply error = %v, want ErrInstallerApply", err)
+	}
+	if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
+		func(context.Context, InstallTransaction) (InstallRecoveryResult, error) {
+			return InstallRecoveryUnknown, nil
+		})); !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("unknown recovery error = %v, want ErrInstallRecoveryRequired", err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.PendingInstall == nil || state.StableSequence != 0 {
+		t.Fatalf("unknown recovery changed durable state: %#v", state)
+	}
+}
