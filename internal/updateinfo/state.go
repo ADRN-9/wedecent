@@ -33,6 +33,7 @@ type State struct {
 	StableSequence uint64 `json:"stable_sequence"`
 	KeysetEpoch    uint64 `json:"keyset_epoch,omitempty"`
 	KeysetDigest   string `json:"keyset_digest,omitempty"`
+	PendingInstall *InstallTransaction `json:"pending_install,omitempty"`
 }
 
 type StateStore struct {
@@ -276,6 +277,10 @@ func saveState(path string, state State) error {
 }
 
 func (s State) validatePersisted() error {
+	if s.PendingInstall != nil {
+		if err := s.PendingInstall.validate(); err != nil { return err }
+		if s.Version != UpdateStateVersionWithKeyset { return fmt.Errorf("%w: pending install requires keyset state", ErrInvalidState) }
+	}
 	switch s.Version {
 	case UpdateStateVersion:
 		if s.StableSequence == 0 || s.KeysetEpoch != 0 || s.KeysetDigest != "" {
