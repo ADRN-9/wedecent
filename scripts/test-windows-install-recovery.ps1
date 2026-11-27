@@ -999,7 +999,7 @@ try {
         recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
         recovery_script_backup_path = $restoreBackup
         recovery_script_had_original = $true
-        recovery_script_original_sha256 = Get-TestHash $recoveryBackup
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
         recovery_script_sha256 = Get-TestHash $recoveryTarget
         recovery_script_state = 'published'
     }
