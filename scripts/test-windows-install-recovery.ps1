@@ -908,7 +908,7 @@ try {
     $InstallDir = $recoveryFixtureDir
     $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
     $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
-    $recoveryBackup = "$recoveryTarget.$recoveryTransactionId.previous"
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
     $oldRecoveryContent = 'prior trusted recovery script'
     $newRecoveryContent = 'new trusted recovery script'
     [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
@@ -951,7 +951,7 @@ try {
         transaction_id = $freshRecoveryTransactionId
         phase = 'prepared'
         recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "$recoveryTarget.$freshRecoveryTransactionId.previous"
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
         recovery_script_had_original = $false
         recovery_script_original_sha256 = ''
         recovery_script_sha256 = ''
