@@ -22,6 +22,31 @@ import (
 
 var shell32Update = syscall.NewLazyDLL("shell32.dll")
 var shellExecuteExUpdate = shell32Update.NewProc("ShellExecuteExW")
+var advapi32Update = syscall.NewLazyDLL("advapi32.dll")
+var getTokenInformationUpdate = advapi32Update.NewProc("GetTokenInformation")
+
+type updateLUID struct {
+	LowPart  uint32
+	HighPart int32
+}
+
+type updateTokenStatistics struct {
+	TokenID           updateLUID
+	AuthenticationID  updateLUID
+	ExpirationTime    int64
+	TokenType         uint32
+	ImpersonationLevel uint32
+	DynamicCharged    uint32
+	DynamicAvailable  uint32
+	GroupCount        uint32
+	PrivilegeCount    uint32
+	ModifiedID        updateLUID
+}
+
+type updateProcessIdentity struct {
+	UserSID string
+	LogonID updateLUID
+}
 
 type shellExecuteInfo struct {
 	Size          uint32
@@ -254,7 +279,10 @@ func waitForUpdateLaunchers(elevatedPID, callerPID uint32, expectedImage string)
 }
 
 func openExpectedProcess(pid uint32, expectedImage string) (windows.Handle, error) {
-	process, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+	process, err := windows.OpenProcess(
+		windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION|windows.PROCESS_QUERY_INFORMATION,
+		false, pid,
+	)
 	if err != nil {
 		return 0, errors.New("open expected WeDecent process")
 	}
@@ -274,7 +302,63 @@ func openExpectedProcess(pid uint32, expectedImage string) (windows.Handle, erro
 		_ = windows.CloseHandle(process)
 		return 0, errors.New("process image does not match installed WeDecent executable")
 	}
+	if err := verifyProcessLogonIdentity(process); err != nil {
+		_ = windows.CloseHandle(process)
+		return 0, err
+	}
 	return process, nil
+}
+
+func currentUpdateProcessIdentity() (updateProcessIdentity, error) {
+	return updateIdentityFromToken(windows.GetCurrentProcessToken())
+}
+
+func updateIdentityFromToken(token windows.Token) (updateProcessIdentity, error) {
+	user, err := token.GetTokenUser()
+	if err != nil || user == nil || user.User.Sid == nil {
+		return updateProcessIdentity{}, errors.New("read Windows process user SID")
+	}
+	var statistics updateTokenStatistics
+	var returned uint32
+	ok, _, callErr := getTokenInformationUpdate.Call(
+		uintptr(token), 10,
+		uintptr(unsafe.Pointer(&statistics)),
+		uintptr(unsafe.Sizeof(statistics)),
+		uintptr(unsafe.Pointer(&returned)),
+	)
+	if ok == 0 || returned < uint32(unsafe.Sizeof(statistics)) {
+		if callErr != syscall.Errno(0) {
+			return updateProcessIdentity{}, fmt.Errorf("read Windows logon-session identity: %w", callErr)
+		}
+		return updateProcessIdentity{}, errors.New("read Windows logon-session identity")
+	}
+	return updateProcessIdentity{UserSID: user.User.Sid.String(), LogonID: statistics.AuthenticationID}, nil
+}
+
+func sameUpdateProcessIdentity(left, right updateProcessIdentity) bool {
+	return left.UserSID != "" &&
+		strings.EqualFold(left.UserSID, right.UserSID) &&
+		left.LogonID == right.LogonID
+}
+
+func verifyProcessLogonIdentity(process windows.Handle) error {
+	var token windows.Token
+	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &token); err != nil {
+		return errors.New("cannot inspect WeDecent process security token")
+	}
+	defer token.Close()
+	actual, err := updateIdentityFromToken(token)
+	if err != nil {
+		return err
+	}
+	expected, err := currentUpdateProcessIdentity()
+	if err != nil {
+		return err
+	}
+	if !sameUpdateProcessIdentity(actual, expected) {
+		return errors.New("WeDecent process belongs to a different Windows user or logon session")
+	}
+	return nil
 }
 
 func validateProcessImage(pid uint32, expectedImage string) error {
