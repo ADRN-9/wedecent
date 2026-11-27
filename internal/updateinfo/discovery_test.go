@@ -552,9 +552,11 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 
 	statePath := StatePath(filepath.Join(t.TempDir(), "client"))
 	newClient := func() DiscoveryClient {
+		store := NewStateStore(statePath)
+		store.readInstalledVersion = func() (string, error) { return "v0.3.9", nil }
 		return DiscoveryClient{
 			RootKeyID: fixture.keyset.RootKeyID, RootPublicKey: fixture.rootPublic,
-			State: NewStateStore(statePath), Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			State: store, Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.URL.String() == fixture.manifest.InstallerURL {
 					return response(http.StatusOK, archive), nil
 				}
