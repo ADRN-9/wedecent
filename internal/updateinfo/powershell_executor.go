@@ -106,6 +106,9 @@ func (e PowerShellInstallerExecutor) FinalizeCommitted(ctx context.Context, stat
 	if !filepath.IsAbs(e.InstallDir) || !filepath.IsAbs(e.StateDir) || e.ServiceName == "" {
 		return fmt.Errorf("%w: absolute install and state directories plus service name are required", ErrInstallCleanupPending)
 	}
+	if state.StableSequence == 0 {
+		return nil
+	}
 	if err := e.requireElevatedContext(); err != nil {
 		return fmt.Errorf("%w: %v", ErrInstallCleanupPending, err)
 	}
