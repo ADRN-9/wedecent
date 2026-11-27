@@ -2,6 +2,8 @@ package updateinfo
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -81,13 +83,19 @@ func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction In
 }
 
 type windowsInstallJournal struct {
-	TransactionID   string `json:"transaction_id"`
-	PackageSHA256   string `json:"package_sha256"`
-	ManifestSHA256  string `json:"manifest_sha256"`
-	PreviousVersion string `json:"previous_version"`
-	Sequence        uint64 `json:"sequence"`
-	Version         string `json:"version"`
-	Phase           string `json:"phase"`
+	TransactionID                  string `json:"transaction_id"`
+	PackageSHA256                  string `json:"package_sha256"`
+	ManifestSHA256                 string `json:"manifest_sha256"`
+	PreviousVersion                string `json:"previous_version"`
+	Sequence                       uint64 `json:"sequence"`
+	Version                        string `json:"version"`
+	Phase                          string `json:"phase"`
+	RecoveryScriptPath             string `json:"recovery_script_path"`
+	RecoveryScriptHadOriginal      bool   `json:"recovery_script_had_original"`
+	RecoveryScriptOriginalSHA256   string `json:"recovery_script_original_sha256"`
+	RecoveryScriptBackupPath       string `json:"recovery_script_backup_path"`
+	RecoveryScriptSHA256           string `json:"recovery_script_sha256"`
+	RecoveryScriptState            string `json:"recovery_script_state"`
 }
 
 func (e PowerShellInstallerExecutor) FinalizeCommitted(ctx context.Context, state State) error {
@@ -137,6 +145,11 @@ func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction In
 		return InstallRecoveryUnknown, err
 	}
 	script := filepath.Join(e.InstallDir, "Recover-WeDecentInstall.ps1")
+	if e.run == nil {
+		if err := verifyRecoveryScriptAdmission(e.InstallDir, script, transaction); err != nil {
+			return InstallRecoveryUnknown, fmt.Errorf("%w: installed recovery script failed transaction authentication: %v", ErrInstallRecoveryRequired, err)
+		}
+	}
 	args := []string{
 		"-TransactionId", transaction.ID,
 		"-InstallDir", filepath.Clean(e.InstallDir),
@@ -182,6 +195,100 @@ func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction In
 	default:
 		return InstallRecoveryUnknown, fmt.Errorf("%w: Windows recovery outcome remains ambiguous", ErrInstallRecoveryRequired)
 	}
+}
+
+
+func verifyRecoveryScriptAdmission(installDir, script string, transaction InstallTransaction) error {
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		return fmt.Errorf("ProgramData is unavailable")
+	}
+	journalPath := filepath.Join(programData, "WeDecent", "install-transactions", transaction.ID+".json")
+	journalInfo, err := os.Lstat(journalPath)
+	if err != nil || !journalInfo.Mode().IsRegular() || journalInfo.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("protected transaction journal is unavailable")
+	}
+	data, err := os.ReadFile(journalPath)
+	if err != nil {
+		return fmt.Errorf("read protected transaction journal")
+	}
+	var journal windowsInstallJournal
+	if err := json.Unmarshal(data, &journal); err != nil ||
+		journal.TransactionID != transaction.ID ||
+		journal.PackageSHA256 != transaction.PackageDigest ||
+		journal.ManifestSHA256 != transaction.ManifestDigest ||
+		journal.PreviousVersion != transaction.PreviousVersion ||
+		journal.Sequence != transaction.Sequence ||
+		journal.Version != transaction.TargetVersion {
+		return fmt.Errorf("transaction journal does not match the recovery capability")
+	}
+	expectedScript, err := filepath.Abs(filepath.Join(installDir, "Recover-WeDecentInstall.ps1"))
+	if err != nil {
+		return fmt.Errorf("resolve installed recovery script")
+	}
+	actualScript, err := filepath.Abs(script)
+	if err != nil || !strings.EqualFold(filepath.Clean(actualScript), filepath.Clean(expectedScript)) ||
+		!strings.EqualFold(filepath.Clean(journal.RecoveryScriptPath), filepath.Clean(expectedScript)) {
+		return fmt.Errorf("recovery script path does not match the transaction")
+	}
+	expectedBackup := expectedScript + "." + transaction.ID + ".previous"
+	if !strings.EqualFold(filepath.Clean(journal.RecoveryScriptBackupPath), filepath.Clean(expectedBackup)) ||
+		!journal.RecoveryScriptHadOriginal ||
+		len(journal.RecoveryScriptOriginalSHA256) != 64 ||
+		len(journal.RecoveryScriptSHA256) != 64 {
+		return fmt.Errorf("recovery script backup binding is malformed")
+	}
+	currentDigest, err := hashInstallerFile(expectedScript)
+	if err != nil {
+		return fmt.Errorf("read installed recovery script identity")
+	}
+	switch journal.RecoveryScriptState {
+	case "original":
+		if currentDigest != journal.RecoveryScriptOriginalSHA256 ||
+			journal.RecoveryScriptSHA256 != journal.RecoveryScriptOriginalSHA256 {
+			return fmt.Errorf("original recovery script digest mismatch")
+		}
+	case "publishing":
+		if currentDigest != journal.RecoveryScriptOriginalSHA256 && currentDigest != journal.RecoveryScriptSHA256 {
+			return fmt.Errorf("interrupted recovery script publication has an unknown digest")
+		}
+	case "published":
+		if currentDigest != journal.RecoveryScriptSHA256 {
+			return fmt.Errorf("published recovery script digest mismatch")
+		}
+	default:
+		return fmt.Errorf("unknown recovery script publication state")
+	}
+	backupInfo, backupErr := os.Lstat(expectedBackup)
+	if backupErr == nil {
+		if !backupInfo.Mode().IsRegular() || backupInfo.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("previous recovery script backup is not a regular file")
+		}
+		backupDigest, err := hashInstallerFile(expectedBackup)
+		if err != nil || backupDigest != journal.RecoveryScriptOriginalSHA256 {
+			return fmt.Errorf("previous recovery script backup digest mismatch")
+		}
+	} else if journal.RecoveryScriptState != "original" {
+		return fmt.Errorf("previous recovery script backup is missing")
+	}
+	return nil
+}
+
+func hashInstallerFile(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("file is not a regular non-symlink")
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 func (e PowerShellInstallerExecutor) requireElevatedContext() error {
