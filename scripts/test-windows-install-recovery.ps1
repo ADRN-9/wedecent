@@ -219,7 +219,8 @@ try {
 
     $serviceName = 'WeDecentRecoveryTestSvc' + [Guid]::NewGuid().ToString('N')
     $serviceAccountName = 'wdrec' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
-    $servicePassword = ConvertTo-SecureString (([Guid]::NewGuid().ToString('N')) + 'Aa1!') -AsPlainText -Force
+    $servicePasswordPlain = ([Guid]::NewGuid().ToString('N')) + 'Aa1!'
+    $servicePassword = ConvertTo-SecureString $servicePasswordPlain -AsPlainText -Force
     $serviceCredential = [pscredential]::new("$env:COMPUTERNAME\$serviceAccountName", $servicePassword)
     $serviceUser = New-LocalUser -Name $serviceAccountName -Password $servicePassword -PasswordNeverExpires -UserMayNotChangePassword -ErrorAction Stop
     $serviceSid = $serviceUser.SID.Value
@@ -304,8 +305,7 @@ try {
     $rejected = $false
     try { Invoke-TestRecovery -Fixture $missingScm | Out-Null } catch { $rejected = $true }
     if (-not $rejected) { throw 'Updater recovery accepted a missing SCM service.' }
-    & sc.exe create $serviceName binPath= $serviceImage start= demand | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not recreate the SCM service fixture.' }
+    New-Service -Name $serviceName -BinaryPathName $serviceImage -Credential $serviceCredential -StartupType Manual -ErrorAction Stop | Out-Null
 
     $mismatchedScm = New-TransactionFixture
     & sc.exe config $serviceName binPath= 'C:\Windows\System32\svchost.exe -k netsvcs' | Out-Null
@@ -313,6 +313,32 @@ try {
     try { Invoke-TestRecovery -Fixture $mismatchedScm | Out-Null } catch { $rejected = $true }
     if (-not $rejected) { throw 'Updater recovery accepted an SCM service with a mismatched image path.' }
     & sc.exe config $serviceName binPath= $serviceImage | Out-Null
+
+    $localSystemSubstitution = New-TransactionFixture
+    & sc.exe config $serviceName obj= LocalSystem | Out-Null
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $localSystemSubstitution | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted LocalSystem in place of the protected service account.' }
+    if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'LocalSystem account mismatch changed the stopped service state.' }
+    & sc.exe config $serviceName obj= "$env:COMPUTERNAME\$serviceAccountName" password= $servicePasswordPlain | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not restore the isolated service account after LocalSystem mismatch test.' }
+
+    $syntheticMetadataMismatch = New-TransactionFixture
+    $mismatchMetadata = Get-Content -LiteralPath $syntheticMetadataMismatch.metadataBackupPath -Raw | ConvertFrom-Json
+    $mismatchMetadata.service_account_sid = 'S-1-5-21-100-200-300-1001'
+    Write-TestJson -Path $syntheticMetadataMismatch.metadataBackupPath -Value $mismatchMetadata
+    $mismatchJournal = Get-Content -LiteralPath $syntheticMetadataMismatch.journalPath -Raw | ConvertFrom-Json
+    $mismatchJournal.metadata_original_sha256 = Get-TestHash $syntheticMetadataMismatch.metadataBackupPath
+    Write-TestJson -Path $syntheticMetadataMismatch.journalPath -Value $mismatchJournal
+    $beforeSyntheticMismatch = @{}
+    foreach ($entry in $syntheticMetadataMismatch.journal.entries) { $beforeSyntheticMismatch[$entry.name] = Get-TestHash $entry.destination }
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $syntheticMetadataMismatch | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted a mismatched synthetic protected metadata SID.' }
+    if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'Metadata SID mismatch changed the stopped service state.' }
+    foreach ($entry in $syntheticMetadataMismatch.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeSyntheticMismatch[$entry.name]) { throw 'Metadata SID mismatch mutated a previous binary.' }
+    }
 
     $restartFailure = New-TransactionFixture -ServiceWasRunning $true
     $rejected = $false
