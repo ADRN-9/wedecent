@@ -85,7 +85,8 @@ function Write-TestJson {
 function New-TransactionFixture {
     param(
         [string]$Id = ([Guid]::NewGuid().ToString('N')),
-        [bool]$Committed = $false
+        [bool]$Committed = $false,
+        [bool]$ServiceWasRunning = $false
     )
     $manifestDigest = 'a' * 64
     $packageDigest = 'b' * 64
@@ -124,7 +125,7 @@ function New-TransactionFixture {
         manifest_sha256 = $manifestDigest
         previous_version = $previousVersion
         sequence = $sequence
-        service_was_running = $false
+        service_was_running = $ServiceWasRunning
         metadata_path = $metadataPath
         metadata_had_original = $true
         metadata_original_sha256 = $metadataOriginalHash
@@ -430,9 +431,20 @@ try {
             state = 'replaced'
         }
     }
-    $finalizeMetadataBackup = Join-Path $finalizeWeDecent ("installer.json.$finalizeTransactionId.metadata.bak")
-    Copy-Item -LiteralPath (Join-Path $root 'WeDecent\installer.json') -Destination $finalizeMetadataBackup
+    $finalizeMetadataPath = Join-Path $finalizeWeDecent 'installer.json'
+    Write-TestJson -Path $finalizeMetadataPath -Value ([ordered]@{
+        schema = 1
+        product = 'WeDecent'
+        version = 'v0.3.9'
+        service_name = $serviceName
+        service_account_sid = $serviceSid
+        install_dir = $finalizeInstallDir
+        state_dir = $finalizeStateDir
+    })
+    $finalizeMetadataBackup = "$finalizeMetadataPath.$finalizeTransactionId.metadata.bak"
+    Copy-Item -LiteralPath $finalizeMetadataPath -Destination $finalizeMetadataBackup
     Set-TestTrustedAcl -Path $finalizeMetadataBackup
+    $finalizeMetadataOriginalHash = Get-TestHash $finalizeMetadataBackup
     $finalizeJournalPath = Join-Path $finalizeJournalRoot ($finalizeTransactionId + '.json')
     $finalizeJournal = [ordered]@{
         schema = 1
@@ -442,25 +454,16 @@ try {
         previous_version = 'v0.3.9'
         sequence = [UInt64]42
         service_was_running = $false
-        metadata_path = $metadataPath
+        metadata_path = $finalizeMetadataPath
         metadata_had_original = $true
-        metadata_original_sha256 = (Get-TestHash $metadataPath)
-        metadata_backup_path = "$metadataPath.$finalizeTransactionId.metadata.bak"
+        metadata_original_sha256 = $finalizeMetadataOriginalHash
+        metadata_backup_path = $finalizeMetadataBackup
         version = 'v0.4.0'
         phase = 'installed-awaiting-sequence-commit'
         entries = $finalizeEntries
         updated_at = [DateTime]::UtcNow.ToString('o')
     }
     Write-TestJson -Path $finalizeJournalPath -Value $finalizeJournal
-    $finalizeMetadataPath = Join-Path $finalizeWeDecent 'installer.json'
-    Write-TestJson -Path $finalizeMetadataPath -Value ([ordered]@{
-        schema = 1
-        product = 'WeDecent'
-        service_name = $serviceName
-        service_account_sid = $serviceSid
-        install_dir = $finalizeInstallDir
-        state_dir = $finalizeStateDir
-    })
     $finalizeStatePath = Join-Path $finalizeStateDir 'update-state.json'
     Write-TestJson -Path $finalizeStatePath -Value ([ordered]@{
         version = 3
@@ -475,6 +478,7 @@ try {
     & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
     $finalizedJournal = Get-Content -LiteralPath $finalizeJournalPath -Raw | ConvertFrom-Json
     if ($finalizedJournal.phase -ne 'committed') { throw 'Post-commit finalizer did not durably mark the journal committed.' }
+    if (Test-Path -LiteralPath $finalizeMetadataBackup) { throw 'Post-commit finalizer did not remove the verified metadata snapshot.' }
     foreach ($entry in $finalizeEntries) {
         if (Test-Path -LiteralPath $entry.backup_path) {
             throw "Post-commit finalizer did not remove a verified backup: $($entry.name)"
@@ -510,9 +514,70 @@ try {
         }
     }
 
+    $metadataCorrupt = New-TransactionFixture
+    $beforeCorrupt = @{}
+    foreach ($entry in $metadataCorrupt.journal.entries) { $beforeCorrupt[$entry.name] = Get-TestHash $entry.destination }
+    [IO.File]::WriteAllText($metadataCorrupt.metadataBackupPath, 'corrupt metadata snapshot')
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $metadataCorrupt | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery accepted a corrupted prior metadata snapshot.' }
+    foreach ($entry in $metadataCorrupt.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeCorrupt[$entry.name]) { throw 'Corrupt metadata snapshot rejection mutated a binary.' }
+    }
+
+    $missingMetadata = New-TransactionFixture
+    Remove-Item -LiteralPath $missingMetadata.metadataBackupPath -Force
+    [IO.File]::WriteAllText($missingMetadata.metadataPath, 'incomplete target metadata')
+    $beforeMissing = @{}
+    foreach ($entry in $missingMetadata.journal.entries) { $beforeMissing[$entry.name] = Get-TestHash $entry.destination }
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $missingMetadata | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery accepted missing prior metadata and corrupted current metadata.' }
+    foreach ($entry in $missingMetadata.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeMissing[$entry.name]) { throw 'Missing metadata rejection mutated a binary.' }
+    }
+
+    $missingScm = New-TransactionFixture
+    & sc.exe delete $serviceName | Out-Null
+    Start-Sleep -Seconds 1
+    $beforeMissingScm = @{}
+    foreach ($entry in $missingScm.journal.entries) { $beforeMissingScm[$entry.name] = Get-TestHash $entry.destination }
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $missingScm | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery accepted a missing SCM service.' }
+    foreach ($entry in $missingScm.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeMissingScm[$entry.name]) { throw 'Missing SCM service rejection mutated a binary.' }
+    }
+    & sc.exe create $serviceName binPath= $serviceImage start= demand | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not recreate the isolated SCM service fixture.' }
+
+    $badScm = New-TransactionFixture
+    & sc.exe config $serviceName binPath= 'C:\Windows\System32\svchost.exe -k netsvcs' | Out-Null
+    $beforeBadScm = @{}
+    foreach ($entry in $badScm.journal.entries) { $beforeBadScm[$entry.name] = Get-TestHash $entry.destination }
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $badScm | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery accepted a service with a mismatched image path.' }
+    foreach ($entry in $badScm.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeBadScm[$entry.name]) { throw 'Mismatched SCM rejection mutated a binary.' }
+    }
+    & sc.exe config $serviceName binPath= $serviceImage | Out-Null
+
+    $restartFailure = New-TransactionFixture -ServiceWasRunning $true
+    $restartRejected = $false
+    try { Invoke-TestRecovery -Fixture $restartFailure | Out-Null } catch { $restartRejected = $true }
+    if (-not $restartRejected) { throw 'Recovery reported success when the previous running service could not restart.' }
+    if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'Failed SCM restart did not leave the service stopped.' }
+    $restartJournal = Get-Content -LiteralPath $restartFailure.journalPath -Raw | ConvertFrom-Json
+    if ($restartJournal.phase -ne 'rolled-back') { throw 'Completed binary/metadata rollback was not journaled before the failed restart.' }
+    foreach ($entry in $restartFailure.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $entry.original_sha256) { throw "Restart failure lost the previous binary: $($entry.name)" }
+    }
+
     Write-Host 'Windows transaction recovery and committed cleanup synthetic adversarial tests passed.'
 } finally {
     $env:ProgramData = $originalProgramData
+    & sc.exe delete $serviceName | Out-Null
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
