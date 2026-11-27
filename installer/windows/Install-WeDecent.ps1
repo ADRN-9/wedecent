@@ -1611,6 +1611,10 @@ function Restore-TransactionRecoveryScript {
         if (-not (Test-WeDecentMetadataTrusted -Path $target)) {
             throw 'Restored previous recovery script failed final ACL verification.'
         }
+        $Journal.recovery_script_sha256 = $expected
+        $Journal.recovery_script_state = 'original'
+        $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
+        Write-InstallJournal -Journal $Journal -Path $journalPath
     } else {
         if (Test-Path -LiteralPath $target) {
             $targetInfo = Get-Item -LiteralPath $target -Force -ErrorAction Stop
