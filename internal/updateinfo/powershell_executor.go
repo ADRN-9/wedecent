@@ -85,6 +85,32 @@ type windowsInstallJournal struct {
 	Phase           string `json:"phase"`
 }
 
+func (e PowerShellInstallerExecutor) FinalizeCommitted(ctx context.Context, state State) error {
+	if ctx == nil || state.PendingInstall != nil || state.InstalledVersion == "" {
+		return fmt.Errorf("%w: committed cleanup state is unavailable or pending", ErrInstallCleanupPending)
+	}
+	if !filepath.IsAbs(e.InstallDir) || !filepath.IsAbs(e.StateDir) || e.ServiceName == "" {
+		return fmt.Errorf("%w: absolute install and state directories plus service name are required", ErrInstallCleanupPending)
+	}
+	powershell, err := strictExecutablePath(e.PowerShellPath)
+	if err != nil {
+		return err
+	}
+	script := filepath.Join(e.InstallDir, "Recover-WeDecentInstall.ps1")
+	args := []string{
+		"-FinalizeCommitted",
+		"-InstallDir", filepath.Clean(e.InstallDir),
+		"-StateDir", filepath.Clean(e.StateDir),
+		"-ServiceName", e.ServiceName,
+		"-ExpectedStableSequence", fmt.Sprintf("%d", state.StableSequence),
+		"-ExpectedInstalledVersion", state.InstalledVersion,
+	}
+	if err := e.runScript(ctx, powershell, script, args...); err != nil {
+		return fmt.Errorf("%w: privileged committed backup cleanup failed", ErrInstallCleanupPending)
+	}
+	return nil
+}
+
 func (e PowerShellInstallerExecutor) Recover(ctx context.Context, transaction InstallTransaction) (InstallRecoveryResult, error) {
 	if ctx == nil {
 		return InstallRecoveryUnknown, fmt.Errorf("%w: recovery context is required", ErrInstallTransaction)
