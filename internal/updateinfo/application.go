@@ -99,32 +99,35 @@ func (s *StateStore) applyVerifiedManifest(
 			pending := current
 			pending.Version = UpdateStateVersionWithInstall
 			pending.PendingInstall = &transaction
-			if err := s.persist(pending); err != nil {
+			if err := s.persistInstallTransition(current, pending); err != nil {
 				return fmt.Errorf("%w: persist pending installer intent", ErrInvalidState)
 			}
 
+			executing := pending
 			transaction.Phase = InstallPhaseExecuting
-			pending.PendingInstall = &transaction
-			if err := s.persist(pending); err != nil {
+			executing.PendingInstall = &transaction
+			if err := s.persistInstallTransition(pending, executing); err != nil {
 				return fmt.Errorf("%w: persist executing installer state", ErrInvalidState)
 			}
 			if err := executor.Execute(context.WithoutCancel(ctx), transaction, pkg); err != nil {
+				recoveryRequired := executing
 				transaction.Phase = InstallPhaseRecoveryRequired
-				pending.PendingInstall = &transaction
-				_ = s.persist(pending)
+				recoveryRequired.PendingInstall = &transaction
+				_ = s.persistInstallTransition(executing, recoveryRequired)
 				return ErrInstallerApply
 			}
 
+			committed := executing
 			transaction.Phase = InstallPhaseCommitted
-			pending.PendingInstall = &transaction
-			if err := s.persist(pending); err != nil {
+			committed.PendingInstall = &transaction
+			if err := s.persistInstallTransition(executing, committed); err != nil {
 				return ErrSequenceCommit
 			}
-			next := pending
+			next := committed
 			next.StableSequence = verified.manifest.Sequence
 			next.InstalledVersion = transaction.TargetVersion
 			next.PendingInstall = nil
-			if err := s.persist(next); err != nil {
+			if err := s.persistInstallTransition(committed, next); err != nil {
 				return ErrSequenceCommit
 			}
 			return nil
@@ -159,9 +162,10 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 	}
 
 	transaction := *current.PendingInstall
+	recoveryState := current
 	transaction.Phase = InstallPhaseRecoveryRequired
-	current.PendingInstall = &transaction
-	if err := s.persist(current); err != nil {
+	recoveryState.PendingInstall = &transaction
+	if err := s.persistInstallTransition(current, recoveryState); err != nil {
 		return ErrInstallRecoveryRequired
 	}
 
@@ -170,10 +174,10 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 		return ErrInstallRecoveryRequired
 	}
 
-	next := current
+	next := recoveryState
 	switch result {
 	case InstallRecoveryApplied:
-		if transaction.Sequence <= current.StableSequence {
+		if transaction.Sequence <= recoveryState.StableSequence {
 			return ErrInstallRecoveryRequired
 		}
 		next.StableSequence = transaction.Sequence
@@ -184,7 +188,7 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 		return ErrInstallRecoveryRequired
 	}
 	next.PendingInstall = nil
-	if err := s.persist(next); err != nil {
+	if err := s.persistInstallTransition(recoveryState, next); err != nil {
 		return ErrInstallRecoveryRequired
 	}
 	return nil
