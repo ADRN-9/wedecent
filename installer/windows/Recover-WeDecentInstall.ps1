@@ -301,10 +301,39 @@ if ([int]$journal.schema -ne 1 -or [string]$journal.transaction_id -cne $Transac
 $metadataPath = Join-Path $env:ProgramData 'WeDecent\installer.json'
 $metadataBackupPath = "$metadataPath.$TransactionId.metadata.bak"
 $expectedMetadataBackup = "$metadataPath.$TransactionId.metadata.bak"
-if (-not [IO.Path]::GetFullPath([string]$journal.metadata_path).Equals([IO.Path]::GetFullPath($metadataPath), [StringComparison]::OrdinalIgnoreCase) -or
-    -not [IO.Path]::GetFullPath([string]$journal.metadata_backup_path).Equals([IO.Path]::GetFullPath($expectedMetadataBackup), [StringComparison]::OrdinalIgnoreCase) -or
-    $journal.metadata_had_original -isnot [bool] -or -not [bool]$journal.metadata_had_original -or
-    [string]$journal.metadata_original_sha256 -notmatch '^[a-f0-9]{64}
+$metadataPathFull = [IO.Path]::GetFullPath($metadataPath)
+$metadataJournalPath = [IO.Path]::GetFullPath([string]$journal.metadata_path)
+$metadataJournalBackup = [IO.Path]::GetFullPath([string]$journal.metadata_backup_path)
+if (-not $metadataJournalPath.Equals($metadataPathFull, [StringComparison]::OrdinalIgnoreCase) -or
+    -not $metadataJournalBackup.Equals([IO.Path]::GetFullPath($expectedMetadataBackup), [StringComparison]::OrdinalIgnoreCase) -or
+    $journal.metadata_had_original -isnot [bool] -or
+    -not [bool]$journal.metadata_had_original -or
+    -not [regex]::IsMatch([string]$journal.metadata_original_sha256, '^[a-f0-9]{64}$')) {
+    throw 'Transaction journal does not contain an authenticated prior installer metadata snapshot.'
+}
+$metadataSource = $null
+if (Test-Path -LiteralPath $metadataBackupPath -PathType Leaf) {
+    Assert-TrustedAcl -Path $metadataBackupPath
+    if ((Get-Sha256FileHash $metadataBackupPath) -ne [string]$journal.metadata_original_sha256) {
+        throw 'Previous installer metadata snapshot failed integrity verification.'
+    }
+    $metadataSource = $metadataBackupPath
+} elseif (Test-Path -LiteralPath $metadataPath -PathType Leaf) {
+    Assert-TrustedAcl -Path $metadataPath
+    if ((Get-Sha256FileHash $metadataPath) -eq [string]$journal.metadata_original_sha256) {
+        $metadataSource = $metadataPath
+    }
+}
+if (-not $metadataSource) {
+    throw 'Previous installer metadata and its verified snapshot are both unavailable.'
+}
+$metadata = Get-Content -LiteralPath $metadataSource -Raw | ConvertFrom-Json
+if ([string]$metadata.install_dir -ine $InstallDir -or
+    [string]$metadata.state_dir -ine $StateDir -or
+    [string]$metadata.service_name -cne $ServiceName -or
+    -not [regex]::IsMatch([string]$metadata.service_account_sid, '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$')) {
+    throw 'Prior installer metadata does not authenticate the requested service and state paths.'
+}
 $installOwner = (Get-Acl -LiteralPath $InstallDir).Owner
 $installOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $installOwner).Translate([Security.Principal.SecurityIdentifier]).Value
 $stateOwner = (Get-Acl -LiteralPath $StateDir).Owner
