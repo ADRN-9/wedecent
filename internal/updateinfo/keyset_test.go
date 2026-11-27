@@ -163,7 +163,7 @@ func TestKeysetRejectsDuplicateAndUnsortedKeys(t *testing.T) {
 func TestManifestV2RequiresActiveKeysetAndRejectsRollback(t *testing.T) {
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
-	manifestPublic, _, err := ed25519.GenerateKey(rand.Reader)
+	manifestPublic, manifestPrivate, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,7 +283,7 @@ func keysetFixtureActive(t *testing.T, now time.Time, rootPrivate ed25519.Privat
 func TestVerifiedManifestCapabilityRejectsWrongSigner(t *testing.T) {
 	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
 	rootPublic, rootPrivate, keyset := keysetFixture(t, now)
-	manifestPublic, manifestPrivate, err := ed25519.GenerateKey(rand.Reader)
+	manifestPublic, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
