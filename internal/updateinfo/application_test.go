@@ -319,7 +319,7 @@ func testVerifiedManifest(t *testing.T, manifest Manifest, store *StateStore) (V
 	if err != nil {
 		t.Fatal(err)
 	}
-	capability, err := VerifyManifestV2Capability(verifiedKeyset, manifestBytes, signature, now, "", 0)
+	capability, err := VerifyManifestV2Capability(verifiedKeyset, manifestBytes, signature, now, "v0.0.0", 0)
 	if err != nil {
 		t.Fatal(err)
 	}
