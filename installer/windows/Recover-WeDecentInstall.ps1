@@ -113,6 +113,44 @@ function Resolve-ServiceAccountSid {
     }
 }
 
+function Restore-TransactionRecoveryScript {
+    param([Parameter(Mandatory = $true)]$Journal)
+    $target = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
+    $backup = "$target.$($Journal.transaction_id).previous"
+    if (-not [IO.Path]::GetFullPath([string]$Journal.recovery_script_path).Equals($target, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [IO.Path]::GetFullPath([string]$Journal.recovery_script_backup_path).Equals($backup, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Recovery script transaction paths are invalid.'
+    }
+    $expected = [string]$Journal.recovery_script_original_sha256
+    if ($expected -notmatch '^[a-f0-9]{64}$') {
+        throw 'Previous recovery script digest is invalid.'
+    }
+    if (Test-Path -LiteralPath $backup -PathType Leaf) {
+        Assert-TrustedAcl -Path $backup
+        if ((Get-Sha256FileHash $backup) -ne $expected) {
+            throw 'Previous recovery script backup is corrupted; retaining it and refusing rollback.'
+        }
+        $restore = "$target.$($Journal.transaction_id).restore"
+        Copy-Item -LiteralPath $backup -Destination $restore -Force
+        if ((Get-Sha256FileHash $restore) -ne $expected) {
+            Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue
+            throw 'Previous recovery script restore copy failed integrity verification.'
+        }
+        Set-TrustedAcl -Path $restore
+        Move-Item -LiteralPath $restore -Destination $target -Force
+    } elseif (-not (Test-Path -LiteralPath $target -PathType Leaf) -or
+        (Get-Sha256FileHash $target) -ne $expected) {
+        throw 'Previous recovery script and its transaction backup are both unavailable.'
+    }
+    if ((Get-Sha256FileHash $target) -ne $expected) {
+        throw 'Restored previous recovery script failed integrity verification.'
+    }
+    $Journal.recovery_script_sha256 = $expected
+    $Journal.recovery_script_state = 'original'
+    $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($Journal.transaction_id + '.json')
+    Write-TransactionJournal -Journal $Journal -Path $journalPath
+}
+
 function Write-TransactionJournal {
     param([Parameter(Mandatory = $true)]$Journal, [Parameter(Mandatory = $true)][string]$Path)
     $directory = Split-Path -Parent $Path
@@ -366,6 +404,35 @@ if (-not [IO.Path]::GetFullPath([string]$journal.metadata_path).Equals([IO.Path]
     -not [regex]::IsMatch([string]$journal.metadata_original_sha256, '^[a-f0-9]{64}$')) {
     throw 'Transaction journal does not contain a verified prior installer metadata snapshot.'
 }
+$recoveryScriptPath = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
+$recoveryScriptBackupPath = "$recoveryScriptPath.$TransactionId.previous"
+if (-not [IO.Path]::GetFullPath([string]$journal.recovery_script_path).Equals($recoveryScriptPath, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [IO.Path]::GetFullPath([string]$journal.recovery_script_backup_path).Equals($recoveryScriptBackupPath, [StringComparison]::OrdinalIgnoreCase) -or
+    $journal.recovery_script_had_original -isnot [bool] -or -not [bool]$journal.recovery_script_had_original -or
+    [string]$journal.recovery_script_original_sha256 -notmatch '^[a-f0-9]{64}$' -or
+    [string]$journal.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$' -or
+    [string]$journal.recovery_script_state -notin @('original', 'publishing', 'published')) {
+    throw 'Transaction journal does not contain a valid recovery-script preservation record.'
+}
+$recoveryScriptDigest = Get-Sha256FileHash $recoveryScriptPath
+if (($journal.recovery_script_state -eq 'original' -and
+        ($recoveryScriptDigest -ne [string]$journal.recovery_script_original_sha256 -or
+         $recoveryScriptDigest -ne [string]$journal.recovery_script_sha256)) -or
+    ($journal.recovery_script_state -eq 'publishing' -and
+        $recoveryScriptDigest -ne [string]$journal.recovery_script_original_sha256 -and
+        $recoveryScriptDigest -ne [string]$journal.recovery_script_sha256) -or
+    ($journal.recovery_script_state -eq 'published' -and
+        $recoveryScriptDigest -ne [string]$journal.recovery_script_sha256)) {
+    throw 'Installed recovery script does not match a transaction-authenticated digest.'
+}
+if (Test-Path -LiteralPath $recoveryScriptBackupPath -PathType Leaf) {
+    Assert-TrustedAcl -Path $recoveryScriptBackupPath
+    if ((Get-Sha256FileHash $recoveryScriptBackupPath) -ne [string]$journal.recovery_script_original_sha256) {
+        throw 'Previous recovery script backup failed integrity verification.'
+    }
+} elseif ($journal.recovery_script_state -ne 'original' -and $journal.phase -ne 'committed') {
+    throw 'Previous recovery script backup is missing from an active publication transaction.'
+}
 $metadataSource = $null
 if (Test-Path -LiteralPath $metadataBackupPath -PathType Leaf) {
     Assert-TrustedAcl -Path $metadataBackupPath
@@ -555,6 +622,7 @@ try {
         }
         Remove-Item -LiteralPath "$destination.$TransactionId.new" -Force -ErrorAction SilentlyContinue
     }
+    Restore-TransactionRecoveryScript -Journal $journal
     $metadataTemp = "$metadataPath.$TransactionId.restore"
     Copy-Item -LiteralPath $metadataBackupPath -Destination $metadataTemp -Force
     if ((Get-Sha256FileHash $metadataTemp) -ne [string]$journal.metadata_original_sha256) {
