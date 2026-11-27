@@ -64,3 +64,7 @@ Before production enablement, add exact-commit tests for:
 - privileged Windows VM service restart, reboot and rollback acceptance.
 
 Production root provisioning, signing, publication and deployment remain separate protected operations.
+
+## C323 validation status
+
+Source-level tests in this change are authored but must be executed by exact-head CI and the platform-specific Desktop workflows. The presence of this document is not a test result or production acceptance evidence.
