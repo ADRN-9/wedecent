@@ -673,8 +673,14 @@ function Rollback-Binary {
         }
         $restorePath = "$Destination.$($script:InstallTransactionId).restore"
         Copy-Item -LiteralPath $backupPath -Destination $restorePath -Force
-        if ((Get-Sha256FileHash $restorePath) -ne $expectedHash) { throw "Restore verification failed for $Destination" }
+        if ((Get-Sha256FileHash $restorePath) -ne $expectedHash) {
+            Remove-Item -LiteralPath $restorePath -Force -ErrorAction SilentlyContinue
+            throw "Restore verification failed for $Destination"
+        }
         Move-Item -LiteralPath $restorePath -Destination $Destination -Force
+        if ((Get-Sha256FileHash $Destination) -ne $expectedHash) {
+            throw "Restored binary verification failed for $Destination"
+        }
     } elseif (-not $HadOriginal) {
         Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
     } else {
@@ -957,6 +963,26 @@ function Rollback-Binaries {
         [Parameter(Mandatory = $true)][hashtable]$OriginalState,
         [Parameter(Mandatory = $true)][hashtable]$Destinations
     )
+    foreach ($name in $AttemptedNames) {
+        $entry = @($script:InstallJournal.entries | Where-Object { $_.name -eq $name })[0]
+        if ($null -eq $entry) { throw "Rollback journal entry is missing for $name" }
+        $destination = [IO.Path]::GetFullPath([string]$Destinations[$name])
+        if ([bool]$OriginalState[$name]) {
+            $backup = [string]$entry.backup_path
+            if (Test-Path -LiteralPath $backup -PathType Leaf) {
+                if ((Get-Sha256FileHash $backup) -ne [string]$entry.original_sha256) {
+                    throw "Rollback preflight found a corrupted backup: $backup"
+                }
+            } elseif (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+                (Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
+                throw "Rollback preflight cannot find a verified original or backup: $destination"
+            }
+        } elseif (Test-Path -LiteralPath $destination -PathType Leaf) {
+            if ((Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
+                throw "Rollback preflight found unexpected contents at $destination"
+            }
+        }
+    }
     for ($i = $AttemptedNames.Count - 1; $i -ge 0; $i--) {
         $name = $AttemptedNames[$i]
         Rollback-Binary -Destination $Destinations[$name] -HadOriginal ([bool]$OriginalState[$name])
