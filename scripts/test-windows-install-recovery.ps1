@@ -1206,6 +1206,9 @@ public static class WeDecentIdentityProcess
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
             if (!LogonUser(user, domain, password, 2, 0, out secondToken))
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
             STARTUPINFO startup = new STARTUPINFO();
             startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
             StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
