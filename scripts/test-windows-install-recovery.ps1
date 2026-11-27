@@ -12,8 +12,10 @@ if ($backupStage -lt 0 -or $replacementStage -lt 0 -or $backupStage -ge $replace
 }
 if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).bak') -or
     -not $installerText.Contains('installed-awaiting-sequence-commit') -or
+    -not $installerText.Contains('param([Parameter(Mandatory = $true)]$Journal, [string]$Path)') -or
+    -not $installerText.Contains('Installer journal path must match its transaction ID inside the protected journal directory.') -or
     -not $installerText.Contains('$stream.Flush($true)')) {
-    throw 'Installer transaction-specific backup, durable journal, or sequence-commit boundary is missing.'
+    throw 'Installer transaction-specific backup, path-bound durable journal, or sequence-commit boundary is missing.'
 }
 $functionNames = @([regex]::Matches($installerText, '(?m)^function\s+([^\s{]+)') | ForEach-Object { $_.Groups[1].Value })
 if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
@@ -871,6 +873,13 @@ try {
     function Get-WeDecentMetadataPath { Join-Path $env:ProgramData 'WeDecent\installer.json' }
     function Get-Sha256FileHash { param([string]$Path) Get-TestHash $Path }
     function Protect-WeDecentMetadataAcl { param([string]$Path) Set-TestTrustedAcl -Path $Path }
+    $writerFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Write-InstallJournal'
+    }, $true)
+    if ($writerFunction.Count -ne 1) { throw 'Could not locate the production installer journal writer.' }
+    Invoke-Expression $writerFunction[0].Extent.Text
     $metadataFunctions = $installerAst.FindAll({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
@@ -925,8 +934,66 @@ try {
     if ($recoveryFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script admission helper.' }
     $script:recoveryTestAclTrusted = $true
     function Test-WeDecentMetadataTrusted { param([string]$Path) return [bool]$script:recoveryTestAclTrusted }
-    function Write-InstallJournal { param($Journal, [string]$Path) $script:recoveryRestoreJournalState = [string]$Journal.recovery_script_state }
     Invoke-Expression $recoveryFunction[0].Extent.Text
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $identityEvidencePath = Join-Path $root 'service-process-identity.txt'
+    [IO.File]::WriteAllText($identityEvidencePath, '')
+    Set-TestTrustedAcl -Path $identityEvidencePath -ExtraSids @($serviceSid)
+    $identityEvidenceLiteral = $identityEvidencePath.Replace("'", "''")
+    $journalPathLiteral = $writerJournalPath.Replace("'", "''")
+    $serviceSidLiteral = $serviceSid.Replace("'", "''")
+    $identityProbe = @(
+        '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+        '$sid = $identity.User.Value'
+        '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+        "if (`$sid -ne '$serviceSidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+        "[IO.File]::WriteAllText('$identityEvidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+        'try {'
+        "    [IO.File]::AppendAllText('$journalPathLiteral', 'unauthorized mutation')"
+        '    exit 0'
+        '} catch [UnauthorizedAccessException] {'
+        '    exit 42'
+        '} catch {'
+        '    exit 43'
+        '}'
+    ) -join [Environment]::NewLine
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $currentLogonSid = @($currentIdentity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like 'S-1-5-5-*' } | Select-Object -First 1)
+    if ($currentLogonSid.Count -ne 1) { throw 'Current Windows token did not expose a logon-session SID for isolation testing.' }
+    $encodedIdentityProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($identityProbe))
+    $powershellExe = Join-Path $PSHOME 'powershell.exe'
+    $identityProcess = Start-Process -FilePath $powershellExe -Credential $serviceCredential -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedIdentityProbe) -Wait -PassThru -WindowStyle Hidden
+    if ($identityProcess.ExitCode -ne 42) {
+        throw "Separate service-identity process did not receive the expected journal ACL denial (exit $($identityProcess.ExitCode))."
+    }
+    $identityEvidence = [IO.File]::ReadAllText($identityEvidencePath).Split('|')
+    if ($identityEvidence.Count -ne 2 -or $identityEvidence[0] -ne $serviceSid -or
+        [string]::Equals($identityEvidence[1], $currentLogonSid[0], [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Separate process did not prove a distinct authenticated Windows user and logon session.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
     $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
     New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
     $savedInstallDir = $InstallDir
@@ -1062,13 +1129,47 @@ try {
         recovery_script_sha256 = Get-TestHash $recoveryTarget
         recovery_script_state = 'published'
     }
+    Set-TestTrustedAcl -Path $restoreBackup
     Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
     if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
         $restoreJournal.recovery_script_state -ne 'original' -or
-        $script:recoveryRestoreJournalState -ne 'original') {
-        throw 'Installer rollback did not restore and durably mark the prior recovery script.'
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
     }
-    Remove-Item -LiteralPath $restoreBackup -Force
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
 
     $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
@@ -1083,10 +1184,11 @@ try {
         recovery_script_state = 'published'
     }
     Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
     if ((Test-Path -LiteralPath $recoveryTarget) -or
         $freshRestoreJournal.recovery_script_state -ne 'absent' -or
         -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
-        $script:recoveryRestoreJournalState -ne 'absent') {
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
         throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
     }
     $InstallDir = $savedInstallDir
