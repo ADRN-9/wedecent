@@ -26,8 +26,12 @@ func TestApplyVerifiedInstallerCommitsSequenceAfterSuccess(t *testing.T) {
 	err := store.ApplyVerifiedManifest(
 		context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(_ context.Context, _ InstallTransaction, pkg VerifiedInstallerPackage) error {
+		InstallerExecutorFunc(func(_ context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
 			called = true
+			if transaction.ID == "" || transaction.Sequence != manifest.Sequence ||
+				transaction.ManifestDigest == "" || transaction.PackageDigest != manifest.InstallerSHA256 {
+				t.Fatalf("executor transaction does not bind verified update: %#v", transaction)
+			}
 			if pkg.Version != manifest.Version {
 				t.Fatalf("executor version = %q, want %q", pkg.Version, manifest.Version)
 			}
