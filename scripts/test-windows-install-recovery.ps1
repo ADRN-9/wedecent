@@ -901,6 +901,7 @@ try {
     if ($recoveryFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script admission helper.' }
     $script:recoveryTestAclTrusted = $true
     function Test-WeDecentMetadataTrusted { param([string]$Path) return [bool]$script:recoveryTestAclTrusted }
+    function Write-InstallJournal { param($Journal, [string]$Path) $script:recoveryRestoreJournalState = [string]$Journal.recovery_script_state }
     Invoke-Expression $recoveryFunction[0].Extent.Text
     $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
     New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
@@ -977,6 +978,57 @@ try {
     $rejected = $false
     try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
     if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($recoveryBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${restoreTransactionId}.previous"
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $recoveryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $script:recoveryRestoreJournalState -ne 'original') {
+        throw 'Installer rollback did not restore and durably mark the prior recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryBackup -Force
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $script:recoveryRestoreJournalState -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
     $InstallDir = $savedInstallDir
 
     Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
