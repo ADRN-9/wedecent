@@ -27,10 +27,10 @@ const (
 )
 
 var (
-	windowsPublisherPattern = regexp.MustCompile("^[A-Fa-f0-9]{40}$")
+	windowsPublisherPattern   = regexp.MustCompile("^[A-Fa-f0-9]{40}$")
 	windowsServiceNamePattern = regexp.MustCompile("^[A-Za-z0-9_.-]{1,128}$")
-	winTrustDLL             = syscall.NewLazyDLL("wintrust.dll")
-	winVerifyTrustProc      = winTrustDLL.NewProc("WinVerifyTrust")
+	winTrustDLL               = syscall.NewLazyDLL("wintrust.dll")
+	winVerifyTrustProc        = winTrustDLL.NewProc("WinVerifyTrust")
 )
 
 type WindowsUpdateRoot struct {
@@ -41,16 +41,16 @@ type WindowsUpdateRoot struct {
 }
 
 type windowsInstallerMetadata struct {
-	Schema               int    `json:"schema"`
-	Product              string `json:"product"`
-	Version              string `json:"version"`
-	ServiceName          string `json:"service_name"`
-	ServiceAccountName   string `json:"service_account_name"`
-	ServiceAccountSID    string `json:"service_account_sid"`
-	ManagedServiceAccount bool  `json:"managed_service_account"`
-	InstallDir           string `json:"install_dir"`
-	StateDir             string `json:"state_dir"`
-	UpdatedAt            string `json:"updated_at"`
+	Schema                int    `json:"schema"`
+	Product               string `json:"product"`
+	Version               string `json:"version"`
+	ServiceName           string `json:"service_name"`
+	ServiceAccountName    string `json:"service_account_name"`
+	ServiceAccountSID     string `json:"service_account_sid"`
+	ManagedServiceAccount bool   `json:"managed_service_account"`
+	InstallDir            string `json:"install_dir"`
+	StateDir              string `json:"state_dir"`
+	UpdatedAt             string `json:"updated_at"`
 }
 
 type winTrustFileInfo struct {
