@@ -442,7 +442,9 @@ func TestUnknownInstallerRecoveryRemainsFailClosed(t *testing.T) {
 	verified, rootPublic, rootPrivate, keyset := testVerifiedManifest(t, manifest, store)
 	if err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
-		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error { return errors.New("interrupted") })); !errors.Is(err, ErrInstallerApply) {
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
+			return errors.New("interrupted")
+		})); !errors.Is(err, ErrInstallerApply) {
 		t.Fatalf("apply error = %v, want ErrInstallerApply", err)
 	}
 	if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
