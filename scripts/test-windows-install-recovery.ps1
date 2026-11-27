@@ -1226,7 +1226,7 @@ public static class WeDecentIdentityProcess
         if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
             throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
         }
-    } catch [ComponentModel.Win32Exception] {
+    } catch [System.ComponentModel.Win32Exception] {
         if ($_.Exception.NativeErrorCode -ne 1314) { throw }
         $identityIsolationAvailable = $false
         Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
