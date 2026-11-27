@@ -17,6 +17,8 @@ import (
 func testVerifiedUpdate(t *testing.T, store *StateStore, manifest Manifest, archive []byte, highest uint64) VerifiedManifest {
 	t.Helper()
 	fixture := newDiscoveryFixture(t)
+	store.readInstalledVersion = func() (string, error) { return "v0.0.0", nil }
+	if _, _, err := store.installedSnapshot(context.Background()); err != nil { t.Fatalf("load protected installed version: %v", err) }
 	keyset, err := store.VerifyAndAdvanceKeyset(context.Background(), fixture.keyset.RootKeyID, fixture.rootPublic, fixture.keysetBody, fixture.keysetSignature, fixture.now)
 	if err != nil {
 		t.Fatalf("persist trusted keyset: %v", err)
