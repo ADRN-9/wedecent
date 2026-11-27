@@ -161,3 +161,9 @@ const (
 type InstallerRecovery interface {
 	Recover(context.Context, InstallTransaction) (InstallRecoveryResult, error)
 }
+
+// InstallerCommitFinalizer removes transaction backups only after protected
+// updater state durably confirms the exact installed sequence and version.
+type InstallerCommitFinalizer interface {
+	FinalizeCommitted(context.Context, State) error
+}
