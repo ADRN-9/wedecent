@@ -1029,6 +1029,98 @@ try {
         throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
     }
     $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessWithTokenW failed for the isolated test identity.");
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+}
+'@
+    }
     function Invoke-ServiceIdentityIsolationProbe {
         param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
         [IO.File]::WriteAllText($EvidencePath, '')
@@ -1052,20 +1144,14 @@ try {
             '}'
         ) -join [Environment]::NewLine
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
-        $startInfo = [Diagnostics.ProcessStartInfo]::new()
-        $startInfo.FileName = $powershellExe
-        $startInfo.Arguments = "-NoProfile -NonInteractive -EncodedCommand $encoded"
-        $startInfo.WorkingDirectory = Join-Path $env:SystemRoot 'System32'
-        $startInfo.UserName = $serviceAccountName
-        $startInfo.Domain = $env:COMPUTERNAME
-        $startInfo.Password = $servicePassword
-        $startInfo.UseShellExecute = $false
-        $startInfo.CreateNoWindow = $true
-        $process = [Diagnostics.Process]::Start($startInfo)
-        if ($null -eq $process) { throw 'Could not start the separate authenticated service-identity process.' }
-        $process.WaitForExit()
-        $processExitCode = $process.ExitCode
-        $process.Dispose()
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
         if ($processExitCode -ne 42) {
             throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
         }
