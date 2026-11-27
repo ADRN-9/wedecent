@@ -3,6 +3,18 @@ Set-StrictMode -Version Latest
 
 $recoveryScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'installer\windows\Recover-WeDecentInstall.ps1'
 $binaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
+$installerScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'installer\windows\Install-WeDecent.ps1'
+$installerText = Get-Content -LiteralPath $installerScript -Raw
+$backupStage = $installerText.IndexOf('All previous binaries are backed up and verified before any replacement.')
+$replacementStage = $installerText.IndexOf('Install-Binary (Join-Path $SourceDirectory $name)')
+if ($backupStage -lt 0 -or $replacementStage -lt 0 -or $backupStage -ge $replacementStage) {
+    throw 'Installer must verify all five transaction backups before replacing the first binary.'
+}
+if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).bak') -or
+    -not $installerText.Contains('installed-awaiting-sequence-commit') -or
+    -not $installerText.Contains('$stream.Flush($true)')) {
+    throw 'Installer transaction-specific backup, durable journal, or sequence-commit boundary is missing.'
+}
 $trustedSids = @('S-1-5-18', 'S-1-5-32-544')
 $serviceSid = 'S-1-5-21-1-2-3-1000'
 $originalProgramData = $env:ProgramData
