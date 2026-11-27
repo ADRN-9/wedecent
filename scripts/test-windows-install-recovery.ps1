@@ -1563,6 +1563,28 @@ public static class WeDecentIdentityProcess
         $persistedFreshRestore.recovery_script_state -ne 'absent') {
         throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
     }
+    # Simulate termination after durable intent but before deleting the published script.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${pendingFreshId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
     # Simulate process termination after the durable removal-intent write and file deletion.
     $interruptedFreshId = [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
