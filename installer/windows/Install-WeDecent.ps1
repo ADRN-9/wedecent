@@ -888,6 +888,7 @@ function Recover-InterruptedInstallerTransactions {
             [string]$journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back')) {
             throw "Installer transaction journal is malformed: $($file.FullName)"
         }
+        Assert-TransactionMetadataSnapshot -Journal $journal -Committed ($journal.phase -eq 'committed')
 
         $statePath = Join-Path $StateDir 'update-state.json'
         $committed = $false
