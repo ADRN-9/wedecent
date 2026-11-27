@@ -21,17 +21,17 @@ var ErrInstallerPackage = errors.New("updateinfo: installer package verification
 
 var (
 	installerBinaries = []string{"wd.exe", "wd-agent.exe", "wd-routerctl.exe", "wd-core.exe", "wd-ui.exe"}
-	installerScripts  = []string{"Install-WeDecent.ps1", "Uninstall-WeDecent.ps1", "Test-WeDecentInstall.ps1", "Recover-WeDecentInstall.ps1", "Recover-WeDecentInstall.ps1"}
+	installerScripts  = []string{"Install-WeDecent.ps1", "Uninstall-WeDecent.ps1", "Test-WeDecentInstall.ps1", "Recover-WeDecentInstall.ps1"}
 	installerFiles    = []string{
 		"wd.exe", "wd-agent.exe", "wd-routerctl.exe", "wd-core.exe", "wd-ui.exe",
 		"VERSION.txt", "SHA256SUMS.txt",
-		"Install-WeDecent.ps1", "Uninstall-WeDecent.ps1", "Test-WeDecentInstall.ps1",
+		"Install-WeDecent.ps1", "Uninstall-WeDecent.ps1", "Test-WeDecentInstall.ps1", "Recover-WeDecentInstall.ps1",
 		"README.md", "PACKAGE_SHA256SUMS.txt",
 	}
 	installerPayloadFiles = []string{
 		"wd.exe", "wd-agent.exe", "wd-routerctl.exe", "wd-core.exe", "wd-ui.exe",
 		"VERSION.txt", "SHA256SUMS.txt",
-		"Install-WeDecent.ps1", "Uninstall-WeDecent.ps1", "Test-WeDecentInstall.ps1",
+		"Install-WeDecent.ps1", "Uninstall-WeDecent.ps1", "Test-WeDecentInstall.ps1", "Recover-WeDecentInstall.ps1",
 		"README.md",
 	}
 )
