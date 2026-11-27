@@ -200,6 +200,64 @@ function Write-TransactionJournal {
     Assert-TrustedAcl -Path $Path
 }
 
+function Get-TransactionRecoveryScriptBackupForCleanup {
+    param([Parameter(Mandatory = $true)]$Journal, [bool]$Current = $false, [bool]$RolledBack = $false)
+    $fields = @('recovery_script_path', 'recovery_script_backup_path', 'recovery_script_had_original', 'recovery_script_original_sha256', 'recovery_script_sha256', 'recovery_script_state')
+    $present = @($fields | Where-Object { $null -ne $Journal.PSObject.Properties[$_] })
+    if ($present.Count -eq 0) { return $null }
+    if ($present.Count -ne $fields.Count) { throw 'Committed cleanup journal contains partial recovery-script authentication fields.' }
+    $target = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
+    $backup = "$target.$($Journal.transaction_id).previous"
+    if (-not [IO.Path]::GetFullPath([string]$Journal.recovery_script_path).Equals($target, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [IO.Path]::GetFullPath([string]$Journal.recovery_script_backup_path).Equals($backup, [StringComparison]::OrdinalIgnoreCase) -or
+        $Journal.recovery_script_had_original -isnot [bool]) {
+        throw 'Committed cleanup recovery-script transaction paths or original-state marker are invalid.'
+    }
+    $hadOriginal = [bool]$Journal.recovery_script_had_original
+    $originalHash = [string]$Journal.recovery_script_original_sha256
+    $publishedHash = [string]$Journal.recovery_script_sha256
+    $state = [string]$Journal.recovery_script_state
+    if ($RolledBack) {
+        $expectedState = 'absent'
+        if ($hadOriginal) { $expectedState = 'original' }
+        if ($state -ne $expectedState -or
+            ($hadOriginal -and ($originalHash -notmatch '^[a-f0-9]{64}$' -or $publishedHash -ne $originalHash)) -or
+            (-not $hadOriginal -and (-not [string]::IsNullOrEmpty($originalHash) -or -not [string]::IsNullOrEmpty($publishedHash)))) {
+            throw 'Rolled-back recovery-script journal state is inconsistent with its original-file record.'
+        }
+    } else {
+        if ($state -ne 'published' -or $publishedHash -notmatch '^[a-f0-9]{64}$' -or
+            ($hadOriginal -and $originalHash -notmatch '^[a-f0-9]{64}$') -or
+            (-not $hadOriginal -and -not [string]::IsNullOrEmpty($originalHash))) {
+            throw 'Committed recovery-script journal does not contain a valid published identity.'
+        }
+        if ($Current) {
+            $targetInfo = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+            if ($targetInfo.PSIsContainer -or ($targetInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Current committed recovery script is not a regular non-reparse file.'
+            }
+            Assert-TrustedAcl -Path $target
+            if ((Get-Sha256FileHash $target) -ne $publishedHash) {
+                throw 'Current committed recovery script does not match its transaction-authenticated digest.'
+            }
+        }
+    }
+    if (Test-Path -LiteralPath $backup) {
+        $backupInfo = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
+        if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not $hadOriginal) {
+            throw 'Transaction recovery-script backup is not an expected regular file.'
+        }
+        Assert-TrustedAcl -Path $backup
+        if ((Get-Sha256FileHash $backup) -ne $originalHash) {
+            throw 'Transaction recovery-script backup failed its original digest check.'
+        }
+        return $backup
+    }
+    if ($hadOriginal -and -not $RolledBack -and [string]$Journal.phase -ne 'committed') {
+        throw 'Recovery-script backup disappeared before durable committed journal publication.'
+    }
+    return $null
+}
 function Assert-NoRunningUserBinaries {
     $destinations = @{}
     foreach ($name in $BinaryNames) {
@@ -305,7 +363,11 @@ if ($PSCmdlet.ParameterSetName -eq 'FinalizeCommitted') {
             throw "Committed cleanup journal is malformed: $($file.FullName)"
         }
         $journalMetadataBackup = [IO.Path]::GetFullPath([string]$journal.metadata_backup_path)
+        $recoveryScriptBackup = Get-TransactionRecoveryScriptBackupForCleanup -Journal $journal -Current ($journalSequence -eq $ExpectedStableSequence) -RolledBack ($journal.phase -eq 'rolled-back')
         if ($journal.phase -eq 'rolled-back') {
+            if ($recoveryScriptBackup) {
+                Remove-Item -LiteralPath $recoveryScriptBackup -Force -ErrorAction Stop
+            }
             if (Test-Path -LiteralPath $journalMetadataBackup -PathType Leaf) {
                 if ((Get-Sha256FileHash $journalMetadataBackup) -ne [string]$journal.metadata_original_sha256) {
                     throw "Rolled-back journal metadata snapshot is corrupted: $journalMetadataBackup"
@@ -368,6 +430,9 @@ if ($PSCmdlet.ParameterSetName -eq 'FinalizeCommitted') {
             if ($journal.phase -ne 'committed') {
                 throw 'Older transaction journal is not durably committed.'
             }
+            if ($recoveryScriptBackup) {
+                Remove-Item -LiteralPath $recoveryScriptBackup -Force -ErrorAction Stop
+            }
             if (Test-Path -LiteralPath $journalMetadataBackup -PathType Leaf) {
                 if ((Get-Sha256FileHash $journalMetadataBackup) -ne [string]$journal.metadata_original_sha256) {
                     throw "Refusing to clean a corrupted older transaction metadata snapshot: $journalMetadataBackup"
@@ -389,6 +454,9 @@ if ($PSCmdlet.ParameterSetName -eq 'FinalizeCommitted') {
             Remove-Item -LiteralPath "$backup.sha256" -Force -ErrorAction SilentlyContinue
             $destination = [string]$entry.destination
             Remove-Item -LiteralPath "$destination.$($journal.transaction_id).new" -Force -ErrorAction SilentlyContinue
+        }
+        if ($recoveryScriptBackup) {
+            Remove-Item -LiteralPath $recoveryScriptBackup -Force -ErrorAction Stop
         }
         if (Test-Path -LiteralPath $journalMetadataBackup -PathType Leaf) {
             if ((Get-Sha256FileHash $journalMetadataBackup) -ne [string]$journal.metadata_original_sha256) {
