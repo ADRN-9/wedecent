@@ -3,11 +3,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"syscall"
 	"unsafe"
 
@@ -37,7 +41,7 @@ type shellExecuteInfo struct {
 }
 
 func runUpdateCommand(args []string) error {
-	if len(args) == 0 || args[0] != "apply" {
+	if len(args) < 1 || args[0] != "apply" {
 		return errors.New("usage: wd-agent update apply")
 	}
 	if len(args) == 1 {
@@ -45,66 +49,140 @@ func runUpdateCommand(args []string) error {
 			return err
 		}
 		if currentAgentProcessElevated() {
-			return updateinfo.ApplyInstalledWindowsStable(context.Background())
+			return launchStagedUpdateWorker()
 		}
 		return launchElevatedStableUpdate()
+	}
+	if len(args) == 3 && args[1] == "--wait-for-ui" {
+		pid, err := strconv.ParseUint(args[2], 10, 32)
+		if err != nil || pid == 0 {
+			return errors.New("invalid desktop process identity")
+		}
+		if err := updateinfo.ValidateInstalledUpdateLauncher(); err != nil {
+			return err
+		}
+		installDir := filepath.Dir(mustCurrentExecutable())
+		if err := waitForProductProcess(uint32(pid), filepath.Join(installDir, "wd-ui.exe"), false); err != nil {
+			return fmt.Errorf("wait for desktop shutdown: %w", err)
+		}
+		if currentAgentProcessElevated() {
+			return launchStagedUpdateWorker()
+		}
+		return launchElevatedStableUpdate()
+	}
+	if len(args) == 4 && args[1] == "--worker" && args[2] == "--parent-pid" {
+		pid, err := strconv.ParseUint(args[3], 10, 32)
+		if err != nil || pid == 0 || !currentAgentProcessElevated() {
+			return errors.New("invalid or unauthorized update worker request")
+		}
+		if err := updateinfo.ValidateInstalledUpdateWorker(); err != nil {
+			return err
+		}
+		installDir := filepath.Dir(filepath.Dir(mustCurrentExecutable()))
+		if err := waitForProductProcess(uint32(pid), filepath.Join(installDir, "wd-agent.exe"), true); err != nil {
+			return fmt.Errorf("wait for elevated launcher shutdown: %w", err)
+		}
+		err := updateinfo.ApplyInstalledWindowsStable(context.Background())
+		writeUpdateApplyResult(err)
+		return err
 	}
 	if len(args) == 2 && args[1] == "--elevated" {
 		if !currentAgentProcessElevated() {
 			return errors.New("elevated updater helper requires administrator consent")
 		}
-		return updateinfo.ApplyInstalledWindowsStable(context.Background())
+		if err := updateinfo.ValidateInstalledUpdateLauncher(); err != nil {
+			return err
+		}
+		return launchStagedUpdateWorker()
 	}
 	return errors.New("update apply accepts no caller-supplied paths or trust material")
 }
 
-func launchElevatedStableUpdate() error {
+func mustCurrentExecutable() string {
+	path, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+func launchStagedUpdateWorker() error {
+	worker, err := updateinfo.PrepareWindowsUpdateWorker(context.Background())
+	if err != nil {
+		return err
+	}
 	executable, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("resolve installed updater executable")
+		return errors.New("resolve elevated updater launcher")
 	}
-	executable, err = filepath.Abs(executable)
+	cmd := exec.Command(worker, "update", "apply", "--worker", "--parent-pid", strconv.Itoa(os.Getpid()))
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		return fmt.Errorf("resolve installed updater path")
+		return errors.New("create update worker readiness pipe")
 	}
-	verb, _ := syscall.UTF16PtrFromString("runas")
-	file, err := syscall.UTF16PtrFromString(executable)
+	cmd.Stderr = io.Discard
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start protected update worker: %w", err)
+	}
+	line, readErr := bufio.NewReader(stdout).ReadString('\n')
+	if readErr != nil || line != "READY\n" {
+		_ = cmd.Process.Kill()
+		return errors.New("protected update worker did not authenticate its launcher")
+	}
+	_ = executable
+	return nil
+}
+
+func waitForProductProcess(pid uint32, expectedImage string, announceReady bool) error {
+	process, err := windows.OpenProcess(windows.SYNCHRONIZE|windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
 	if err != nil {
-		return fmt.Errorf("encode updater executable")
+		return fmt.Errorf("open expected parent process")
 	}
-	parameters, _ := syscall.UTF16PtrFromString("update apply --elevated")
-	directory, err := syscall.UTF16PtrFromString(filepath.Dir(executable))
-	if err != nil {
-		return fmt.Errorf("encode updater working directory")
-	}
-	info := shellExecuteInfo{
-		Size: uint32(unsafe.Sizeof(shellExecuteInfo{})),
-		Mask: 0x00000040, Verb: verb, File: file,
-		Parameters: parameters, Directory: directory, Show: 0,
-	}
-	ok, _, callErr := shellExecuteExUpdate.Call(uintptr(unsafe.Pointer(&info)))
+	defer windows.CloseHandle(process)
+	buffer := make([]uint16, 32768)
+	size := uint32(len(buffer))
+	query := syscall.NewLazyDLL("kernel32.dll").NewProc("QueryFullProcessImageNameW")
+	ok, _, callErr := query.Call(
+		uintptr(process), 0,
+		uintptr(unsafe.Pointer(&buffer[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
 	if ok == 0 {
-		if callErr != syscall.Errno(0) {
-			return fmt.Errorf("Windows elevation request was denied or failed: %w", callErr)
+		return fmt.Errorf("query expected parent executable: %w", callErr)
+	}
+	actualImage := syscall.UTF16ToString(buffer[:size])
+	actualImage, err = filepath.Abs(actualImage)
+	if err != nil || !strings.EqualFold(filepath.Clean(actualImage), filepath.Clean(expectedImage)) {
+		return errors.New("parent process image does not match the installed WeDecent executable")
+	}
+	if announceReady {
+		if _, err := fmt.Fprintln(os.Stdout, "READY"); err != nil {
+			return errors.New("cannot acknowledge authenticated update worker")
 		}
-		return errors.New("Windows elevation request was denied or failed")
 	}
-	if info.Process == 0 {
-		return errors.New("Windows elevation helper did not return a process handle")
-	}
-	defer windows.CloseHandle(info.Process)
-	wait, err := windows.WaitForSingleObject(info.Process, windows.INFINITE)
+	wait, err := windows.WaitForSingleObject(process, windows.INFINITE)
 	if err != nil || wait != windows.WAIT_OBJECT_0 {
-		return errors.New("wait for elevated updater helper failed")
-	}
-	var exitCode uint32
-	if err := windows.GetExitCodeProcess(info.Process, &exitCode); err != nil {
-		return fmt.Errorf("read elevated updater exit status")
-	}
-	if exitCode != 0 {
-		return fmt.Errorf("elevated updater failed with exit code %d", exitCode)
+		return errors.New("waiting for parent process exit failed")
 	}
 	return nil
+}
+
+func writeUpdateApplyResult(err error) {
+	programData := os.Getenv("ProgramData")
+	if programData == "" {
+		return
+	}
+	path := filepath.Join(programData, "WeDecent", "update-apply.log")
+	file, openErr := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if openErr != nil {
+		return
+	}
+	defer file.Close()
+	if err != nil {
+		_, _ = fmt.Fprintf(file, "stable update failed: %v\n", err)
+		return
+	}
+	_, _ = fmt.Fprintln(file, "stable update completed")
 }
 
 func currentAgentProcessElevated() bool {
