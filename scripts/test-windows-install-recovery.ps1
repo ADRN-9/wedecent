@@ -1024,40 +1024,50 @@ try {
     try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
     if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
 
-    $identityEvidencePath = Join-Path $root 'service-process-identity.txt'
-    [IO.File]::WriteAllText($identityEvidencePath, '')
-    Set-TestTrustedAcl -Path $identityEvidencePath -ExtraSids @($serviceSid)
-    $identityEvidenceLiteral = $identityEvidencePath.Replace("'", "''")
-    $journalPathLiteral = $writerJournalPath.Replace("'", "''")
-    $serviceSidLiteral = $serviceSid.Replace("'", "''")
-    $identityProbe = @(
-        '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
-        '$sid = $identity.User.Value'
-        '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
-        "if (`$sid -ne '$serviceSidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
-        "[IO.File]::WriteAllText('$identityEvidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
-        'try {'
-        "    [IO.File]::AppendAllText('$journalPathLiteral', 'unauthorized mutation')"
-        '    exit 0'
-        '} catch [UnauthorizedAccessException] {'
-        '    exit 42'
-        '} catch {'
-        '    exit 43'
-        '}'
-    ) -join [Environment]::NewLine
-    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    $currentLogonSid = @($currentIdentity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like 'S-1-5-5-*' } | Select-Object -First 1)
-    if ($currentLogonSid.Count -ne 1) { throw 'Current Windows token did not expose a logon-session SID for isolation testing.' }
-    $encodedIdentityProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($identityProbe))
-    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $identityProcess = Start-Process -FilePath $powershellExe -Credential $serviceCredential -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encodedIdentityProbe) -Wait -PassThru -WindowStyle Hidden
-    if ($identityProcess.ExitCode -ne 42) {
-        throw "Separate service-identity process did not receive the expected journal ACL denial (exit $($identityProcess.ExitCode))."
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
     }
-    $identityEvidence = [IO.File]::ReadAllText($identityEvidencePath) -split '\|'
-    if ($identityEvidence.Count -ne 2 -or $identityEvidence[0] -ne $serviceSid -or
-        [string]::Equals($identityEvidence[1], $currentLogonSid[0], [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Separate process did not prove a distinct authenticated Windows user and logon session.'
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $process = Start-Process -FilePath $powershellExe -Credential $serviceCredential -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Wait -PassThru -WindowStyle Hidden
+        if ($process.ExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $($process.ExitCode))."
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+    $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+    if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
     }
     $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
     if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
