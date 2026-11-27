@@ -1293,13 +1293,12 @@ public static class WeDecentIdentityProcess
         if ($processExitCode -ne 42) {
             throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
         }
-        # Exercise the actual wd-agent validator in the alternate-user process.
-        $env:WEDECENT_IDENTITY_PROBE = '1'
-        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
-        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
         $validatorEvidencePath = "$EvidencePath.wd-agent"
         [IO.File]::WriteAllText($validatorEvidencePath, '')
         Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
         $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
         $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
         try {
@@ -1526,53 +1525,6 @@ public static class WeDecentIdentityProcess
         throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
     }
 
-    # Simulate interruption after the restored journal is durable but before its backup is deleted.
-    $retryTransactionId = [Guid]::NewGuid().ToString('N')
-    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
-    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
-    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
-    Set-TestTrustedAcl -Path $retryBackup
-    $retryJournal = [ordered]@{
-        transaction_id = $retryTransactionId
-        phase = 'replacing'
-        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = $retryBackup
-        recovery_script_had_original = $true
-        recovery_script_original_sha256 = Get-TestHash $retryBackup
-        recovery_script_sha256 = Get-TestHash $recoveryTarget
-        recovery_script_state = 'original'
-    }
-    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
-    Restore-TransactionRecoveryScript -Journal $retryJournal
-    if ((Test-Path -LiteralPath $retryBackup) -or
-        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
-        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
-    }
-    Restore-TransactionRecoveryScript -Journal $retryJournal
-    if (Test-Path -LiteralPath $retryBackup) {
-        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
-    }
-
-    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
-    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
-    $freshRestoreJournal = [ordered]@{
-        transaction_id = $freshRestoreTransactionId
-        phase = 'prepared'
-        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
-        recovery_script_had_original = $false
-        recovery_script_original_sha256 = ''
-        recovery_script_sha256 = Get-TestHash $recoveryTarget
-        recovery_script_state = 'published'
-    }
-    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
-    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
-    if ((Test-Path -LiteralPath $recoveryTarget) -or
-        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
-        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
-        $persistedFreshRestore.recovery_script_state -ne 'absent') {
-        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
-    }
     # Simulate termination after durable intent but before deleting the published script.
     $pendingFreshId = [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
@@ -1580,7 +1532,7 @@ public static class WeDecentIdentityProcess
         transaction_id = $pendingFreshId
         phase = 'replacing'
         recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "${recoveryTarget}.${pendingFreshId}.previous"
+        recovery_script_backup_path = "\${recoveryTarget}.\${pendingFreshId}.previous"
         recovery_script_had_original = $false
         recovery_script_original_sha256 = ''
         recovery_script_sha256 = Get-TestHash $recoveryTarget
@@ -1595,247 +1547,6 @@ public static class WeDecentIdentityProcess
         throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
     }
 
-    # Simulate process termination after the durable removal-intent write and file deletion.
-    $interruptedFreshId = [Guid]::NewGuid().ToString('N')
-    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
-    $interruptedFreshJournal = [ordered]@{
-        transaction_id = $interruptedFreshId
-        phase = 'replacing'
-        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "${recoveryTarget}.${interruptedFreshId}.previous"
-        recovery_script_had_original = $false
-        recovery_script_original_sha256 = ''
-        recovery_script_sha256 = Get-TestHash $recoveryTarget
-        recovery_script_state = 'removal-pending'
-    }
-    $interruptedJournalPath = Join-Path $restoreJournalDir ($interruptedFreshId + '.json')
-    Write-InstallJournal -Journal $interruptedFreshJournal -Path $interruptedJournalPath
-    Remove-Item -LiteralPath $recoveryTarget -Force
-    Assert-TransactionRecoveryScript -Journal $interruptedFreshJournal
-    Restore-TransactionRecoveryScript -Journal $interruptedFreshJournal
-    $recoveredFreshJournal = Get-Content -LiteralPath $interruptedJournalPath -Raw | ConvertFrom-Json
-    if ((Test-Path -LiteralPath $recoveryTarget) -or
-        $recoveredFreshJournal.recovery_script_state -ne 'absent' -or
-        -not [string]::IsNullOrEmpty([string]$recoveredFreshJournal.recovery_script_sha256)) {
-        throw 'Recovery did not finish a fresh-install removal interrupted after durable removal intent.'
-    }
-    Restore-TransactionRecoveryScript -Journal $interruptedFreshJournal
-    if ((Test-Path -LiteralPath $recoveryTarget) -or
-        (Get-Content -LiteralPath $interruptedJournalPath -Raw | ConvertFrom-Json).recovery_script_state -ne 'absent') {
-        throw 'Repeated fresh-install removal recovery was not idempotent.'
-    }
-
-    $InstallDir = $savedInstallDir
-
-    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
-} finally {
-    $env:ProgramData = $originalProgramData
-    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
-    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
-    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
-    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
-    if ($finalizePath) {
-        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
-    }
-},
-            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
-        )
-        if ($sessionExit -ne 0) {
-            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
-        }
-        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
-        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
-            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
-        }
-        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
-        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
-            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
-        }
-        return $identityParts[1]
-    }
-    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
-    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
-    $identityIsolationAvailable = $true
-    try {
-        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
-        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
-        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
-            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
-        }
-    } catch [System.ComponentModel.Win32Exception] {
-        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
-        $identityIsolationAvailable = $false
-        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
-    }
-    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
-    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
-        throw 'Cross-session journal isolation probe changed the protected journal.'
-    }
-    if ($identityIsolationAvailable) {
-        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
-            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
-            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
-                $identityParts[1] -notmatch '^S-1-5-5-') {
-                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
-            }
-        }
-    }
-    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
-    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
-        throw 'Cross-session journal isolation probe changed the protected journal.'
-    }
-
-    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
-    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
-    $savedInstallDir = $InstallDir
-    $InstallDir = $recoveryFixtureDir
-    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
-    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
-    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
-    $oldRecoveryContent = 'prior trusted recovery script'
-    $newRecoveryContent = 'new trusted recovery script'
-    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
-    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
-    $oldRecoveryHash = Get-TestHash $recoveryTarget
-    $recoveryJournal = [ordered]@{
-        transaction_id = $recoveryTransactionId
-        phase = 'prepared'
-        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
-        recovery_script_had_original = $true
-        recovery_script_original_sha256 = $oldRecoveryHash
-        recovery_script_sha256 = $oldRecoveryHash
-        recovery_script_state = 'original'
-    }
-    Assert-TransactionRecoveryScript -Journal $recoveryJournal
-    $customJournal = [pscustomobject]$recoveryJournal
-    Assert-TransactionRecoveryScript -Journal $customJournal
-    $script:recoveryTestAclTrusted = $false
-    $rejected = $false
-    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
-    $script:recoveryTestAclTrusted = $true
-    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
-    $newRecoveryHash = Get-TestHash $recoveryTarget
-    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
-    $recoveryJournal.recovery_script_state = 'publishing'
-    Assert-TransactionRecoveryScript -Journal $recoveryJournal
-    $recoveryJournal.recovery_script_state = 'published'
-    Assert-TransactionRecoveryScript -Journal $recoveryJournal
-
-    $recoveryJournal.phase = 'committed'
-    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
-    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
-    $rejected = $false
-    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
-
-    $recoveryJournal.phase = 'rolled-back'
-    $recoveryJournal.recovery_script_state = 'original'
-    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
-    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
-    $rejected = $false
-    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
-    $recoveryJournal.phase = 'prepared'
-    $recoveryJournal.recovery_script_state = 'published'
-    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
-    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
-    Assert-TransactionRecoveryScript -Journal $recoveryJournal
-    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
-    $rejected = $false
-    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
-
-    Remove-Item -LiteralPath $recoveryTarget -Force
-    Remove-Item -LiteralPath $recoveryBackup -Force
-    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
-    $freshRecoveryJournal = [ordered]@{
-        transaction_id = $freshRecoveryTransactionId
-        phase = 'prepared'
-        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
-        recovery_script_had_original = $false
-        recovery_script_original_sha256 = ''
-        recovery_script_sha256 = ''
-        recovery_script_state = 'absent'
-    }
-    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
-    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
-    $freshRecoveryJournal.recovery_script_state = 'publishing'
-    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
-    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
-    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
-    $freshRecoveryJournal.recovery_script_state = 'published'
-    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
-    $freshRecoveryJournal.phase = 'rolled-back'
-    $freshRecoveryJournal.recovery_script_state = 'absent'
-    $freshRecoveryJournal.recovery_script_sha256 = ''
-    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
-    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
-    $rejected = $false
-    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
-    Remove-Item -LiteralPath $recoveryTarget -Force
-    $freshRecoveryJournal.phase = 'prepared'
-    $freshRecoveryJournal.recovery_script_state = 'published'
-    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
-    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
-    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
-    $rejected = $false
-    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
-    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
-
-    $legacyJournal = [ordered]@{ phase = 'committed' }
-    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
-    $legacyJournal.phase = 'rolled-back'
-    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
-    $legacyJournal.phase = 'prepared'
-    $rejected = $false
-    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
-    $restoreFunction = $installerAst.FindAll({
-        param($node)
-        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
-            $node.Name -eq 'Restore-TransactionRecoveryScript'
-    }, $true)
-    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
-    Invoke-Expression $restoreFunction[0].Extent.Text
-    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
-    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
-    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
-    $restoreOriginalContent = 'original recovery script bytes'
-    $restorePublishedContent = 'published recovery script bytes'
-    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
-    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
-    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
-    $restoreJournal = [ordered]@{
-        transaction_id = $restoreTransactionId
-        phase = 'prepared'
-        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = $restoreBackup
-        recovery_script_had_original = $true
-        recovery_script_original_sha256 = Get-TestHash $restoreBackup
-        recovery_script_sha256 = Get-TestHash $recoveryTarget
-        recovery_script_state = 'published'
-    }
-    Set-TestTrustedAcl -Path $restoreBackup
-    Restore-TransactionRecoveryScript -Journal $restoreJournal
-    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
-    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
-        $restoreJournal.recovery_script_state -ne 'original' -or
-        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
-        (Test-Path -LiteralPath $restoreBackup)) {
-        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
-    }
-    Restore-TransactionRecoveryScript -Journal $restoreJournal
-    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
-        (Test-Path -LiteralPath $restoreBackup)) {
-        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
-    }
-
     # Simulate interruption after the restored journal is durable but before its backup is deleted.
     $retryTransactionId = [Guid]::NewGuid().ToString('N')
     $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
@@ -1883,14 +1594,14 @@ public static class WeDecentIdentityProcess
         $persistedFreshRestore.recovery_script_state -ne 'absent') {
         throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
     }
-    # Simulate process termination after the durable removal-intent write and file deletion.
+    # Simulate termination after durable removal intent and after the published file was deleted.
     $interruptedFreshId = [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
     $interruptedFreshJournal = [ordered]@{
         transaction_id = $interruptedFreshId
         phase = 'replacing'
         recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
-        recovery_script_backup_path = "${recoveryTarget}.${interruptedFreshId}.previous"
+        recovery_script_backup_path = "\${recoveryTarget}.\${interruptedFreshId}.previous"
         recovery_script_had_original = $false
         recovery_script_original_sha256 = ''
         recovery_script_sha256 = Get-TestHash $recoveryTarget
