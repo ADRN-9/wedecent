@@ -29,6 +29,7 @@ type PowerShellInstallerExecutor struct {
 	WebRelay       string
 	run            installerCommandRunner
 	isElevated     func() bool
+	verifyExecutable func(context.Context, string) (string, error)
 }
 
 func (e PowerShellInstallerExecutor) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
@@ -231,11 +232,20 @@ func (e PowerShellInstallerExecutor) runScript(ctx context.Context, powershell, 
 		"-File", script,
 	}
 	commandArgs = append(commandArgs, args...)
+	before, err := e.verifyExecutableDigest(ctx, powershell)
+	if err != nil {
+		return fmt.Errorf("verify trusted PowerShell executable: %w", err)
+	}
 	cmd := exec.CommandContext(ctx, powershell, commandArgs...)
 	cmd.Stdin = nil
 	cmd.Stdout = io.Discard
 	cmd.Stderr = io.Discard
-	if err := cmd.Run(); err != nil {
+	runErr := cmd.Run()
+	after, verifyErr := e.verifyExecutableDigest(ctx, powershell)
+	if verifyErr != nil || after != before {
+		return fmt.Errorf("PowerShell executable identity changed during installer execution")
+	}
+	if runErr != nil {
 		return fmt.Errorf("PowerShell installer command failed")
 	}
 	return nil
