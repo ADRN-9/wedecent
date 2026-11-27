@@ -52,7 +52,7 @@ $root = Join-Path ([IO.Path]::GetTempPath()) ('wedecent-recovery-' + [Guid]::New
 $installDir = Join-Path $env:ProgramFiles ('WeDecent-Recovery-' + [Guid]::NewGuid().ToString('N'))
 $stateDir = Join-Path $installDir 'data\agent'
 $journalRoot = Join-Path $root 'WeDecent\install-transactions'
-$serviceName = 'WeDecentRecoveryTestSvc'
+$serviceName = 'WeDecentRecoveryTestSvc' + [Guid]::NewGuid().ToString('N')
 
 function Set-TestTrustedAcl {
     param([Parameter(Mandatory = $true)][string]$Path, [string[]]$ExtraSids = @())
