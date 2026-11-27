@@ -325,6 +325,42 @@ func TestPowerShellInstallerExecutorRecoveryMapsDurableJournalOutcome(t *testing
 	}
 }
 
+func TestPowerShellInstallerExecutorRecoveryFailsClosedBeforePowerShellWhenJournalMissing(t *testing.T) {
+	root := privateTempDir(t)
+	t.Setenv("ProgramData", root)
+	powershell := filepath.Join(root, "powershell.exe")
+	if err := os.WriteFile(powershell, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(root, "install")
+	stateDir := filepath.Join(installDir, "data", "agent")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(installDir, "Recover-WeDecentInstall.ps1")
+	if err := os.WriteFile(script, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transaction := executorTestTransaction("v0.4.0")
+	transaction.Phase = InstallPhaseRecoveryRequired
+	calls := 0
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: powershell, InstallDir: installDir, StateDir: stateDir, ServiceName: "WeDecentAgent",
+		isElevated: func() bool { return true },
+		run: func(context.Context, string, string, []string) error {
+			calls++
+			return nil
+		},
+	}
+	got, err := executor.Recover(context.Background(), transaction)
+	if got != InstallRecoveryUnknown || !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("Recover() = %v, %v; want unknown and ErrInstallRecoveryRequired", got, err)
+	}
+	if calls != 0 {
+		t.Fatalf("PowerShell recovery was invoked %d times without an authenticated transaction journal", calls)
+	}
+}
+
 func TestPowerShellInstallerExecutorRecoveryRejectsMismatchedJournal(t *testing.T) {
 	root := privateTempDir(t)
 	t.Setenv("ProgramData", root)
