@@ -518,6 +518,56 @@ func TestUnknownRecoveryRemainsFailClosedAndNotAppliedKeepsSequence(t *testing.T
 	}
 }
 
+func TestPowerShellRecoveryAdapterKeepsPendingInstallWhenJournalIsMissing(t *testing.T) {
+	manifest, archive := buildInstallerPackageFixture(t, nil)
+	manifest.Sequence = 14
+	staged := writeStagedArchive(t, archive)
+	store := NewStateStore(StatePath(privateTempDir(t)))
+	verified := testVerifiedUpdate(t, store, manifest, archive, 0)
+	if err := store.applyVerifiedManifest(context.Background(), verified, staged, 0,
+		func(context.Context, string) error { return nil },
+		InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
+			return errors.New("simulated interruption before PowerShell journal creation")
+		})); !errors.Is(err, ErrInstallerApply) {
+		t.Fatalf("apply error = %v; want interrupted install", err)
+	}
+
+	programData := privateTempDir(t)
+	t.Setenv("ProgramData", programData)
+	powershell := filepath.Join(programData, "powershell.exe")
+	if err := os.WriteFile(powershell, []byte("test executable"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(programData, "install")
+	stateDir := filepath.Join(installDir, "data", "agent")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "Recover-WeDecentInstall.ps1"), []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: powershell, InstallDir: installDir, StateDir: stateDir, ServiceName: "WeDecentAgent",
+		isElevated: func() bool { return true },
+		run: func(context.Context, string, string, []string) error {
+			calls++
+			return nil
+		},
+	}
+	err := store.RecoverPendingInstall(context.Background(), executor)
+	state, loadErr := store.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if !errors.Is(err, ErrInstallRecoveryRequired) || state.PendingInstall == nil || state.StableSequence != 0 {
+		t.Fatalf("missing-journal recovery err=%v state=%#v; want pending transaction and unchanged sequence", err, state)
+	}
+	if calls != 0 {
+		t.Fatalf("PowerShell recovery was invoked %d times without an authenticated transaction journal", calls)
+	}
+}
+
 func TestApplyVerifiedManifestRejectsStaleKeysetAfterRotation(t *testing.T) {
 	manifest, archive := buildInstallerPackageFixture(t, nil)
 	manifest.Sequence = 13
