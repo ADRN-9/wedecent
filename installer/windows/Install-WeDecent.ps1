@@ -1087,6 +1087,24 @@ function Install-Binaries {
     if (Test-Path -LiteralPath $journalPath) {
         throw 'Installer transaction ID has already been used; refusing replay.'
     }
+    $metadataPath = [IO.Path]::GetFullPath((Get-WeDecentMetadataPath))
+    $metadataHadOriginal = Test-Path -LiteralPath $metadataPath -PathType Leaf
+    $metadataBackupPath = "$metadataPath.$($script:InstallTransactionId).metadata.bak"
+    $metadataOriginalHash = ''
+    if ($metadataHadOriginal) {
+        if ((Get-Item -LiteralPath $metadataPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'Installer metadata cannot be snapshotted from a reparse point.'
+        }
+        if (Test-Path -LiteralPath $metadataBackupPath) {
+            throw 'Transaction-specific installer metadata snapshot path already exists.'
+        }
+        $metadataOriginalHash = Get-Sha256FileHash $metadataPath
+        Copy-Item -LiteralPath $metadataPath -Destination $metadataBackupPath
+        if ((Get-Sha256FileHash $metadataBackupPath) -ne $metadataOriginalHash) {
+            throw 'Installer metadata snapshot failed integrity verification.'
+        }
+        Protect-WeDecentMetadataAcl $metadataBackupPath
+    }
     $script:InstallJournal = [ordered]@{
         schema = 1
         transaction_id = $script:InstallTransactionId
@@ -1095,6 +1113,10 @@ function Install-Binaries {
         previous_version = $PreviousVersion
         sequence = [UInt64]$script:InstallTransactionSequence
         service_was_running = [bool]$script:InstallServiceWasRunning
+        metadata_path = $metadataPath
+        metadata_had_original = [bool]$metadataHadOriginal
+        metadata_original_sha256 = $metadataOriginalHash
+        metadata_backup_path = $metadataBackupPath
         version = $script:InstallTargetVersion
         phase = 'prepared'
         entries = @($entries.ToArray())
