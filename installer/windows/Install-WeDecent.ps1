@@ -1428,10 +1428,15 @@ if ($service) {
         }
         if ($binariesRestored -and $metadataRestored -and $journalPersisted) {
             Invoke-RollbackStep 'restart previous agent service' {
-                Start-Service -Name $ServiceName -ErrorAction Stop
-                (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-                if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
-                    throw 'SCM did not confirm the previous agent service is running.'
+                try {
+                    Start-Service -Name $ServiceName -ErrorAction Stop
+                    (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+                    if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
+                        throw 'SCM did not confirm the previous agent service is running.'
+                    }
+                } catch {
+                    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+                    throw
                 }
             } | Out-Null
         } else {
