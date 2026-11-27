@@ -220,9 +220,13 @@ func TestDiscoverStableUsesProtectedInstalledVersionNotCallerArgument(t *testing
 	fixture := newDiscoveryFixture(t)
 	client, store := newDiscoveryClient(t, fixture, fixture.transport(nil))
 	state, err := store.Load()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	state.InstalledVersion = "v2.0.0"
-	if err := saveState(store.Path, state); err != nil { t.Fatal(err) }
+	if err := saveState(store.Path, state); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := client.DiscoverStable(context.Background(), "v0.1.0", 0); !errors.Is(err, ErrRollback) {
 		t.Fatalf("caller-supplied downgrade baseline was trusted: %v", err)
 	}
@@ -355,10 +359,14 @@ func TestDiscoverStableUsesPersistedSequenceAfterRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	initial, err := first.Load()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	initial.InstalledVersion = "v1.2.2"
 	initial.StableSequence = fixture.manifest.Sequence
-	if err := saveState(statePath, initial); err != nil { t.Fatal(err) }
+	if err := saveState(statePath, initial); err != nil {
+		t.Fatal(err)
+	}
 
 	restarted := NewStateStore(statePath)
 	client := DiscoveryClient{
@@ -534,9 +542,13 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 
 			client, store := newDiscoveryClient(t, fixture, nil)
 			protected, loadErr := store.Load()
-			if loadErr != nil { t.Fatal(loadErr) }
+			if loadErr != nil {
+		t.Fatal(loadErr)
+	}
 			protected.InstalledVersion = "v0.3.9"
-			if err := saveState(store.Path, protected); err != nil { t.Fatal(err) }
+			if err := saveState(store.Path, protected); err != nil {
+		t.Fatal(err)
+	}
 			test.mutate(t, &fixture, &client)
 			client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.URL.String() == fixture.manifest.InstallerURL {
@@ -601,7 +613,9 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 	initialState, err := initialStore.Load()
 	if err != nil { t.Fatal(err) }
 	initialState.InstalledVersion = "v0.3.9"
-	if err := saveState(statePath, initialState); err != nil { t.Fatal(err) }
+	if err := saveState(statePath, initialState); err != nil {
+		t.Fatal(err)
+	}
 	newClient := func() DiscoveryClient {
 		return DiscoveryClient{
 			RootKeyID: fixture.keyset.RootKeyID, RootPublicKey: fixture.rootPublic,
