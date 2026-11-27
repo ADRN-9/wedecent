@@ -21,6 +21,10 @@ func testVerifiedUpdate(t *testing.T, store *StateStore, manifest Manifest, arch
 	if err != nil {
 		t.Fatalf("persist trusted keyset: %v", err)
 	}
+	protected, err := store.Load()
+	if err != nil { t.Fatal(err) }
+	protected.InstalledVersion = "v0.0.0"
+	if err := saveState(store.Path, protected); err != nil { t.Fatal(err) }
 	manifest.Schema = ManifestSchemaV2
 	manifest.SigningKeyID = fixture.keyset.Keys[0].ID
 	manifest.KeysetEpoch = fixture.keyset.Epoch
