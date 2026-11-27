@@ -216,3 +216,21 @@ func containsArgPair(args []string, name, value string) bool {
 	}
 	return false
 }
+
+
+func TestPowerShellInstallerExecutorRejectsModifiedVerifiedPackage(t *testing.T) {
+	root := privateTempDir(t)
+	powershell := filepath.Join(root, "powershell.exe")
+	if err := os.WriteFile(powershell, []byte("fixture"), 0o600); err != nil { t.Fatal(err) }
+	pkgDir := filepath.Join(root, "pkg")
+	if err := os.Mkdir(pkgDir, 0o700); err != nil { t.Fatal(err) }
+	tx := testExecutorTransaction()
+	pkg := testVerifiedPackage(pkgDir, tx)
+	if err := os.WriteFile(filepath.Join(pkgDir, "wd-agent.exe"), []byte("attacker replacement"), 0o600); err != nil { t.Fatal(err) }
+	calls := 0
+	executor := PowerShellInstallerExecutor{PowerShellPath: powershell, run: func(context.Context, string, string, []string) error { calls++; return nil }}
+	if err := executor.Execute(context.Background(), tx, pkg); !errors.Is(err, ErrInstallerPackage) {
+		t.Fatalf("modified package error = %v, want ErrInstallerPackage", err)
+	}
+	if calls != 0 { t.Fatalf("executor commands = %d, want 0", calls) }
+}
