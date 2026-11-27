@@ -532,7 +532,9 @@ func verifyAuthenticodePublisher(ctx context.Context, powershell, target, expect
 		return fmt.Errorf("Authenticode verification context is incomplete")
 	}
 	script := `$ErrorActionPreference = 'Stop'
-Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+$securityModule = Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security\Microsoft.PowerShell.Security.psd1'
+if (-not (Test-Path -LiteralPath $securityModule -PathType Leaf)) { throw 'Windows PowerShell security module manifest is missing.' }
+Import-Module -Name $securityModule -ErrorAction Stop
 $s = Get-AuthenticodeSignature -LiteralPath $env:WEDECENT_AUTHENTICODE_FILE
 if ($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate) { exit 31 }
 if ($env:WEDECENT_AUTHENTICODE_THUMBPRINT) {
