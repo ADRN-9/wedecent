@@ -15,6 +15,10 @@ if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).b
     -not $installerText.Contains('$stream.Flush($true)')) {
     throw 'Installer transaction-specific backup, durable journal, or sequence-commit boundary is missing.'
 }
+$functionNames = @([regex]::Matches($installerText, '(?m)^function\s+([^\s{]+)') | ForEach-Object { $_.Groups[1].Value })
+if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
+    throw 'Installer contains duplicate top-level function definitions.'
+}
 $cleanupHelper = $installerText.IndexOf('function Remove-CommittedTransactionBackups')
 $cleanupCommit = $installerText.IndexOf('Remove-CommittedTransactionBackups -Journal $journal')
 $cleanupGate = $installerText.IndexOf('Cannot clean transaction backups before the exact transaction is durably committed.')
