@@ -937,10 +937,11 @@ function Recover-InterruptedInstallerTransactions {
         $serviceBefore = Get-Service -Name $ServiceName -ErrorAction Stop
         $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
         $expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
+        $expectedServicePath = '"' + $expectedAgent + '"'
+        $stateArgumentPattern = '(?:^|\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\s|$)'
         if ($null -eq $serviceConfig -or
-            ([string]$serviceConfig.PathName).IndexOf($expectedAgent, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-            ([string]$serviceConfig.PathName).IndexOf('--state=', [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-            ([string]$serviceConfig.PathName).IndexOf([IO.Path]::GetFullPath($StateDir), [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            -not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
+            -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
             throw 'SCM service identity does not match the authenticated installer paths.'
         }
         $restartService = [bool]$journal.service_was_running
