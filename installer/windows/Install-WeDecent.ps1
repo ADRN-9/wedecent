@@ -859,6 +859,14 @@ function Remove-CommittedTransactionBackups {
         $destination = [string]$entry.destination
         Remove-Item -LiteralPath "$destination.$($Journal.transaction_id).new" -Force -ErrorAction SilentlyContinue
     }
+    $metadataBackup = [string]$Journal.metadata_backup_path
+    if (Test-Path -LiteralPath $metadataBackup -PathType Leaf) {
+        if ([bool]$Journal.metadata_had_original -and
+            (Get-Sha256FileHash $metadataBackup) -ne [string]$Journal.metadata_original_sha256) {
+            throw 'Refusing to clean a corrupted installer metadata snapshot.'
+        }
+        Remove-Item -LiteralPath $metadataBackup -Force -ErrorAction Stop
+    }
 }
 
 function Recover-InterruptedInstallerTransactions {
