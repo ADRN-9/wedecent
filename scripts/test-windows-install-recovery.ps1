@@ -31,6 +31,7 @@ $recoveryText = Get-Content -LiteralPath $recoveryScript -Raw
 if (-not $recoveryText.Contains('FinalizeCommitted') -or
     -not $recoveryText.Contains('Protected updater state changed before committed backup cleanup.') -or
     -not $recoveryText.Contains('Backup disappeared before durable committed journal publication') -or
+    -not $recoveryText.Contains('Refusing to clean a corrupted or unauthenticated committed metadata snapshot.') -or
     -not $recoveryText.Contains('metadata_backup_path') -or
     -not $recoveryText.Contains('SCM service identity does not match authenticated prior installer metadata.') -or
     -not $recoveryText.Contains('SCM did not confirm the service stopped before recovery.') -or
@@ -534,6 +535,13 @@ try {
         install_dir = $finalizeInstallDir
         state_dir = $finalizeStateDir
     })
+    $finalizeMetadataBackup = "$finalizeMetadataPath.$finalizeTransactionId.metadata.bak"
+    Copy-Item -LiteralPath $finalizeMetadataPath -Destination $finalizeMetadataBackup
+    Set-TestTrustedAcl -Path $finalizeMetadataBackup
+    $finalizeJournal.metadata_original_sha256 = Get-TestHash $finalizeMetadataBackup
+    $finalizeJournal.metadata_path = $finalizeMetadataPath
+    $finalizeJournal.metadata_backup_path = $finalizeMetadataBackup
+    Write-TestJson -Path $finalizeJournalPath -Value $finalizeJournal
     $finalizeStatePath = Join-Path $finalizeStateDir 'update-state.json'
     Write-TestJson -Path $finalizeStatePath -Value ([ordered]@{
         version = 3
@@ -548,6 +556,7 @@ try {
     & $recoveryScript -FinalizeCommitted -InstallDir $finalizeInstallDir -StateDir $finalizeStateDir -ServiceName $serviceName -ExpectedStableSequence 42 -ExpectedInstalledVersion 'v0.4.0' | Out-Null
     $finalizedJournal = Get-Content -LiteralPath $finalizeJournalPath -Raw | ConvertFrom-Json
     if ($finalizedJournal.phase -ne 'committed') { throw 'Post-commit finalizer did not durably mark the journal committed.' }
+    if (Test-Path -LiteralPath $finalizeMetadataBackup) { throw 'Post-commit finalizer did not remove the verified metadata snapshot.' }
     foreach ($entry in $finalizeEntries) {
         if (Test-Path -LiteralPath $entry.backup_path) {
             throw "Post-commit finalizer did not remove a verified backup: $($entry.name)"
