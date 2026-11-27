@@ -482,7 +482,11 @@ func verifyWindowsPowerShellExecutable(ctx context.Context, path string) (string
 		return "", fmt.Errorf("hash Windows PowerShell executable")
 	}
 	if err := winVerifyTrustFile(expected); err != nil {
-		return "", fmt.Errorf("Windows PowerShell Authenticode trust verification failed: %w", err)
+		var status winTrustStatusError
+		if ctx == nil || !errors.As(err, &status) || uint32(status) != 0x800B0100 {
+			return "", fmt.Errorf("Windows PowerShell Authenticode trust verification failed: %w", err)
+		}
+		// System binaries may be catalog-signed; PowerShell's signature API checks catalog and embedded signatures.
 	}
 	if ctx != nil {
 		if err := verifyAuthenticodePublisher(ctx, expected, expected, "Microsoft Windows", ""); err != nil {
@@ -494,6 +498,12 @@ func verifyWindowsPowerShellExecutable(ctx context.Context, path string) (string
 		return "", fmt.Errorf("Windows PowerShell changed during trust verification")
 	}
 	return before, nil
+}
+
+type winTrustStatusError uint32
+
+func (e winTrustStatusError) Error() string {
+	return fmt.Sprintf("WinVerifyTrust returned 0x%08x", uint32(e))
 }
 
 func winVerifyTrustFile(path string) error {
@@ -512,7 +522,7 @@ func winVerifyTrustFile(path string) error {
 	result, _, _ := winVerifyTrustProc.Call(^uintptr(0),
 		uintptr(unsafe.Pointer(&genericVerifyV2)), uintptr(unsafe.Pointer(&data)))
 	if result != 0 {
-		return fmt.Errorf("WinVerifyTrust returned 0x%08x", uint32(result))
+		return winTrustStatusError(uint32(result))
 	}
 	return nil
 }
