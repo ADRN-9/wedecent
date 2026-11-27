@@ -164,6 +164,179 @@ if ([int]$journal.schema -ne 1 -or [string]$journal.transaction_id -cne $Transac
     throw 'Transaction journal does not match the authenticated Go transaction.'
 }
 
+$metadataPath = Join-Path $env:ProgramData 'WeDecent\installer.json'
+if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
+    throw 'Authenticated installer metadata is unavailable; recovery outcome is unknown.'
+}
+Assert-TrustedAcl -Path $metadataPath
+$metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+if ([string]$metadata.install_dir -ine $InstallDir -or
+    [string]$metadata.state_dir -ine $StateDir -or
+    [string]$metadata.service_name -cne $ServiceName -or
+    [string]$metadata.service_account_sid -notmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+
+    $name = [string]$entry.name
+    if ($BinaryNames -notcontains $name -or $seen.ContainsKey($name)) {
+        throw "Transaction journal has an unknown or duplicate binary: $name"
+    }
+    $seen[$name] = $true
+    $destination = [IO.Path]::GetFullPath([string]$entry.destination)
+    $expectedDestination = [IO.Path]::GetFullPath((Join-Path $InstallDir $name))
+    $expectedBackup = "$expectedDestination.$TransactionId.bak"
+    if (-not $destination.Equals($expectedDestination, [StringComparison]::OrdinalIgnoreCase) -or
+        -not ([IO.Path]::GetFullPath([string]$entry.backup_path)).Equals($expectedBackup, [StringComparison]::OrdinalIgnoreCase) -or
+        $entry.had_original -isnot [bool] -or
+        [string]$entry.state -notin @('planned', 'backup-verified', 'replacing', 'replaced') -or
+        [string]$entry.original_sha256 -notmatch '^(?:[a-f0-9]{64})?$' -or
+        [string]$entry.replacement_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw "Transaction journal entry is invalid for $name"
+    }
+    if ([bool]$entry.had_original) {
+        if ([string]$entry.original_sha256 -notmatch '^[a-f0-9]{64}$') {
+            throw "Original binary digest is missing for $name"
+        }
+        if (Test-Path -LiteralPath $expectedBackup -PathType Leaf) {
+            if ((Get-Sha256FileHash $expectedBackup) -ne [string]$entry.original_sha256) {
+                throw "Transaction backup integrity failure: $expectedBackup"
+            }
+        } elseif ($committed) {
+            if (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+                (Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
+                throw "Committed transaction has neither its backup nor the verified replacement: $destination"
+            }
+        } elseif (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+            (Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
+            throw "Original binary and verified backup are both unavailable: $destination"
+        }
+    } elseif (-not [string]::IsNullOrEmpty([string]$entry.original_sha256)) {
+        throw "Unexpected original digest for $name"
+    }
+}
+if ($seen.Count -ne $BinaryNames.Count) {
+    throw 'Transaction journal does not cover all five approved binaries.'
+}
+
+if ($journal.phase -eq 'committed' -and -not $committed) {
+    throw 'Journal claims commit but protected updater state does not confirm it.'
+}
+if ($journal.phase -eq 'rolled-back' -and $committed) {
+    throw 'Journal claims rollback but protected updater state confirms commit.'
+}
+if ($committed) {
+    foreach ($entry in @($journal.entries)) {
+        if ((Get-Sha256FileHash ([string]$entry.destination)) -ne [string]$entry.replacement_sha256) {
+            throw "Committed sequence has a mismatched binary: $($entry.destination)"
+        }
+    }
+    $journal.phase = 'committed'
+    Write-TransactionJournal -Journal $journal -Path $journalPath
+    foreach ($entry in @($journal.entries)) {
+        $backup = [string]$entry.backup_path
+        if (Test-Path -LiteralPath $backup -PathType Leaf) {
+            if ([bool]$entry.had_original -and
+                (Get-Sha256FileHash $backup) -ne [string]$entry.original_sha256) {
+                throw "Refusing to clean a corrupted committed backup: $backup"
+            }
+            Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+        }
+        Remove-Item -LiteralPath "$backup.sha256" -Force -ErrorAction SilentlyContinue
+        $destination = [string]$entry.destination
+        Remove-Item -LiteralPath "$destination.$TransactionId.new" -Force -ErrorAction SilentlyContinue
+    }
+    Write-Output 'applied'
+    exit 0
+}
+
+$pending = $state.pending_install
+if ($null -eq $pending -or [string]$pending.id -cne $TransactionId -or
+    [UInt64]$pending.sequence -ne $Sequence -or
+    [string]$pending.manifest_digest -cne $ExpectedManifestSHA256 -or
+    [string]$pending.package_digest -cne $ExpectedPackageSHA256 -or
+    [string]$pending.previous_version -cne $PreviousVersion -or
+    [string]$pending.target_version -cne $TargetVersion) {
+    throw 'Updater state does not contain the exact pending transaction; recovery is ambiguous.'
+}
+
+# Preflight every original and backup before stopping services or changing files.
+foreach ($entry in @($journal.entries)) {
+    $destination = [string]$entry.destination
+    if ([bool]$entry.had_original) {
+        $backup = [string]$entry.backup_path
+        if (Test-Path -LiteralPath $backup -PathType Leaf) {
+            if ((Get-Sha256FileHash $backup) -ne [string]$entry.original_sha256) {
+                throw "Corrupted transaction backup: $backup"
+            }
+        } elseif (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+            (Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
+            throw "No verified original or backup is available: $destination"
+        }
+    } elseif (Test-Path -LiteralPath $destination -PathType Leaf) {
+        if ((Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
+            throw "Unexpected binary contents prevent safe rollback: $destination"
+        }
+    }
+}
+Assert-NoRunningUserBinaries
+
+$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$restartService = [bool]$journal.service_was_running
+if ($service -and $service.Status -ne 'Stopped') {
+    Stop-Service -Name $ServiceName -Force
+    (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+}
+try {
+    for ($i = @($journal.entries).Count - 1; $i -ge 0; $i--) {
+        $entry = @($journal.entries)[$i]
+        $destination = [string]$entry.destination
+        if ([bool]$entry.had_original) {
+            $backup = [string]$entry.backup_path
+            if (Test-Path -LiteralPath $backup -PathType Leaf) {
+                $restore = "$destination.$TransactionId.recover"
+                Copy-Item -LiteralPath $backup -Destination $restore -Force
+                if ((Get-Sha256FileHash $restore) -ne [string]$entry.original_sha256) {
+                    Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue
+                    throw "Restored backup verification failed: $destination"
+                }
+                Move-Item -LiteralPath $restore -Destination $destination -Force
+            }
+            if ((Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
+                throw "Rollback verification failed: $destination"
+            }
+        } elseif (Test-Path -LiteralPath $destination -PathType Leaf) {
+            Remove-Item -LiteralPath $destination -Force
+        }
+        Remove-Item -LiteralPath "$destination.$TransactionId.new" -Force -ErrorAction SilentlyContinue
+    }
+    if ($restartService -and $service) {
+        Start-Service -Name $ServiceName
+        (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    }
+    $journal.phase = 'rolled-back'
+    Write-TransactionJournal -Journal $journal -Path $journalPath
+} catch {
+    $failure = $_
+    throw "Windows transaction recovery failed closed; pending authorization and backups were retained. Cause: $($failure.Exception.Message)"
+}
+Write-Output 'not-applied'
+) {
+    throw 'Installer metadata does not authenticate the requested service and state paths.'
+}
+$installOwner = (Get-Acl -LiteralPath $InstallDir).Owner
+$installOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $installOwner).Translate([Security.Principal.SecurityIdentifier]).Value
+$stateOwner = (Get-Acl -LiteralPath $StateDir).Owner
+$stateOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $stateOwner).Translate([Security.Principal.SecurityIdentifier]).Value
+$statePath = Join-Path $StateDir 'update-state.json'
+if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+    throw 'Protected updater state is unavailable; recovery outcome is unknown.'
+}
+$stateItem = Get-Item -LiteralPath $statePath -Force
+if ($stateItem.PSIsContainer -or ($stateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+    throw 'Updater state is not a regular file.'
+}
+Assert-TrustedAcl -Path $statePath -AdditionalTrustedSids @([string]$metadata.service_account_sid, $installOwnerSid, $stateOwnerSid)
+$state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+$committed = [UInt64]$state.stable_sequence -ge $Sequence -and
+    $null -eq $state.pending_install -and [string]$state.installed_version -ceq $TargetVersion
+
 $seen = @{}
 foreach ($entry in @($journal.entries)) {
     $name = [string]$entry.name
@@ -202,34 +375,6 @@ if ($seen.Count -ne $BinaryNames.Count) {
     throw 'Transaction journal does not cover all five approved binaries.'
 }
 
-$metadataPath = Join-Path $env:ProgramData 'WeDecent\installer.json'
-if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) {
-    throw 'Authenticated installer metadata is unavailable; recovery outcome is unknown.'
-}
-Assert-TrustedAcl -Path $metadataPath
-$metadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
-if ([string]$metadata.install_dir -ine $InstallDir -or
-    [string]$metadata.state_dir -ine $StateDir -or
-    [string]$metadata.service_name -cne $ServiceName -or
-    [string]$metadata.service_account_sid -notmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') {
-    throw 'Installer metadata does not authenticate the requested service and state paths.'
-}
-$installOwner = (Get-Acl -LiteralPath $InstallDir).Owner
-$installOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $installOwner).Translate([Security.Principal.SecurityIdentifier]).Value
-$stateOwner = (Get-Acl -LiteralPath $StateDir).Owner
-$stateOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $stateOwner).Translate([Security.Principal.SecurityIdentifier]).Value
-$statePath = Join-Path $StateDir 'update-state.json'
-if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
-    throw 'Protected updater state is unavailable; recovery outcome is unknown.'
-}
-$stateItem = Get-Item -LiteralPath $statePath -Force
-if ($stateItem.PSIsContainer -or ($stateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-    throw 'Updater state is not a regular file.'
-}
-Assert-TrustedAcl -Path $statePath -AdditionalTrustedSids @([string]$metadata.service_account_sid, $installOwnerSid, $stateOwnerSid)
-$state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-$committed = [UInt64]$state.stable_sequence -ge $Sequence -and
-    $null -eq $state.pending_install -and [string]$state.installed_version -ceq $TargetVersion
 if ($journal.phase -eq 'committed' -and -not $committed) {
     throw 'Journal claims commit but protected updater state does not confirm it.'
 }
