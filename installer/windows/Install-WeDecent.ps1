@@ -828,6 +828,7 @@ function Recover-InterruptedInstallerTransactions {
         $committed = $false
         $stableSequence = [UInt64]0
         $installedVersion = ''
+        $state = $null
         if (Test-Path -LiteralPath $statePath -PathType Leaf) {
             $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
             $stableSequence = [UInt64]$state.stable_sequence
@@ -836,8 +837,9 @@ function Recover-InterruptedInstallerTransactions {
                 $null -eq $state.pending_install -and $installedVersion -ceq [string]$journal.version
         }
         $superseded = $journal.phase -eq 'committed' -and
-            $stableSequence -gt [UInt64]$journal.sequence -and
-            $null -ne $state -and $null -eq $state.pending_install
+            $stableSequence -ge [UInt64]$journal.sequence -and
+            $null -ne $state -and
+            ($null -eq $state.pending_install -or [UInt64]$state.pending_install.sequence -gt [UInt64]$journal.sequence)
         if ($superseded) {
             foreach ($entry in @($journal.entries)) {
                 if (Test-Path -LiteralPath ([string]$entry.backup_path) -PathType Leaf) {
