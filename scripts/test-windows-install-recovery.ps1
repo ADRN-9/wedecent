@@ -1219,10 +1219,30 @@ public static class WeDecentIdentityProcess
     }
     $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
     $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
-    $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
-    $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
-    if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 3 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-' -or $identityParts[2] -ne 'denied') {
+                throw 'Separate process did not prove authenticated service identity, unique logon session, and journal ACL denial.'
+            }
+        }
     }
     $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
     if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
