@@ -62,12 +62,13 @@ func validateInstallStateTransition(current, next State) error {
 	if err := next.validatePersisted(); err != nil {
 		return fmt.Errorf("%w: next transaction state is invalid", ErrInstallTransaction)
 	}
-	if current.StableSequence != next.StableSequence ||
-		current.KeysetEpoch != next.KeysetEpoch ||
-		current.KeysetDigest != next.KeysetDigest {
+	if current.KeysetEpoch != next.KeysetEpoch || current.KeysetDigest != next.KeysetDigest {
+		return fmt.Errorf("%w: transaction cannot change keyset trust baseline", ErrInstallTransaction)
+	}
+	if current.StableSequence != next.StableSequence {
 		if current.PendingInstall == nil || next.PendingInstall != nil ||
 			current.PendingInstall.Sequence != next.StableSequence {
-			return fmt.Errorf("%w: transaction cannot change trust baseline", ErrInstallTransaction)
+			return fmt.Errorf("%w: transaction sequence transition is inconsistent", ErrInstallTransaction)
 		}
 	}
 
