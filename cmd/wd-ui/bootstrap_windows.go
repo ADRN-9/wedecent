@@ -26,31 +26,31 @@ const createNoWindow = 0x08000000
 const th32csSnapProcess = 0x00000002
 
 var (
-	kernel32Core = syscall.NewLazyDLL("kernel32.dll")
-	toolhelp32Core = syscall.NewLazyDLL("kernel32.dll")
-	createToolhelpSnapshotCore = toolhelp32Core.NewProc("CreateToolhelp32Snapshot")
-	process32FirstCore = toolhelp32Core.NewProc("Process32FirstW")
-	process32NextCore = toolhelp32Core.NewProc("Process32NextW")
-	queryProcessImageCore = kernel32Core.NewProc("QueryFullProcessImageNameW")
+	kernel32Core                = syscall.NewLazyDLL("kernel32.dll")
+	toolhelp32Core              = syscall.NewLazyDLL("kernel32.dll")
+	createToolhelpSnapshotCore  = toolhelp32Core.NewProc("CreateToolhelp32Snapshot")
+	process32FirstCore          = toolhelp32Core.NewProc("Process32FirstW")
+	process32NextCore           = toolhelp32Core.NewProc("Process32NextW")
+	queryProcessImageCore       = kernel32Core.NewProc("QueryFullProcessImageNameW")
 )
 
 type processEntry32Core struct {
-	Size uint32
-	Usage uint32
-	ProcessID uint32
-	DefaultHeapID uintptr
-	ModuleID uint32
-	Threads uint32
+	Size            uint32
+	Usage           uint32
+	ProcessID       uint32
+	DefaultHeapID   uintptr
+	ModuleID        uint32
+	Threads         uint32
 	ParentProcessID uint32
-	BasePriority int32
-	Flags uint32
-	ExeFile [260]uint16
+	BasePriority    int32
+	Flags           uint32
+	ExeFile         [260]uint16
 }
 
 var (
 	localCoreProcessMu sync.Mutex
-	localCoreProcess *exec.Cmd
-	localCoreDone chan error
+	localCoreProcess   *exec.Cmd
+	localCoreDone      chan error
 )
 
 func prepareLocalCore(ctx context.Context, core *coreclient.Client) (guiapp.Core, error) {
