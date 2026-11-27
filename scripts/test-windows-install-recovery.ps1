@@ -1288,6 +1288,8 @@ public static class WeDecentIdentityProcess
         $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
         $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
         $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
         $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
         $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
         try {
@@ -1307,7 +1309,7 @@ public static class WeDecentIdentityProcess
             throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
         }
         $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
-        if ($validatorEvidence -notmatch '^user\\|.*different Windows user or logon session') {
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
             throw 'The actual wd-agent process validator did not reject a different Windows user.'
         }
         $sessionEvidencePath = "$EvidencePath.session"
@@ -1323,7 +1325,7 @@ public static class WeDecentIdentityProcess
             throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
         }
         $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
-        if ($sessionEvidence -notmatch '^session\\|.*different Windows user or logon session') {
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
             throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
         }
         $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
@@ -1611,7 +1613,7 @@ public static class WeDecentIdentityProcess
             throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
         }
         $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
-        if ($sessionEvidence -notmatch '^session\\|.*different Windows user or logon session') {
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
             throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
         }
         $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
