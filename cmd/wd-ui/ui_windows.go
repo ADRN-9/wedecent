@@ -6,7 +6,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -64,6 +69,7 @@ const (
 	idOutput     = 1005
 	idInput      = 1006
 	idSend       = 1007
+	idUpdate     = 1008
 
 	bnClicked    = 0
 	lbnSelChange = 1
@@ -146,6 +152,7 @@ const (
 	eventTerminalError
 	eventSendDone
 	eventResizeDone
+	eventUpdateFailed
 	eventExitReady
 )
 
@@ -171,6 +178,7 @@ type winApp struct {
 	output     uintptr
 	input      uintptr
 	send       uintptr
+	update     uintptr
 
 	devices []v1.Device
 
@@ -326,6 +334,9 @@ func (a *winApp) createControls() error {
 	if a.refresh, err = createControl("BUTTON", "Refresh", wsChild|wsVisible|wsTabStop, 0, idRefresh, 0, 0, 90, 28, a.hwnd); err != nil {
 		return err
 	}
+	if a.update, err = createControl("BUTTON", "Check for updates", wsChild|wsVisible|wsTabStop, 0, idUpdate, 0, 0, 160, 28, a.hwnd); err != nil {
+		return err
+	}
 	if a.devicesBox, err = createControl("LISTBOX", "", wsChild|wsVisible|wsBorder|wsVScroll|lbsNotify, 0, idDevices, 0, 0, 300, 300, a.hwnd); err != nil {
 		return err
 	}
@@ -347,7 +358,7 @@ func (a *winApp) createControls() error {
 	}
 
 	font, _, _ := procGetStockObject.Call(defaultGUIFont)
-	for _, control := range []uintptr{a.status, a.refresh, a.devicesBox, a.connect, a.disconnect, a.output, a.input, a.send} {
+	for _, control := range []uintptr{a.status, a.refresh, a.update, a.devicesBox, a.connect, a.disconnect, a.output, a.input, a.send} {
 		procSendMessageW.Call(control, wmSetFont, font, 1)
 	}
 	a.updateControls()
@@ -393,7 +404,8 @@ func (a *winApp) layout(width, height int) {
 	}
 	a.clientWidth, a.clientHeight = width, height
 
-	move(a.status, 10, 10, width-120, 24)
+	move(a.status, 10, 10, width-290, 24)
+	move(a.update, width-270, 8, 160, 28)
 	move(a.refresh, width-100, 8, 90, 28)
 	move(a.devicesBox, 10, 44, 300, height-94)
 	move(a.connect, 10, height-40, 90, 28)
@@ -418,6 +430,10 @@ func (a *winApp) handleCommand(id, notification uint16) {
 		if notification == bnClicked {
 			a.refreshAsync()
 		}
+	case idUpdate:
+		if notification == bnClicked {
+			a.applyUpdateAsync()
+		}
 	case idConnect:
 		if notification == bnClicked {
 			a.connectAsync()
@@ -435,6 +451,49 @@ func (a *winApp) handleCommand(id, notification uint16) {
 			a.updateControls()
 		}
 	}
+}
+
+func (a *winApp) applyUpdateAsync() {
+	if a.closingApp || a.busyConnect || a.busyDisconnect || a.busySend {
+		return
+	}
+	a.closingApp = true
+	a.updateControls()
+	a.setStatus("Closing Local Core before requesting update approval…")
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+		defer cancel()
+		if _, active := a.controller.ActiveConnection(); active {
+			if err := a.controller.Disconnect(ctx); err != nil {
+				a.postEvent(uiEvent{kind: eventUpdateFailed, message: "Disconnect the active session before updating."})
+				return
+			}
+		}
+		a.stopReader()
+		if err := stopSiblingCore(); err != nil {
+			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "Local Core did not stop safely. Update was not started."})
+			return
+		}
+		agentPath, err := siblingExecutablePath(os.Executable, filepath.EvalSymlinks, "wd-agent.exe")
+		if err != nil {
+			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "Installed updater executable is unavailable."})
+			return
+		}
+		info, err := os.Lstat(agentPath)
+		if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "Installed updater executable is unsafe."})
+			return
+		}
+		command := exec.Command(agentPath, "update", "apply", "--wait-for-ui", strconv.Itoa(os.Getpid()))
+		command.Stdout = io.Discard
+		command.Stderr = io.Discard
+		command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+		if err := command.Start(); err != nil {
+			a.postEvent(uiEvent{kind: eventUpdateFailed, message: "Could not start the verified Windows updater."})
+			return
+		}
+		a.postEvent(uiEvent{kind: eventExitReady})
+	}()
 }
 
 func (a *winApp) refreshAsync() {
@@ -704,6 +763,10 @@ func (a *winApp) handleEvent(token uintptr) {
 		if event.message != "" {
 			a.setStatus("Terminal resize failed: " + event.message)
 		}
+	case eventUpdateFailed:
+		a.closingApp = false
+		a.setStatus(event.message)
+		a.updateControls()
 	case eventExitReady:
 		procDestroyWindow.Call(a.hwnd)
 	}
@@ -782,6 +845,7 @@ func (a *winApp) updateControls() {
 	_, active := a.controller.ActiveConnection()
 	selection := a.selectedDeviceIndex() >= 0
 	enable(a.refresh, !a.busyRefresh && !a.closingApp)
+	enable(a.update, !a.closingApp && !a.busyConnect && !a.busyDisconnect && !a.busySend)
 	enable(a.devicesBox, !a.busyConnect && !a.busyDisconnect && !a.closingApp)
 	enable(a.connect, selection && !active && !a.busyConnect && !a.busyDisconnect && !a.closingApp)
 	enable(a.disconnect, active && !a.busyDisconnect && !a.closingApp)
