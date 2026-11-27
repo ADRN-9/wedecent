@@ -435,7 +435,7 @@ func TestUnknownInstallerRecoveryRemainsFailClosed(t *testing.T) {
 	manifest.InstallerSHA256 = sha256Hex(archive)
 	path := writeStagedArchive(t, archive)
 	store := NewStateStore(StatePath(privateTempDir(t)))
-	verified, _, _, _ := testVerifiedManifest(t, manifest, store)
+	verified, rootPublic, rootPrivate, keyset := testVerifiedManifest(t, manifest, store)
 	if err := store.ApplyVerifiedManifest(context.Background(), verified, path, 0,
 		func(context.Context, string) error { return nil },
 		InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error { return errors.New("interrupted") })); !errors.Is(err, ErrInstallerApply) {
@@ -446,6 +446,15 @@ func TestUnknownInstallerRecoveryRemainsFailClosed(t *testing.T) {
 			return InstallRecoveryUnknown, nil
 		})); !errors.Is(err, ErrInstallRecoveryRequired) {
 		t.Fatalf("unknown recovery error = %v, want ErrInstallRecoveryRequired", err)
+	}
+	if err := store.Advance(200); !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("sequence advance during pending install = %v, want ErrInstallRecoveryRequired", err)
+	}
+	now := time.Date(2026, 11, 26, 12, 0, 0, 0, time.UTC)
+	keyset.Epoch++
+	keysetBody, keysetSignature := signKeyset(t, keyset, rootPrivate, now)
+	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), keyset.RootKeyID, rootPublic, keysetBody, keysetSignature, now); !errors.Is(err, ErrInstallRecoveryRequired) {
+		t.Fatalf("keyset rotation during pending install = %v, want ErrInstallRecoveryRequired", err)
 	}
 	state, err := store.Load()
 	if err != nil {
