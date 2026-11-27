@@ -133,6 +133,44 @@ func TestPowerShellInstallerExecutorRejectsUntrustedExecutablePath(t *testing.T)
 	}
 }
 
+func TestPowerShellInstallerExecutorRejectsForgedPackageAndTransactionMismatch(t *testing.T) {
+	root := privateTempDir(t)
+	powershell := filepath.Join(root, "powershell.exe")
+	if err := os.WriteFile(powershell, []byte("fixture"), 0o600); err != nil { t.Fatal(err) }
+	pkgDir := filepath.Join(root, "pkg")
+	if err := os.Mkdir(pkgDir, 0o700); err != nil { t.Fatal(err) }
+	for _, name := range []string{"Install-WeDecent.ps1", "Test-WeDecentInstall.ps1"} {
+		if err := os.WriteFile(filepath.Join(pkgDir, name), []byte("fixture"), 0o600); err != nil { t.Fatal(err) }
+	}
+	calls := 0
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: powershell,
+		run: func(context.Context, string, string, []string) error { calls++; return nil },
+	}
+	transaction := executorTestTransaction("v0.4.0")
+	forged := VerifiedInstallerPackage{Dir: pkgDir, Version: "v0.4.0"}
+	if err := executor.Execute(context.Background(), transaction, forged); !errors.Is(err, ErrInstallerPackage) {
+		t.Fatalf("forged package error = %v, want ErrInstallerPackage", err)
+	}
+	valid := newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))
+	mismatch := transaction
+	mismatch.PackageDigest = strings.Repeat("c", 64)
+	if err := executor.Execute(context.Background(), mismatch, valid); !errors.Is(err, ErrInstallerPackage) {
+		t.Fatalf("package digest mismatch error = %v, want ErrInstallerPackage", err)
+	}
+	unauthorized := transaction
+	unauthorized.Phase = InstallPhasePending
+	if err := executor.Execute(context.Background(), unauthorized, valid); !errors.Is(err, ErrInstallTransaction) {
+		t.Fatalf("unauthorized phase error = %v, want ErrInstallTransaction", err)
+	}
+	tampered := valid
+	tampered.Version = "v0.4.1"
+	if err := executor.Execute(context.Background(), transaction, tampered); !errors.Is(err, ErrInstallerPackage) {
+		t.Fatalf("tampered package error = %v, want ErrInstallerPackage", err)
+	}
+	if calls != 0 { t.Fatalf("PowerShell commands = %d, want 0", calls) }
+}
+
 func executorTestTransaction(version string) InstallTransaction {
 	return InstallTransaction{
 		ID: strings.Repeat("1", 32), Sequence: 1,
