@@ -36,8 +36,14 @@ if ($installBinariesStart -lt 0 -or $firstServiceStop -lt 0 -or $firstReplacemen
     throw 'Installer must durably journal the transaction and verify original backups before stopping SCM or replacing binaries.'
 }
 $upgradeStart = $installerText.IndexOf('Upgrading existing $ServiceName service')
-$upgradeInstallCall = $installerText.IndexOf('Install-Binaries -SourceDirectory $BundlePath', $upgradeStart)
-$prematureUpgradeStop = $installerText.IndexOf('Stop-Service -Name $ServiceName -Force', $upgradeStart, $upgradeInstallCall - $upgradeStart)
+$upgradeInstallCall = -1
+$prematureUpgradeStop = -1
+if ($upgradeStart -ge 0) {
+    $upgradeInstallCall = $installerText.IndexOf('Install-Binaries -SourceDirectory $BundlePath', $upgradeStart)
+    if ($upgradeInstallCall -ge $upgradeStart) {
+        $prematureUpgradeStop = $installerText.IndexOf('Stop-Service -Name $ServiceName -Force', $upgradeStart, $upgradeInstallCall - $upgradeStart)
+    }
+}
 if ($upgradeStart -lt 0 -or $upgradeInstallCall -lt 0 -or $prematureUpgradeStop -ge 0) {
     throw 'Managed upgrade must not stop the service before the durable installer transaction exists.'
 }
