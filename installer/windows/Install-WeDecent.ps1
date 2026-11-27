@@ -1413,13 +1413,29 @@ if ($service) {
         $binariesRestored = Invoke-RollbackStep 'restore installed binaries' {
             Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
         }
-        if ($binariesRestored) {
-            Invoke-RollbackStep 'restart previous agent service' {
-                Start-Service -Name $ServiceName
-                (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        $metadataRestored = $true
+        if ($script:InstallJournal) {
+            $metadataRestored = Invoke-RollbackStep 'restore previous installer metadata' {
+                Restore-TransactionMetadata -Journal $script:InstallJournal
             }
+        }
+        $journalPersisted = $true
+        if ($binariesRestored -and $metadataRestored -and $script:InstallJournal) {
+            $script:InstallJournal.phase = 'rolled-back'
+            $journalPersisted = Invoke-RollbackStep 'persist completed rollback journal' {
+                Write-InstallJournal -Journal $script:InstallJournal
+            }
+        }
+        if ($binariesRestored -and $metadataRestored -and $journalPersisted) {
+            Invoke-RollbackStep 'restart previous agent service' {
+                Start-Service -Name $ServiceName -ErrorAction Stop
+                (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+                if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
+                    throw 'SCM did not confirm the previous agent service is running.'
+                }
+            } | Out-Null
         } else {
-            Write-Warning 'Previous binaries could not be fully restored; the agent service is intentionally left stopped for recovery.'
+            Write-Warning 'Previous binaries, metadata, or rollback journal could not be fully restored; the agent service is intentionally left stopped for recovery.'
         }
         throw "Upgrade failed; rollback was attempted: $($failed.Exception.Message)"
     }
