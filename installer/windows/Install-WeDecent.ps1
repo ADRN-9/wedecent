@@ -759,6 +759,43 @@ function Write-InstallJournal {
     Protect-WeDecentMetadataAcl $path
 }
 
+function Remove-CommittedTransactionBackups {
+    param([Parameter(Mandatory = $true)]$Journal)
+
+    $statePath = Join-Path $StateDir 'update-state.json'
+    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
+        throw 'Cannot clean transaction backups without durable updater state.'
+    }
+    $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+    if ([UInt64]$state.stable_sequence -lt [UInt64]$Journal.sequence -or
+        $null -ne $state.pending_install -or
+        [string]$state.installed_version -cne [string]$Journal.version) {
+        throw 'Cannot clean transaction backups before the exact transaction is durably committed.'
+    }
+    foreach ($entry in @($Journal.entries)) {
+        $destination = [string]$entry.destination
+        if (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+            (Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
+            throw "Cannot clean transaction backups while an installed binary is unverified: $destination"
+        }
+    }
+
+    # The durable committed journal is the retry marker if cleanup is interrupted.
+    foreach ($entry in @($Journal.entries)) {
+        $backup = [string]$entry.backup_path
+        if (Test-Path -LiteralPath $backup -PathType Leaf) {
+            if ([bool]$entry.had_original -and
+                (Get-Sha256FileHash $backup) -ne [string]$entry.original_sha256) {
+                throw "Refusing to clean a corrupted transaction backup: $backup"
+            }
+            Remove-Item -LiteralPath $backup -Force -ErrorAction Stop
+        }
+        Remove-Item -LiteralPath "$backup.sha256" -Force -ErrorAction SilentlyContinue
+        $destination = [string]$entry.destination
+        Remove-Item -LiteralPath "$destination.$($Journal.transaction_id).new" -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Recover-InterruptedInstallerTransactions {
     param([Parameter(Mandatory = $true)][hashtable]$Destinations)
     $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
@@ -787,6 +824,14 @@ function Recover-InterruptedInstallerTransactions {
             throw "Installer transaction journal is malformed: $($file.FullName)"
         }
 
+        $statePath = Join-Path $StateDir 'update-state.json'
+        $committed = $false
+        if (Test-Path -LiteralPath $statePath -PathType Leaf) {
+            $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+            $committed = [UInt64]$state.stable_sequence -ge [UInt64]$journal.sequence -and
+                $null -eq $state.pending_install -and [string]$state.installed_version -ceq [string]$journal.version
+        }
+
         $seenNames = @{}
         foreach ($entry in @($journal.entries)) {
             $name = [string]$entry.name
@@ -813,6 +858,11 @@ function Recover-InterruptedInstallerTransactions {
                     if ((Get-Sha256FileHash $expectedBackup) -ne $expectedOriginal) {
                         throw "Interrupted-install backup integrity failure: $expectedBackup"
                     }
+                } elseif ($committed) {
+                    if (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
+                        (Get-Sha256FileHash $expectedDestination) -ne [string]$entry.replacement_sha256) {
+                        throw "Committed transaction has neither its backup nor the verified replacement: $expectedDestination"
+                    }
                 } elseif (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
                     (Get-Sha256FileHash $expectedDestination) -ne $expectedOriginal) {
                     throw "Original binary and verified transaction backup are both unavailable: $expectedDestination"
@@ -825,13 +875,6 @@ function Recover-InterruptedInstallerTransactions {
             throw "Installer transaction journal does not cover the exact five approved binaries: $($file.FullName)"
         }
 
-        $statePath = Join-Path $StateDir 'update-state.json'
-        $committed = $false
-        if (Test-Path -LiteralPath $statePath -PathType Leaf) {
-            $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-            $committed = [UInt64]$state.stable_sequence -ge [UInt64]$journal.sequence -and
-                $null -eq $state.pending_install -and [string]$state.installed_version -ceq [string]$journal.version
-        }
         if ($journal.phase -eq 'committed' -and -not $committed) {
             throw 'Installer journal claims commit but protected updater state does not confirm it.'
         }
@@ -850,6 +893,11 @@ function Recover-InterruptedInstallerTransactions {
         if ($committed) {
             $journal.phase = 'committed'
             Write-InstallJournal -Journal $journal
+            try {
+                Remove-CommittedTransactionBackups -Journal $journal
+            } catch {
+                Write-Warning "Committed installation is valid; backup cleanup will be retried later. Cause: $($_.Exception.Message)"
+            }
             continue
         }
 
@@ -1273,7 +1321,11 @@ if ($service) {
         }
         throw "Upgrade failed; rollback was attempted: $($failed.Exception.Message)"
     }
-    if (-not $script:IsManagedUpdate -and $script:InstallJournal) { $script:InstallJournal.phase = 'committed'; Write-InstallJournal -Journal $script:InstallJournal }
+    if (-not $script:IsManagedUpdate -and $script:InstallJournal) {
+        $script:InstallJournal.phase = 'committed'
+        Write-InstallJournal -Journal $script:InstallJournal
+        Remove-CommittedTransactionBackups -Journal $script:InstallJournal
+    }
 } else {
     Import-Module Microsoft.PowerShell.LocalAccounts -ErrorAction Stop
     $localUser = Get-LocalUser -Name $ServiceAccountName -ErrorAction SilentlyContinue
@@ -1382,7 +1434,11 @@ if ($service) {
         if ($AddToMachinePath) { Add-MachinePathEntry $InstallDir }
         Write-WeDecentMetadata -AccountSid $localUser.SID.Value -ManagedAccount $managed -AccountName $ServiceAccountName -Version $version
         Initialize-WeDecentUpdateState -Version $version -ServiceSid $localUser.SID.Value
-        if (-not $script:IsManagedUpdate -and $script:InstallJournal) { $script:InstallJournal.phase = 'committed'; Write-InstallJournal -Journal $script:InstallJournal }
+        if (-not $script:IsManagedUpdate -and $script:InstallJournal) {
+        $script:InstallJournal.phase = 'committed'
+        Write-InstallJournal -Journal $script:InstallJournal
+        Remove-CommittedTransactionBackups -Journal $script:InstallJournal
+    }
     } catch {
         $failed = $_
         Invoke-RollbackStep 'remove partially created service' {
