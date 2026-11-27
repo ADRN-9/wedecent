@@ -184,9 +184,11 @@ func PrepareWindowsUpdateWorker(ctx context.Context) (string, error) {
 		_ = os.Remove(destination)
 		return "", fmt.Errorf("verify copied update worker publisher: %w", err)
 	}
-	if err := validateTrustedSystemPath(destination); err != nil {
+	workerInfo, err := os.Lstat(destination)
+	if err != nil || workerInfo.Mode()&os.ModeSymlink != 0 || !workerInfo.Mode().IsRegular() ||
+		validateWindowsUpdateStatePath(destination, workerInfo, false) != nil {
 		_ = os.Remove(destination)
-		return "", fmt.Errorf("validate protected update worker path: %w", err)
+		return "", fmt.Errorf("validate protected update worker path")
 	}
 	return destination, nil
 }
@@ -204,8 +206,10 @@ func ValidateInstalledUpdateWorker() error {
 	if !strings.EqualFold(filepath.Base(installDir), "WeDecent") {
 		return fmt.Errorf("update worker install directory is invalid")
 	}
-	if err := validateTrustedSystemPath(executable); err != nil {
-		return err
+	workerInfo, err := os.Lstat(executable)
+	if err != nil || workerInfo.Mode()&os.ModeSymlink != 0 || !workerInfo.Mode().IsRegular() ||
+		validateWindowsUpdateStatePath(executable, workerInfo, false) != nil {
+		return fmt.Errorf("validate protected update worker executable")
 	}
 	root, err := loadWindowsUpdateRoot(filepath.Join(installDir, windowsUpdateRootFilename))
 	if err != nil {
@@ -243,7 +247,13 @@ func ApplyInstalledWindowsStable(ctx context.Context) error {
 			!strings.EqualFold(filepath.Base(executable), "wd-agent-update.exe")) {
 		return fmt.Errorf("updater must run from the installed WeDecent directory or protected update worker")
 	}
-	if err := validateTrustedSystemPath(executable); err != nil {
+	if strings.EqualFold(filepath.Base(executable), "wd-agent-update.exe") {
+		workerInfo, statErr := os.Lstat(executable)
+		if statErr != nil || workerInfo.Mode()&os.ModeSymlink != 0 || !workerInfo.Mode().IsRegular() ||
+			validateWindowsUpdateStatePath(executable, workerInfo, false) != nil {
+			return fmt.Errorf("validate protected update worker executable")
+		}
+	} else if err := validateTrustedSystemPath(executable); err != nil {
 		return err
 	}
 	root, err := loadWindowsUpdateRoot(filepath.Join(installDir, windowsUpdateRootFilename))
