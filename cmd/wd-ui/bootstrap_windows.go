@@ -106,10 +106,7 @@ func stopSiblingCore() error {
 	localCoreProcessMu.Lock()
 	cmd, done := localCoreProcess, localCoreDone
 	localCoreProcessMu.Unlock()
-	if cmd == nil || cmd.Process == nil {
-		return nil
-	}
-	if done != nil {
+	if cmd != nil && cmd.Process != nil && done != nil {
 		select {
 		case <-done:
 		default:
