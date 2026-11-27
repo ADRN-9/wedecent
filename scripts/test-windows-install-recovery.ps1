@@ -1052,7 +1052,7 @@ try {
             '}'
         ) -join [Environment]::NewLine
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
-        $process = Start-Process -FilePath $powershellExe -Credential $serviceCredential -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Wait -PassThru -WindowStyle Hidden
+        $process = Start-Process -FilePath $powershellExe -Credential $serviceCredential -WorkingDirectory (Join-Path $env:SystemRoot 'System32') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Wait -PassThru -WindowStyle Hidden
         if ($process.ExitCode -ne 42) {
             throw "Separate service-identity process did not receive the expected journal ACL denial (exit $($process.ExitCode))."
         }
