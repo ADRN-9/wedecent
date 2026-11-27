@@ -532,6 +532,7 @@ func verifyAuthenticodePublisher(ctx context.Context, powershell, target, expect
 		return fmt.Errorf("Authenticode verification context is incomplete")
 	}
 	script := `$ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 $s = Get-AuthenticodeSignature -LiteralPath $env:WEDECENT_AUTHENTICODE_FILE
 if ($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate) { exit 31 }
 if ($env:WEDECENT_AUTHENTICODE_THUMBPRINT) {
