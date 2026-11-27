@@ -15,6 +15,7 @@ on:
       - security/c225-relay-lifecycle-verification
       - security/c227-windows-preflight-service-recovery
       - security/c228-windows-service-e2e-hardening
+      - security/c298-transport-override-fail-closed
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
