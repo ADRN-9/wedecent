@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,11 +61,12 @@ func TestResolvePairLocatorDiscoveryRejectsExplicitTransport(t *testing.T) {
 	t.Parallel()
 
 	for name, opts := range map[string]pairLocatorOptions{
-		"endpoint": {Endpoint: "192.0.2.10:7443"},
-		"rfcomm":   {RFCOMM: "01:23:45:67:89:AB/7"},
-		"serial":   {SerialDevice: "/dev/ttyACM0"},
-		"relay":    {Relay: "relay.example:443"},
-		"webRelay": {WebRelay: "https://relay.example"},
+		"endpoint":          {Endpoint: "192.0.2.10:7443"},
+		"rfcomm":            {RFCOMM: "01:23:45:67:89:AB/7"},
+		"serial":            {SerialDevice: "/dev/ttyACM0"},
+		"relay":             {Relay: "relay.example:443"},
+		"webRelay":          {WebRelay: "https://relay.example"},
+		"whitespace rfcomm": {RFCOMM: " "},
 	} {
 		name, opts := name, opts
 		t.Run(name, func(t *testing.T) {
@@ -122,5 +124,23 @@ func TestResolvePairLocatorDiscoveryPropagatesFinderError(t *testing.T) {
 	})
 	if !errors.Is(err, want) {
 		t.Fatalf("error = %v, want %v", err, want)
+	}
+}
+
+func TestResolvePairLocatorDiscoveryRejectsExplicitEmptyFlagPresence(t *testing.T) {
+	for _, name := range []string{"endpoint", "rfcomm", "serial", "relay", "web-relay"} {
+		_, err := resolvePairLocator(context.Background(), pairLocatorOptions{
+			ExplicitTransportFlags: []string{name},
+			DiscoverLAN:            true,
+			DiscoverTimeout:        time.Second,
+			DeviceID:               "wd_aaaaaaaaaaaaaaaa",
+			Fingerprint:            testPairLANFingerprint,
+		}, func(context.Context, string, string) (discovery.Result, error) {
+			t.Fatalf("discovery finder called with explicitly supplied empty --%s", name)
+			return discovery.Result{}, nil
+		})
+		if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+			t.Errorf("explicit empty --%s: error = %v; want discovery conflict", name, err)
+		}
 	}
 }

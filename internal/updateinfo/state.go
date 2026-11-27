@@ -2,19 +2,25 @@ package updateinfo
 
 import (
 	"bytes"
+	"context"
+	"crypto/ed25519"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
+	"time"
 )
 
 const (
-	UpdateStateVersion  = 1
-	UpdateStateFilename = "update-state.json"
-	MaxUpdateStateBytes = 4 << 10
+	UpdateStateVersion           = 1
+	UpdateStateVersionWithKeyset = 2
+	UpdateStateFilename          = "update-state.json"
+	MaxUpdateStateBytes          = 4 << 10
 )
 
 var ErrInvalidState = errors.New("updateinfo: invalid update state")
@@ -23,8 +29,11 @@ var ErrInvalidState = errors.New("updateinfo: invalid update state")
 // signed stable-channel sequence explicitly accepted after a successful update
 // boundary; merely fetching a manifest must not advance it.
 type State struct {
-	Version        int    `json:"version"`
-	StableSequence uint64 `json:"stable_sequence"`
+	Version        int                 `json:"version"`
+	StableSequence uint64              `json:"stable_sequence"`
+	KeysetEpoch    uint64              `json:"keyset_epoch,omitempty"`
+	KeysetDigest   string              `json:"keyset_digest,omitempty"`
+	PendingInstall *InstallTransaction `json:"pending_install,omitempty"`
 }
 
 type StateStore struct {
@@ -62,14 +71,85 @@ func (s *StateStore) Advance(sequence uint64) error {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	release, err := acquireUpdateLock(context.Background(), s.Path)
+	if err != nil {
+		return err
+	}
+	defer release()
 	current, err := loadState(s.Path)
 	if err != nil {
 		return err
 	}
+	if current.PendingInstall != nil {
+		return ErrInstallRecoveryRequired
+	}
 	if sequence <= current.StableSequence {
 		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, sequence, current.StableSequence)
 	}
-	return saveState(s.Path, State{Version: UpdateStateVersion, StableSequence: sequence})
+	next := State{
+		Version:        current.Version,
+		StableSequence: sequence,
+		KeysetEpoch:    current.KeysetEpoch,
+		KeysetDigest:   current.KeysetDigest,
+	}
+	if next.Version == 0 {
+		next.Version = UpdateStateVersion
+	}
+	return saveState(s.Path, next)
+}
+
+// VerifyAndAdvanceKeyset authenticates a root-signed keyset against the
+// persisted epoch/digest and commits a newer keyset atomically with the current
+// stable sequence. Callers cannot advance trust state using an unverified digest.
+func (s *StateStore) VerifyAndAdvanceKeyset(
+	ctx context.Context,
+	rootKeyID string,
+	rootPublicKey ed25519.PublicKey,
+	keysetBytes, signatureBytes []byte,
+	now time.Time,
+) (VerifiedKeyset, error) {
+	var zero VerifiedKeyset
+	if s == nil || s.Path == "" {
+		return zero, fmt.Errorf("%w: state path is required", ErrInvalidState)
+	}
+	if ctx == nil {
+		return zero, fmt.Errorf("%w: context is required", ErrInvalidState)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := acquireUpdateLock(ctx, s.Path)
+	if err != nil {
+		return zero, err
+	}
+	defer release()
+	current, err := loadState(s.Path)
+	if err != nil {
+		return zero, err
+	}
+	if current.PendingInstall != nil {
+		return zero, ErrInstallRecoveryRequired
+	}
+	verified, err := VerifyKeyset(
+		rootKeyID, rootPublicKey, keysetBytes, signatureBytes, now,
+		current.KeysetEpoch, current.KeysetDigest,
+	)
+	if err != nil {
+		return zero, err
+	}
+	if verified.Epoch() == current.KeysetEpoch {
+		return verified, nil
+	}
+	next := State{
+		Version:        UpdateStateVersionWithKeyset,
+		StableSequence: current.StableSequence,
+		KeysetEpoch:    verified.Epoch(),
+		KeysetDigest:   verified.Digest(),
+	}
+	if err := saveState(s.Path, next); err != nil {
+		return zero, fmt.Errorf("%w: persist verified keyset: %v", ErrInvalidState, err)
+	}
+	return verified, nil
 }
 
 func loadState(path string) (State, error) {
@@ -77,6 +157,22 @@ func loadState(path string) (State, error) {
 	info, err := os.Lstat(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
+			dir := filepath.Dir(path)
+			dirInfo, dirErr := os.Lstat(dir)
+			if dirErr == nil {
+				if !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+					return zero, fmt.Errorf("%w: update state parent must be a real directory", ErrInvalidState)
+				}
+				if err := validateStateDirInfo(dir, dirInfo); err != nil {
+					return zero, err
+				}
+			} else if errors.Is(dirErr, os.ErrNotExist) {
+				if err := validateStateDirAncestors(dir); err != nil {
+					return zero, err
+				}
+			} else {
+				return zero, fmt.Errorf("%w: stat update state parent: %v", ErrInvalidState, dirErr)
+			}
 			return State{Version: UpdateStateVersion}, nil
 		}
 		return zero, fmt.Errorf("%w: stat update state: %v", ErrInvalidState, err)
@@ -87,7 +183,15 @@ func loadState(path string) (State, error) {
 	if !info.Mode().IsRegular() {
 		return zero, fmt.Errorf("%w: update state must be a regular file", ErrInvalidState)
 	}
-	if err := validateStateFileInfo(info); err != nil {
+	dir := filepath.Dir(path)
+	dirInfo, err := os.Lstat(dir)
+	if err != nil || !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return zero, fmt.Errorf("%w: update state parent must be a real directory", ErrInvalidState)
+	}
+	if err := validateStateDirInfo(dir, dirInfo); err != nil {
+		return zero, err
+	}
+	if err := validateStateFileInfo(path, info); err != nil {
 		return zero, err
 	}
 	data, err := os.ReadFile(path)
@@ -150,6 +254,15 @@ func saveState(path string, state State) error {
 		cleanup()
 		return fmt.Errorf("%w: protect update state temp file: %v", ErrInvalidState, err)
 	}
+	tempInfo, err := tmp.Stat()
+	if err != nil {
+		cleanup()
+		return fmt.Errorf("%w: inspect update state temp file: %v", ErrInvalidState, err)
+	}
+	if err := validateStateFileInfo(tmpPath, tempInfo); err != nil {
+		cleanup()
+		return err
+	}
 	if _, err := tmp.Write(data); err != nil {
 		cleanup()
 		return fmt.Errorf("%w: write update state: %v", ErrInvalidState, err)
@@ -170,11 +283,28 @@ func saveState(path string, state State) error {
 }
 
 func (s State) validatePersisted() error {
-	if s.Version != UpdateStateVersion {
-		return fmt.Errorf("%w: unsupported state version %d", ErrInvalidState, s.Version)
+	if s.PendingInstall != nil {
+		if err := s.PendingInstall.validate(); err != nil {
+			return err
+		}
+		if s.Version != UpdateStateVersionWithKeyset {
+			return fmt.Errorf("%w: pending install requires keyset state", ErrInvalidState)
+		}
 	}
-	if s.StableSequence == 0 {
-		return fmt.Errorf("%w: persisted sequence must be positive", ErrInvalidState)
+	switch s.Version {
+	case UpdateStateVersion:
+		if s.StableSequence == 0 || s.KeysetEpoch != 0 || s.KeysetDigest != "" {
+			return fmt.Errorf("%w: legacy state fields are invalid", ErrInvalidState)
+		}
+	case UpdateStateVersionWithKeyset:
+		if s.KeysetEpoch == 0 || len(s.KeysetDigest) != 64 || strings.ToLower(s.KeysetDigest) != s.KeysetDigest {
+			return fmt.Errorf("%w: version 2 keyset epoch or digest is invalid", ErrInvalidState)
+		}
+		if _, err := hex.DecodeString(s.KeysetDigest); err != nil {
+			return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
+		}
+	default:
+		return fmt.Errorf("%w: unsupported state version %d", ErrInvalidState, s.Version)
 	}
 	return nil
 }
@@ -192,6 +322,9 @@ func encodeState(state State) ([]byte, error) {
 }
 
 func ensurePrivateStateDir(dir string) error {
+	if err := validateStateDirAncestors(dir); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("%w: create update state directory: %v", ErrInvalidState, err)
 	}
@@ -202,7 +335,7 @@ func ensurePrivateStateDir(dir string) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return fmt.Errorf("%w: update state directory must be a real directory", ErrInvalidState)
 	}
-	if err := validateStateDirInfo(info); err != nil {
+	if err := validateStateDirInfo(dir, info); err != nil {
 		return err
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {

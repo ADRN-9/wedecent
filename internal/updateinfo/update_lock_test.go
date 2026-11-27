@@ -16,11 +16,12 @@ func TestApplyVerifiedInstallerSerializesIndependentStores(t *testing.T) {
 	statePath := StatePath(privateTempDir(t))
 	firstStore := NewStateStore(statePath)
 	secondStore := NewStateStore(statePath)
+	verified, _, _, _ := testVerifiedManifest(t, manifest, firstStore)
 
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var calls atomic.Int32
-	executor := InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 		if calls.Add(1) == 1 {
 			close(started)
 			<-release
@@ -31,7 +32,7 @@ func TestApplyVerifiedInstallerSerializesIndependentStores(t *testing.T) {
 
 	first := make(chan error, 1)
 	go func() {
-		first <- firstStore.ApplyVerifiedInstaller(context.Background(), manifest, path, 0, verify, executor)
+		first <- firstStore.ApplyVerifiedManifest(context.Background(), verified, path, 0, verify, executor)
 	}()
 	select {
 	case <-started:
@@ -41,7 +42,7 @@ func TestApplyVerifiedInstallerSerializesIndependentStores(t *testing.T) {
 
 	second := make(chan error, 1)
 	go func() {
-		second <- secondStore.ApplyVerifiedInstaller(context.Background(), manifest, path, 0, verify, executor)
+		second <- secondStore.ApplyVerifiedManifest(context.Background(), verified, path, 0, verify, executor)
 	}()
 	select {
 	case err := <-second:

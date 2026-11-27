@@ -621,6 +621,13 @@ func runPair(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	presentTransportFlags := visitedTransportFlags(fs)
+	if err := validateExplicitTransportFlags(presentTransportFlags, map[string]string{
+		"endpoint": *endpoint, "rfcomm": *rfcomm, "serial": *serialDevice,
+		"relay": *relayAddr, "web-relay": *webRelay,
+	}); err != nil {
+		return err
+	}
 	if *fingerprint == "" {
 		return errors.New("--fingerprint is required; verify it through an independent trusted channel such as local wd-agent identity output or managed enrollment data")
 	}
@@ -638,15 +645,16 @@ func runPair(args []string) error {
 		return errors.New("--discover-timeout requires --discover-lan")
 	}
 	locator, err := resolvePairLocator(context.Background(), pairLocatorOptions{
-		Endpoint:        *endpoint,
-		RFCOMM:          *rfcomm,
-		SerialDevice:    *serialDevice,
-		Relay:           *relayAddr,
-		WebRelay:        *webRelay,
-		DeviceID:        *deviceID,
-		Fingerprint:     *fingerprint,
-		DiscoverLAN:     *discoverLAN,
-		DiscoverTimeout: *discoverTimeout,
+		Endpoint:               *endpoint,
+		RFCOMM:                 *rfcomm,
+		SerialDevice:           *serialDevice,
+		Relay:                  *relayAddr,
+		WebRelay:               *webRelay,
+		ExplicitTransportFlags: presentTransportFlags,
+		DeviceID:               *deviceID,
+		Fingerprint:            *fingerprint,
+		DiscoverLAN:            *discoverLAN,
+		DiscoverTimeout:        *discoverTimeout,
 	}, discovery.FindPairCandidate)
 	if err != nil {
 		return err
@@ -740,6 +748,13 @@ func runConnect(args []string) (int, error) {
 	routeFirstCost := fs.Uint64("route-first-cost", 0, "source-to-router route cost")
 	routeSecondCost := fs.Uint64("route-second-cost", 0, "router-to-destination route cost")
 	if err := fs.Parse(args); err != nil {
+		return 0, err
+	}
+	presentTransportFlags := visitedTransportFlags(fs)
+	if err := validateExplicitTransportFlags(presentTransportFlags, map[string]string{
+		"endpoint": *endpoint, "rfcomm": *rfcomm, "serial": *serialDevice,
+		"relay": *relayAddr, "web-relay": *webRelay,
+	}); err != nil {
 		return 0, err
 	}
 	if fs.NArg() != 1 {

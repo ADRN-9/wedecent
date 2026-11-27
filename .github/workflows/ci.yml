@@ -6,6 +6,8 @@ on:
       - main
       - security/c227-windows-preflight-service-recovery
       - security/c228-windows-service-e2e-hardening
+      - security/c298-transport-override-fail-closed
+      - security/c323-verified-update-admission
   pull_request:
     branches:
       - main
@@ -66,6 +68,15 @@ jobs:
           cache: true
       - name: Validate production release workflow syntax
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 .github/workflows/production-release-build.yml
+      - name: Parse isolated production update scripts
+        run: |
+          for script in ./scripts/sign-windows-stable-update.sh ./scripts/verify-windows-stable-update.sh ./scripts/publish-windows-stable-update-pair.sh; do
+            bash -n "$script"
+          done
+      - name: Test production signing and publication privilege separation
+        run: python3 ./scripts/test-production-signing-isolation.py
+      - name: Test single-object R2 stable-pair conditional CAS
+        run: bash ./scripts/test-r2-stable-pair-cas.sh
       - name: Test immutable live release tags
         run: bash ./scripts/test-release-tags.sh
       - name: Test production release trust and output containment

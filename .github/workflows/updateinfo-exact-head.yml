@@ -1,0 +1,33 @@
+name: Updateinfo exact-head validation
+
+on:
+  pull_request:
+    branches:
+      - security/c228-windows-service-e2e-hardening
+  push:
+    branches:
+      - security/c323-verified-update-admission
+
+permissions:
+  contents: read
+
+jobs:
+  updateinfo-exact-head:
+    if: github.event_name == 'push' || github.event.pull_request.head.ref == 'security/c323-verified-update-admission'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Verify exact-head Go formatting
+        run: test -z "$(gofmt -l internal/updateinfo)"
+      - name: Test updater admission and recovery
+        run: go test ./internal/updateinfo
+      - name: Vet updater admission and recovery
+        run: go vet ./internal/updateinfo

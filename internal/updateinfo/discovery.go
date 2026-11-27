@@ -11,52 +11,90 @@ import (
 )
 
 const (
-	StableManifestURL     = "https://downloads.wedecent.com/windows/stable/manifest-v1.json"
-	StableSignatureURL    = "https://downloads.wedecent.com/windows/stable/manifest-v1.sig"
+	StableKeysetURLPrefix = "https://downloads.wedecent.com/windows/stable/keysets/"
+	StablePairURL         = "https://downloads.wedecent.com/windows/stable/current-v2.json"
 	MaxSignatureFileBytes = 128
 	DefaultFetchTimeout   = 10 * time.Second
 )
 
 var ErrDiscovery = errors.New("updateinfo: update discovery failed")
 
-// DiscoveryClient fetches the stable update manifest from the fixed public
-// origin and authenticates it with an explicitly provisioned Ed25519 key.
-// Transport is injectable for tests; production callers should normally leave
-// it nil so the default HTTPS transport is used.
 type DiscoveryClient struct {
-	PublicKey ed25519.PublicKey
-	Transport http.RoundTripper
-	Timeout   time.Duration
+	RootKeyID     string
+	RootPublicKey ed25519.PublicKey
+	State         *StateStore
+	Transport     http.RoundTripper
+	Timeout       time.Duration
+	Now           func() time.Time
 }
 
-// DiscoverStable fetches and verifies the stable manifest, then applies the
-// caller's installed-version and anti-rollback sequence policy. It never
-// persists sequence state merely because a candidate was observed.
 func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion string, highestSequence uint64) (Manifest, error) {
-	var zero Manifest
-	if len(c.PublicKey) != ed25519.PublicKeySize {
-		return zero, fmt.Errorf("%w: invalid pinned public key", ErrDiscovery)
+	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
+	if err != nil {
+		return Manifest{}, err
+	}
+	return verified.Manifest(), nil
+}
+
+// DiscoverStableVerified returns an opaque capability bound to the verified
+// manifest bytes and the exact root-authorized keyset snapshot.
+func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, currentVersion string, highestSequence uint64) (VerifiedManifest, error) {
+	var zero VerifiedManifest
+	if ctx == nil || c.State == nil || c.State.Path == "" || len(c.RootPublicKey) != ed25519.PublicKeySize || !keyIDPattern.MatchString(c.RootKeyID) {
+		return zero, fmt.Errorf("%w: pinned root key and protected state store are required", ErrDiscovery)
 	}
 	if c.Timeout < 0 {
 		return zero, fmt.Errorf("%w: timeout must not be negative", ErrDiscovery)
 	}
+	now := time.Now()
+	if c.Now != nil {
+		now = c.Now()
+	}
+	pairBytes, err := c.fetch(ctx, StablePairURL, MaxStablePairBytes)
+	if err != nil {
+		return zero, err
+	}
+	manifestBytes, signatureBytes, err := ParseCanonicalStablePair(pairBytes)
+	if err != nil {
+		return zero, fmt.Errorf("%w: parse stable pair: %w", ErrDiscovery, err)
+	}
+	untrustedManifest, err := ParseCanonical(manifestBytes)
+	if err != nil || untrustedManifest.Schema != ManifestSchemaV2 {
+		return zero, fmt.Errorf("%w: stable channel requires a canonical schema-v2 manifest", ErrDiscovery)
+	}
+	keysetURL, keysetSignatureURL := stableKeysetURLs(untrustedManifest.KeysetEpoch)
+	keysetBytes, err := c.fetch(ctx, keysetURL, MaxKeysetBytes)
+	if err != nil {
+		return zero, err
+	}
+	keysetSignature, err := c.fetch(ctx, keysetSignatureURL, MaxSignatureFileBytes)
+	if err != nil {
+		return zero, err
+	}
+	keyset, err := c.State.VerifyAndAdvanceKeyset(ctx, c.RootKeyID, c.RootPublicKey, keysetBytes, keysetSignature, now)
+	if err != nil {
+		return zero, fmt.Errorf("%w: verify keyset: %w", ErrDiscovery, err)
+	}
+	persisted, err := c.State.Load()
+	if err != nil {
+		return zero, fmt.Errorf("%w: load protected update state: %w", ErrDiscovery, err)
+	}
+	if persisted.KeysetEpoch != keyset.Epoch() || persisted.KeysetDigest != keyset.Digest() {
+		return zero, fmt.Errorf("%w: verified keyset does not match persisted trust state", ErrDiscovery)
+	}
+	if persisted.StableSequence > highestSequence {
+		highestSequence = persisted.StableSequence
+	}
+	capability, err := VerifyManifestV2Capability(keyset, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
+	if err != nil {
+		return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err)
+	}
+	return capability, nil
+}
 
-	manifestBytes, err := c.fetch(ctx, StableManifestURL, MaxManifestBytes)
-	if err != nil {
-		return zero, err
-	}
-	signatureBytes, err := c.fetch(ctx, StableSignatureURL, MaxSignatureFileBytes)
-	if err != nil {
-		return zero, err
-	}
-	manifest, err := Verify(c.PublicKey, manifestBytes, signatureBytes)
-	if err != nil {
-		return zero, err
-	}
-	if err := CheckAdvance(currentVersion, highestSequence, manifest); err != nil {
-		return zero, err
-	}
-	return manifest, nil
+func stableKeysetURLs(epoch uint64) (string, string) {
+	base := fmt.Sprintf("%s%d/", StableKeysetURLPrefix, epoch)
+	return base + "keyset.json", base + "keyset.sig"
 }
 
 func (c DiscoveryClient) fetch(ctx context.Context, rawURL string, limit int) ([]byte, error) {
@@ -64,13 +102,9 @@ func (c DiscoveryClient) fetch(ctx context.Context, rawURL string, limit int) ([
 	if timeout == 0 {
 		timeout = DefaultFetchTimeout
 	}
-	client := &http.Client{
-		Transport: c.Transport,
-		Timeout:   timeout,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			return fmt.Errorf("%w: redirects are not permitted", ErrDiscovery)
-		},
-	}
+	client := &http.Client{Transport: c.Transport, Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+		return fmt.Errorf("%w: redirects are not permitted", ErrDiscovery)
+	}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("%w: build request", ErrDiscovery)
