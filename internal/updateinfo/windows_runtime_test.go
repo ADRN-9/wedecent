@@ -22,9 +22,9 @@ func TestWindowsUpdateRootStrictSchema(t *testing.T) {
 		t.Fatal(err)
 	}
 	root := WindowsUpdateRoot{
-		Schema: windowsUpdateRootSchema,
-		RootKeyID: "stable-root",
-		RootPublicKey: strings.TrimSpace(string(encoded)),
+		Schema:                 windowsUpdateRootSchema,
+		RootKeyID:              "stable-root",
+		RootPublicKey:          strings.TrimSpace(string(encoded)),
 		AuthenticodeThumbprint: strings.Repeat("A", 40),
 	}
 	data, err := json.Marshal(root)
