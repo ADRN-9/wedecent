@@ -1317,6 +1317,8 @@ function Install-Binaries {
     if (Test-Path -LiteralPath $recoveryScriptBackupPath) {
         throw 'Transaction-specific recovery script backup path already exists.'
     }
+    $recoveryScriptState = 'absent'
+    if ($recoveryScriptHadOriginal) { $recoveryScriptState = 'original' }
     $script:InstallJournal = [ordered]@{
         schema = 1
         transaction_id = $script:InstallTransactionId
@@ -1334,7 +1336,7 @@ function Install-Binaries {
         recovery_script_original_sha256 = $recoveryScriptOriginalHash
         recovery_script_backup_path = $recoveryScriptBackupPath
         recovery_script_sha256 = $recoveryScriptOriginalHash
-        recovery_script_state = if ($recoveryScriptHadOriginal) { 'original' } else { 'absent' }
+        recovery_script_state = $recoveryScriptState
         version = $script:InstallTargetVersion
         phase = 'prepared'
         entries = @($entries.ToArray())
