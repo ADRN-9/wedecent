@@ -1066,9 +1066,9 @@ function Recover-InterruptedInstallerTransactions {
                 $null -eq $state.pending_install -and $installedVersion -ceq [string]$journal.version
         }
         $superseded = $journal.phase -eq 'committed' -and
-            $stableSequence -ge [UInt64]$journal.sequence -and
             $null -ne $state -and
-            ($null -eq $state.pending_install -or [UInt64]$state.pending_install.sequence -gt [UInt64]$journal.sequence)
+            ($stableSequence -gt [UInt64]$journal.sequence -or
+                ($null -ne $state.pending_install -and [UInt64]$state.pending_install.sequence -gt [UInt64]$journal.sequence))
         $seenNames = @{}
         foreach ($entry in @($journal.entries)) {
             $name = [string]$entry.name
