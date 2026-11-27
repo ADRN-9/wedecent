@@ -67,7 +67,7 @@ if ($publicationCalls -ne 1) {
     throw "Installer must publish its recovery script exactly once per upgrade; found $publicationCalls invocations."
 }
 $trustedSids = @('S-1-5-18', 'S-1-5-32-544')
-$serviceSid = 'S-1-5-21-1-2-3-1000'
+$serviceSid = $null
 $originalProgramData = $env:ProgramData
 $root = Join-Path ([IO.Path]::GetTempPath()) ('wedecent-recovery-' + [Guid]::NewGuid().ToString('N'))
 $installDir = Join-Path $env:ProgramFiles ('WeDecent-Recovery-' + [Guid]::NewGuid().ToString('N'))
@@ -218,6 +218,11 @@ try {
     $env:ProgramData = $root
 
     $serviceName = 'WeDecentRecoveryTestSvc' + [Guid]::NewGuid().ToString('N')
+    $serviceAccountName = 'wdrec' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $servicePassword = ConvertTo-SecureString (([Guid]::NewGuid().ToString('N')) + 'Aa1!') -AsPlainText -Force
+    $serviceCredential = [pscredential]::new("$env:COMPUTERNAME\$serviceAccountName", $servicePassword)
+    $serviceUser = New-LocalUser -Name $serviceAccountName -Password $servicePassword -PasswordNeverExpires -UserMayNotChangePassword -ErrorAction Stop
+    $serviceSid = $serviceUser.SID.Value
     $metadataPath = Join-Path $root 'WeDecent\installer.json'
     Write-TestJson -Path $metadataPath -Value ([ordered]@{
         schema = 1
@@ -229,13 +234,16 @@ try {
         state_dir = $stateDir
     })
 
-    $successful = New-TransactionFixture
     $agentPath = Join-Path $installDir 'wd-agent.exe'
     $serviceImage = '"' + $agentPath + '" --service --state="' + $stateDir + '"'
-    & sc.exe create $serviceName binPath= $serviceImage start= demand | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated stopped SCM service fixture.' }
+    New-Service -Name $serviceName -BinaryPathName $serviceImage -Credential $serviceCredential -StartupType Manual -ErrorAction Stop | Out-Null
     $serviceCheck = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
     if ($null -eq $serviceCheck -or $serviceCheck.State -ne 'Stopped') { throw 'SCM service fixture was not created stopped.' }
+    $actualServiceSid = (New-Object Security.Principal.NTAccount -ArgumentList ([string]$serviceCheck.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    if (-not [string]::Equals($actualServiceSid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "SCM test service account SID does not match its provisioned local account ($actualServiceSid != $serviceSid)."
+    }
+    $successful = New-TransactionFixture
     $metadataBefore = Get-TestHash $successful.metadataBackupPath
     $targetMetadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
     $targetMetadata.version = $successful.targetVersion
@@ -664,6 +672,7 @@ try {
 } finally {
     $env:ProgramData = $originalProgramData
     if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
