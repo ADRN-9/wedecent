@@ -75,6 +75,9 @@ func main() {
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "wd-agent:", err)
+		if os.Args[1] == "update" {
+			showUpdateError(err)
+		}
 		os.Exit(1)
 	}
 }
