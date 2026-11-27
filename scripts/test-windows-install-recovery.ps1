@@ -41,9 +41,14 @@ if ($cleanupHelper -lt 0 -or $cleanupCommit -lt 0 -or $cleanupGate -lt 0 -or
     $cleanupHelper -ge $cleanupGate -or $cleanupGate -ge $cleanupCommit) {
     throw 'Committed backup cleanup must be gated by durable updater state and invoked from committed recovery.'
 }
+$rolledBackBranch = $installerText.IndexOf("if (`$journal.phase -eq 'rolled-back') {")
+$rolledBackContinue = -1
+if ($rolledBackBranch -ge 0) { $rolledBackContinue = $installerText.IndexOf('continue', $rolledBackBranch) }
+$rollbackServiceStart = $installerText.IndexOf('$serviceBefore = Get-Service')
 if (-not $installerText.Contains('$historical = $superseded -or $journal.phase -eq ''rolled-back''') -or
     -not $installerText.Contains('$journal.phase -ne ''rolled-back'' -and') -or
-    -not $installerText.Contains("if (`$journal.phase -eq 'rolled-back') {`n            continue")) {
+    $rolledBackBranch -lt 0 -or $rolledBackContinue -lt 0 -or $rollbackServiceStart -lt 0 -or
+    $rolledBackContinue -gt $rollbackServiceStart) {
     throw 'Installer must treat completed rollback journals as historical and never replay them over a later installation.'
 }
 if (-not $installerText.Contains('$stableSequence -gt [UInt64]$journal.sequence') -or
