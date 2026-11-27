@@ -625,11 +625,9 @@ function Install-Binary {
     $backupPath = "$Destination.$($script:InstallTransactionId).bak"
     Remove-Item -LiteralPath $newPath -Force -ErrorAction SilentlyContinue
     $entry = @($script:InstallJournal.entries | Where-Object { $_.destination -eq [IO.Path]::GetFullPath($Destination) })[0]
-    if ($HadOriginal) {
-        if (-not (Test-Path -LiteralPath $backupPath -PathType Leaf) -or
-            (Get-Sha256FileHash $backupPath) -ne [string]$entry.original_sha256) {
-            throw "Verified transaction backup is unavailable before replacement: $Destination"
-        }
+    if ($HadOriginal -and (-not (Test-Path -LiteralPath $backupPath -PathType Leaf) -or
+        (Get-Sha256FileHash $backupPath) -ne [string]$entry.original_sha256)) {
+        throw "Verified transaction backup is unavailable before replacement: $Destination"
     }
     Copy-Item -LiteralPath $Source -Destination $newPath -Force
     $sourceHash = Get-Sha256FileHash $Source
@@ -640,7 +638,9 @@ function Install-Binary {
     $script:InstallJournal.phase = 'replacing'
     Write-InstallJournal -Journal $script:InstallJournal
     Move-Item -LiteralPath $newPath -Destination $Destination -Force
-    if ((Get-Sha256FileHash $Destination) -ne $sourceHash) { throw "Replacement verification failed for $Destination" }
+    if ((Get-Sha256FileHash $Destination) -ne $sourceHash) {
+        throw "Replacement verification failed for $Destination"
+    }
     $entry.state = 'replaced'
     Write-InstallJournal -Journal $script:InstallJournal
 }
@@ -763,7 +763,11 @@ function Recover-InterruptedInstallerTransactions {
         $journal = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
         $journalSequence = [UInt64]$journal.sequence
         $managedJournal = -not [string]::IsNullOrWhiteSpace([string]$journal.package_sha256) -or $journalSequence -ne 0
-        if ([int]$journal.schema -ne 1 -or [string]$journal.transaction_id -notmatch '^[a-f0-9]{32}
+        if ([int]$journal.schema -ne 1 -or
+            [string]$journal.transaction_id -notmatch '^[a-f0-9]{32}$' -or
+            [string]$file.BaseName -cne [string]$journal.transaction_id -or
+            ($managedJournal -and ([string]$journal.package_sha256 -notmatch '^[a-f0-9]{64}$' -or $journalSequence -eq 0)) -or
+            [string]$journal.version -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or
             @($journal.entries).Count -ne $script:BinaryNames.Count -or
             [string]$journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back')) {
             throw "Installer transaction journal is malformed: $($file.FullName)"
@@ -881,10 +885,14 @@ function Install-Binaries {
     )
     $entries = New-Object System.Collections.Generic.List[object]
     foreach ($name in $script:BinaryNames) {
-        if (-not $script:VerifiedBinaryHashes.ContainsKey($name)) { throw "No pinned verified hash for $name" }
+        if (-not $script:VerifiedBinaryHashes.ContainsKey($name)) {
+            throw "No pinned verified hash for $name"
+        }
         $source = Join-Path $SourceDirectory $name
         $sourceHash = Get-Sha256FileHash $source
-        if ($sourceHash -ne $script:VerifiedBinaryHashes[$name]) { throw "Release bundle changed after verification: $name" }
+        if ($sourceHash -ne $script:VerifiedBinaryHashes[$name]) {
+            throw "Release bundle changed after verification: $name"
+        }
         $destination = [IO.Path]::GetFullPath([string]$Destinations[$name])
         $hadOriginal = Test-Path -LiteralPath $destination -PathType Leaf
         $OriginalState[$name] = $hadOriginal
@@ -900,6 +908,7 @@ function Install-Binaries {
             state = 'planned'
         })
     }
+
     $journalPath = Join-Path (Join-Path $env:ProgramData 'WeDecent\install-transactions') ($script:InstallTransactionId + '.json')
     if (Test-Path -LiteralPath $journalPath) {
         throw 'Installer transaction ID has already been used; refusing replay.'
@@ -915,9 +924,37 @@ function Install-Binaries {
         updated_at = [DateTime]::UtcNow.ToString('o')
     }
     Write-InstallJournal -Journal $script:InstallJournal
+
+    # All previous binaries are backed up and verified before any replacement.
     foreach ($entry in $script:InstallJournal.entries) {
         $name = [string]$entry.name
-        $AttemptedNames.Add($name)
+        $destination = [string]$entry.destination
+        $backupPath = [string]$entry.backup_path
+        if ([bool]$entry.had_original) {
+            if (Test-Path -LiteralPath $backupPath) {
+                throw "Transaction-specific backup path already exists: $backupPath"
+            }
+            if (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+                (Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
+                throw "Original binary changed before backup: $destination"
+            }
+            Copy-Item -LiteralPath $destination -Destination $backupPath
+            if ((Get-Sha256FileHash $backupPath) -ne [string]$entry.original_sha256) {
+                throw "Backup integrity verification failed for $destination"
+            }
+            Set-Content -LiteralPath "$backupPath.sha256" -Value $entry.original_sha256 -NoNewline -Encoding ASCII
+            Protect-WeDecentMetadataAcl "$backupPath.sha256"
+        }
+        $entry.state = 'backup-verified'
+        $script:InstallJournal.phase = 'backups-verified'
+        Write-InstallJournal -Journal $script:InstallJournal
+    }
+
+    foreach ($entry in $script:InstallJournal.entries) {
+        $AttemptedNames.Add([string]$entry.name)
+    }
+    foreach ($entry in $script:InstallJournal.entries) {
+        $name = [string]$entry.name
         Install-Binary (Join-Path $SourceDirectory $name) ([string]$entry.destination) ([bool]$entry.had_original)
     }
     $script:InstallJournal.phase = 'installed-awaiting-sequence-commit'
