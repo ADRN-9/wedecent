@@ -67,7 +67,7 @@ func runUpdateCommand(args []string) error {
 			return errors.New("resolve installed updater executable")
 		}
 		installDir := filepath.Dir(executable)
-		if err := waitForProductProcess(uint32(pid), filepath.Join(installDir, "wd-ui.exe")); err != nil {
+		if err := waitForProductProcess(uint32(pid), filepath.Join(installDir, "wd-ui.exe"), true); err != nil {
 			return fmt.Errorf("wait for desktop shutdown: %w", err)
 		}
 		if currentAgentProcessElevated() {
@@ -204,12 +204,17 @@ func launchElevatedStableUpdate(launcherPID uint32) error {
 	return nil
 }
 
-func waitForProductProcess(pid uint32, expectedImage string) error {
+func waitForProductProcess(pid uint32, expectedImage string, announceReady bool) error {
 	handle, err := openExpectedProcess(pid, expectedImage)
 	if err != nil {
 		return err
 	}
 	defer windows.CloseHandle(handle)
+	if announceReady {
+		if _, err := fmt.Fprintln(os.Stdout, "READY"); err != nil {
+			return errors.New("cannot acknowledge desktop update handoff")
+		}
+	}
 	wait, err := windows.WaitForSingleObject(handle, windows.INFINITE)
 	if err != nil || wait != windows.WAIT_OBJECT_0 {
 		return errors.New("waiting for desktop process exit failed")
