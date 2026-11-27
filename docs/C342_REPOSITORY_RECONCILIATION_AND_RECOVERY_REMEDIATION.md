@@ -24,10 +24,10 @@ The code checkout `68a8c37956146528cc2548de2191da5ab9d53600` passed the complete
 | Parent | `897f81e0fb0a4330be32330e4550b80acc1851c7` |
 | C341 report commit / comparison base | `0eae549edb6d05c64c616e7ef2c72aeef7cdcb55` |
 | Merge base | `0eae549edb6d05c64c616e7ef2c72aeef7cdcb55` |
-| Commits since C341 | 44 ahead, 0 behind |
+| Engineering commits since C341 | 44 ahead, 0 behind |
 | PR base | `security/c298-transport-override-fail-closed` |
 | PR state | Open; draft; unmerged |
-| PR commit count | 387 |
+| PR commit count at code checkout | 387 |
 
 GitHub compare confirms C341 remains an ancestor of the current branch. No commit was rewritten or removed.
 
@@ -193,7 +193,7 @@ Linux CI additionally passed:
 
 ## 7. Task disposition and recommended C343
 
-**C342 implementation and full repository CI: passed.** Updater-security passed. Linux and macOS Desktop checks passed. Windows Desktop Tauri shell remained in progress at report publication, so three-platform Desktop acceptance is not yet claimed complete.
+**C342 implementation, full repository CI and all three Desktop platform checks: passed.** Updater-security passed. Linux, Windows and macOS Desktop checks all passed.
 
 Recommended C343:
 1. Obtain a persistent privileged Windows VM and name the accountable operator.
