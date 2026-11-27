@@ -167,6 +167,14 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 	}
 
 	transaction := *current.PendingInstall
+	if current.InstalledVersion == "" {
+		if transaction.Phase == InstallPhaseCommitted {
+			current.InstalledVersion = transaction.TargetVersion
+		} else {
+			current.InstalledVersion = transaction.PreviousVersion
+		}
+		current.Version = UpdateStateVersionWithInstalled
+	}
 	if transaction.Phase == InstallPhaseCommitted {
 		if current.StableSequence != transaction.Sequence {
 			return ErrInstallRecoveryRequired
