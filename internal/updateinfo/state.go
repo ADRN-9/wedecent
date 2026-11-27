@@ -295,9 +295,14 @@ func saveState(path string, state State) error {
 }
 
 func (s State) validatePersisted() error {
+	if s.InstalledVersion != "" {
+		if _, err := parseStableVersion(s.InstalledVersion); err != nil {
+			return fmt.Errorf("%w: installed version is invalid", ErrInvalidState)
+		}
+	}
 	switch s.Version {
 	case UpdateStateVersion:
-		if s.StableSequence == 0 || s.KeysetEpoch != 0 || s.KeysetDigest != "" || s.PendingInstall != nil {
+		if (s.StableSequence == 0 && s.InstalledVersion == "") || s.KeysetEpoch != 0 || s.KeysetDigest != "" || s.PendingInstall != nil {
 			return fmt.Errorf("%w: legacy state fields are invalid", ErrInvalidState)
 		}
 	case UpdateStateVersionWithKeyset, UpdateStateVersionWithInstall:
@@ -309,11 +314,6 @@ func (s State) validatePersisted() error {
 		}
 		if s.Version == UpdateStateVersionWithKeyset && s.PendingInstall != nil {
 			return fmt.Errorf("%w: pending install requires state version 3", ErrInvalidState)
-		}
-		if s.InstalledVersion != "" {
-			if _, err := parseStableVersion(s.InstalledVersion); err != nil {
-				return fmt.Errorf("%w: installed version is invalid", ErrInvalidState)
-			}
 		}
 		if s.PendingInstall != nil {
 			if err := s.PendingInstall.validate(); err != nil {
