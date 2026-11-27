@@ -35,6 +35,7 @@ func TestPowerShellInstallerExecutorRunsPreflightInstallPostflight(t *testing.T)
 	var commands []recordedInstallerCommand
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell,
+		isElevated:     func() bool { return true },
 		InstallDir:     `C:\Program Files\WeDecent`,
 		StateDir:       `C:\ProgramData\WeDecent\agent`,
 		ServiceName:    "WeDecentAgent",
@@ -103,6 +104,7 @@ func TestPowerShellInstallerExecutorRejectsNonElevatedCallerBeforeProcessStart(t
 	calls := 0
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell,
+		isElevated:     func() bool { return true },
 		isElevated:     func() bool { return false },
 		run: func(context.Context, string, string, []string) error {
 			calls++
@@ -137,6 +139,7 @@ func TestPowerShellInstallerExecutorPreflightFailurePreventsMutation(t *testing.
 	calls := 0
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell,
+		isElevated:     func() bool { return true },
 		run: func(context.Context, string, string, []string) error {
 			calls++
 			return errors.New("preflight failed")
@@ -163,7 +166,7 @@ func TestPowerShellInstallerExecutorRejectsUntrustedExecutablePath(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if err := (PowerShellInstallerExecutor{PowerShellPath: "powershell.exe"}).Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")); err == nil || !strings.Contains(err.Error(), "absolute") {
+	if err := (PowerShellInstallerExecutor{PowerShellPath: "powershell.exe", isElevated: func() bool { return true }}).Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("relative PowerShell error = %v", err)
 	}
 
@@ -173,7 +176,7 @@ func TestPowerShellInstallerExecutorRejectsUntrustedExecutablePath(t *testing.T)
 	}
 	link := filepath.Join(root, "powershell.exe")
 	if err := os.Symlink(target, link); err == nil {
-		if err := (PowerShellInstallerExecutor{PowerShellPath: link}).Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")); err == nil || !strings.Contains(err.Error(), "non-symlink") {
+		if err := (PowerShellInstallerExecutor{PowerShellPath: link, isElevated: func() bool { return true }}).Execute(context.Background(), executorTestTransaction("v0.4.0"), verifiedInstallerPackageForTest(t, pkgDir, "v0.4.0")); err == nil || !strings.Contains(err.Error(), "non-symlink") {
 			t.Fatalf("symlink PowerShell error = %v", err)
 		}
 	}
@@ -197,6 +200,7 @@ func TestPowerShellInstallerExecutorRejectsForgedPackageAndTransactionMismatch(t
 	calls := 0
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell,
+		isElevated:     func() bool { return true },
 		run: func(context.Context, string, string, []string) error {
 			calls++
 			return nil
@@ -406,6 +410,7 @@ func TestPowerShellInstallerExecutorFinalizesOnlyCommittedState(t *testing.T) {
 	var command recordedInstallerCommand
 	executor := PowerShellInstallerExecutor{
 		PowerShellPath: powershell,
+		isElevated:     func() bool { return true },
 		InstallDir:     installDir,
 		StateDir:       stateDir,
 		ServiceName:    "WeDecentAgent",
