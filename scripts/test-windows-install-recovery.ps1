@@ -70,6 +70,13 @@ $publicationCalls = [regex]::Matches($installerText, 'Publish-WeDecentRecoverySc
 if ($publicationCalls -ne 1) {
     throw "Installer must publish its recovery script exactly once per upgrade; found $publicationCalls invocations."
 }
+if (-not $installerText.Contains('recovery_script_backup_path') -or
+    -not $installerText.Contains('Restore-TransactionRecoveryScript -Journal') -or
+    -not $recoveryText.Contains('recovery_script_original_sha256') -or
+    -not $recoveryText.Contains('Restore-TransactionRecoveryScript -Journal $journal') -or
+    -not $recoveryText.Contains('Previous recovery script backup failed integrity verification.')) {
+    throw 'Recovery-script preservation, integrity validation, and interrupted rollback restoration are required.'
+}
 $trustedSids = @('S-1-5-18', 'S-1-5-32-544')
 $serviceSid = $null
 $originalProgramData = $env:ProgramData
@@ -125,6 +132,14 @@ function New-TransactionFixture {
     Copy-Item -LiteralPath $metadataPath -Destination $metadataBackupPath
     Set-TestTrustedAcl -Path $metadataBackupPath
     if ((Get-TestHash $metadataBackupPath) -ne $metadataOriginalHash) { throw 'Recovery fixture metadata snapshot failed integrity verification.' }
+    $recoveryScriptPath = Join-Path $installDir 'Recover-WeDecentInstall.ps1'
+    $recoveryScriptBackupPath = "$recoveryScriptPath.$Id.previous"
+    [IO.File]::WriteAllText($recoveryScriptPath, "published recovery script:$Id")
+    [IO.File]::WriteAllText($recoveryScriptBackupPath, "original recovery script:$Id")
+    Set-TestTrustedAcl -Path $recoveryScriptPath
+    Set-TestTrustedAcl -Path $recoveryScriptBackupPath
+    $recoveryScriptOriginalHash = Get-TestHash $recoveryScriptBackupPath
+    $recoveryScriptHash = Get-TestHash $recoveryScriptPath
     $entries = @()
     foreach ($name in $binaryNames) {
         $destination = Join-Path $installDir $name
@@ -155,6 +170,12 @@ function New-TransactionFixture {
         metadata_had_original = $true
         metadata_original_sha256 = $metadataOriginalHash
         metadata_backup_path = $metadataBackupPath
+        recovery_script_path = $recoveryScriptPath
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $recoveryScriptOriginalHash
+        recovery_script_backup_path = $recoveryScriptBackupPath
+        recovery_script_sha256 = $recoveryScriptHash
+        recovery_script_state = 'published'
         version = $targetVersion
         phase = 'replacing'
         entries = $entries
@@ -195,6 +216,9 @@ function New-TransactionFixture {
         metadataPath = $metadataPath
         metadataBackupPath = $metadataBackupPath
         metadataOriginalHash = $metadataOriginalHash
+        recoveryScriptPath = $recoveryScriptPath
+        recoveryScriptBackupPath = $recoveryScriptBackupPath
+        recoveryScriptOriginalHash = $recoveryScriptOriginalHash
     }
 }
 
@@ -260,6 +284,12 @@ try {
     [IO.File]::WriteAllText("$metadataPath.$($successful.id).restore", 'interrupted restore temp')
     Invoke-TestRecovery -Fixture $successful | Out-Null
     if ((Get-TestHash $metadataPath) -ne $metadataBefore) { throw 'Recovery did not restore exact prior installer metadata bytes.' }
+    if ((Get-TestHash $successful.recoveryScriptPath) -ne $successful.recoveryScriptOriginalHash) {
+        throw 'Interrupted recovery did not restore the exact previous privileged recovery script.'
+    }
+    if ((Get-TestHash $successful.recoveryScriptBackupPath) -ne $successful.recoveryScriptOriginalHash) {
+        throw 'Interrupted recovery did not retain the verified recovery-script backup.'
+    }
     $recovered = Get-Content -LiteralPath $successful.journalPath -Raw | ConvertFrom-Json
     if ($recovered.phase -ne 'rolled-back') { throw 'Recovery did not persist the rolled-back phase.' }
     foreach ($entry in $successful.journal.entries) {
@@ -278,6 +308,19 @@ try {
         }
     }
     $metadataOriginalBytes = [IO.File]::ReadAllBytes($metadataPath)
+
+    $corruptRecoveryScript = New-TransactionFixture
+    $beforeCorruptRecovery = @{}
+    foreach ($entry in $corruptRecoveryScript.journal.entries) { $beforeCorruptRecovery[$entry.name] = Get-TestHash $entry.destination }
+    [IO.File]::WriteAllText($corruptRecoveryScript.recoveryScriptBackupPath, 'corrupt recovery-script backup')
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $corruptRecoveryScript | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted a corrupted privileged recovery-script backup.' }
+    foreach ($entry in $corruptRecoveryScript.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeCorruptRecovery[$entry.name]) {
+            throw 'Corrupted recovery-script backup rejection mutated an installed binary.'
+        }
+    }
 
     $corruptMetadata = New-TransactionFixture
     $beforeCorruptMetadata = @{}
