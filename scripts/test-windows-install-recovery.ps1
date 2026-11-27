@@ -451,4 +451,8 @@ try {
     $env:ProgramData = $originalProgramData
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
 }
