@@ -271,6 +271,14 @@ if ($PSCmdlet.ParameterSetName -eq 'FinalizeCommitted') {
             Remove-Item -LiteralPath "$destination.$($journal.transaction_id).new" -Force -ErrorAction SilentlyContinue
         }
     }
+    $metadataBackup = "$metadataPath.$($journal.transaction_id).metadata.bak"
+    if (Test-Path -LiteralPath $metadataBackup -PathType Leaf) {
+        if (-not [regex]::IsMatch([string]$journal.metadata_original_sha256, '^[a-f0-9]{64}$') -or
+            (Get-Sha256FileHash $metadataBackup) -ne [string]$journal.metadata_original_sha256) {
+            throw 'Refusing to clean a corrupted or unauthenticated committed metadata snapshot.'
+        }
+        Remove-Item -LiteralPath $metadataBackup -Force -ErrorAction Stop
+    }
     Write-Output 'committed-backup-cleanup-complete'
     exit 0
 }
