@@ -1065,6 +1065,50 @@ public static class WeDecentIdentityProcess
         StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
         ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
 
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
 
@@ -1090,9 +1134,21 @@ public static class WeDecentIdentityProcess
             PROCESS_INFORMATION process;
             StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
             const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
             if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
                 IntPtr.Zero, workingDirectory, ref startup, out process))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "CreateProcessWithTokenW failed for the isolated test identity.");
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
 
             try
             {
