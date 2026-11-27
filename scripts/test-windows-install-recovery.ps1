@@ -1630,6 +1630,31 @@ public static class WeDecentIdentityProcess
     if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
         $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
         [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
     # Reconstruct the durable crash state after removal intent and file deletion.
     $interruptedFreshId = [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
