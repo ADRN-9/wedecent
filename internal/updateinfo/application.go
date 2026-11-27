@@ -21,7 +21,13 @@ type InstallerExecutor interface {
 	Execute(context.Context, InstallTransaction, VerifiedInstallerPackage) error
 }
 
+type InstallerCommitter interface {
+	Commit(context.Context, InstallTransaction) error
+}
+
 type InstallerExecutorFunc func(context.Context, InstallTransaction, VerifiedInstallerPackage) error
+
+func (f InstallerExecutorFunc) Commit(context.Context, InstallTransaction) error { return nil }
 
 func (f InstallerExecutorFunc) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
 	if f == nil {
@@ -47,6 +53,8 @@ func (s *StateStore) applyVerifiedManifest(
 	if executor == nil {
 		return ErrInstallerUnavailable
 	}
+	committer, ok := executor.(InstallerCommitter)
+	if !ok { return fmt.Errorf("%w: transaction finalizer is required", ErrInstallerUnavailable) }
 	if err := verified.validate(); err != nil {
 		return err
 	}
@@ -113,14 +121,17 @@ func (s *StateStore) applyVerifiedManifest(
 			}
 
 			transaction.Phase = InstallPhaseCommitted
-			pending.PendingInstall = &transaction
-			if err := s.persist(pending); err != nil {
+			committed := pending
+			committed.StableSequence = verified.manifest.Sequence
+			committed.PendingInstall = &transaction
+			if err := s.persist(committed); err != nil {
 				return ErrSequenceCommit
 			}
-			next := pending
-			next.StableSequence = verified.manifest.Sequence
-			next.PendingInstall = nil
-			if err := s.persist(next); err != nil {
+			if err := committer.Commit(context.WithoutCancel(ctx), transaction); err != nil {
+				return ErrSequenceCommit
+			}
+			committed.PendingInstall = nil
+			if err := s.persist(committed); err != nil {
 				return ErrSequenceCommit
 			}
 			return nil
@@ -155,6 +166,19 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 	}
 
 	transaction := *current.PendingInstall
+	if transaction.Phase == InstallPhaseCommitted {
+		if current.StableSequence != transaction.Sequence {
+			return ErrInstallRecoveryRequired
+		}
+		committer, ok := recovery.(InstallerCommitter)
+		if !ok { return ErrInstallRecoveryRequired }
+		if err := committer.Commit(context.WithoutCancel(ctx), transaction); err != nil {
+			return ErrInstallRecoveryRequired
+		}
+		current.PendingInstall = nil
+		if err := s.persist(current); err != nil { return ErrInstallRecoveryRequired }
+		return nil
+	}
 	transaction.Phase = InstallPhaseRecoveryRequired
 	current.PendingInstall = &transaction
 	if err := s.persist(current); err != nil {
@@ -169,19 +193,21 @@ func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery Install
 	next := current
 	switch result {
 	case InstallRecoveryApplied:
-		if transaction.Sequence <= current.StableSequence {
-			return ErrInstallRecoveryRequired
-		}
+		if transaction.Sequence <= current.StableSequence { return ErrInstallRecoveryRequired }
+		transaction.Phase = InstallPhaseCommitted
 		next.StableSequence = transaction.Sequence
+		next.PendingInstall = &transaction
+		if err := s.persist(next); err != nil { return ErrInstallRecoveryRequired }
+		committer, ok := recovery.(InstallerCommitter)
+		if !ok { return ErrInstallRecoveryRequired }
+		if err := committer.Commit(context.WithoutCancel(ctx), transaction); err != nil { return ErrInstallRecoveryRequired }
 	case InstallRecoveryNotApplied:
 		// Adapter has verified restoration of PreviousVersion; sequence stays unchanged.
 	default:
 		return ErrInstallRecoveryRequired
 	}
 	next.PendingInstall = nil
-	if err := s.persist(next); err != nil {
-		return ErrInstallRecoveryRequired
-	}
+	if err := s.persist(next); err != nil { return ErrInstallRecoveryRequired }
 	return nil
 }
 
