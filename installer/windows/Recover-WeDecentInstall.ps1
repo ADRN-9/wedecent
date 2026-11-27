@@ -451,11 +451,21 @@ foreach ($entry in @($journal.entries)) {
 }
 Assert-NoRunningUserBinaries
 
-$service = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
+$service = Get-Service -Name $ServiceName -ErrorAction Stop
+$serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+$expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
+$expectedServicePath = '"' + $expectedAgent + '"'
+$stateArgumentPattern = '(?:^|\\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\\s|$)'
+if ($null -eq $serviceConfig -or
+    -not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
+    -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+    throw 'SCM service identity does not match authenticated prior installer metadata.'
+}
 $restartService = [bool]$journal.service_was_running
-if ($service -and $service.Status -ne 'Stopped') {
-    Stop-Service -Name $ServiceName -Force
-    (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+if ($service.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force -ErrorAction Stop }
+(Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+    throw 'SCM did not confirm the service stopped before recovery.'
 }
 try {
     for ($i = @($journal.entries).Count - 1; $i -ge 0; $i--) {
