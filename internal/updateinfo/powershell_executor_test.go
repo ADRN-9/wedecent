@@ -206,3 +206,11 @@ func TestPowerShellInstallerExecutorCommitRequiresTransactionScript(t *testing.T
 		t.Fatalf("commit args = %v", args)
 	}
 }
+
+
+func containsArgPair(args []string, name, value string) bool {
+	for i := 0; i+1 < len(args); i++ {
+		if args[i] == name && args[i+1] == value { return true }
+	}
+	return false
+}
