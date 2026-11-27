@@ -1053,9 +1053,22 @@ try {
             '}'
         ) -join [Environment]::NewLine
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
-        $process = Start-Process -FilePath $powershellExe -Credential $processCredential -WorkingDirectory (Join-Path $env:SystemRoot 'System32') -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -Wait -PassThru
-        if ($process.ExitCode -ne 42) {
-            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $($process.ExitCode))."
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $powershellExe
+        $startInfo.Arguments = "-NoProfile -NonInteractive -EncodedCommand $encoded"
+        $startInfo.WorkingDirectory = Join-Path $env:SystemRoot 'System32'
+        $startInfo.UserName = $serviceAccountName
+        $startInfo.Domain = $env:COMPUTERNAME
+        $startInfo.Password = $servicePassword
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $process = [Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $process) { throw 'Could not start the separate authenticated service-identity process.' }
+        $process.WaitForExit()
+        $processExitCode = $process.ExitCode
+        $process.Dispose()
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
         }
         $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
         if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
