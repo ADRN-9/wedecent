@@ -26,6 +26,10 @@ if ($cleanupHelper -lt 0 -or $cleanupCommit -lt 0 -or $cleanupGate -lt 0 -or
     $cleanupHelper -ge $cleanupGate -or $cleanupGate -ge $cleanupCommit) {
     throw 'Committed backup cleanup must be gated by durable updater state and invoked from committed recovery.'
 }
+if (-not $installerText.Contains('$stableSequence -gt [UInt64]$journal.sequence') -or
+    -not $installerText.Contains('Superseded committed transaction has unfinished backup cleanup:')) {
+    throw 'Installer must finish cleanup for the current committed journal and fail closed on superseded journals with retained backups.'
+}
 if (-not $installerText.Contains('Committed installation remains valid; refusing another installation until backup cleanup completes.') -or
     -not $installerText.Contains('$superseded') -or
     -not $installerText.Contains('Superseded committed transaction has unfinished backup cleanup')) {
