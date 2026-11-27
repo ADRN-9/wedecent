@@ -333,8 +333,8 @@ try {
     if ((Get-TestHash $successful.recoveryScriptPath) -ne $successful.recoveryScriptOriginalHash) {
         throw 'Interrupted recovery did not restore the exact previous privileged recovery script.'
     }
-    if ((Get-TestHash $successful.recoveryScriptBackupPath) -ne $successful.recoveryScriptOriginalHash) {
-        throw 'Interrupted recovery did not retain the verified recovery-script backup.'
+    if (Test-Path -LiteralPath $successful.recoveryScriptBackupPath) {
+        throw 'Interrupted recovery did not clean its transaction-specific recovery-script backup after durable rollback.'
     }
     $recovered = Get-Content -LiteralPath $successful.journalPath -Raw | ConvertFrom-Json
     if ($recovered.phase -ne 'rolled-back') { throw 'Recovery did not persist the rolled-back phase.' }
@@ -346,6 +346,9 @@ try {
 
     # Repeating the same recovery transaction must remain safe and idempotent.
     Invoke-TestRecovery -Fixture $successful | Out-Null
+    if (Test-Path -LiteralPath $successful.recoveryScriptBackupPath) {
+        throw 'Repeated recovery recreated a previously cleaned recovery-script backup.'
+    }
     $replayed = Get-Content -LiteralPath $successful.journalPath -Raw | ConvertFrom-Json
     if ($replayed.phase -ne 'rolled-back') { throw 'Repeated recovery changed the completed rollback phase.' }
     foreach ($entry in $successful.journal.entries) {
