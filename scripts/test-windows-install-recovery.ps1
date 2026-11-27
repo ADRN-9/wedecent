@@ -66,6 +66,12 @@ if (-not $installerText.Contains('metadata_original_sha256') -or
 if ($installerText -match '(?s)\$journal\.phase = ''rolled-back''.*?finally\s*\{\s*if \(\$restartService\)') {
     throw 'Interrupted transaction recovery must not restart the service from a finally block after rollback failure.'
 }
+if (-not $installerText.Contains('function Assert-TransactionRecoveryScript') -or
+    -not $installerText.Contains('Assert-TransactionRecoveryScript -Journal $journal') -or
+    -not $installerText.Contains('Previous recovery-script backup is unsafe or corrupted.') -or
+    -not $installerText.Contains('Refusing committed cleanup because the installed recovery script identity is invalid.')) {
+    throw 'Installer recovery must authenticate the recovery script and its backup before rollback or committed cleanup.'
+}
 $publicationCalls = [regex]::Matches($installerText, 'Publish-WeDecentRecoveryScript').Count - 1
 if ($publicationCalls -ne 1) {
     throw "Installer must publish its recovery script exactly once per upgrade; found $publicationCalls invocations."
