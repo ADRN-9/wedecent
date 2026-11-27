@@ -15,7 +15,8 @@ if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).b
     -not $installerText.Contains('$stream.Flush($true)')) {
     throw 'Installer transaction-specific backup, durable journal, or sequence-commit boundary is missing.'
 }
-$publicationCalls = [regex]::Matches($installerText, '(?m)^\s*Publish-WeDecentRecoveryScript\s*$trustedSids = @('S-1-5-18', 'S-1-5-32-544')
+$publicationCalls = ([regex]::Matches($installerText, 'Publish-WeDecentRecoveryScript').Count - 1)
+if ($publicationCalls -ne 1) { throw "Installer must publish recovery script exactly once per upgrade; found $publicationCalls invocations." }
 $serviceSid = 'S-1-5-21-1-2-3-1000'
 $originalProgramData = $env:ProgramData
 $root = Join-Path ([IO.Path]::GetTempPath()) ('wedecent-recovery-' + [Guid]::NewGuid().ToString('N'))
