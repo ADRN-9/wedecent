@@ -207,6 +207,7 @@ try {
     Set-TestTrustedAcl -Path $stateDir
     $env:ProgramData = $root
 
+    $serviceName = 'WeDecentRecoveryTestSvc' + [Guid]::NewGuid().ToString('N')
     $metadataPath = Join-Path $root 'WeDecent\installer.json'
     Write-TestJson -Path $metadataPath -Value ([ordered]@{
         schema = 1
@@ -221,7 +222,6 @@ try {
     $successful = New-TransactionFixture
     $agentPath = Join-Path $installDir 'wd-agent.exe'
     $serviceImage = '"' + $agentPath + '" --service --state="' + $stateDir + '"'
-    $serviceName = 'WeDecentRecoveryTestSvc' + [Guid]::NewGuid().ToString('N')
     & sc.exe create $serviceName binPath= $serviceImage start= demand | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated stopped SCM service fixture.' }
     $serviceCheck = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
