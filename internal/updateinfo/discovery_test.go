@@ -143,6 +143,17 @@ func (f discoveryFixture) transport(mutate func(string, []byte) ([]byte, int)) h
 func newDiscoveryClient(t *testing.T, f discoveryFixture, transport http.RoundTripper) (DiscoveryClient, *StateStore) {
 	t.Helper()
 	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
+	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), f.keyset.RootKeyID, f.rootPublic, f.keysetBody, f.keysetSignature, f.now); err != nil {
+		t.Fatalf("provision test keyset: %v", err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.InstalledVersion = "v1.2.2"
+	if err := saveState(store.Path, state); err != nil {
+		t.Fatalf("provision protected test version: %v", err)
+	}
 	client := DiscoveryClient{
 		RootKeyID:     f.keyset.RootKeyID,
 		RootPublicKey: f.rootPublic,
