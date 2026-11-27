@@ -841,7 +841,7 @@ function Write-InstallJournal {
 }
 
 function Assert-TransactionMetadataSnapshot {
-    param([Parameter(Mandatory = $true)]$Journal, [bool]$Committed = $false)
+    param([Parameter(Mandatory = $true)]$Journal, [bool]$Committed = $false, [bool]$Historical = $false)
     $expectedPath = [IO.Path]::GetFullPath((Get-WeDecentMetadataPath))
     $expectedBackup = "$expectedPath.$($Journal.transaction_id).metadata.bak"
     $actualPath = [IO.Path]::GetFullPath([string]$Journal.metadata_path)
@@ -860,12 +860,12 @@ function Assert-TransactionMetadataSnapshot {
             if ((Get-Sha256FileHash $expectedBackup) -ne [string]$Journal.metadata_original_sha256) {
                 throw 'Installer metadata snapshot backup is corrupted.'
             }
-        } elseif (-not $Committed) {
+        } elseif (-not $Committed -and -not $Historical) {
             if (-not (Test-Path -LiteralPath $expectedPath -PathType Leaf) -or
                 (Get-Sha256FileHash $expectedPath) -ne [string]$Journal.metadata_original_sha256) {
                 throw 'Previous installer metadata and its verified snapshot are both unavailable.'
             }
-        } elseif ($Journal.phase -ne 'committed') {
+        } elseif (-not $Committed -and -not $Historical -and $Journal.phase -ne 'committed') {
             throw 'Committed metadata snapshot disappeared before the durable commit marker.'
         }
     } elseif (-not [string]::IsNullOrEmpty([string]$Journal.metadata_original_sha256) -or $backupExists) {
@@ -1096,8 +1096,6 @@ function Recover-InterruptedInstallerTransactions {
             [string]$journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back')) {
             throw "Installer transaction journal is malformed: $($file.FullName)"
         }
-        Assert-TransactionMetadataSnapshot -Journal $journal -Committed ($journal.phase -eq 'committed')
-
         $statePath = Join-Path $StateDir 'update-state.json'
         $committed = $false
         $stableSequence = [UInt64]0
@@ -1116,6 +1114,7 @@ function Recover-InterruptedInstallerTransactions {
             ($stableSequence -gt [UInt64]$journal.sequence -or
                 ($null -ne $state.pending_install -and [UInt64]$state.pending_install.sequence -gt [UInt64]$journal.sequence))
         $historical = $superseded -or $journal.phase -eq 'rolled-back'
+        Assert-TransactionMetadataSnapshot -Journal $journal -Committed ($journal.phase -eq 'committed') -Historical $historical
         Assert-TransactionRecoveryScript -Journal $journal -Committed ($journal.phase -eq 'committed') -Historical $historical
         $seenNames = @{}
         foreach ($entry in @($journal.entries)) {
