@@ -518,3 +518,4 @@ func TestCleanupInterruptionKeepsCommittedStateAndBlocksNextUpdate(t *testing.T)
 	if err := store.finalizeCommittedInstalls(context.Background(), retry); err != nil {
 		t.Fatalf("committed cleanup retry failed: %v", err)
 }
+}
