@@ -34,9 +34,16 @@ if (-not $recoveryText.Contains('FinalizeCommitted') -or
     throw 'Committed backup finalization must require exact durable state, exact target hashes, and a durable journal marker.'
 }
 if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
-    -not $installerText.Contains('if ($binariesRestored)') -or
+    -not $installerText.Contains('if ($binariesRestored -and $metadataRestored -and $journalPersisted)') -or
     -not $installerText.Contains('service is intentionally left stopped for recovery')) {
-    throw 'Upgrade rollback must not restart the service when binary restoration fails.'
+    throw 'Upgrade rollback must not restart unless binary, metadata and journal restoration all succeed.'
+}
+if (-not $installerText.Contains('metadata_original_sha256') -or
+    -not $installerText.Contains('Restore-TransactionMetadata -Journal') -or
+    -not $installerText.Contains('persist completed rollback journal') -or
+    -not $installerText.Contains('SCM service identity does not match the authenticated installer paths.') -or
+    -not $installerText.Contains('SCM did not confirm the service stopped before interrupted-install recovery.')) {
+    throw 'Installer recovery must preserve prior metadata and verify the expected SCM identity/state.'
 }
 if ($installerText -match '(?s)\$journal\.phase = ''rolled-back''.*?finally\s*\{\s*if \(\$restartService\)') {
     throw 'Interrupted transaction recovery must not restart the service from a finally block after rollback failure.'
