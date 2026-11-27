@@ -12,3 +12,5 @@ import (
 func prepareLocalCore(_ context.Context, core *coreclient.Client) (guiapp.Core, error) {
 	return core, nil
 }
+
+func stopSiblingCore() error { return nil }
