@@ -313,6 +313,7 @@ try {
     $journal.phase = 'rolled-back'
     Write-TransactionJournal -Journal $journal -Path $journalPath
 } catch {
-    throw 'Windows transaction recovery failed closed; pending authorization and backups were retained.'
+    $failure = $_
+    throw "Windows transaction recovery failed closed; pending authorization and backups were retained. Cause: $($failure.Exception.Message)"
 }
 Write-Output 'not-applied'
