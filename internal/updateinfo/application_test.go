@@ -621,6 +621,7 @@ func TestInstallCrashHelper(t *testing.T) {
 	}
 	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 		if phase == "executor" {
+			_ = os.WriteFile(filepath.Join(stateDir, "executor-entered"), []byte("started"), 0o600)
 			os.Exit(78)
 		}
 		return nil
@@ -652,6 +653,14 @@ func TestInstallProcessTerminationAtDurableBoundaries(t *testing.T) {
 				t.Fatalf("child exit = %d, want %d", exitErr.ExitCode(), wantExit)
 			}
 
+			_, markerErr := os.Stat(filepath.Join(stateDir, "executor-entered"))
+			if phase == "executor" && markerErr != nil {
+				t.Fatalf("executor crash boundary did not enter executor: %v", markerErr)
+			}
+			if phase == "executing" && !errors.Is(markerErr, os.ErrNotExist) {
+				t.Fatalf("executing-state crash unexpectedly entered executor: marker error=%v", markerErr)
+			}
+
 			store := NewStateStore(StatePath(stateDir))
 			state, err := store.Load()
 			if err != nil {
@@ -667,7 +676,9 @@ func TestInstallProcessTerminationAtDurableBoundaries(t *testing.T) {
 				t.Fatalf("crash did not preserve pending journal without advancing sequence: %#v", state)
 			}
 			want := InstallRecoveryNotApplied
-			if phase == "executing" || phase == "committed" {
+			// The executing journal is durable before Execute is entered. Only a
+			// committed journal proves the executor returned successfully.
+			if phase == "committed" {
 				want = InstallRecoveryApplied
 			}
 			if err := store.RecoverPendingInstall(context.Background(), testInstallerRecovery(
