@@ -31,16 +31,16 @@ type updateLUID struct {
 }
 
 type updateTokenStatistics struct {
-	TokenID           updateLUID
-	AuthenticationID  updateLUID
-	ExpirationTime    int64
-	TokenType         uint32
+	TokenID            updateLUID
+	AuthenticationID   updateLUID
+	ExpirationTime     int64
+	TokenType          uint32
 	ImpersonationLevel uint32
-	DynamicCharged    uint32
-	DynamicAvailable  uint32
-	GroupCount        uint32
-	PrivilegeCount    uint32
-	ModifiedID        updateLUID
+	DynamicCharged     uint32
+	DynamicAvailable   uint32
+	GroupCount         uint32
+	PrivilegeCount     uint32
+	ModifiedID         updateLUID
 }
 
 type updateProcessIdentity struct {
