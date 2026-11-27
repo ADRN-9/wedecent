@@ -938,9 +938,9 @@ function Recover-InterruptedInstallerTransactions {
         $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
         $expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
         if ($null -eq $serviceConfig -or
-            -not ([string]$serviceConfig.PathName).IndexOf($expectedAgent, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-            -not ([string]$serviceConfig.PathName).IndexOf('--state=', [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
-            -not ([string]$serviceConfig.PathName).IndexOf([IO.Path]::GetFullPath($StateDir), [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            ([string]$serviceConfig.PathName).IndexOf($expectedAgent, [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+            ([string]$serviceConfig.PathName).IndexOf('--state=', [StringComparison]::OrdinalIgnoreCase) -lt 0 -or
+            ([string]$serviceConfig.PathName).IndexOf([IO.Path]::GetFullPath($StateDir), [StringComparison]::OrdinalIgnoreCase) -lt 0) {
             throw 'SCM service identity does not match the authenticated installer paths.'
         }
         $restartService = [bool]$journal.service_was_running
