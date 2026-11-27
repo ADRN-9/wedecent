@@ -482,7 +482,7 @@ func verifyWindowsPowerShellExecutable(ctx context.Context, path string) (string
 		return "", fmt.Errorf("hash Windows PowerShell executable")
 	}
 	if err := winVerifyTrustFile(expected); err != nil {
-		return "", fmt.Errorf("Windows PowerShell Authenticode trust verification failed")
+		return "", fmt.Errorf("Windows PowerShell Authenticode trust verification failed: %w", err)
 	}
 	if ctx != nil {
 		if err := verifyAuthenticodePublisher(ctx, expected, expected, "Microsoft Windows", ""); err != nil {
@@ -505,7 +505,8 @@ func winVerifyTrustFile(path string) error {
 	fileInfo.Size = uint32(unsafe.Sizeof(fileInfo))
 	data := winTrustData{
 		UIChoice: 2, UnionChoice: 1, FileInfo: &fileInfo,
-		ProviderFlags: 0x80 | 0x1000,
+		// Require chain revocation checking while allowing WinVerifyTrust to retrieve current revocation data.
+		ProviderFlags: 0x80,
 	}
 	data.Size = uint32(unsafe.Sizeof(data))
 	result, _, _ := winVerifyTrustProc.Call(^uintptr(0),
