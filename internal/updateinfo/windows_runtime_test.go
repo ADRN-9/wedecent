@@ -13,7 +13,7 @@ import (
 )
 
 func TestWindowsUpdateRootStrictSchema(t *testing.T) {
-	_, publicKey, err := ed25519.GenerateKey(rand.Reader)
+	publicKey, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
 	}
