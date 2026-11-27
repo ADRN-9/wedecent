@@ -51,6 +51,13 @@ func (s *StateStore) persist(state State) error {
 	return saveState(s.Path, state)
 }
 
+func (s *StateStore) persistInstallTransition(current, next State) error {
+	if err := validateInstallStateTransition(current, next); err != nil {
+		return err
+	}
+	return s.persist(next)
+}
+
 func NewStateStore(path string) *StateStore {
 	return &StateStore{Path: path}
 }
