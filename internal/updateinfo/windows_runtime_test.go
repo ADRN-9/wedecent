@@ -67,7 +67,6 @@ func TestWindowsPowerShellRejectsSubstitutedExecutablePath(t *testing.T) {
 	}
 }
 
-
 func TestSameUpdateProcessIdentityRejectsCrossUserAndCrossSession(t *testing.T) {
 	baseline := updateProcessIdentity{
 		UserSID: "S-1-5-21-100-200-300-1001",
