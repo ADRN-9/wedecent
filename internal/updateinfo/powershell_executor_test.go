@@ -2,6 +2,7 @@ package updateinfo
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -57,6 +58,18 @@ func TestPowerShellInstallerExecutorRunsPreflightInstallPostflight(t *testing.T)
 	}
 	if !containsArgPair(commands[1].args, "-BundlePath", pkgDir) {
 		t.Fatalf("install args missing verified bundle path: %v", commands[1].args)
+	}
+	transaction := executorTestTransaction("v0.4.0")
+	for _, pair := range [][2]string{
+		{"-TransactionId", transaction.ID},
+		{"-ExpectedPackageSHA256", transaction.PackageDigest},
+		{"-ExpectedManifestSHA256", transaction.ManifestDigest},
+		{"-PreviousVersion", transaction.PreviousVersion},
+		{"-TransactionSequence", "1"},
+	} {
+		if !containsArgPair(commands[1].args, pair[0], pair[1]) {
+			t.Fatalf("install args missing transaction binding %v: %v", pair, commands[1].args)
+		}
 	}
 	for _, command := range commands {
 		for _, pair := range [][2]string{
@@ -186,6 +199,121 @@ func TestPowerShellInstallerExecutorRejectsForgedPackageAndTransactionMismatch(t
 	}
 	if calls != 0 {
 		t.Fatalf("PowerShell commands = %d, want 0", calls)
+	}
+}
+
+func TestPowerShellInstallerExecutorRecoveryMapsDurableJournalOutcome(t *testing.T) {
+	for _, test := range []struct {
+		phase string
+		want  InstallRecoveryResult
+	}{
+		{phase: "committed", want: InstallRecoveryApplied},
+		{phase: "rolled-back", want: InstallRecoveryNotApplied},
+	} {
+		t.Run(test.phase, func(t *testing.T) {
+			root := privateTempDir(t)
+			t.Setenv("ProgramData", root)
+			powershell := filepath.Join(root, "powershell.exe")
+			if err := os.WriteFile(powershell, []byte("fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			installDir := filepath.Join(root, "install")
+			stateDir := filepath.Join(installDir, "data", "agent")
+			if err := os.MkdirAll(stateDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			script := filepath.Join(installDir, "Recover-WeDecentInstall.ps1")
+			if err := os.WriteFile(script, []byte("fixture"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			transaction := executorTestTransaction("v0.4.0")
+			transaction.Phase = InstallPhaseRecoveryRequired
+			journal := windowsInstallJournal{
+				TransactionID: transaction.ID, PackageSHA256: transaction.PackageDigest,
+				ManifestSHA256: transaction.ManifestDigest, PreviousVersion: transaction.PreviousVersion,
+				Sequence: transaction.Sequence, Version: transaction.TargetVersion, Phase: test.phase,
+			}
+			journalDir := filepath.Join(root, "WeDecent", "install-transactions")
+			if err := os.MkdirAll(journalDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			data, err := json.Marshal(journal)
+			if err != nil {
+				t.Fatal(err)
+			}
+			journalPath := filepath.Join(journalDir, transaction.ID+".json")
+			if err := os.WriteFile(journalPath, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			called := false
+			executor := PowerShellInstallerExecutor{
+				PowerShellPath: powershell, InstallDir: installDir, StateDir: stateDir, ServiceName: "WeDecentAgent",
+				run: func(_ context.Context, gotPowerShell, gotScript string, args []string) error {
+					called = true
+					if gotPowerShell != powershell || gotScript != script {
+						t.Fatalf("recovery command paths = %q, %q", gotPowerShell, gotScript)
+					}
+					for _, pair := range [][2]string{
+						{"-TransactionId", transaction.ID},
+						{"-ExpectedManifestSHA256", transaction.ManifestDigest},
+						{"-ExpectedPackageSHA256", transaction.PackageDigest},
+						{"-Sequence", "1"},
+						{"-PreviousVersion", transaction.PreviousVersion},
+						{"-TargetVersion", transaction.TargetVersion},
+					} {
+						if !containsArgPair(args, pair[0], pair[1]) {
+							t.Fatalf("recovery args missing %v: %v", pair, args)
+						}
+					}
+					return nil
+				},
+			}
+			got, err := executor.Recover(context.Background(), transaction)
+			if err != nil || got != test.want || !called {
+				t.Fatalf("Recover() = %v, %v, called=%v; want %v", got, err, called, test.want)
+			}
+		})
+	}
+}
+
+func TestPowerShellInstallerExecutorRecoveryRejectsMismatchedJournal(t *testing.T) {
+	root := privateTempDir(t)
+	t.Setenv("ProgramData", root)
+	powershell := filepath.Join(root, "powershell.exe")
+	if err := os.WriteFile(powershell, []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	installDir := filepath.Join(root, "install")
+	stateDir := filepath.Join(installDir, "data", "agent")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "Recover-WeDecentInstall.ps1"), []byte("fixture"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	transaction := executorTestTransaction("v0.4.0")
+	transaction.Phase = InstallPhaseRecoveryRequired
+	journalDir := filepath.Join(root, "WeDecent", "install-transactions")
+	if err := os.MkdirAll(journalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(windowsInstallJournal{
+		TransactionID: transaction.ID, PackageSHA256: strings.Repeat("c", 64),
+		ManifestSHA256: transaction.ManifestDigest, PreviousVersion: transaction.PreviousVersion,
+		Sequence: transaction.Sequence, Version: transaction.TargetVersion, Phase: "rolled-back",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(journalDir, transaction.ID+".json"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	executor := PowerShellInstallerExecutor{
+		PowerShellPath: powershell, InstallDir: installDir, StateDir: stateDir, ServiceName: "WeDecentAgent",
+		run: func(context.Context, string, string, []string) error { return nil },
+	}
+	if got, err := executor.Recover(context.Background(), transaction); !errors.Is(err, ErrInstallRecoveryRequired) || got != InstallRecoveryUnknown {
+		t.Fatalf("Recover() = %v, %v; want unknown recovery error", got, err)
 	}
 }
 
