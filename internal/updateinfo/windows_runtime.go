@@ -520,28 +520,18 @@ func verifyAuthenticodePublisher(ctx context.Context, powershell, target, expect
 	if ctx == nil || powershell == "" || target == "" {
 		return fmt.Errorf("Authenticode verification context is incomplete")
 	}
-	script := "$ErrorActionPreference = 'Stop'
-" +
-		"$s = Get-AuthenticodeSignature -LiteralPath $env:WEDECENT_AUTHENTICODE_FILE
-" +
-		"if ($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate) { exit 31 }
-" +
-		"if ($env:WEDECENT_AUTHENTICODE_THUMBPRINT) {
-" +
-		"  $actual = ($s.SignerCertificate.Thumbprint -replace '\s', '').ToUpperInvariant()
-" +
-		"  if ($actual -cne $env:WEDECENT_AUTHENTICODE_THUMBPRINT) { exit 32 }
-" +
-		"}
-" +
-		"if ($env:WEDECENT_AUTHENTICODE_SUBJECT) {
-" +
-		"  $subject = $s.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
-" +
-		"  if ($subject -cne $env:WEDECENT_AUTHENTICODE_SUBJECT) { exit 33 }
-" +
-		"}
-"
+	script := `$ErrorActionPreference = 'Stop'
+$s = Get-AuthenticodeSignature -LiteralPath $env:WEDECENT_AUTHENTICODE_FILE
+if ($s.Status -ne 'Valid' -or $null -eq $s.SignerCertificate) { exit 31 }
+if ($env:WEDECENT_AUTHENTICODE_THUMBPRINT) {
+  $actual = ($s.SignerCertificate.Thumbprint -replace '\s', '').ToUpperInvariant()
+  if ($actual -cne $env:WEDECENT_AUTHENTICODE_THUMBPRINT) { exit 32 }
+}
+if ($env:WEDECENT_AUTHENTICODE_SUBJECT) {
+  $subject = $s.SignerCertificate.GetNameInfo([Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false)
+  if ($subject -cne $env:WEDECENT_AUTHENTICODE_SUBJECT) { exit 33 }
+}
+`
 	command := exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive",
 		"-ExecutionPolicy", "AllSigned", "-Command", script)
 	command.Env = append(os.Environ(),
