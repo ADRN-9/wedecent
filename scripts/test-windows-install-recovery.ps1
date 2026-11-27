@@ -96,13 +96,21 @@ function Write-TestJson {
 function New-TransactionFixture {
     param(
         [string]$Id = ([Guid]::NewGuid().ToString('N')),
-        [bool]$Committed = $false
+        [bool]$Committed = $false,
+        [bool]$ServiceWasRunning = $false
     )
     $manifestDigest = 'a' * 64
     $packageDigest = 'b' * 64
     $sequence = [UInt64]42
     $previousVersion = 'v0.3.9'
     $targetVersion = 'v0.4.0'
+    $metadataPath = Join-Path $root 'WeDecent\installer.json'
+    $metadataBackupPath = "$metadataPath.$Id.metadata.bak"
+    if (-not (Test-Path -LiteralPath $metadataPath -PathType Leaf)) { throw 'Recovery fixture prior metadata is missing.' }
+    $metadataOriginalHash = Get-TestHash $metadataPath
+    Copy-Item -LiteralPath $metadataPath -Destination $metadataBackupPath
+    Set-TestTrustedAcl -Path $metadataBackupPath
+    if ((Get-TestHash $metadataBackupPath) -ne $metadataOriginalHash) { throw 'Recovery fixture metadata snapshot failed integrity verification.' }
     $entries = @()
     foreach ($name in $binaryNames) {
         $destination = Join-Path $installDir $name
@@ -128,7 +136,11 @@ function New-TransactionFixture {
         manifest_sha256 = $manifestDigest
         previous_version = $previousVersion
         sequence = $sequence
-        service_was_running = $false
+        service_was_running = $ServiceWasRunning
+        metadata_path = $metadataPath
+        metadata_had_original = $true
+        metadata_original_sha256 = $metadataOriginalHash
+        metadata_backup_path = $metadataBackupPath
         version = $targetVersion
         phase = 'replacing'
         entries = $entries
@@ -166,6 +178,9 @@ function New-TransactionFixture {
         sequence = $sequence
         previousVersion = $previousVersion
         targetVersion = $targetVersion
+        metadataPath = $metadataPath
+        metadataBackupPath = $metadataBackupPath
+        metadataOriginalHash = $metadataOriginalHash
     }
 }
 
@@ -196,6 +211,7 @@ try {
     Write-TestJson -Path $metadataPath -Value ([ordered]@{
         schema = 1
         product = 'WeDecent'
+        version = 'v0.3.9'
         service_name = $serviceName
         service_account_sid = $serviceSid
         install_dir = $installDir
@@ -203,7 +219,20 @@ try {
     })
 
     $successful = New-TransactionFixture
+    $agentPath = Join-Path $installDir 'wd-agent.exe'
+    $serviceImage = '"' + $agentPath + '" --service --state="' + $stateDir + '"'
+    $serviceName = 'WeDecentRecoveryTestSvc' + [Guid]::NewGuid().ToString('N')
+    & sc.exe create $serviceName binPath= $serviceImage start= demand | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not create the isolated stopped SCM service fixture.' }
+    $serviceCheck = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    if ($null -eq $serviceCheck -or $serviceCheck.State -ne 'Stopped') { throw 'SCM service fixture was not created stopped.' }
+    $metadataBefore = Get-TestHash $successful.metadataBackupPath
+    $targetMetadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
+    $targetMetadata.version = $successful.targetVersion
+    Write-TestJson -Path $metadataPath -Value $targetMetadata
+    [IO.File]::WriteAllText("$metadataPath.$($successful.id).restore", 'interrupted restore temp')
     Invoke-TestRecovery -Fixture $successful | Out-Null
+    if ((Get-TestHash $metadataPath) -ne $metadataBefore) { throw 'Recovery did not restore exact prior installer metadata bytes.' }
     $recovered = Get-Content -LiteralPath $successful.journalPath -Raw | ConvertFrom-Json
     if ($recovered.phase -ne 'rolled-back') { throw 'Recovery did not persist the rolled-back phase.' }
     foreach ($entry in $successful.journal.entries) {
@@ -557,6 +586,7 @@ try {
     Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
 } finally {
     $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
