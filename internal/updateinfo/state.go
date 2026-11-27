@@ -20,6 +20,7 @@ const (
 	UpdateStateVersion            = 1
 	UpdateStateVersionWithKeyset  = 2
 	UpdateStateVersionWithInstall = 3
+	UpdateStateVersionWithInstalled = 4
 	UpdateStateFilename           = "update-state.json"
 	MaxUpdateStateBytes           = 4 << 10
 )
@@ -35,12 +36,14 @@ type State struct {
 	KeysetEpoch    uint64              `json:"keyset_epoch,omitempty"`
 	KeysetDigest   string              `json:"keyset_digest,omitempty"`
 	PendingInstall *InstallTransaction `json:"pending_install,omitempty"`
+	InstalledVersion string `json:"installed_version,omitempty"`
 }
 
 type StateStore struct {
 	Path         string
 	mu           sync.Mutex
 	persistState func(State) error
+	readInstalledVersion func() (string, error)
 }
 
 func (s *StateStore) persist(state State) error {
@@ -51,7 +54,7 @@ func (s *StateStore) persist(state State) error {
 }
 
 func NewStateStore(path string) *StateStore {
-	return &StateStore{Path: path}
+	return &StateStore{Path: path, readInstalledVersion: readProtectedInstalledVersion}
 }
 
 func StatePath(stateDir string) string {
@@ -95,12 +98,8 @@ func (s *StateStore) Advance(sequence uint64) error {
 	if sequence <= current.StableSequence {
 		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, sequence, current.StableSequence)
 	}
-	next := State{
-		Version:        current.Version,
-		StableSequence: sequence,
-		KeysetEpoch:    current.KeysetEpoch,
-		KeysetDigest:   current.KeysetDigest,
-	}
+	next := current
+	next.StableSequence = sequence
 	if next.Version == 0 {
 		next.Version = UpdateStateVersion
 	}
@@ -150,15 +149,41 @@ func (s *StateStore) VerifyAndAdvanceKeyset(
 		return verified, nil
 	}
 	next := State{
-		Version:        UpdateStateVersionWithKeyset,
+		Version: UpdateStateVersionWithInstalled,
 		StableSequence: current.StableSequence,
-		KeysetEpoch:    verified.Epoch(),
-		KeysetDigest:   verified.Digest(),
+		KeysetEpoch: verified.Epoch(),
+		KeysetDigest: verified.Digest(),
+		InstalledVersion: current.InstalledVersion,
 	}
 	if err := saveState(s.Path, next); err != nil {
 		return zero, fmt.Errorf("%w: persist verified keyset: %v", ErrInvalidState, err)
 	}
 	return verified, nil
+}
+
+var ErrInstalledVersionUnavailable = errors.New("updateinfo: protected installed version is unavailable")
+
+func (s *StateStore) installedSnapshot(ctx context.Context) (string, uint64, error) {
+	if s == nil || s.Path == "" || ctx == nil { return "", 0, ErrInvalidState }
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := acquireUpdateLock(ctx, s.Path)
+	if err != nil { return "", 0, err }
+	defer release()
+	current, err := loadState(s.Path)
+	if err != nil { return "", 0, err }
+	if current.PendingInstall != nil { return "", 0, ErrInstallRecoveryRequired }
+	if current.InstalledVersion == "" {
+		reader := s.readInstalledVersion
+		if reader == nil { return "", 0, ErrInstalledVersionUnavailable }
+		version, err := reader()
+		if err != nil { return "", 0, fmt.Errorf("%w: %v", ErrInstalledVersionUnavailable, err) }
+		if _, err := parseStableVersion(version); err != nil { return "", 0, ErrInstalledVersionUnavailable }
+		current.Version = UpdateStateVersionWithInstalled
+		current.InstalledVersion = version
+		if err := s.persist(current); err != nil { return "", 0, err }
+	}
+	return current.InstalledVersion, current.StableSequence, nil
 }
 
 func loadState(path string) (State, error) {
@@ -296,6 +321,31 @@ func (s State) validatePersisted() error {
 	case UpdateStateVersion:
 		if s.StableSequence == 0 || s.KeysetEpoch != 0 || s.KeysetDigest != "" || s.PendingInstall != nil {
 			return fmt.Errorf("%w: legacy state fields are invalid", ErrInvalidState)
+		}
+	case UpdateStateVersionWithInstalled:
+		if _, err := parseStableVersion(s.InstalledVersion); err != nil {
+			return fmt.Errorf("%w: installed version is invalid", ErrInvalidState)
+		}
+		if (s.KeysetEpoch == 0) != (s.KeysetDigest == "") {
+			return fmt.Errorf("%w: keyset epoch and digest must be present together", ErrInvalidState)
+		}
+		if s.KeysetEpoch != 0 {
+			if len(s.KeysetDigest) != 64 || strings.ToLower(s.KeysetDigest) != s.KeysetDigest {
+				return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
+			}
+			if _, err := hex.DecodeString(s.KeysetDigest); err != nil {
+				return fmt.Errorf("%w: keyset digest is invalid", ErrInvalidState)
+			}
+		}
+		if s.PendingInstall != nil {
+			if err := s.PendingInstall.validate(); err != nil { return fmt.Errorf("%w: pending install journal: %v", ErrInvalidState, err) }
+			if s.PendingInstall.Phase == InstallPhaseCommitted {
+				if s.PendingInstall.Sequence != s.StableSequence || s.InstalledVersion != s.PendingInstall.TargetVersion {
+					return fmt.Errorf("%w: committed transaction does not match protected installed state", ErrInvalidState)
+				}
+			} else if s.PendingInstall.Sequence <= s.StableSequence {
+				return fmt.Errorf("%w: pending install sequence is stale", ErrInvalidState)
+			}
 		}
 	case UpdateStateVersionWithKeyset, UpdateStateVersionWithInstall:
 		if s.KeysetEpoch == 0 || len(s.KeysetDigest) != 64 || strings.ToLower(s.KeysetDigest) != s.KeysetDigest {
