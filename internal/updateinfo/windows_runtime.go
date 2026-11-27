@@ -3,6 +3,7 @@
 package updateinfo
 
 import (
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -27,6 +28,7 @@ const (
 
 var (
 	windowsPublisherPattern = regexp.MustCompile("^[A-Fa-f0-9]{40}$")
+	windowsServiceNamePattern = regexp.MustCompile("^[A-Za-z0-9_.-]{1,128}$")
 	winTrustDLL             = syscall.NewLazyDLL("wintrust.dll")
 	winVerifyTrustProc      = winTrustDLL.NewProc("WinVerifyTrust")
 )
@@ -39,12 +41,16 @@ type WindowsUpdateRoot struct {
 }
 
 type windowsInstallerMetadata struct {
-	Schema      int    `json:"schema"`
-	Product     string `json:"product"`
-	Version     string `json:"version"`
-	ServiceName string `json:"service_name"`
-	InstallDir  string `json:"install_dir"`
-	StateDir    string `json:"state_dir"`
+	Schema               int    `json:"schema"`
+	Product              string `json:"product"`
+	Version              string `json:"version"`
+	ServiceName          string `json:"service_name"`
+	ServiceAccountName   string `json:"service_account_name"`
+	ServiceAccountSID    string `json:"service_account_sid"`
+	ManagedServiceAccount bool  `json:"managed_service_account"`
+	InstallDir           string `json:"install_dir"`
+	StateDir             string `json:"state_dir"`
+	UpdatedAt            string `json:"updated_at"`
 }
 
 type winTrustFileInfo struct {
@@ -219,6 +225,9 @@ func ValidateInstalledUpdateWorker() error {
 	if err != nil {
 		return err
 	}
+	if _, err := verifyWindowsPowerShellExecutable(context.Background(), powershell); err != nil {
+		return err
+	}
 	if err := verifyAuthenticodePublisher(context.Background(), powershell, executable, "", root.AuthenticodeThumbprint); err != nil {
 		return fmt.Errorf("verify staged update worker publisher: %w", err)
 	}
@@ -276,7 +285,7 @@ func ApplyInstalledWindowsStable(ctx context.Context) error {
 	var metadata windowsInstallerMetadata
 	if err := decodeStrictJSON(metadataBytes, &metadata); err != nil ||
 		metadata.Schema != 1 || metadata.Product != "WeDecent" ||
-		metadata.Version == "" || !keyIDPattern.MatchString(metadata.ServiceName) ||
+		metadata.Version == "" || !windowsServiceNamePattern.MatchString(metadata.ServiceName) ||
 		!filepath.IsAbs(metadata.InstallDir) || !filepath.IsAbs(metadata.StateDir) ||
 		!strings.EqualFold(filepath.Clean(metadata.InstallDir), filepath.Clean(installDir)) {
 		return fmt.Errorf("protected installer metadata is invalid or does not match this installation")
@@ -335,7 +344,7 @@ func ApplyInstalledWindowsStable(ctx context.Context) error {
 	}
 	manifest, err := client.ApplyStable(
 		ctx, state.InstalledVersion, state.StableSequence,
-		InstallerClient{}, stagingDir, MaxInstallerArchiveBytes, verifier, executor,
+		InstallerClient{}, stagingDir, MaxInstallerExpandedBytes, verifier, executor,
 	)
 	if err != nil {
 		return fmt.Errorf("stable update failed closed: %w", err)
@@ -369,7 +378,8 @@ func loadWindowsUpdateRoot(path string) (WindowsUpdateRoot, error) {
 }
 
 func decodeStrictJSON(data []byte, target any) error {
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	data = bytes.TrimPrefix(data, []byte{0xEF, 0xBB, 0xBF})
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return err
