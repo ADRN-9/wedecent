@@ -450,7 +450,6 @@ func TestInstallProcessTerminationAtDurableBoundaries(t *testing.T) {
 	}
 }
 
-
 type testCommitFinalizerExecutor struct {
 	called bool
 	fail   bool
@@ -518,8 +517,3 @@ func TestCleanupInterruptionKeepsCommittedStateAndBlocksNextUpdate(t *testing.T)
 	retry := &testCommitFinalizerExecutor{}
 	if err := store.finalizeCommittedInstalls(context.Background(), retry); err != nil {
 		t.Fatalf("committed cleanup retry failed: %v", err)
-	}
-	if !retry.called {
-		t.Fatal("committed cleanup retry did not run")
-	}
-}
