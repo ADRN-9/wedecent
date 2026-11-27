@@ -20,17 +20,19 @@ const (
 var ErrDiscovery = errors.New("updateinfo: update discovery failed")
 
 type DiscoveryClient struct {
-	RootKeyID string
+	RootKeyID     string
 	RootPublicKey ed25519.PublicKey
-	State *StateStore
-	Transport http.RoundTripper
-	Timeout time.Duration
-	Now func() time.Time
+	State         *StateStore
+	Transport     http.RoundTripper
+	Timeout       time.Duration
+	Now           func() time.Time
 }
 
 func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion string, highestSequence uint64) (Manifest, error) {
 	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
-	if err != nil { return Manifest{}, err }
+	if err != nil {
+		return Manifest{}, err
+	}
 	return verified.Manifest(), nil
 }
 
@@ -41,32 +43,52 @@ func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, currentVers
 	if ctx == nil || c.State == nil || c.State.Path == "" || len(c.RootPublicKey) != ed25519.PublicKeySize || !keyIDPattern.MatchString(c.RootKeyID) {
 		return zero, fmt.Errorf("%w: pinned root key and protected state store are required", ErrDiscovery)
 	}
-	if c.Timeout < 0 { return zero, fmt.Errorf("%w: timeout must not be negative", ErrDiscovery) }
+	if c.Timeout < 0 {
+		return zero, fmt.Errorf("%w: timeout must not be negative", ErrDiscovery)
+	}
 	now := time.Now()
-	if c.Now != nil { now = c.Now() }
+	if c.Now != nil {
+		now = c.Now()
+	}
 	pairBytes, err := c.fetch(ctx, StablePairURL, MaxStablePairBytes)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	manifestBytes, signatureBytes, err := ParseCanonicalStablePair(pairBytes)
-	if err != nil { return zero, fmt.Errorf("%w: parse stable pair: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: parse stable pair: %w", ErrDiscovery, err)
+	}
 	untrustedManifest, err := ParseCanonical(manifestBytes)
 	if err != nil || untrustedManifest.Schema != ManifestSchemaV2 {
 		return zero, fmt.Errorf("%w: stable channel requires a canonical schema-v2 manifest", ErrDiscovery)
 	}
 	keysetURL, keysetSignatureURL := stableKeysetURLs(untrustedManifest.KeysetEpoch)
 	keysetBytes, err := c.fetch(ctx, keysetURL, MaxKeysetBytes)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	keysetSignature, err := c.fetch(ctx, keysetSignatureURL, MaxSignatureFileBytes)
-	if err != nil { return zero, err }
+	if err != nil {
+		return zero, err
+	}
 	keyset, err := c.State.VerifyAndAdvanceKeyset(ctx, c.RootKeyID, c.RootPublicKey, keysetBytes, keysetSignature, now)
-	if err != nil { return zero, fmt.Errorf("%w: verify keyset: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: verify keyset: %w", ErrDiscovery, err)
+	}
 	persisted, err := c.State.Load()
-	if err != nil { return zero, fmt.Errorf("%w: load protected update state: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: load protected update state: %w", ErrDiscovery, err)
+	}
 	if persisted.KeysetEpoch != keyset.Epoch() || persisted.KeysetDigest != keyset.Digest() {
 		return zero, fmt.Errorf("%w: verified keyset does not match persisted trust state", ErrDiscovery)
 	}
-	if persisted.StableSequence > highestSequence { highestSequence = persisted.StableSequence }
+	if persisted.StableSequence > highestSequence {
+		highestSequence = persisted.StableSequence
+	}
 	capability, err := VerifyManifestV2Capability(keyset, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
-	if err != nil { return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err) }
+	if err != nil {
+		return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err)
+	}
 	return capability, nil
 }
 
@@ -77,20 +99,34 @@ func stableKeysetURLs(epoch uint64) (string, string) {
 
 func (c DiscoveryClient) fetch(ctx context.Context, rawURL string, limit int) ([]byte, error) {
 	timeout := c.Timeout
-	if timeout == 0 { timeout = DefaultFetchTimeout }
+	if timeout == 0 {
+		timeout = DefaultFetchTimeout
+	}
 	client := &http.Client{Transport: c.Transport, Timeout: timeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
 		return fmt.Errorf("%w: redirects are not permitted", ErrDiscovery)
 	}}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil { return nil, fmt.Errorf("%w: build request", ErrDiscovery) }
+	if err != nil {
+		return nil, fmt.Errorf("%w: build request", ErrDiscovery)
+	}
 	req.Header.Set("Accept", "application/json, text/plain;q=0.9")
 	resp, err := client.Do(req)
-	if err != nil { return nil, fmt.Errorf("%w: fetch %s: %w", ErrDiscovery, rawURL, err) }
+	if err != nil {
+		return nil, fmt.Errorf("%w: fetch %s: %w", ErrDiscovery, rawURL, err)
+	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK { return nil, fmt.Errorf("%w: fetch %s returned HTTP %d", ErrDiscovery, rawURL, resp.StatusCode) }
-	if resp.ContentLength > int64(limit) { return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrDiscovery, limit) }
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("%w: fetch %s returned HTTP %d", ErrDiscovery, rawURL, resp.StatusCode)
+	}
+	if resp.ContentLength > int64(limit) {
+		return nil, fmt.Errorf("%w: response exceeds %d bytes", ErrDiscovery, limit)
+	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
-	if err != nil { return nil, fmt.Errorf("%w: read %s: %w", ErrDiscovery, rawURL, err) }
-	if len(body) == 0 || len(body) > limit { return nil, fmt.Errorf("%w: response size is invalid", ErrDiscovery) }
+	if err != nil {
+		return nil, fmt.Errorf("%w: read %s: %w", ErrDiscovery, rawURL, err)
+	}
+	if len(body) == 0 || len(body) > limit {
+		return nil, fmt.Errorf("%w: response size is invalid", ErrDiscovery)
+	}
 	return body, nil
 }
