@@ -46,7 +46,10 @@ func (t InstallTransaction) validate() error {
 	return nil
 }
 
-func newInstallTransaction(verified VerifiedManifest, _ VerifiedInstallerPackage) (InstallTransaction, error) {
+func newInstallTransaction(verified VerifiedManifest, pkg VerifiedInstallerPackage) (InstallTransaction, error) {
+	if pkg.Version != verified.manifest.Version {
+		return InstallTransaction{}, ErrInstallTransaction
+	}
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
 		return InstallTransaction{}, fmt.Errorf("%w: transaction ID generation failed", ErrInstallTransaction)
