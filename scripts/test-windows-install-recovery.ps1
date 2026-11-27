@@ -1564,6 +1564,17 @@ public static class WeDecentIdentityProcess
         recovery_script_state = 'original'
     }
     Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
     Restore-TransactionRecoveryScript -Journal $retryJournal
     if ((Test-Path -LiteralPath $retryBackup) -or
         (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
@@ -1586,6 +1597,120 @@ public static class WeDecentIdentityProcess
         recovery_script_sha256 = Get-TestHash $recoveryTarget
         recovery_script_state = 'published'
     }
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}
+    # Reconstruct the durable crash state after removal intent and file deletion.
+    $interruptedFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $interruptedFreshJournal = [ordered]@{
+        transaction_id = $interruptedFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $interruptedFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $interruptedJournalPath = Join-Path $restoreJournalDir ($interruptedFreshId + '.json')
+    Write-InstallJournal -Journal $interruptedFreshJournal -Path $interruptedJournalPath
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Assert-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    Restore-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    $recoveredFreshJournal = Get-Content -LiteralPath $interruptedJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $recoveredFreshJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$recoveredFreshJournal.recovery_script_sha256)) {
+        throw 'Recovery did not finish a fresh-install removal interrupted after durable removal intent.'
+    }
+    Restore-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        (Get-Content -LiteralPath $interruptedJournalPath -Raw | ConvertFrom-Json).recovery_script_state -ne 'absent') {
+        throw 'Repeated fresh-install removal recovery was not idempotent.'
+    }
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}) {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}
+    # Reconstruct the durable crash state after removal intent and file deletion.
+    $interruptedFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $interruptedFreshJournal = [ordered]@{
+        transaction_id = $interruptedFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $interruptedFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $interruptedJournalPath = Join-Path $restoreJournalDir ($interruptedFreshId + '.json')
+    Write-InstallJournal -Journal $interruptedFreshJournal -Path $interruptedJournalPath
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Assert-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    Restore-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    $recoveredFreshJournal = Get-Content -LiteralPath $interruptedJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $recoveredFreshJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$recoveredFreshJournal.recovery_script_sha256)) {
+        throw 'Recovery did not finish a fresh-install removal interrupted after durable removal intent.'
+    }
+    Restore-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        (Get-Content -LiteralPath $interruptedJournalPath -Raw | ConvertFrom-Json).recovery_script_state -ne 'absent') {
+        throw 'Repeated fresh-install removal recovery was not idempotent.'
+    }
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}) {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
     Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
     $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
     if ((Test-Path -LiteralPath $recoveryTarget) -or
@@ -1593,6 +1718,13 @@ public static class WeDecentIdentityProcess
         -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
         $persistedFreshRestore.recovery_script_state -ne 'absent') {
         throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
     }
     # Reconstruct the durable crash state after removal intent and file deletion.
     $interruptedFreshId = [Guid]::NewGuid().ToString('N')
