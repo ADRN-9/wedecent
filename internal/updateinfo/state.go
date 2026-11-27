@@ -20,8 +20,8 @@ const (
 	UpdateStateVersion            = 1
 	UpdateStateVersionWithKeyset  = 2
 	UpdateStateVersionWithInstall = 3
-	UpdateStateFilename          = "update-state.json"
-	MaxUpdateStateBytes          = 4 << 10
+	UpdateStateFilename           = "update-state.json"
+	MaxUpdateStateBytes           = 4 << 10
 )
 
 var ErrInvalidState = errors.New("updateinfo: invalid update state")
@@ -30,9 +30,9 @@ var ErrInvalidState = errors.New("updateinfo: invalid update state")
 // signed stable-channel sequence explicitly accepted after a successful update
 // boundary; merely fetching a manifest must not advance it.
 type State struct {
-	Version        int    `json:"version"`
-	StableSequence uint64 `json:"stable_sequence"`
-	KeysetEpoch    uint64 `json:"keyset_epoch,omitempty"`
+	Version        int                 `json:"version"`
+	StableSequence uint64              `json:"stable_sequence"`
+	KeysetEpoch    uint64              `json:"keyset_epoch,omitempty"`
 	KeysetDigest   string              `json:"keyset_digest,omitempty"`
 	PendingInstall *InstallTransaction `json:"pending_install,omitempty"`
 }
