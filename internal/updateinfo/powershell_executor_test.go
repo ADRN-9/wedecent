@@ -46,7 +46,7 @@ func TestPowerShellInstallerExecutorRunsPreflightInstallPostflight(t *testing.T)
 			return nil
 		},
 	}
-	if err := executor.Execute(context.Background(), VerifiedInstallerPackage{Dir: pkgDir, Version: "v0.4.0"}); err != nil {
+	if err := executor.Execute(context.Background(), executorTestTransaction("v0.4.0"), newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
 	if len(commands) != 3 {
@@ -96,7 +96,7 @@ func TestPowerShellInstallerExecutorPreflightFailurePreventsMutation(t *testing.
 			return errors.New("preflight failed")
 		},
 	}
-	if err := executor.Execute(context.Background(), VerifiedInstallerPackage{Dir: pkgDir}); err == nil {
+	if err := executor.Execute(context.Background(), executorTestTransaction("v0.4.0"), newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))); err == nil {
 		t.Fatal("Execute() unexpectedly succeeded")
 	}
 	if calls != 1 {
@@ -117,7 +117,7 @@ func TestPowerShellInstallerExecutorRejectsUntrustedExecutablePath(t *testing.T)
 		t.Fatal(err)
 	}
 
-	if err := (PowerShellInstallerExecutor{PowerShellPath: "powershell.exe"}).Execute(context.Background(), VerifiedInstallerPackage{Dir: pkgDir}); err == nil || !strings.Contains(err.Error(), "absolute") {
+	if err := (PowerShellInstallerExecutor{PowerShellPath: "powershell.exe"}).Execute(context.Background(), executorTestTransaction("v0.4.0"), newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))); err == nil || !strings.Contains(err.Error(), "absolute") {
 		t.Fatalf("relative PowerShell error = %v", err)
 	}
 
@@ -127,9 +127,19 @@ func TestPowerShellInstallerExecutorRejectsUntrustedExecutablePath(t *testing.T)
 	}
 	link := filepath.Join(root, "powershell.exe")
 	if err := os.Symlink(target, link); err == nil {
-		if err := (PowerShellInstallerExecutor{PowerShellPath: link}).Execute(context.Background(), VerifiedInstallerPackage{Dir: pkgDir}); err == nil || !strings.Contains(err.Error(), "non-symlink") {
+		if err := (PowerShellInstallerExecutor{PowerShellPath: link}).Execute(context.Background(), executorTestTransaction("v0.4.0"), newVerifiedInstallerPackage(pkgDir, "v0.4.0", strings.Repeat("a", 64))); err == nil || !strings.Contains(err.Error(), "non-symlink") {
 			t.Fatalf("symlink PowerShell error = %v", err)
 		}
+	}
+}
+
+func executorTestTransaction(version string) InstallTransaction {
+	return InstallTransaction{
+		ID: strings.Repeat("1", 32), Sequence: 1,
+		ManifestDigest: strings.Repeat("b", 64),
+		PackageDigest: strings.Repeat("a", 64),
+		PreviousVersion: "v0.3.9", TargetVersion: version,
+		Phase: InstallPhaseExecuting,
 	}
 }
 
