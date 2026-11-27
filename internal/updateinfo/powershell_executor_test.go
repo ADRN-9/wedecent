@@ -462,7 +462,6 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-
 func TestRecoveryScriptAdmissionRejectsTamperingAndAllowsVerifiedRollback(t *testing.T) {
 	root := privateTempDir(t)
 	t.Setenv("ProgramData", root)
@@ -538,7 +537,6 @@ func TestRecoveryScriptAdmissionRejectsTamperingAndAllowsVerifiedRollback(t *tes
 		t.Fatalf("verified prior script should be admitted for rollback retry: %v", err)
 	}
 }
-
 
 func TestCommittedRecoveryScriptAdmissionRejectsTampering(t *testing.T) {
 	root := privateTempDir(t)
