@@ -4,6 +4,6 @@ package updateinfo
 
 import "golang.org/x/sys/windows"
 
-func currentProcessElevated() bool {
+func windowsCurrentProcessElevated() bool {
 	return windows.GetCurrentProcessToken().IsElevated()
 }
