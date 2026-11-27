@@ -922,6 +922,7 @@ function Install-Binaries {
         manifest_sha256 = $ExpectedManifestSHA256
         previous_version = $PreviousVersion
         sequence = [UInt64]$script:InstallTransactionSequence
+        service_was_running = [bool]$script:InstallServiceWasRunning
         version = $script:InstallTargetVersion
         phase = 'prepared'
         entries = @($entries.ToArray())
@@ -1143,6 +1144,7 @@ if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
 }
 $metadata = Read-WeDecentMetadata
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+$script:InstallServiceWasRunning = $null -ne $service -and $service.State -eq 'Running'
 if (-not $service) {
     if ($metadata) {
         if (-not $metadataTrusted) {
