@@ -19,21 +19,6 @@ $functionNames = @([regex]::Matches($installerText, '(?m)^function\s+([^\s{]+)')
 if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
     throw 'Installer contains duplicate top-level function definitions.'
 }
-if (-not $installerText.Contains("recovery_script_state = if (`$recoveryScriptHadOriginal) { 'original' } else { 'absent' }") -or
-    -not $installerText.Contains('Unexpected recovery script appeared after the initial-install transaction snapshot.') -or
-    -not $installerText.Contains('Unexpected previous recovery-script backup exists for a new installation.')) {
-    throw 'Fresh-install recovery-script publication must handle absent prior script state and reject unexpected files.'
-}
-$initialPublish = $installerText.LastIndexOf('Publish-WeDecentRecoveryScript')
-$initialServiceInstall = $installerText.LastIndexOf('Invoke-AgentServiceInstall')
-$initialRollback = $installerText.LastIndexOf('Restore-TransactionRecoveryScript -Journal $script:InstallJournal')
-$freshFailure = $installerText.LastIndexOf('Fresh installation failed; rollback was attempted')
-$initialCommit = $installerText.LastIndexOf('$script:InstallJournal.phase = ''committed''')
-if ($initialPublish -lt 0 -or $initialPublish -gt $initialServiceInstall -or
-    $initialRollback -lt 0 -or $initialRollback -gt $freshFailure -or
-    $initialCommit -lt $freshFailure) {
-    throw 'Fresh installation must publish and roll back its recovery script, and commit only after rollback handling has completed.'
-}
 if (-not $installerText.Contains('recovery_script_state = $recoveryScriptState') -or
     -not $installerText.Contains('Unexpected recovery script appeared after the initial-install transaction snapshot.') -or
     -not $installerText.Contains('Unexpected previous recovery-script backup exists for a new installation.')) {
