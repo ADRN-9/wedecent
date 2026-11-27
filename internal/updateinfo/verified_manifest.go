@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"time"
 )
 
 // VerifiedManifest is an opaque authorization capability. Its fields are
@@ -20,6 +21,17 @@ type VerifiedManifest struct {
 var ErrUnverifiedManifest = errors.New("updateinfo: manifest lacks verified update authority")
 
 func (v VerifiedManifest) Manifest() Manifest { return v.manifest }
+
+
+ // VerifyManifestV2Capability is the only capability constructor exposed to
+ // callers. It delegates to the full v2 signature/keyset verifier first.
+func VerifyManifestV2Capability(verified VerifiedKeyset, manifestBytes, signatureBytes []byte, now time.Time, currentVersion string, highestSequence uint64) (VerifiedManifest, error) {
+	manifest, err := VerifyManifestV2(verified, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
+	if err != nil {
+		return VerifiedManifest{}, err
+	}
+	return verifiedManifestFrom(verified, manifest, manifestBytes)
+}
 
 func verifiedManifestFrom(keyset VerifiedKeyset, manifest Manifest, canonicalBytes []byte) (VerifiedManifest, error) {
 	if keyset.digest == "" || keyset.keyset.Epoch == 0 ||
