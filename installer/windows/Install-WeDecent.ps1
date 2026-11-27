@@ -762,25 +762,83 @@ function Recover-InterruptedInstallerTransactions {
     param([Parameter(Mandatory = $true)][hashtable]$Destinations)
     $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
     if (-not (Test-Path -LiteralPath $root -PathType Container)) { return }
+
+    $expectedNames = @($script:BinaryNames | Sort-Object -CaseSensitive)
     foreach ($file in @(Get-ChildItem -LiteralPath $root -Filter '*.json' -File)) {
+        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Installer transaction journal must not be a reparse point: $($file.FullName)"
+        }
         $journal = Get-Content -LiteralPath $file.FullName -Raw | ConvertFrom-Json
         if ([int]$journal.schema -ne 1 -or [string]$journal.transaction_id -notmatch '^[a-f0-9]{32}$' -or
-            [string]$file.BaseName -ne [string]$journal.transaction_id -or @($journal.entries).Count -ne 5) {
+            [string]$file.BaseName -cne [string]$journal.transaction_id -or
+            [string]$journal.package_sha256 -notmatch '^[a-f0-9]{64}$' -or
+            [UInt64]$journal.sequence -eq 0 -or
+            [string]$journal.version -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$' -or
+            @($journal.entries).Count -ne $script:BinaryNames.Count -or
+            [string]$journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back')) {
             throw "Installer transaction journal is malformed: $($file.FullName)"
         }
+
+        $seenNames = @{}
+        foreach ($entry in @($journal.entries)) {
+            $name = [string]$entry.name
+            if ($script:BinaryNames -notcontains $name -or $seenNames.ContainsKey($name)) {
+                throw "Installer transaction journal contains an unknown or duplicate binary: $name"
+            }
+            $seenNames[$name] = $true
+            $destination = [IO.Path]::GetFullPath([string]$entry.destination)
+            $expectedDestination = [IO.Path]::GetFullPath([string]$Destinations[$name])
+            $expectedBackup = "$expectedDestination.$($journal.transaction_id).bak"
+            if (-not [string]::Equals($destination, $expectedDestination, [StringComparison]::OrdinalIgnoreCase) -or
+                -not [string]::Equals([IO.Path]::GetFullPath([string]$entry.backup_path), $expectedBackup, [StringComparison]::OrdinalIgnoreCase) -or
+                [string]$entry.replacement_sha256 -notmatch '^[a-f0-9]{64}$' -or
+                [string]$entry.state -notin @('planned', 'backup-verified', 'replacing', 'replaced')) {
+                throw "Installer transaction journal entry is invalid for $name"
+            }
+            if ([bool]$entry.had_original) {
+                $expectedOriginal = [string]$entry.original_sha256
+                if ($expectedOriginal -notmatch '^[a-f0-9]{64}$') {
+                    throw "Installer transaction original digest is invalid for $name"
+                }
+                if (Test-Path -LiteralPath $expectedBackup -PathType Leaf) {
+                    if ((Get-Sha256FileHash $expectedBackup) -ne $expectedOriginal) {
+                        throw "Interrupted-install backup integrity failure: $expectedBackup"
+                    }
+                } elseif (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
+                    (Get-Sha256FileHash $expectedDestination) -ne $expectedOriginal) {
+                    throw "Original binary and verified transaction backup are both unavailable: $expectedDestination"
+                }
+            } elseif (-not [string]::IsNullOrEmpty([string]$entry.original_sha256)) {
+                throw "Unexpected original digest for new binary $name"
+            }
+        }
+        if (@($seenNames.Keys | Sort-Object -CaseSensitive) -cne $expectedNames) {
+            throw "Installer transaction journal does not cover the exact five approved binaries: $($file.FullName)"
+        }
+
         if ($journal.phase -in @('committed', 'rolled-back')) { continue }
         $statePath = Join-Path $StateDir 'update-state.json'
         $committed = $false
         if ($journal.phase -eq 'installed-awaiting-sequence-commit' -and (Test-Path -LiteralPath $statePath -PathType Leaf)) {
             $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
             $committed = [UInt64]$state.stable_sequence -ge [UInt64]$journal.sequence -and
-                $null -eq $state.pending_install -and [string]$state.installed_version -eq [string]$journal.version
+                $null -eq $state.pending_install -and [string]$state.installed_version -ceq [string]$journal.version
+            if ($committed) {
+                foreach ($entry in @($journal.entries)) {
+                    $destination = [string]$entry.destination
+                    if (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
+                        (Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
+                        throw "Sequence is committed but installed binary does not match the transaction: $destination"
+                    }
+                }
+            }
         }
         if ($committed) {
             $journal.phase = 'committed'
             Write-InstallJournal -Journal $journal
             continue
         }
+
         $serviceBefore = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
         $restartService = $null -ne $serviceBefore -and $serviceBefore.Status -eq 'Running'
         if ($restartService) {
@@ -791,24 +849,25 @@ function Recover-InterruptedInstallerTransactions {
             for ($i = @($journal.entries).Count - 1; $i -ge 0; $i--) {
                 $entry = @($journal.entries)[$i]
                 $destination = [IO.Path]::GetFullPath([string]$entry.destination)
-                if ($Destinations.Values -notcontains $destination) { throw "Unexpected installer journal destination: $destination" }
                 if ([bool]$entry.had_original) {
                     $backup = [string]$entry.backup_path
                     if (Test-Path -LiteralPath $backup -PathType Leaf) {
                         $expected = [string]$entry.original_sha256
-                        if ($expected -notmatch '^[a-f0-9]{64}$' -or (Get-Sha256FileHash $backup) -ne $expected) {
-                            throw "Interrupted-install backup integrity failure: $backup"
-                        }
                         $restore = "$destination.$($journal.transaction_id).recover"
                         Copy-Item -LiteralPath $backup -Destination $restore -Force
-                        if ((Get-Sha256FileHash $restore) -ne $expected) { throw "Restore verification failed: $destination" }
+                        if ((Get-Sha256FileHash $restore) -ne $expected) {
+                            Remove-Item -LiteralPath $restore -Force -ErrorAction SilentlyContinue
+                            throw "Interrupted-install restore verification failure: $destination"
+                        }
                         Move-Item -LiteralPath $restore -Destination $destination -Force
-                    } elseif (-not (Test-Path -LiteralPath $destination -PathType Leaf) -or
-                        (Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
-                        throw "Original binary and verified backup are unavailable: $destination"
                     }
                 } else {
-                    Remove-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+                    if (Test-Path -LiteralPath $destination -PathType Leaf) {
+                        if ((Get-Sha256FileHash $destination) -ne [string]$entry.replacement_sha256) {
+                            throw "Unexpected binary contents prevent safe rollback: $destination"
+                        }
+                        Remove-Item -LiteralPath $destination -Force
+                    }
                 }
                 Remove-Item -LiteralPath "$destination.$($journal.transaction_id).new" -Force -ErrorAction SilentlyContinue
             }
@@ -1022,8 +1081,8 @@ if (-not $service) {
     }
 }
 $binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
-Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
 Recover-InterruptedInstallerTransactions -Destinations $binaryDestinations
+Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
 $wdDestination = $binaryDestinations['wd.exe']
 $agentDestination = $binaryDestinations['wd-agent.exe']
 
