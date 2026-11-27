@@ -191,7 +191,12 @@ if ($PSCmdlet.ParameterSetName -eq 'FinalizeCommitted') {
         $journalSequence = [UInt64]$journal.sequence
         $managedJournal = -not [string]::IsNullOrWhiteSpace([string]$journal.package_sha256) -or $journalSequence -ne 0
         if ([int]$journal.schema -ne 1 -or
-            [string]$journal.transaction_id -notmatch '^[a-f0-9]{32}
+            [string]$journal.transaction_id -notmatch '^[a-f0-9]{32}$' -or
+            [string]$file.BaseName -cne [string]$journal.transaction_id -or
+            [string]$journal.metadata_path -ine [IO.Path]::GetFullPath($metadataPath) -or
+            [string]$journal.metadata_backup_path -ine [IO.Path]::GetFullPath("$metadataPath.$($journal.transaction_id).metadata.bak") -or
+            $journal.metadata_had_original -isnot [bool] -or
+            -not [regex]::IsMatch([string]$journal.metadata_original_sha256, '^[a-f0-9]{64}$') -or
             ($managedJournal -and ([string]$journal.package_sha256 -notmatch '^[a-f0-9]{64}$' -or
                 [string]$journal.manifest_sha256 -notmatch '^[a-f0-9]{64}$' -or
                 [string]$journal.previous_version -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or $journalSequence -eq 0)) -or
@@ -967,7 +972,18 @@ Write-Output 'not-applied') -or
         if ($seen.Count -ne $expectedNames.Count) {
             throw 'Committed cleanup journal does not cover all five approved binaries.'
         }
-        if ($journalSequence -lt $ExpectedStableSequence) { continue }
+        if ($journalSequence -lt $ExpectedStableSequence) {
+            if ($journal.phase -ne 'committed') {
+                throw 'Older transaction journal is not durably committed.'
+            }
+            if (Test-Path -LiteralPath $journalMetadataBackup -PathType Leaf) {
+                if ((Get-Sha256FileHash $journalMetadataBackup) -ne [string]$journal.metadata_original_sha256) {
+                    throw "Refusing to clean a corrupted older transaction metadata snapshot: $journalMetadataBackup"
+                }
+                Remove-Item -LiteralPath $journalMetadataBackup -Force -ErrorAction Stop
+            }
+            continue
+        }
 
         if ($journal.phase -ne 'committed') {
             $journal.phase = 'committed'
