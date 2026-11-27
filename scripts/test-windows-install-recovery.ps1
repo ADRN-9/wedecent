@@ -15,6 +15,14 @@ if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).b
     -not $installerText.Contains('$stream.Flush($true)')) {
     throw 'Installer transaction-specific backup, durable journal, or sequence-commit boundary is missing.'
 }
+if (-not $installerText.Contains('$binariesRestored = Invoke-RollbackStep') -or
+    -not $installerText.Contains('if ($binariesRestored)') -or
+    -not $installerText.Contains('service is intentionally left stopped for recovery')) {
+    throw 'Upgrade rollback must not restart the service when binary restoration fails.'
+}
+if ($installerText -match '(?s)\$journal\.phase = ''rolled-back''.*?finally\s*\{\s*if \(\$restartService\)') {
+    throw 'Interrupted transaction recovery must not restart the service from a finally block after rollback failure.'
+}
 $publicationCalls = [regex]::Matches($installerText, 'Publish-WeDecentRecoveryScript').Count - 1
 if ($publicationCalls -ne 1) {
     throw "Installer must publish its recovery script exactly once per upgrade; found $publicationCalls invocations."
@@ -251,6 +259,36 @@ try {
     foreach ($entry in $mismatched.journal.entries) {
         if ((Get-TestHash $entry.destination) -ne $before[$entry.name]) {
             throw "Mismatched-journal rejection mutated a protected binary: $($entry.name)"
+        }
+    }
+
+    $replaced = New-TransactionFixture
+    $replacedBackup = [string]$replaced.journal.entries[1].backup_path
+    Remove-Item -LiteralPath $replacedBackup -Force
+    [IO.File]::WriteAllText($replacedBackup, 'replacement backup from another transaction')
+    $before = @{}
+    foreach ($entry in $replaced.journal.entries) { $before[$entry.name] = Get-TestHash $entry.destination }
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $replaced | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery accepted a replaced transaction backup.' }
+    foreach ($entry in $replaced.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $before[$entry.name]) {
+            throw "Replaced-backup rejection mutated an installed binary: $($entry.name)"
+        }
+    }
+
+    $wrongAssociation = New-TransactionFixture
+    $forgedAssociation = Get-Content -LiteralPath $wrongAssociation.journalPath -Raw | ConvertFrom-Json
+    $forgedAssociation.entries[0].backup_path = [string]$forgedAssociation.entries[1].backup_path
+    Write-TestJson -Path $wrongAssociation.journalPath -Value $forgedAssociation
+    $before = @{}
+    foreach ($entry in $wrongAssociation.journal.entries) { $before[$entry.name] = Get-TestHash $entry.destination }
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $wrongAssociation | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery accepted a backup associated with a different binary.' }
+    foreach ($entry in $wrongAssociation.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $before[$entry.name]) {
+            throw "Mismatched-backup association rejection mutated an installed binary: $($entry.name)"
         }
     }
 
