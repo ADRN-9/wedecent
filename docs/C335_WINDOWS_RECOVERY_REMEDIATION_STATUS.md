@@ -1,98 +1,134 @@
-# C335 — Windows recovery remediation status and evidence
+# C335 — Windows recovery remediation and verification
 
-**Repository:** ADRN-9/wedecent  
+**Repository:** `ADRN-9/wedecent`  
 **PR:** #209 — open, draft, unmerged  
-**Inspection date:** 2026-11-27  
-**Reconciled source HEAD:** `172839462fe2e8e9092411bd23cb5c138cd6bfb0`  
-**Base:** `security/c298-transport-override-fail-closed` at `629456e4a2f594adad7433589aaa3591454503d5`  
-**Disposition:** C335 implementation is NOT COMPLETE. This report records verified source findings and current CI evidence; it does not claim remediation.
+**Source branch:** `security/c324-verified-update-admission-recovery`  
+**Base branch:** `security/c298-transport-override-fail-closed`  
+**Base SHA:** `629456e4a2f594adad7433589aaa3591454503d5`  
+**Exact code HEAD validated:** `f9dff472fc6fe34df113e4a3e7926050eda3c044`  
+**Validation date:** 2026-11-27
 
-## Repository identity and ancestry
+## Disposition
 
-GitHub PR metadata confirms:
-- Source branch: `security/c324-verified-update-admission-recovery`
-- Base branch: `security/c298-transport-override-fail-closed`
-- PR #209: open, draft=true, merged=false
-- Head SHA: `172839462fe2e8e9092411bd23cb5c138cd6bfb0`
-- Base SHA: `629456e4a2f594adad7433589aaa3591454503d5`
-- GitHub compare: 165 commits ahead, 0 behind; merge base equals the PR base SHA.
+**Repository implementation and hosted CI validation: PASS.**  
+**Production acceptance: BLOCKED pending persistent privileged Windows VM acceptance and remaining SCM identity review.**
 
-The connected GitHub repository is `ADRN-9/wedecent`; its default branch is `main`. The GitHub connection reports push/admin permissions. No branch rewrite, merge, signing, publication, or deployment was performed.
+GitHub PR metadata confirms the exact source branch and HEAD above, open/draft=true/merged=false. GitHub compare reports 215 commits ahead, 0 behind, and merge-base exactly equal to the PR base SHA. No history rewrite or merge was performed.
 
-## Confirmed C335 defects at the reconciled HEAD
+## Implementation delivered
 
-### 1. Installer metadata is outside the rollback transaction
+### 1. Durable installer metadata preservation
 
-`installer/windows/Install-WeDecent.ps1`:
-- `Write-WeDecentMetadata` (around line 243) atomically replaces `ProgramData\WeDecent\installer.json`, but deletes its temporary previous-file backup in `finally`.
-- The managed upgrade path starts the new service and writes target-version metadata around lines 1317–1325.
-- The transaction journal created by `Install-Binaries` (around line 1006) records binary hashes and service state, but no authenticated prior metadata bytes/digest/existence marker.
-- The catch path restores binaries but does not restore the previous metadata.
+`installer/windows/Install-WeDecent.ps1` now:
+- Snapshots the exact previous `ProgramData\WeDecent\installer.json` bytes to a transaction-specific backup before changing metadata.
+- Verifies the snapshot SHA-256 and applies the protected metadata ACL.
+- Binds metadata path, prior-existence flag, digest, and backup path into the transaction journal.
+- Validates the snapshot during interrupted-transaction recovery.
+- Restores and verifies the prior metadata as part of rollback.
+- Cleans the metadata snapshot only after the transaction is durably committed and the snapshot digest is verified.
+- Gates service restart on successful restoration of binaries, metadata, and the rollback journal.
 
-`installer/windows/Recover-WeDecentInstall.ps1` also validates the current metadata and restores binary backups without restoring prior metadata. An interruption after metadata publication but before Go's durable state commit can therefore leave old binaries paired with target-version metadata.
+If binary restoration, metadata restoration, or journal publication fails, the service is intentionally not restarted. If a rollback restart itself fails, the service is stopped again and the operation reports failure.
 
-### 2. SCM service existence and identity are not mandatory in recovery
+### 2. SCM recovery and ordering
 
-At `Recover-WeDecentInstall.ps1` around lines 435–469:
-- `Get-Service -ErrorAction SilentlyContinue` permits the expected service to be absent.
-- If the journal says the service was running, restart is skipped when the service object is null.
-- Recovery can still persist `rolled-back` and return `not-applied`, allowing the Go adapter to treat the rollback as verified.
-- The script does not authenticate the service's SCM ImagePath, StartName/account SID, and enabled start configuration against protected metadata before recovery.
+Both installer recovery paths now require the named SCM service to exist and require its command line to match the expected quoted `wd-agent.exe` path and authenticated state-directory argument.
 
-### 3. Recovery journal/restart ordering is unsafe
+Recovery:
+1. Verifies the transaction journal, five binary entries, metadata snapshot and backups.
+2. Verifies SCM service identity and confirms the service is stopped.
+3. Restores all five prior binaries and verifies their hashes.
+4. Restores the exact prior installer metadata and verifies its hash.
+5. Durably writes the `rolled-back` journal phase.
+6. Only then attempts to restart the service if the journal says it was previously running.
+7. Verifies the expected Running/Stopped state. A failed restart triggers another stop attempt and returns failure.
 
-The same recovery path starts the service and waits for Running before persisting the `rolled-back` journal marker. A journal publication failure can therefore leave a service running while the transaction remains pending. Restart failure is not followed by a guaranteed stop-and-retain-pending sequence.
+The installer now runs the interactive user-process preflight before invoking interrupted transaction recovery, so recovery cannot stop the service before the normal user-process guard has run.
 
-The installer-side interrupted-recovery path also needs the same explicit invariant: restore and verify all five binaries and prior metadata, durably persist the rollback marker, then restart. Any incomplete restore or failed journal write must leave the service stopped.
+The committed recovery finalizer also verifies and removes a committed metadata snapshot after durable commit, alongside the binary backup cleanup.
 
-### 4. Existing tests do not exercise actual SCM recovery
+### 3. Adversarial tests
 
-`scripts/test-windows-install-recovery.ps1` creates filesystem/journal fixtures with `service_was_running = $false`. It does not provision or manipulate the named SCM service. Its source assertions and synthetic filesystem fixtures therefore cannot prove:
-- missing/misconfigured service rejection;
-- stop failure or stop timeout handling;
-- restart failure followed by stop;
-- service account SID/ImagePath validation;
-- service state after interrupted metadata restoration.
+`scripts/test-windows-install-recovery.ps1` now exercises:
+- Interrupted metadata restore using a pre-existing partial restore temporary file.
+- Exact prior metadata byte/hash restoration and repeated idempotent restoration.
+- Corrupted metadata snapshot rejection.
+- Missing snapshot plus corrupted current metadata rejection.
+- Inconsistent metadata journal path rejection.
+- Missing SCM service rejection.
+- Mismatched SCM image-path rejection.
+- Restart failure with service left stopped, rollback journal persisted, and all five original binary hashes preserved.
+- Committed metadata snapshot cleanup.
+- Existing repeated recovery, inconsistent binary journals, missing/corrupt/replaced/misassociated binary backups, and five-binary integrity cases.
 
-The test suite does include repeated recovery and several backup/journal integrity cases, but those are synthetic filesystem tests, not privileged Windows VM acceptance.
+The installer metadata helper functions are parsed from the production installer AST and executed against isolated ACL-protected synthetic metadata fixtures. The SCM cases create and remove a temporary Windows service on the hosted Windows runner; they are not a persistent-VM or reboot acceptance test.
 
-## Exact-HEAD hosted validation
+`scripts/test-windows-upgrade-preflight.ps1` was updated to verify that interactive user-process preflight precedes interrupted recovery and normal service mutation.
 
-All three GitHub Actions workflows completed successfully for HEAD `172839462fe2e8e9092411bd23cb5c138cd6bfb0`:
+## Exact-HEAD GitHub Actions evidence
+
+All three requested workflows completed successfully for code HEAD `f9dff472fc6fe34df113e4a3e7926050eda3c044`.
 
 | Workflow | Run ID | Result |
 |---|---:|---|
-| C324 updater exact-head security tests | `46014509594` | SUCCESS |
-| Repository CI | `46014509572` | SUCCESS — 9/9 jobs |
-| Desktop shell | `46014509530` | SUCCESS — Windows, Linux, macOS |
+| C324 updater exact-head security tests | `46034829057` | SUCCESS |
+| Repository CI | `46034827067` | SUCCESS — 9/9 jobs |
+| Desktop shell | `46034826974` | SUCCESS — 3/3 platforms |
 
-Repository CI Windows-agent job `140558083286` passed, including step 7, **Test Windows installer recovery and backup integrity**. The updater-security workflow passed its configured formatting, `go test ./internal/updateinfo -count=1`, and `go vet ./internal/updateinfo` steps. Desktop jobs `140558133666`, `140558134243`, and `140558134245` passed for Linux, Windows, and macOS respectively.
+### Repository CI jobs
 
-These are exact-HEAD hosted CI results. They do not demonstrate real service recovery, power-loss recovery, or a persistent privileged Windows installation.
+| Job | Job ID | Result |
+|---|---:|---|
+| relay-worker | `140627600353` | SUCCESS |
+| control-plane | `140627600883` | SUCCESS |
+| supabase-db | `140627600921` | SUCCESS |
+| windows-agent | `140627601134` | SUCCESS |
+| macos-agent | `140627601153` | SUCCESS |
+| windows-release | `140627601412` | SUCCESS |
+| route-capability-client | `140627602133` | SUCCESS |
+| route-e2e | `140627748606` | SUCCESS |
+| linux | `140627863320` | SUCCESS |
 
-## C335 implementation status
+The Windows-agent job passed the installer recovery/backup integrity test, SCM recovery credential contract, state-migration coordinator, replay-store regressions, native Windows agent test, state ancestor ACL tests, hostile ancestor rejection, service SID provisioning, native binary build, and version/UI autostart checks.
 
-**No source-code or test-file modifications were made in this C335 execution.** The repository was inspected through GitHub read APIs. No local shell, PowerShell, Go, or other commands were executed. No test was run by this operator; the CI results above were queried from GitHub Actions.
+### Desktop shell jobs
 
-Required implementation remains:
-1. Persist a bounded, authenticated snapshot of prior installer metadata (existence, exact bytes, digest) in the durable transaction before mutating metadata.
-2. On rollback, validate the snapshot and restore exact previous metadata atomically; if no prior metadata existed, remove only the authenticated transaction's newly written metadata.
-3. Verify the expected SCM service exists and authenticate ImagePath, StartName/account SID and start mode against protected metadata before rollback.
-4. Stop and confirm the service is stopped before file mutation.
-5. Restore and hash-verify all five previous binaries and prior metadata.
-6. Persist the durable `rolled-back` journal state before attempting restart.
-7. On restart failure/timeout, stop the service, retain the pending updater authorization and backups, and fail closed. Repeated recovery must remain idempotent.
-8. Add adversarial tests for interrupted metadata restore, missing/misconfigured SCM service, stop/start failures, journal-write failure after restore, repeated recovery and inconsistent metadata/journal snapshots.
+| Platform | Job ID | Result |
+|---|---:|---|
+| Windows | `140627636958` | SUCCESS |
+| Linux | `140627637255` | SUCCESS |
+| macOS | `140627637266` | SUCCESS |
 
-## External acceptance blockers
+These are actual hosted GitHub Actions results tied to the exact code HEAD. No tests were run locally by this operator.
 
-- **Persistent privileged Windows VM:** not evidenced as provisioned or accessible in repository records.
-- **Accountable individual operator:** ADRN-9 is identified as the accountable organization, but no named individual VM operator is designated.
-- Hosted `windows-latest` is not a substitute for process termination/reboot tests against a real SCM service and persistent NTFS installation.
-- The separate production updater integration/privileged broker concerns identified by prior independent reviews remain unresolved.
+## Remaining blockers and limitations
 
-A human ADRN-9 administrator must designate the VM operator and confirm/provision the isolated persistent Windows VM. This does not block independent code remediation, which remains outstanding.
+### Persistent privileged Windows acceptance — NOT ESTABLISHED
 
-## Release/PR controls
+Hosted `windows-latest` CI now exercises an ephemeral SCM service, service stop/start failures, ACL behavior, service-account provisioning, and native Windows builds. It does **not** establish a persistent privileged Windows VM or prove recovery across an actual power loss/reboot with a durable Program Files and ProgramData installation.
 
-PR #209 must remain open, draft and unmerged. Preserve history. Do not sign, publish, or deploy production artifacts. No production credentials, trust anchors, or customer data were accessed.
+Required acceptance still includes interruption at each journal/metadata/binary replacement boundary, reboot, repeated recovery, five-binary and metadata hash verification, SCM state verification, and corrupted/missing backup cases on the same persistent VM.
+
+- Accountable organization: **ADRN-9**.
+- Named individual VM provisioning/operator: **not designated**.
+- Persistent VM identity, availability and access: **not evidenced**.
+
+ADRN-9 must designate the individual operator and confirm/provision the isolated persistent privileged Windows VM. Hosted CI is not a substitute.
+
+### SCM account binding review
+
+The recovery path verifies SCM service existence, executable path, state-directory argument, and expected service state. It does not yet compare the SCM `StartName` account SID to the `service_account_sid` recorded in protected installer metadata. That remains a security-hardening item before production acceptance.
+
+### Release controls
+
+PR #209 remains open, draft and unmerged. No production signing, publication, deployment, credential provisioning, or trust-anchor changes were performed. Repository readiness must remain separate from production publication.
+
+## Final C335 status
+
+- Metadata snapshot/restore implementation: **delivered**.
+- SCM existence/path/state handling and journal/restart ordering: **delivered**.
+- Hosted adversarial recovery tests: **passed**.
+- Exact-HEAD updater security, repository CI, and Windows/Linux/macOS Desktop workflows: **passed**.
+- Persistent privileged Windows acceptance: **blocked / not established**.
+- SCM service-account SID cross-check: **outstanding**.
+- PR merge, production signing/publication/deployment: **not performed**.
