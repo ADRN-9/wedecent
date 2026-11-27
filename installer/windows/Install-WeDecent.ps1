@@ -911,7 +911,11 @@ function Recover-InterruptedInstallerTransactions {
         if ($committed) {
             $journal.phase = 'committed'
             Write-InstallJournal -Journal $journal
-            Remove-CommittedTransactionBackups -Journal $journal
+            try {
+                Remove-CommittedTransactionBackups -Journal $journal
+            } catch {
+                throw "Committed installation remains valid; refusing another installation until backup cleanup completes. Cause: $($_.Exception.Message)"
+            }
             continue
         }
 
