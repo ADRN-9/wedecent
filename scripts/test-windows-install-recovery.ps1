@@ -200,11 +200,13 @@ try {
     Write-TestJson -Path $metadataPath -Value ([ordered]@{
         schema = 1
         product = 'WeDecent'
+        version = 'v0.3.9'
         service_name = $serviceName
         service_account_sid = $serviceSid
         install_dir = $installDir
         state_dir = $stateDir
     })
+    $metadataOriginalBytes = [IO.File]::ReadAllBytes($metadataPath)
 
     $successful = New-TransactionFixture
     $agentPath = Join-Path $installDir 'wd-agent.exe'
@@ -217,6 +219,7 @@ try {
     $targetMetadata = Get-Content -LiteralPath $metadataPath -Raw | ConvertFrom-Json
     $targetMetadata.version = $successful.targetVersion
     Write-TestJson -Path $metadataPath -Value $targetMetadata
+    [IO.File]::WriteAllText("$metadataPath.$($successful.id).restore", 'interrupted metadata restore')
     Invoke-TestRecovery -Fixture $successful | Out-Null
     if ((Get-TestHash $metadataPath) -ne $metadataBefore) { throw 'Recovery did not restore exact prior installer metadata bytes.' }
     $recovered = Get-Content -LiteralPath $successful.journalPath -Raw | ConvertFrom-Json
@@ -535,6 +538,21 @@ try {
     if (-not $rejected) { throw 'Recovery accepted missing prior metadata and corrupted current metadata.' }
     foreach ($entry in $missingMetadata.journal.entries) {
         if ((Get-TestHash $entry.destination) -ne $beforeMissing[$entry.name]) { throw 'Missing metadata rejection mutated a binary.' }
+    }
+    [IO.File]::WriteAllBytes($metadataPath, $metadataOriginalBytes)
+    Set-TestTrustedAcl -Path $metadataPath
+
+    $inconsistentMetadataJournal = New-TransactionFixture
+    $inconsistentJournal = Get-Content -LiteralPath $inconsistentMetadataJournal.journalPath -Raw | ConvertFrom-Json
+    $inconsistentJournal.metadata_path = (Join-Path $root 'forged-installer.json')
+    Write-TestJson -Path $inconsistentMetadataJournal.journalPath -Value $inconsistentJournal
+    $beforeInconsistent = @{}
+    foreach ($entry in $inconsistentMetadataJournal.journal.entries) { $beforeInconsistent[$entry.name] = Get-TestHash $entry.destination }
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $inconsistentMetadataJournal | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery accepted a journal with an inconsistent metadata path.' }
+    foreach ($entry in $inconsistentMetadataJournal.journal.entries) {
+        if ((Get-TestHash $entry.destination) -ne $beforeInconsistent[$entry.name]) { throw 'Inconsistent metadata journal rejection mutated a binary.' }
     }
 
     $missingScm = New-TransactionFixture
