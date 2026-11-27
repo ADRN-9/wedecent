@@ -82,7 +82,9 @@ func TestStateStoreBootstrapsAndPreservesProtectedInstalledVersion(t *testing.T)
 		t.Fatal(err)
 	}
 	state, err = store.Load()
-	if err != nil { t.Fatal(err) }
+	if err != nil {
+		t.Fatal(err)
+	}
 	if state.InstalledVersion != "v1.2.3" || state.StableSequence != 1 {
 		t.Fatalf("advance lost installed-version authority: %#v", state)
 	}
