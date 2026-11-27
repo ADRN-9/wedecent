@@ -1192,6 +1192,57 @@ public static class WeDecentIdentityProcess
             if (token != IntPtr.Zero) CloseHandle(token);
         }
     }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\\"" + targetExecutable + "\\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not start first-session target process.");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\\"" + probeExecutable + "\\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not start second-session wd-agent validator.");
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
 }
 '@
     }
