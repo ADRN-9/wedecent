@@ -327,9 +327,14 @@ func TestDiscoverStableUsesPersistedSequenceAfterRestart(t *testing.T) {
 	fixture := newDiscoveryFixture(t)
 	statePath := StatePath(filepath.Join(t.TempDir(), "client"))
 	first := NewStateStore(statePath)
-	if err := first.Advance(fixture.manifest.Sequence); err != nil {
+	if _, err := first.VerifyAndAdvanceKeyset(context.Background(), fixture.keyset.RootKeyID, fixture.rootPublic, fixture.keysetBody, fixture.keysetSignature, fixture.now); err != nil {
 		t.Fatal(err)
 	}
+	initial, err := first.Load()
+	if err != nil { t.Fatal(err) }
+	initial.InstalledVersion = "v1.2.2"
+	initial.StableSequence = fixture.manifest.Sequence
+	if err := saveState(statePath, initial); err != nil { t.Fatal(err) }
 
 	restarted := NewStateStore(statePath)
 	client := DiscoveryClient{
@@ -504,6 +509,10 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 			}
 
 			client, store := newDiscoveryClient(t, fixture, nil)
+			protected, loadErr := store.Load()
+			if loadErr != nil { t.Fatal(loadErr) }
+			protected.InstalledVersion = "v0.3.9"
+			if err := saveState(store.Path, protected); err != nil { t.Fatal(err) }
 			test.mutate(t, &fixture, &client)
 			client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.URL.String() == fixture.manifest.InstallerURL {
@@ -561,6 +570,14 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 	}
 
 	statePath := StatePath(filepath.Join(t.TempDir(), "client"))
+	initialStore := NewStateStore(statePath)
+	if _, err := initialStore.VerifyAndAdvanceKeyset(context.Background(), fixture.keyset.RootKeyID, fixture.rootPublic, fixture.keysetBody, fixture.keysetSignature, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	initialState, err := initialStore.Load()
+	if err != nil { t.Fatal(err) }
+	initialState.InstalledVersion = "v0.3.9"
+	if err := saveState(statePath, initialState); err != nil { t.Fatal(err) }
 	newClient := func() DiscoveryClient {
 		return DiscoveryClient{
 			RootKeyID: fixture.keyset.RootKeyID, RootPublicKey: fixture.rootPublic,
