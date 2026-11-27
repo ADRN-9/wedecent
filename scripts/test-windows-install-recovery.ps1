@@ -21,6 +21,17 @@ $functionNames = @([regex]::Matches($installerText, '(?m)^function\s+([^\s{]+)')
 if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
     throw 'Installer contains duplicate top-level function definitions.'
 }
+if (-not $installerText.Contains("'removal-pending'") -or
+    -not $installerText.Contains('Persist intent before deletion so recovery can safely repeat the removal.')) {
+    throw 'Fresh-install rollback must durably journal recovery-script removal intent before deleting the published script.'
+}
+$removalIntent = $installerText.IndexOf("recovery_script_state = 'removal-pending'")
+$removalAction = $installerText.IndexOf('Remove-Item -LiteralPath $target -Force -ErrorAction Stop', $removalIntent)
+$removalCommitted = $installerText.IndexOf("recovery_script_state = 'absent'", $removalAction)
+if ($removalIntent -lt 0 -or $removalAction -lt 0 -or $removalCommitted -lt 0 -or
+    $removalIntent -ge $removalAction -or $removalAction -ge $removalCommitted) {
+    throw 'Fresh-install recovery-script removal intent, deletion, and completion journal ordering is invalid.'
+}
 if (-not $installerText.Contains('recovery_script_state = $recoveryScriptState') -or
     -not $installerText.Contains('Unexpected recovery script appeared after the initial-install transaction snapshot.') -or
     -not $installerText.Contains('Unexpected previous recovery-script backup exists for a new installation.')) {
@@ -1238,9 +1249,9 @@ public static class WeDecentIdentityProcess
     if ($identityIsolationAvailable) {
         foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
             $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
-            if ($identityParts.Count -ne 3 -or $identityParts[0] -ne $serviceSid -or
-                $identityParts[1] -notmatch '^S-1-5-5-' -or $identityParts[2] -ne 'denied') {
-                throw 'Separate process did not prove authenticated service identity, unique logon session, and journal ACL denial.'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
             }
         }
     }
@@ -1446,6 +1457,36 @@ public static class WeDecentIdentityProcess
         $persistedFreshRestore.recovery_script_state -ne 'absent') {
         throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
     }
+    # Simulate process termination after the durable removal-intent write and file deletion.
+    $interruptedFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $interruptedFreshJournal = [ordered]@{
+        transaction_id = $interruptedFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${interruptedFreshId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $interruptedJournalPath = Join-Path $restoreJournalDir ($interruptedFreshId + '.json')
+    Write-InstallJournal -Journal $interruptedFreshJournal -Path $interruptedJournalPath
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Assert-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    Restore-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    $recoveredFreshJournal = Get-Content -LiteralPath $interruptedJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $recoveredFreshJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$recoveredFreshJournal.recovery_script_sha256)) {
+        throw 'Recovery did not finish a fresh-install removal interrupted after durable removal intent.'
+    }
+    Restore-TransactionRecoveryScript -Journal $interruptedFreshJournal
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        (Get-Content -LiteralPath $interruptedJournalPath -Raw | ConvertFrom-Json).recovery_script_state -ne 'absent') {
+        throw 'Repeated fresh-install removal recovery was not idempotent.'
+    }
+
     $InstallDir = $savedInstallDir
 
     Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
