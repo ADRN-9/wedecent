@@ -152,7 +152,8 @@ if (-not $recoveryText.Contains('FinalizeCommitted') -or
     -not $recoveryText.Contains('Live SCM service account SID does not match the dedicated account authenticated by protected installer metadata.') -or
     -not $recoveryText.Contains('Live SCM executable path does not match protected installer metadata.') -or
     -not $recoveryText.Contains('Live SCM state path does not match protected installer metadata.') -or
-    -not $recoveryText.Contains('Live SCM service start mode does not match the supported automatic service configuration.') -or
+    -not $recoveryText.Contains('Live SCM service start mode changed during the authenticated recovery transaction.') -or
+    -not $recoveryText.Contains('Live SCM service start mode is unsupported for authenticated recovery.') -or
     -not $recoveryText.Contains('$ServiceConfig.StartName') -or
     -not $recoveryText.Contains('SCM did not confirm the service stopped.') -or
     -not $recoveryText.Contains('$recoveryScmMutationLock = Enter-RecoveryScmMutationLock') -or
@@ -468,6 +469,7 @@ try {
     foreach ($functionAst in $identityFunctions) { Invoke-Expression $functionAst.Extent.Text }
 
     $ServiceName = $serviceName
+    $script:RecoveryExpectedServiceStartMode = 'Auto'
     $InstallDir = $installDir
     $StateDir = $stateDir
     $identityMetadata = [pscustomobject]@{
@@ -723,12 +725,21 @@ try {
     & sc.exe config $serviceName binPath= $serviceImage | Out-Null
 
     $mismatchedStartMode = New-TransactionFixture
-    & sc.exe config $serviceName start= demand | Out-Null
+    & sc.exe config $serviceName start= disabled | Out-Null
     $beforeStartModeMismatch = Get-RecoverySideEffectSnapshot -Fixture $mismatchedStartMode
     $rejected = $false
     try { Invoke-TestRecovery -Fixture $mismatchedStartMode | Out-Null } catch { $rejected = $true }
-    if (-not $rejected) { throw 'Updater recovery accepted an SCM service with a non-automatic start mode.' }
-    Assert-RecoveryNoSideEffects -Fixture $mismatchedStartMode -Before $beforeStartModeMismatch -Case 'SCM start mode mismatch'
+    if (-not $rejected) { throw 'Updater recovery accepted an unsupported disabled SCM start mode.' }
+    Assert-RecoveryNoSideEffects -Fixture $mismatchedStartMode -Before $beforeStartModeMismatch -Case 'unsupported SCM start mode'
+    & sc.exe config $serviceName start= auto | Out-Null
+
+    $manualStartMode = New-TransactionFixture
+    & sc.exe config $serviceName start= demand | Out-Null
+    Invoke-TestRecovery -Fixture $manualStartMode | Out-Null
+    $manualServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    if ([string]$manualServiceConfig.StartMode -cne 'Manual' -or (Get-Service -Name $serviceName).Status -ne 'Stopped') {
+        throw 'Recovery did not preserve an authenticated manual SCM start mode and stopped service state.'
+    }
     & sc.exe config $serviceName start= auto | Out-Null
 
     $localSystemSubstitution = New-TransactionFixture
