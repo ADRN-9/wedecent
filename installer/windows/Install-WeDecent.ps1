@@ -2078,6 +2078,10 @@ if ($metadata) {
     if (-not $metadataTrusted) {
         throw 'Existing installer metadata is not ACL-trusted; refusing migration recovery or installer state changes.'
     }
+    if ([string]::IsNullOrWhiteSpace([string]$metadata.install_dir) -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$metadata.install_dir), [IO.Path]::GetFullPath($InstallDir), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Protected installer metadata does not authenticate the requested installation directory; refusing migration recovery or installer state changes.'
+    }
 }
 if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
     [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $migrationJournalPath) -AgentPath $migrationAgentPath)
