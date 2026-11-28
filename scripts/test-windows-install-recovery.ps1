@@ -169,7 +169,7 @@ if (-not $recoveryText.Contains('function Acquire-WeDecentRecoveryLock') -or
     throw 'Updater recovery must share the installer-wide exclusive lock and release it on every exit.'
 }
 $recoveryMarker = $recoveryText.IndexOf('$journal.phase = ''rolled-back''')
-$recoveryStart = $recoveryText.LastIndexOf('Start-Service -Name $ServiceName')
+$recoveryStart = $recoveryText.LastIndexOf('Start-AuthenticatedRecoveryService -Metadata $metadata')
 if ($recoveryMarker -lt 0 -or $recoveryStart -lt 0 -or $recoveryMarker -ge $recoveryStart) {
     throw 'Recovery must persist the rolled-back journal before attempting to restart the service.'
 }
