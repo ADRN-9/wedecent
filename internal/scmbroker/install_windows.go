@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"golang.org/x/sys/windows"
 	"wedecent.com/wedecent/internal/winservice"
@@ -75,7 +74,7 @@ func InstallService(executable string) error {
 
 // UninstallService stops and removes only the fixed WeDecent broker service.
 func UninstallService() error {
-	if err := winservice.Stop(brokerServiceName); err != nil && !strings.Contains(strings.ToLower(err.Error()), "does not exist") {
+	if err := winservice.Stop(brokerServiceName); err != nil {
 		return fmt.Errorf("stop broker service: %w", err)
 	}
 	if err := winservice.Uninstall(brokerServiceName); err != nil {
