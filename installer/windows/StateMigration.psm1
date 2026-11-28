@@ -625,7 +625,7 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal transaction identifier is invalid.'
     }
     foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path',
-        'service_name', 'service_sid', 'service_start_name', 'service_start_mode', 'agent_path', 'original_service_path',
+        'service_name', 'service_sid', 'service_start_name', 'service_start_mode', 'service_executable_path', 'agent_path', 'original_service_path',
         'updated_service_path', 'original_metadata_json', 'source_manifest_sha256', 'source_stable_manifest_sha256')) {
         if ([string]::IsNullOrWhiteSpace([string]$journal.$field)) {
             throw "Migration journal field '$field' is missing."
@@ -908,9 +908,11 @@ function Set-WeDecentMigrationServicePath {
     if (-not $service -or [string]$service.PathName -cne $BinaryPath) {
         throw 'SCM service path did not persist exactly as requested.'
     }
+    [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $Journal -MetadataPath $Journal.metadata_path -ServiceName $ServiceName -ExpectedDestinationPath $Journal.destination)
     $actualSid = ([Security.Principal.NTAccount]::new([string]$service.StartName)).Translate([Security.Principal.SecurityIdentifier]).Value
-    if ($actualSid -cne $ServiceSid -or [string]$service.StartMode -cne $StartMode) {
-        throw 'SCM service account or start mode changed during the state migration transition.'
+    if ($actualSid -cne $ServiceSid -or [string]$service.StartName -cne [string]$Journal.service_start_name -or
+        [string]$service.StartMode -cne $StartMode) {
+        throw 'SCM service account name, SID, or start mode changed during the state migration transition.'
     }
 }
 
@@ -1108,7 +1110,17 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
     } catch {
         throw 'Protected installer metadata service account name cannot be resolved to its authenticated SID.'
     }
-    if ($metadataAccountSid -cne $metadataSid.Value -or $actualSid -cne $journalSid.Value -or
+    $originalAccountName = [string]$original.service_account_name
+    if ([string]::IsNullOrWhiteSpace($originalAccountName)) {
+        throw 'Original protected installer metadata service_account_name is missing.'
+    }
+    try {
+        $originalAccountSid = ([Security.Principal.NTAccount]::new($originalAccountName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        throw 'Original protected installer metadata service account name cannot be resolved to its authenticated SID.'
+    }
+    if ($metadataAccountSid -cne $metadataSid.Value -or $originalAccountSid -cne $originalSid.Value -or
+        $actualSid -cne $journalSid.Value -or
         -not [string]::Equals([string]$service.StartName, [string]$Journal.service_start_name, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$service.StartMode -cne [string]$Journal.service_start_mode) {
         throw 'Live SCM service-account SID, account name, or start mode does not match protected migration authority.'
@@ -1119,7 +1131,7 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         throw 'Live SCM binary/state command line is outside the authenticated migration transaction.'
     }
     $serviceExecutable = Get-WeDecentMigrationServiceExecutablePath -ServicePath $servicePath
-    $expectedExecutable = Get-WeDecentMigrationCanonicalPath -Path ([string]$Journal.agent_path)
+    $expectedExecutable = Get-WeDecentMigrationCanonicalPath -Path ([string]$Journal.service_executable_path)
     if (-not [string]::Equals($serviceExecutable, $expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Live SCM executable path does not match the authenticated migration agent.'
     }
