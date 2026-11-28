@@ -74,10 +74,8 @@ func loadPublisherPolicy() (publisherPolicy, error) {
 		if err != nil || attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
 			return zero, errors.New("publisher policy path contains a reparse point")
 		}
-		if item.path != productRoot {
-			if err := verifyPublisherPolicyACL(item.path, item.dir); err != nil {
-				return zero, err
-			}
+		if err := verifyPublisherPolicyACL(item.path, item.dir); err != nil {
+			return zero, err
 		}
 	}
 
