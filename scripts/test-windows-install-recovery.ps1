@@ -17,6 +17,7 @@ if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).b
     -not $installerText.Contains('Installer transaction journal already exists; exclusive transaction creation rejected replay.') -or
     -not $installerText.Contains('Publish-WeDecentBinaryBackup -Source $destination') -or
     -not $installerText.Contains('CopyTo($output); $output.Flush($true)') -or
+    -not $installerText.Contains('Flush-WeDecentFileToDisk -Path $BackupPath') -or
     -not $installerText.Contains('Write($bytes, 0, $bytes.Length); $stream.Flush($true)') -or
     -not $installerText.Contains('FileShare]::None') -or
     -not $installerText.Contains('function Acquire-WeDecentInstallerLock')) {
@@ -1056,7 +1057,7 @@ try {
     $script:recoveryTestAclTrusted = $true
     function Test-WeDecentMetadataTrusted { param([string]$Path) return [bool]$script:recoveryTestAclTrusted }
     Invoke-Expression $recoveryFunction[0].Extent.Text
-    $durableFunctionNames = @('Copy-WeDecentFileDurably', 'Write-WeDecentTextDurably', 'Publish-WeDecentBinaryBackup', 'Publish-TransactionRecoveryScriptBackup', 'Acquire-WeDecentInstallerLock')
+    $durableFunctionNames = @('Copy-WeDecentFileDurably', 'Flush-WeDecentFileToDisk', 'Write-WeDecentTextDurably', 'Publish-WeDecentBinaryBackup', 'Publish-TransactionRecoveryScriptBackup', 'Acquire-WeDecentInstallerLock')
     $durableFunctions = $installerAst.FindAll({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $durableFunctionNames
@@ -1137,7 +1138,7 @@ Publish-WeDecentBinaryBackup -Source '__SOURCE__' -BackupPath '__BACKUP__' -Expe
     }
 
     # Recovery-script backup publication has the same process-death and fresh-process retry guarantees.
-    $recoveryBackupFunctions = ($durableFunctions | Where-Object { $_.Name -in @('Copy-WeDecentFileDurably', 'Publish-TransactionRecoveryScriptBackup') } | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+    $recoveryBackupFunctions = ($durableFunctions | Where-Object { $_.Name -in @('Copy-WeDecentFileDurably', 'Flush-WeDecentFileToDisk', 'Publish-TransactionRecoveryScriptBackup') } | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
     foreach ($crashPoint in @('after-backup-flush', 'after-backup-hash', 'after-backup-acl', 'after-backup-publish')) {
         $id = [Guid]::NewGuid().ToString('N')
         $target = Join-Path $durableTestDir ("recovery-target-" + $id)
