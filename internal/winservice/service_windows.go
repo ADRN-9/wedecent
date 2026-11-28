@@ -39,7 +39,7 @@ const (
 
 	scManagerConnect       = 0x00000001
 	scManagerCreateService = 0x00000002
-	serviceQueryConfig      = 0x00000001
+	serviceQueryConfig     = 0x00000001
 	serviceQueryStatus     = 0x00000004
 	serviceChangeConfig    = 0x00000002
 	serviceConfigSIDInfo   = 5
