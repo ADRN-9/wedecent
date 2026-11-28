@@ -305,9 +305,13 @@ function Start-AuthenticatedRecoveryService {
     if ($ownsScmLock) { $ScmLock = Enter-RecoveryScmMutationLock }
     try {
         $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
-        if ($snapshot.Service.Status -ne 'Running') {
-            Start-Service -Name $ServiceName -ErrorAction Stop
+        if ($snapshot.Service.Status -eq 'Running') {
+            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+            $unexpectedlyRunning = Get-Service -Name $ServiceName -ErrorAction Stop
+            $unexpectedlyRunning.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+            throw 'SCM service was started outside the recovery transaction; it was stopped and recovery restart was rejected.'
         }
+        Start-Service -Name $ServiceName -ErrorAction Stop
         $running = Get-Service -Name $ServiceName -ErrorAction Stop
         $running.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
