@@ -203,7 +203,7 @@ try {
     $Command
 } catch {
     if (`$_.Exception.Message -like '*owns the machine-wide installation lock*') { exit 0 }
-    Write-Error $_
+    Write-Error `$_.Exception.Message
     exit 5
 }
 exit 6
