@@ -19,7 +19,20 @@ $installerLockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
 $installerLockRootCreated = -not (Test-Path -LiteralPath $installerLockRoot -PathType Container)
 New-Item -ItemType Directory -Force -Path $installerLockRoot | Out-Null
 if ($installerLockRootCreated) {
-    Set-WeDecentMigrationAdminDirectory -Path $installerLockRoot -AgentPath $agentPath
+    $adminsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $lockRootAcl = [Security.AccessControl.DirectorySecurity]::new()
+    $lockRootAcl.SetAccessRuleProtection($true, $false)
+    $lockRootAcl.SetOwner($adminsSid)
+    $lockInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($adminsSid, $systemSid)) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, [Security.AccessControl.FileSystemRights]::FullControl, $lockInheritance,
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$lockRootAcl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $installerLockRoot -AclObject $lockRootAcl -ErrorAction Stop
 } else {
     [void](Assert-WeDecentMigrationAdminDirectory -Path $installerLockRoot)
 }
