@@ -262,6 +262,30 @@ public static class WeDecentRecoveryScmDatabaseLock
 '@ -ErrorAction Stop
 }
 
+function Assert-AuthenticatedRecoveryServiceAccount {
+    param([Parameter(Mandatory = $true)]$Metadata)
+    $config = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+    if ($null -eq $config -or [string]$config.Name -cne $ServiceName -or [string]$Metadata.service_name -cne $ServiceName) {
+        throw 'SCM service name does not match protected installer metadata.'
+    }
+    $expectedSid = [Security.Principal.SecurityIdentifier]::new([string]$Metadata.service_account_sid).Value
+    $metadataAccountName = Normalize-ServiceAccountName -Name ([string]$Metadata.service_account_name)
+    $liveAccountName = Normalize-ServiceAccountName -Name ([string]$config.StartName)
+    $localAccountPrefix = "$env:COMPUTERNAME\"
+    if (-not $metadataAccountName.StartsWith($localAccountPrefix, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($metadataAccountName, $liveAccountName, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM service account name does not exactly match protected installer metadata.'
+    }
+    $metadataSid = Resolve-ServiceAccountSid -StartName $metadataAccountName
+    $liveSid = Resolve-ServiceAccountSid -StartName $liveAccountName
+    if ($expectedSid -in @('S-1-5-18', 'S-1-5-19', 'S-1-5-20') -or
+        -not [string]::Equals($metadataSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($liveSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM service account SID does not match protected installer metadata.'
+    }
+    return $config
+}
+
 function Enter-RecoveryScmMutationLock {
     $manager = [WeDecentRecoveryScmDatabaseLock]::OpenSCManager([IntPtr]::Zero, [IntPtr]::Zero, 0x0009)
     if ($manager -eq [IntPtr]::Zero) {
@@ -541,7 +565,7 @@ if ($PSCmdlet.ParameterSetName -eq 'FinalizeCommitted') {
         [string]$metadata.service_account_sid -notmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') {
         throw 'Installer metadata does not authenticate committed cleanup paths.'
     }
-    $finalizerSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
+    $finalizerService = Assert-AuthenticatedRecoveryServiceAccount -Metadata $metadata
     $installOwner = (Get-Acl -LiteralPath $InstallDir).Owner
     $installOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $installOwner).Translate([Security.Principal.SecurityIdentifier]).Value
     $stateOwner = (Get-Acl -LiteralPath $StateDir).Owner
