@@ -970,7 +970,7 @@ function Acquire-WeDecentInstallerLock {
 }
 
 function Write-InstallJournal {
-    param([Parameter(Mandatory = $true)]$Journal, [string]$Path, [switch]$CreateNew)
+    param([Parameter(Mandatory = $true)]$Journal, [string]$Path, [switch]$CreateNew, [scriptblock]$CrashHook)
     $transactionId = [string]$Journal.transaction_id
     $transactionGuid = [Guid]::Empty
     if (-not [Guid]::TryParseExact($transactionId, 'N', [ref]$transactionGuid)) {
@@ -1005,21 +1005,26 @@ function Write-InstallJournal {
         $bytes = (New-Object Text.UTF8Encoding($false)).GetBytes(($Journal | ConvertTo-Json -Depth 8 -Compress) + "`n")
         $stream = [IO.File]::Open($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+        if ($CrashHook) { & $CrashHook 'after-journal-flush' }
         Protect-WeDecentMetadataAcl $temp
         if ($CreateNew) {
             if (Test-Path -LiteralPath $path) { throw 'Installer transaction journal already exists; exclusive transaction creation rejected replay.' }
             [IO.File]::Move($temp, $path)
+            if ($CrashHook) { & $CrashHook 'after-journal-publish' }
         } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
             $backup = Join-Path $root ('.' + [Guid]::NewGuid().ToString('N') + '.previous')
             [IO.File]::Replace($temp, $path, $backup, $true)
+            if ($CrashHook) { & $CrashHook 'after-journal-publish' }
             Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
         } else {
             [IO.File]::Move($temp, $path)
+            if ($CrashHook) { & $CrashHook 'after-journal-publish' }
         }
         Protect-WeDecentMetadataAcl $path
         if (-not (Test-WeDecentMetadataTrusted -Path $path)) {
             throw 'Published installer transaction journal failed ACL verification.'
         }
+        if ($CrashHook) { & $CrashHook 'after-journal-acl' }
     } finally {
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
     }
