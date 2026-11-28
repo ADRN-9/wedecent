@@ -936,10 +936,12 @@ function Publish-TransactionRecoveryScriptBackup {
 
 function Acquire-WeDecentInstallerLock {
     $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    $rootCreated = -not (Test-Path -LiteralPath $root)
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     $rootInfo = Get-Item -LiteralPath $root -Force -ErrorAction Stop
     if (-not $rootInfo.PSIsContainer -or ($rootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installer lock directory must be a regular non-reparse directory.' }
-    Protect-WeDecentMetadataAcl $root
+    if ($rootCreated) { Protect-WeDecentMetadataAcl $root }
+    if (-not (Test-WeDecentMetadataTrusted -Path $root)) { throw 'Installer lock directory ACL verification failed.' }
     $path = Join-Path $root 'installer.lock'
     $lockCreated = $false
     if (-not (Test-Path -LiteralPath $path)) {
