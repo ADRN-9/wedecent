@@ -131,7 +131,7 @@ if (-not $recoveryText.Contains('FinalizeCommitted') -or
     throw 'Committed cleanup and interrupted recovery must authenticate metadata and verify SCM before restart.'
 }
 if (-not $recoveryText.Contains('function Acquire-WeDecentRecoveryLock') -or
-    -not $recoveryText.Contains("Join-Path $env:ProgramData 'WeDecent\\install-transactions'") -or
+    -not $recoveryText.Contains('Join-Path $env:ProgramData ''WeDecent\install-transactions''') -or
     -not $recoveryText.Contains('[IO.FileShare]::None') -or
     -not $recoveryText.Contains('$recoveryLock.Dispose()')) {
     throw 'Updater recovery must share the installer-wide exclusive lock and release it on every exit.'
