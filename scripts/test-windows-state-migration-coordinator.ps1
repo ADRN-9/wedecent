@@ -1958,7 +1958,7 @@ $recoveryRejectedCases = @(
     }
     [pscustomobject]@{
         Name = 'missing protected service-account SID'
-        ExpectedError = '*Migration SID is invalid*'
+        ExpectedError = '*service_account_sid is missing*'
         Mutate = {
             param($journal, $fixture)
             $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
