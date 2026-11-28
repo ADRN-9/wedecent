@@ -180,8 +180,12 @@ func authenticateClient(pipe windows.Handle, pid uint32) (bool, error) {
 		},
 		func() (bool, error) {
 			var clientToken windows.Token
+			thread, threadErr := windows.GetCurrentThread()
+			if threadErr != nil {
+				return false, fmt.Errorf("get impersonating thread: %w", threadErr)
+			}
 			result, _, callErr := procOpenThreadToken.Call(
-				uintptr(windows.GetCurrentThread()),
+				uintptr(thread),
 				uintptr(windows.TOKEN_QUERY),
 				1,
 				uintptr(unsafe.Pointer(&clientToken)),
