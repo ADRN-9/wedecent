@@ -3,6 +3,8 @@
 package scmbroker
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"unsafe"
 
@@ -61,7 +63,6 @@ func TestSameTokenUserSIDRejectsCrossUserIdentity(t *testing.T) {
 		t.Fatal("identical user SIDs were treated as different")
 	}
 }
-
 
 func TestVerifyBrokerServiceSIDRejectsInteractiveProcess(t *testing.T) {
 	sid, err := brokerServiceSID("WeDecentSCMBroker")
