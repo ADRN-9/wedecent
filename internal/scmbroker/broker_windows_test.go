@@ -61,3 +61,24 @@ func TestSameTokenUserSIDRejectsCrossUserIdentity(t *testing.T) {
 		t.Fatal("identical user SIDs were treated as different")
 	}
 }
+
+
+func TestVerifyBrokerServiceSIDRejectsInteractiveProcess(t *testing.T) {
+	sid, err := brokerServiceSID("WeDecentSCMBroker")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyBrokerServiceSID(sid); err == nil {
+		t.Fatal("interactive test process unexpectedly had the broker service SID")
+	}
+}
+
+func TestProcessImagePathUsesOpenProcessHandle(t *testing.T) {
+	path, err := processImagePath(windows.CurrentProcess())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(path, string(os.PathSeparator)) {
+		t.Fatalf("process image path is not absolute: %q", path)
+	}
+}
