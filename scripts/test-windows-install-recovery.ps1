@@ -12,10 +12,21 @@ if ($backupStage -lt 0 -or $replacementStage -lt 0 -or $backupStage -ge $replace
 }
 if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).bak') -or
     -not $installerText.Contains('installed-awaiting-sequence-commit') -or
-    -not $installerText.Contains('param([Parameter(Mandatory = $true)]$Journal, [string]$Path)') -or
+    -not $installerText.Contains('param([Parameter(Mandatory = $true)]$Journal, [string]$Path, [switch]$CreateNew)') -or
     -not $installerText.Contains('Installer journal path must match its transaction ID inside the protected journal directory.') -or
-    -not $installerText.Contains('$stream.Flush($true)')) {
-    throw 'Installer transaction-specific backup, path-bound durable journal, or sequence-commit boundary is missing.'
+    -not $installerText.Contains('Installer transaction journal already exists; exclusive transaction creation rejected replay.') -or
+    -not $installerText.Contains('Publish-WeDecentBinaryBackup -Source $destination') -or
+    -not $installerText.Contains('CopyTo($output); $output.Flush($true)') -or
+    -not $installerText.Contains('Write($bytes, 0, $bytes.Length); $stream.Flush($true)') -or
+    -not $installerText.Contains('FileShare]::None') -or
+    -not $installerText.Contains('function Acquire-WeDecentInstallerLock')) {
+    throw 'Installer must use exclusive transaction creation, durable verified backups, and an OS-released machine-wide lock.'
+}
+if (-not $installerText.Contains('service_existed = [bool]$script:InstallServiceExisted') -or
+    -not $installerText.Contains('Fresh-install recovery expected no pre-existing SCM service') -or
+    -not $installerText.Contains('if ($serviceExisted) {') -or
+    -not $installerText.Contains('Publish-TransactionRecoveryScriptBackup')) {
+    throw 'Interrupted fresh-install recovery must be independent of a service that has not yet been created.'
 }
 $functionNames = @([regex]::Matches($installerText, '(?m)^function\s+([^\s{]+)') | ForEach-Object { $_.Groups[1].Value })
 if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
@@ -1040,6 +1051,117 @@ try {
     $script:recoveryTestAclTrusted = $true
     function Test-WeDecentMetadataTrusted { param([string]$Path) return [bool]$script:recoveryTestAclTrusted }
     Invoke-Expression $recoveryFunction[0].Extent.Text
+    $durableFunctionNames = @('Copy-WeDecentFileDurably', 'Write-WeDecentTextDurably', 'Publish-WeDecentBinaryBackup', 'Publish-TransactionRecoveryScriptBackup', 'Acquire-WeDecentInstallerLock')
+    $durableFunctions = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $durableFunctionNames
+    }, $true)
+    if ($durableFunctions.Count -ne $durableFunctionNames.Count) { throw 'Could not locate every production durable-backup and installer-lock helper.' }
+    foreach ($functionAst in $durableFunctions) { Invoke-Expression $functionAst.Extent.Text }
+
+    # Exercise all five durable backup paths and reject corrupted existing backups.
+    $durableTestDir = Join-Path $root 'durable-backup-tests'
+    New-Item -ItemType Directory -Force -Path $durableTestDir | Out-Null
+    Set-TestTrustedAcl -Path $durableTestDir
+    foreach ($name in $binaryNames) {
+        $source = Join-Path $durableTestDir ("source-" + $name)
+        $backup = Join-Path $durableTestDir ("backup-" + $name)
+        [IO.File]::WriteAllBytes($source, [Text.Encoding]::UTF8.GetBytes("durable-original:$name"))
+        $expected = Get-TestHash $source
+        Publish-WeDecentBinaryBackup -Source $source -BackupPath $backup -ExpectedSHA256 $expected
+        if ((Get-TestHash $backup) -ne $expected -or (Get-Content -LiteralPath "$backup.sha256" -Raw).Trim() -cne $expected) {
+            throw "Durable backup helper did not persist and verify both payload and sidecar: $name"
+        }
+    }
+    $corruptDurableSource = Join-Path $durableTestDir 'corrupt-source'
+    $corruptDurableBackup = Join-Path $durableTestDir 'corrupt-backup'
+    [IO.File]::WriteAllText($corruptDurableSource, 'trusted source')
+    [IO.File]::WriteAllText($corruptDurableBackup, 'corrupt backup')
+    Set-TestTrustedAcl -Path $corruptDurableBackup
+    $rejected = $false
+    try { Publish-WeDecentBinaryBackup -Source $corruptDurableSource -BackupPath $corruptDurableBackup -ExpectedSHA256 (Get-TestHash $corruptDurableSource) } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Durable backup helper accepted a corrupted existing backup.' }
+
+    # Kill child PowerShell processes at each durable backup boundary, then retry in a fresh process.
+    $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $backupCrashPoints = @('after-backup-flush', 'after-backup-hash', 'after-backup-acl', 'after-sidecar-flush', 'after-sidecar-acl', 'after-sidecar-publish', 'after-backup-publish')
+    foreach ($crashPoint in $backupCrashPoints) {
+        $id = [Guid]::NewGuid().ToString('N')
+        $source = Join-Path $durableTestDir ("crash-source-" + $id)
+        $backup = Join-Path $durableTestDir ("crash-backup-" + $id)
+        [IO.File]::WriteAllText($source, "crash-safe original:$id")
+        $expected = Get-TestHash $source
+        $marker = Join-Path $durableTestDir ("crash-marker-" + $id)
+        $functionText = ($durableFunctions | Where-Object { $_.Name -in @('Copy-WeDecentFileDurably', 'Write-WeDecentTextDurably', 'Publish-WeDecentBinaryBackup') } | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+        $sourceQ = $source.Replace("'", "''"); $backupQ = $backup.Replace("'", "''")
+        $markerQ = $marker.Replace("'", "''")
+        $childCommand = @'
+function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__FUNCTION_TEXT__
+Publish-WeDecentBinaryBackup -Source '__SOURCE__' -BackupPath '__BACKUP__' -ExpectedSHA256 '__EXPECTED__' -CrashHook {
+    param($point)
+    if ($point -eq '__CRASH_POINT__') { [IO.File]::WriteAllText('__MARKER__', 'crash'); [Environment]::Exit(77) }
+}
+'@
+        $childCommand = $childCommand.Replace('__FUNCTION_TEXT__', $functionText).Replace('__SOURCE__', $sourceQ).Replace('__BACKUP__', $backupQ).Replace('__EXPECTED__', $expected).Replace('__CRASH_POINT__', $crashPoint).Replace('__MARKER__', $markerQ)
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+        $child = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -PassThru -WindowStyle Hidden
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        while (-not (Test-Path -LiteralPath $marker) -and -not $child.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $child.Refresh() }
+        if (-not (Test-Path -LiteralPath $marker)) {
+            if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force }
+            throw "Child process did not reach durable backup crash point: $crashPoint"
+        }
+        $child.WaitForExit()
+        if ($child.ExitCode -ne 77) { throw "Child process did not terminate at the expected crash point $crashPoint (exit $($child.ExitCode))." }
+        $retryCommand = @'
+function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__FUNCTION_TEXT__
+Publish-WeDecentBinaryBackup -Source '__SOURCE__' -BackupPath '__BACKUP__' -ExpectedSHA256 '__EXPECTED__'
+'@
+        $retryCommand = $retryCommand.Replace('__FUNCTION_TEXT__', $functionText).Replace('__SOURCE__', $sourceQ).Replace('__BACKUP__', $backupQ).Replace('__EXPECTED__', $expected)
+        $retryEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($retryCommand))
+        $retry = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $retryEncoded) -PassThru -Wait -WindowStyle Hidden
+        if ($retry.ExitCode -ne 0 -or (Get-TestHash $backup) -ne $expected -or (Get-Content -LiteralPath "$backup.sha256" -Raw).Trim() -cne $expected) {
+            throw "Fresh-process recovery did not complete the durable backup after $crashPoint."
+        }
+    }
+
+    # The exclusive installer lock is held by a live process, then released automatically on process death.
+    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
     $writerTransactionId = [Guid]::NewGuid().ToString('N')
     $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
     $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
