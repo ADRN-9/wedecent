@@ -1222,7 +1222,7 @@ if (Test-Path -LiteralPath '__JOURNAL_PATH__') {
     $recoveryFlowText = ($recoveryFlowAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
     $freshPaths = @()
     foreach ($name in $binaryNames) { $freshPaths += "'" + $freshDestinations[$name].Replace("'", "''") + "'" }
-    $freshDestinationsLiteral = "@{ " + (($binaryNames | ForEach-Object -Begin { $n = 0 } -Process { "'" + $_ + "' = " + $freshPaths[$n]; $n++ }) -join '; ') + " }"
+    $freshDestinationsLiteral = "@{ " + (($binaryNames | ForEach-Object -Begin { $n = 0 } -Process { $pair = "'" + $_ + "' = " + $freshPaths[$n]; $n = $n + 1; $pair }) -join '; ') + " }"
     $freshCommand = @'
 $env:ProgramData = '__PROGRAMDATA__'
 $InstallDir = '__INSTALLDIR__'
