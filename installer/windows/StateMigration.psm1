@@ -1885,6 +1885,8 @@ function Invoke-WeDecentStateMigration {
         [string]$FaultAt
     )
 
+    $installerLock = Open-WeDecentMigrationInstallerLock
+    try {
     $sourceFull = Get-WeDecentMigrationCanonicalPath -Path $Source
     $destinationFull = Get-WeDecentMigrationCanonicalPath -Path $Destination
     if (Test-Path -LiteralPath $destinationFull) {
@@ -2096,6 +2098,9 @@ function Invoke-WeDecentStateMigration {
                 throw 'Terminal migration journal unexpectedly retains staging; refusing implicit cleanup.'
             }
         }
+    }
+    } finally {
+        Close-WeDecentMigrationInstallerLock -Lock $installerLock
     }
 }
 
