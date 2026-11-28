@@ -843,12 +843,58 @@ function Copy-WeDecentFileDurably {
 }
 
 function Write-WeDecentTextDurably {
-    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Value)
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Value, [scriptblock]$CrashHook)
     $bytes = [Text.Encoding]::ASCII.GetBytes($Value)
     $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    if ($CrashHook) { & $CrashHook 'after-sidecar-flush' }
     Protect-WeDecentMetadataAcl $Path
     if (-not (Test-WeDecentMetadataTrusted -Path $Path) -or [IO.File]::ReadAllText($Path, [Text.Encoding]::ASCII) -cne $Value) { throw "Durable backup digest sidecar failed ACL or content verification: $Path" }
+    if ($CrashHook) { & $CrashHook 'after-sidecar-acl' }
+}
+
+function Publish-WeDecentBinaryBackup {
+    param([Parameter(Mandatory = $true)][string]$Source, [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedSHA256, [scriptblock]$CrashHook)
+    $stage = "$BackupPath.staging"
+    $sidecar = "$BackupPath.sha256"
+    $sidecarStage = "$sidecar.staging"
+    foreach ($stagingPath in @($stage, $sidecarStage)) {
+        if (Test-Path -LiteralPath $stagingPath) {
+            $info = Get-Item -LiteralPath $stagingPath -Force -ErrorAction Stop
+            if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Binary backup staging path is unsafe: $stagingPath" }
+            Remove-Item -LiteralPath $stagingPath -Force -ErrorAction Stop
+        }
+    }
+    if (Test-Path -LiteralPath $BackupPath) {
+        $info = Get-Item -LiteralPath $BackupPath -Force -ErrorAction Stop
+        if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not (Test-WeDecentMetadataTrusted -Path $BackupPath) -or (Get-Sha256FileHash $BackupPath) -ne $ExpectedSHA256) {
+            throw "Existing transaction backup is unsafe or corrupted: $BackupPath"
+        }
+    } else {
+        Copy-WeDecentFileDurably -Source $Source -Destination $stage -ExpectedSHA256 $ExpectedSHA256 -CrashHook $CrashHook
+        if (-not (Test-Path -LiteralPath $sidecar)) {
+            Write-WeDecentTextDurably -Path $sidecarStage -Value $ExpectedSHA256 -CrashHook $CrashHook
+            [IO.File]::Move($sidecarStage, $sidecar)
+        } elseif (-not (Test-WeDecentMetadataTrusted -Path $sidecar) -or
+            (Get-Content -LiteralPath $sidecar -Raw).Trim() -cne $ExpectedSHA256) {
+            throw "Existing transaction backup sidecar is unsafe or corrupted: $sidecar"
+        }
+        [IO.File]::Move($stage, $BackupPath)
+        if ($CrashHook) { & $CrashHook 'after-backup-publish' }
+    }
+    if (-not (Test-Path -LiteralPath $sidecar)) {
+        Write-WeDecentTextDurably -Path $sidecarStage -Value $ExpectedSHA256 -CrashHook $CrashHook
+        [IO.File]::Move($sidecarStage, $sidecar)
+    }
+    Protect-WeDecentMetadataAcl $BackupPath
+    if (-not (Test-WeDecentMetadataTrusted -Path $BackupPath) -or
+        (Get-Sha256FileHash $BackupPath) -ne $ExpectedSHA256 -or
+        -not (Test-WeDecentMetadataTrusted -Path $sidecar) -or
+        (Get-Content -LiteralPath $sidecar -Raw).Trim() -cne $ExpectedSHA256) {
+        throw "Durable binary backup or digest sidecar failed final verification: $BackupPath"
+    }
 }
 
 function Publish-TransactionRecoveryScriptBackup {
@@ -1560,40 +1606,8 @@ function Install-Binaries {
                 (Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
                 throw "Original binary changed before backup: $destination"
             }
-            $backupStage = "$backupPath.staging"
-            $sidecarPath = "$backupPath.sha256"
-            $sidecarStage = "$sidecarPath.staging"
-            foreach ($stagingPath in @($backupStage, $sidecarStage)) {
-                if (Test-Path -LiteralPath $stagingPath) {
-                    $stageInfo = Get-Item -LiteralPath $stagingPath -Force -ErrorAction Stop
-                    if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Binary backup staging path is unsafe: $stagingPath" }
-                    Remove-Item -LiteralPath $stagingPath -Force -ErrorAction Stop
-                }
-            }
-            if (Test-Path -LiteralPath $backupPath) {
-                $existingBackup = Get-Item -LiteralPath $backupPath -Force -ErrorAction Stop
-                if ($existingBackup.PSIsContainer -or ($existingBackup.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
-                    -not (Test-WeDecentMetadataTrusted -Path $backupPath) -or (Get-Sha256FileHash $backupPath) -ne [string]$entry.original_sha256) {
-                    throw "Existing transaction backup is unsafe or corrupted: $backupPath"
-                }
-            } else {
-                Copy-WeDecentFileDurably -Source $destination -Destination $backupStage -ExpectedSHA256 ([string]$entry.original_sha256)
-                if (-not (Test-Path -LiteralPath $sidecarPath)) {
-                    Write-WeDecentTextDurably -Path $sidecarStage -Value ([string]$entry.original_sha256)
-                    [IO.File]::Move($sidecarStage, $sidecarPath)
-                }
-                [IO.File]::Move($backupStage, $backupPath)
-            }
-            if (-not (Test-Path -LiteralPath $sidecarPath)) {
-                Write-WeDecentTextDurably -Path $sidecarStage -Value ([string]$entry.original_sha256)
-                [IO.File]::Move($sidecarStage, $sidecarPath)
-            }
-            Protect-WeDecentMetadataAcl $backupPath
-            if (-not (Test-WeDecentMetadataTrusted -Path $backupPath) -or
-                (Get-Sha256FileHash $backupPath) -ne [string]$entry.original_sha256 -or
-                (Get-Content -LiteralPath $sidecarPath -Raw).Trim() -cne [string]$entry.original_sha256) {
-                throw "Durable binary backup or digest sidecar failed final verification: $backupPath"
-            }
+            Publish-WeDecentBinaryBackup -Source $destination -BackupPath $backupPath -ExpectedSHA256 ([string]$entry.original_sha256)
+
         }
         $entry.state = 'backup-verified'
         $script:InstallJournal.phase = 'backups-verified'
