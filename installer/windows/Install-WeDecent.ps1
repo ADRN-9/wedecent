@@ -838,8 +838,15 @@ function Copy-WeDecentFileDurably {
     if ((Get-Sha256FileHash $Destination) -ne $ExpectedSHA256) { throw "Durable backup failed post-flush integrity verification: $Destination" }
     if ($CrashHook) { & $CrashHook 'after-backup-hash' }
     Protect-WeDecentMetadataAcl $Destination
+    Flush-WeDecentFileToDisk -Path $Destination
     if (-not (Test-WeDecentMetadataTrusted -Path $Destination) -or (Get-Sha256FileHash $Destination) -ne $ExpectedSHA256) { throw "Durable backup failed ACL or final integrity verification: $Destination" }
     if ($CrashHook) { & $CrashHook 'after-backup-acl' }
+}
+
+function Flush-WeDecentFileToDisk {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+    try { $stream.Flush($true) } finally { $stream.Dispose() }
 }
 
 function Write-WeDecentTextDurably {
@@ -849,6 +856,7 @@ function Write-WeDecentTextDurably {
     try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
     if ($CrashHook) { & $CrashHook 'after-sidecar-flush' }
     Protect-WeDecentMetadataAcl $Path
+    Flush-WeDecentFileToDisk -Path $Path
     if (-not (Test-WeDecentMetadataTrusted -Path $Path) -or [IO.File]::ReadAllText($Path, [Text.Encoding]::ASCII) -cne $Value) { throw "Durable backup digest sidecar failed ACL or content verification: $Path" }
     if ($CrashHook) { & $CrashHook 'after-sidecar-acl' }
 }
@@ -890,6 +898,7 @@ function Publish-WeDecentBinaryBackup {
         [IO.File]::Move($sidecarStage, $sidecar)
     }
     Protect-WeDecentMetadataAcl $BackupPath
+    Flush-WeDecentFileToDisk -Path $BackupPath
     if (-not (Test-WeDecentMetadataTrusted -Path $BackupPath) -or
         (Get-Sha256FileHash $BackupPath) -ne $ExpectedSHA256 -or
         -not (Test-WeDecentMetadataTrusted -Path $sidecar) -or
@@ -920,6 +929,7 @@ function Publish-TransactionRecoveryScriptBackup {
     Copy-WeDecentFileDurably -Source $target -Destination $staging -ExpectedSHA256 $expected -CrashHook $CrashHook
     [IO.File]::Move($staging, $backup)
     if ($CrashHook) { & $CrashHook 'after-backup-publish' }
+    Flush-WeDecentFileToDisk -Path $backup
     $published = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
     if ($published.PSIsContainer -or ($published.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not (Test-WeDecentMetadataTrusted -Path $backup) -or (Get-Sha256FileHash $backup) -ne $expected) { throw 'Published recovery-script transaction backup failed final integrity verification.' }
 }
