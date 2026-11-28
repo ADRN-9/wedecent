@@ -50,7 +50,7 @@ func TestVerifyAuthenticodePublisherRejectsRelativeAndMissingFiles(t *testing.T)
 }
 
 func TestProcessImagePathRejectsInvalidHandle(t *testing.T) {
-	if _, err := processImagePath(windows.InvalidHandle); err == nil {
+	if _, err := processImagePath(windows.Handle(0)); err == nil {
 		t.Fatal("invalid process handle produced an image path")
 	}
 }
