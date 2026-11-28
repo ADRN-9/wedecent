@@ -1965,13 +1965,11 @@ function Invoke-WeDecentStateMigration {
         if ([string]$existingJournal.phase -notin @('Committed', 'RolledBack')) {
             throw 'An existing nonterminal migration journal must be recovered before another forward migration can begin.'
         }
-        [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $existingJournal -MetadataPath $metadataFull -ServiceName $ServiceName -ExpectedDestinationPath ([string]$existingJournal.destination))
+        [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $existingJournal -MetadataPath $MetadataPath -ServiceName $ServiceName -ExpectedDestinationPath ([string]$existingJournal.destination))
         if (Test-Path -LiteralPath ([string]$existingJournal.staging)) {
             [void](Assert-WeDecentMigrationPartialTreeSafe -Path ([string]$existingJournal.staging) -ServiceSid $ServiceSid)
             throw 'Terminal migration journal unexpectedly retains staging; refusing to replace its authority.'
         }
-    } elseif (Test-Path -LiteralPath $journalFull) {
-        throw 'Migration journal path exists but is not an authenticated regular file.'
     }
     $serviceExecutablePath = Get-WeDecentMigrationServiceExecutablePath -ServicePath $preflightServicePath
     $expectedServiceExecutable = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'wd-agent.exe')
