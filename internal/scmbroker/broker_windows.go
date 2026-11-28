@@ -255,8 +255,17 @@ func authenticateClient(pipe windows.Handle, pid uint32) (bool, error) {
 			if err := validateAdministratorHighIntegrityToken(processToken); err != nil {
 				return false, fmt.Errorf("client process token is not an eligible elevated administrator token: %w", err)
 			}
+			imagePath, err := processImagePath(process)
+			if err != nil {
+				return false, err
+			}
+			if _, err := verifyAuthenticodePublisher(imagePath); err != nil {
+				return false, fmt.Errorf("pipe client executable failed Authenticode verification: %w", err)
+			}
 
-			// Until exact publisher policy is provisioned and verified, deny all callers.
+			// Signature validity is necessary but not sufficient: until the signer
+			// thumbprint is compared with a protected, human-provisioned policy,
+			// deny every caller.
 			return false, nil
 		},
 	)
