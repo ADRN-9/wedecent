@@ -436,6 +436,26 @@ try {
         throw 'Repeated interrupted recovery recreated a cleaned recovery-script backup.'
     }
 
+    # A process death during recovery-script backup copy leaves only a staging file; recovery must retain the intact original.
+    $interruptedRecoveryBackup = New-TransactionFixture
+    $interruptedJournal = Get-Content -LiteralPath $interruptedRecoveryBackup.journalPath -Raw | ConvertFrom-Json
+    [IO.File]::Copy($interruptedRecoveryBackup.recoveryScriptBackupPath, $interruptedRecoveryBackup.recoveryScriptPath, $true)
+    Set-TestTrustedAcl -Path $interruptedRecoveryBackup.recoveryScriptPath
+    Remove-Item -LiteralPath $interruptedRecoveryBackup.recoveryScriptBackupPath -Force
+    $interruptedStaging = "$($interruptedRecoveryBackup.recoveryScriptBackupPath).staging"
+    [IO.File]::WriteAllText($interruptedStaging, 'partial recovery backup bytes')
+    Set-TestTrustedAcl -Path $interruptedStaging
+    $interruptedJournal.recovery_script_state = 'original'
+    $interruptedJournal.recovery_script_sha256 = $interruptedJournal.recovery_script_original_sha256
+    Write-TestJson -Path $interruptedRecoveryBackup.journalPath -Value $interruptedJournal
+    Invoke-TestRecovery -Fixture $interruptedRecoveryBackup | Out-Null
+    if (Test-Path -LiteralPath $interruptedStaging) {
+        throw 'Recovery did not remove the incomplete recovery-script staging file after authenticating the intact original.'
+    }
+    if ((Get-TestHash $interruptedRecoveryBackup.recoveryScriptPath) -ne $interruptedRecoveryBackup.recoveryScriptOriginalHash) {
+        throw 'Recovery changed the intact original recovery script while cleaning an interrupted backup staging file.'
+    }
+
     $corruptRecoveryScript = New-TransactionFixture
     $beforeCorruptRecovery = @{}
     foreach ($entry in $corruptRecoveryScript.journal.entries) { $beforeCorruptRecovery[$entry.name] = Get-TestHash $entry.destination }
