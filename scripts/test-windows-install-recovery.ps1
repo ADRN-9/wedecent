@@ -1090,6 +1090,100 @@ try {
     }, $true)
     if ($durableFunctions.Count -ne $durableFunctionNames.Count) { throw 'Could not locate every production durable-backup and installer-lock helper.' }
     foreach ($functionAst in $durableFunctions) { Invoke-Expression $functionAst.Extent.Text }
+    # Rehydrate a prepared fresh-install transaction in a new process while SCM has never been created.
+    $freshProgramData = Join-Path $durableTestDir 'fresh-no-service-programdata'
+    $freshInstallDir = Join-Path $durableTestDir 'fresh-no-service-install'
+    $freshStateDir = Join-Path $freshInstallDir 'data\agent'
+    $freshJournalRoot = Join-Path $freshProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $freshJournalRoot, $freshInstallDir, $freshStateDir | Out-Null
+    $freshId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryScript = Join-Path $freshInstallDir 'Recover-WeDecentInstall.ps1'
+    [IO.File]::WriteAllText($freshRecoveryScript, 'fresh transaction recovery script')
+    $freshRecoveryHash = Get-TestHash $freshRecoveryScript
+    $freshEntries = @()
+    $freshDestinations = @{}
+    foreach ($name in $binaryNames) {
+        $destination = Join-Path $freshInstallDir $name
+        [IO.File]::WriteAllText($destination, "newly installed:$name")
+        $freshHash = Get-TestHash $destination
+        $freshDestinations[$name] = $destination
+        $freshEntries += [ordered]@{
+            name = $name
+            destination = $destination
+            had_original = $false
+            original_sha256 = ''
+            replacement_sha256 = $freshHash
+            backup_path = "$destination.$freshId.bak"
+            state = 'replaced'
+        }
+    }
+    $freshMetadataPath = Join-Path $freshProgramData 'WeDecent\installer.json'
+    $freshJournal = [ordered]@{
+        schema = 1
+        transaction_id = $freshId
+        package_sha256 = ''
+        manifest_sha256 = ''
+        previous_version = ''
+        sequence = [UInt64]0
+        service_was_running = $false
+        service_existed = $false
+        metadata_path = $freshMetadataPath
+        metadata_had_original = $false
+        metadata_original_sha256 = ''
+        metadata_backup_path = "$freshMetadataPath.$freshId.metadata.bak"
+        recovery_script_path = $freshRecoveryScript
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_backup_path = "$freshRecoveryScript.$freshId.previous"
+        recovery_script_sha256 = $freshRecoveryHash
+        recovery_script_state = 'published'
+        version = 'v0.4.0'
+        phase = 'installed-awaiting-sequence-commit'
+        entries = $freshEntries
+        updated_at = [DateTime]::UtcNow.ToString('o')
+    }
+    $freshJournalPath = Join-Path $freshJournalRoot ($freshId + '.json')
+    [IO.File]::WriteAllText($freshJournalPath, ($freshJournal | ConvertTo-Json -Depth 10 -Compress))
+    $recoveryFlowNames = @('Write-InstallJournal', 'Assert-TransactionMetadataSnapshot', 'Assert-TransactionRecoveryScript',
+        'Restore-TransactionMetadata', 'Restore-TransactionRecoveryScript', 'Recover-InterruptedInstallerTransactions')
+    $recoveryFlowAsts = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $recoveryFlowNames
+    }, $true)
+    if ($recoveryFlowAsts.Count -ne $recoveryFlowNames.Count) { throw 'Could not locate the production fresh-install recovery transaction functions.' }
+    $recoveryFlowText = ($recoveryFlowAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+    $freshPaths = @()
+    foreach ($name in $binaryNames) { $freshPaths += "'" + $freshDestinations[$name].Replace("'", "''") + "'" }
+    $freshDestinationsLiteral = "@{ " + (($binaryNames | ForEach-Object -Begin { $n = 0 } -Process { "'" + $_ + "' = " + $freshPaths[$n]; $n++ }) -join '; ') + " }"
+    $freshCommand = @'
+$env:ProgramData = '__PROGRAMDATA__'
+$InstallDir = '__INSTALLDIR__'
+$StateDir = '__STATEDIR__'
+$ServiceName = 'WeDecentAgent'
+$script:BinaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
+function Get-WeDecentMetadataPath { Join-Path $env:ProgramData 'WeDecent\installer.json' }
+function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+function Get-CimInstance { [CmdletBinding()] param([string]$ClassName, [string]$Filter) return $null }
+__RECOVERY_FLOW_FUNCTIONS__
+$Destinations = __DESTINATIONS__
+Recover-InterruptedInstallerTransactions -Destinations $Destinations
+'@
+    $freshCommand = $freshCommand.Replace('__PROGRAMDATA__', $freshProgramData.Replace("'", "''")).Replace('__INSTALLDIR__', $freshInstallDir.Replace("'", "''")).Replace('__STATEDIR__', $freshStateDir.Replace("'", "''")).Replace('__RECOVERY_FLOW_FUNCTIONS__', $recoveryFlowText).Replace('__DESTINATIONS__', $freshDestinationsLiteral)
+    $freshEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($freshCommand))
+    $freshProcess = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $freshEncoded) -PassThru -Wait -WindowStyle Hidden
+    if ($freshProcess.ExitCode -ne 0) { throw "Fresh-process no-service recovery failed (exit $($freshProcess.ExitCode))." }
+    $freshRecovered = Get-Content -LiteralPath $freshJournalPath -Raw | ConvertFrom-Json
+    if ($freshRecovered.phase -ne 'rolled-back' -or (Test-Path -LiteralPath $freshRecoveryScript)) {
+        throw 'Fresh-install recovery did not persist rollback without requiring an SCM service.'
+    }
+    foreach ($name in $binaryNames) {
+        if (Test-Path -LiteralPath $freshDestinations[$name]) {
+            throw "Fresh-install recovery left a newly created binary before SCM service creation: $name"
+        }
+    }
+
 
     # Exercise all five durable backup paths and reject corrupted existing backups.
     $durableTestDir = Join-Path $root 'durable-backup-tests'
