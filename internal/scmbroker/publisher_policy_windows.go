@@ -49,12 +49,13 @@ func loadPublisherPolicy() (publisherPolicy, error) {
 	if !filepath.IsAbs(programData) || strings.TrimSpace(programData) == "" {
 		return zero, errors.New("ProgramData is unavailable or not absolute")
 	}
-	root := filepath.Join(programData, "WeDecent", "broker")
+	productRoot := filepath.Join(programData, "WeDecent")
+	root := filepath.Join(productRoot, "broker")
 	path := filepath.Join(root, "publisher-policy.json")
 	for _, item := range []struct {
 		path string
 		dir  bool
-	}{{root, true}, {path, false}} {
+	}{{productRoot, true}, {root, true}, {path, false}} {
 		info, err := os.Lstat(item.path)
 		if err != nil {
 			return zero, fmt.Errorf("inspect protected publisher policy path: %w", err)
@@ -65,8 +66,18 @@ func loadPublisherPolicy() (publisherPolicy, error) {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return zero, errors.New("publisher policy path must not be a reparse point or symlink")
 		}
-		if err := verifyPublisherPolicyACL(item.path, item.dir); err != nil {
+		name, err := windows.UTF16PtrFromString(item.path)
+		if err != nil {
 			return zero, err
+		}
+		attrs, err := windows.GetFileAttributes(name)
+		if err != nil || attrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return zero, errors.New("publisher policy path contains a reparse point")
+		}
+		if item.path != productRoot {
+			if err := verifyPublisherPolicyACL(item.path, item.dir); err != nil {
+				return zero, err
+			}
 		}
 	}
 
@@ -141,9 +152,9 @@ func verifyPublisherPolicyACL(path string, directory bool) error {
 	if err != nil {
 		return err
 	}
-	expected := "O:BAG:DAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;" + serviceSID + ")"
+	expected := "O:BAD:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GR;;;" + serviceSID + ")"
 	if directory {
-		expected = "O:BAG:DAD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)(A;OICI;GR;;;" + serviceSID + ")"
+		expected = "O:BAD:P(A;OICI;GA;;;SY)(A;OICI;GA;;;BA)(A;OICI;GR;;;" + serviceSID + ")"
 	}
 	if !strings.EqualFold(actual, expected) {
 		return fmt.Errorf("publisher policy ACL is not the exact protected allow-list: %s", actual)
