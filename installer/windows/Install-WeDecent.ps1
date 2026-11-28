@@ -1035,16 +1035,7 @@ function Acquire-WeDecentInstallerLock {
     if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installer lock path is not a regular non-reparse file.' }
     if ($lockCreated) { Protect-WeDecentMetadataAcl $path }
     if (-not (Test-WeDecentMetadataTrusted -Path $path)) { throw 'Installer lock file ACL verification failed.' }
-    try {
-        # Kernel releases exclusive sharing when the owner exits; stale contents never retain ownership.
-        $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-    } catch [IO.IOException] { throw 'Another WeDecent installer or recovery operation owns the machine-wide installation lock.' }
-    try {
-        $stream.SetLength(0)
-        $owner = [Text.Encoding]::ASCII.GetBytes(("pid=" + $PID + [Environment]::NewLine))
-        $stream.Write($owner, 0, $owner.Length); $stream.Flush($true)
-        $script:InstallerLockStream = $stream
-    } catch { $stream.Dispose(); throw }
+    Enter-WeDecentMigrationInstallerLock
 }
 
 function Write-InstallJournal {
@@ -2057,6 +2048,8 @@ function Invoke-RollbackStep {
 }
 
 Assert-Administrator
+$migrationModule = Join-Path $PSScriptRoot 'StateMigration.psm1'
+Import-Module $migrationModule -ErrorAction Stop
 Acquire-WeDecentInstallerLock
 try {
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { $BundlePath = $PSScriptRoot }
@@ -2067,8 +2060,6 @@ $StateDir = Assert-SafeChildPath -Path $StateDir -Root $InstallDir -Label 'State
 $version = Assert-ReleaseBundle
 $script:InstallTargetVersion = $version
 $metadataPath = Get-WeDecentMetadataPath
-$migrationModule = Join-Path $PSScriptRoot 'StateMigration.psm1'
-Import-Module $migrationModule -Force -ErrorAction Stop
 $migrationJournalPath = Join-Path $InstallDir 'migration\state-migration.json'
 $migrationAgentPath = Join-Path $BundlePath 'wd-agent.exe'
 $metadata = Read-WeDecentMetadata
@@ -2084,8 +2075,7 @@ if ($metadata) {
     }
 }
 if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
-    [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $migrationJournalPath) -AgentPath $migrationAgentPath)
-    [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName -ExpectedDestinationPath $StateDir -InstallerLockHeld)
+    [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName -ExpectedDestinationPath $StateDir)
 }
 $metadata = Read-WeDecentMetadata
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
@@ -2427,8 +2417,5 @@ Write-Host "State:     $StateDir"
 Write-Host "Service:   $ServiceName ($($finalService.StartName))"
 Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the installer does not register them as services or autostart entries.'
 } finally {
-    if ($null -ne $script:InstallerLockStream) {
-        $script:InstallerLockStream.Dispose()
-        $script:InstallerLockStream = $null
-    }
+    Exit-WeDecentMigrationInstallerLock
 }
