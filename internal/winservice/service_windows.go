@@ -66,6 +66,7 @@ var (
 	procRegisterServiceCtrlHandlerExW = advapi32.NewProc("RegisterServiceCtrlHandlerExW")
 	procSetServiceStatus              = advapi32.NewProc("SetServiceStatus")
 	procChangeServiceConfig2W         = advapi32.NewProc("ChangeServiceConfig2W")
+	procQueryServiceConfig2W          = advapi32.NewProc("QueryServiceConfig2W")
 	procSetSecurityInfo               = advapi32.NewProc("SetSecurityInfo")
 )
 
@@ -88,6 +89,10 @@ type Status struct {
 
 type serviceDescription struct {
 	Description *uint16
+}
+
+type serviceSIDInfo struct {
+	ServiceSIDType uint32
 }
 
 type serviceStatus struct {
@@ -305,6 +310,37 @@ func openServiceWithAccess(name string, access uintptr) (uintptr, error) {
 		return 0, winCallError("OpenServiceW", callErr)
 	}
 	return h, nil
+}
+
+// EnableServiceSID enables the unrestricted per-service SID and verifies the
+// resulting SCM configuration. The broker must additionally verify its runtime
+// token contains that SID before creating its named pipe.
+func EnableServiceSID(name string) error {
+	if strings.TrimSpace(name) == "" {
+		return errors.New("service name is required")
+	}
+	h, err := openServiceWithAccess(name, serviceChangeConfig|serviceQueryStatus)
+	if err != nil {
+		return err
+	}
+	defer closeServiceHandle(h)
+	info := serviceSIDInfo{ServiceSIDType: serviceSIDUnrestricted}
+	result, _, callErr := procChangeServiceConfig2W.Call(h, serviceConfigSIDInfo, uintptr(unsafe.Pointer(&info)))
+	if result == 0 {
+		return winCallError("ChangeServiceConfig2W(service SID)", callErr)
+	}
+	var verified serviceSIDInfo
+	result, _, callErr = procQueryServiceConfig2W.Call(
+		h, serviceConfigSIDInfo, uintptr(unsafe.Pointer(&verified)),
+		unsafe.Sizeof(verified), 0,
+	)
+	if result == 0 {
+		return winCallError("QueryServiceConfig2W(service SID)", callErr)
+	}
+	if verified.ServiceSIDType != serviceSIDUnrestricted {
+		return fmt.Errorf("service %q does not have unrestricted service SID enabled", name)
+	}
+	return nil
 }
 
 // RestrictService applies the WeDecent service-object DACL to an existing service.
