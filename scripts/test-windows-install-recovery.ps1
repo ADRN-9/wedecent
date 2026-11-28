@@ -1054,6 +1054,7 @@ try {
         $snapshotError = Join-Path $helperWeDecent ("snapshot-" + $snapshotCrashPoint + ".error")
         $snapshotChild = @'
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 __SNAPSHOT_FUNCTIONS__
 try {
@@ -1082,6 +1083,7 @@ try {
         }
         $retryChild = @'
 $ErrorActionPreference = 'Stop'
+Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
 function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 __SNAPSHOT_FUNCTIONS__
 try {
