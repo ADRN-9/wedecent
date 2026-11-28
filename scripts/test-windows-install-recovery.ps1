@@ -1162,6 +1162,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Could not restore the isolated service account after the main-installer mismatch test.' }
 
     $mainOriginalMetadataBytes = [IO.File]::ReadAllBytes($mainMetadataPath)
+    $env:ProgramData = $mainProgramData
     foreach ($sidCase in @('missing', 'malformed')) {
         $caseMetadata = Get-Content -LiteralPath $mainMetadataPath -Raw | ConvertFrom-Json
         if ($sidCase -eq 'missing') { $caseMetadata.service_account_sid = '' }
@@ -1185,6 +1186,7 @@ try {
         [IO.File]::WriteAllBytes($mainMetadataPath, $mainOriginalMetadataBytes)
         Set-TestTrustedAcl -Path $mainMetadataPath
     }
+    $env:ProgramData = $savedProgramData
     Write-Host 'Production main-installer recovery rejected missing, malformed, and mismatched service identities before SCM or filesystem side effects.'
     $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
     [IO.File]::WriteAllText($snapshotSource, ($helperOriginalMetadata | ConvertTo-Json -Depth 5 -Compress))
