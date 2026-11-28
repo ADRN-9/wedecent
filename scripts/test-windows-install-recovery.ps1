@@ -1090,6 +1090,11 @@ try {
     }, $true)
     if ($durableFunctions.Count -ne $durableFunctionNames.Count) { throw 'Could not locate every production durable-backup and installer-lock helper.' }
     foreach ($functionAst in $durableFunctions) { Invoke-Expression $functionAst.Extent.Text }
+    # Exercise all five durable backup paths and reject corrupted existing backups.
+    $durableTestDir = Join-Path $root 'durable-backup-tests'
+    New-Item -ItemType Directory -Force -Path $durableTestDir | Out-Null
+    Set-TestTrustedAcl -Path $durableTestDir
+
     # Rehydrate a prepared fresh-install transaction in a new process while SCM has never been created.
     $freshProgramData = Join-Path $durableTestDir 'fresh-no-service-programdata'
     $freshInstallDir = Join-Path $durableTestDir 'fresh-no-service-install'
@@ -1185,10 +1190,6 @@ Recover-InterruptedInstallerTransactions -Destinations $Destinations
     }
 
 
-    # Exercise all five durable backup paths and reject corrupted existing backups.
-    $durableTestDir = Join-Path $root 'durable-backup-tests'
-    New-Item -ItemType Directory -Force -Path $durableTestDir | Out-Null
-    Set-TestTrustedAcl -Path $durableTestDir
     foreach ($name in $binaryNames) {
         $source = Join-Path $durableTestDir ("source-" + $name)
         $backup = Join-Path $durableTestDir ("backup-" + $name)
