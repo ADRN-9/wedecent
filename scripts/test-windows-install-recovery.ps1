@@ -1131,6 +1131,12629 @@ Publish-WeDecentBinaryBackup -Source '__SOURCE__' -BackupPath '__BACKUP__' -Expe
         }
     }
 
+    # Recovery-script backup publication has the same process-death and fresh-process retry guarantees.
+    $recoveryBackupFunctions = ($durableFunctions | Where-Object { $_.Name -in @('Copy-WeDecentFileDurably', 'Publish-TransactionRecoveryScriptBackup') } | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+    foreach ($crashPoint in @('after-backup-flush', 'after-backup-hash', 'after-backup-acl', 'after-backup-publish')) {
+        $id = [Guid]::NewGuid().ToString('N')
+        $target = Join-Path $durableTestDir ("recovery-target-" + $id)
+        $backup = "$target.$id.previous"
+        [IO.File]::WriteAllText($target, "prior recovery entrypoint:$id")
+        $expected = Get-TestHash $target
+        $marker = Join-Path $durableTestDir ("recovery-marker-" + $id)
+        $targetQ = $target.Replace("'", "''"); $backupQ = $backup.Replace("'", "''")
+        $markerQ = $marker.Replace("'", "''")
+        $childCommand = @'
+function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+$RECOVERY_FUNCTIONS$
+$script:InstallJournal = [ordered]@{
+    recovery_script_had_original = $true
+    recovery_script_path = '$TARGET    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+    recovery_script_backup_path = '$BACKUP    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+    recovery_script_original_sha256 = '$EXPECTED    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+}
+Publish-TransactionRecoveryScriptBackup -CrashHook {
+    param($point)
+    if ($point -eq '$CRASH_POINT    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+) { [IO.File]::WriteAllText('$MARKER    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, 'crash'); [Environment]::Exit(78) }
+}
+'@
+        $childCommand = $childCommand.Replace('$RECOVERY_FUNCTIONS    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $recoveryBackupFunctions).Replace('$TARGET    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $targetQ).Replace('$BACKUP    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $backupQ).Replace('$EXPECTED    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $expected).Replace('$CRASH_POINT    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $crashPoint).Replace('$MARKER    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $markerQ)
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+        $child = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -PassThru -WindowStyle Hidden
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        while (-not (Test-Path -LiteralPath $marker) -and -not $child.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $child.Refresh() }
+        if (-not (Test-Path -LiteralPath $marker)) {
+            if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force }
+            throw "Recovery-script backup child did not reach crash point: $crashPoint"
+        }
+        $child.WaitForExit()
+        if ($child.ExitCode -ne 78) { throw "Recovery-script backup child did not terminate at $crashPoint." }
+        $retryCommand = @'
+function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+$RECOVERY_FUNCTIONS$
+$script:InstallJournal = [ordered]@{
+    recovery_script_had_original = $true
+    recovery_script_path = '$TARGET    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+    recovery_script_backup_path = '$BACKUP    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+    recovery_script_original_sha256 = '$EXPECTED    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+}
+Publish-TransactionRecoveryScriptBackup
+'@
+        $retryCommand = $retryCommand.Replace('$RECOVERY_FUNCTIONS    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $recoveryBackupFunctions).Replace('$TARGET    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $targetQ).Replace('$BACKUP    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $backupQ).Replace('$EXPECTED    $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
+    $lockPath = Join-Path $lockRoot 'installer.lock'
+    if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
+    $lockMarker = Join-Path $durableTestDir 'lock-owned'
+    $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockChildCommand = @'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__LOCK_FUNCTION__
+Acquire-WeDecentInstallerLock
+[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+Start-Sleep -Seconds 60
+'@
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
+    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    $lockRejected = $false
+    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
+    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    Stop-Process -Id $lockChild.Id -Force
+    $lockChild.WaitForExit()
+    Acquire-WeDecentInstallerLock
+    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
+    $script:InstallerLockStream.Dispose()
+    $script:InstallerLockStream = $null
+    $writerTransactionId = [Guid]::NewGuid().ToString('N')
+    $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
+    $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
+    Write-InstallJournal -Journal $writerJournal -Path $writerJournalPath
+    $writtenJournal = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($writtenJournal.transaction_id -ne $writerTransactionId -or $writtenJournal.phase -ne 'prepared') {
+        throw 'Production installer journal writer did not persist the explicit transaction path.'
+    }
+    $defaultWriterId = [Guid]::NewGuid().ToString('N')
+    $defaultWriterJournal = [ordered]@{ transaction_id = $defaultWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $defaultWriterJournal
+    $defaultWriterPath = Join-Path $journalRoot ($defaultWriterId + '.json')
+    if (-not (Test-Path -LiteralPath $defaultWriterPath -PathType Leaf)) {
+        throw 'Production installer journal writer did not derive the canonical transaction path.'
+    }
+    $rejectedWriterPath = $false
+    try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
+    if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+
+    $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Isolation test service account must be a different authenticated Windows user from the installer process.'
+    }
+    $powershellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Set-TestTrustedAcl -Path $root -ExtraSids @($serviceSid)
+    $identityProbeExe = Join-Path $root 'wd-agent-identity-probe.exe'
+    & go test -c -o $identityProbeExe ./cmd/wd-agent
+    if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $identityProbeExe -PathType Leaf)) {
+        throw 'Could not build the wd-agent process identity probe test binary.'
+    }
+    Set-TestTrustedAcl -Path $identityProbeExe -ExtraSids @($serviceSid)
+    if (-not ('WeDecentIdentityProcess' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class WeDecentIdentityProcess
+{
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct STARTUPINFO
+    {
+        public int cb;
+        public string lpReserved;
+        public string lpDesktop;
+        public string lpTitle;
+        public int dwX, dwY, dwXSize, dwYSize, dwXCountChars, dwYCountChars, dwFillAttribute, dwFlags;
+        public short wShowWindow, cbReserved2;
+        public IntPtr lpReserved2, hStdInput, hStdOutput, hStdError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct PROCESS_INFORMATION
+    {
+        public IntPtr hProcess, hThread;
+        public int dwProcessId, dwThreadId;
+    }
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LogonUser(string user, string domain, string password, int logonType, int provider, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool CreateProcessWithTokenW(IntPtr token, uint logonFlags, string applicationName,
+        StringBuilder commandLine, uint creationFlags, IntPtr environment, string currentDirectory,
+        ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessAsUserW")]
+    private static extern bool CreateProcessAsUserW(IntPtr token, string applicationName, StringBuilder commandLine,
+        IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
+        IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID { public uint LowPart; public int HighPart; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct LUID_AND_ATTRIBUTES { public LUID Luid; public uint Attributes; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TOKEN_PRIVILEGES { public uint PrivilegeCount; public LUID_AND_ATTRIBUTES Privileges; }
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool OpenProcessToken(IntPtr process, uint access, out IntPtr token);
+
+    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    private static extern bool LookupPrivilegeValue(string systemName, string name, out LUID luid);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    private static extern bool AdjustTokenPrivileges(IntPtr token, bool disableAll, ref TOKEN_PRIVILEGES newState,
+        uint bufferLength, IntPtr previousState, IntPtr returnLength);
+
+    private static void EnablePrivilege(string name)
+    {
+        IntPtr processToken;
+        if (!OpenProcessToken(GetCurrentProcess(), 0x20 | 0x8, out processToken)) return;
+        try
+        {
+            LUID luid;
+            if (!LookupPrivilegeValue(null, name, out luid)) return;
+            TOKEN_PRIVILEGES privileges = new TOKEN_PRIVILEGES();
+            privileges.PrivilegeCount = 1;
+            privileges.Privileges.Luid = luid;
+            privileges.Privileges.Attributes = 0x2;
+            AdjustTokenPrivileges(processToken, false, ref privileges, 0, IntPtr.Zero, IntPtr.Zero);
+        }
+        finally { CloseHandle(processToken); }
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(IntPtr handle, uint milliseconds);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool GetExitCodeProcess(IntPtr process, out uint exitCode);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool CloseHandle(IntPtr handle);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool TerminateProcess(IntPtr process, uint exitCode);
+
+    public static int Run(string user, string domain, string password, string executable, string arguments, string workingDirectory)
+    {
+        IntPtr token;
+        if (!LogonUser(user, domain, password, 2, 0, out token))
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "LogonUser failed for the isolated test identity.");
+
+        try
+        {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
+
+            try
+            {
+                uint wait = WaitForSingleObject(process.hProcess, 120000);
+                if (wait != 0)
+                {
+                    TerminateProcess(process.hProcess, 124);
+                    throw new TimeoutException("Isolated identity process did not exit within 120 seconds.");
+                }
+                uint exitCode;
+                if (!GetExitCodeProcess(process.hProcess, out exitCode))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "GetExitCodeProcess failed for the isolated test identity.");
+                return checked((int)exitCode);
+            }
+            finally
+            {
+                if (process.hThread != IntPtr.Zero) CloseHandle(process.hThread);
+                if (process.hProcess != IntPtr.Zero) CloseHandle(process.hProcess);
+            }
+        }
+        finally
+        {
+            if (token != IntPtr.Zero) CloseHandle(token);
+        }
+    }
+
+    public static int RunDifferentSession(string user, string domain, string password,
+        string targetExecutable, string targetArguments, string probeExecutable, string probeArguments,
+        string workingDirectory, string evidencePath)
+    {
+        IntPtr firstToken = IntPtr.Zero, secondToken = IntPtr.Zero;
+        PROCESS_INFORMATION target = new PROCESS_INFORMATION();
+        PROCESS_INFORMATION probe = new PROCESS_INFORMATION();
+        try
+        {
+            if (!LogonUser(user, domain, password, 2, 0, out firstToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "First service-account logon failed.");
+            if (!LogonUser(user, domain, password, 2, 0, out secondToken))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Second service-account logon failed.");
+            EnablePrivilege("SeImpersonatePrivilege");
+            EnablePrivilege("SeIncreaseQuotaPrivilege");
+            EnablePrivilege("SeAssignPrimaryTokenPrivilege");
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
+            uint wait = WaitForSingleObject(probe.hProcess, 120000);
+            if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
+            uint exitCode;
+            if (!GetExitCodeProcess(probe.hProcess, out exitCode))
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read second-session validator exit code.");
+            return checked((int)exitCode);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", null);
+            Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", null);
+            if (target.hProcess != IntPtr.Zero) { TerminateProcess(target.hProcess, 0); CloseHandle(target.hProcess); }
+            if (target.hThread != IntPtr.Zero) CloseHandle(target.hThread);
+            if (probe.hProcess != IntPtr.Zero) CloseHandle(probe.hProcess);
+            if (probe.hThread != IntPtr.Zero) CloseHandle(probe.hThread);
+            if (firstToken != IntPtr.Zero) CloseHandle(firstToken);
+            if (secondToken != IntPtr.Zero) CloseHandle(secondToken);
+        }
+    }
+}
+'@
+    }
+    function Invoke-ServiceIdentityIsolationProbe {
+        param([string]$EvidencePath, [string]$JournalPath, [string]$ExpectedSid)
+        [IO.File]::WriteAllText($EvidencePath, '')
+        Set-TestTrustedAcl -Path $EvidencePath -ExtraSids @($ExpectedSid)
+        $evidenceLiteral = $EvidencePath.Replace("'", "''")
+        $journalLiteral = $JournalPath.Replace("'", "''")
+        $sidLiteral = $ExpectedSid.Replace("'", "''")
+        $probe = @(
+            '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()'
+            '$sid = $identity.User.Value'
+            '$logonSid = @($identity.Groups | ForEach-Object { $_.Value } | Where-Object { $_ -like ''S-1-5-5-*'' } | Select-Object -First 1)'
+            "if (`$sid -ne '$sidLiteral' -or `$logonSid.Count -ne 1) { exit 20 }"
+            "[IO.File]::WriteAllText('$evidenceLiteral', (`$sid + '|' + `$logonSid[0]))"
+            'try {'
+            "    [IO.File]::AppendAllText('$journalLiteral', 'unauthorized mutation')"
+            '    exit 0'
+            '} catch [UnauthorizedAccessException] {'
+            '    exit 42'
+            '} catch {'
+            '    exit 43'
+            '}'
+        ) -join [Environment]::NewLine
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probe))
+        $processExitCode = [WeDecentIdentityProcess]::Run(
+            $serviceAccountName,
+            $env:COMPUTERNAME,
+            $servicePasswordPlain,
+            $powershellExe,
+            "-NoProfile -NonInteractive -EncodedCommand $encoded",
+            (Join-Path $env:SystemRoot 'System32')
+        )
+        if ($processExitCode -ne 42) {
+            throw "Separate service-identity process did not receive the expected journal ACL denial (exit $processExitCode)."
+        }
+        $validatorEvidencePath = "$EvidencePath.wd-agent"
+        [IO.File]::WriteAllText($validatorEvidencePath, '')
+        Set-TestTrustedAcl -Path $validatorEvidencePath -ExtraSids @($serviceSid)
+        $env:WEDECENT_IDENTITY_PROBE = '1'
+        $env:WEDECENT_IDENTITY_PROBE_TARGET_PID = [string]$PID
+        $env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE = (Get-Process -Id $PID).Path
+        $env:WEDECENT_IDENTITY_PROBE_EVIDENCE = $validatorEvidencePath
+        $env:WEDECENT_IDENTITY_PROBE_BOUNDARY = 'user'
+        try {
+            $validatorExit = [WeDecentIdentityProcess]::Run(
+                $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+                $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+                (Join-Path $env:SystemRoot 'System32')
+            )
+        } finally {
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_TARGET_PID -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_EVIDENCE -ErrorAction SilentlyContinue
+            Remove-Item Env:WEDECENT_IDENTITY_PROBE_BOUNDARY -ErrorAction SilentlyContinue
+        }
+        if ($validatorExit -ne 0) {
+            throw "The real wd-agent process-identity validator failed (exit $validatorExit)."
+        }
+        $validatorEvidence = [IO.File]::ReadAllText($validatorEvidencePath)
+        if ($validatorEvidence -notmatch '^user\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a different Windows user.'
+        }
+        $sessionEvidencePath = "$EvidencePath.session"
+        [IO.File]::WriteAllText($sessionEvidencePath, '')
+        Set-TestTrustedAcl -Path $sessionEvidencePath -ExtraSids @($serviceSid)
+        $sessionExit = [WeDecentIdentityProcess]::RunDifferentSession(
+            $serviceAccountName, $env:COMPUTERNAME, $servicePasswordPlain,
+            $powershellExe, '-NoProfile -NonInteractive -Command "Start-Sleep -Seconds 90"',
+            $identityProbeExe, '-test.run=^TestUpdateProcessIdentityRealProcessProbe$',
+            (Join-Path $env:SystemRoot 'System32'), $sessionEvidencePath
+        )
+        if ($sessionExit -ne 0) {
+            throw "The real wd-agent validator failed the same-user/different-logon-session probe (exit $sessionExit)."
+        }
+        $sessionEvidence = [IO.File]::ReadAllText($sessionEvidencePath)
+        if ($sessionEvidence -notmatch '^session\|.*different Windows user or logon session') {
+            throw 'The actual wd-agent process validator did not reject a distinct logon session for the same SID.'
+        }
+        $identityParts = [IO.File]::ReadAllText($EvidencePath) -split '\|'
+        if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $ExpectedSid -or $identityParts[1] -notmatch '^S-1-5-5-') {
+            throw 'Separate process did not report its authenticated user SID and logon-session SID.'
+        }
+        return $identityParts[1]
+    }
+    $firstEvidencePath = Join-Path $root 'service-process-identity-1.txt'
+    $secondEvidencePath = Join-Path $root 'service-process-identity-2.txt'
+    $identityIsolationAvailable = $true
+    try {
+        $firstLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $firstEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        $secondLogonSid = Invoke-ServiceIdentityIsolationProbe -EvidencePath $secondEvidencePath -JournalPath $writerJournalPath -ExpectedSid $serviceSid
+        if ([string]::Equals($firstLogonSid, $secondLogonSid, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Separate authenticated processes reused the same Windows logon session; cross-session isolation was not demonstrated.'
+        }
+    } catch [System.ComponentModel.Win32Exception] {
+        if ($_.Exception.NativeErrorCode -ne 1314) { throw }
+        $identityIsolationAvailable = $false
+        Write-Warning 'Cross-user/session process isolation probe skipped: hosted Windows runner lacks the process-token privileges required to create a child under the authenticated service identity. Run this test on the persistent privileged Windows VM.'
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+    if ($identityIsolationAvailable) {
+        foreach ($evidencePath in @($firstEvidencePath, $secondEvidencePath)) {
+            $identityParts = [IO.File]::ReadAllText($evidencePath) -split '\|'
+            if ($identityParts.Count -ne 2 -or $identityParts[0] -ne $serviceSid -or
+                $identityParts[1] -notmatch '^S-1-5-5-') {
+                throw 'Separate process did not prove authenticated service identity and logon-session identity.'
+            }
+        }
+    }
+    $journalAfterIsolation = Get-Content -LiteralPath $writerJournalPath -Raw | ConvertFrom-Json
+    if ($journalAfterIsolation.transaction_id -ne $writerTransactionId -or $journalAfterIsolation.phase -ne 'prepared') {
+        throw 'Cross-session journal isolation probe changed the protected journal.'
+    }
+
+    $recoveryFixtureDir = Join-Path $root 'recovery-script-admission'
+    New-Item -ItemType Directory -Force -Path $recoveryFixtureDir | Out-Null
+    $savedInstallDir = $InstallDir
+    $InstallDir = $recoveryFixtureDir
+    $recoveryTarget = Join-Path $recoveryFixtureDir 'Recover-WeDecentInstall.ps1'
+    $recoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $recoveryBackup = "${recoveryTarget}.${recoveryTransactionId}.previous"
+    $oldRecoveryContent = 'prior trusted recovery script'
+    $newRecoveryContent = 'new trusted recovery script'
+    [IO.File]::WriteAllText($recoveryTarget, $oldRecoveryContent)
+    Copy-Item -LiteralPath $recoveryTarget -Destination $recoveryBackup
+    $oldRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal = [ordered]@{
+        transaction_id = $recoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = [IO.Path]::GetFullPath($recoveryBackup)
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = $oldRecoveryHash
+        recovery_script_sha256 = $oldRecoveryHash
+        recovery_script_state = 'original'
+    }
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $customJournal = [pscustomobject]$recoveryJournal
+    Assert-TransactionRecoveryScript -Journal $customJournal
+    $script:recoveryTestAclTrusted = $false
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a recovery file with an untrusted ACL.' }
+    $script:recoveryTestAclTrusted = $true
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    $newRecoveryHash = Get-TestHash $recoveryTarget
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $recoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    $recoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+
+    $recoveryJournal.phase = 'committed'
+    [IO.File]::WriteAllText($recoveryTarget, 'later installed recovery script')
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Current committed recovery admission accepted a later installation script.' }
+
+    $recoveryJournal.phase = 'rolled-back'
+    $recoveryJournal.recovery_script_state = 'original'
+    $recoveryJournal.recovery_script_sha256 = $oldRecoveryHash
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back recovery admission accepted a later installation script as its original.' }
+    $recoveryJournal.phase = 'prepared'
+    $recoveryJournal.recovery_script_state = 'published'
+    $recoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $recoveryJournal
+    [IO.File]::WriteAllText($recoveryBackup, 'corrupted recovery backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $recoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted a corrupted transaction backup.' }
+
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    Remove-Item -LiteralPath $recoveryBackup -Force
+    $freshRecoveryTransactionId = [Guid]::NewGuid().ToString('N')
+    $freshRecoveryJournal = [ordered]@{
+        transaction_id = $freshRecoveryTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRecoveryTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = ''
+        recovery_script_state = 'absent'
+    }
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    $freshRecoveryJournal.recovery_script_state = 'publishing'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal
+    $freshRecoveryJournal.phase = 'rolled-back'
+    $freshRecoveryJournal.recovery_script_state = 'absent'
+    $freshRecoveryJournal.recovery_script_sha256 = ''
+    [IO.File]::WriteAllText($recoveryTarget, 'recovery script from a later install')
+    Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Historical $true
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Rolled-back fresh-install journal rejected neither a later recovery script nor historical admission.' }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+    $freshRecoveryJournal.phase = 'prepared'
+    $freshRecoveryJournal.recovery_script_state = 'published'
+    $freshRecoveryJournal.recovery_script_sha256 = $newRecoveryHash
+    [IO.File]::WriteAllText($recoveryTarget, $newRecoveryContent)
+    [IO.File]::WriteAllText($freshRecoveryJournal.recovery_script_backup_path, 'unexpected backup')
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $freshRecoveryJournal -Committed $true } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Fresh-install recovery-script admission accepted an unexpected backup.' }
+    Remove-Item -LiteralPath $freshRecoveryJournal.recovery_script_backup_path -Force
+
+    $legacyJournal = [ordered]@{ phase = 'committed' }
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Committed $true
+    $legacyJournal.phase = 'rolled-back'
+    Assert-TransactionRecoveryScript -Journal $legacyJournal -Historical $true
+    $legacyJournal.phase = 'prepared'
+    $rejected = $false
+    try { Assert-TransactionRecoveryScript -Journal $legacyJournal } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Recovery-script admission accepted an uncommitted legacy journal without authentication fields.' }
+    $restoreFunction = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -eq 'Restore-TransactionRecoveryScript'
+    }, $true)
+    if ($restoreFunction.Count -ne 1) { throw 'Could not locate the installer recovery-script rollback helper.' }
+    Invoke-Expression $restoreFunction[0].Extent.Text
+    $restoreJournalDir = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $restoreJournalDir | Out-Null
+    $restoreTransactionId = [Guid]::NewGuid().ToString('N')
+    $restoreOriginalContent = 'original recovery script bytes'
+    $restorePublishedContent = 'published recovery script bytes'
+    $restoreBackup = "${recoveryTarget}.${restoreTransactionId}.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    [IO.File]::WriteAllText($restoreBackup, $restoreOriginalContent)
+    $restoreJournal = [ordered]@{
+        transaction_id = $restoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $restoreBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $restoreBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+    Set-TestTrustedAcl -Path $restoreBackup
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    $persistedRestoreJournal = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($restoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        $restoreJournal.recovery_script_state -ne 'original' -or
+        $persistedRestoreJournal.recovery_script_state -ne 'original' -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Installer rollback did not restore, durably journal, and clean the prior recovery script backup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $restoreJournal
+    if ((Get-TestHash $recoveryTarget) -ne $restoreJournal.recovery_script_original_sha256 -or
+        (Test-Path -LiteralPath $restoreBackup)) {
+        throw 'Repeated installer recovery was not idempotent after recovery-script backup cleanup.'
+    }
+
+    # Reconstruct the durable crash state after intent persistence but before deletion.
+    $pendingFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $pendingFreshJournal = [ordered]@{
+        transaction_id = $pendingFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $pendingFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'removal-pending'
+    }
+    $pendingFreshJournalPath = Join-Path $restoreJournalDir ($pendingFreshId + '.json')
+    Write-InstallJournal -Journal $pendingFreshJournal -Path $pendingFreshJournalPath
+    Assert-TransactionRecoveryScript -Journal $pendingFreshJournal
+    Restore-TransactionRecoveryScript -Journal $pendingFreshJournal
+    $pendingFreshPersisted = Get-Content -LiteralPath $pendingFreshJournalPath -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or $pendingFreshPersisted.recovery_script_state -ne 'absent') {
+        throw 'Recovery did not finish removal after interruption between intent persistence and deletion.'
+    }
+
+    # Simulate interruption after the restored journal is durable but before its backup is deleted.
+    $retryTransactionId = [Guid]::NewGuid().ToString('N')
+    $retryBackup = "$recoveryTarget.$retryTransactionId.previous"
+    [IO.File]::WriteAllText($recoveryTarget, $restoreOriginalContent)
+    [IO.File]::WriteAllText($retryBackup, $restoreOriginalContent)
+    Set-TestTrustedAcl -Path $retryBackup
+    $retryJournal = [ordered]@{
+        transaction_id = $retryTransactionId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = $retryBackup
+        recovery_script_had_original = $true
+        recovery_script_original_sha256 = Get-TestHash $retryBackup
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'original'
+    }
+    Write-InstallJournal -Journal $retryJournal -Path (Join-Path $restoreJournalDir ($retryTransactionId + '.json'))
+    $retryCrashObserved = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $retryJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-terminal-journal') { throw 'injected crash after original-state journal publication' }
+        }
+    } catch { $retryCrashObserved = $true }
+    if (-not $retryCrashObserved -or -not (Test-Path -LiteralPath $retryBackup) -or
+        (Get-Content -LiteralPath (Join-Path $restoreJournalDir ($retryTransactionId + '.json')) -Raw | ConvertFrom-Json).recovery_script_state -ne 'original') {
+        throw 'Crash injection did not preserve the original-state journal and verified backup before cleanup.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if ((Test-Path -LiteralPath $retryBackup) -or
+        (Get-TestHash $recoveryTarget) -ne $retryJournal.recovery_script_original_sha256) {
+        throw 'Interrupted recovery-script backup cleanup did not complete on retry.'
+    }
+    Restore-TransactionRecoveryScript -Journal $retryJournal
+    if (Test-Path -LiteralPath $retryBackup) {
+        throw 'Repeated recovery recreated or retained a cleaned transaction-specific backup.'
+    }
+
+    $freshRestoreTransactionId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $freshRestoreJournal = [ordered]@{
+        transaction_id = $freshRestoreTransactionId
+        phase = 'prepared'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = "${recoveryTarget}.${freshRestoreTransactionId}.previous"
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = Get-TestHash $recoveryTarget
+        recovery_script_state = 'published'
+    }
+
+    # Crash after durable removal intent but before deleting the script.
+    $freshIntentCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-removal-intent') { throw 'injected crash after removal intent' }
+        }
+    } catch { $freshIntentCrash = $true }
+    $freshIntentPersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshIntentCrash -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshIntentPersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshIntentPersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Removal-intent crash did not preserve a valid published identity before script deletion.'
+    }
+
+    # Crash after deleting the script but before committing the absent journal state.
+    $freshDeleteCrash = $false
+    try {
+        Restore-TransactionRecoveryScript -Journal $freshRestoreJournal -CrashHook {
+            param($point)
+            if ($point -eq 'after-script-delete') { throw 'injected crash after recovery-script deletion' }
+        }
+    } catch { $freshDeleteCrash = $true }
+    $freshDeletePersisted = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if (-not $freshDeleteCrash -or (Test-Path -LiteralPath $recoveryTarget) -or
+        $freshDeletePersisted.recovery_script_state -ne 'removal-pending' -or
+        [string]$freshDeletePersisted.recovery_script_sha256 -notmatch '^[a-f0-9]{64}$') {
+        throw 'Script-deletion crash did not preserve a valid retryable removal-pending journal.'
+    }
+
+    # Restart recovery must commit absent and remain idempotent on subsequent retries.
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $persistedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $freshRestoreJournal.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$freshRestoreJournal.recovery_script_sha256) -or
+        $persistedFreshRestore.recovery_script_state -ne 'absent') {
+        throw 'Fresh-install rollback did not remove its script and persist the absent journal state.'
+    }
+    Restore-TransactionRecoveryScript -Journal $freshRestoreJournal
+    $repeatedFreshRestore = Get-Content -LiteralPath (Join-Path $restoreJournalDir ($freshRestoreTransactionId + '.json')) -Raw | ConvertFrom-Json
+    if ((Test-Path -LiteralPath $recoveryTarget) -or
+        $repeatedFreshRestore.recovery_script_state -ne 'absent' -or
+        -not [string]::IsNullOrEmpty([string]$repeatedFreshRestore.recovery_script_sha256)) {
+        throw 'Repeated fresh-install recovery changed an already-absent transaction or published an invalid removal intent.'
+    }
+
+    # An invalid published digest must fail before any removal intent is written.
+    $invalidFreshId = [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($recoveryTarget, $restorePublishedContent)
+    $invalidFreshJournal = [ordered]@{
+        transaction_id = $invalidFreshId
+        phase = 'replacing'
+        recovery_script_path = [IO.Path]::GetFullPath($recoveryTarget)
+        recovery_script_backup_path = ($recoveryTarget + '.' + $invalidFreshId + '.previous')
+        recovery_script_had_original = $false
+        recovery_script_original_sha256 = ''
+        recovery_script_sha256 = 'invalid-digest'
+        recovery_script_state = 'published'
+    }
+    $invalidFreshJournalPath = Join-Path $restoreJournalDir ($invalidFreshId + '.json')
+    Write-InstallJournal -Journal $invalidFreshJournal -Path $invalidFreshJournalPath
+    $invalidFreshRejected = $false
+    try { Restore-TransactionRecoveryScript -Journal $invalidFreshJournal } catch { $invalidFreshRejected = $true }
+    $invalidFreshPersisted = Get-Content -LiteralPath $invalidFreshJournalPath -Raw | ConvertFrom-Json
+    if (-not $invalidFreshRejected -or -not (Test-Path -LiteralPath $recoveryTarget) -or
+        $invalidFreshPersisted.recovery_script_state -ne 'published' -or
+        $invalidFreshPersisted.recovery_script_sha256 -ne 'invalid-digest') {
+        throw 'Invalid published digest was allowed to create a removal-pending journal or delete the recovery script.'
+    }
+    Remove-Item -LiteralPath $recoveryTarget -Force
+
+    $InstallDir = $savedInstallDir
+
+    Write-Host 'Windows transaction recovery and installer metadata helper adversarial tests passed.'
+} finally {
+    $env:ProgramData = $originalProgramData
+    if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
+    Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
+    $finalizePath = Get-Variable -Name finalizeInstallDir -ValueOnly -ErrorAction SilentlyContinue
+    if ($finalizePath) {
+        Remove-Item -LiteralPath $finalizePath -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+, $expected)
+        $retryEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($retryCommand))
+        $retry = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $retryEncoded) -PassThru -Wait -WindowStyle Hidden
+        if ($retry.ExitCode -ne 0 -or (Get-TestHash $backup) -ne $expected -or (Get-TestHash $target) -ne $expected) {
+            throw "Fresh-process recovery did not complete recovery-script backup after $crashPoint."
+        }
+    }
+
     # The exclusive installer lock is held by a live process, then released automatically on process death.
     $lockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
     New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
