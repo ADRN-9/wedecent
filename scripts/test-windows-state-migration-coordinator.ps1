@@ -2127,6 +2127,50 @@ $recoveryRejectedCases = @(
             param($journal, $fixture)
             $global:WeDecentMigrationMockService.StartName = 'NT AUTHORITY\SYSTEM'
         }
+    },
+    [pscustomobject]@{
+        Name = 'metadata state directory outside authenticated migration'
+        ExpectedError = '*Protected installer metadata state_dir is outside this migration transaction*'
+        Mutate = {
+            param($journal, $fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.state_dir = Join-Path $fixture.Root 'unauthorized-state'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'metadata account name resolves to a different SID'
+        ExpectedError = '*Live SCM service-account SID, account name, or start mode*'
+        Mutate = {
+            param($journal, $fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.service_account_name = 'NT AUTHORITY\SYSTEM'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM executable path mismatch'
+        ExpectedError = '*Live SCM binary/state command line is outside the authenticated migration transaction*'
+        Mutate = {
+            param($journal, $fixture)
+            $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'other-agent.exe') + '" serve "--state=' + $fixture.Source + '"'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM state path mismatch'
+        ExpectedError = '*Live SCM binary/state command line is outside the authenticated migration transaction*'
+        Mutate = {
+            param($journal, $fixture)
+            $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'wd-agent.exe') + '" serve "--state=' + (Join-Path $fixture.Root 'unauthorized-state') + '"'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM start mode mismatch'
+        ExpectedError = '*Live SCM service-account SID, account name, or start mode*'
+        Mutate = {
+            param($journal, $fixture)
+            $global:WeDecentMigrationMockService.StartMode = 'Auto'
+        }
     }
 )
 $installerLockContentionFixture = New-MigrationFixture
