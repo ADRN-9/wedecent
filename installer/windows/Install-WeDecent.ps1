@@ -898,7 +898,7 @@ function Acquire-WeDecentInstallerLock {
 }
 
 function Write-InstallJournal {
-    param([Parameter(Mandatory = $true)]$Journal, [string]$Path)
+    param([Parameter(Mandatory = $true)]$Journal, [string]$Path, [switch]$CreateNew)
     $transactionId = [string]$Journal.transaction_id
     $transactionGuid = [Guid]::Empty
     if (-not [Guid]::TryParseExact($transactionId, 'N', [ref]$transactionGuid)) {
@@ -934,7 +934,10 @@ function Write-InstallJournal {
         $stream = [IO.File]::Open($temp, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
         Protect-WeDecentMetadataAcl $temp
-        if (Test-Path -LiteralPath $path -PathType Leaf) {
+        if ($CreateNew) {
+            if (Test-Path -LiteralPath $path) { throw 'Installer transaction journal already exists; exclusive transaction creation rejected replay.' }
+            [IO.File]::Move($temp, $path)
+        } elseif (Test-Path -LiteralPath $path -PathType Leaf) {
             $backup = Join-Path $root ('.' + [Guid]::NewGuid().ToString('N') + '.previous')
             [IO.File]::Replace($temp, $path, $backup, $true)
             Remove-Item -LiteralPath $backup -Force -ErrorAction SilentlyContinue
@@ -1253,8 +1256,18 @@ function Recover-InterruptedInstallerTransactions {
                     throw "Installer transaction original digest is invalid for $name"
                 }
                 if (Test-Path -LiteralPath $expectedBackup -PathType Leaf) {
-                    if ((Get-Sha256FileHash $expectedBackup) -ne $expectedOriginal) {
-                        throw "Interrupted-install backup integrity failure: $expectedBackup"
+                    $backupInfo = Get-Item -LiteralPath $expectedBackup -Force -ErrorAction Stop
+                    $sidecarPath = "$expectedBackup.sha256"
+                    if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                        -not (Test-WeDecentMetadataTrusted -Path $expectedBackup) -or
+                        (Get-Sha256FileHash $expectedBackup) -ne $expectedOriginal) {
+                        throw "Interrupted-install backup integrity or ACL failure: $expectedBackup"
+                    }
+                    if (Test-Path -LiteralPath $sidecarPath) {
+                        if (-not (Test-WeDecentMetadataTrusted -Path $sidecarPath) -or
+                            (Get-Content -LiteralPath $sidecarPath -Raw).Trim() -cne $expectedOriginal) {
+                            throw "Interrupted-install backup digest sidecar integrity failure: $sidecarPath"
+                        }
                     }
                 } elseif ($committed -and -not $superseded) {
                     if (-not (Test-Path -LiteralPath $expectedDestination -PathType Leaf) -or
@@ -1271,6 +1284,30 @@ function Recover-InterruptedInstallerTransactions {
         }
         if ($seenNames.Count -ne $expectedNames.Count) {
             throw "Installer transaction journal does not cover the exact five approved binaries: $($file.FullName)"
+        }
+        foreach ($entry in @($journal.entries)) {
+            if ([bool]$entry.had_original -and
+                (Get-Sha256FileHash ([string]$entry.destination)) -eq [string]$entry.original_sha256) {
+                foreach ($stagingPath in @("$($entry.backup_path).staging", "$($entry.backup_path).sha256.staging")) {
+                    if (Test-Path -LiteralPath $stagingPath) {
+                        $stageInfo = Get-Item -LiteralPath $stagingPath -Force -ErrorAction Stop
+                        if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                            throw "Interrupted binary backup staging path is unsafe: $stagingPath"
+                        }
+                        Remove-Item -LiteralPath $stagingPath -Force -ErrorAction Stop
+                    }
+                }
+                $sidecar = "$($entry.backup_path).sha256"
+                if (-not (Test-Path -LiteralPath $entry.backup_path) -and (Test-Path -LiteralPath $sidecar)) {
+                    $sidecarInfo = Get-Item -LiteralPath $sidecar -Force -ErrorAction Stop
+                    if ($sidecarInfo.PSIsContainer -or ($sidecarInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                        -not (Test-WeDecentMetadataTrusted -Path $sidecar) -or
+                        (Get-Content -LiteralPath $sidecar -Raw).Trim() -cne [string]$entry.original_sha256) {
+                        throw "Orphaned binary backup sidecar is not authenticated: $sidecar"
+                    }
+                    Remove-Item -LiteralPath $sidecar -Force -ErrorAction Stop
+                }
+            }
         }
         if ($superseded) {
             foreach ($entry in @($journal.entries)) {
@@ -1500,7 +1537,7 @@ function Install-Binaries {
         entries = @($entries.ToArray())
         updated_at = [DateTime]::UtcNow.ToString('o')
     }
-    Write-InstallJournal -Journal $script:InstallJournal
+    Write-InstallJournal -Journal $script:InstallJournal -CreateNew
 
     # Preserve the previous recovery entrypoint before stopping SCM or replacing any binary.
     Publish-TransactionRecoveryScriptBackup
