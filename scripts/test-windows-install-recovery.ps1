@@ -1647,14 +1647,11 @@ Publish-TransactionRecoveryScriptBackup
     $lockModuleQ = $migrationModulePath.Replace("'", "''")
 $lockChildCommand = @'
 Import-Module '__MIGRATION_MODULE__' -ErrorAction Stop
-function Protect-WeDecentMetadataAcl { param([string]$Path) }
-function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
-__LOCK_FUNCTION__
-Acquire-WeDecentInstallerLock
+Enter-WeDecentMigrationInstallerLock
 [IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
 Start-Sleep -Seconds 60
 '@
-    $lockChildCommand = $lockChildCommand.Replace('__MIGRATION_MODULE__', $lockModuleQ).Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockChildCommand = $lockChildCommand.Replace('__MIGRATION_MODULE__', $lockModuleQ).Replace('__LOCK_MARKER__', $lockMarkerQ)
     $lockChildScriptPath = Join-Path $durableTestDir 'installer-lock-child.ps1'
     [IO.File]::WriteAllText($lockChildScriptPath, $lockChildCommand, [Text.Encoding]::Unicode)
     $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$lockChildScriptPath`"" -PassThru -WindowStyle Hidden
