@@ -74,7 +74,8 @@ func TestVerifyBrokerServiceSIDRejectsInteractiveProcess(t *testing.T) {
 }
 
 func TestProcessImagePathUsesOpenProcessHandle(t *testing.T) {
-	path, err := processImagePath(windows.CurrentProcess())
+	process, _, _ := procGetCurrentProcess.Call()
+	path, err := processImagePath(windows.Handle(process))
 	if err != nil {
 		t.Fatal(err)
 	}
