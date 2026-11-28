@@ -15,24 +15,24 @@ import (
 )
 
 const (
-	wtdUIChoiceNone                         = 2
-	wtdRevokeWholeChain                     = 1
-	wtdChoiceFile                           = 1
-	wtdStateActionVerify                    = 1
-	wtdStateActionClose                     = 2
-	wtdRevocationCheckChainExcludeRoot      = 0x80
-	certSHA1HashPropID                      = 3
+	wtdUIChoiceNone                    = 2
+	wtdRevokeWholeChain                = 1
+	wtdChoiceFile                      = 1
+	wtdStateActionVerify               = 1
+	wtdStateActionClose                = 2
+	wtdRevocationCheckChainExcludeRoot = 0x80
+	certSHA1HashPropID                 = 3
 )
 
 var (
-	kernel32Publisher = syscall.NewLazyDLL("kernel32.dll")
-	procQueryFullProcessImageName = kernel32Publisher.NewProc("QueryFullProcessImageNameW")
-	wintrustDLL                         = syscall.NewLazyDLL("wintrust.dll")
-	procWinVerifyTrust                  = wintrustDLL.NewProc("WinVerifyTrust")
-	procWTHelperProvDataFromStateData   = wintrustDLL.NewProc("WTHelperProvDataFromStateData")
-	procWTHelperGetProvSignerFromChain = wintrustDLL.NewProc("WTHelperGetProvSignerFromChain")
-	procWTHelperGetProvCertFromChain   = wintrustDLL.NewProc("WTHelperGetProvCertFromChain")
-	crypt32DLL                          = syscall.NewLazyDLL("crypt32.dll")
+	kernel32Publisher                     = syscall.NewLazyDLL("kernel32.dll")
+	procQueryFullProcessImageName         = kernel32Publisher.NewProc("QueryFullProcessImageNameW")
+	wintrustDLL                           = syscall.NewLazyDLL("wintrust.dll")
+	procWinVerifyTrust                    = wintrustDLL.NewProc("WinVerifyTrust")
+	procWTHelperProvDataFromStateData     = wintrustDLL.NewProc("WTHelperProvDataFromStateData")
+	procWTHelperGetProvSignerFromChain    = wintrustDLL.NewProc("WTHelperGetProvSignerFromChain")
+	procWTHelperGetProvCertFromChain      = wintrustDLL.NewProc("WTHelperGetProvCertFromChain")
+	crypt32DLL                            = syscall.NewLazyDLL("crypt32.dll")
 	procCertGetCertificateContextProperty = crypt32DLL.NewProc("CertGetCertificateContextProperty")
 )
 
@@ -44,57 +44,57 @@ type winTrustGUID struct {
 }
 
 type winTrustFileInfo struct {
-	Size       uint32
-	FilePath   *uint16
-	File       windows.Handle
+	Size         uint32
+	FilePath     *uint16
+	File         windows.Handle
 	KnownSubject *winTrustGUID
 }
 
 type winTrustData struct {
-	Size                 uint32
-	PolicyCallbackData   uintptr
-	SIPClientData        uintptr
-	UIChoice             uint32
-	RevocationChecks     uint32
-	UnionChoice          uint32
-	FileInfo             *winTrustFileInfo
-	StateAction          uint32
-	StateData            windows.Handle
-	URLReference         *uint16
-	ProviderFlags        uint32
-	UIContext            uint32
-	SignatureSettings    uintptr
+	Size               uint32
+	PolicyCallbackData uintptr
+	SIPClientData      uintptr
+	UIChoice           uint32
+	RevocationChecks   uint32
+	UnionChoice        uint32
+	FileInfo           *winTrustFileInfo
+	StateAction        uint32
+	StateData          windows.Handle
+	URLReference       *uint16
+	ProviderFlags      uint32
+	UIContext          uint32
+	SignatureSettings  uintptr
 }
 
 type winTrustProviderSigner struct {
-	Size             uint32
-	VerifyAsOf       windows.Filetime
-	CertChainCount   uint32
-	CertChain        uintptr
-	SignerType       uint32
-	Signer           uintptr
-	Error            uint32
-	CounterCount     uint32
-	CounterSigners   uintptr
-	ChainContext     uintptr
+	Size           uint32
+	VerifyAsOf     windows.Filetime
+	CertChainCount uint32
+	CertChain      uintptr
+	SignerType     uint32
+	Signer         uintptr
+	Error          uint32
+	CounterCount   uint32
+	CounterSigners uintptr
+	ChainContext   uintptr
 }
 
 type winTrustProviderCert struct {
-	Size                 uint32
-	Certificate          uintptr
-	Commercial           uint32
-	TrustedRoot          uint32
-	SelfSigned           uint32
-	TestCertificate      uint32
-	RevokedReason        uint32
-	Confidence           uint32
-	Error                uint32
-	TrustListContext     uintptr
-	TrustListSignerCert  uint32
-	CTL                  uintptr
-	CTLError              uint32
-	Cyclic               uint32
-	ChainElement         uintptr
+	Size                uint32
+	Certificate         uintptr
+	Commercial          uint32
+	TrustedRoot         uint32
+	SelfSigned          uint32
+	TestCertificate     uint32
+	RevokedReason       uint32
+	Confidence          uint32
+	Error               uint32
+	TrustListContext    uintptr
+	TrustListSignerCert uint32
+	CTL                 uintptr
+	CTLError            uint32
+	Cyclic              uint32
+	ChainElement        uintptr
 }
 
 // verifyAuthenticodePublisher validates the PE's Authenticode signature using
@@ -201,7 +201,6 @@ func verifyAuthenticodePublisher(path string) (string, error) {
 	}
 	return strings.ToUpper(hex.EncodeToString(hash[:])), nil
 }
-
 
 // processImagePath returns the executable path associated with the still-open
 // kernel process handle. The caller must keep that handle open through signature
