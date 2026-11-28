@@ -67,6 +67,9 @@ func RunContext(ctx context.Context) error {
 	if ctx == nil {
 		return errors.New("SCM broker: nil context")
 	}
+	if ctx.Err() != nil {
+		return nil
+	}
 	serviceSID, err := brokerServiceSID("WeDecentSCMBroker")
 	if err != nil {
 		return err
