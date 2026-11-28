@@ -252,6 +252,9 @@ func authenticateClient(pipe windows.Handle, pid uint32) (bool, error) {
 			if !sameTokenUserSID(&clientUserInfo[0], &processUserInfo[0]) {
 				return false, errors.New("pipe token does not match client process token")
 			}
+			if err := validateAdministratorHighIntegrityToken(processToken); err != nil {
+				return false, fmt.Errorf("client process token is not an eligible elevated administrator token: %w", err)
+			}
 
 			// Until exact publisher policy is provisioned and verified, deny all callers.
 			return false, nil
