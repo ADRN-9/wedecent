@@ -1094,6 +1094,7 @@ try {
     $durableTestDir = Join-Path $root 'durable-backup-tests'
     New-Item -ItemType Directory -Force -Path $durableTestDir | Out-Null
     Set-TestTrustedAcl -Path $durableTestDir
+    $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
 
     # Terminate a child at each durable journal boundary, then resume journal publication in a fresh process.
     $journalCrashPoints = @('after-journal-flush', 'after-journal-publish', 'after-journal-acl')
