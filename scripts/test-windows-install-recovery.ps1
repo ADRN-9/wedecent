@@ -1158,7 +1158,7 @@ try {
         @(Get-ChildItem -LiteralPath $mainProgramData -File -Recurse -Force).Count -ne $mainFileHashesBefore.Count) {
         throw 'Mismatched SCM identity created or removed protected installer/recovery files.'
     }
-    & sc.exe config $serviceName obj= "$env:COMPUTERNAME\\$serviceAccountName" password= $servicePasswordPlain | Out-Null
+    & sc.exe config $serviceName obj= "$env:COMPUTERNAME\$serviceAccountName" password= $servicePasswordPlain | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not restore the isolated service account after the main-installer mismatch test.' }
     Write-Host 'Production main-installer recovery rejected a mismatched SCM SID before SCM or filesystem side effects.'
     $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
