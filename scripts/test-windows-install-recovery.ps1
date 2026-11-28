@@ -390,6 +390,9 @@ try {
     Write-TestJson -Path $metadataPath -Value $targetMetadata
     [IO.File]::WriteAllText("$metadataPath.$($successful.id).restore", 'interrupted restore temp')
     Invoke-TestRecovery -Fixture $successful | Out-Null
+    if ((Get-Service -Name $serviceName -ErrorAction Stop).Status -ne 'Stopped') {
+        throw 'Recovery did not preserve the originally stopped SCM service state.'
+    }
     if ((Get-TestHash $metadataPath) -ne $metadataBefore) { throw 'Recovery did not restore exact prior installer metadata bytes.' }
     if ((Get-TestHash $successful.recoveryScriptPath) -ne $successful.recoveryScriptOriginalHash) {
         throw 'Interrupted recovery did not restore the exact previous privileged recovery script.'
