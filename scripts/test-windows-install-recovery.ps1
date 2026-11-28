@@ -1120,8 +1120,9 @@ Write-InstallJournal -Journal $journal -CreateNew -CrashHook {
 }
 '@
         $childCommand = $childCommand.Replace('__PROGRAMDATA__', $programDataQ).Replace('__WRITER_FUNCTION__', $writerText).Replace('__ID__', $id).Replace('__CRASH_POINT__', $crashPoint).Replace('__MARKER__', $markerQ)
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
-        $child = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -PassThru -WindowStyle Hidden
+        $childScriptPath = Join-Path $durableTestDir ("journal-child-" + $id + ".ps1")
+        [IO.File]::WriteAllText($childScriptPath, $childCommand, [Text.Encoding]::Unicode)
+        $child = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$childScriptPath`"" -PassThru -WindowStyle Hidden
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
         while (-not (Test-Path -LiteralPath $marker) -and -not $child.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $child.Refresh() }
         if (-not (Test-Path -LiteralPath $marker)) {
@@ -1148,8 +1149,9 @@ if (Test-Path -LiteralPath '__JOURNAL_PATH__') {
 }
 '@
         $retryCommand = $retryCommand.Replace('__PROGRAMDATA__', $programDataQ).Replace('__WRITER_FUNCTION__', $writerText).Replace('__ID__', $id).Replace('__JOURNAL_PATH__', $journalPathForCrash.Replace("'", "''"))
-        $retryEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($retryCommand))
-        $retry = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $retryEncoded) -PassThru -Wait -WindowStyle Hidden
+        $retryScriptPath = Join-Path $durableTestDir ("journal-retry-" + $id + ".ps1")
+        [IO.File]::WriteAllText($retryScriptPath, $retryCommand, [Text.Encoding]::Unicode)
+        $retry = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$retryScriptPath`"" -PassThru -Wait -WindowStyle Hidden
         if ($retry.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $journalPathForCrash)) {
             throw "Fresh-process journal recovery failed after $crashPoint."
         }
@@ -1298,8 +1300,9 @@ Publish-WeDecentBinaryBackup -Source '__SOURCE__' -BackupPath '__BACKUP__' -Expe
 }
 '@
         $childCommand = $childCommand.Replace('__FUNCTION_TEXT__', $functionText).Replace('__SOURCE__', $sourceQ).Replace('__BACKUP__', $backupQ).Replace('__EXPECTED__', $expected).Replace('__CRASH_POINT__', $crashPoint).Replace('__MARKER__', $markerQ)
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
-        $child = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -PassThru -WindowStyle Hidden
+        $childScriptPath = Join-Path $durableTestDir ("backup-child-" + $id + ".ps1")
+        [IO.File]::WriteAllText($childScriptPath, $childCommand, [Text.Encoding]::Unicode)
+        $child = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$childScriptPath`"" -PassThru -WindowStyle Hidden
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
         while (-not (Test-Path -LiteralPath $marker) -and -not $child.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $child.Refresh() }
         if (-not (Test-Path -LiteralPath $marker)) {
@@ -1316,8 +1319,9 @@ __FUNCTION_TEXT__
 Publish-WeDecentBinaryBackup -Source '__SOURCE__' -BackupPath '__BACKUP__' -ExpectedSHA256 '__EXPECTED__'
 '@
         $retryCommand = $retryCommand.Replace('__FUNCTION_TEXT__', $functionText).Replace('__SOURCE__', $sourceQ).Replace('__BACKUP__', $backupQ).Replace('__EXPECTED__', $expected)
-        $retryEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($retryCommand))
-        $retry = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $retryEncoded) -PassThru -Wait -WindowStyle Hidden
+        $retryScriptPath = Join-Path $durableTestDir ("backup-retry-" + $id + ".ps1")
+        [IO.File]::WriteAllText($retryScriptPath, $retryCommand, [Text.Encoding]::Unicode)
+        $retry = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$retryScriptPath`"" -PassThru -Wait -WindowStyle Hidden
         if ($retry.ExitCode -ne 0 -or (Get-TestHash $backup) -ne $expected -or (Get-Content -LiteralPath "$backup.sha256" -Raw).Trim() -cne $expected) {
             throw "Fresh-process recovery did not complete the durable backup after $crashPoint."
         }
@@ -1351,8 +1355,9 @@ Publish-TransactionRecoveryScriptBackup -CrashHook {
 }
 '@
         $childCommand = $childCommand.Replace('$RECOVERY_FUNCTIONS$', $recoveryBackupFunctions).Replace('$TARGET$', $targetQ).Replace('$BACKUP$', $backupQ).Replace('$EXPECTED$', $expected).Replace('$CRASH_POINT$', $crashPoint).Replace('$MARKER$', $markerQ)
-        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
-        $child = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -PassThru -WindowStyle Hidden
+        $childScriptPath = Join-Path $durableTestDir ("recovery-child-" + $id + ".ps1")
+        [IO.File]::WriteAllText($childScriptPath, $childCommand, [Text.Encoding]::Unicode)
+        $child = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$childScriptPath`"" -PassThru -WindowStyle Hidden
         $deadline = [DateTime]::UtcNow.AddSeconds(15)
         while (-not (Test-Path -LiteralPath $marker) -and -not $child.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $child.Refresh() }
         if (-not (Test-Path -LiteralPath $marker)) {
@@ -1375,8 +1380,9 @@ $script:InstallJournal = [ordered]@{
 Publish-TransactionRecoveryScriptBackup
 '@
         $retryCommand = $retryCommand.Replace('$RECOVERY_FUNCTIONS$', $recoveryBackupFunctions).Replace('$TARGET$', $targetQ).Replace('$BACKUP$', $backupQ).Replace('$EXPECTED$', $expected)
-        $retryEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($retryCommand))
-        $retry = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $retryEncoded) -PassThru -Wait -WindowStyle Hidden
+        $retryScriptPath = Join-Path $durableTestDir ("recovery-retry-" + $id + ".ps1")
+        [IO.File]::WriteAllText($retryScriptPath, $retryCommand, [Text.Encoding]::Unicode)
+        $retry = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$retryScriptPath`"" -PassThru -Wait -WindowStyle Hidden
         if ($retry.ExitCode -ne 0 -or (Get-TestHash $backup) -ne $expected -or (Get-TestHash $target) -ne $expected) {
             throw "Fresh-process recovery did not complete recovery-script backup after $crashPoint."
         }
@@ -1399,8 +1405,9 @@ Acquire-WeDecentInstallerLock
 Start-Sleep -Seconds 60
 '@
     $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
-    $lockEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($lockChildCommand))
-    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $lockEncoded) -PassThru -WindowStyle Hidden
+    $lockChildScriptPath = Join-Path $durableTestDir 'installer-lock-child.ps1'
+    [IO.File]::WriteAllText($lockChildScriptPath, $lockChildCommand, [Text.Encoding]::Unicode)
+    $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$lockChildScriptPath`"" -PassThru -WindowStyle Hidden
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
     if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
