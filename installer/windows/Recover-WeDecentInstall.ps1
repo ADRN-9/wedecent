@@ -281,8 +281,9 @@ function Exit-RecoveryScmMutationLock {
 }
 
 function Stop-AuthenticatedRecoveryService {
-    param([Parameter(Mandatory = $true)]$Metadata)
-    $scmLock = Enter-RecoveryScmMutationLock
+    param([Parameter(Mandatory = $true)]$Metadata, [object]$ScmLock)
+    $ownsScmLock = $null -eq $ScmLock
+    if ($ownsScmLock) { $ScmLock = Enter-RecoveryScmMutationLock }
     try {
         $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
         if ($snapshot.Service.Status -ne 'Stopped') {
@@ -294,13 +295,14 @@ function Stop-AuthenticatedRecoveryService {
             throw 'SCM did not confirm the service stopped.'
         }
     } finally {
-        Exit-RecoveryScmMutationLock -Handle $scmLock
+        if ($ownsScmLock) { Exit-RecoveryScmMutationLock -Handle $ScmLock }
     }
 }
 
 function Start-AuthenticatedRecoveryService {
-    param([Parameter(Mandatory = $true)]$Metadata)
-    $scmLock = Enter-RecoveryScmMutationLock
+    param([Parameter(Mandatory = $true)]$Metadata, [object]$ScmLock)
+    $ownsScmLock = $null -eq $ScmLock
+    if ($ownsScmLock) { $ScmLock = Enter-RecoveryScmMutationLock }
     try {
         $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
         if ($snapshot.Service.Status -ne 'Running') {
@@ -312,7 +314,7 @@ function Start-AuthenticatedRecoveryService {
             throw 'SCM did not confirm the service running.'
         }
     } finally {
-        Exit-RecoveryScmMutationLock -Handle $scmLock
+        if ($ownsScmLock) { Exit-RecoveryScmMutationLock -Handle $ScmLock }
     }
 }
 
@@ -885,11 +887,13 @@ foreach ($entry in @($journal.entries)) {
 }
 Assert-NoRunningUserBinaries
 
-# Authenticate before any protected-file mutation, then repeat under the SCM database lock immediately before stopping.
-$initialServiceSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
-$restartService = [bool]$journal.service_was_running
-Stop-AuthenticatedRecoveryService -Metadata $metadata
+# Hold the SCM database lock through rollback and restart so service identity cannot be reconfigured between admission and use.
+$recoveryScmMutationLock = Enter-RecoveryScmMutationLock
 try {
+    $initialServiceSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
+    $restartService = [bool]$journal.service_was_running
+    Stop-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock
+    try {
     for ($i = @($journal.entries).Count - 1; $i -ge 0; $i--) {
         $entry = @($journal.entries)[$i]
         $destination = [string]$entry.destination
@@ -930,7 +934,7 @@ try {
 } catch {
     $failure = $_
     $stopFailure = $null
-    try { Stop-AuthenticatedRecoveryService -Metadata $metadata } catch { $stopFailure = $_.Exception.Message }
+    try { Stop-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock } catch { $stopFailure = $_.Exception.Message }
     if ($null -ne $stopFailure) {
         throw "Windows transaction recovery failed; protected backups and pending authorization were retained. SCM stop was not attempted after identity/lock revalidation failed. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
     }
@@ -938,7 +942,7 @@ try {
 }
 try {
     if ($restartService) {
-        Start-AuthenticatedRecoveryService -Metadata $metadata
+        Start-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock
     } else {
         $finalSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
         if ($finalSnapshot.Service.Status -ne 'Stopped') {
@@ -953,6 +957,9 @@ try {
         throw "Previous binaries and metadata were restored, but service state is uncertain; no stop mutation was attempted without fresh identity/lock authorization. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
     }
     throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; authenticated service was left stopped. Cause: $($failure.Exception.Message)"
+    }
+} finally {
+    Exit-RecoveryScmMutationLock -Handle $recoveryScmMutationLock
 }
 Write-Output 'not-applied'
 } finally {
