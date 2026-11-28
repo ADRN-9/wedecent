@@ -20,6 +20,9 @@ const (
 	pipeWait                = 0
 	pipeRejectRemoteClients = 0x00000008
 	tokenElevation          = 20
+	tokenElevationType      = 18
+	tokenIntegrityLevel     = 25
+	tokenIsAppContainer     = 29
 	tokenUser               = 1
 )
 
@@ -35,6 +38,9 @@ var (
 	procOpenThreadToken             = advapi32.NewProc("OpenThreadToken")
 	procGetTokenInformation         = advapi32.NewProc("GetTokenInformation")
 	procEqualSid                    = advapi32.NewProc("EqualSid")
+	procCheckTokenMembership        = advapi32.NewProc("CheckTokenMembership")
+	procGetSidSubAuthorityCount    = advapi32.NewProc("GetSidSubAuthorityCount")
+	procGetSidSubAuthority        = advapi32.NewProc("GetSidSubAuthority")
 )
 
 type tokenElevationInfo struct {
@@ -151,6 +157,9 @@ func authenticateClient(pipe windows.Handle, pid uint32) (authorized bool, err e
 	if elevation.TokenIsElevated != 1 {
 		return false, nil
 	}
+	if err := validateAdministratorHighIntegrityToken(clientToken); err != nil {
+		return false, err
+	}
 
 	// Bind the impersonation token to the kernel-reported client process.
 	// Publisher verification is still a mandatory, unimplemented authorization
@@ -208,4 +217,87 @@ func sameTokenUserSID(a, b *byte) bool {
 	}
 	result, _, _ := procEqualSid.Call(x.SID, y.SID)
 	return result != 0
+}
+
+
+// validateAdministratorHighIntegrityToken checks the effective impersonation
+// token, not the broker process token. It does not by itself authorize a client;
+// exact publisher verification remains a separate mandatory gate.
+func validateAdministratorHighIntegrityToken(token windows.Token) error {
+	adminSID, err := windows.StringToSid("S-1-5-32-544")
+	if err != nil {
+		return fmt.Errorf("construct administrators SID: %w", err)
+	}
+	var isMember int32
+	result, _, callErr := procCheckTokenMembership.Call(
+		uintptr(token),
+		uintptr(unsafe.Pointer(adminSID)),
+		uintptr(unsafe.Pointer(&isMember)),
+	)
+	if result == 0 {
+		return fmt.Errorf("check administrators membership: %w", callErr)
+	}
+	if isMember == 0 {
+		return errors.New("client token is not an enabled administrator")
+	}
+
+	var elevationType uint32
+	var returned uint32
+	result, _, callErr = procGetTokenInformation.Call(
+		uintptr(token),
+		tokenElevationType,
+		uintptr(unsafe.Pointer(&elevationType)),
+		unsafe.Sizeof(elevationType),
+		uintptr(unsafe.Pointer(&returned)),
+	)
+	if result == 0 {
+		return fmt.Errorf("query token elevation type: %w", callErr)
+	}
+	if elevationType != 2 { // TokenElevationTypeFull
+		return errors.New("client token is not fully elevated")
+	}
+
+	var appContainer uint32
+	result, _, callErr = procGetTokenInformation.Call(
+		uintptr(token),
+		tokenIsAppContainer,
+		uintptr(unsafe.Pointer(&appContainer)),
+		unsafe.Sizeof(appContainer),
+		uintptr(unsafe.Pointer(&returned)),
+	)
+	if result == 0 {
+		return fmt.Errorf("query AppContainer token state: %w", callErr)
+	}
+	if appContainer != 0 {
+		return errors.New("AppContainer clients are not authorized")
+	}
+
+	var integrity [256]byte
+	result, _, callErr = procGetTokenInformation.Call(
+		uintptr(token),
+		tokenIntegrityLevel,
+		uintptr(unsafe.Pointer(&integrity[0])),
+		uintptr(len(integrity)),
+		uintptr(unsafe.Pointer(&returned)),
+	)
+	if result == 0 {
+		return fmt.Errorf("query token integrity level: %w", callErr)
+	}
+	type sidAndAttributes struct {
+		SID        uintptr
+		Attributes uint32
+	}
+	label := (*sidAndAttributes)(unsafe.Pointer(&integrity[0]))
+	if label.SID == 0 {
+		return errors.New("client token has no integrity SID")
+	}
+	count, _, _ := procGetSidSubAuthorityCount.Call(label.SID)
+	if count == 0 || *(*byte)(unsafe.Pointer(count)) == 0 {
+		return errors.New("client token integrity SID is malformed")
+	}
+	rid, _, _ := procGetSidSubAuthority.Call(label.SID, uintptr(*(*byte)(unsafe.Pointer(count))-1))
+	if rid == 0 || *(*uint32)(unsafe.Pointer(rid)) < 0x3000 { // SECURITY_MANDATORY_HIGH_RID
+		return errors.New("client token integrity is below High")
+	}
+	return nil
 }
