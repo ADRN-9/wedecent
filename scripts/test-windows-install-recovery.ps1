@@ -1035,6 +1035,7 @@ try {
     }, $true)
     if ($metadataFunctions.Count -ne 2) { throw 'Could not locate both installer metadata transaction helpers.' }
     foreach ($functionAst in $metadataFunctions) { Invoke-Expression $functionAst.Extent.Text }
+    $powerShellExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     $snapshotFunctionNames = @('Copy-WeDecentFileDurably', 'Flush-WeDecentFileToDisk', 'Publish-WeDecentMetadataSnapshot',
         'Protect-WeDecentMetadataAcl', 'Test-WeDecentMetadataTrusted')
     $snapshotFunctionAsts = $installerAst.FindAll({
