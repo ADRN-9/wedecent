@@ -1023,6 +1023,7 @@ try {
         schema = 1
         product = 'WeDecent'
         service_name = $serviceName
+        service_account_name = $serviceAccountName
         service_account_sid = $serviceSid
         install_dir = $finalizeInstallDir
         state_dir = $finalizeStateDir
