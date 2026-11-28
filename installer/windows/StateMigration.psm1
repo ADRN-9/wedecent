@@ -625,13 +625,13 @@ function Read-WeDecentMigrationJournal {
         throw 'Migration journal transaction identifier is invalid.'
     }
     foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path',
-        'service_name', 'service_sid', 'service_start_name', 'service_start_mode', 'service_executable_path', 'agent_path', 'original_service_path',
+        'service_name', 'service_sid', 'service_start_name', 'service_start_mode', 'agent_path', 'original_service_path',
         'updated_service_path', 'original_metadata_json', 'source_manifest_sha256', 'source_stable_manifest_sha256')) {
         if ([string]::IsNullOrWhiteSpace([string]$journal.$field)) {
             throw "Migration journal field '$field' is missing."
         }
     }
-    foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path', 'service_executable_path', 'agent_path')) {
+    foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path', 'agent_path')) {
         if (-not [IO.Path]::IsPathRooted([string]$journal.$field)) {
             throw "Migration journal path '$field' is not absolute."
         }
@@ -1081,7 +1081,14 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         throw 'Migration journal or destination is outside the authenticated installation transaction namespace.'
     }
     $expectedServiceExecutable = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'wd-agent.exe')
-    if (-not [string]::Equals([string]$Journal.service_executable_path, $expectedServiceExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+    $journalServiceExecutable = if ([string]::IsNullOrWhiteSpace([string]$Journal.service_executable_path)) {
+        Get-WeDecentMigrationServiceExecutablePath -ServicePath ([string]$Journal.original_service_path)
+    } else {
+        Get-WeDecentMigrationCanonicalPath -Path ([string]$Journal.service_executable_path)
+    }
+    $updatedServiceExecutable = Get-WeDecentMigrationServiceExecutablePath -ServicePath ([string]$Journal.updated_service_path)
+    if (-not [string]::Equals($journalServiceExecutable, $expectedServiceExecutable, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($updatedServiceExecutable, $expectedServiceExecutable, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Migration journal service executable is outside the authenticated installation identity.'
     }
     if (-not [string]::Equals($metadataState, $source, [StringComparison]::OrdinalIgnoreCase) -and
@@ -1135,7 +1142,7 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         throw 'Live SCM binary/state command line is outside the authenticated migration transaction.'
     }
     $serviceExecutable = Get-WeDecentMigrationServiceExecutablePath -ServicePath $servicePath
-    $expectedExecutable = Get-WeDecentMigrationCanonicalPath -Path ([string]$Journal.service_executable_path)
+    $expectedExecutable = $expectedServiceExecutable
     if (-not [string]::Equals($serviceExecutable, $expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Live SCM executable path does not match the authenticated migration agent.'
     }
