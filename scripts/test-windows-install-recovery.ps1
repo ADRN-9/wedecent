@@ -1240,13 +1240,22 @@ function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 function Get-CimInstance { [CmdletBinding()] param([string]$ClassName, [string]$Filter) return $null }
 __RECOVERY_FLOW_FUNCTIONS__
 $Destinations = __DESTINATIONS__
-Recover-InterruptedInstallerTransactions -Destinations $Destinations
+try {
+    Recover-InterruptedInstallerTransactions -Destinations $Destinations
+} catch {
+    [IO.File]::WriteAllText('__ERROR_PATH__', (($_ | Out-String) + [Environment]::NewLine + $_.ScriptStackTrace))
+    exit 1
+}
 '@
-    $freshCommand = $freshCommand.Replace('__PROGRAMDATA__', $freshProgramData.Replace("'", "''")).Replace('__INSTALLDIR__', $freshInstallDir.Replace("'", "''")).Replace('__STATEDIR__', $freshStateDir.Replace("'", "''")).Replace('__RECOVERY_FLOW_FUNCTIONS__', $recoveryFlowText).Replace('__DESTINATIONS__', $freshDestinationsLiteral)
+    $freshErrorPath = Join-Path $durableTestDir 'fresh-no-service-recovery-error.txt'
+    $freshCommand = $freshCommand.Replace('__PROGRAMDATA__', $freshProgramData.Replace("'", "''")).Replace('__INSTALLDIR__', $freshInstallDir.Replace("'", "''")).Replace('__STATEDIR__', $freshStateDir.Replace("'", "''")).Replace('__RECOVERY_FLOW_FUNCTIONS__', $recoveryFlowText).Replace('__DESTINATIONS__', $freshDestinationsLiteral).Replace('__ERROR_PATH__', $freshErrorPath.Replace("'", "''"))
     $freshScriptPath = Join-Path $durableTestDir 'fresh-no-service-recovery-child.ps1'
     [IO.File]::WriteAllText($freshScriptPath, $freshCommand, [Text.Encoding]::Unicode)
     $freshProcess = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$freshScriptPath`"" -PassThru -Wait -WindowStyle Hidden
-    if ($freshProcess.ExitCode -ne 0) { throw "Fresh-process no-service recovery failed (exit $($freshProcess.ExitCode))." }
+    if ($freshProcess.ExitCode -ne 0) {
+        $freshError = if (Test-Path -LiteralPath $freshErrorPath) { Get-Content -LiteralPath $freshErrorPath -Raw } else { 'child produced no error detail' }
+        throw "Fresh-process no-service recovery failed (exit $($freshProcess.ExitCode)): $freshError"
+    }
     $freshRecovered = Get-Content -LiteralPath $freshJournalPath -Raw | ConvertFrom-Json
     if ($freshRecovered.phase -ne 'rolled-back' -or (Test-Path -LiteralPath $freshRecoveryScript)) {
         throw 'Fresh-install recovery did not persist rollback without requiring an SCM service.'
