@@ -54,7 +54,6 @@ func TestServiceManagementUsesLeastPrivilegeMasks(t *testing.T) {
 	}
 }
 
-
 func TestEnableServiceSIDConfiguresAndVerifiesSCMService(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
