@@ -631,7 +631,7 @@ function Read-WeDecentMigrationJournal {
             throw "Migration journal field '$field' is missing."
         }
     }
-    foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path')) {
+    foreach ($field in @('source', 'destination', 'staging', 'metadata_path', 'journal_path', 'service_executable_path', 'agent_path')) {
         if (-not [IO.Path]::IsPathRooted([string]$journal.$field)) {
             throw "Migration journal path '$field' is not absolute."
         }
@@ -1079,6 +1079,10 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
     if (-not [string]::Equals([string]$Journal.journal_path, $expectedJournalPath, [StringComparison]::OrdinalIgnoreCase) -or
         -not $destination.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Migration journal or destination is outside the authenticated installation transaction namespace.'
+    }
+    $expectedServiceExecutable = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'wd-agent.exe')
+    if (-not [string]::Equals([string]$Journal.service_executable_path, $expectedServiceExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Migration journal service executable is outside the authenticated installation identity.'
     }
     if (-not [string]::Equals($metadataState, $source, [StringComparison]::OrdinalIgnoreCase) -and
         -not [string]::Equals($metadataState, $destination, [StringComparison]::OrdinalIgnoreCase)) {
