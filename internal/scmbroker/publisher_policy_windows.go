@@ -94,6 +94,11 @@ func loadPublisherPolicy() (publisherPolicy, error) {
 	if err != nil || len(data) > 4096 {
 		return zero, errors.New("publisher policy could not be read within size limit")
 	}
+	return decodePublisherPolicy(data)
+}
+
+func decodePublisherPolicy(data []byte) (publisherPolicy, error) {
+	var zero publisherPolicy
 	if err := rejectDuplicateKeys(data); err != nil {
 		return zero, fmt.Errorf("publisher policy has duplicate or malformed JSON: %w", err)
 	}
