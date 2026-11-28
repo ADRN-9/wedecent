@@ -821,7 +821,7 @@ function Assert-InstalledUserBinariesStopped {
 }
 
 function Copy-WeDecentFileDurably {
-    param([Parameter(Mandatory = $true)][string]$Source, [Parameter(Mandatory = $true)][string]$Destination, [Parameter(Mandatory = $true)][string]$ExpectedSHA256)
+    param([Parameter(Mandatory = $true)][string]$Source, [Parameter(Mandatory = $true)][string]$Destination, [Parameter(Mandatory = $true)][string]$ExpectedSHA256, [scriptblock]$CrashHook)
     $sourceInfo = Get-Item -LiteralPath $Source -Force -ErrorAction Stop
     if ($sourceInfo.PSIsContainer -or ($sourceInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Durable backup source must be a regular non-reparse file: $Source" }
     if (Test-Path -LiteralPath $Destination) { throw "Durable backup staging path already exists: $Destination" }
@@ -830,13 +830,16 @@ function Copy-WeDecentFileDurably {
         $input = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
         $output = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
         $input.CopyTo($output); $output.Flush($true)
+        if ($CrashHook) { & $CrashHook 'after-backup-flush' }
     } finally {
         if ($null -ne $output) { $output.Dispose() }
         if ($null -ne $input) { $input.Dispose() }
     }
     if ((Get-Sha256FileHash $Destination) -ne $ExpectedSHA256) { throw "Durable backup failed post-flush integrity verification: $Destination" }
+    if ($CrashHook) { & $CrashHook 'after-backup-hash' }
     Protect-WeDecentMetadataAcl $Destination
     if (-not (Test-WeDecentMetadataTrusted -Path $Destination) -or (Get-Sha256FileHash $Destination) -ne $ExpectedSHA256) { throw "Durable backup failed ACL or final integrity verification: $Destination" }
+    if ($CrashHook) { & $CrashHook 'after-backup-acl' }
 }
 
 function Write-WeDecentTextDurably {
@@ -849,6 +852,7 @@ function Write-WeDecentTextDurably {
 }
 
 function Publish-TransactionRecoveryScriptBackup {
+    param([scriptblock]$CrashHook)
     $journal = $script:InstallJournal
     if (-not [bool]$journal.recovery_script_had_original) { return }
     $target = [IO.Path]::GetFullPath([string]$journal.recovery_script_path)
@@ -866,8 +870,9 @@ function Publish-TransactionRecoveryScriptBackup {
         if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Interrupted recovery-script staging path is not a regular file.' }
         Remove-Item -LiteralPath $staging -Force -ErrorAction Stop
     }
-    Copy-WeDecentFileDurably -Source $target -Destination $staging -ExpectedSHA256 $expected
+    Copy-WeDecentFileDurably -Source $target -Destination $staging -ExpectedSHA256 $expected -CrashHook $CrashHook
     [IO.File]::Move($staging, $backup)
+    if ($CrashHook) { & $CrashHook 'after-backup-publish' }
     $published = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
     if ($published.PSIsContainer -or ($published.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not (Test-WeDecentMetadataTrusted -Path $backup) -or (Get-Sha256FileHash $backup) -ne $expected) { throw 'Published recovery-script transaction backup failed final integrity verification.' }
 }
