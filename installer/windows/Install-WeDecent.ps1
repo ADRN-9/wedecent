@@ -941,17 +941,23 @@ function Acquire-WeDecentInstallerLock {
     if (-not $rootInfo.PSIsContainer -or ($rootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installer lock directory must be a regular non-reparse directory.' }
     Protect-WeDecentMetadataAcl $root
     $path = Join-Path $root 'installer.lock'
-    if (Test-Path -LiteralPath $path) {
-        $info = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-        if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not (Test-WeDecentMetadataTrusted -Path $path)) { throw 'Existing installer lock file is unsafe or ACL-untrusted.' }
+    if (-not (Test-Path -LiteralPath $path)) {
+        try {
+            $bootstrap = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $bootstrap.Dispose()
+        } catch [IO.IOException] {
+            if (-not (Test-Path -LiteralPath $path)) { throw }
+        }
     }
+    $info = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installer lock path is not a regular non-reparse file.' }
+    Protect-WeDecentMetadataAcl $path
+    if (-not (Test-WeDecentMetadataTrusted -Path $path)) { throw 'Installer lock file ACL verification failed.' }
     try {
-        # Kernel releases exclusive sharing when the owner exits; stale contents do not retain ownership.
-        $stream = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        # Kernel releases exclusive sharing when the owner exits; stale contents never retain ownership.
+        $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     } catch [IO.IOException] { throw 'Another WeDecent installer or recovery operation owns the machine-wide installation lock.' }
     try {
-        Protect-WeDecentMetadataAcl $path
-        if (-not (Test-WeDecentMetadataTrusted -Path $path)) { throw 'Installer lock file ACL verification failed.' }
         $stream.SetLength(0)
         $owner = [Text.Encoding]::ASCII.GetBytes(("pid=" + $PID + [Environment]::NewLine))
         $stream.Write($owner, 0, $owner.Length); $stream.Flush($true)
