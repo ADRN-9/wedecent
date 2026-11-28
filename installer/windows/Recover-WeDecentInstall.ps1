@@ -100,10 +100,12 @@ function Acquire-WeDecentRecoveryLock {
     Set-TrustedAcl -Path $root
     Assert-TrustedAcl -Path $root
     $path = Join-Path $root 'installer.lock'
+    $lockCreated = $false
     if (-not (Test-Path -LiteralPath $path)) {
         try {
             $bootstrap = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             $bootstrap.Dispose()
+            $lockCreated = $true
         } catch [IO.IOException] {
             if (-not (Test-Path -LiteralPath $path)) { throw }
         }
@@ -112,7 +114,7 @@ function Acquire-WeDecentRecoveryLock {
     if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Installer lock path is not a regular non-reparse file.'
     }
-    Set-TrustedAcl -Path $path
+    if ($lockCreated) { Set-TrustedAcl -Path $path }
     Assert-TrustedAcl -Path $path
     try {
         # The same exclusive OS file handle serializes installer and updater recovery; process exit releases stale ownership.
