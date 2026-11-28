@@ -1039,6 +1039,14 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         throw 'Protected installer metadata does not bind the same installation identity as the migration transaction.'
     }
 
+    $installRoot = Get-WeDecentMigrationCanonicalPath -Path ([string]$metadata.install_dir)
+    $installPrefix = $installRoot.TrimEnd('\\') + '\\'
+    $expectedJournalPath = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'migration\\state-migration.json')
+    if (-not [string]::Equals([string]$Journal.journal_path, $expectedJournalPath, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $destination.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Migration journal or destination is outside the authenticated installation transaction namespace.'
+    }
+
     if ([string]::IsNullOrWhiteSpace([string]$metadata.state_dir) -or
         [string]::IsNullOrWhiteSpace([string]$original.state_dir)) {
         throw 'Protected installer metadata is missing a state path.'
