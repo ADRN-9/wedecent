@@ -90,6 +90,43 @@ function Assert-TrustedAcl {
     }
 }
 
+function Acquire-WeDecentRecoveryLock {
+    $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $rootInfo = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (-not $rootInfo.PSIsContainer -or ($rootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Recovery lock directory must be a regular non-reparse directory.'
+    }
+    Set-TrustedAcl -Path $root
+    Assert-TrustedAcl -Path $root
+    $path = Join-Path $root 'installer.lock'
+    if (Test-Path -LiteralPath $path) {
+        $info = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'Existing installer lock is not a regular non-reparse file.'
+        }
+        Assert-TrustedAcl -Path $path
+    }
+    try {
+        # The same exclusive OS file handle serializes installer and updater recovery; process exit releases stale ownership.
+        $stream = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] {
+        throw 'Another WeDecent installer or recovery operation owns the machine-wide installation lock.'
+    }
+    try {
+        Set-TrustedAcl -Path $path
+        Assert-TrustedAcl -Path $path
+        $stream.SetLength(0)
+        $owner = [Text.Encoding]::ASCII.GetBytes(("pid=" + $PID + [Environment]::NewLine))
+        $stream.Write($owner, 0, $owner.Length)
+        $stream.Flush($true)
+        return $stream
+    } catch {
+        $stream.Dispose()
+        throw
+    }
+}
+
 function Resolve-ServiceAccountSid {
     param([Parameter(Mandatory = $true)][string]$StartName)
     $account = $StartName.Trim()
@@ -277,6 +314,8 @@ function Assert-NoRunningUserBinaries {
 }
 
 Assert-Administrator
+$recoveryLock = Acquire-WeDecentRecoveryLock
+try {
 $InstallDir = [IO.Path]::GetFullPath($InstallDir)
 $StateDir = [IO.Path]::GetFullPath($StateDir)
 if (-not $InstallDir.StartsWith([IO.Path]::GetFullPath($env:ProgramFiles) + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
@@ -753,3 +792,9 @@ try {
     throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; service was left stopped. Cause: $($_.Exception.Message)"
 }
 Write-Output 'not-applied'
+} finally {
+    if ($null -ne $recoveryLock) {
+        $recoveryLock.Dispose()
+        $recoveryLock = $null
+    }
+}
