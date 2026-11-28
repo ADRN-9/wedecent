@@ -877,6 +877,7 @@ function Publish-WeDecentBinaryBackup {
         if (-not (Test-Path -LiteralPath $sidecar)) {
             Write-WeDecentTextDurably -Path $sidecarStage -Value $ExpectedSHA256 -CrashHook $CrashHook
             [IO.File]::Move($sidecarStage, $sidecar)
+            if ($CrashHook) { & $CrashHook 'after-sidecar-publish' }
         } elseif (-not (Test-WeDecentMetadataTrusted -Path $sidecar) -or
             (Get-Content -LiteralPath $sidecar -Raw).Trim() -cne $ExpectedSHA256) {
             throw "Existing transaction backup sidecar is unsafe or corrupted: $sidecar"
