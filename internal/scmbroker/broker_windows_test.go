@@ -5,6 +5,7 @@ package scmbroker
 import (
 	"errors"
 	"testing"
+	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
@@ -36,5 +37,28 @@ func TestBrokerAuthenticationRejectsInvalidPipeHandle(t *testing.T) {
 func TestBrokerPipePathIsLocalNamedPipe(t *testing.T) {
 	if pipePath != `\\.\pipe\WeDecent.SCM.v1` {
 		t.Fatalf("pipe path = %q", pipePath)
+	}
+}
+
+func TestSameTokenUserSIDRejectsCrossUserIdentity(t *testing.T) {
+	userA, err := windows.StringToSid("S-1-5-21-111-222-333-1001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	userB, err := windows.StringToSid("S-1-5-21-111-222-333-1002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type sidAndAttributes struct {
+		SID        uintptr
+		Attributes uint32
+	}
+	a := sidAndAttributes{SID: uintptr(unsafe.Pointer(userA))}
+	b := sidAndAttributes{SID: uintptr(unsafe.Pointer(userB))}
+	if sameTokenUserSID((*byte)(unsafe.Pointer(&a)), (*byte)(unsafe.Pointer(&b))) {
+		t.Fatal("different user SIDs were treated as equal")
+	}
+	if !sameTokenUserSID((*byte)(unsafe.Pointer(&a)), (*byte)(unsafe.Pointer(&a))) {
+		t.Fatal("identical user SIDs were treated as different")
 	}
 }
