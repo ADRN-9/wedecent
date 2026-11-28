@@ -47,6 +47,8 @@ $script:InstallTransactionSequence = $TransactionSequence
 $script:InstallJournal = $null
 $script:InstallServiceStoppedForTransaction = $false
 $script:InstallServiceExisted = $false
+$script:InstallServiceStartName = $null
+$script:InstallServiceStartMode = $null
 
 function Assert-Administrator {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
