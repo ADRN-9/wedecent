@@ -34,6 +34,7 @@ const (
 
 var (
 	kernel32                        = syscall.NewLazyDLL("kernel32.dll")
+	procGetCurrentProcess            = kernel32.NewProc("GetCurrentProcess")
 	procCreateNamedPipe             = kernel32.NewProc("CreateNamedPipeW")
 	procConnectNamedPipe            = kernel32.NewProc("ConnectNamedPipe")
 	procDisconnectNamedPipe         = kernel32.NewProc("DisconnectNamedPipe")
@@ -43,6 +44,7 @@ var (
 	procRevertToSelf                = advapi32.NewProc("RevertToSelf")
 	procOpenThreadToken             = advapi32.NewProc("OpenThreadToken")
 	procGetTokenInformation         = advapi32.NewProc("GetTokenInformation")
+	procOpenProcessToken            = advapi32.NewProc("OpenProcessToken")
 	procEqualSid                    = advapi32.NewProc("EqualSid")
 	procCheckTokenMembership        = advapi32.NewProc("CheckTokenMembership")
 	procGetSidSubAuthorityCount     = advapi32.NewProc("GetSidSubAuthorityCount")
@@ -67,6 +69,9 @@ func RunContext(ctx context.Context) error {
 	}
 	serviceSID, err := brokerServiceSID("WeDecentSCMBroker")
 	if err != nil {
+		return err
+	}
+	if err := verifyBrokerServiceSID(serviceSID); err != nil {
 		return err
 	}
 	sddl := "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;" + serviceSID + ")"
@@ -395,4 +400,34 @@ func brokerServiceSID(serviceName string) (string, error) {
 		fmt.Fprintf(&sid, "-%d", value)
 	}
 	return sid.String(), nil
+}
+
+
+// verifyBrokerServiceSID refuses to start the privileged broker outside its
+// dedicated service identity. SCM configuration alone is not sufficient.
+func verifyBrokerServiceSID(serviceSID string) error {
+	sid, err := windows.StringToSid(serviceSID)
+	if err != nil {
+		return fmt.Errorf("parse broker service SID: %w", err)
+	}
+	process, _, _ := procGetCurrentProcess.Call()
+	var token windows.Token
+	ok, _, callErr := procOpenProcessToken.Call(process, uintptr(windows.TOKEN_QUERY), uintptr(unsafe.Pointer(&token)))
+	if ok == 0 {
+		return fmt.Errorf("open broker process token: %w", callErr)
+	}
+	defer token.Close()
+	var member int32
+	ok, _, callErr = procCheckTokenMembership.Call(
+		uintptr(token),
+		uintptr(unsafe.Pointer(sid)),
+		uintptr(unsafe.Pointer(&member)),
+	)
+	if ok == 0 {
+		return fmt.Errorf("verify broker service SID in process token: %w", callErr)
+	}
+	if member == 0 {
+		return errors.New("SCM broker must run with its enabled dedicated service SID")
+	}
+	return nil
 }
