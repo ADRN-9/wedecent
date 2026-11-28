@@ -33,3 +33,4 @@ func Uninstall(string) error                        { return errWindowsOnly }
 func Query(string) (Status, error)                  { return Status{}, errWindowsOnly }
 func Run(string, func(context.Context) error) error { return errWindowsOnly }
 func RestrictDirectory(string, string) error        { return errWindowsOnly }
+func EnableServiceSID(string) error                 { return errWindowsOnly }
