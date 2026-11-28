@@ -1584,7 +1584,8 @@ function Recover-InterruptedInstallerTransactions {
                 throw 'SCM service identity does not match the authenticated installer paths.'
             }
             if ($serviceBefore.Status -ne 'Stopped') {
-                [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
+                $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+                [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig $serviceConfig)
                 Stop-Service -Name $ServiceName -Force -ErrorAction Stop
             }
             (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
