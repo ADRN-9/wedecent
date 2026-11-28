@@ -292,3 +292,35 @@ These coordinator tests still replace SCM queries/commands with test doubles. Th
 Repository changes and hosted CI may establish code-level fail-closed behavior and mocked coordinator regressions. The following remain **NOT ESTABLISHED** until the isolated persistent VM produces retained redacted evidence: real SCM identity mismatch/unresolved rejection with zero SCM/file effects; real running and stopped service restoration; installer/recovery process concurrency under the actual service; abrupt process-kill recovery; DPAPI identity continuity under the actual service token; and same-disk reboot recovery.
 
 Do not interpret this C354 implementation note as approval to close the Windows migration VM gate or as production-readiness evidence.
+
+
+## C356 — live SCM identity, forward admission and lock serialization (2026-11-28)
+
+### Implemented repository controls
+
+- Normal upgrades now authenticate the current SCM service SID against both the protected metadata SID and the SID resolved from the protected metadata account name before state-migration recovery or binary-recovery work. A normal upgrade cannot silently replace the service account identity.
+- Forward state migration now acquires the same exclusive machine-wide installer lock as recovery. It authenticates the ACL-protected metadata, strict JSON shape, service name, install root, source state directory, account-name/SID binding, requested service SID, live SCM account SID, live executable path, and actual SCM `--state` argument before changing directory ACLs, writing a journal, copying files or changing SCM.
+- The migration journal records the installed SCM executable path separately from the bundle agent path used for identity operations. Recovery validates that path against the authenticated installation root and checks the actual live executable and `--state` command line on every service-identity validation.
+- Recovery permits only the two journal-defined source/destination paths during the narrowly defined `StatePublished`, `ServiceReconfigured` and `RollingBack` transition windows. All other metadata/SCM state mismatches fail closed.
+- Immediately before service stop, binary-path reconfiguration and service start, forward migration and rollback revalidate the live service SID, exact account name, executable path, state path and start mode. The post-`sc.exe config` state is also revalidated.
+- Installer recovery and normal-upgrade stop/start and rollback paths revalidate the same live service identity immediately before SCM mutation.
+- The caller-controlled `-InstallerLockHeld` switch has been removed. The module owns the lock handle and same-thread reentrancy state; the installer acquires/releases through exported lock entrypoints. Both direct migration and recovery acquire the lock themselves when not already executing inside the installer-owned lock.
+
+### C356 hosted regression coverage
+
+`scripts/test-windows-state-migration-coordinator.ps1` now includes:
+- Forward-migration rejection for a mismatched protected service SID, metadata state path not bound to source, live SCM state path mismatch, and live executable mismatch. It snapshots the full fixture tree/ACLs, metadata bytes, journal existence/bytes, and SCM counters to assert zero side effects.
+- Recovery rejection for metadata state path outside the authenticated transaction, metadata account-name/SID mismatch, live executable mismatch, live state-path mismatch and start-mode mismatch, in addition to the existing missing/malformed/unresolved/mismatched SID cases.
+- Cross-process lock contention: a separate PowerShell process attempts installer lock acquisition, direct forward migration and recovery while another process owns the shared lock. Each must reject before side effects.
+- Static installer integration assertions that normal-upgrade SID authentication precedes recovery, the installer enters/exits the module-owned lock, and no caller-supplied lock bypass remains.
+
+The test suite still uses SCM test doubles for coordinator operations. Hosted results are not real SCM acceptance.
+
+### Compatibility and fail-closed behavior
+
+- New migration journals record `service_executable_path`. Older protected journals may derive that path only from the authenticated original/updated SCM command lines; both must resolve to the expected `wd-agent.exe` under the protected install root. Arbitrary or mismatched executable paths remain rejected.
+- A service-account SID change is not supported by normal upgrade or state-only migration. It remains rejected until a separate explicit service-account migration flow can authenticate both old and new identities and journal the authorized transition.
+
+### Acceptance status
+
+C356 does not close the persistent privileged Windows VM gate. Hosted Windows process tests cannot prove actual service-token identity, SCM command mutation, error 1314 privilege requirements, abrupt process termination, reboot recovery, or DPAPI continuity. Retain all infrastructure dependencies listed above.
