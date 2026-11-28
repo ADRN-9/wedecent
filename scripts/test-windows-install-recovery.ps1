@@ -1098,7 +1098,7 @@ try {
         [IO.File]::WriteAllText($source, "crash-safe original:$id")
         $expected = Get-TestHash $source
         $marker = Join-Path $durableTestDir ("crash-marker-" + $id)
-        $functionText = ($durableFunctions | Where-Object { $_.Name -in @('Copy-WeDecentFileDurably', 'Write-WeDecentTextDurably', 'Publish-WeDecentBinaryBackup') } | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+        $functionText = ($durableFunctions | Where-Object { $_.Name -in @('Copy-WeDecentFileDurably', 'Flush-WeDecentFileToDisk', 'Write-WeDecentTextDurably', 'Publish-WeDecentBinaryBackup') } | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
         $sourceQ = $source.Replace("'", "''"); $backupQ = $backup.Replace("'", "''")
         $markerQ = $marker.Replace("'", "''")
         $childCommand = @'
