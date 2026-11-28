@@ -63,3 +63,29 @@ The first exact-head run for commit `391d067fbc1e54b1f63a951719b01d3c1d7692e4` f
 - Desktop shell and updater security workflow succeeded on that earlier commit.
 
 The follow-on exact-head CI for `a5bf490fcb4b75b876557101115022d6422db506` was queued/pending when this addendum was written; no passing outcome is claimed. The independent local protocol/impersonation helper tests passed using the copied package source with Go 1.23.2, but this is not a substitute for the repository's Go 1.27 Windows CI.
+
+
+## C363 continuation — dedicated entrypoint and lifecycle hardening
+
+Follow-on commits after the earlier report added:
+- `cmd/wd-scm-broker` Windows and non-Windows entrypoints. The Windows entrypoint uses the existing Windows SCM dispatcher under the fixed service name `WeDecentSCMBroker`.
+- A cancellable broker run loop (`RunContext`) using bounded 100 ms connection polling so the service context can stop accepting new clients. It still dispatches no IPC request.
+- A Windows test for already-cancelled service startup and cancellation before pipe connection.
+- `runtime.LockOSThread` around named-pipe impersonation through `RevertToSelf`. Windows impersonation is thread-scoped; without this, Go goroutine migration could cause reversion to occur on a different OS thread. The helper's defer ordering reverts before unlocking the thread.
+
+These are source-level foundations only. The new executable is not yet included in the Windows release/installer payload, registered by the installer, or provisioned with its virtual service account/service SID. The service has no installation, update, uninstall or recovery path. The named-pipe loop is not a completed broker service lifecycle acceptance test; cancellation while blocked on the pipe is not yet proven by an actual SCM stop/restart test.
+
+No Authenticode verifier or protected publisher-policy loader was added. In particular, the broker does not call WinVerifyTrust, does not inspect the signer certificate against an exact allowlisted thumbprint, and does not verify the client process image/file identity. The caller authentication path continues to return unauthorized unconditionally. SCM mutation dispatch remains disabled.
+
+### Exact-head workflow reconciliation
+
+At HEAD `e5fa253dfc228acb046fad894d9a4367bde90456`, tree `2436f1e6d4e4587bb1f33897a1099c6b91e897ab`, the fresh workflow IDs were:
+- CI: `46128164228` and `46128159786`
+- Desktop shell: `46128164239` and `46128159835`
+- C324 updater security: `46128164242` and `46128159799`
+
+The later workflow instances were queued/pending when last inspected; earlier instances were still running when subsequent commits caused cancellation. These are not passing full CI results. An earlier exact-head updater run at `24292cdc...` passed (runs `46127578542` and `46127582510`), but it predates the new broker entrypoint/lifecycle code and is not exact-head verification for this addendum.
+
+For the exact-head run on `1ae7453...`, CI `46128071036` was cancelled while its Windows agent job `140927046011` had completed the updater integration test and Go toolchain setup, but the diagnostic release build was cancelled and all later native agent/integration steps were skipped. Linux job `140927202939` was cancelled during the disposable R2 CAS step; all subsequent Linux formatting, all-package, vet, race and smoke tests were skipped. macOS job `140927046124` was still running. These are incomplete runs, not passes.
+
+No Windows cross-user isolation, service SID provisioning, SCM race closure, broker image verification, actual broker stop/restart, or persistent Windows VM acceptance is claimed.
