@@ -100,22 +100,27 @@ function Acquire-WeDecentRecoveryLock {
     Set-TrustedAcl -Path $root
     Assert-TrustedAcl -Path $root
     $path = Join-Path $root 'installer.lock'
-    if (Test-Path -LiteralPath $path) {
-        $info = Get-Item -LiteralPath $path -Force -ErrorAction Stop
-        if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-            throw 'Existing installer lock is not a regular non-reparse file.'
+    if (-not (Test-Path -LiteralPath $path)) {
+        try {
+            $bootstrap = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $bootstrap.Dispose()
+        } catch [IO.IOException] {
+            if (-not (Test-Path -LiteralPath $path)) { throw }
         }
-        Assert-TrustedAcl -Path $path
     }
+    $info = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Installer lock path is not a regular non-reparse file.'
+    }
+    Set-TrustedAcl -Path $path
+    Assert-TrustedAcl -Path $path
     try {
         # The same exclusive OS file handle serializes installer and updater recovery; process exit releases stale ownership.
-        $stream = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     } catch [IO.IOException] {
         throw 'Another WeDecent installer or recovery operation owns the machine-wide installation lock.'
     }
     try {
-        Set-TrustedAcl -Path $path
-        Assert-TrustedAcl -Path $path
         $stream.SetLength(0)
         $owner = [Text.Encoding]::ASCII.GetBytes(("pid=" + $PID + [Environment]::NewLine))
         $stream.Write($owner, 0, $owner.Length)
