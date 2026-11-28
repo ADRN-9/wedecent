@@ -15,6 +15,20 @@ foreach ($required in @('Recover-WeDecentStateMigration','Test-WeDecentMetadataT
     if (-not $installerText.Contains($required)) { throw "Installer migration integration is missing guard: $required" }
 }
 Import-Module $modulePath -Force
+$installerLockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+$installerLockRootCreated = -not (Test-Path -LiteralPath $installerLockRoot -PathType Container)
+New-Item -ItemType Directory -Force -Path $installerLockRoot | Out-Null
+if ($installerLockRootCreated) {
+    Set-WeDecentMigrationAdminDirectory -Path $installerLockRoot -AgentPath $agentPath
+} else {
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $installerLockRoot)
+}
+$installerLockPath = Join-Path $installerLockRoot 'installer.lock'
+if (-not (Test-Path -LiteralPath $installerLockPath -PathType Leaf)) {
+    $bootstrapLock = [IO.File]::Open($installerLockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $bootstrapLock.Dispose()
+    Set-WeDecentMigrationAdminFileAcl -Path $installerLockPath
+}
 $global:WeDecentMigrationMockService = $null
 $global:WeDecentMigrationMockStatus = 'Running'
 $global:WeDecentMigrationStartCount = 0
@@ -802,6 +816,23 @@ try {
 } finally {
     Remove-Item -LiteralPath $success.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
+$successStopped = New-MigrationFixture
+try {
+    $global:WeDecentMigrationMockStatus = 'Stopped'
+    $global:WeDecentMigrationMockService.State = 'Stopped'
+    $result = Invoke-WeDecentStateMigration -Source $successStopped.Source -Destination $successStopped.Destination -AgentPath $agentPath -ServiceName $successStopped.ServiceName -ServiceSid $successStopped.ServiceSid -MetadataPath $successStopped.MetadataPath -JournalPath $successStopped.Journal
+    if ($result.phase -cne 'Committed') { throw 'Stopped-service migration did not commit.' }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped' -or $global:WeDecentMigrationMockService.State -cne 'Stopped') {
+        throw 'Successful migration changed a service that was stopped before migration.'
+    }
+    if ($global:WeDecentMigrationMockService.PathName -notlike "*$($successStopped.Destination)*") {
+        throw 'Successful stopped-service migration did not update the SCM state path.'
+    }
+    Write-Host 'Migration successful commit preserves originally stopped service state PASS'
+} finally {
+    Remove-Item -LiteralPath $successStopped.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $recovery = New-MigrationFixture
 try {
     $interrupted = $false
@@ -1960,7 +1991,7 @@ $recoveryRejectedCases = @(
         ExpectedError = '*cannot resolve SCM service account*'
         Mutate = {
             param($journal, $fixture)
-            $global:WeDecentMigrationMockService.StartName = 'WEDECENT-NO-SUCH-DOMAIN\\NO-SUCH-ACCOUNT'
+            $global:WeDecentMigrationMockService.StartName = 'WEDECENT-NO-SUCH-DOMAIN\NO-SUCH-ACCOUNT'
         }
     },
     [pscustomobject]@{
@@ -1968,10 +1999,40 @@ $recoveryRejectedCases = @(
         ExpectedError = '*Live SCM service-account SID*'
         Mutate = {
             param($journal, $fixture)
-            $global:WeDecentMigrationMockService.StartName = 'NT AUTHORITY\\SYSTEM'
+            $global:WeDecentMigrationMockService.StartName = 'NT AUTHORITY\SYSTEM'
         }
     }
 )
+$installerLockContentionFixture = New-MigrationFixture
+try {
+    $pendingRollback = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $installerLockContentionFixture.Source -Destination $installerLockContentionFixture.Destination -AgentPath $agentPath -ServiceName $installerLockContentionFixture.ServiceName -ServiceSid $installerLockContentionFixture.ServiceSid -MetadataPath $installerLockContentionFixture.MetadataPath -JournalPath $installerLockContentionFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch { $pendingRollback = $_.Exception.Message -like '*durable rollback is pending*'; if (-not $pendingRollback) { throw } }
+    if (-not $pendingRollback) { throw 'Installer-lock contention fixture did not reach pending rollback.' }
+    $journal = Read-WeDecentMigrationJournal -Path $installerLockContentionFixture.Journal
+    $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $installerLockContentionFixture -Journal $journal
+    $installerOwnedLock = [IO.File]::Open($installerLockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $rejected = $false
+        try {
+            [void](Recover-WeDecentStateMigration -JournalPath $installerLockContentionFixture.Journal -AgentPath $agentPath -MetadataPath $installerLockContentionFixture.MetadataPath -ServiceName $installerLockContentionFixture.ServiceName -ExpectedDestinationPath $installerLockContentionFixture.Destination)
+        } catch {
+            $rejected = $_.Exception.Message -like '*owns the machine-wide installation lock*'
+            if (-not $rejected) { throw }
+        }
+        if (-not $rejected) { throw 'Migration recovery entered while the installer held the shared machine-wide lock.' }
+        Assert-MigrationRecoveryNoSideEffects -Fixture $installerLockContentionFixture -Journal $journal -Before $before -Case 'installer/recovery lock contention'
+    } finally { $installerOwnedLock.Dispose() }
+    $installerText = Get-Content -LiteralPath $installerPath -Raw
+    $installerLockAcquire = $installerText.IndexOf('Acquire-WeDecentInstallerLock', [StringComparison]::Ordinal)
+    $installerMigrationRecovery = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
+    if ($installerLockAcquire -lt 0 -or $installerMigrationRecovery -lt 0 -or $installerLockAcquire -ge $installerMigrationRecovery) {
+        throw 'Production installer does not acquire the shared installer lock before migration recovery.'
+    }
+    Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
+} finally { Remove-Item -LiteralPath $installerLockContentionFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
+
 $expectedDestinationFixture = New-MigrationFixture
 try {
     $interrupted = $false
