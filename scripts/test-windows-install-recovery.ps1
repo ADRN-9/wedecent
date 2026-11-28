@@ -10,6 +10,28 @@ $replacementStage = $installerText.IndexOf('Install-Binary (Join-Path $SourceDir
 if ($backupStage -lt 0 -or $replacementStage -lt 0 -or $backupStage -ge $replacementStage) {
     throw 'Installer must verify all five transaction backups before replacing the first binary.'
 }
+$identityHelperStart = $installerText.IndexOf('function Assert-WeDecentRecoveryServiceIdentity')
+$recoveryFunctionStart = $installerText.IndexOf('function Recover-InterruptedInstallerTransactions')
+$recoveryFunctionEnd = $installerText.IndexOf("`nfunction ", $recoveryFunctionStart + 1)
+if ($recoveryFunctionEnd -lt 0) { $recoveryFunctionEnd = $installerText.Length }
+$recoveryFunctionText = $installerText.Substring($recoveryFunctionStart, $recoveryFunctionEnd - $recoveryFunctionStart)
+$identityPreflight = $recoveryFunctionText.IndexOf('Assert-WeDecentRecoveryServiceIdentity -ServiceConfig $recoveryServiceConfig')
+$identityRecheck = $recoveryFunctionText.IndexOf('Assert-WeDecentRecoveryServiceIdentity -ServiceConfig $serviceConfig')
+$firstRecoveryMutation = [int]::MaxValue
+foreach ($mutation in @('Stop-Service ', 'Remove-Item ', 'Copy-Item ', 'Move-Item ', 'Write-InstallJournal ')) {
+    $mutationIndex = $recoveryFunctionText.IndexOf($mutation)
+    if ($mutationIndex -ge 0 -and $mutationIndex -lt $firstRecoveryMutation) { $firstRecoveryMutation = $mutationIndex }
+}
+$stopIndex = $recoveryFunctionText.IndexOf('Stop-Service -Name $ServiceName')
+if ($identityHelperStart -lt 0 -or $recoveryFunctionStart -lt 0 -or
+    $identityPreflight -lt 0 -or $identityPreflight -ge $firstRecoveryMutation -or
+    $identityRecheck -lt 0 -or $stopIndex -lt 0 -or $identityRecheck -ge $stopIndex -or
+    -not $installerText.Contains('Test-WeDecentMetadataTrusted -Path $metadataPath') -or
+    -not $installerText.Contains('$ServiceConfig.StartName') -or
+    -not $installerText.Contains('SCM service account SID does not match protected installer metadata.')) {
+    throw 'Main-installer recovery must authenticate protected SCM service-account identity before any recovery mutation and recheck it immediately before Stop-Service.'
+}
+
 if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).bak') -or
     -not $installerText.Contains('installed-awaiting-sequence-commit') -or
     -not $installerText.Contains('param([Parameter(Mandatory = $true)]$Journal, [string]$Path, [switch]$CreateNew, [scriptblock]$CrashHook)') -or
