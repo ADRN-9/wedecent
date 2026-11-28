@@ -338,8 +338,8 @@ function Assert-WeDecentRecoveryServiceIdentity {
     if ([string]::IsNullOrWhiteSpace($startName)) {
         throw 'SCM service account identity is missing.'
     }
-    if ($startName.StartsWith('.\\', [StringComparison]::OrdinalIgnoreCase)) {
-        $startName = "$env:COMPUTERNAME\\$($startName.Substring(2))"
+    if ($startName.StartsWith('.\', [StringComparison]::OrdinalIgnoreCase)) {
+        $startName = "$env:COMPUTERNAME\$($startName.Substring(2))"
     }
     try {
         $actualSid = (New-Object Security.Principal.NTAccount -ArgumentList $startName).Translate([Security.Principal.SecurityIdentifier]).Value
