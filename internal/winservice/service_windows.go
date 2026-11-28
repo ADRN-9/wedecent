@@ -37,9 +37,20 @@ const (
 	serviceAcceptStop     = 0x00000001
 	serviceAcceptShutdown = 0x00000004
 
-	scManagerAllAccess  = 0x000F003F
-	serviceAllAccess    = 0x000F01FF
-	scStatusProcessInfo = 0
+
+	scManagerConnect       = 0x00000001
+	scManagerCreateService = 0x00000002
+	serviceQueryStatus     = 0x00000004
+	serviceStart           = 0x00000010
+	serviceStop            = 0x00000020
+	serviceDelete          = 0x00010000
+	serviceWriteDACL       = 0x00040000
+	serviceAllAccess       = 0x000F01FF
+	scStatusProcessInfo    = 0
+
+	securityObjectService = 1
+	daclSecurityInformation = 0x00000004
+	protectedDACLInformation = 0x80000000
 )
 
 var (
@@ -56,6 +67,7 @@ var (
 	procRegisterServiceCtrlHandlerExW = advapi32.NewProc("RegisterServiceCtrlHandlerExW")
 	procSetServiceStatus              = advapi32.NewProc("SetServiceStatus")
 	procChangeServiceConfig2W         = advapi32.NewProc("ChangeServiceConfig2W")
+	procSetSecurityInfo               = advapi32.NewProc("SetSecurityInfo")
 )
 
 type InstallOptions struct {
@@ -124,7 +136,7 @@ func Install(opts InstallOptions) error {
 		return fmt.Errorf("service executable: %w", err)
 	}
 
-	manager, err := openManager()
+	manager, err := openManagerWithAccess(scManagerCreateService)
 	if err != nil {
 		return err
 	}
@@ -198,11 +210,15 @@ func Install(opts InstallOptions) error {
 			return winCallError("ChangeServiceConfig2W(description)", callErr)
 		}
 	}
+	if err := restrictServiceHandle(h); err != nil {
+		_, _, _ = procDeleteService.Call(h)
+		return fmt.Errorf("restrict service control DACL: %w", err)
+	}
 	return nil
 }
 
 func Start(name string) error {
-	h, err := openService(name)
+	h, err := openServiceWithAccess(name, serviceStart|serviceQueryStatus)
 	if err != nil {
 		return err
 	}
@@ -215,7 +231,7 @@ func Start(name string) error {
 }
 
 func Stop(name string) error {
-	h, err := openService(name)
+	h, err := openServiceWithAccess(name, serviceStop|serviceQueryStatus)
 	if err != nil {
 		return err
 	}
@@ -236,7 +252,7 @@ func Stop(name string) error {
 }
 
 func Uninstall(name string) error {
-	h, err := openService(name)
+	h, err := openServiceWithAccess(name, serviceDelete|serviceStop|serviceQueryStatus)
 	if err != nil {
 		return err
 	}
@@ -255,7 +271,7 @@ func Uninstall(name string) error {
 }
 
 func Query(name string) (Status, error) {
-	h, err := openService(name)
+	h, err := openServiceWithAccess(name, serviceQueryStatus)
 	if err != nil {
 		return Status{}, err
 	}
@@ -267,16 +283,16 @@ func Query(name string) (Status, error) {
 	return Status{State: stateName(st.CurrentState), ProcessID: st.ProcessID, ExitCode: st.Win32ExitCode}, nil
 }
 
-func openManager() (uintptr, error) {
-	h, _, callErr := procOpenSCManagerW.Call(0, 0, scManagerAllAccess)
+func openManagerWithAccess(access uintptr) (uintptr, error) {
+	h, _, callErr := procOpenSCManagerW.Call(0, 0, access)
 	if h == 0 {
 		return 0, winCallError("OpenSCManagerW", callErr)
 	}
 	return h, nil
 }
 
-func openService(name string) (uintptr, error) {
-	manager, err := openManager()
+func openServiceWithAccess(name string, access uintptr) (uintptr, error) {
+	manager, err := openManagerWithAccess(scManagerConnect)
 	if err != nil {
 		return 0, err
 	}
@@ -285,11 +301,51 @@ func openService(name string) (uintptr, error) {
 	if err != nil {
 		return 0, err
 	}
-	h, _, callErr := procOpenServiceW.Call(manager, uintptr(unsafe.Pointer(namePtr)), serviceAllAccess)
+	h, _, callErr := procOpenServiceW.Call(manager, uintptr(unsafe.Pointer(namePtr)), access)
 	if h == 0 {
 		return 0, winCallError("OpenServiceW", callErr)
 	}
 	return h, nil
+}
+
+// RestrictService applies the WeDecent service-object DACL to an existing service.
+// Only LocalSystem and local Administrators receive full control; Authenticated
+// Users receive query-status only. The caller must already be authorized for WRITE_DAC.
+func RestrictService(name string) error {
+	h, err := openServiceWithAccess(name, serviceWriteDACL)
+	if err != nil {
+		return err
+	}
+	defer closeServiceHandle(h)
+	return restrictServiceHandle(h)
+}
+
+func serviceControlSecurityDescriptor() string {
+	return "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000004;;;AU)"
+}
+
+func restrictServiceHandle(service uintptr) error {
+	sd, err := windows.SecurityDescriptorFromString(serviceControlSecurityDescriptor())
+	if err != nil {
+		return fmt.Errorf("construct service control DACL: %w", err)
+	}
+	dacl, _, err := sd.DACL()
+	if err != nil || dacl == nil {
+		return fmt.Errorf("construct service control DACL: invalid descriptor: %v", err)
+	}
+	result, _, _ := procSetSecurityInfo.Call(
+		service,
+		securityObjectService,
+		daclSecurityInformation|protectedDACLInformation,
+		0,
+		0,
+		uintptr(unsafe.Pointer(dacl)),
+		0,
+	)
+	if result != 0 {
+		return fmt.Errorf("SetSecurityInfo(service DACL): %w", syscall.Errno(result))
+	}
+	return nil
 }
 
 func closeServiceHandle(h uintptr) {
