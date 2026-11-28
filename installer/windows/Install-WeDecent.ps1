@@ -2156,6 +2156,8 @@ if ($service) {
         throw 'Live SCM service-account SID must exactly match ACL-protected installer metadata before any upgrade recovery or mutation.'
     }
 }
+$binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
+Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
 if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
     [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName -ExpectedDestinationPath $StateDir)
 }
@@ -2174,8 +2176,6 @@ if (-not $service) {
         throw 'Legacy ProgramData service state exists; refusing to create a replacement identity at the Program Files location.'
     }
 }
-$binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
-Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
 Recover-InterruptedInstallerTransactions -Destinations $binaryDestinations
 $wdDestination = $binaryDestinations['wd.exe']
 $agentDestination = $binaryDestinations['wd-agent.exe']
