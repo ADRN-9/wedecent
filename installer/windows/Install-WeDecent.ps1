@@ -2426,7 +2426,7 @@ if ($service) {
         Initialize-WeDecentUpdateState -Version $version -ServiceSid $localUser.SID.Value
     } catch {
         $failed = $_
-        Invoke-RollbackStep 'remove partially created service' {
+        $serviceRemovalSucceeded = Invoke-RollbackStep 'remove partially created service' {
             $createdService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
             if ($createdService) {
                 $createdServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
@@ -2435,6 +2435,9 @@ if ($service) {
                 & sc.exe delete $ServiceName | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
             }
+        }
+        if (-not $serviceRemovalSucceeded) {
+            throw 'Fresh-install rollback stopped before binary or account cleanup because live SCM identity could not be authenticated; preserve service, state and binaries for recovery.'
         }
         Invoke-RollbackStep 'restore installed binaries' {
             Rollback-Binaries -AttemptedNames $attemptedBinaryNames -OriginalState $binaryOriginalState -Destinations $binaryDestinations
