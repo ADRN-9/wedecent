@@ -30,6 +30,7 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:RecoveryExpectedServiceStartMode = $null
 $BinaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
 $TrustedSids = @('S-1-5-18', 'S-1-5-32-544')
 
@@ -195,8 +196,16 @@ function Assert-AuthenticatedRecoveryServiceIdentity {
         -not [string]::Equals($liveAccountSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Live SCM service account SID does not match the dedicated account authenticated by protected installer metadata.'
     }
-    if ([string]$ServiceConfig.StartMode -cne 'Auto') {
-        throw 'Live SCM service start mode does not match the supported automatic service configuration.'
+    $liveStartMode = [string]$ServiceConfig.StartMode
+    if ([string]::IsNullOrWhiteSpace($liveStartMode)) {
+        throw 'Live SCM service start mode is unavailable.'
+    }
+    if (-not [string]::IsNullOrWhiteSpace([string]$script:RecoveryExpectedServiceStartMode)) {
+        if ($liveStartMode -cne [string]$script:RecoveryExpectedServiceStartMode) {
+            throw 'Live SCM service start mode changed during the authenticated recovery transaction.'
+        }
+    } elseif ($liveStartMode -notin @('Auto', 'Manual')) {
+        throw 'Live SCM service start mode is unsupported for authenticated recovery.'
     }
 
     $expectedExecutable = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
@@ -896,6 +905,7 @@ Assert-NoRunningUserBinaries
 $recoveryScmMutationLock = Enter-RecoveryScmMutationLock
 try {
     $initialServiceSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
+    $script:RecoveryExpectedServiceStartMode = [string]$initialServiceSnapshot.Config.StartMode
     $restartService = [bool]$journal.service_was_running
     Stop-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock
     try {
