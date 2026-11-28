@@ -47,6 +47,8 @@ func runServiceCommand(args []string) error {
 		return runServiceStatus(args[1:])
 	case "uninstall":
 		return runServiceUninstall(args[1:])
+	case "secure":
+		return runServiceSecure(args[1:])
 	default:
 		serviceUsage()
 		return fmt.Errorf("unknown service subcommand %q", args[0])
@@ -556,6 +558,14 @@ func runServiceUninstall(args []string) error {
 		return err
 	}
 	return winservice.Uninstall(name)
+}
+
+func runServiceSecure(args []string) error {
+	name, err := serviceNameOnlyFlags("service secure", args)
+	if err != nil {
+		return err
+	}
+	return winservice.RestrictService(name)
 }
 
 func serviceNameOnlyFlags(name string, args []string) (string, error) {
