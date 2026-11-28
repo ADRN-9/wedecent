@@ -1,5 +1,8 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+$script:WeDecentMigrationInstallerLockStream = $null
+$script:WeDecentMigrationInstallerLockThreadId = $null
+$script:WeDecentMigrationInstallerLockDepth = 0
 
 $script:WeDecentMigrationPhases = @(
     'Prepared',
@@ -1220,6 +1223,11 @@ function Restore-WeDecentMigrationTransaction {
 }
 
 function Open-WeDecentMigrationInstallerLock {
+    $threadId = [Threading.Thread]::CurrentThread.ManagedThreadId
+    if ($null -ne $script:WeDecentMigrationInstallerLockStream) {
+        if ($script:WeDecentMigrationInstallerLockThreadId -eq $threadId) { return $null }
+        throw 'Another WeDecent migration operation in this process owns the machine-wide installer lock.'
+    }
     $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
     [void](Assert-WeDecentMigrationAdminDirectory -Path $root)
     $path = Join-Path $root 'installer.lock'
@@ -1241,9 +1249,52 @@ function Open-WeDecentMigrationInstallerLock {
         }
     }
     try {
-        return [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $stream = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     } catch [IO.IOException] {
         throw 'Another WeDecent installer or migration recovery operation owns the machine-wide installation lock.'
+    }
+    $script:WeDecentMigrationInstallerLockStream = $stream
+    $script:WeDecentMigrationInstallerLockThreadId = $threadId
+    $script:WeDecentMigrationInstallerLockDepth = 0
+    return $stream
+}
+
+function Close-WeDecentMigrationInstallerLock {
+    param($Lock)
+    if ($null -eq $Lock) { return }
+    if ($null -eq $script:WeDecentMigrationInstallerLockStream -or
+        -not [object]::ReferenceEquals($Lock, $script:WeDecentMigrationInstallerLockStream) -or
+        $script:WeDecentMigrationInstallerLockThreadId -ne [Threading.Thread]::CurrentThread.ManagedThreadId) {
+        throw 'Migration installer lock release does not match its owning thread and handle.'
+    }
+    $Lock.Dispose()
+    $script:WeDecentMigrationInstallerLockStream = $null
+    $script:WeDecentMigrationInstallerLockThreadId = $null
+    $script:WeDecentMigrationInstallerLockDepth = 0
+}
+
+function Enter-WeDecentMigrationInstallerLock {
+    $threadId = [Threading.Thread]::CurrentThread.ManagedThreadId
+    if ($null -ne $script:WeDecentMigrationInstallerLockStream) {
+        if ($script:WeDecentMigrationInstallerLockThreadId -ne $threadId) {
+            throw 'Another WeDecent migration operation in this process owns the machine-wide installer lock.'
+        }
+        $script:WeDecentMigrationInstallerLockDepth++
+        return
+    }
+    $lock = Open-WeDecentMigrationInstallerLock
+    if ($null -eq $lock) { throw 'Migration installer lock acquisition returned no ownership handle.' }
+    $script:WeDecentMigrationInstallerLockDepth = 1
+}
+
+function Exit-WeDecentMigrationInstallerLock {
+    if ($null -eq $script:WeDecentMigrationInstallerLockStream) { return }
+    if ($script:WeDecentMigrationInstallerLockThreadId -ne [Threading.Thread]::CurrentThread.ManagedThreadId) {
+        throw 'Migration installer lock must be released by its owning thread.'
+    }
+    $script:WeDecentMigrationInstallerLockDepth--
+    if ($script:WeDecentMigrationInstallerLockDepth -le 0) {
+        Close-WeDecentMigrationInstallerLock -Lock $script:WeDecentMigrationInstallerLockStream
     }
 }
 
@@ -2049,6 +2100,8 @@ function Invoke-WeDecentStateMigration {
 }
 
 Export-ModuleMember -Function @(
+    'Enter-WeDecentMigrationInstallerLock',
+    'Exit-WeDecentMigrationInstallerLock',
     'Get-WeDecentMigrationManifest',
     'Get-WeDecentMigrationManifestDigest',
     'Get-WeDecentMigrationStableManifestDigest',
