@@ -37,7 +37,6 @@ const (
 	serviceAcceptStop     = 0x00000001
 	serviceAcceptShutdown = 0x00000004
 
-
 	scManagerConnect       = 0x00000001
 	scManagerCreateService = 0x00000002
 	serviceQueryStatus     = 0x00000004
@@ -48,8 +47,8 @@ const (
 	serviceAllAccess       = 0x000F01FF
 	scStatusProcessInfo    = 0
 
-	securityObjectService = 1
-	daclSecurityInformation = 0x00000004
+	securityObjectService    = 1
+	daclSecurityInformation  = 0x00000004
 	protectedDACLInformation = 0x80000000
 )
 
