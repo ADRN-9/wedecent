@@ -1074,6 +1074,90 @@ try {
     $snapshotFunctionText = ($snapshotChildFunctionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
     $trustedAclFunctionAsts = $snapshotFunctionAsts | Where-Object { $_.Name -in @('Protect-WeDecentMetadataAcl', 'Test-WeDecentMetadataTrusted') }
     foreach ($functionAst in $trustedAclFunctionAsts) { Invoke-Expression $functionAst.Extent.Text }
+
+    $mainRecoveryFunctionNames = @(
+        'Assert-WeDecentMetadataShape',
+        'Read-WeDecentMetadata',
+        'Assert-WeDecentRecoveryServiceIdentity',
+        'Recover-InterruptedInstallerTransactions'
+    )
+    $mainRecoveryFunctionAsts = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+            $node.Name -in $mainRecoveryFunctionNames
+    }, $true)
+    if ($mainRecoveryFunctionAsts.Count -ne $mainRecoveryFunctionNames.Count) {
+        throw 'Could not locate the production main-installer recovery entrypoint and its identity helpers.'
+    }
+    foreach ($functionAst in $mainRecoveryFunctionAsts) { Invoke-Expression $functionAst.Extent.Text }
+    $script:BinaryNames = $binaryNames
+
+    # Exercise the actual main-installer recovery function against a real SCM service query.
+    $mainMismatchName = 'wdmis' + [Guid]::NewGuid().ToString('N').Substring(0, 12)
+    $mainMismatchPasswordPlain = ([Guid]::NewGuid().ToString('N')) + 'Aa1!'
+    $mainMismatchPassword = ConvertTo-SecureString $mainMismatchPasswordPlain -AsPlainText -Force
+    New-LocalUser -Name $mainMismatchName -Password $mainMismatchPassword -PasswordNeverExpires -UserMayNotChangePassword -ErrorAction Stop | Out-Null
+    & sc.exe config $serviceName obj= "$env:COMPUTERNAME\$mainMismatchName" password= $mainMismatchPasswordPlain | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not configure the isolated SCM service with a mismatched local identity.' }
+
+    $mainInstallerMismatch = New-TransactionFixture
+    $mainProgramData = Join-Path ([IO.Path]::GetTempPath()) ('wedecent-main-installer-recovery-' + [Guid]::NewGuid().ToString('N'))
+    $mainMetadataDir = Join-Path $mainProgramData 'WeDecent'
+    $mainJournalRoot = Join-Path $mainMetadataDir 'install-transactions'
+    New-Item -ItemType Directory -Force -Path $mainMetadataDir, $mainJournalRoot | Out-Null
+    $mainMetadataPath = Join-Path $mainMetadataDir 'installer.json'
+    Copy-Item -LiteralPath $metadataPath -Destination $mainMetadataPath
+    Set-TestTrustedAcl -Path $mainMetadataPath
+    $mainJournalPath = Join-Path $mainJournalRoot ($mainInstallerMismatch.id + '.json')
+    Copy-Item -LiteralPath $mainInstallerMismatch.journalPath -Destination $mainJournalPath
+    Set-TestTrustedAcl -Path $mainJournalPath
+
+    $savedProgramData = $env:ProgramData
+    $env:ProgramData = $mainProgramData
+    $mainServiceBefore = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    $mainServiceStateBefore = (Get-Service -Name $serviceName -ErrorAction Stop).Status
+    $mainServiceStartNameBefore = [string]$mainServiceBefore.StartName
+    $mainFileHashesBefore = @{}
+    foreach ($path in @(Get-ChildItem -LiteralPath $installDir -File -Recurse -Force | ForEach-Object { $_.FullName }) +
+        @(Get-ChildItem -LiteralPath $mainProgramData -File -Recurse -Force | ForEach-Object { $_.FullName })) {
+        $mainFileHashesBefore[$path] = Get-TestHash $path
+    }
+    $script:mainInstallerScmMutationCalls = 0
+    function Stop-Service { $script:mainInstallerScmMutationCalls++ }
+    function Start-Service { $script:mainInstallerScmMutationCalls++ }
+    $mainMismatchRejected = $false
+    try {
+        $destinations = @{}
+        foreach ($name in $binaryNames) { $destinations[$name] = Join-Path $installDir $name }
+        Recover-InterruptedInstallerTransactions -Destinations $destinations
+    } catch {
+        $mainMismatchRejected = $true
+    } finally {
+        Remove-Item Function:\Stop-Service -ErrorAction SilentlyContinue
+        Remove-Item Function:\Start-Service -ErrorAction SilentlyContinue
+        $env:ProgramData = $savedProgramData
+    }
+    if (-not $mainMismatchRejected) {
+        throw 'The production main-installer recovery entrypoint accepted a service account that differs from protected metadata.'
+    }
+    if ($script:mainInstallerScmMutationCalls -ne 0) {
+        throw 'Mismatched SCM identity caused a service stop/start side effect in the production main-installer recovery entrypoint.'
+    }
+    $mainServiceAfter = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    if ((Get-Service -Name $serviceName -ErrorAction Stop).Status -ne $mainServiceStateBefore -or
+        [string]$mainServiceAfter.StartName -cne $mainServiceStartNameBefore) {
+        throw 'Mismatched SCM identity changed the actual service state or configured account.'
+    }
+    foreach ($path in $mainFileHashesBefore.Keys) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-TestHash $path) -ne $mainFileHashesBefore[$path]) {
+            throw "Mismatched SCM identity mutated protected installer/recovery state: $path"
+        }
+    }
+    if (@(Get-ChildItem -LiteralPath $installDir -File -Recurse -Force).Count +
+        @(Get-ChildItem -LiteralPath $mainProgramData -File -Recurse -Force).Count -ne $mainFileHashesBefore.Count) {
+        throw 'Mismatched SCM identity created or removed protected installer/recovery files.'
+    }
+    Write-Host 'Production main-installer recovery rejected a mismatched SCM SID before SCM or filesystem side effects.'
     $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
     [IO.File]::WriteAllText($snapshotSource, ($helperOriginalMetadata | ConvertTo-Json -Depth 5 -Compress))
     Set-TestTrustedAcl -Path $snapshotSource
