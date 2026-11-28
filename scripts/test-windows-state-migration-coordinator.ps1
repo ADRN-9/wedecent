@@ -202,7 +202,7 @@ Import-Module $moduleLiteral -ErrorAction Stop
 try {
     $Command
 } catch {
-    if ($_.Exception.Message -like '*owns the machine-wide installation lock*') { exit 0 }
+    if (`$_.Exception.Message -like '*owns the machine-wide installation lock*') { exit 0 }
     Write-Error $_
     exit 5
 }
@@ -2166,6 +2166,34 @@ try {
     }
     Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
 } finally { Remove-Item -LiteralPath $installerLockContentionFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
+
+$processLockMigrationFixture = New-MigrationFixture
+$processLockRecoveryFixture = New-MigrationFixture
+try {
+    $pendingRollback = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $processLockRecoveryFixture.Source -Destination $processLockRecoveryFixture.Destination -AgentPath $agentPath -ServiceName $processLockRecoveryFixture.ServiceName -ServiceSid $processLockRecoveryFixture.ServiceSid -MetadataPath $processLockRecoveryFixture.MetadataPath -JournalPath $processLockRecoveryFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch { $pendingRollback = $_.Exception.Message -like '*durable rollback is pending*'; if (-not $pendingRollback) { throw } }
+    if (-not $pendingRollback) { throw 'Process-lock recovery fixture did not reach a pending rollback.' }
+    $migrationBefore = Get-ForwardMigrationSideEffectSnapshot -Fixture $processLockMigrationFixture
+    $recoveryJournal = Read-WeDecentMigrationJournal -Path $processLockRecoveryFixture.Journal
+    $recoveryBefore = Get-MigrationRecoverySideEffectSnapshot -Fixture $processLockRecoveryFixture -Journal $recoveryJournal
+    $q = { param($value) "'" + ([string]$value).Replace("'", "''") + "'" }
+    $directCommand = "[void](Invoke-WeDecentStateMigration -Source $(& $q $processLockMigrationFixture.Source) -Destination $(& $q $processLockMigrationFixture.Destination) -AgentPath $(& $q $agentPath) -ServiceName $(& $q $processLockMigrationFixture.ServiceName) -ServiceSid $(& $q $processLockMigrationFixture.ServiceSid) -MetadataPath $(& $q $processLockMigrationFixture.MetadataPath) -JournalPath $(& $q $processLockMigrationFixture.Journal))"
+    $recoveryCommand = "[void](Recover-WeDecentStateMigration -JournalPath $(& $q $processLockRecoveryFixture.Journal) -AgentPath $(& $q $agentPath) -MetadataPath $(& $q $processLockRecoveryFixture.MetadataPath) -ServiceName $(& $q $processLockRecoveryFixture.ServiceName) -ExpectedDestinationPath $(& $q $processLockRecoveryFixture.Destination))"
+    Enter-WeDecentMigrationInstallerLock
+    try {
+        Invoke-MigrationLockContentionChild -Command 'Enter-WeDecentMigrationInstallerLock'
+        Invoke-MigrationLockContentionChild -Command $directCommand
+        Invoke-MigrationLockContentionChild -Command $recoveryCommand
+    } finally { Exit-WeDecentMigrationInstallerLock }
+    Assert-ForwardMigrationNoSideEffects -Before $migrationBefore -After (Get-ForwardMigrationSideEffectSnapshot -Fixture $processLockMigrationFixture) -Case 'competing direct migration process'
+    Assert-MigrationRecoveryNoSideEffects -Fixture $processLockRecoveryFixture -Journal $recoveryJournal -Before $recoveryBefore -Case 'competing recovery process'
+    Write-Host 'Competing installer, direct migration, and recovery processes serialize on the machine-wide lock PASS'
+} finally {
+    Remove-Item -LiteralPath $processLockMigrationFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $processLockRecoveryFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 $expectedDestinationFixture = New-MigrationFixture
 try {
