@@ -9,8 +9,14 @@ $agentPath = Join-Path $repoRoot 'dist/wedecent-windows-amd64/wd-agent.exe'
 if (-not (Test-Path -LiteralPath $agentPath -PathType Leaf)) { throw "Missing built Windows agent: $agentPath" }
 $installerText = Get-Content -LiteralPath $installerPath -Raw
 $migrationCall = $installerText.IndexOf('Invoke-WeDecentStateMigration -Source $recordedStateDir', [StringComparison]::Ordinal)
+$recoveryCall = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
+$normalUpgradeIdentity = $installerText.IndexOf('Live SCM service-account SID must exactly match ACL-protected installer metadata before any upgrade recovery or mutation.', [StringComparison]::Ordinal)
 $binaryInstall = $installerText.IndexOf('Install-Binaries -SourceDirectory $BundlePath', [StringComparison]::Ordinal)
-if ($migrationCall -lt 0 -or $binaryInstall -lt 0 -or $migrationCall -ge $binaryInstall) { throw 'Installer does not execute migration before binary replacement.' }
+if ($migrationCall -lt 0 -or $binaryInstall -lt 0 -or $migrationCall -ge $binaryInstall -or
+    $recoveryCall -lt 0 -or $normalUpgradeIdentity -lt 0 -or $normalUpgradeIdentity -ge $recoveryCall) {
+    throw 'Installer must authenticate normal-upgrade service identity before recovery and execute migration before binary replacement.'
+}
+if ($installerText.Contains('-InstallerLockHeld')) { throw 'Installer must not expose a caller-controlled migration lock bypass.' }
 foreach ($required in @('Recover-WeDecentStateMigration','Test-WeDecentMetadataTrusted','Existing SCM command line does not match the authenticated state_dir metadata','Existing service state location is not authenticated by protected installer metadata','Legacy ProgramData service state exists; refusing to create a replacement identity','Protected metadata account name, live SCM account and local account SID do not agree')) {
     if (-not $installerText.Contains($required)) { throw "Installer migration integration is missing guard: $required" }
 }
