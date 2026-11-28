@@ -549,6 +549,14 @@ try {
         $initialIdentityIndex -ge $stopWrapperIndex -or $initialIdentityIndex -ge $firstRecoveryFileMutation) {
         throw 'Standalone recovery must reject a mismatched live service identity before SCM or protected-file side effects.'
     }
+    $scmLockStart = $recoverySource.IndexOf('$recoveryScmMutationLock = Enter-RecoveryScmMutationLock', $pendingRecoveryStart, [StringComparison]::Ordinal)
+    $scmLockEnd = $recoverySource.IndexOf('Exit-RecoveryScmMutationLock -Handle $recoveryScmMutationLock', $scmLockStart, [StringComparison]::Ordinal)
+    $serviceRestartCall = $recoverySource.IndexOf('Start-AuthenticatedRecoveryService -Metadata $metadata', $scmLockStart, [StringComparison]::Ordinal)
+    if ($scmLockStart -lt 0 -or $scmLockEnd -lt 0 -or $serviceRestartCall -lt 0 -or
+        $scmLockStart -ge $initialIdentityIndex -or $scmLockEnd -le $serviceRestartCall -or
+        $scmLockStart -ge $firstRecoveryFileMutation) {
+        throw 'Standalone recovery must hold SCM configuration protection from live identity admission through rollback file changes and service restart.'
+    }
     foreach ($mutationFunction in @(
         @{ Name = 'Stop-AuthenticatedRecoveryService'; Mutation = 'Stop-Service -Name $ServiceName' },
         @{ Name = 'Start-AuthenticatedRecoveryService'; Mutation = 'Start-Service -Name $ServiceName' }
