@@ -17,6 +17,13 @@ for ($lineIndex = 0; $lineIndex -lt $installerLines.Count; $lineIndex++) {
             throw "Installer SCM mutation lacks an immediately preceding live identity guard at line $($lineIndex + 1)."
         }
     }
+    if ($installerLines[$lineIndex] -match '&\s*sc\.exe\s+delete\s+\$ServiceName') {
+        $firstGuardLine = [Math]::Max(0, $lineIndex - 3)
+        $guardWindow = [string]::Join([Environment]::NewLine, $installerLines[$firstGuardLine..($lineIndex - 1)])
+        if ($guardWindow -notmatch 'Assert-WeDecentFreshServiceIdentity') {
+            throw "Installer SCM deletion lacks an immediately preceding live identity guard at line $($lineIndex + 1)."
+        }
+    }
 }
 $migrationCall = $installerText.IndexOf('Invoke-WeDecentStateMigration -Source $recordedStateDir', [StringComparison]::Ordinal)
 $recoveryCall = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
