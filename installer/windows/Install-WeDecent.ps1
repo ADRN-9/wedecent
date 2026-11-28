@@ -2122,10 +2122,16 @@ if ($service) {
     $localUser = Get-LocalUser -Name $localName -ErrorAction Stop
     Assert-StandardLocalAccount $localUser
     $accountSid = $localUser.SID.Value
-    $managed = $false
-    if ($metadataTrusted -and $metadata.service_account_sid -eq $accountSid) {
-        $managed = [bool]$metadata.managed_service_account
+    if (-not $metadataTrusted -or [string]::IsNullOrWhiteSpace([string]$metadata.service_account_sid) -or
+        [string]$metadata.service_account_sid -cne $accountSid) {
+        throw 'Existing service account SID does not exactly match ACL-protected installer metadata; normal upgrades cannot change service identity.'
     }
+    $metadataAccountSid = Resolve-AccountSid ([string]$metadata.service_account_name)
+    $liveServiceSid = Resolve-AccountSid ([string]$service.StartName)
+    if ($metadataAccountSid -cne $accountSid -or $liveServiceSid -cne $accountSid) {
+        throw 'Protected metadata account name, live SCM account and local account SID do not agree; service identity changes require a separately authenticated migration.'
+    }
+    $managed = [bool]$metadata.managed_service_account
 
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Upgrade WeDecent to $version")) { return }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
