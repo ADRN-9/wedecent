@@ -360,6 +360,42 @@ function Invoke-TestRecovery {
     & $recoveryScript -TransactionId $Fixture.id -InstallDir $installDir -StateDir $stateDir -ServiceName $serviceName -ExpectedManifestSHA256 $Fixture.manifestDigest -ExpectedPackageSHA256 $Fixture.packageDigest -Sequence $Fixture.sequence -PreviousVersion $Fixture.previousVersion -TargetVersion $Fixture.targetVersion
 }
 
+function Get-RecoverySideEffectSnapshot {
+    param($Fixture)
+    $binaryHashes = @{}
+    foreach ($entry in @($Fixture.journal.entries)) { $binaryHashes[[string]$entry.name] = Get-TestHash ([string]$entry.destination) }
+    $config = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
+    return [pscustomobject]@{
+        BinaryHashes = $binaryHashes
+        JournalHash = Get-TestHash $Fixture.journalPath
+        MetadataHash = Get-TestHash $Fixture.metadataPath
+        MetadataBackupHash = Get-TestHash $Fixture.metadataBackupPath
+        RecoveryScriptHash = Get-TestHash $Fixture.recoveryScriptPath
+        RecoveryScriptBackupHash = Get-TestHash $Fixture.recoveryScriptBackupPath
+        StateHash = Get-TestHash $Fixture.statePath
+        ServiceState = (Get-Service -Name $serviceName -ErrorAction Stop).Status.ToString()
+        ServiceStartName = [string]$config.StartName
+        ServiceStartMode = [string]$config.StartMode
+        ServicePathName = [string]$config.PathName
+    }
+}
+
+function Assert-RecoveryNoSideEffects {
+    param($Fixture, $Before, [string]$Case)
+    $after = Get-RecoverySideEffectSnapshot -Fixture $Fixture
+    foreach ($property in @('JournalHash', 'MetadataHash', 'MetadataBackupHash', 'RecoveryScriptHash',
+        'RecoveryScriptBackupHash', 'StateHash', 'ServiceState', 'ServiceStartName', 'ServiceStartMode', 'ServicePathName')) {
+        if ([string]$after.$property -cne [string]$Before.$property) {
+            throw "Rejected $Case changed protected recovery state ($property)."
+        }
+    }
+    foreach ($name in $Before.BinaryHashes.Keys) {
+        if ($after.BinaryHashes[$name] -cne $Before.BinaryHashes[$name]) {
+            throw "Rejected $Case changed protected binary $name."
+        }
+    }
+}
+
 try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
@@ -655,17 +691,39 @@ try {
 
     $mismatchedScm = New-TransactionFixture
     & sc.exe config $serviceName binPath= 'C:\Windows\System32\svchost.exe -k netsvcs' | Out-Null
+    $beforeMismatch = Get-RecoverySideEffectSnapshot -Fixture $mismatchedScm
     $rejected = $false
     try { Invoke-TestRecovery -Fixture $mismatchedScm | Out-Null } catch { $rejected = $true }
     if (-not $rejected) { throw 'Updater recovery accepted an SCM service with a mismatched image path.' }
+    Assert-RecoveryNoSideEffects -Fixture $mismatchedScm -Before $beforeMismatch -Case 'SCM executable path mismatch'
     & sc.exe config $serviceName binPath= $serviceImage | Out-Null
+
+    $mismatchedStatePath = New-TransactionFixture
+    $wrongStateImage = '"' + $agentPath + '" --service --state="' + (Join-Path $stateDir 'untrusted-state') + '"'
+    & sc.exe config $serviceName binPath= $wrongStateImage | Out-Null
+    $beforeStateMismatch = Get-RecoverySideEffectSnapshot -Fixture $mismatchedStatePath
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $mismatchedStatePath | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted an SCM service with a mismatched state path.' }
+    Assert-RecoveryNoSideEffects -Fixture $mismatchedStatePath -Before $beforeStateMismatch -Case 'SCM state path mismatch'
+    & sc.exe config $serviceName binPath= $serviceImage | Out-Null
+
+    $mismatchedStartMode = New-TransactionFixture
+    & sc.exe config $serviceName start= demand | Out-Null
+    $beforeStartModeMismatch = Get-RecoverySideEffectSnapshot -Fixture $mismatchedStartMode
+    $rejected = $false
+    try { Invoke-TestRecovery -Fixture $mismatchedStartMode | Out-Null } catch { $rejected = $true }
+    if (-not $rejected) { throw 'Updater recovery accepted an SCM service with a non-automatic start mode.' }
+    Assert-RecoveryNoSideEffects -Fixture $mismatchedStartMode -Before $beforeStartModeMismatch -Case 'SCM start mode mismatch'
+    & sc.exe config $serviceName start= auto | Out-Null
 
     $localSystemSubstitution = New-TransactionFixture
     & sc.exe config $serviceName obj= LocalSystem | Out-Null
+    $beforeLocalSystem = Get-RecoverySideEffectSnapshot -Fixture $localSystemSubstitution
     $rejected = $false
     try { Invoke-TestRecovery -Fixture $localSystemSubstitution | Out-Null } catch { $rejected = $true }
     if (-not $rejected) { throw 'Updater recovery accepted LocalSystem in place of the protected service account.' }
-    if ((Get-Service -Name $serviceName).Status -ne 'Stopped') { throw 'LocalSystem account mismatch changed the stopped service state.' }
+    Assert-RecoveryNoSideEffects -Fixture $localSystemSubstitution -Before $beforeLocalSystem -Case 'built-in service identity mismatch'
     & sc.exe config $serviceName obj= "$env:COMPUTERNAME\$serviceAccountName" password= $servicePasswordPlain | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not restore the isolated service account after LocalSystem mismatch test.' }
 
