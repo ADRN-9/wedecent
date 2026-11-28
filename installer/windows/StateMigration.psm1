@@ -992,10 +992,11 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         [Parameter(Mandatory = $true)][string]$ExpectedDestinationPath
     )
 
-    $metadataFull = [IO.Path]::GetFullPath($MetadataPath)
+    $metadataFull = Get-WeDecentMigrationCanonicalPath -Path $MetadataPath
+    $expectedDestinationFull = Get-WeDecentMigrationCanonicalPath -Path $ExpectedDestinationPath
     if (-not [string]::Equals([string]$Journal.metadata_path, $metadataFull, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$Journal.service_name -cne $ServiceName -or
-        -not [string]::Equals([string]$Journal.destination, [IO.Path]::GetFullPath($ExpectedDestinationPath), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$Journal.destination, $expectedDestinationFull, [StringComparison]::OrdinalIgnoreCase) -or
         [string]::IsNullOrWhiteSpace([string]$Journal.agent_path)) {
         throw 'Migration recovery authority does not match the expected service, installer metadata, agent, or destination transaction.'
     }
@@ -1200,10 +1201,11 @@ function Recover-WeDecentStateMigration {
     if (-not $InstallerLockHeld) { $installerLock = Open-WeDecentMigrationInstallerLock }
     try {
     $journal = Read-WeDecentMigrationJournal -Path $JournalPath
+    $expectedDestinationFull = Get-WeDecentMigrationCanonicalPath -Path $ExpectedDestinationPath
     if (-not [string]::Equals([string]$journal.metadata_path,[IO.Path]::GetFullPath($MetadataPath),[StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([string]$journal.journal_path,[IO.Path]::GetFullPath($JournalPath),[StringComparison]::OrdinalIgnoreCase) -or
         [string]$journal.service_name -cne $ServiceName -or
-        -not [string]::Equals([IO.Path]::GetFullPath([string]$journal.destination), [IO.Path]::GetFullPath($ExpectedDestinationPath), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$journal.destination, $expectedDestinationFull, [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([IO.Path]::GetFullPath([string]$journal.agent_path), [IO.Path]::GetFullPath($AgentPath), [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Migration recovery journal does not match this installer metadata path, journal path, service, agent, or expected state destination.'
     }
