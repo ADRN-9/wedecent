@@ -486,13 +486,7 @@ if ($PSCmdlet.ParameterSetName -eq 'FinalizeCommitted') {
         [string]$metadata.service_account_sid -notmatch '^S-1-5-21-(?:[0-9]+-){3}[0-9]+$') {
         throw 'Installer metadata does not authenticate committed cleanup paths.'
     }
-    $finalizerService = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-    if ($null -eq $finalizerService) { throw 'SCM service is unavailable; committed cleanup is unsafe.' }
-    $finalizerMetadataSid = [Security.Principal.SecurityIdentifier]::new([string]$metadata.service_account_sid).Value
-    $finalizerServiceSid = Resolve-ServiceAccountSid -StartName ([string]$finalizerService.StartName)
-    if (-not [string]::Equals($finalizerServiceSid, $finalizerMetadataSid, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'SCM service account SID does not match protected installer metadata; committed cleanup is unsafe.'
-    }
+    $finalizerSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
     $installOwner = (Get-Acl -LiteralPath $InstallDir).Owner
     $installOwnerSid = (New-Object Security.Principal.NTAccount -ArgumentList $installOwner).Translate([Security.Principal.SecurityIdentifier]).Value
     $stateOwner = (Get-Acl -LiteralPath $StateDir).Owner
