@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/windows"
 	"wedecent.com/wedecent/internal/winservice"
@@ -21,6 +22,24 @@ func InstallService(executable string) error {
 		return errors.New("broker service executable path must be absolute")
 	}
 	executable = filepath.Clean(executable)
+	programFiles := os.Getenv("ProgramFiles")
+	if !filepath.IsAbs(programFiles) || !strings.EqualFold(filepath.Dir(executable), filepath.Join(programFiles, "WeDecent")) ||
+		!strings.EqualFold(filepath.Base(executable), "wd-scm-broker.exe") {
+		return errors.New("broker service executable must be Program Files\\WeDecent\\wd-scm-broker.exe")
+	}
+	installDir := filepath.Dir(executable)
+	dirInfo, err := os.Lstat(installDir)
+	if err != nil || !dirInfo.IsDir() || dirInfo.Mode()&os.ModeSymlink != 0 {
+		return errors.New("broker service installation directory is missing, non-directory, or a symlink")
+	}
+	dirName, err := windows.UTF16PtrFromString(installDir)
+	if err != nil {
+		return err
+	}
+	dirAttrs, err := windows.GetFileAttributes(dirName)
+	if err != nil || dirAttrs&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return errors.New("broker service installation directory must not be a reparse point")
+	}
 	info, err := os.Lstat(executable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
 		return errors.New("broker service executable is missing, non-regular, or a symlink")
