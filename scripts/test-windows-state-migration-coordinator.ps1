@@ -2025,10 +2025,95 @@ try {
         Assert-MigrationRecoveryNoSideEffects -Fixture $installerLockContentionFixture -Journal $journal -Before $before -Case 'installer/recovery lock contention'
     } finally { $installerOwnedLock.Dispose() }
     $installerText = Get-Content -LiteralPath $installerPath -Raw
-    $installerLockAcquire = $installerText.IndexOf('Acquire-WeDecentInstallerLock', [StringComparison]::Ordinal)
+    $installerLockCall = [regex]::Match($installerText, '(?m)^Acquire-WeDecentInstallerLock\s*    Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
+} finally { Remove-Item -LiteralPath $installerLockContentionFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
+
+$expectedDestinationFixture = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $expectedDestinationFixture.Source -Destination $expectedDestinationFixture.Destination -AgentPath $agentPath -ServiceName $expectedDestinationFixture.ServiceName -ServiceSid $expectedDestinationFixture.ServiceSid -MetadataPath $expectedDestinationFixture.MetadataPath -JournalPath $expectedDestinationFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch { $interrupted = $_.Exception.Message -like '*durable rollback is pending*'; if (-not $interrupted) { throw } }
+    if (-not $interrupted) { throw 'Expected-destination fixture did not reach pending rollback.' }
+    $journal = Read-WeDecentMigrationJournal -Path $expectedDestinationFixture.Journal
+    $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $expectedDestinationFixture -Journal $journal
+    $rejected = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $expectedDestinationFixture.Journal -AgentPath $agentPath -MetadataPath $expectedDestinationFixture.MetadataPath -ServiceName $expectedDestinationFixture.ServiceName -ExpectedDestinationPath (Join-Path $expectedDestinationFixture.Root 'unexpected-state'))
+    } catch { $rejected = $_.Exception.Message -like '*does not match this installer metadata path*' -or $_.Exception.Message -like '*expected state destination*'; if (-not $rejected) { throw } }
+    if (-not $rejected) { throw 'Recovery accepted a destination outside the installer-requested state path.' }
+    Assert-MigrationRecoveryNoSideEffects -Fixture $expectedDestinationFixture -Journal $journal -Before $before -Case 'unexpected destination path'
+    Write-Host 'Migration recovery rejects destination outside installer-requested state path without side effects PASS'
+} finally { Remove-Item -LiteralPath $expectedDestinationFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
+
+foreach ($case in $recoveryRejectedCases) {
+    $fixture = New-MigrationFixture
+    try {
+        $pendingRollback = $false
+        try {
+            Invoke-WeDecentStateMigration -Source $fixture.Source -Destination $fixture.Destination -AgentPath $agentPath -ServiceName $fixture.ServiceName -ServiceSid $fixture.ServiceSid -MetadataPath $fixture.MetadataPath -JournalPath $fixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+        } catch {
+            $pendingRollback = $_.Exception.Message -like '*durable rollback is pending*'
+            if (-not $pendingRollback) { throw }
+        }
+        if (-not $pendingRollback) { throw "Fixture did not reach pending rollback for $($case.Name)." }
+        $journal = Read-WeDecentMigrationJournal -Path $fixture.Journal
+        & $case.Mutate $journal $fixture
+        Write-WeDecentMigrationJournal -Path $fixture.Journal -Journal $journal
+        $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $fixture -Journal $journal
+        $rejected = $false
+        try {
+            [void](Recover-WeDecentStateMigration -JournalPath $fixture.Journal -AgentPath $agentPath -MetadataPath $fixture.MetadataPath -ServiceName $fixture.ServiceName -ExpectedDestinationPath $fixture.Destination)
+        } catch {
+            $rejected = $_.Exception.Message -like $case.ExpectedError
+            if (-not $rejected) { throw }
+        }
+        if (-not $rejected) { throw "Recovery accepted $($case.Name)." }
+        Assert-MigrationRecoveryNoSideEffects -Fixture $fixture -Journal $journal -Before $before -Case $case.Name
+        Write-Host "Migration recovery rejects $($case.Name) without filesystem, metadata, journal, or SCM mutation PASS"
+    } finally {
+        Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Model the crash window after same-parent destination rename but before StatePublished is journaled.
+$publishedCrashRecovery = New-MigrationFixture
+try {
+    $pendingRollback = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $publishedCrashRecovery.Source -Destination $publishedCrashRecovery.Destination -AgentPath $agentPath -ServiceName $publishedCrashRecovery.ServiceName -ServiceSid $publishedCrashRecovery.ServiceSid -MetadataPath $publishedCrashRecovery.MetadataPath -JournalPath $publishedCrashRecovery.Journal -FaultAt 'Verified,RollbackServiceStopped' | Out-Null
+    } catch {
+        $pendingRollback = $_.Exception.Message -like '*durable rollback is pending*'
+        if (-not $pendingRollback) { throw }
+    }
+    if (-not $pendingRollback) { throw 'Did not preserve the Verified journal boundary for destination-publication recovery.' }
+    $pending = Read-WeDecentMigrationJournal -Path $publishedCrashRecovery.Journal
+    if ($pending.phase -cne 'Verified' -or -not $pending.staging_complete -or -not (Test-Path -LiteralPath $pending.staging -PathType Container)) {
+        throw 'Fixture did not retain the verified staging tree and pre-publication journal phase.'
+    }
+    [IO.Directory]::Move([string]$pending.staging, [string]$publishedCrashRecovery.Destination)
+    if ((Test-Path -LiteralPath $pending.staging) -or -not (Test-Path -LiteralPath $publishedCrashRecovery.Destination -PathType Container)) {
+        throw 'Could not model atomic destination publication before the StatePublished journal write.'
+    }
+    $afterRename = Read-WeDecentMigrationJournal -Path $publishedCrashRecovery.Journal
+    if ($afterRename.phase -cne 'Verified') { throw 'Synthetic crash-state unexpectedly advanced the durable journal phase.' }
+    Invoke-MigrationRecoveryInFreshPowerShell -Fixture $publishedCrashRecovery
+    $global:WeDecentMigrationMockStatus = 'Running'
+    $global:WeDecentMigrationMockService.State = 'Running'
+    $global:WeDecentMigrationMockService.PathName = $publishedCrashRecovery.OriginalServicePath
+    Assert-MigrationRolledBack -Fixture $publishedCrashRecovery -Fault 'fresh-process destination-publication recovery'
+    Write-Host 'Migration coordinator recovers destination publication before StatePublished journal write in fresh process PASS (synthetic crash-state; SCM mocked)'
+} finally {
+    Remove-Item -LiteralPath $publishedCrashRecovery.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+Write-Host 'Windows state migration coordinator integration PASS'
+)
     $installerMigrationRecovery = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
-    if ($installerLockAcquire -lt 0 -or $installerMigrationRecovery -lt 0 -or $installerLockAcquire -ge $installerMigrationRecovery) {
-        throw 'Production installer does not acquire the shared installer lock before migration recovery.'
+    if (-not $installerLockCall.Success -or $installerMigrationRecovery -lt 0 -or
+        $installerLockCall.Index -ge $installerMigrationRecovery -or
+        -not $installerText.Contains('-ExpectedDestinationPath $StateDir -InstallerLockHeld')) {
+        throw 'Production installer does not acquire and pass the shared installer lock before bound migration recovery.'
     }
     Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
 } finally { Remove-Item -LiteralPath $installerLockContentionFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
