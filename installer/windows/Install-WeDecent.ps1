@@ -2081,7 +2081,7 @@ if ($metadata) {
 }
 if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
     [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $migrationJournalPath) -AgentPath $migrationAgentPath)
-    [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName)
+    [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName -ExpectedDestinationPath $StateDir)
 }
 $metadata = Read-WeDecentMetadata
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
