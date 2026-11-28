@@ -1388,6 +1388,7 @@ function Recover-InterruptedInstallerTransactions {
             ($stableSequence -gt [UInt64]$journal.sequence -or
                 ($null -ne $state.pending_install -and [UInt64]$state.pending_install.sequence -gt [UInt64]$journal.sequence))
         $historical = $superseded -or $journal.phase -eq 'rolled-back'
+        if ($journal.phase -eq 'rolled-back') { continue }
         if ($journal.phase -ne 'rolled-back') {
             $recoveryServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
             if ($serviceExisted -or $committed) {
