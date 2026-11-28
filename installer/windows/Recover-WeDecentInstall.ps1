@@ -911,9 +911,9 @@ $initialServiceSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $me
 } catch {
     $failure = $_
     $stopFailure = $null
-    try { Stop-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock } catch { $stopFailure = $_.Exception.Message }
+    try { Stop-AuthenticatedRecoveryService -Metadata $metadata } catch { $stopFailure = $_.Exception.Message }
     if ($null -ne $stopFailure) {
-        throw "Windows transaction recovery failed; protected backups and pending authorization were retained. SCM stop was not attempted after identity/lock revalidation failed. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
+        throw "Windows transaction recovery failed; protected backups and pending authorization were retained. SCM stop was not attempted after fresh identity revalidation failed. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
     }
     throw "Windows transaction recovery failed closed; authenticated service was left stopped and pending authorization/backups were retained. Cause: $($failure.Exception.Message)"
 }
@@ -929,12 +929,12 @@ try {
 } catch {
     $failure = $_
     $stopFailure = $null
-    try { Stop-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock } catch { $stopFailure = $_.Exception.Message }
+    try { Stop-AuthenticatedRecoveryService -Metadata $metadata } catch { $stopFailure = $_.Exception.Message }
     if ($null -ne $stopFailure) {
-        throw "Previous binaries and metadata were restored, but service state is uncertain; no stop mutation was attempted without fresh identity/lock authorization. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
+        throw "Previous binaries and metadata were restored, but service state is uncertain; no stop mutation was attempted without fresh identity authorization. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
     }
     throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; authenticated service was left stopped. Cause: $($failure.Exception.Message)"
-    }
+}
 Write-Output 'not-applied'
 } finally {
     if ($null -ne $recoveryLock) {
