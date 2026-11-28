@@ -417,7 +417,7 @@ try {
     $recoveryParseErrors = $null
     $recoveryAst = [System.Management.Automation.Language.Parser]::ParseInput($recoverySource, [ref]$recoveryTokens, [ref]$recoveryParseErrors)
     if ($recoveryParseErrors.Count -ne 0) { throw 'Standalone recovery script has PowerShell parse errors.' }
-    $identityFunctionNames = @('Resolve-ServiceAccountSid', 'Normalize-ServiceAccountName', 'Assert-AuthenticatedRecoveryServiceIdentity')
+    $identityFunctionNames = @('Resolve-ServiceAccountSid', 'Normalize-ServiceAccountName', 'Assert-AuthenticatedRecoveryServiceIdentity', 'Get-AuthenticatedRecoveryServiceSnapshot')
     $identityFunctions = $recoveryAst.FindAll({
         param($node)
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $identityFunctionNames -contains $node.Name
@@ -448,6 +448,33 @@ try {
         $rejected = $false
         try { [void](Assert-AuthenticatedRecoveryServiceIdentity -Metadata $Metadata -ServiceConfig $Config) } catch { $rejected = $true }
         if (-not $rejected) { throw "Standalone recovery accepted mismatched $Case." }
+
+        $snapshotProbe = {
+            param($ProbeMetadata, $ProbeConfig)
+            $script:RecoveryProbeConfig = $ProbeConfig
+            $script:RecoveryProbeServiceReads = 0
+            $script:RecoveryProbeScmMutations = 0
+            $script:RecoveryProbeFileMutations = 0
+            function Get-CimInstance { return $script:RecoveryProbeConfig }
+            function Get-Service {
+                $script:RecoveryProbeServiceReads++
+                return [pscustomobject]@{ Status = 'Running' }
+            }
+            function Stop-Service { $script:RecoveryProbeScmMutations++ }
+            function Start-Service { $script:RecoveryProbeScmMutations++ }
+            function Copy-Item { $script:RecoveryProbeFileMutations++ }
+            function Move-Item { $script:RecoveryProbeFileMutations++ }
+            function Remove-Item { $script:RecoveryProbeFileMutations++ }
+            function Set-Acl { $script:RecoveryProbeFileMutations++ }
+            function Write-TransactionJournal { $script:RecoveryProbeFileMutations++ }
+            $snapshotRejected = $false
+            try { [void](Get-AuthenticatedRecoveryServiceSnapshot -Metadata $ProbeMetadata) } catch { $snapshotRejected = $true }
+            if (-not $snapshotRejected -or $script:RecoveryProbeServiceReads -ne 0 -or
+                $script:RecoveryProbeScmMutations -ne 0 -or $script:RecoveryProbeFileMutations -ne 0) {
+                throw "Mismatched $Case caused or passed SCM/file side effects during recovery admission."
+            }
+        }
+        & $snapshotProbe $Metadata $Config
     }
     $bad = $validIdentityConfig.PSObject.Copy()
     $bad.StartName = "$env:COMPUTERNAME\other-service-account"
