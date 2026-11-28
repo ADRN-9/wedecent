@@ -2028,7 +2028,14 @@ try {
         Assert-MigrationRecoveryNoSideEffects -Fixture $installerLockContentionFixture -Journal $journal -Before $before -Case 'installer/recovery lock contention'
     } finally { $installerOwnedLock.Dispose() }
     $installerText = Get-Content -LiteralPath $installerPath -Raw
-    $installerLockCall = [regex]::Match($installerText, '(?m)^Acquire-WeDecentInstallerLock\s*    Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
+    $installerLockCall = [regex]::Match($installerText, '(?m)^Acquire-WeDecentInstallerLock\s*$')
+    $installerMigrationRecovery = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
+    if (-not $installerLockCall.Success -or $installerMigrationRecovery -lt 0 -or
+        $installerLockCall.Index -ge $installerMigrationRecovery -or
+        -not $installerText.Contains('-ExpectedDestinationPath $StateDir -InstallerLockHeld')) {
+        throw 'Production installer does not acquire and pass the shared installer lock before bound migration recovery.'
+    }
+    Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
 } finally { Remove-Item -LiteralPath $installerLockContentionFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
 
 $expectedDestinationFixture = New-MigrationFixture
