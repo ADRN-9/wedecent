@@ -47,7 +47,7 @@ const (
 	serviceAllAccess       = 0x000F01FF
 	scStatusProcessInfo    = 0
 
-	securityObjectService    = 1
+	securityObjectService    = 2
 	daclSecurityInformation  = 0x00000004
 	protectedDACLInformation = 0x80000000
 )
