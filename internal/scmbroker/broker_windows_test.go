@@ -3,7 +3,6 @@
 package scmbroker
 
 import (
-	"errors"
 	"testing"
 	"unsafe"
 
