@@ -984,6 +984,28 @@ function Assert-WeDecentMigrationPartialTreeSafe {
     return $true
 }
 
+function Get-WeDecentMigrationServiceExecutablePath {
+    param([Parameter(Mandatory = $true)][string]$ServicePath)
+
+    $match = [regex]::Match($ServicePath, '^"([^"]+)"(?:\s|$)|^(\S+)(?:\s|$)')
+    if (-not $match.Success) { throw 'SCM service executable path is missing or ambiguous.' }
+    $value = if ($match.Groups[1].Success) { $match.Groups[1].Value } else { $match.Groups[2].Value }
+    if (-not [IO.Path]::IsPathRooted($value)) { throw 'SCM service executable path must be absolute.' }
+    return Get-WeDecentMigrationCanonicalPath -Path $value
+}
+
+function Get-WeDecentMigrationServiceStatePath {
+    param([Parameter(Mandatory = $true)][string]$ServicePath)
+
+    $pattern = '(?i)(?<!\S)"--state=([^"]+)"|(?<!\S)--state="([^"]+)"|(?<!\S)--state=([^\s"]+)'
+    $matches = [regex]::Matches($ServicePath, $pattern)
+    if ($matches.Count -ne 1) { throw 'SCM command line must contain exactly one unambiguous --state argument.' }
+    $match = $matches[0]
+    $value = if ($match.Groups[1].Success) { $match.Groups[1].Value } elseif ($match.Groups[2].Success) { $match.Groups[2].Value } else { $match.Groups[3].Value }
+    if (-not [IO.Path]::IsPathRooted($value)) { throw 'SCM --state path must be absolute.' }
+    return Get-WeDecentMigrationCanonicalPath -Path $value
+}
+
 function Assert-WeDecentMigrationRecoveryServiceIdentity {
     param(
         [Parameter(Mandatory = $true)][pscustomobject]$Journal,
@@ -1073,7 +1095,17 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
     } catch {
         throw "Migration recovery cannot resolve SCM service account '$($service.StartName)' to a SID."
     }
-    if ($actualSid -cne $journalSid.Value -or
+    $metadataAccountName = [string]$metadata.service_account_name
+    if ([string]::IsNullOrWhiteSpace($metadataAccountName) -or
+        [string]::IsNullOrWhiteSpace([string]$Journal.service_start_name)) {
+        throw 'Protected installer metadata or migration journal is missing the SCM account name.'
+    }
+    try {
+        $metadataAccountSid = ([Security.Principal.NTAccount]::new($metadataAccountName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        throw 'Protected installer metadata service account name cannot be resolved to its authenticated SID.'
+    }
+    if ($metadataAccountSid -cne $metadataSid.Value -or $actualSid -cne $journalSid.Value -or
         -not [string]::Equals([string]$service.StartName, [string]$Journal.service_start_name, [StringComparison]::OrdinalIgnoreCase) -or
         [string]$service.StartMode -cne [string]$Journal.service_start_mode) {
         throw 'Live SCM service-account SID, account name, or start mode does not match protected migration authority.'
@@ -1082,6 +1114,22 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
     if (-not [string]::Equals($servicePath, [string]$Journal.original_service_path, [StringComparison]::OrdinalIgnoreCase) -and
         -not [string]::Equals($servicePath, [string]$Journal.updated_service_path, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Live SCM binary/state command line is outside the authenticated migration transaction.'
+    }
+    $serviceExecutable = Get-WeDecentMigrationServiceExecutablePath -ServicePath $servicePath
+    $expectedExecutable = Get-WeDecentMigrationCanonicalPath -Path ([string]$Journal.agent_path)
+    if (-not [string]::Equals($serviceExecutable, $expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM executable path does not match the authenticated migration agent.'
+    }
+    $serviceStatePath = Get-WeDecentMigrationServiceStatePath -ServicePath $servicePath
+    $metadataOnSource = [string]::Equals($metadataState, $source, [StringComparison]::OrdinalIgnoreCase)
+    $metadataOnDestination = [string]::Equals($metadataState, $destination, [StringComparison]::OrdinalIgnoreCase)
+    $serviceOnSource = [string]::Equals($serviceStatePath, $source, [StringComparison]::OrdinalIgnoreCase)
+    $serviceOnDestination = [string]::Equals($serviceStatePath, $destination, [StringComparison]::OrdinalIgnoreCase)
+    $transactionTransition = [string]$Journal.phase -in @('StatePublished', 'ServiceReconfigured', 'RollingBack') -and
+        (($metadataOnSource -and $serviceOnDestination) -or ($metadataOnDestination -and $serviceOnSource))
+    if (-not (($metadataOnSource -and $serviceOnSource) -or ($metadataOnDestination -and $serviceOnDestination)) -and
+        -not $transactionTransition) {
+        throw 'Protected installer metadata state_dir does not authenticate the live SCM --state path for this transaction phase.'
     }
     return $service
 }
@@ -1206,12 +1254,10 @@ function Recover-WeDecentStateMigration {
         [Parameter(Mandatory = $true)][string]$MetadataPath,
         [Parameter(Mandatory = $true)][string]$ServiceName,
         [Parameter(Mandatory = $true)][string]$ExpectedDestinationPath,
-        [switch]$InstallerLockHeld,
         [string]$FaultAt
     )
     if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $false }
-    $installerLock = $null
-    if (-not $InstallerLockHeld) { $installerLock = Open-WeDecentMigrationInstallerLock }
+    $installerLock = Open-WeDecentMigrationInstallerLock
     try {
     $journal = Read-WeDecentMigrationJournal -Path $JournalPath
     $expectedDestinationFull = Get-WeDecentMigrationCanonicalPath -Path $ExpectedDestinationPath
@@ -1241,7 +1287,7 @@ function Recover-WeDecentStateMigration {
     }
     return $true
     } finally {
-        if ($null -ne $installerLock) { $installerLock.Dispose() }
+        Close-WeDecentMigrationInstallerLock -Lock $installerLock
     }
 }
 
