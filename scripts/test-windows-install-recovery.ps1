@@ -387,6 +387,7 @@ try {
         product = 'WeDecent'
         version = 'v0.3.9'
         service_name = $serviceName
+        service_account_name = $serviceAccountName
         service_account_sid = $serviceSid
         install_dir = $installDir
         state_dir = $stateDir
@@ -1157,6 +1158,8 @@ try {
         @(Get-ChildItem -LiteralPath $mainProgramData -File -Recurse -Force).Count -ne $mainFileHashesBefore.Count) {
         throw 'Mismatched SCM identity created or removed protected installer/recovery files.'
     }
+    & sc.exe config $serviceName obj= "$env:COMPUTERNAME\\$serviceAccountName" password= $servicePasswordPlain | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'Could not restore the isolated service account after the main-installer mismatch test.' }
     Write-Host 'Production main-installer recovery rejected a mismatched SCM SID before SCM or filesystem side effects.'
     $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
     [IO.File]::WriteAllText($snapshotSource, ($helperOriginalMetadata | ConvertTo-Json -Depth 5 -Compress))
@@ -2286,6 +2289,8 @@ public static class WeDecentIdentityProcess
 } finally {
     $env:ProgramData = $originalProgramData
     if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
+    $mainMismatchAccount = Get-Variable -Name mainMismatchName -ValueOnly -ErrorAction SilentlyContinue
+    if ($mainMismatchAccount) { Remove-LocalUser -Name $mainMismatchAccount -ErrorAction SilentlyContinue }
     if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
