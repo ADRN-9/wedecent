@@ -130,3 +130,48 @@ The intended protected policy is a fixed-schema local file under a broker-owned 
 - The broker remains absent from the Windows installer payload and no production mutation endpoint is enabled.
 
 The GitHub hosted Windows runner can run elevated integration tests in its ephemeral VM, but the required persistent privileged VM and independently provisioned production publisher trust anchor are not available in repository evidence. These are real acceptance dependencies, not reasons to guess credentials or weaken fail-closed behavior.
+
+
+## C363 continuation — Authenticode and service identity work (2026-11-28)
+
+### Exact requested workflow reconciliation at starting HEAD
+
+The branch was re-fetched at starting HEAD `ef85bb8f5b8a0f1e61ae1ce75cf94f5c6d41aac2`, tree `13af59957da8d6e94d89a00cbdda6be05567dc8e`. PR #209 remained open, draft and unmerged.
+
+- CI `46138590682`: **SUCCESS**. All jobs passed, including Windows agent, Windows release, Linux, macOS agent, Supabase, relay worker, control plane, route-capability client and route E2E. The Windows agent's native test, actual state ACL, hostile ancestor owner, service SID provisioning, cleanup, native binary build and UI command checks all passed.
+- CI `46138585990`: **SUCCESS** with the same complete job matrix and Windows native acceptance steps passing.
+- Desktop `46138590745`: **CANCELLED**. Linux and macOS checks passed; Windows Tauri shell check was cancelled.
+- Desktop `46138585986`: **CANCELLED**. Linux and macOS checks passed; Windows Tauri shell and macOS job were cancelled before final completion (macOS later reported success in job detail, but the workflow itself remained cancelled).
+
+Thus the two requested CI runs are fully successful at `ef85bb8...`; neither requested desktop workflow is a completed pass. These runs predate the publisher verification commits below.
+
+### New source changes
+
+- `internal/scmbroker/publisher_windows.go`: added native `WinVerifyTrust` verification using the generic Authenticode policy, chain revocation checking, no UI, signer certificate extraction through the WinTrust provider chain, and SHA-1 thumbprint extraction. The executable is opened read-only without write/delete sharing, reparse points are rejected, and the same open file handle is supplied to WinVerifyTrust to reduce replacement races.
+- The pipe client's kernel-reported process is held open while querying its executable path and validating the signature. PID reuse is additionally constrained by matching the impersonation token's user SID with the primary process token.
+- `internal/scmbroker/publisher_policy_windows.go`: added strict bounded policy parsing, duplicate-key and unknown-field rejection, uppercase 40-hex thumbprint validation, and exact protected owner/DACL checks for the product root, broker directory and policy file. Missing or malformed policy fails closed.
+- `authenticateClient` now requires a valid Authenticode signature and exact match to the protected publisher thumbprint. It still returns unauthorized after those checks: additional IPC-specific authorization has not been established and no request is dispatched.
+- `internal/winservice/service_windows.go`: added `EnableServiceSID`, which configures the unrestricted service SID through SCM and reads the configuration back for verification.
+- `RunContext` now verifies that the dedicated broker service SID is actually enabled in the current process token before creating the pipe. A cancelled context exits before this service-only check.
+- Added Windows-only tests for malformed publisher policies, invalid/missing executable paths, invalid process handles and absent policy fail-closed behavior.
+
+### Critical provisioning and implementation gaps
+
+The production publisher thumbprint remains intentionally absent. The policy path is `%ProgramData%\\WeDecent\\broker\\publisher-policy.json`; it requires a protected product root, broker directory and policy file with owner Administrators, SYSTEM/Administrators full control, and broker service SID read-only access. The installer does not yet create this directory/policy, and the dedicated broker executable is not yet part of the Windows release bundle or installer payload. Consequently the new broker will fail closed at startup until provisioning exists.
+
+The WinTrust code and policy loader have been committed but **have not yet received completed exact-HEAD Windows CI**. The policy's exact SDDL assumptions, WinTrust structure layouts, provider-chain extraction, file-handle behavior and revocation behavior require hosted Windows execution and focused adversarial review. The added tests are not evidence of a passing Windows build until CI completes.
+
+The service SID enable/verify helper is not yet wired into a dedicated broker install/upgrade/uninstall transaction. The installer currently installs the existing WeDecent agent, not `WeDecentSCMBroker`. Service account selection, service binary ACLs, broker service object DACL, policy creation, service SID enablement and rollback need one installer-owned transaction. The persistent privileged Windows VM remains necessary for stop/restart/interruption and cross-user tests.
+
+No SCM mutation dispatch has been enabled. No publisher thumbprint has been guessed, copied from the updater trust root, or accepted from an untrusted request. SCM concurrency against an equally privileged administrator remains an architectural limitation; no code here claims to eliminate that race.
+
+### Exact-head verification after these commits
+
+Latest branch HEAD: `f4bf6f935e086684be40431451a1c3cbc367cfa0`, tree `8ba9356cd88f2b2c3d25da67966fdc4b9ba312de`, parent `993ec9541e171fc37ba949d73a7cc675b96d5ac4`.
+
+Fresh runs triggered for that exact HEAD:
+- CI: `46139483162`, `46139478320`
+- Desktop: `46139483175`, `46139478243`
+- Updater: `46139483166`, `46139478296`
+
+At documentation time these workflows were queued, pending or in progress. The updater run `46139478296` was still running. No exact-head pass is claimed for `f4bf6f9...`. Later commits will naturally make these runs non-exact-head for the branch, so every source correction requires another fresh run.
