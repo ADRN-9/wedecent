@@ -38,6 +38,9 @@ func TestServiceControlSecurityDescriptorIsLeastPrivilege(t *testing.T) {
 }
 
 func TestServiceManagementUsesLeastPrivilegeMasks(t *testing.T) {
+	if securityObjectService != 2 {
+		t.Fatalf("SE_SERVICE object type = %d, want 2", securityObjectService)
+	}
 	if scManagerConnect != 0x1 || scManagerCreateService != 0x2 {
 		t.Fatalf("unexpected SCM manager access masks: connect=%#x create=%#x", scManagerConnect, scManagerCreateService)
 	}
