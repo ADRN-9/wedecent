@@ -1644,20 +1644,31 @@ Publish-TransactionRecoveryScriptBackup
     $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
     $lockMarker = Join-Path $durableTestDir 'lock-owned'
     $lockMarkerQ = $lockMarker.Replace("'", "''")
+    $lockErrorMarker = Join-Path $durableTestDir 'lock-error'
+    $lockErrorMarkerQ = $lockErrorMarker.Replace("'", "''")
     $lockModuleQ = $migrationModulePath.Replace("'", "''")
 $lockChildCommand = @'
 Import-Module '__MIGRATION_MODULE__' -Global -ErrorAction Stop
-Enter-WeDecentMigrationInstallerLock
-[IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
-Start-Sleep -Seconds 60
+try {
+    Enter-WeDecentMigrationInstallerLock
+    [IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
+    Start-Sleep -Seconds 60
+} catch {
+    [IO.File]::WriteAllText('__LOCK_ERROR_MARKER__', $_.Exception.ToString())
+    exit 11
+}
 '@
-    $lockChildCommand = $lockChildCommand.Replace('__MIGRATION_MODULE__', $lockModuleQ).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockChildCommand = $lockChildCommand.Replace('__MIGRATION_MODULE__', $lockModuleQ).Replace('__LOCK_MARKER__', $lockMarkerQ).Replace('__LOCK_ERROR_MARKER__', $lockErrorMarkerQ)
     $lockChildScriptPath = Join-Path $durableTestDir 'installer-lock-child.ps1'
     [IO.File]::WriteAllText($lockChildScriptPath, $lockChildCommand, [Text.Encoding]::Unicode)
     $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$lockChildScriptPath`"" -PassThru -WindowStyle Hidden
     $deadline = [DateTime]::UtcNow.AddSeconds(15)
     while (-not (Test-Path -LiteralPath $lockMarker) -and -not $lockChild.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $lockChild.Refresh() }
-    if (-not (Test-Path -LiteralPath $lockMarker)) { if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }; throw 'Installer lock child process did not acquire the lock.' }
+    if (-not (Test-Path -LiteralPath $lockMarker)) {
+        if (-not $lockChild.HasExited) { Stop-Process -Id $lockChild.Id -Force }
+        $childError = if (Test-Path -LiteralPath $lockErrorMarker) { Get-Content -LiteralPath $lockErrorMarker -Raw } else { "Child exit code: $($lockChild.ExitCode)" }
+        throw "Installer lock child process did not acquire the lock: $childError"
+    }
     $lockRejected = $false
     try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
     if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
