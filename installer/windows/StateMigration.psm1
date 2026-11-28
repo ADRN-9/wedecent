@@ -1009,8 +1009,10 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
     Assert-WeDecentMigrationStrictJson -Json $metadataJson -Description 'Migration recovery installer metadata'
     $metadata = $metadataJson | ConvertFrom-Json -ErrorAction Stop
     if ([int]$metadata.schema -ne 1 -or [string]$metadata.product -cne 'WeDecent' -or
-        [string]$metadata.service_name -cne $ServiceName) {
-        throw 'Protected installer metadata does not authenticate this migration service.'
+        [string]$metadata.service_name -cne $ServiceName -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.install_dir) -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.state_dir)) {
+        throw 'Protected installer metadata does not authenticate this migration service or its installation/state paths.'
     }
     $metadataSidText = [string]$metadata.service_account_sid
     $metadataSid = ConvertTo-WeDecentMigrationSid -Sid $metadataSidText
@@ -1022,6 +1024,12 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
     if ($metadataSid.Value -cne $journalSid.Value -or $originalSid.Value -cne $journalSid.Value -or
         [string]$original.service_name -cne $ServiceName) {
         throw 'Migration journal, original metadata, and current protected metadata disagree on service identity.'
+    }
+
+    if ([string]::IsNullOrWhiteSpace([string]$original.install_dir) -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$metadata.install_dir),
+            [IO.Path]::GetFullPath([string]$original.install_dir), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Protected installer metadata does not bind the same installation identity as the migration transaction.'
     }
 
     if ([string]::IsNullOrWhiteSpace([string]$metadata.state_dir) -or
