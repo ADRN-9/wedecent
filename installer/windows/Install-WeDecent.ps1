@@ -1367,15 +1367,6 @@ function Recover-InterruptedInstallerTransactions {
         }
         $serviceExisted = $true
         if ($null -ne $journal.PSObject.Properties['service_existed']) { $serviceExisted = [bool]$journal.service_existed }
-        $recoveryServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-        if ($serviceExisted) {
-            if ($null -eq $recoveryServiceConfig) {
-                throw 'Interrupted-install recovery requires the previously authenticated SCM service to exist.'
-            }
-            [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig $recoveryServiceConfig)
-        } elseif ($null -ne $recoveryServiceConfig) {
-            throw 'Fresh-install recovery expected no pre-existing SCM service; an unexpected service exists and requires authenticated operator investigation.'
-        }
         $statePath = Join-Path $StateDir 'update-state.json'
         $committed = $false
         $stableSequence = [UInt64]0
@@ -1394,6 +1385,17 @@ function Recover-InterruptedInstallerTransactions {
             ($stableSequence -gt [UInt64]$journal.sequence -or
                 ($null -ne $state.pending_install -and [UInt64]$state.pending_install.sequence -gt [UInt64]$journal.sequence))
         $historical = $superseded -or $journal.phase -eq 'rolled-back'
+        if ($journal.phase -ne 'rolled-back') {
+            $recoveryServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+            if ($serviceExisted -or $committed) {
+                if ($null -eq $recoveryServiceConfig) {
+                    throw 'Interrupted-install recovery requires the authenticated SCM service to exist.'
+                }
+                [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig $recoveryServiceConfig)
+            } elseif ($null -ne $recoveryServiceConfig) {
+                throw 'Fresh-install recovery expected no pre-existing SCM service; an unexpected service exists and requires authenticated operator investigation.'
+            }
+        }
         Assert-TransactionMetadataSnapshot -Journal $journal -Committed ($journal.phase -eq 'committed') -Historical $historical
         Assert-TransactionRecoveryScript -Journal $journal -Committed ($journal.phase -eq 'committed') -Historical $historical
         $seenNames = @{}
