@@ -73,7 +73,6 @@ func TestPublisherPolicyRequiresUppercaseSHA1Pin(t *testing.T) {
 	}
 }
 
-
 func TestInstallServiceRejectsUnprotectedExecutablePath(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "wd-scm-broker.exe")
 	if err := InstallService(path); err == nil {
