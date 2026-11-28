@@ -3,7 +3,6 @@
 package scmbroker
 
 import (
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -72,5 +71,4 @@ func TestPublisherPolicyRequiresUppercaseSHA1Pin(t *testing.T) {
 	if publisherThumbprintPattern.MatchString(strings.Repeat("a", 40)) {
 		t.Fatal("lowercase thumbprint was accepted")
 	}
-	_ = os.ErrNotExist
 }
