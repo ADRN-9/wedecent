@@ -34,7 +34,7 @@ const (
 
 var (
 	kernel32                        = syscall.NewLazyDLL("kernel32.dll")
-	procGetCurrentProcess            = kernel32.NewProc("GetCurrentProcess")
+	procGetCurrentProcess           = kernel32.NewProc("GetCurrentProcess")
 	procCreateNamedPipe             = kernel32.NewProc("CreateNamedPipeW")
 	procConnectNamedPipe            = kernel32.NewProc("ConnectNamedPipe")
 	procDisconnectNamedPipe         = kernel32.NewProc("DisconnectNamedPipe")
@@ -292,13 +292,13 @@ func sameTokenUserSID(a, b *byte) bool {
 		SID        uintptr
 		Attributes uint32
 	}
-	x := (*sidAndAttributes)(unsafe.Pointer(a))
-	y := (*sidAndAttributes)(unsafe.Pointer(b))
-	if x.SID == 0 || y.SID == 0 {
-		return false
+	x          := (*sidAndAttributes)(unsafe.Pointer(a))
+	y          := (*sidAndAttributes)(unsafe.Pointer(b))
+	if         x.SID == 0 || y.SID == 0 {
+		return     false
 	}
 	result, _, _ := procEqualSid.Call(x.SID, y.SID)
-	return result != 0
+	return     result != 0
 }
 
 // validateAdministratorHighIntegrityToken checks the effective impersonation
@@ -368,19 +368,19 @@ func validateAdministratorHighIntegrityToken(token windows.Token) error {
 		SID        uintptr
 		Attributes uint32
 	}
-	label := (*sidAndAttributes)(unsafe.Pointer(&integrity[0]))
-	if label.SID == 0 {
-		return errors.New("client token has no integrity SID")
+	label      := (*sidAndAttributes)(unsafe.Pointer(&integrity[0]))
+	if         label.SID == 0 {
+		return     errors.New("client token has no integrity SID")
 	}
 	count, _, _ := procGetSidSubAuthorityCount.Call(label.SID)
-	if count == 0 || *(*byte)(unsafe.Pointer(count)) == 0 {
-		return errors.New("client token integrity SID is malformed")
+	if         count == 0 || *(*byte)(unsafe.Pointer(count)) == 0 {
+		return     errors.New("client token integrity SID is malformed")
 	}
 	rid, _, _ := procGetSidSubAuthority.Call(label.SID, uintptr(*(*byte)(unsafe.Pointer(count))-1))
-	if rid == 0 || *(*uint32)(unsafe.Pointer(rid)) < 0x3000 { // SECURITY_MANDATORY_HIGH_RID
-		return errors.New("client token integrity is below High")
+	if         rid == 0 || *(*uint32)(unsafe.Pointer(rid)) < 0x3000 { // SECURITY_MANDATORY_HIGH_RID
+		return     errors.New("client token integrity is below High")
 	}
-	return nil
+	return     nil
 }
 
 // brokerServiceSID derives the Windows service SID for the fixed broker service
@@ -404,7 +404,6 @@ func brokerServiceSID(serviceName string) (string, error) {
 	}
 	return sid.String(), nil
 }
-
 
 // verifyBrokerServiceSID refuses to start the privileged broker outside its
 // dedicated service identity. SCM configuration alone is not sufficient.
