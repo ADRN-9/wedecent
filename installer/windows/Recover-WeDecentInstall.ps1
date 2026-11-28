@@ -226,6 +226,57 @@ function Get-AuthenticatedRecoveryServiceSnapshot {
     return [pscustomobject]@{ Config = $config; Service = $service }
 }
 
+if (-not ('WeDecentRecoveryScmDatabaseLock' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class WeDecentRecoveryScmDatabaseLock
+{
+    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr OpenSCManager(string machineName, string databaseName, uint desiredAccess);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    public static extern IntPtr LockServiceDatabase(IntPtr scmHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool UnlockServiceDatabase(IntPtr lockHandle);
+
+    [DllImport("advapi32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseServiceHandle(IntPtr handle);
+}
+'@ -ErrorAction Stop
+}
+
+function Enter-RecoveryScmMutationLock {
+    $manager = [WeDecentRecoveryScmDatabaseLock]::OpenSCManager($null, $null, 0x0008)
+    if ($manager -eq [IntPtr]::Zero) {
+        throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error(), 'Unable to open SCM for exclusive service-configuration protection.')
+    }
+    $lock = [WeDecentRecoveryScmDatabaseLock]::LockServiceDatabase($manager)
+    if ($lock -eq [IntPtr]::Zero) {
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        [void][WeDecentRecoveryScmDatabaseLock]::CloseServiceHandle($manager)
+        throw [ComponentModel.Win32Exception]::new($errorCode, 'Unable to lock SCM service configuration; refusing service mutation.')
+    }
+    return [pscustomobject]@{ Manager = $manager; Lock = $lock }
+}
+
+function Exit-RecoveryScmMutationLock {
+    param([Parameter(Mandatory = $true)]$Handle)
+    $unlockError = $null
+    try {
+        if (-not [WeDecentRecoveryScmDatabaseLock]::UnlockServiceDatabase($Handle.Lock)) {
+            $unlockError = [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error(), 'Unable to release SCM service-configuration lock.')
+        }
+    } finally {
+        [void][WeDecentRecoveryScmDatabaseLock]::CloseServiceHandle($Handle.Manager)
+    }
+    if ($null -ne $unlockError) { throw $unlockError }
+}
+
 function Restore-TransactionRecoveryScript {
     param([Parameter(Mandatory = $true)]$Journal)
     $target = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
