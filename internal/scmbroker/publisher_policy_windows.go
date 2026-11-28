@@ -19,22 +19,22 @@ import (
 )
 
 const (
-	seFileObject = 1
+	seFileObject             = 1
 	ownerSecurityInformation = 0x1
-	daclSecurityInformation = 0x4
-	sddlRevision1 = 1
+	daclSecurityInformation  = 0x4
+	sddlRevision1            = 1
 )
 
 var (
-	advapiPublisherPolicy = syscall.NewLazyDLL("advapi32.dll")
-	procGetNamedSecurityInfo = advapiPublisherPolicy.NewProc("GetNamedSecurityInfoW")
-	procConvertSDToStringSD = advapiPublisherPolicy.NewProc("ConvertSecurityDescriptorToStringSecurityDescriptorW")
-	kernelPublisherPolicy = syscall.NewLazyDLL("kernel32.dll")
+	advapiPublisherPolicy        = syscall.NewLazyDLL("advapi32.dll")
+	procGetNamedSecurityInfo     = advapiPublisherPolicy.NewProc("GetNamedSecurityInfoW")
+	procConvertSDToStringSD      = advapiPublisherPolicy.NewProc("ConvertSecurityDescriptorToStringSecurityDescriptorW")
+	kernelPublisherPolicy        = syscall.NewLazyDLL("kernel32.dll")
 	procLocalFreePublisherPolicy = kernelPublisherPolicy.NewProc("LocalFree")
 )
 
 type publisherPolicy struct {
-	Schema             uint32 `json:"schema"`
+	Schema              uint32 `json:"schema"`
 	PublisherThumbprint string `json:"publisher_thumbprint"`
 }
 
