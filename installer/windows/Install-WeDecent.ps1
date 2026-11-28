@@ -334,9 +334,12 @@ function Assert-WeDecentRecoveryServiceIdentity {
     } catch {
         throw 'Protected installer metadata contains a malformed service-account SID.'
     }
-    $startName = [string]$ServiceConfig.StartName
+    $startName = ([string]$ServiceConfig.StartName).Trim()
     if ([string]::IsNullOrWhiteSpace($startName)) {
         throw 'SCM service account identity is missing.'
+    }
+    if ($startName.StartsWith('.\\', [StringComparison]::OrdinalIgnoreCase)) {
+        $startName = "$env:COMPUTERNAME\\$($startName.Substring(2))"
     }
     try {
         $actualSid = (New-Object Security.Principal.NTAccount -ArgumentList $startName).Translate([Security.Principal.SecurityIdentifier]).Value
