@@ -236,7 +236,7 @@ using System.Runtime.InteropServices;
 
 public static class WeDecentRecoveryScmDatabaseLock
 {
-    [DllImport("advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("advapi32.dll", EntryPoint = "OpenSCManagerW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     public static extern IntPtr OpenSCManager(string machineName, string databaseName, uint desiredAccess);
 
     [DllImport("advapi32.dll", SetLastError = true)]
@@ -254,9 +254,9 @@ public static class WeDecentRecoveryScmDatabaseLock
 }
 
 function Enter-RecoveryScmMutationLock {
-    $manager = [WeDecentRecoveryScmDatabaseLock]::OpenSCManager($null, $null, 0x0008)
+    $manager = [WeDecentRecoveryScmDatabaseLock]::OpenSCManager($null, $null, 0x0009)
     if ($manager -eq [IntPtr]::Zero) {
-        throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error(), 'Unable to open SCM for exclusive service-configuration protection.')
+        throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error(), ('Unable to open SCM for exclusive service-configuration protection (Win32 ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error() + ').'))
     }
     $lock = [WeDecentRecoveryScmDatabaseLock]::LockServiceDatabase($manager)
     if ($lock -eq [IntPtr]::Zero) {
