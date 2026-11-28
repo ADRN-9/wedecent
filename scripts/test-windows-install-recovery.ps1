@@ -28,6 +28,11 @@ if (-not $installerText.Contains('service_existed = [bool]$script:InstallService
     -not $installerText.Contains('Publish-TransactionRecoveryScriptBackup')) {
     throw 'Interrupted fresh-install recovery must be independent of a service that has not yet been created.'
 }
+$lockCall = $installerText.IndexOf('Acquire-WeDecentInstallerLock', $installerText.IndexOf('Assert-Administrator'))
+$recoveryCall = $installerText.IndexOf('Recover-InterruptedInstallerTransactions -Destinations')
+if ($lockCall -lt 0 -or $recoveryCall -lt 0 -or $lockCall -ge $recoveryCall) {
+    throw 'Installer-wide lock must be acquired before transaction recovery or any install-state mutation.'
+}
 $functionNames = @([regex]::Matches($installerText, '(?m)^function\s+([^\s{]+)') | ForEach-Object { $_.Groups[1].Value })
 if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
     throw 'Installer contains duplicate top-level function definitions.'
@@ -1239,6 +1244,12 @@ Start-Sleep -Seconds 60
     $rejectedWriterPath = $false
     try { Write-InstallJournal -Journal $writerJournal -Path (Join-Path $root 'outside-transaction.json') } catch { $rejectedWriterPath = $true }
     if (-not $rejectedWriterPath) { throw 'Production installer journal writer accepted a path outside its transaction binding.' }
+    $exclusiveWriterId = [Guid]::NewGuid().ToString('N')
+    $exclusiveWriterJournal = [ordered]@{ transaction_id = $exclusiveWriterId; phase = 'prepared' }
+    Write-InstallJournal -Journal $exclusiveWriterJournal -CreateNew
+    $exclusiveReplayRejected = $false
+    try { Write-InstallJournal -Journal $exclusiveWriterJournal -CreateNew } catch { $exclusiveReplayRejected = $true }
+    if (-not $exclusiveReplayRejected) { throw 'Production journal writer replaced an existing transaction during exclusive creation.' }
 
     $currentIdentitySid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
     if ([string]::Equals($currentIdentitySid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
