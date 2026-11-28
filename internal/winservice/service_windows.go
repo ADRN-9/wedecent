@@ -39,6 +39,7 @@ const (
 
 	scManagerConnect       = 0x00000001
 	scManagerCreateService = 0x00000002
+	serviceQueryConfig      = 0x00000001
 	serviceQueryStatus     = 0x00000004
 	serviceChangeConfig    = 0x00000002
 	serviceConfigSIDInfo   = 5
@@ -322,7 +323,7 @@ func EnableServiceSID(name string) error {
 	if strings.TrimSpace(name) == "" {
 		return errors.New("service name is required")
 	}
-	h, err := openServiceWithAccess(name, serviceChangeConfig|serviceQueryStatus)
+	h, err := openServiceWithAccess(name, serviceChangeConfig|serviceQueryConfig)
 	if err != nil {
 		return err
 	}
