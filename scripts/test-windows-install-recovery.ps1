@@ -4,6 +4,9 @@ Set-StrictMode -Version Latest
 $recoveryScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'installer\windows\Recover-WeDecentInstall.ps1'
 $binaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
 $installerScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'installer\windows\Install-WeDecent.ps1'
+$migrationModulePath = Join-Path (Split-Path -Parent $installerScript) 'StateMigration.psm1'
+$migrationAgentPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\wedecent-windows-amd64\wd-agent.exe'
+Import-Module $migrationModulePath -Force -ErrorAction Stop
 $installerText = Get-Content -LiteralPath $installerScript -Raw
 $backupStage = $installerText.IndexOf('All previous binaries are backed up and verified before any replacement.')
 $replacementStage = $installerText.IndexOf('Install-Binary (Join-Path $SourceDirectory $name)')
@@ -1635,10 +1638,15 @@ Publish-TransactionRecoveryScriptBackup
     New-Item -ItemType Directory -Force -Path $lockRoot | Out-Null
     $lockPath = Join-Path $lockRoot 'installer.lock'
     if (Test-Path -LiteralPath $lockPath) { Remove-Item -LiteralPath $lockPath -Force }
+    [void](Set-WeDecentMigrationAdminDirectory -Path $lockRoot -AgentPath $migrationAgentPath)
+    New-Item -ItemType File -Path $lockPath -ErrorAction Stop | Out-Null
+    Set-WeDecentMigrationAdminFileAcl -Path $lockPath
     $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
     $lockMarker = Join-Path $durableTestDir 'lock-owned'
     $lockMarkerQ = $lockMarker.Replace("'", "''")
-    $lockChildCommand = @'
+    $lockModuleQ = $migrationModulePath.Replace("'", "''")
+$lockChildCommand = @'
+Import-Module '__MIGRATION_MODULE__' -ErrorAction Stop
 function Protect-WeDecentMetadataAcl { param([string]$Path) }
 function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 __LOCK_FUNCTION__
@@ -1646,7 +1654,7 @@ Acquire-WeDecentInstallerLock
 [IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
 Start-Sleep -Seconds 60
 '@
-    $lockChildCommand = $lockChildCommand.Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
+    $lockChildCommand = $lockChildCommand.Replace('__MIGRATION_MODULE__', $lockModuleQ).Replace('__LOCK_FUNCTION__', $lockFunction).Replace('__LOCK_MARKER__', $lockMarkerQ)
     $lockChildScriptPath = Join-Path $durableTestDir 'installer-lock-child.ps1'
     [IO.File]::WriteAllText($lockChildScriptPath, $lockChildCommand, [Text.Encoding]::Unicode)
     $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$lockChildScriptPath`"" -PassThru -WindowStyle Hidden
@@ -1659,9 +1667,7 @@ Start-Sleep -Seconds 60
     Stop-Process -Id $lockChild.Id -Force
     $lockChild.WaitForExit()
     Acquire-WeDecentInstallerLock
-    if ($null -eq $script:InstallerLockStream) { throw 'Installer lock was not reacquired after the owner process terminated.' }
-    $script:InstallerLockStream.Dispose()
-    $script:InstallerLockStream = $null
+    Exit-WeDecentMigrationInstallerLock
     $writerTransactionId = [Guid]::NewGuid().ToString('N')
     $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
     $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
