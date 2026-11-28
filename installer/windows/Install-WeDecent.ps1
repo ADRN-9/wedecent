@@ -311,6 +311,44 @@ function Initialize-WeDecentUpdateState {
     Set-WeDecentUpdateStateAcl -Path $path -TrustedSids @('S-1-5-18', 'S-1-5-32-544', $ServiceSid, $stateOwnerSid)
 }
 
+function Assert-WeDecentRecoveryServiceIdentity {
+    param([Parameter(Mandatory = $true)]$ServiceConfig)
+
+    $metadataPath = Get-WeDecentMetadataPath
+    if (-not (Test-WeDecentMetadataTrusted -Path $metadataPath)) {
+        throw 'Interrupted-install recovery requires ACL-authenticated installer metadata.'
+    }
+    $metadata = Read-WeDecentMetadata
+    if ($null -eq $metadata -or
+        [string]$metadata.service_name -cne $ServiceName -or
+        [IO.Path]::GetFullPath([string]$metadata.install_dir) -ine [IO.Path]::GetFullPath($InstallDir) -or
+        [IO.Path]::GetFullPath([string]$metadata.state_dir) -ine [IO.Path]::GetFullPath($StateDir)) {
+        throw 'Interrupted-install recovery metadata does not authenticate this service and its protected paths.'
+    }
+    $expectedSidText = [string]$metadata.service_account_sid
+    if ([string]::IsNullOrWhiteSpace($expectedSidText)) {
+        throw 'Protected installer metadata has no service-account SID.'
+    }
+    try {
+        $expectedSid = [Security.Principal.SecurityIdentifier]::new($expectedSidText).Value
+    } catch {
+        throw 'Protected installer metadata contains a malformed service-account SID.'
+    }
+    $startName = [string]$ServiceConfig.StartName
+    if ([string]::IsNullOrWhiteSpace($startName)) {
+        throw 'SCM service account identity is missing.'
+    }
+    try {
+        $actualSid = (New-Object Security.Principal.NTAccount -ArgumentList $startName).Translate([Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        throw "SCM service account identity cannot be resolved: $startName"
+    }
+    if (-not [string]::Equals($actualSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SCM service account SID does not match protected installer metadata.'
+    }
+    return $ServiceConfig
+}
+
 function Read-WeDecentMetadata {
     $path = Get-WeDecentMetadataPath
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
@@ -1327,6 +1365,17 @@ function Recover-InterruptedInstallerTransactions {
             [string]$journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back')) {
             throw "Installer transaction journal is malformed: $($file.FullName)"
         }
+        $serviceExisted = $true
+        if ($null -ne $journal.PSObject.Properties['service_existed']) { $serviceExisted = [bool]$journal.service_existed }
+        $recoveryServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+        if ($serviceExisted) {
+            if ($null -eq $recoveryServiceConfig) {
+                throw 'Interrupted-install recovery requires the previously authenticated SCM service to exist.'
+            }
+            [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig $recoveryServiceConfig)
+        } elseif ($null -ne $recoveryServiceConfig) {
+            throw 'Fresh-install recovery expected no pre-existing SCM service; an unexpected service exists and requires authenticated operator investigation.'
+        }
         $statePath = Join-Path $StateDir 'update-state.json'
         $committed = $false
         $stableSequence = [UInt64]0
@@ -1463,17 +1512,16 @@ function Recover-InterruptedInstallerTransactions {
             continue
         }
 
-        $serviceExisted = $true
-        if ($null -ne $journal.PSObject.Properties['service_existed']) { $serviceExisted = [bool]$journal.service_existed }
         $restartService = [bool]$journal.service_was_running
         if ($serviceExisted) {
             $serviceBefore = Get-Service -Name $ServiceName -ErrorAction Stop
             $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+            if ($null -eq $serviceConfig) { throw 'SCM service disappeared during interrupted-install recovery.' }
+            [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig $serviceConfig)
             $expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
             $expectedServicePath = '"' + $expectedAgent + '"'
-            $stateArgumentPattern = '(?:^|\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\s|$)'
-            if ($null -eq $serviceConfig -or
-                -not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
+            $stateArgumentPattern = '(?:^|\\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\\s|$)'
+            if (-not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
                 -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
                 throw 'SCM service identity does not match the authenticated installer paths.'
             }
@@ -1481,8 +1529,6 @@ function Recover-InterruptedInstallerTransactions {
             (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
             if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') { throw 'SCM did not confirm the service stopped before interrupted-install recovery.' }
         } else {
-            $unexpectedService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
-            if ($null -ne $unexpectedService) { throw 'Fresh-install recovery expected no pre-existing SCM service; an unexpected service exists and requires authenticated operator investigation.' }
             $restartService = $false
         }
         if ([bool]$journal.recovery_script_had_original) {
