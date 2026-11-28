@@ -8,6 +8,16 @@ $installerPath = Join-Path $repoRoot 'installer/windows/Install-WeDecent.ps1'
 $agentPath = Join-Path $repoRoot 'dist/wedecent-windows-amd64/wd-agent.exe'
 if (-not (Test-Path -LiteralPath $agentPath -PathType Leaf)) { throw "Missing built Windows agent: $agentPath" }
 $installerText = Get-Content -LiteralPath $installerPath -Raw
+$installerLines = $installerText -split '\r?\n'
+for ($lineIndex = 0; $lineIndex -lt $installerLines.Count; $lineIndex++) {
+    if ($installerLines[$lineIndex] -match '^\s*(?:Stop-Service|Start-Service)\s+-Name\s+\$ServiceName') {
+        $firstGuardLine = [Math]::Max(0, $lineIndex - 3)
+        $guardWindow = [string]::Join([Environment]::NewLine, $installerLines[$firstGuardLine..($lineIndex - 1)])
+        if ($guardWindow -notmatch 'Assert-WeDecent(?:Recovery|Fresh)ServiceIdentity') {
+            throw "Installer SCM mutation lacks an immediately preceding live identity guard at line $($lineIndex + 1)."
+        }
+    }
+}
 $migrationCall = $installerText.IndexOf('Invoke-WeDecentStateMigration -Source $recordedStateDir', [StringComparison]::Ordinal)
 $recoveryCall = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
 $normalUpgradeIdentity = $installerText.IndexOf('Live SCM service-account SID must exactly match ACL-protected installer metadata before any upgrade recovery or mutation.', [StringComparison]::Ordinal)
