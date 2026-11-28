@@ -351,12 +351,14 @@ function Assert-WeDecentRecoveryServiceIdentity {
         throw "SCM service account identity cannot be resolved: $startName"
     }
     if (-not [string]::Equals($actualSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals($metadataNameSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase) -or
-        (-not [string]::IsNullOrWhiteSpace([string]$script:InstallServiceStartName) -and
+        -not [string]::Equals($metadataNameSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SCM service account SID does not match protected installer metadata.'
+    }
+    if ((-not [string]::IsNullOrWhiteSpace([string]$script:InstallServiceStartName) -and
             -not [string]::Equals([string]$ServiceConfig.StartName, [string]$script:InstallServiceStartName, [StringComparison]::OrdinalIgnoreCase)) -or
         (-not [string]::IsNullOrWhiteSpace([string]$script:InstallServiceStartMode) -and
             [string]$ServiceConfig.StartMode -cne [string]$script:InstallServiceStartMode)) {
-        throw 'SCM service account SID, account name, or start mode does not match protected installer migration authority.'
+        throw 'SCM service account name or start mode does not match protected installer migration authority.'
     }
     $expectedExecutable = [IO.Path]::GetFullPath((Join-Path ([string]$metadata.install_dir) 'wd-agent.exe'))
     $servicePath = [string]$ServiceConfig.PathName
