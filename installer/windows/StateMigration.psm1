@@ -1970,7 +1970,10 @@ function Invoke-WeDecentStateMigration {
         throw 'Protected installer metadata state_dir does not match the live SCM command-line state path.'
     }
 
-    $destinationParent = Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $destinationFull)
+    $destinationParent = Get-WeDecentMigrationCanonicalPath -Path (Split-Path -Parent $destinationFull)
+    $journalParent = Get-WeDecentMigrationCanonicalPath -Path (Split-Path -Parent $JournalPath)
+    [void](Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $destinationParent))
+    [void](Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $journalParent))
     $transactionId = [Guid]::NewGuid().ToString('D')
     $staging = Join-Path $destinationParent ('.wedecent-migration-' + $transactionId.Replace('-', ''))
     $staging = Get-WeDecentMigrationCanonicalPath -Path $staging
@@ -1978,21 +1981,28 @@ function Invoke-WeDecentStateMigration {
     $metadataFull = Get-WeDecentMigrationCanonicalPath -Path $MetadataPath
     $migrationPaths = @($sourceFull, $destinationFull, $staging, $journalFull, $metadataFull)
     [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
-    $directoryAnchors = @($sourceFull, $destinationParent, (Split-Path -Parent $JournalPath),
+    $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath $preflightServicePath -Source $sourceFull -Destination $destinationFull
+    if ($updatedPath -ceq $preflightServicePath) { throw 'Could not construct an unambiguous destination SCM command line.' }
+
+    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
+    # Parent creation and ACL changes occur only after metadata and live SCM authentication.
+    if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
+        New-Item -ItemType Directory -Path $destinationParent -ErrorAction Stop | Out-Null
+    }
+    if (-not (Test-Path -LiteralPath $journalParent -PathType Container)) {
+        New-Item -ItemType Directory -Path $journalParent -ErrorAction Stop | Out-Null
+    }
+    [void](Assert-WeDecentMigrationRealDirectory -Path $destinationParent)
+    [void](Assert-WeDecentMigrationRealDirectory -Path $journalParent)
+    [void](Set-WeDecentMigrationAdminDirectory -Path $journalParent -AgentPath $AgentPath)
+    [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
+    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
+    $directoryAnchors = @($sourceFull, $destinationParent, $journalParent,
         (Split-Path -Parent $MetadataPath))
     $identityAnchors = @($directoryAnchors + @($MetadataPath))
     $identitySnapshot = Get-WeDecentMigrationIdentitySnapshot -Paths $identityAnchors
     $directorySnapshot = Get-WeDecentMigrationIdentitySnapshot -Paths $directoryAnchors
     Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-    
-    $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath $preflightServicePath -Source $sourceFull -Destination $destinationFull
-    if ($updatedPath -ceq $preflightServicePath) { throw 'Could not construct an unambiguous destination SCM command line.' }
-
-    Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-    [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
-    [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $JournalPath) -AgentPath $AgentPath)
-    [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
-    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
 
     $sourceManifest = @(Get-WeDecentMigrationManifest -Root $sourceFull)
     $sourceIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $sourceFull
