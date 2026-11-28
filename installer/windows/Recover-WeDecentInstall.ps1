@@ -256,7 +256,8 @@ public static class WeDecentRecoveryScmDatabaseLock
 function Enter-RecoveryScmMutationLock {
     $manager = [WeDecentRecoveryScmDatabaseLock]::OpenSCManager($null, $null, 0x0009)
     if ($manager -eq [IntPtr]::Zero) {
-        throw [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error(), ('Unable to open SCM for exclusive service-configuration protection (Win32 ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error() + ').'))
+        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
+        throw [ComponentModel.Win32Exception]::new($errorCode, "Unable to open SCM for exclusive service-configuration protection (Win32 $errorCode).")
     }
     $lock = [WeDecentRecoveryScmDatabaseLock]::LockServiceDatabase($manager)
     if ($lock -eq [IntPtr]::Zero) {
