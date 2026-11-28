@@ -183,7 +183,7 @@ function Assert-AuthenticatedRecoveryServiceIdentity {
     $expectedSid = [Security.Principal.SecurityIdentifier]::new([string]$Metadata.service_account_sid).Value
     $metadataAccountName = Normalize-ServiceAccountName -Name ([string]$Metadata.service_account_name)
     $liveAccountName = Normalize-ServiceAccountName -Name ([string]$ServiceConfig.StartName)
-    $localAccountPrefix = "$env:COMPUTERNAME\\"
+    $localAccountPrefix = "$env:COMPUTERNAME\"
     if (-not $metadataAccountName.StartsWith($localAccountPrefix, [StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals($metadataAccountName, $liveAccountName, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Live SCM service account name does not exactly match protected installer metadata.'
