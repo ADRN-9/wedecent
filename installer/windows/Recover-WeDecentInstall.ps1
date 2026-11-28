@@ -952,7 +952,7 @@ try {
 } catch {
     $failure = $_
     $stopFailure = $null
-    try { Stop-AuthenticatedRecoveryService -Metadata $metadata } catch { $stopFailure = $_.Exception.Message }
+    try { Stop-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock } catch { $stopFailure = $_.Exception.Message }
     if ($null -ne $stopFailure) {
         throw "Previous binaries and metadata were restored, but service state is uncertain; no stop mutation was attempted without fresh identity/lock authorization. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
     }
