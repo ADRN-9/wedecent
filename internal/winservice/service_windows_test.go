@@ -3,6 +3,8 @@
 package winservice
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
@@ -49,5 +51,27 @@ func TestServiceManagementUsesLeastPrivilegeMasks(t *testing.T) {
 	}
 	if serviceStart&serviceAllAccess == 0 || serviceStop&serviceAllAccess == 0 {
 		t.Fatal("service operation masks are not represented in SERVICE_ALL_ACCESS")
+	}
+}
+
+
+func TestEnableServiceSIDConfiguresAndVerifiesSCMService(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("WeDecentSIDTest_%d", os.Getpid())
+	if err := Install(InstallOptions{
+		Name:       name,
+		Account:    "NT AUTHORITY\\LocalService",
+		Executable: executable,
+	}); err != nil {
+		t.Fatalf("install temporary SCM service: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = Uninstall(name)
+	})
+	if err := EnableServiceSID(name); err != nil {
+		t.Fatalf("enable and verify service SID: %v", err)
 	}
 }
