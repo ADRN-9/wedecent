@@ -377,6 +377,42 @@ function Assert-WeDecentRecoveryServiceIdentity {
     return $ServiceConfig
 }
 
+function Assert-WeDecentFreshServiceIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$ServiceConfig,
+        [Parameter(Mandatory = $true)][string]$AccountName,
+        [Parameter(Mandatory = $true)][string]$AccountSid,
+        [Parameter(Mandatory = $true)][string]$AgentPath,
+        [Parameter(Mandatory = $true)][string]$StatePath
+    )
+    $expectedSid = [Security.Principal.SecurityIdentifier]::new($AccountSid).Value
+    $expectedNameSid = Resolve-AccountSid $AccountName
+    $startName = ([string]$ServiceConfig.StartName).Trim()
+    if ($startName.StartsWith('.\', [StringComparison]::OrdinalIgnoreCase)) {
+        $startName = "$env:COMPUTERNAME\$($startName.Substring(2))"
+    }
+    $actualSid = Resolve-AccountSid $startName
+    if ($expectedNameSid -cne $expectedSid -or $actualSid -cne $expectedSid -or [string]$ServiceConfig.StartMode -cne 'Auto') {
+        throw 'Fresh SCM service account name, SID, or automatic start mode does not match the authenticated install request.'
+    }
+    $servicePath = [string]$ServiceConfig.PathName
+    $exeMatch = [regex]::Match($servicePath, '^"([^"]+)"(?:\s|$)|^(\S+)(?:\s|$)')
+    if (-not $exeMatch.Success) { throw 'Fresh SCM executable path is missing or ambiguous.' }
+    $actualExecutable = if ($exeMatch.Groups[1].Success) { $exeMatch.Groups[1].Value } else { $exeMatch.Groups[2].Value }
+    if ([IO.Path]::GetFullPath($actualExecutable) -ine [IO.Path]::GetFullPath($AgentPath)) {
+        throw 'Fresh SCM executable path does not match the authenticated install bundle destination.'
+    }
+    $statePattern = '(?i)(?<!\S)"--state=([^"]+)"|(?<!\S)--state="([^"]+)"|(?<!\S)--state=([^\s"]+)'
+    $stateMatches = [regex]::Matches($servicePath, $statePattern)
+    if ($stateMatches.Count -ne 1) { throw 'Fresh SCM command line must contain exactly one --state argument.' }
+    $stateMatch = $stateMatches[0]
+    $actualState = if ($stateMatch.Groups[1].Success) { $stateMatch.Groups[1].Value } elseif ($stateMatch.Groups[2].Success) { $stateMatch.Groups[2].Value } else { $stateMatch.Groups[3].Value }
+    if ([IO.Path]::GetFullPath($actualState) -ine [IO.Path]::GetFullPath($StatePath)) {
+        throw 'Fresh SCM --state path does not match the authenticated install request.'
+    }
+    return $ServiceConfig
+}
+
 function Read-WeDecentMetadata {
     $path = Get-WeDecentMetadataPath
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $null }
@@ -2382,10 +2418,7 @@ if ($service) {
         if (-not $finalService -or $finalService.State -ne 'Running') {
             throw "$ServiceName is not running after installation"
         }
-        $finalSid = Resolve-AccountSid $finalService.StartName
-        if ($finalSid -ne $localUser.SID.Value) {
-            throw 'Installed service account SID does not match the expected local account.'
-        }
+        [void](Assert-WeDecentFreshServiceIdentity -ServiceConfig $finalService -AccountName $ServiceAccountName -AccountSid $localUser.SID.Value -AgentPath $agentDestination -StatePath $StateDir)
 
         if ($AddToMachinePath) { Add-MachinePathEntry $InstallDir }
         Write-WeDecentMetadata -AccountSid $localUser.SID.Value -ManagedAccount $managed -AccountName $ServiceAccountName -Version $version
@@ -2396,6 +2429,8 @@ if ($service) {
         Invoke-RollbackStep 'remove partially created service' {
             $createdService = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
             if ($createdService) {
+                $createdServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+                [void](Assert-WeDecentFreshServiceIdentity -ServiceConfig $createdServiceConfig -AccountName $ServiceAccountName -AccountSid $localUser.SID.Value -AgentPath $agentDestination -StatePath $StateDir)
                 Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
                 & sc.exe delete $ServiceName | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
