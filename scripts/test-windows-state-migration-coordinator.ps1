@@ -11,7 +11,7 @@ $installerText = Get-Content -LiteralPath $installerPath -Raw
 $migrationCall = $installerText.IndexOf('Invoke-WeDecentStateMigration -Source $recordedStateDir', [StringComparison]::Ordinal)
 $binaryInstall = $installerText.IndexOf('Install-Binaries -SourceDirectory $BundlePath', [StringComparison]::Ordinal)
 if ($migrationCall -lt 0 -or $binaryInstall -lt 0 -or $migrationCall -ge $binaryInstall) { throw 'Installer does not execute migration before binary replacement.' }
-foreach ($required in @('Recover-WeDecentStateMigration','Test-WeDecentMetadataTrusted','Existing SCM command line does not match the authenticated state_dir metadata','Existing service state location is not authenticated by protected installer metadata','Legacy ProgramData service state exists; refusing to create a replacement identity')) {
+foreach ($required in @('Recover-WeDecentStateMigration','Test-WeDecentMetadataTrusted','Existing SCM command line does not match the authenticated state_dir metadata','Existing service state location is not authenticated by protected installer metadata','Legacy ProgramData service state exists; refusing to create a replacement identity','Protected metadata account name, live SCM account and local account SID do not agree')) {
     if (-not $installerText.Contains($required)) { throw "Installer migration integration is missing guard: $required" }
 }
 Import-Module $modulePath -Force
@@ -200,7 +200,8 @@ function New-MigrationFixture {
     $originalMetadataJson = ConvertTo-Json -InputObject $metadata -Depth 10
     [IO.File]::WriteAllText($metadataPath, $originalMetadataJson)
     Set-WeDecentMigrationAdminFileAcl -Path $metadataPath
-    $originalServicePath = '"' + $agentPath + '" serve "--state=' + $source + '"'
+    $serviceExecutablePath = Join-Path $root 'wd-agent.exe'
+    $originalServicePath = '"' + $serviceExecutablePath + '" serve "--state=' + $source + '"'
     $global:WeDecentMigrationMockService = [pscustomobject]@{ Name=$serviceName; StartName=$serviceAccount; StartMode='Manual'; State='Running'; PathName=$originalServicePath }
     $global:WeDecentMigrationMockStatus = 'Running'
     $manifest = Get-WeDecentMigrationManifest -Root $source
@@ -2043,10 +2044,16 @@ try {
     $installerText = Get-Content -LiteralPath $installerPath -Raw
     $installerLockCall = [regex]::Match($installerText, '(?m)^Acquire-WeDecentInstallerLock\s*$')
     $installerMigrationRecovery = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
+    $moduleText = Get-Content -LiteralPath $modulePath -Raw
     if (-not $installerLockCall.Success -or $installerMigrationRecovery -lt 0 -or
         $installerLockCall.Index -ge $installerMigrationRecovery -or
-        -not $installerText.Contains('-ExpectedDestinationPath $StateDir -InstallerLockHeld')) {
-        throw 'Production installer does not acquire and pass the shared installer lock before bound migration recovery.'
+        -not $installerText.Contains('Import-Module $migrationModule -ErrorAction Stop') -or
+        -not $installerText.Contains('Enter-WeDecentMigrationInstallerLock') -or
+        -not $installerText.Contains('Exit-WeDecentMigrationInstallerLock') -or
+        $moduleText.Contains('InstallerLockHeld') -or
+        -not $moduleText.Contains('function Enter-WeDecentMigrationInstallerLock') -or
+        -not $moduleText.Contains('function Exit-WeDecentMigrationInstallerLock')) {
+        throw 'Production installer or migration module does not enforce the shared non-bypassable installer lock.'
     }
     Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
 } finally { Remove-Item -LiteralPath $installerLockContentionFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
