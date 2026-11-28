@@ -1124,6 +1124,7 @@ try {
         $mainFileHashesBefore[$path] = Get-TestHash $path
     }
     $script:mainInstallerScmMutationCalls = 0
+    function Get-Service { [pscustomobject]@{ Status = 'Running' } }
     function Stop-Service { $script:mainInstallerScmMutationCalls++ }
     function Start-Service { $script:mainInstallerScmMutationCalls++ }
     $mainMismatchRejected = $false
@@ -1134,6 +1135,7 @@ try {
     } catch {
         $mainMismatchRejected = $true
     } finally {
+        Remove-Item Function:\Get-Service -ErrorAction SilentlyContinue
         Remove-Item Function:\Stop-Service -ErrorAction SilentlyContinue
         Remove-Item Function:\Start-Service -ErrorAction SilentlyContinue
         $env:ProgramData = $savedProgramData
@@ -1169,6 +1171,7 @@ try {
         else { $caseMetadata.service_account_sid = 'not-a-sid' }
         Write-TestJson -Path $mainMetadataPath -Value $caseMetadata
         $script:mainInstallerScmMutationCalls = 0
+        function Get-Service { [pscustomobject]@{ Status = 'Running' } }
         function Stop-Service { $script:mainInstallerScmMutationCalls++ }
         function Start-Service { $script:mainInstallerScmMutationCalls++ }
         $caseRejected = $false
@@ -1177,6 +1180,7 @@ try {
         } catch {
             $caseRejected = $true
         } finally {
+            Remove-Item Function:\Get-Service -ErrorAction SilentlyContinue
             Remove-Item Function:\Stop-Service -ErrorAction SilentlyContinue
             Remove-Item Function:\Start-Service -ErrorAction SilentlyContinue
         }
