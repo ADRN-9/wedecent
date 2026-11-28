@@ -259,13 +259,20 @@ func authenticateClient(pipe windows.Handle, pid uint32) (bool, error) {
 			if err != nil {
 				return false, err
 			}
-			if _, err := verifyAuthenticodePublisher(imagePath); err != nil {
+			thumbprint, err := verifyAuthenticodePublisher(imagePath)
+			if err != nil {
 				return false, fmt.Errorf("pipe client executable failed Authenticode verification: %w", err)
 			}
+			policy, err := loadPublisherPolicy()
+			if err != nil {
+				return false, fmt.Errorf("load protected publisher policy: %w", err)
+			}
+			if thumbprint != policy.PublisherThumbprint {
+				return false, errors.New("pipe client signer is not the provisioned WeDecent publisher")
+			}
 
-			// Signature validity is necessary but not sufficient: until the signer
-			// thumbprint is compared with a protected, human-provisioned policy,
-			// deny every caller.
+			// The current policy authenticates only the executable publisher.
+			// Additional IPC-specific authorization remains intentionally denied.
 			return false, nil
 		},
 	)
