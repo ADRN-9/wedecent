@@ -2074,6 +2074,7 @@ if ($metadata) {
         throw 'Protected installer metadata does not authenticate the requested installation directory; refusing migration recovery or installer state changes.'
     }
 }
+$service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
 if ($service) {
     if (-not $metadataTrusted -or [string]::IsNullOrWhiteSpace([string]$metadata.service_account_sid) -or
         [string]::IsNullOrWhiteSpace([string]$metadata.service_account_name)) {
