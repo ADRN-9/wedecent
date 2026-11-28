@@ -1016,11 +1016,17 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         throw 'Protected installer metadata does not authenticate this migration service or its installation/state paths.'
     }
     $metadataSidText = [string]$metadata.service_account_sid
+    if ([string]::IsNullOrWhiteSpace($metadataSidText)) {
+        throw 'Protected installer metadata service_account_sid is missing.'
+    }
     $metadataSid = ConvertTo-WeDecentMigrationSid -Sid $metadataSidText
     $journalSid = ConvertTo-WeDecentMigrationSid -Sid ([string]$Journal.service_sid)
     $originalMetadata = [string]$Journal.original_metadata_json
     Assert-WeDecentMigrationStrictJson -Json $originalMetadata -Description 'Migration original installer metadata'
     $original = $originalMetadata | ConvertFrom-Json -ErrorAction Stop
+    if ([string]::IsNullOrWhiteSpace([string]$original.service_account_sid)) {
+        throw 'Original protected installer metadata service_account_sid is missing.'
+    }
     $originalSid = ConvertTo-WeDecentMigrationSid -Sid ([string]$original.service_account_sid)
     if ($metadataSid.Value -cne $journalSid.Value -or $originalSid.Value -cne $journalSid.Value -or
         [string]$original.service_name -cne $ServiceName) {
