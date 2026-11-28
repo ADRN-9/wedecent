@@ -158,6 +158,74 @@ function Resolve-ServiceAccountSid {
     }
 }
 
+function Normalize-ServiceAccountName {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    $value = $Name.Trim()
+    if ([string]::IsNullOrWhiteSpace($value)) { throw 'Service account name is empty.' }
+    if ($value.StartsWith('.\\', [StringComparison]::Ordinal)) {
+        return "$env:COMPUTERNAME\\$($value.Substring(2))"
+    }
+    if (-not $value.Contains('\\')) { return "$env:COMPUTERNAME\\$value" }
+    return $value
+}
+
+function Assert-AuthenticatedRecoveryServiceIdentity {
+    param(
+        [Parameter(Mandatory = $true)]$Metadata,
+        [Parameter(Mandatory = $true)]$ServiceConfig
+    )
+    if ([string]$Metadata.service_name -cne $ServiceName -or
+        [IO.Path]::GetFullPath([string]$Metadata.install_dir) -ine $InstallDir -or
+        [IO.Path]::GetFullPath([string]$Metadata.state_dir) -ine $StateDir) {
+        throw 'Protected installer metadata does not authenticate the live recovery service paths.'
+    }
+    $expectedSid = [Security.Principal.SecurityIdentifier]::new([string]$Metadata.service_account_sid).Value
+    $metadataAccountName = Normalize-ServiceAccountName -Name ([string]$Metadata.service_account_name)
+    $liveAccountName = Normalize-ServiceAccountName -Name ([string]$ServiceConfig.StartName)
+    if (-not [string]::Equals($metadataAccountName, $liveAccountName, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM service account name does not exactly match protected installer metadata.'
+    }
+    $metadataAccountSid = Resolve-ServiceAccountSid -StartName $metadataAccountName
+    $liveAccountSid = Resolve-ServiceAccountSid -StartName $liveAccountName
+    if ($expectedSid -in @('S-1-5-18', 'S-1-5-19', 'S-1-5-20') -or
+        -not [string]::Equals($metadataAccountSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($liveAccountSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM service account SID does not match the dedicated account authenticated by protected installer metadata.'
+    }
+    if ([string]$ServiceConfig.StartMode -cne 'Auto') {
+        throw 'Live SCM service start mode does not match the supported automatic service configuration.'
+    }
+
+    $expectedExecutable = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
+    $servicePath = [string]$ServiceConfig.PathName
+    $exeMatch = [regex]::Match($servicePath, '^"([^"]+)"(?:\\s|$)|^(\\S+)(?:\\s|$)')
+    if (-not $exeMatch.Success) { throw 'Live SCM executable path is missing or ambiguous.' }
+    $actualExecutable = if ($exeMatch.Groups[1].Success) { $exeMatch.Groups[1].Value } else { $exeMatch.Groups[2].Value }
+    if (-not [string]::Equals([IO.Path]::GetFullPath($actualExecutable), $expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM executable path does not match protected installer metadata.'
+    }
+
+    $statePattern = '(?i)(?<!\\S)"--state=([^"]+)"|(?<!\\S)--state="([^"]+)"|(?<!\\S)--state=([^\\s"]+)'
+    $stateMatches = [regex]::Matches($servicePath, $statePattern)
+    if ($stateMatches.Count -ne 1) { throw 'Live SCM command line must contain exactly one authenticated --state argument.' }
+    $stateMatch = $stateMatches[0]
+    $actualState = if ($stateMatch.Groups[1].Success) { $stateMatch.Groups[1].Value } elseif ($stateMatch.Groups[2].Success) { $stateMatch.Groups[2].Value } else { $stateMatch.Groups[3].Value }
+    if (-not [string]::Equals([IO.Path]::GetFullPath($actualState), $StateDir, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM state path does not match protected installer metadata.'
+    }
+    return $ServiceConfig
+}
+
+function Get-AuthenticatedRecoveryServiceSnapshot {
+    param([Parameter(Mandatory = $true)]$Metadata)
+    $config = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+    if ($null -eq $config) { throw 'Live SCM service configuration is unavailable.' }
+    [void](Assert-AuthenticatedRecoveryServiceIdentity -Metadata $Metadata -ServiceConfig $config)
+    $service = Get-Service -Name $ServiceName -ErrorAction Stop
+    if ($null -eq $service) { throw 'Live SCM service status is unavailable.' }
+    return [pscustomobject]@{ Config = $config; Service = $service }
+}
+
 function Restore-TransactionRecoveryScript {
     param([Parameter(Mandatory = $true)]$Journal)
     $target = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
