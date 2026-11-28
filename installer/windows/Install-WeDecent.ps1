@@ -2074,6 +2074,18 @@ if ($metadata) {
         throw 'Protected installer metadata does not authenticate the requested installation directory; refusing migration recovery or installer state changes.'
     }
 }
+if ($service) {
+    if (-not $metadataTrusted -or [string]::IsNullOrWhiteSpace([string]$metadata.service_account_sid) -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.service_account_name)) {
+        throw 'Existing SCM service requires ACL-protected service-account identity metadata before upgrade.'
+    }
+    $metadataSid = [string]$metadata.service_account_sid
+    $metadataNameSid = Resolve-AccountSid ([string]$metadata.service_account_name)
+    $liveServiceSid = Resolve-AccountSid ([string]$service.StartName)
+    if ($metadataNameSid -cne $metadataSid -or $liveServiceSid -cne $metadataSid) {
+        throw 'Live SCM service-account SID must exactly match ACL-protected installer metadata before any upgrade recovery or mutation.'
+    }
+}
 if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
     [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName -ExpectedDestinationPath $StateDir)
 }
