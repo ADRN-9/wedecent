@@ -1186,6 +1186,14 @@ try {
         [IO.File]::WriteAllBytes($mainMetadataPath, $mainOriginalMetadataBytes)
         Set-TestTrustedAcl -Path $mainMetadataPath
     }
+    foreach ($path in $mainFileHashesBefore.Keys) {
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf) -or (Get-TestHash $path) -ne $mainFileHashesBefore[$path]) {
+            throw "Missing/malformed SCM SID rejection mutated protected installer/recovery state: $path"
+        }
+    }
+    if ($script:mainInstallerScmMutationCalls -ne 0) {
+        throw 'Missing/malformed SCM SID rejection caused an SCM stop/start side effect.'
+    }
     $env:ProgramData = $savedProgramData
     Write-Host 'Production main-installer recovery rejected missing, malformed, and mismatched service identities before SCM or filesystem side effects.'
     $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
