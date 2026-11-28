@@ -333,9 +333,10 @@ func EnableServiceSID(name string) error {
 		return winCallError("ChangeServiceConfig2W(service SID)", callErr)
 	}
 	var verified serviceSIDInfo
+	var needed uint32
 	result, _, callErr = procQueryServiceConfig2W.Call(
 		h, serviceConfigSIDInfo, uintptr(unsafe.Pointer(&verified)),
-		unsafe.Sizeof(verified), 0,
+		unsafe.Sizeof(verified), uintptr(unsafe.Pointer(&needed)),
 	)
 	if result == 0 {
 		return winCallError("QueryServiceConfig2W(service SID)", callErr)
