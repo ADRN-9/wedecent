@@ -941,17 +941,19 @@ function Acquire-WeDecentInstallerLock {
     if (-not $rootInfo.PSIsContainer -or ($rootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installer lock directory must be a regular non-reparse directory.' }
     Protect-WeDecentMetadataAcl $root
     $path = Join-Path $root 'installer.lock'
+    $lockCreated = $false
     if (-not (Test-Path -LiteralPath $path)) {
         try {
             $bootstrap = [IO.File]::Open($path, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
             $bootstrap.Dispose()
+            $lockCreated = $true
         } catch [IO.IOException] {
             if (-not (Test-Path -LiteralPath $path)) { throw }
         }
     }
     $info = Get-Item -LiteralPath $path -Force -ErrorAction Stop
     if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installer lock path is not a regular non-reparse file.' }
-    Protect-WeDecentMetadataAcl $path
+    if ($lockCreated) { Protect-WeDecentMetadataAcl $path }
     if (-not (Test-WeDecentMetadataTrusted -Path $path)) { throw 'Installer lock file ACL verification failed.' }
     try {
         # Kernel releases exclusive sharing when the owner exits; stale contents never retain ownership.
