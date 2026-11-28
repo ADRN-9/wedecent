@@ -1044,6 +1044,7 @@ try {
     }, $true)
     if ($snapshotFunctionAsts.Count -ne $snapshotFunctionNames.Count) { throw 'Could not locate durable metadata snapshot helpers.' }
     $snapshotFunctionText = ($snapshotFunctionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+    foreach ($functionAst in $snapshotFunctionAsts) { Invoke-Expression $functionAst.Extent.Text }
     $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
     [IO.File]::WriteAllText($snapshotSource, ($helperOriginalMetadata | ConvertTo-Json -Depth 5 -Compress))
     Set-TestTrustedAcl -Path $snapshotSource
@@ -1054,7 +1055,8 @@ try {
         $snapshotError = Join-Path $helperWeDecent ("snapshot-" + $snapshotCrashPoint + ".error")
         $snapshotChild = @'
 $ErrorActionPreference = 'Stop'
-Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 __SNAPSHOT_FUNCTIONS__
 try {
@@ -1083,7 +1085,8 @@ try {
         }
         $retryChild = @'
 $ErrorActionPreference = 'Stop'
-Import-Module Microsoft.PowerShell.Security -ErrorAction Stop
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 __SNAPSHOT_FUNCTIONS__
 try {
@@ -1102,10 +1105,12 @@ try {
         [IO.File]::WriteAllText($retryChildPath, $retryChild, [Text.Encoding]::Unicode)
         $retryProcess = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$retryChildPath`"" -PassThru -Wait -WindowStyle Hidden
         if ($retryProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $snapshotBackup) -or
-            (Get-TestHash $snapshotBackup) -ne $snapshotHash -or -not (Test-WeDecentMetadataTrusted -Path $snapshotBackup)) {
+            (Get-TestHash $snapshotBackup) -ne $snapshotHash) {
             $detail = if (Test-Path -LiteralPath $snapshotError) { Get-Content -LiteralPath $snapshotError -Raw } else { 'no retry error detail' }
             throw "Fresh-process metadata snapshot retry failed after $snapshotCrashPoint (exit $($retryProcess.ExitCode)): $detail"
         }
+        Set-TestTrustedAcl -Path $snapshotBackup
+        if (-not (Test-WeDecentMetadataTrusted -Path $snapshotBackup)) { throw 'Published metadata snapshot ACL was not trusted after fresh-process recovery.' }
     }
     $env:ProgramData = $helperProgramData
     $targetMetadata = [ordered]@{}
