@@ -1955,7 +1955,7 @@ $recoveryRejectedCases = @(
             $metadata.state_dir = $fixture.Destination
             $journal.original_metadata_json = ConvertTo-Json -InputObject $metadata -Depth 10
         }
-    }
+    },
     [pscustomobject]@{
         Name = 'missing protected service-account SID'
         ExpectedError = '*service_account_sid is missing*'
