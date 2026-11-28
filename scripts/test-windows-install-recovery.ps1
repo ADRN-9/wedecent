@@ -156,8 +156,9 @@ if (-not $recoveryText.Contains('FinalizeCommitted') -or
     -not $recoveryText.Contains('Live SCM service start mode is unsupported for authenticated recovery.') -or
     -not $recoveryText.Contains('$ServiceConfig.StartName') -or
     -not $recoveryText.Contains('SCM did not confirm the service stopped.') -or
-    -not $recoveryText.Contains('$recoveryScmMutationLock = Enter-RecoveryScmMutationLock') -or
-    -not $recoveryText.Contains('Exit-RecoveryScmMutationLock -Handle $recoveryScmMutationLock') -or
+    $recoveryText.Contains('WeDecentRecoveryScmDatabaseLock') -or
+    $recoveryText.Contains('Enter-RecoveryScmMutationLock') -or
+    -not $recoveryText.Contains('LockServiceDatabase is a compatibility no-op on Windows Vista and later.') -or
     -not $recoveryText.Contains('journalMetadataBackup') -or
     -not $recoveryText.Contains('Older transaction journal is not durably committed.') -or
     -not $recoveryText.Contains('Restored installer metadata failed its original digest check.')) {
@@ -557,13 +558,14 @@ try {
         $initialIdentityIndex -ge $stopWrapperIndex -or $initialIdentityIndex -ge $firstRecoveryFileMutation) {
         throw 'Standalone recovery must reject a mismatched live service identity before SCM or protected-file side effects.'
     }
-    $scmLockStart = $recoverySource.IndexOf('$recoveryScmMutationLock = Enter-RecoveryScmMutationLock', $pendingRecoveryStart, [StringComparison]::Ordinal)
-    $scmLockEnd = $recoverySource.IndexOf('Exit-RecoveryScmMutationLock -Handle $recoveryScmMutationLock', $scmLockStart, [StringComparison]::Ordinal)
-    $serviceRestartCall = $recoverySource.IndexOf('Start-AuthenticatedRecoveryService -Metadata $metadata', $scmLockStart, [StringComparison]::Ordinal)
-    if ($scmLockStart -lt 0 -or $scmLockEnd -lt 0 -or $serviceRestartCall -lt 0 -or
-        $scmLockStart -ge $initialIdentityIndex -or $scmLockEnd -le $serviceRestartCall -or
-        $scmLockStart -ge $firstRecoveryFileMutation) {
-        throw 'Standalone recovery must hold SCM configuration protection from live identity admission through rollback file changes and service restart.'
+    if ($recoverySource.Contains('WeDecentRecoveryScmDatabaseLock') -or
+        $recoverySource.Contains('Enter-RecoveryScmMutationLock') -or
+        $recoverySource.Contains('UnlockServiceDatabase')) {
+        throw 'Standalone recovery must not rely on the obsolete SCM database lock as an external configuration fence.'
+    }
+    $serviceRestartCall = $recoverySource.IndexOf('Start-AuthenticatedRecoveryService -Metadata $metadata', $initialIdentityIndex, [StringComparison]::Ordinal)
+    if ($serviceRestartCall -lt 0 -or $initialIdentityIndex -ge $firstRecoveryFileMutation) {
+        throw 'Standalone recovery must authenticate the service before protected rollback mutations and restart.'
     }
     foreach ($mutationFunction in @(
         @{ Name = 'Stop-AuthenticatedRecoveryService'; Mutation = 'Stop-Service -Name $ServiceName' },
@@ -573,11 +575,10 @@ try {
         $functionEnd = $recoverySource.IndexOf(([Environment]::NewLine + 'function '), $functionStart + 1, [StringComparison]::Ordinal)
         if ($functionEnd -lt 0) { $functionEnd = $recoverySource.Length }
         $functionBody = $recoverySource.Substring($functionStart, $functionEnd - $functionStart)
-        $lockIndex = $functionBody.IndexOf('Enter-RecoveryScmMutationLock', [StringComparison]::Ordinal)
         $freshIdentityIndex = $functionBody.IndexOf('Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata', [StringComparison]::Ordinal)
         $scmMutationIndex = $functionBody.IndexOf($mutationFunction.Mutation, [StringComparison]::Ordinal)
-        if ($lockIndex -lt 0 -or $freshIdentityIndex -lt $lockIndex -or $scmMutationIndex -lt $freshIdentityIndex) {
-            throw "Standalone recovery $($mutationFunction.Name) must lock SCM and revalidate immediately before mutation."
+        if ($freshIdentityIndex -lt 0 -or $scmMutationIndex -lt $freshIdentityIndex) {
+            throw "Standalone recovery $($mutationFunction.Name) must revalidate the complete live identity immediately before mutation."
         }
     }
     $successful = New-TransactionFixture
