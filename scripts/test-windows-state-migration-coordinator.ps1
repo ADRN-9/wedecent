@@ -172,6 +172,58 @@ function Assert-MigrationRecoveryNoSideEffects {
         if ([string]$after.$field -cne [string]$Before.$field) { throw "Rejected $Case changed mocked SCM/service field $field." }
     }
 }
+function Get-ForwardMigrationSideEffectSnapshot {
+    param([Parameter(Mandatory = $true)]$Fixture)
+    return [pscustomobject]@{
+        Root = Get-MigrationTreeSnapshot -Path $Fixture.Root
+        MetadataBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Fixture.MetadataPath))
+        JournalExists = Test-Path -LiteralPath $Fixture.Journal
+        JournalBytes = if (Test-Path -LiteralPath $Fixture.Journal) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($Fixture.Journal)) } else { '<missing>' }
+        ServicePath = [string]$global:WeDecentMigrationMockService.PathName
+        ServiceStartName = [string]$global:WeDecentMigrationMockService.StartName
+        ServiceStartMode = [string]$global:WeDecentMigrationMockService.StartMode
+        ServiceState = [string]$global:WeDecentMigrationMockService.State
+        StartCount = [int]$global:WeDecentMigrationStartCount
+        StopCount = [int]$global:WeDecentMigrationStopCount
+        ConfigCount = [int]$global:WeDecentMigrationScmConfigCount
+    }
+}
+function Assert-ForwardMigrationNoSideEffects {
+    param([Parameter(Mandatory = $true)]$Before, [Parameter(Mandatory = $true)]$After, [Parameter(Mandatory = $true)][string]$Case)
+    foreach ($field in @('Root','MetadataBytes','JournalExists','JournalBytes','ServicePath','ServiceStartName','ServiceStartMode','ServiceState','StartCount','StopCount','ConfigCount')) {
+        if ([string]$Before.$field -cne [string]$After.$field) { throw "Rejected forward migration $Case changed $field." }
+    }
+}
+function Invoke-MigrationLockContentionChild {
+    param([Parameter(Mandatory = $true)][string]$Command)
+    $moduleLiteral = "'" + $modulePath.Replace("'", "''") + "'"
+    $scriptText = @"
+Import-Module $moduleLiteral -ErrorAction Stop
+try {
+    $Command
+} catch {
+    if ($_.Exception.Message -like '*owns the machine-wide installation lock*') { exit 0 }
+    Write-Error $_
+    exit 5
+}
+exit 6
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($scriptText))
+    $psi = [Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = (Get-Process -Id $PID -ErrorAction Stop).Path
+    $psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $encoded
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($psi)
+    try {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Competing migration process was not rejected by the shared lock (exit=$($process.ExitCode)): $stdout $stderr" }
+    } finally { $process.Dispose() }
+}
+
 function New-MigrationFixture {
     $root = Join-Path $env:ProgramFiles ('WeDecentMigrationCoordinator-' + [Guid]::NewGuid().ToString('N'))
     $source = Join-Path $root 'source-state'
@@ -244,6 +296,63 @@ function Assert-MigrationJournalRejected {
     catch { $rejected = $true }
     if (-not $rejected) { throw "Migration journal parser accepted $Case." }
     Write-Host "Migration journal parser rejects $Case PASS"
+}
+
+$forwardAuthorizationCases = @(
+    [pscustomobject]@{
+        Name = 'mismatched protected service-account SID'
+        ExpectedError = '*Live SCM service-account SID and requested migration SID must exactly match protected installer metadata*'
+        Mutate = {
+            param($fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.service_account_sid = 'S-1-5-18'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'metadata state path not bound to source'
+        ExpectedError = '*Protected installer metadata state_dir does not authenticate the forward migration source*'
+        Mutate = {
+            param($fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.state_dir = Join-Path $fixture.Root 'unauthorized-state'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM state path differs from protected metadata'
+        ExpectedError = '*Protected installer metadata state_dir does not match the live SCM command-line state path*'
+        Mutate = {
+            param($fixture)
+            $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'wd-agent.exe') + '" serve "--state=' + (Join-Path $fixture.Root 'other-state') + '"'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM executable differs from installation agent'
+        ExpectedError = '*Live SCM executable path does not match the authenticated installation agent*'
+        Mutate = {
+            param($fixture)
+            $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'other-agent.exe') + '" serve "--state=' + $fixture.Source + '"'
+        }
+    }
+)
+foreach ($case in $forwardAuthorizationCases) {
+    $fixture = New-MigrationFixture
+    try {
+        & $case.Mutate $fixture
+        $before = Get-ForwardMigrationSideEffectSnapshot -Fixture $fixture
+        $rejected = $false
+        try {
+            [void](Invoke-WeDecentStateMigration -Source $fixture.Source -Destination $fixture.Destination -AgentPath $agentPath -ServiceName $fixture.ServiceName -ServiceSid $fixture.ServiceSid -MetadataPath $fixture.MetadataPath -JournalPath $fixture.Journal)
+        } catch {
+            $rejected = $_.Exception.Message -like $case.ExpectedError
+            if (-not $rejected) { throw }
+        }
+        if (-not $rejected) { throw "Forward migration accepted $($case.Name)." }
+        $after = Get-ForwardMigrationSideEffectSnapshot -Fixture $fixture
+        Assert-ForwardMigrationNoSideEffects -Before $before -After $after -Case $case.Name
+        Write-Host "Forward migration rejects $($case.Name) before filesystem, ACL, journal, or SCM mutation PASS"
+    } finally { Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 $journalParserFixture = New-MigrationFixture
