@@ -907,6 +907,43 @@ function Publish-WeDecentBinaryBackup {
     }
 }
 
+function Publish-WeDecentMetadataSnapshot {
+    param([Parameter(Mandatory = $true)][string]$Source, [Parameter(Mandatory = $true)][string]$BackupPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedSHA256, [scriptblock]$CrashHook)
+    $sourceInfo = Get-Item -LiteralPath $Source -Force -ErrorAction Stop
+    if ($sourceInfo.PSIsContainer -or ($sourceInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        (Get-Sha256FileHash $Source) -ne $ExpectedSHA256) {
+        throw 'Installer metadata source changed before its durable snapshot was published.'
+    }
+    $stage = "$BackupPath.staging"
+    if (Test-Path -LiteralPath $BackupPath) {
+        $backupInfo = Get-Item -LiteralPath $BackupPath -Force -ErrorAction Stop
+        if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not (Test-WeDecentMetadataTrusted -Path $BackupPath) -or (Get-Sha256FileHash $BackupPath) -ne $ExpectedSHA256) {
+            throw 'Existing installer metadata snapshot is unsafe or corrupted.'
+        }
+    } else {
+        if (Test-Path -LiteralPath $stage) {
+            $stageInfo = Get-Item -LiteralPath $stage -Force -ErrorAction Stop
+            if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'Interrupted installer metadata snapshot staging path is unsafe.'
+            }
+            if ((Get-Sha256FileHash $Source) -ne $ExpectedSHA256) {
+                throw 'Cannot discard interrupted metadata staging after the original source changed.'
+            }
+            Remove-Item -LiteralPath $stage -Force -ErrorAction Stop
+        }
+        Copy-WeDecentFileDurably -Source $Source -Destination $stage -ExpectedSHA256 $ExpectedSHA256 -CrashHook $CrashHook
+        [IO.File]::Move($stage, $BackupPath)
+        if ($CrashHook) { & $CrashHook 'after-metadata-publish' }
+    }
+    Protect-WeDecentMetadataAcl $BackupPath
+    Flush-WeDecentFileToDisk -Path $BackupPath
+    if (-not (Test-WeDecentMetadataTrusted -Path $BackupPath) -or (Get-Sha256FileHash $BackupPath) -ne $ExpectedSHA256) {
+        throw 'Published installer metadata snapshot failed final ACL or integrity verification.'
+    }
+}
+
 function Publish-TransactionRecoveryScriptBackup {
     param([scriptblock]$CrashHook)
     $journal = $script:InstallJournal
@@ -1564,11 +1601,7 @@ function Install-Binaries {
             throw 'Transaction-specific installer metadata snapshot path already exists.'
         }
         $metadataOriginalHash = Get-Sha256FileHash $metadataPath
-        Copy-Item -LiteralPath $metadataPath -Destination $metadataBackupPath
-        if ((Get-Sha256FileHash $metadataBackupPath) -ne $metadataOriginalHash) {
-            throw 'Installer metadata snapshot failed integrity verification.'
-        }
-        Protect-WeDecentMetadataAcl $metadataBackupPath
+        Publish-WeDecentMetadataSnapshot -Source $metadataPath -BackupPath $metadataBackupPath -ExpectedSHA256 $metadataOriginalHash
     }
     $recoveryScriptPath = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
     $recoveryScriptInfo = Get-Item -LiteralPath $recoveryScriptPath -Force -ErrorAction SilentlyContinue
