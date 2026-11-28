@@ -34,6 +34,13 @@ if ($migrationCall -lt 0 -or $binaryInstall -lt 0 -or $migrationCall -ge $binary
     throw 'Installer must authenticate normal-upgrade service identity before recovery and execute migration before binary replacement.'
 }
 if ($installerText.Contains('-InstallerLockHeld')) { throw 'Installer must not expose a caller-controlled migration lock bypass.' }
+$migrationBlockStart = $installerText.IndexOf('if ($needsStateMigration) {', [StringComparison]::Ordinal)
+if ($migrationBlockStart -lt 0 -or $migrationCall -le $migrationBlockStart) { throw 'Installer migration block is missing its authenticated module entrypoint.' }
+$migrationPreflightText = $installerText.Substring($migrationBlockStart, $migrationCall - $migrationBlockStart)
+if ($migrationPreflightText.Contains('Set-WeDecentMigrationAdminDirectory') -or
+    $migrationPreflightText.Contains('New-Item -ItemType Directory')) {
+    throw 'Installer must not create migration parents or change ACLs before the migration module authenticates metadata and live SCM identity.'
+}
 foreach ($required in @('Recover-WeDecentStateMigration','Test-WeDecentMetadataTrusted','Existing SCM command line does not match the authenticated state_dir metadata','Existing service state location is not authenticated by protected installer metadata','Legacy ProgramData service state exists; refusing to create a replacement identity','Protected metadata account name, live SCM account and local account SID do not agree')) {
     if (-not $installerText.Contains($required)) { throw "Installer migration integration is missing guard: $required" }
 }
