@@ -322,7 +322,7 @@ function Assert-WeDecentRecoveryServiceIdentity {
     if ($null -eq $metadata -or
         [string]$metadata.service_name -cne $ServiceName -or
         [IO.Path]::GetFullPath([string]$metadata.install_dir) -ine [IO.Path]::GetFullPath($InstallDir) -or
-        [IO.Path]::GetFullPath([string]$metadata.state_dir) -ine [IO.Path]::GetFullPath($StateDir)) {
+        [string]::IsNullOrWhiteSpace([string]$metadata.state_dir)) {
         throw 'Interrupted-install recovery metadata does not authenticate this service and its protected paths.'
     }
     $expectedSidText = [string]$metadata.service_account_sid
@@ -1520,7 +1520,7 @@ function Recover-InterruptedInstallerTransactions {
             [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig $serviceConfig)
             $expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
             $expectedServicePath = '"' + $expectedAgent + '"'
-            $stateArgumentPattern = '(?:^|\\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\\s|$)'
+            $stateArgumentPattern = '(?:^|\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\s|$)'
             if (-not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
                 -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
                 throw 'SCM service identity does not match the authenticated installer paths.'
