@@ -25,6 +25,8 @@ const (
 )
 
 var (
+	kernel32Publisher = syscall.NewLazyDLL("kernel32.dll")
+	procQueryFullProcessImageName = kernel32Publisher.NewProc("QueryFullProcessImageNameW")
 	wintrustDLL                         = syscall.NewLazyDLL("wintrust.dll")
 	procWinVerifyTrust                  = wintrustDLL.NewProc("WinVerifyTrust")
 	procWTHelperProvDataFromStateData   = wintrustDLL.NewProc("WTHelperProvDataFromStateData")
@@ -113,10 +115,30 @@ func verifyAuthenticodePublisher(path string) (string, error) {
 		Data3: 0x11D0,
 		Data4: [8]byte{0x8C, 0xC2, 0x00, 0xC0, 0x4F, 0xC2, 0x95, 0xEE},
 	}
+	file, err := windows.CreateFile(
+		filePath,
+		windows.GENERIC_READ,
+		windows.FILE_SHARE_READ,
+		nil,
+		windows.OPEN_EXISTING,
+		windows.FILE_ATTRIBUTE_NORMAL|windows.FILE_FLAG_OPEN_REPARSE_POINT,
+		0,
+	)
+	if err != nil {
+		return "", fmt.Errorf("open broker executable without replacement sharing: %w", err)
+	}
+	defer windows.CloseHandle(file)
+	var fileInfoByHandle windows.ByHandleFileInformation
+	if err := windows.GetFileInformationByHandle(file, &fileInfoByHandle); err != nil {
+		return "", fmt.Errorf("inspect broker executable handle: %w", err)
+	}
+	if fileInfoByHandle.FileAttributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+		return "", errors.New("broker executable must not be a reparse point")
+	}
 	fileInfo := winTrustFileInfo{
 		Size:     uint32(unsafe.Sizeof(winTrustFileInfo{})),
 		FilePath: filePath,
-		File:     windows.InvalidHandle,
+		File:     file,
 	}
 	data := winTrustData{
 		Size:             uint32(unsafe.Sizeof(winTrustData{})),
@@ -178,4 +200,23 @@ func verifyAuthenticodePublisher(path string) (string, error) {
 		return "", fmt.Errorf("read Authenticode signer certificate thumbprint: %w", callErr)
 	}
 	return strings.ToUpper(hex.EncodeToString(hash[:])), nil
+}
+
+
+// processImagePath returns the executable path associated with the still-open
+// kernel process handle. The caller must keep that handle open through signature
+// verification to prevent PID reuse from changing the process being inspected.
+func processImagePath(process windows.Handle) (string, error) {
+	buf := make([]uint16, 32768)
+	size := uint32(len(buf))
+	ok, _, callErr := procQueryFullProcessImageName.Call(
+		uintptr(process),
+		0,
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if ok == 0 || size == 0 || size > uint32(len(buf)) {
+		return "", fmt.Errorf("query pipe client executable path: %w", callErr)
+	}
+	return windows.UTF16ToString(buf[:size]), nil
 }
