@@ -1958,6 +1958,7 @@ function Invoke-RollbackStep {
 
 Assert-Administrator
 Acquire-WeDecentInstallerLock
+try {
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { $BundlePath = $PSScriptRoot }
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { throw 'Cannot determine installer bundle path.' }
 $BundlePath = (Resolve-Path -LiteralPath $BundlePath).Path
@@ -2321,3 +2322,9 @@ Write-Host "UI:        $($binaryDestinations['wd-ui.exe'])"
 Write-Host "State:     $StateDir"
 Write-Host "Service:   $ServiceName ($($finalService.StartName))"
 Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the installer does not register them as services or autostart entries.'
+} finally {
+    if ($null -ne $script:InstallerLockStream) {
+        $script:InstallerLockStream.Dispose()
+        $script:InstallerLockStream = $null
+    }
+}
