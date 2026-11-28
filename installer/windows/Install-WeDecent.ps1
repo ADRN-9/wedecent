@@ -1098,7 +1098,6 @@ function Acquire-WeDecentInstallerLock {
     if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installer lock path is not a regular non-reparse file.' }
     if ($lockCreated) { Protect-WeDecentMetadataAcl $path }
     if (-not (Test-WeDecentMetadataTrusted -Path $path)) { throw 'Installer lock file ACL verification failed.' }
-    Enter-WeDecentMigrationInstallerLock
 }
 
 function Write-InstallJournal {
@@ -2121,7 +2120,7 @@ Assert-Administrator
 $migrationModule = Join-Path $PSScriptRoot 'StateMigration.psm1'
 Import-Module $migrationModule -ErrorAction Stop
 Acquire-WeDecentInstallerLock
-try {
+Invoke-WeDecentMigrationInstallerTransaction -Action {
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { $BundlePath = $PSScriptRoot }
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { throw 'Cannot determine installer bundle path.' }
 $BundlePath = (Resolve-Path -LiteralPath $BundlePath).Path
@@ -2503,6 +2502,4 @@ Write-Host "UI:        $($binaryDestinations['wd-ui.exe'])"
 Write-Host "State:     $StateDir"
 Write-Host "Service:   $ServiceName ($($finalService.StartName))"
 Write-Host 'wd-core.exe and wd-ui.exe are installed for same-user launch; the installer does not register them as services or autostart entries.'
-} finally {
-    Exit-WeDecentMigrationInstallerLock
 }
