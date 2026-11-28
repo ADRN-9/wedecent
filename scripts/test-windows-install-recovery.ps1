@@ -1160,7 +1160,32 @@ try {
     }
     & sc.exe config $serviceName obj= "$env:COMPUTERNAME\$serviceAccountName" password= $servicePasswordPlain | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not restore the isolated service account after the main-installer mismatch test.' }
-    Write-Host 'Production main-installer recovery rejected a mismatched SCM SID before SCM or filesystem side effects.'
+
+    $mainOriginalMetadataBytes = [IO.File]::ReadAllBytes($mainMetadataPath)
+    foreach ($sidCase in @('missing', 'malformed')) {
+        $caseMetadata = Get-Content -LiteralPath $mainMetadataPath -Raw | ConvertFrom-Json
+        if ($sidCase -eq 'missing') { $caseMetadata.service_account_sid = '' }
+        else { $caseMetadata.service_account_sid = 'not-a-sid' }
+        Write-TestJson -Path $mainMetadataPath -Value $caseMetadata
+        $script:mainInstallerScmMutationCalls = 0
+        function Stop-Service { $script:mainInstallerScmMutationCalls++ }
+        function Start-Service { $script:mainInstallerScmMutationCalls++ }
+        $caseRejected = $false
+        try {
+            Recover-InterruptedInstallerTransactions -Destinations $destinations
+        } catch {
+            $caseRejected = $true
+        } finally {
+            Remove-Item Function:\Stop-Service -ErrorAction SilentlyContinue
+            Remove-Item Function:\Start-Service -ErrorAction SilentlyContinue
+        }
+        if (-not $caseRejected -or $script:mainInstallerScmMutationCalls -ne 0) {
+            throw "Production main-installer recovery did not fail closed without SCM side effects for $sidCase service-account metadata."
+        }
+        [IO.File]::WriteAllBytes($mainMetadataPath, $mainOriginalMetadataBytes)
+        Set-TestTrustedAcl -Path $mainMetadataPath
+    }
+    Write-Host 'Production main-installer recovery rejected missing, malformed, and mismatched service identities before SCM or filesystem side effects.'
     $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
     [IO.File]::WriteAllText($snapshotSource, ($helperOriginalMetadata | ConvertTo-Json -Depth 5 -Compress))
     Set-TestTrustedAcl -Path $snapshotSource
@@ -2291,6 +2316,8 @@ public static class WeDecentIdentityProcess
     if ($serviceName) { & sc.exe delete $serviceName | Out-Null }
     $mainMismatchAccount = Get-Variable -Name mainMismatchName -ValueOnly -ErrorAction SilentlyContinue
     if ($mainMismatchAccount) { Remove-LocalUser -Name $mainMismatchAccount -ErrorAction SilentlyContinue }
+    $mainRecoveryRoot = Get-Variable -Name mainProgramData -ValueOnly -ErrorAction SilentlyContinue
+    if ($mainRecoveryRoot) { Remove-Item -LiteralPath $mainRecoveryRoot -Recurse -Force -ErrorAction SilentlyContinue }
     if ($serviceAccountName) { Remove-LocalUser -Name $serviceAccountName -ErrorAction SilentlyContinue }
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
