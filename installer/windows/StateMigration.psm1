@@ -994,10 +994,9 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
 
     $metadataFull = [IO.Path]::GetFullPath($MetadataPath)
     if (-not [string]::Equals([string]$Journal.metadata_path, $metadataFull, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals([string]$Journal.journal_path, [IO.Path]::GetFullPath([string]$Journal.journal_path), [StringComparison]::OrdinalIgnoreCase) -or
         [string]$Journal.service_name -cne $ServiceName -or
         -not [string]::Equals([string]$Journal.destination, [IO.Path]::GetFullPath($ExpectedDestinationPath), [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals([IO.Path]::GetFullPath([string]$Journal.agent_path), [IO.Path]::GetFullPath([string]$Journal.agent_path), [StringComparison]::OrdinalIgnoreCase)) {
+        [string]::IsNullOrWhiteSpace([string]$Journal.agent_path)) {
         throw 'Migration recovery authority does not match the expected service, installer metadata, agent, or destination transaction.'
     }
 
@@ -1025,6 +1024,10 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         throw 'Migration journal, original metadata, and current protected metadata disagree on service identity.'
     }
 
+    if ([string]::IsNullOrWhiteSpace([string]$metadata.state_dir) -or
+        [string]::IsNullOrWhiteSpace([string]$original.state_dir)) {
+        throw 'Protected installer metadata is missing a state path.'
+    }
     $metadataState = [IO.Path]::GetFullPath([string]$metadata.state_dir)
     $source = [IO.Path]::GetFullPath([string]$Journal.source)
     $destination = [IO.Path]::GetFullPath([string]$Journal.destination)
