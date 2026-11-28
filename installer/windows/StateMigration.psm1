@@ -1878,6 +1878,7 @@ function Invoke-WeDecentStateMigration {
         if ($journal.service_was_running) {
             Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
             Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
+            [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $journal -MetadataPath $MetadataPath -ServiceName $ServiceName -ExpectedDestinationPath $destinationFull)
             Stop-Service -Name $ServiceName -Force -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
@@ -1943,6 +1944,7 @@ function Invoke-WeDecentStateMigration {
             Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths @($sourceFull, $destinationFull, $journalFull, $metadataFull)
             Assert-WeDecentMigrationIdentitySnapshot -Snapshot $directorySnapshot -Paths $directoryAnchors
             Assert-WeDecentMigrationRecoverySource -Journal $journal
+            [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $journal -MetadataPath $MetadataPath -ServiceName $ServiceName -ExpectedDestinationPath $destinationFull)
             Start-Service -Name $ServiceName -ErrorAction Stop
             (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         }
