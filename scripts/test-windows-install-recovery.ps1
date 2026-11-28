@@ -1958,37 +1958,6 @@ public static class WeDecentIdentityProcess
         IntPtr processAttributes, IntPtr threadAttributes, bool inheritHandles, uint creationFlags,
         IntPtr environment, string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
 
-
-    [DllImport("advapi32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateProcessWithLogonW")]
-    private static extern bool CreateProcessWithLogonW(string user, string domain, string password, uint logonFlags,
-        string applicationName, StringBuilder commandLine, uint creationFlags, IntPtr environment,
-        string currentDirectory, ref STARTUPINFO startupInfo, out PROCESS_INFORMATION processInformation);
-
-    private static PROCESS_INFORMATION CreateAuthenticatedProcess(IntPtr token, string user, string domain,
-        string password, string executable, string arguments, string workingDirectory)
-    {
-        STARTUPINFO startup = new STARTUPINFO();
-        startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-        PROCESS_INFORMATION process;
-        StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
-        const uint CREATE_NO_WINDOW = 0x08000000;
-        if (CreateProcessWithTokenW(token, 0, null, commandLine, CREATE_NO_WINDOW,
-            IntPtr.Zero, workingDirectory, ref startup, out process))
-            return process;
-        int tokenError = Marshal.GetLastWin32Error();
-        if (CreateProcessAsUserW(token, null, commandLine, IntPtr.Zero, IntPtr.Zero, false,
-            CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
-            return process;
-        int userError = Marshal.GetLastWin32Error();
-        // This fallback does not require SeImpersonate, SeAssignPrimaryToken, or SeIncreaseQuota.
-        if (CreateProcessWithLogonW(user, domain, password, 0, null, commandLine, CREATE_NO_WINDOW,
-            IntPtr.Zero, workingDirectory, ref startup, out process))
-            return process;
-        int logonError = Marshal.GetLastWin32Error();
-        throw new Win32Exception(logonError, "Cross-identity process creation failed: CreateProcessWithTokenW=" +
-            tokenError + ", CreateProcessAsUserW=" + userError + ", CreateProcessWithLogonW=" + logonError + ".");
-    }
-
     [StructLayout(LayoutKind.Sequential)]
     private struct LUID { public uint LowPart; public int HighPart; }
 
@@ -2048,11 +2017,26 @@ public static class WeDecentIdentityProcess
 
         try
         {
+            STARTUPINFO startup = new STARTUPINFO();
+            startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
+            PROCESS_INFORMATION process;
+            StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
+            const uint CREATE_NO_WINDOW = 0x08000000;
             EnablePrivilege("SeImpersonatePrivilege");
             EnablePrivilege("SeIncreaseQuotaPrivilege");
             EnablePrivilege("SeAssignPrimaryTokenPrivilege");
-            PROCESS_INFORMATION process = CreateAuthenticatedProcess(token, user, domain, password,
-                executable, arguments, workingDirectory);
+            if (!CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+                IntPtr.Zero, workingDirectory, ref startup, out process))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+                    CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
+                {
+                    int userError = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(userError, "CreateProcessWithTokenW failed with " + tokenError +
+                        " and CreateProcessAsUserW failed with " + userError + " for the isolated test identity.");
+                }
+            }
 
             try
             {
@@ -2097,16 +2081,29 @@ public static class WeDecentIdentityProcess
             EnablePrivilege("SeAssignPrimaryTokenPrivilege");
             STARTUPINFO startup = new STARTUPINFO();
             startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
-            target = CreateAuthenticatedProcess(firstToken, user, domain, password,
-                targetExecutable, targetArguments, workingDirectory);
+            StringBuilder targetCommand = new StringBuilder("\"" + targetExecutable + "\" " + targetArguments);
+            if (!CreateProcessWithTokenW(firstToken, 0, targetExecutable, targetCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out target))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(firstToken, targetExecutable, targetCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out target))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "First-session process creation failed; token error " + tokenError + ".");
+            }
             Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE", "1");
             Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_TARGET_PID", target.dwProcessId.ToString());
             Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EXPECTED_IMAGE", targetExecutable);
             Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_EVIDENCE", evidencePath);
             Environment.SetEnvironmentVariable("WEDECENT_IDENTITY_PROBE_BOUNDARY", "session");
-            probe = CreateAuthenticatedProcess(secondToken, user, domain, password,
-                probeExecutable, probeArguments, workingDirectory);
-
+            StringBuilder probeCommand = new StringBuilder("\"" + probeExecutable + "\" " + probeArguments);
+            if (!CreateProcessWithTokenW(secondToken, 0, probeExecutable, probeCommand, 0x08000000,
+                IntPtr.Zero, workingDirectory, ref startup, out probe))
+            {
+                int tokenError = Marshal.GetLastWin32Error();
+                if (!CreateProcessAsUserW(secondToken, probeExecutable, probeCommand, IntPtr.Zero, IntPtr.Zero, false,
+                    0x08000000, IntPtr.Zero, workingDirectory, ref startup, out probe))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Second-session validator creation failed; token error " + tokenError + ".");
+            }
             uint wait = WaitForSingleObject(probe.hProcess, 120000);
             if (wait != 0) throw new TimeoutException("Second-session wd-agent validator timed out.");
             uint exitCode;
