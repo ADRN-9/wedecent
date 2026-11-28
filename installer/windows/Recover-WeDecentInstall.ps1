@@ -277,6 +277,42 @@ function Exit-RecoveryScmMutationLock {
     if ($null -ne $unlockError) { throw $unlockError }
 }
 
+function Stop-AuthenticatedRecoveryService {
+    param([Parameter(Mandatory = $true)]$Metadata)
+    $scmLock = Enter-RecoveryScmMutationLock
+    try {
+        $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
+        if ($snapshot.Service.Status -ne 'Stopped') {
+            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+        }
+        $stopped = Get-Service -Name $ServiceName -ErrorAction Stop
+        $stopped.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+            throw 'SCM did not confirm the service stopped.'
+        }
+    } finally {
+        Exit-RecoveryScmMutationLock -Handle $scmLock
+    }
+}
+
+function Start-AuthenticatedRecoveryService {
+    param([Parameter(Mandatory = $true)]$Metadata)
+    $scmLock = Enter-RecoveryScmMutationLock
+    try {
+        $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
+        if ($snapshot.Service.Status -ne 'Running') {
+            Start-Service -Name $ServiceName -ErrorAction Stop
+        }
+        $running = Get-Service -Name $ServiceName -ErrorAction Stop
+        $running.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
+            throw 'SCM did not confirm the service running.'
+        }
+    } finally {
+        Exit-RecoveryScmMutationLock -Handle $scmLock
+    }
+}
+
 function Restore-TransactionRecoveryScript {
     param([Parameter(Mandatory = $true)]$Journal)
     $target = [IO.Path]::GetFullPath((Join-Path $InstallDir 'Recover-WeDecentInstall.ps1'))
@@ -846,27 +882,10 @@ foreach ($entry in @($journal.entries)) {
 }
 Assert-NoRunningUserBinaries
 
-$service = Get-Service -Name $ServiceName -ErrorAction Stop
-$serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-$expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
-$expectedServicePath = '"' + $expectedAgent + '"'
-$stateArgumentPattern = '(?:^|\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\s|$)'
-if ($null -eq $serviceConfig -or
-    -not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
-    -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-    throw 'SCM service identity does not match authenticated prior installer metadata.'
-}
-$metadataServiceSid = [Security.Principal.SecurityIdentifier]::new([string]$metadata.service_account_sid).Value
-$serviceAccountSid = Resolve-ServiceAccountSid -StartName ([string]$serviceConfig.StartName)
-if (-not [string]::Equals($serviceAccountSid, $metadataServiceSid, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "SCM service account SID does not match protected installer metadata (SCM=$serviceAccountSid, metadata=$metadataServiceSid)."
-}
+# Authenticate before any protected-file mutation, then repeat under the SCM database lock immediately before stopping.
+$initialServiceSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
 $restartService = [bool]$journal.service_was_running
-if ($service.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force -ErrorAction Stop }
-(Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
-    throw 'SCM did not confirm the service stopped before recovery.'
-}
+Stop-AuthenticatedRecoveryService -Metadata $metadata
 try {
     for ($i = @($journal.entries).Count - 1; $i -ge 0; $i--) {
         $entry = @($journal.entries)[$i]
@@ -907,22 +926,30 @@ try {
     Write-TransactionJournal -Journal $journal -Path $journalPath
 } catch {
     $failure = $_
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-    throw "Windows transaction recovery failed closed; service was left stopped and pending authorization/backups were retained. Cause: $($failure.Exception.Message)"
+    $stopFailure = $null
+    try { Stop-AuthenticatedRecoveryService -Metadata $metadata } catch { $stopFailure = $_.Exception.Message }
+    if ($null -ne $stopFailure) {
+        throw "Windows transaction recovery failed; protected backups and pending authorization were retained. SCM stop was not attempted after identity/lock revalidation failed. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
+    }
+    throw "Windows transaction recovery failed closed; authenticated service was left stopped and pending authorization/backups were retained. Cause: $($failure.Exception.Message)"
 }
 try {
     if ($restartService) {
-        Start-Service -Name $ServiceName -ErrorAction Stop
-        (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
-            throw 'SCM did not confirm the previous service returned to Running.'
+        Start-AuthenticatedRecoveryService -Metadata $metadata
+    } else {
+        $finalSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
+        if ($finalSnapshot.Service.Status -ne 'Stopped') {
+            throw 'SCM service was expected to remain stopped after recovery.'
         }
-    } elseif ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
-        throw 'SCM service was expected to remain stopped after recovery.'
     }
 } catch {
-    Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-    throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; service was left stopped. Cause: $($_.Exception.Message)"
+    $failure = $_
+    $stopFailure = $null
+    try { Stop-AuthenticatedRecoveryService -Metadata $metadata } catch { $stopFailure = $_.Exception.Message }
+    if ($null -ne $stopFailure) {
+        throw "Previous binaries and metadata were restored, but service state is uncertain; no stop mutation was attempted without fresh identity/lock authorization. Cause: $($failure.Exception.Message); stop guard: $stopFailure"
+    }
+    throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; authenticated service was left stopped. Cause: $($failure.Exception.Message)"
 }
 Write-Output 'not-applied'
 } finally {
