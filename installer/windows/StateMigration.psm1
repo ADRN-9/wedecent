@@ -1040,8 +1040,8 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
     }
 
     $installRoot = Get-WeDecentMigrationCanonicalPath -Path ([string]$metadata.install_dir)
-    $installPrefix = $installRoot.TrimEnd('\\') + '\\'
-    $expectedJournalPath = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'migration\\state-migration.json')
+    $installPrefix = $installRoot.TrimEnd('\') + '\'
+    $expectedJournalPath = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'migration\state-migration.json')
     if (-not [string]::Equals([string]$Journal.journal_path, $expectedJournalPath, [StringComparison]::OrdinalIgnoreCase) -or
         -not $destination.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Migration journal or destination is outside the authenticated installation transaction namespace.'
