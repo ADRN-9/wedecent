@@ -326,13 +326,15 @@ function Assert-WeDecentRecoveryServiceIdentity {
         throw 'Interrupted-install recovery metadata does not authenticate this service and its protected paths.'
     }
     $expectedSidText = [string]$metadata.service_account_sid
-    if ([string]::IsNullOrWhiteSpace($expectedSidText)) {
-        throw 'Protected installer metadata has no service-account SID.'
+    if ([string]::IsNullOrWhiteSpace($expectedSidText) -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.service_account_name)) {
+        throw 'Protected installer metadata has no service-account SID or account name.'
     }
     try {
         $expectedSid = [Security.Principal.SecurityIdentifier]::new($expectedSidText).Value
+        $metadataNameSid = (New-Object Security.Principal.NTAccount -ArgumentList ([string]$metadata.service_account_name)).Translate([Security.Principal.SecurityIdentifier]).Value
     } catch {
-        throw 'Protected installer metadata contains a malformed service-account SID.'
+        throw 'Protected installer metadata service-account identity cannot be resolved.'
     }
     $startName = ([string]$ServiceConfig.StartName).Trim()
     if ([string]::IsNullOrWhiteSpace($startName)) {
@@ -346,8 +348,29 @@ function Assert-WeDecentRecoveryServiceIdentity {
     } catch {
         throw "SCM service account identity cannot be resolved: $startName"
     }
-    if (-not [string]::Equals($actualSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'SCM service account SID does not match protected installer metadata.'
+    if (-not [string]::Equals($actualSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($metadataNameSid, $expectedSid, [StringComparison]::OrdinalIgnoreCase) -or
+        (-not [string]::IsNullOrWhiteSpace([string]$script:InstallServiceStartName) -and
+            -not [string]::Equals([string]$ServiceConfig.StartName, [string]$script:InstallServiceStartName, [StringComparison]::OrdinalIgnoreCase)) -or
+        (-not [string]::IsNullOrWhiteSpace([string]$script:InstallServiceStartMode) -and
+            [string]$ServiceConfig.StartMode -cne [string]$script:InstallServiceStartMode)) {
+        throw 'SCM service account SID, account name, or start mode does not match protected installer migration authority.'
+    }
+    $expectedExecutable = [IO.Path]::GetFullPath((Join-Path ([string]$metadata.install_dir) 'wd-agent.exe'))
+    $servicePath = [string]$ServiceConfig.PathName
+    $exeMatch = [regex]::Match($servicePath, '^"([^"]+)"(?:\s|$)|^(\S+)(?:\s|$)')
+    if (-not $exeMatch.Success) { throw 'SCM executable path is missing or ambiguous during installer recovery.' }
+    $actualExecutable = if ($exeMatch.Groups[1].Success) { $exeMatch.Groups[1].Value } else { $exeMatch.Groups[2].Value }
+    if (-not [string]::Equals([IO.Path]::GetFullPath($actualExecutable), $expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SCM executable path does not match protected installer installation metadata.'
+    }
+    $statePattern = '(?i)(?<!\S)"--state=([^"]+)"|(?<!\S)--state="([^"]+)"|(?<!\S)--state=([^\s"]+)'
+    $stateMatches = [regex]::Matches($servicePath, $statePattern)
+    if ($stateMatches.Count -ne 1) { throw 'SCM command line must contain exactly one authenticated --state argument.' }
+    $stateMatch = $stateMatches[0]
+    $actualState = if ($stateMatch.Groups[1].Success) { $stateMatch.Groups[1].Value } elseif ($stateMatch.Groups[2].Success) { $stateMatch.Groups[2].Value } else { $stateMatch.Groups[3].Value }
+    if (-not [string]::Equals([IO.Path]::GetFullPath($actualState), [IO.Path]::GetFullPath([string]$metadata.state_dir), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'SCM --state path does not match protected installer metadata.'
     }
     return $ServiceConfig
 }
@@ -2076,6 +2099,8 @@ if ($metadata) {
 }
 $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
 if ($service) {
+    $script:InstallServiceStartName = [string]$service.StartName
+    $script:InstallServiceStartMode = [string]$service.StartMode
     if (-not $metadataTrusted -or [string]::IsNullOrWhiteSpace([string]$metadata.service_account_sid) -or
         [string]::IsNullOrWhiteSpace([string]$metadata.service_account_name)) {
         throw 'Existing SCM service requires ACL-protected service-account identity metadata before upgrade.'
