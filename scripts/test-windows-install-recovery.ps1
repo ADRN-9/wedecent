@@ -1972,16 +1972,16 @@ public static class WeDecentIdentityProcess
         PROCESS_INFORMATION process;
         StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
         const uint CREATE_NO_WINDOW = 0x08000000;
-        if (CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
+        if (CreateProcessWithTokenW(token, 0, null, commandLine, CREATE_NO_WINDOW,
             IntPtr.Zero, workingDirectory, ref startup, out process))
             return process;
         int tokenError = Marshal.GetLastWin32Error();
-        if (CreateProcessAsUserW(token, executable, commandLine, IntPtr.Zero, IntPtr.Zero, false,
+        if (CreateProcessAsUserW(token, null, commandLine, IntPtr.Zero, IntPtr.Zero, false,
             CREATE_NO_WINDOW, IntPtr.Zero, workingDirectory, ref startup, out process))
             return process;
         int userError = Marshal.GetLastWin32Error();
         // This fallback does not require SeImpersonate, SeAssignPrimaryToken, or SeIncreaseQuota.
-        if (CreateProcessWithLogonW(user, domain, password, 0, executable, commandLine, CREATE_NO_WINDOW,
+        if (CreateProcessWithLogonW(user, domain, password, 0, null, commandLine, CREATE_NO_WINDOW,
             IntPtr.Zero, workingDirectory, ref startup, out process))
             return process;
         int logonError = Marshal.GetLastWin32Error();
