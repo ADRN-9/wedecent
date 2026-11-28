@@ -1646,19 +1646,20 @@ Publish-TransactionRecoveryScriptBackup
     $lockMarkerQ = $lockMarker.Replace("'", "''")
     $lockErrorMarker = Join-Path $durableTestDir 'lock-error'
     $lockErrorMarkerQ = $lockErrorMarker.Replace("'", "''")
-    $lockModuleQ = $migrationModulePath.Replace("'", "''")
+    $lockPathQ = $lockPath.Replace("'", "''")
 $lockChildCommand = @'
-Import-Module '__MIGRATION_MODULE__' -Global -ErrorAction Stop
 try {
-    Enter-WeDecentMigrationInstallerLock
+    $lockStream = [IO.File]::Open('__LOCK_PATH__', [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
     [IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
     Start-Sleep -Seconds 60
 } catch {
     [IO.File]::WriteAllText('__LOCK_ERROR_MARKER__', $_.Exception.ToString())
     exit 11
+} finally {
+    if ($null -ne $lockStream) { $lockStream.Dispose() }
 }
 '@
-    $lockChildCommand = $lockChildCommand.Replace('__MIGRATION_MODULE__', $lockModuleQ).Replace('__LOCK_MARKER__', $lockMarkerQ).Replace('__LOCK_ERROR_MARKER__', $lockErrorMarkerQ)
+    $lockChildCommand = $lockChildCommand.Replace('__LOCK_PATH__', $lockPathQ).Replace('__LOCK_MARKER__', $lockMarkerQ).Replace('__LOCK_ERROR_MARKER__', $lockErrorMarkerQ)
     $lockChildScriptPath = Join-Path $durableTestDir 'installer-lock-child.ps1'
     [IO.File]::WriteAllText($lockChildScriptPath, $lockChildCommand, [Text.Encoding]::Unicode)
     $lockChild = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$lockChildScriptPath`"" -PassThru -WindowStyle Hidden
