@@ -820,6 +820,83 @@ function Assert-InstalledUserBinariesStopped {
     }
 }
 
+function Copy-WeDecentFileDurably {
+    param([Parameter(Mandatory = $true)][string]$Source, [Parameter(Mandatory = $true)][string]$Destination, [Parameter(Mandatory = $true)][string]$ExpectedSHA256)
+    $sourceInfo = Get-Item -LiteralPath $Source -Force -ErrorAction Stop
+    if ($sourceInfo.PSIsContainer -or ($sourceInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Durable backup source must be a regular non-reparse file: $Source" }
+    if (Test-Path -LiteralPath $Destination) { throw "Durable backup staging path already exists: $Destination" }
+    $input = $null; $output = $null
+    try {
+        $input = [IO.File]::Open($Source, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $output = [IO.File]::Open($Destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $input.CopyTo($output); $output.Flush($true)
+    } finally {
+        if ($null -ne $output) { $output.Dispose() }
+        if ($null -ne $input) { $input.Dispose() }
+    }
+    if ((Get-Sha256FileHash $Destination) -ne $ExpectedSHA256) { throw "Durable backup failed post-flush integrity verification: $Destination" }
+    Protect-WeDecentMetadataAcl $Destination
+    if (-not (Test-WeDecentMetadataTrusted -Path $Destination) -or (Get-Sha256FileHash $Destination) -ne $ExpectedSHA256) { throw "Durable backup failed ACL or final integrity verification: $Destination" }
+}
+
+function Write-WeDecentTextDurably {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Value)
+    $bytes = [Text.Encoding]::ASCII.GetBytes($Value)
+    $stream = [IO.File]::Open($Path, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }
+    Protect-WeDecentMetadataAcl $Path
+    if (-not (Test-WeDecentMetadataTrusted -Path $Path) -or [IO.File]::ReadAllText($Path, [Text.Encoding]::ASCII) -cne $Value) { throw "Durable backup digest sidecar failed ACL or content verification: $Path" }
+}
+
+function Publish-TransactionRecoveryScriptBackup {
+    $journal = $script:InstallJournal
+    if (-not [bool]$journal.recovery_script_had_original) { return }
+    $target = [IO.Path]::GetFullPath([string]$journal.recovery_script_path)
+    $backup = [IO.Path]::GetFullPath([string]$journal.recovery_script_backup_path)
+    $staging = "$backup.staging"
+    $expected = [string]$journal.recovery_script_original_sha256
+    if (-not (Test-Path -LiteralPath $target -PathType Leaf) -or (Get-Sha256FileHash $target) -ne $expected) { throw 'Previous recovery script changed before its durable transaction backup was published.' }
+    if (Test-Path -LiteralPath $backup) {
+        $info = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
+        if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not (Test-WeDecentMetadataTrusted -Path $backup) -or (Get-Sha256FileHash $backup) -ne $expected) { throw 'Existing recovery-script transaction backup is unsafe or corrupted.' }
+        return
+    }
+    if (Test-Path -LiteralPath $staging) {
+        $stageInfo = Get-Item -LiteralPath $staging -Force -ErrorAction Stop
+        if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Interrupted recovery-script staging path is not a regular file.' }
+        Remove-Item -LiteralPath $staging -Force -ErrorAction Stop
+    }
+    Copy-WeDecentFileDurably -Source $target -Destination $staging -ExpectedSHA256 $expected
+    [IO.File]::Move($staging, $backup)
+    $published = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
+    if ($published.PSIsContainer -or ($published.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not (Test-WeDecentMetadataTrusted -Path $backup) -or (Get-Sha256FileHash $backup) -ne $expected) { throw 'Published recovery-script transaction backup failed final integrity verification.' }
+}
+
+function Acquire-WeDecentInstallerLock {
+    $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    New-Item -ItemType Directory -Force -Path $root | Out-Null
+    $rootInfo = Get-Item -LiteralPath $root -Force -ErrorAction Stop
+    if (-not $rootInfo.PSIsContainer -or ($rootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Installer lock directory must be a regular non-reparse directory.' }
+    Protect-WeDecentMetadataAcl $root
+    $path = Join-Path $root 'installer.lock'
+    if (Test-Path -LiteralPath $path) {
+        $info = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not (Test-WeDecentMetadataTrusted -Path $path)) { throw 'Existing installer lock file is unsafe or ACL-untrusted.' }
+    }
+    try {
+        # Kernel releases exclusive sharing when the owner exits; stale contents do not retain ownership.
+        $stream = [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] { throw 'Another WeDecent installer or recovery operation owns the machine-wide installation lock.' }
+    try {
+        Protect-WeDecentMetadataAcl $path
+        if (-not (Test-WeDecentMetadataTrusted -Path $path)) { throw 'Installer lock file ACL verification failed.' }
+        $stream.SetLength(0)
+        $owner = [Text.Encoding]::ASCII.GetBytes(("pid=" + $PID + [Environment]::NewLine))
+        $stream.Write($owner, 0, $owner.Length); $stream.Flush($true)
+        $script:InstallerLockStream = $stream
+    } catch { $stream.Dispose(); throw }
+}
+
 function Write-InstallJournal {
     param([Parameter(Mandatory = $true)]$Journal, [string]$Path)
     $transactionId = [string]$Journal.transaction_id
@@ -1127,6 +1204,7 @@ function Recover-InterruptedInstallerTransactions {
             (-not $managedJournal -and (-not [string]::IsNullOrEmpty([string]$journal.manifest_sha256) -or
                 -not [string]::IsNullOrEmpty([string]$journal.previous_version))) -or
             $journal.service_was_running -isnot [bool] -or
+            ($null -ne $journal.PSObject.Properties['service_existed'] -and $journal.service_existed -isnot [bool]) -or
             [string]$journal.version -notmatch '^v[0-9]+[.][0-9]+[.][0-9]+(?:-[0-9A-Za-z.-]+)?$' -or
             @($journal.entries).Count -ne $script:BinaryNames.Count -or
             [string]$journal.phase -notin @('prepared', 'backups-verified', 'replacing', 'installed-awaiting-sequence-commit', 'committed', 'rolled-back')) {
@@ -1234,21 +1312,39 @@ function Recover-InterruptedInstallerTransactions {
             continue
         }
 
-        $serviceBefore = Get-Service -Name $ServiceName -ErrorAction Stop
-        $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
-        $expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
-        $expectedServicePath = '"' + $expectedAgent + '"'
-        $stateArgumentPattern = '(?:^|\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\s|$)'
-        if ($null -eq $serviceConfig -or
-            -not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
-            -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-            throw 'SCM service identity does not match the authenticated installer paths.'
-        }
+        $serviceExisted = $true
+        if ($null -ne $journal.PSObject.Properties['service_existed']) { $serviceExisted = [bool]$journal.service_existed }
         $restartService = [bool]$journal.service_was_running
-        if ($serviceBefore.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force -ErrorAction Stop }
-        (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
-            throw 'SCM did not confirm the service stopped before interrupted-install recovery.'
+        if ($serviceExisted) {
+            $serviceBefore = Get-Service -Name $ServiceName -ErrorAction Stop
+            $serviceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+            $expectedAgent = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
+            $expectedServicePath = '"' + $expectedAgent + '"'
+            $stateArgumentPattern = '(?:^|\s)--state=(?:"' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + '"|' + [regex]::Escape([IO.Path]::GetFullPath($StateDir)) + ')(?:\s|$)'
+            if ($null -eq $serviceConfig -or
+                -not ([string]$serviceConfig.PathName).StartsWith($expectedServicePath, [StringComparison]::OrdinalIgnoreCase) -or
+                -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
+                throw 'SCM service identity does not match the authenticated installer paths.'
+            }
+            if ($serviceBefore.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force -ErrorAction Stop }
+            (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+            if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') { throw 'SCM did not confirm the service stopped before interrupted-install recovery.' }
+        } else {
+            $unexpectedService = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue
+            if ($null -ne $unexpectedService) { throw 'Fresh-install recovery expected no pre-existing SCM service; an unexpected service exists and requires authenticated operator investigation.' }
+            $restartService = $false
+        }
+        if ([bool]$journal.recovery_script_had_original) {
+            $recoveryBackup = [string]$journal.recovery_script_backup_path
+            $recoveryStaging = "$recoveryBackup.staging"
+            if (Test-Path -LiteralPath $recoveryStaging) {
+                $stageInfo = Get-Item -LiteralPath $recoveryStaging -Force -ErrorAction Stop
+                if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    (Get-Sha256FileHash ([string]$journal.recovery_script_path)) -ne [string]$journal.recovery_script_original_sha256) {
+                    throw 'Interrupted recovery-script staging file cannot be safely discarded.'
+                }
+                Remove-Item -LiteralPath $recoveryStaging -Force -ErrorAction Stop
+            }
         }
         try {
             for ($i = @($journal.entries).Count - 1; $i -ge 0; $i--) {
@@ -1286,17 +1382,21 @@ function Recover-InterruptedInstallerTransactions {
         } catch {
             throw "Interrupted installer rollback failed closed; service remains stopped and backups are retained. Cause: $($_.Exception.Message)"
         }
-        try {
-            if ($restartService) {
-                Start-Service -Name $ServiceName -ErrorAction Stop
-                (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-                if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') { throw 'SCM did not confirm the previous service returned to Running.' }
-            } elseif ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
-                throw 'SCM service was expected to remain stopped after recovery.'
+        if ($serviceExisted) {
+            try {
+                if ($restartService) {
+                    Start-Service -Name $ServiceName -ErrorAction Stop
+                    (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+                    if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') { throw 'SCM did not confirm the previous service returned to Running.' }
+                } elseif ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+                    throw 'SCM service was expected to remain stopped after recovery.'
+                }
+            } catch {
+                Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+                throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; service was left stopped. Cause: $($_.Exception.Message)"
             }
-        } catch {
-            Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
-            throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; service was left stopped. Cause: $($_.Exception.Message)"
+        } elseif ($null -ne (Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction SilentlyContinue)) {
+            throw 'Fresh-install rollback completed but an unexpected SCM service appeared; refusing to claim a clean rollback.'
         }
     }
 }
@@ -1384,6 +1484,7 @@ function Install-Binaries {
         previous_version = $PreviousVersion
         sequence = [UInt64]$script:InstallTransactionSequence
         service_was_running = [bool]$script:InstallServiceWasRunning
+        service_existed = [bool]$script:InstallServiceExisted
         metadata_path = $metadataPath
         metadata_had_original = [bool]$metadataHadOriginal
         metadata_original_sha256 = $metadataOriginalHash
@@ -1401,6 +1502,9 @@ function Install-Binaries {
     }
     Write-InstallJournal -Journal $script:InstallJournal
 
+    # Preserve the previous recovery entrypoint before stopping SCM or replacing any binary.
+    Publish-TransactionRecoveryScriptBackup
+
     # All previous binaries are backed up and verified before any replacement.
     foreach ($entry in $script:InstallJournal.entries) {
         $name = [string]$entry.name
@@ -1414,12 +1518,40 @@ function Install-Binaries {
                 (Get-Sha256FileHash $destination) -ne [string]$entry.original_sha256) {
                 throw "Original binary changed before backup: $destination"
             }
-            Copy-Item -LiteralPath $destination -Destination $backupPath
-            if ((Get-Sha256FileHash $backupPath) -ne [string]$entry.original_sha256) {
-                throw "Backup integrity verification failed for $destination"
+            $backupStage = "$backupPath.staging"
+            $sidecarPath = "$backupPath.sha256"
+            $sidecarStage = "$sidecarPath.staging"
+            foreach ($stagingPath in @($backupStage, $sidecarStage)) {
+                if (Test-Path -LiteralPath $stagingPath) {
+                    $stageInfo = Get-Item -LiteralPath $stagingPath -Force -ErrorAction Stop
+                    if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Binary backup staging path is unsafe: $stagingPath" }
+                    Remove-Item -LiteralPath $stagingPath -Force -ErrorAction Stop
+                }
             }
-            Set-Content -LiteralPath "$backupPath.sha256" -Value $entry.original_sha256 -NoNewline -Encoding ASCII
-            Protect-WeDecentMetadataAcl "$backupPath.sha256"
+            if (Test-Path -LiteralPath $backupPath) {
+                $existingBackup = Get-Item -LiteralPath $backupPath -Force -ErrorAction Stop
+                if ($existingBackup.PSIsContainer -or ($existingBackup.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                    -not (Test-WeDecentMetadataTrusted -Path $backupPath) -or (Get-Sha256FileHash $backupPath) -ne [string]$entry.original_sha256) {
+                    throw "Existing transaction backup is unsafe or corrupted: $backupPath"
+                }
+            } else {
+                Copy-WeDecentFileDurably -Source $destination -Destination $backupStage -ExpectedSHA256 ([string]$entry.original_sha256)
+                if (-not (Test-Path -LiteralPath $sidecarPath)) {
+                    Write-WeDecentTextDurably -Path $sidecarStage -Value ([string]$entry.original_sha256)
+                    [IO.File]::Move($sidecarStage, $sidecarPath)
+                }
+                [IO.File]::Move($backupStage, $backupPath)
+            }
+            if (-not (Test-Path -LiteralPath $sidecarPath)) {
+                Write-WeDecentTextDurably -Path $sidecarStage -Value ([string]$entry.original_sha256)
+                [IO.File]::Move($sidecarStage, $sidecarPath)
+            }
+            Protect-WeDecentMetadataAcl $backupPath
+            if (-not (Test-WeDecentMetadataTrusted -Path $backupPath) -or
+                (Get-Sha256FileHash $backupPath) -ne [string]$entry.original_sha256 -or
+                (Get-Content -LiteralPath $sidecarPath -Raw).Trim() -cne [string]$entry.original_sha256) {
+                throw "Durable binary backup or digest sidecar failed final verification: $backupPath"
+            }
         }
         $entry.state = 'backup-verified'
         $script:InstallJournal.phase = 'backups-verified'
@@ -1597,14 +1729,11 @@ function Publish-WeDecentRecoveryScript {
             (Get-Sha256FileHash $target) -ne [string]$script:InstallJournal.recovery_script_original_sha256) {
             throw 'Previous recovery script changed after transaction snapshot.'
         }
-        if (Test-Path -LiteralPath $backup) {
-            throw 'Transaction-specific recovery script backup already exists.'
+        if (-not (Test-Path -LiteralPath $backup -PathType Leaf) -or
+            -not (Test-WeDecentMetadataTrusted -Path $backup) -or
+            (Get-Sha256FileHash $backup) -ne [string]$script:InstallJournal.recovery_script_original_sha256) {
+            throw 'Previous recovery script backup was not durably published and verified before service replacement.'
         }
-        Copy-Item -LiteralPath $target -Destination $backup
-        if ((Get-Sha256FileHash $backup) -ne [string]$script:InstallJournal.recovery_script_original_sha256) {
-            throw 'Previous recovery script backup failed integrity verification.'
-        }
-        Protect-WeDecentMetadataAcl $backup
     } elseif (Test-Path -LiteralPath $target) {
         throw 'Unexpected recovery script appeared after the initial-install transaction snapshot.'
     } elseif (Test-Path -LiteralPath $backup) {
@@ -1761,6 +1890,7 @@ function Invoke-RollbackStep {
 }
 
 Assert-Administrator
+Acquire-WeDecentInstallerLock
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { $BundlePath = $PSScriptRoot }
 if ([string]::IsNullOrWhiteSpace($BundlePath)) { throw 'Cannot determine installer bundle path.' }
 $BundlePath = (Resolve-Path -LiteralPath $BundlePath).Path
