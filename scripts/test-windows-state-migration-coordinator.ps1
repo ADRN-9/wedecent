@@ -1005,7 +1005,7 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
     $child.UseShellExecute = $false
     $child.RedirectStandardOutput = $true
     $child.RedirectStandardError = $true
-    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$partialStagingRecovery.Journal,'-AgentPath',$agentPath,'-MetadataPath',$partialStagingRecovery.MetadataPath,'-ServiceName',$partialStagingRecovery.ServiceName)) {
+    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$partialStagingRecovery.Journal,'-AgentPath',$agentPath,'-MetadataPath',$partialStagingRecovery.MetadataPath,'-ServiceName',$partialStagingRecovery.ServiceName,'-ExpectedDestinationPath',$partialStagingRecovery.Destination)) {
         [void]$child.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::Start($child)
@@ -1895,7 +1895,7 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
     $child.UseShellExecute = $false
     $child.RedirectStandardOutput = $true
     $child.RedirectStandardError = $true
-    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$Fixture.Journal,'-AgentPath',$agentPath,'-MetadataPath',$Fixture.MetadataPath,'-ServiceName',$Fixture.ServiceName)) {
+    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$Fixture.Journal,'-AgentPath',$agentPath,'-MetadataPath',$Fixture.MetadataPath,'-ServiceName',$Fixture.ServiceName,'-ExpectedDestinationPath',$Fixture.Destination)) {
         [void]$child.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::Start($child)
