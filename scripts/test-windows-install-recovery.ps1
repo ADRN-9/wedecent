@@ -651,7 +651,7 @@ try {
     $rejected = $false
     try { Invoke-TestRecovery -Fixture $missingScm | Out-Null } catch { $rejected = $true }
     if (-not $rejected) { throw 'Updater recovery accepted a missing SCM service.' }
-    New-Service -Name $serviceName -BinaryPathName $serviceImage -Credential $serviceCredential -StartupType Manual -ErrorAction Stop | Out-Null
+    New-Service -Name $serviceName -BinaryPathName $serviceImage -Credential $serviceCredential -StartupType Automatic -ErrorAction Stop | Out-Null
 
     $mismatchedScm = New-TransactionFixture
     & sc.exe config $serviceName binPath= 'C:\Windows\System32\svchost.exe -k netsvcs' | Out-Null
