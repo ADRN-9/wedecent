@@ -892,9 +892,11 @@ function Set-WeDecentMigrationServicePath {
         [Parameter(Mandatory = $true)][string]$ServiceName,
         [Parameter(Mandatory = $true)][string]$BinaryPath,
         [Parameter(Mandatory = $true)][string]$ServiceSid,
-        [Parameter(Mandatory = $true)][string]$StartMode
+        [Parameter(Mandatory = $true)][string]$StartMode,
+        [Parameter(Mandatory = $true)][pscustomobject]$Journal
     )
 
+    [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $Journal -MetadataPath $Journal.metadata_path -ServiceName $ServiceName -ExpectedDestinationPath $Journal.destination)
     $output = & sc.exe config $ServiceName "binPath= $BinaryPath" 2>&1
     if ($LASTEXITCODE -ne 0) {
         throw "SCM rejected the migration service path: $($output -join [Environment]::NewLine)"
@@ -982,6 +984,83 @@ function Assert-WeDecentMigrationPartialTreeSafe {
     return $true
 }
 
+function Assert-WeDecentMigrationRecoveryServiceIdentity {
+    param(
+        [Parameter(Mandatory = $true)][pscustomobject]$Journal,
+        [Parameter(Mandatory = $true)][string]$MetadataPath,
+        [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][string]$ExpectedDestinationPath
+    )
+
+    $metadataFull = [IO.Path]::GetFullPath($MetadataPath)
+    if (-not [string]::Equals([string]$Journal.metadata_path, $metadataFull, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$Journal.journal_path, [IO.Path]::GetFullPath([string]$Journal.journal_path), [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$Journal.service_name -cne $ServiceName -or
+        -not [string]::Equals([string]$Journal.destination, [IO.Path]::GetFullPath($ExpectedDestinationPath), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$Journal.agent_path), [IO.Path]::GetFullPath([string]$Journal.agent_path), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Migration recovery authority does not match the expected service, installer metadata, agent, or destination transaction.'
+    }
+
+    [void](Assert-WeDecentMigrationMetadataAcl -Path $metadataFull)
+    $metadataItem = Get-Item -LiteralPath $metadataFull -Force -ErrorAction Stop
+    if ($metadataItem.PSIsContainer -or ($metadataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Migration recovery installer metadata must be a regular protected file.'
+    }
+    $metadataJson = Get-Content -LiteralPath $metadataFull -Raw -ErrorAction Stop
+    Assert-WeDecentMigrationStrictJson -Json $metadataJson -Description 'Migration recovery installer metadata'
+    $metadata = $metadataJson | ConvertFrom-Json -ErrorAction Stop
+    if ([int]$metadata.schema -ne 1 -or [string]$metadata.product -cne 'WeDecent' -or
+        [string]$metadata.service_name -cne $ServiceName) {
+        throw 'Protected installer metadata does not authenticate this migration service.'
+    }
+    $metadataSidText = [string]$metadata.service_account_sid
+    $metadataSid = ConvertTo-WeDecentMigrationSid -Sid $metadataSidText
+    $journalSid = ConvertTo-WeDecentMigrationSid -Sid ([string]$Journal.service_sid)
+    $originalMetadata = [string]$Journal.original_metadata_json
+    Assert-WeDecentMigrationStrictJson -Json $originalMetadata -Description 'Migration original installer metadata'
+    $original = $originalMetadata | ConvertFrom-Json -ErrorAction Stop
+    $originalSid = ConvertTo-WeDecentMigrationSid -Sid ([string]$original.service_account_sid)
+    if ($metadataSid.Value -cne $journalSid.Value -or $originalSid.Value -cne $journalSid.Value -or
+        [string]$original.service_name -cne $ServiceName) {
+        throw 'Migration journal, original metadata, and current protected metadata disagree on service identity.'
+    }
+
+    $metadataState = [IO.Path]::GetFullPath([string]$metadata.state_dir)
+    $source = [IO.Path]::GetFullPath([string]$Journal.source)
+    $destination = [IO.Path]::GetFullPath([string]$Journal.destination)
+    if (-not [string]::Equals($metadataState, $source, [StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::Equals($metadataState, $destination, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Protected installer metadata state_dir is outside this migration transaction.'
+    }
+    if (-not [string]::Equals([IO.Path]::GetFullPath([string]$original.state_dir), $source, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Original protected installer metadata does not bind the migration source path.'
+    }
+
+    $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+    if ($null -eq $service) { throw "Migration recovery SCM service '$ServiceName' is missing." }
+    $startName = ([string]$service.StartName).Trim()
+    if ([string]::IsNullOrWhiteSpace($startName)) { throw 'Migration recovery SCM service account is missing.' }
+    if ($startName.StartsWith('.\', [StringComparison]::OrdinalIgnoreCase)) {
+        $startName = "$env:COMPUTERNAME\$($startName.Substring(2))"
+    }
+    try {
+        $actualSid = ([Security.Principal.NTAccount]::new($startName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    } catch {
+        throw "Migration recovery cannot resolve SCM service account '$($service.StartName)' to a SID."
+    }
+    if ($actualSid -cne $journalSid.Value -or
+        -not [string]::Equals([string]$service.StartName, [string]$Journal.service_start_name, [StringComparison]::OrdinalIgnoreCase) -or
+        [string]$service.StartMode -cne [string]$Journal.service_start_mode) {
+        throw 'Live SCM service-account SID, account name, or start mode does not match protected migration authority.'
+    }
+    $servicePath = [string]$service.PathName
+    if (-not [string]::Equals($servicePath, [string]$Journal.original_service_path, [StringComparison]::OrdinalIgnoreCase) -and
+        -not [string]::Equals($servicePath, [string]$Journal.updated_service_path, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM binary/state command line is outside the authenticated migration transaction.'
+    }
+    return $service
+}
+
 function Restore-WeDecentMigrationTransaction {
     param(
         [Parameter(Mandatory = $true)][pscustomobject]$Journal,
@@ -1001,10 +1080,12 @@ function Restore-WeDecentMigrationTransaction {
     try {
         Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
         Assert-WeDecentMigrationRecoverySource -Journal $Journal
+        $serviceConfig = Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $Journal -MetadataPath $Journal.metadata_path -ServiceName $Journal.service_name -ExpectedDestinationPath $Journal.destination
         $service = Get-Service -Name $Journal.service_name -ErrorAction Stop
         if ($service.Status -ne 'Stopped') {
             Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
             Assert-WeDecentMigrationRecoverySource -Journal $Journal
+            [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $Journal -MetadataPath $Journal.metadata_path -ServiceName $Journal.service_name -ExpectedDestinationPath $Journal.destination)
             Stop-Service -Name $Journal.service_name -Force -ErrorAction Stop
             (Get-Service -Name $Journal.service_name).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
         }
@@ -1016,7 +1097,8 @@ function Restore-WeDecentMigrationTransaction {
         Invoke-WeDecentMigrationFaultPoint -Name 'RollbackStarted' -FaultAt $FaultAt
         Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
         Assert-WeDecentMigrationRecoverySource -Journal $Journal
-        Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path -ServiceSid $Journal.service_sid -StartMode $Journal.service_start_mode
+        [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $Journal -MetadataPath $Journal.metadata_path -ServiceName $Journal.service_name -ExpectedDestinationPath $Journal.destination)
+        Set-WeDecentMigrationServicePath -ServiceName $Journal.service_name -BinaryPath $Journal.original_service_path -ServiceSid $Journal.service_sid -StartMode $Journal.service_start_mode -Journal $Journal
         Invoke-WeDecentMigrationFaultPoint -Name 'RollbackSCMRestored' -FaultAt $FaultAt
         Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
         Assert-WeDecentMigrationRecoverySource -Journal $Journal
@@ -1025,6 +1107,7 @@ function Restore-WeDecentMigrationTransaction {
         if ([bool]$Journal.service_was_running) {
             Assert-WeDecentMigrationMutationLease -Lease $MutationLease -Paths $paths
             Assert-WeDecentMigrationRecoverySource -Journal $Journal
+            [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $Journal -MetadataPath $Journal.metadata_path -ServiceName $Journal.service_name -ExpectedDestinationPath $Journal.destination)
             Start-Service -Name $Journal.service_name -ErrorAction Stop
             (Get-Service -Name $Journal.service_name).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         }
@@ -1069,14 +1152,17 @@ function Recover-WeDecentStateMigration {
         [Parameter(Mandatory = $true)][string]$AgentPath,
         [Parameter(Mandatory = $true)][string]$MetadataPath,
         [Parameter(Mandatory = $true)][string]$ServiceName,
+        [Parameter(Mandatory = $true)][string]$ExpectedDestinationPath,
         [string]$FaultAt
     )
     if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $false }
     $journal = Read-WeDecentMigrationJournal -Path $JournalPath
     if (-not [string]::Equals([string]$journal.metadata_path,[IO.Path]::GetFullPath($MetadataPath),[StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([string]$journal.journal_path,[IO.Path]::GetFullPath($JournalPath),[StringComparison]::OrdinalIgnoreCase) -or
-        [string]$journal.service_name -cne $ServiceName) {
-        throw 'Migration recovery journal does not match this installer metadata path, journal path and service.'
+        [string]$journal.service_name -cne $ServiceName -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$journal.destination), [IO.Path]::GetFullPath($ExpectedDestinationPath), [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$journal.agent_path), [IO.Path]::GetFullPath($AgentPath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Migration recovery journal does not match this installer metadata path, journal path, service, agent, or expected state destination.'
     }
     if ($journal.phase -in @('Committed','RolledBack')) { return $false }
     $journal | Add-Member -NotePropertyName journal_path -NotePropertyValue ([IO.Path]::GetFullPath($JournalPath)) -Force
@@ -1089,6 +1175,7 @@ function Recover-WeDecentStateMigration {
     $recoveryLease = New-WeDecentMigrationMutationLease -Directories $recoveryDirectories
     try {
         Assert-WeDecentMigrationMutationLease -Lease $recoveryLease -Paths $recoveryPaths
+        [void](Assert-WeDecentMigrationRecoveryServiceIdentity -Journal $journal -MetadataPath $MetadataPath -ServiceName $ServiceName -ExpectedDestinationPath $ExpectedDestinationPath)
         [void](Assert-WeDecentMigrationRecoverySource -Journal $journal)
         Restore-WeDecentMigrationTransaction -Journal $journal -FaultAt $FaultAt -MutationLease $recoveryLease
     } finally {
@@ -1798,7 +1885,7 @@ function Invoke-WeDecentStateMigration {
         Invoke-WeDecentMigrationFaultPoint -Name 'SCMTransition' -FaultAt $FaultAt
         Assert-WeDecentMigrationMutationLease -Lease $mutationLease -Paths $migrationPaths
         Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-        Set-WeDecentMigrationServicePath -ServiceName $ServiceName -BinaryPath $updatedPath -ServiceSid $ServiceSid -StartMode ([string]$service.StartMode)
+        Set-WeDecentMigrationServicePath -ServiceName $ServiceName -BinaryPath $updatedPath -ServiceSid $ServiceSid -StartMode ([string]$service.StartMode) -Journal $journal
         $journal.phase = 'ServiceReconfigured'
         Write-WeDecentMigrationJournal -Path $JournalPath -Journal $journal
         Invoke-WeDecentMigrationFaultPoint -Name 'ServiceReconfigured' -FaultAt $FaultAt
