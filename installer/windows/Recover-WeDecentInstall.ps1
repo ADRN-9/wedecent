@@ -162,10 +162,10 @@ function Normalize-ServiceAccountName {
     param([Parameter(Mandatory = $true)][string]$Name)
     $value = $Name.Trim()
     if ([string]::IsNullOrWhiteSpace($value)) { throw 'Service account name is empty.' }
-    if ($value.StartsWith('.\\', [StringComparison]::Ordinal)) {
-        return "$env:COMPUTERNAME\\$($value.Substring(2))"
+    if ($value.StartsWith('.\', [StringComparison]::Ordinal)) {
+        return "$env:COMPUTERNAME\$($value.Substring(2))"
     }
-    if (-not $value.Contains('\\')) { return "$env:COMPUTERNAME\\$value" }
+    if (-not $value.Contains('\')) { return "$env:COMPUTERNAME\$value" }
     return $value
 }
 
@@ -198,14 +198,14 @@ function Assert-AuthenticatedRecoveryServiceIdentity {
 
     $expectedExecutable = [IO.Path]::GetFullPath((Join-Path $InstallDir 'wd-agent.exe'))
     $servicePath = [string]$ServiceConfig.PathName
-    $exeMatch = [regex]::Match($servicePath, '^"([^"]+)"(?:\\s|$)|^(\\S+)(?:\\s|$)')
+    $exeMatch = [regex]::Match($servicePath, '^"([^"]+)"(?:\s|$)|^(\S+)(?:\s|$)')
     if (-not $exeMatch.Success) { throw 'Live SCM executable path is missing or ambiguous.' }
     $actualExecutable = if ($exeMatch.Groups[1].Success) { $exeMatch.Groups[1].Value } else { $exeMatch.Groups[2].Value }
     if (-not [string]::Equals([IO.Path]::GetFullPath($actualExecutable), $expectedExecutable, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Live SCM executable path does not match protected installer metadata.'
     }
 
-    $statePattern = '(?i)(?<!\\S)"--state=([^"]+)"|(?<!\\S)--state="([^"]+)"|(?<!\\S)--state=([^\\s"]+)'
+    $statePattern = '(?i)(?<!\S)"--state=([^"]+)"|(?<!\S)--state="([^"]+)"|(?<!\S)--state=([^\s"]+)'
     $stateMatches = [regex]::Matches($servicePath, $statePattern)
     if ($stateMatches.Count -ne 1) { throw 'Live SCM command line must contain exactly one authenticated --state argument.' }
     $stateMatch = $stateMatches[0]
