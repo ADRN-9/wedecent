@@ -162,6 +162,18 @@ function Restore-TransactionRecoveryScript {
     if ($expected -notmatch '^[a-f0-9]{64}$') {
         throw 'Previous recovery script digest is invalid.'
     }
+    $staging = "$backup.staging"
+    if (Test-Path -LiteralPath $staging) {
+        $stagingInfo = Get-Item -LiteralPath $staging -Force -ErrorAction Stop
+        if ($stagingInfo.PSIsContainer -or ($stagingInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            (Test-Path -LiteralPath $backup) -or
+            -not (Test-Path -LiteralPath $target -PathType Leaf) -or
+            (Get-Sha256FileHash $target) -ne $expected) {
+            throw 'Interrupted recovery-script staging file cannot be safely discarded; retaining it and refusing rollback.'
+        }
+        # The original script remains authoritative; only the incomplete transaction staging file is removed.
+        Remove-Item -LiteralPath $staging -Force -ErrorAction Stop
+    }
     if (Test-Path -LiteralPath $backup) {
         $backupInfo = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
         if ($backupInfo.PSIsContainer -or ($backupInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
