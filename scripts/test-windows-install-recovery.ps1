@@ -147,10 +147,16 @@ if (-not $recoveryText.Contains('FinalizeCommitted') -or
     -not $recoveryText.Contains('Backup disappeared before durable committed journal publication') -or
     -not $recoveryText.Contains('Refusing to clean a corrupted committed metadata snapshot:') -or
     -not $recoveryText.Contains('metadata_backup_path') -or
-    -not $recoveryText.Contains('SCM service identity does not match authenticated prior installer metadata.') -or
-    -not $recoveryText.Contains('SCM service account SID does not match protected installer metadata') -or
-    -not $recoveryText.Contains('$serviceConfig.StartName') -or
-    -not $recoveryText.Contains('SCM did not confirm the service stopped before recovery.') -or
+    -not $recoveryText.Contains('function Assert-AuthenticatedRecoveryServiceIdentity') -or
+    -not $recoveryText.Contains('Live SCM service account name does not exactly match protected installer metadata.') -or
+    -not $recoveryText.Contains('Live SCM service account SID does not match the dedicated account authenticated by protected installer metadata.') -or
+    -not $recoveryText.Contains('Live SCM executable path does not match protected installer metadata.') -or
+    -not $recoveryText.Contains('Live SCM state path does not match protected installer metadata.') -or
+    -not $recoveryText.Contains('Live SCM service start mode does not match the supported automatic service configuration.') -or
+    -not $recoveryText.Contains('$ServiceConfig.StartName') -or
+    -not $recoveryText.Contains('SCM did not confirm the service stopped.') -or
+    -not $recoveryText.Contains('$recoveryScmMutationLock = Enter-RecoveryScmMutationLock') -or
+    -not $recoveryText.Contains('Exit-RecoveryScmMutationLock -Handle $recoveryScmMutationLock') -or
     -not $recoveryText.Contains('journalMetadataBackup') -or
     -not $recoveryText.Contains('Older transaction journal is not durably committed.') -or
     -not $recoveryText.Contains('Restored installer metadata failed its original digest check.')) {
