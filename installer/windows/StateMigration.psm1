@@ -1989,13 +1989,13 @@ function Invoke-WeDecentStateMigration {
     if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
         New-Item -ItemType Directory -Path $destinationParent -ErrorAction Stop | Out-Null
     }
+    [void](Assert-WeDecentMigrationRealDirectory -Path $destinationParent)
+    [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
     if (-not (Test-Path -LiteralPath $journalParent -PathType Container)) {
         New-Item -ItemType Directory -Path $journalParent -ErrorAction Stop | Out-Null
     }
-    [void](Assert-WeDecentMigrationRealDirectory -Path $destinationParent)
     [void](Assert-WeDecentMigrationRealDirectory -Path $journalParent)
     [void](Set-WeDecentMigrationAdminDirectory -Path $journalParent -AgentPath $AgentPath)
-    [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
     [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
     $directoryAnchors = @($sourceFull, $destinationParent, $journalParent,
         (Split-Path -Parent $MetadataPath))
