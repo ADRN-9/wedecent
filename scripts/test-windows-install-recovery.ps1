@@ -398,7 +398,7 @@ try {
 
     $agentPath = Join-Path $installDir 'wd-agent.exe'
     $serviceImage = '"' + $agentPath + '" --service --state="' + $stateDir + '"'
-    New-Service -Name $serviceName -BinaryPathName $serviceImage -Credential $serviceCredential -StartupType Manual -ErrorAction Stop | Out-Null
+    New-Service -Name $serviceName -BinaryPathName $serviceImage -Credential $serviceCredential -StartupType Automatic -ErrorAction Stop | Out-Null
     $serviceCheck = Get-CimInstance -ClassName Win32_Service -Filter "Name='$serviceName'" -ErrorAction Stop
     if ($null -eq $serviceCheck -or $serviceCheck.State -ne 'Stopped') { throw 'SCM service fixture was not created stopped.' }
     $actualServiceStartName = ([string]$serviceCheck.StartName).Trim()
@@ -408,6 +408,97 @@ try {
     $actualServiceSid = (New-Object Security.Principal.NTAccount -ArgumentList $actualServiceStartName).Translate([Security.Principal.SecurityIdentifier]).Value
     if (-not [string]::Equals($actualServiceSid, $serviceSid, [StringComparison]::OrdinalIgnoreCase)) {
         throw "SCM test service account SID does not match its provisioned local account ($actualServiceSid != $serviceSid)."
+    }
+
+    # Execute production identity predicates against a real temporary local account.
+    $recoverySource = Get-Content -LiteralPath $recoveryScript -Raw
+    $recoveryTokens = $null
+    $recoveryParseErrors = $null
+    $recoveryAst = [System.Management.Automation.Language.Parser]::ParseInput($recoverySource, [ref]$recoveryTokens, [ref]$recoveryParseErrors)
+    if ($recoveryParseErrors.Count -ne 0) { throw 'Standalone recovery script has PowerShell parse errors.' }
+    $identityFunctionNames = @('Resolve-ServiceAccountSid', 'Normalize-ServiceAccountName', 'Assert-AuthenticatedRecoveryServiceIdentity')
+    $identityFunctions = $recoveryAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $identityFunctionNames -contains $node.Name
+    }, $true)
+    if ($identityFunctions.Count -ne $identityFunctionNames.Count) { throw 'Standalone recovery identity functions are missing.' }
+    foreach ($functionAst in $identityFunctions) { Invoke-Expression $functionAst.Extent.Text }
+
+    $ServiceName = $serviceName
+    $InstallDir = $installDir
+    $StateDir = $stateDir
+    $identityMetadata = [pscustomobject]@{
+        service_name = $serviceName
+        install_dir = $installDir
+        state_dir = $stateDir
+        service_account_name = $serviceAccountName
+        service_account_sid = $serviceSid
+    }
+    $validIdentityConfig = [pscustomobject]@{
+        Name = $serviceName
+        StartName = $actualServiceStartName
+        StartMode = 'Auto'
+        PathName = '"' + $agentPath + '" --service --state="' + $stateDir + '"'
+    }
+    [void](Assert-AuthenticatedRecoveryServiceIdentity -Metadata $identityMetadata -ServiceConfig $validIdentityConfig)
+
+    function Assert-RecoveryIdentityRejected {
+        param([string]$Case, $Metadata, $Config)
+        $rejected = $false
+        try { [void](Assert-AuthenticatedRecoveryServiceIdentity -Metadata $Metadata -ServiceConfig $Config) } catch { $rejected = $true }
+        if (-not $rejected) { throw "Standalone recovery accepted mismatched $Case." }
+    }
+    $bad = $validIdentityConfig.PSObject.Copy()
+    $bad.StartName = "$env:COMPUTERNAME\other-service-account"
+    Assert-RecoveryIdentityRejected -Case 'service account name' -Metadata $identityMetadata -Config $bad
+    $bad = $validIdentityConfig.PSObject.Copy()
+    $bad.PathName = '"' + (Join-Path $installDir 'untrusted-agent.exe') + '" --service --state="' + $stateDir + '"'
+    Assert-RecoveryIdentityRejected -Case 'executable path' -Metadata $identityMetadata -Config $bad
+    $bad = $validIdentityConfig.PSObject.Copy()
+    $bad.PathName = '"' + $agentPath + '" --service --state="' + (Join-Path $installDir 'other-state') + '"'
+    Assert-RecoveryIdentityRejected -Case 'state path' -Metadata $identityMetadata -Config $bad
+    $bad = $validIdentityConfig.PSObject.Copy()
+    $bad.StartMode = 'Manual'
+    Assert-RecoveryIdentityRejected -Case 'start mode' -Metadata $identityMetadata -Config $bad
+    $badMetadata = $identityMetadata.PSObject.Copy()
+    $badMetadata.service_account_sid = 'S-1-5-21-111111111-222222222-333333333-4444'
+    Assert-RecoveryIdentityRejected -Case 'service SID' -Metadata $badMetadata -Config $validIdentityConfig
+    $badMetadata = $identityMetadata.PSObject.Copy()
+    $badMetadata.service_name = 'DifferentService'
+    Assert-RecoveryIdentityRejected -Case 'service name' -Metadata $badMetadata -Config $validIdentityConfig
+    $builtInMetadata = $identityMetadata.PSObject.Copy()
+    $builtInMetadata.service_account_name = 'NT AUTHORITY\SYSTEM'
+    $builtInMetadata.service_account_sid = 'S-1-5-18'
+    $builtInConfig = $validIdentityConfig.PSObject.Copy()
+    $builtInConfig.StartName = 'NT AUTHORITY\SYSTEM'
+    Assert-RecoveryIdentityRejected -Case 'built-in service identity' -Metadata $builtInMetadata -Config $builtInConfig
+
+    $pendingRecoveryStart = $recoverySource.IndexOf('$pending = $state.pending_install', [StringComparison]::Ordinal)
+    $initialIdentityIndex = $recoverySource.IndexOf('$initialServiceSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata', $pendingRecoveryStart, [StringComparison]::Ordinal)
+    $stopWrapperIndex = $recoverySource.IndexOf('Stop-AuthenticatedRecoveryService -Metadata $metadata', $initialIdentityIndex, [StringComparison]::Ordinal)
+    $firstRecoveryFileMutation = [int]::MaxValue
+    foreach ($mutation in @('Copy-Item ', 'Move-Item ', 'Remove-Item ', 'Write-TransactionJournal ')) {
+        $mutationIndex = $recoverySource.IndexOf($mutation, $initialIdentityIndex, [StringComparison]::Ordinal)
+        if ($mutationIndex -ge 0 -and $mutationIndex -lt $firstRecoveryFileMutation) { $firstRecoveryFileMutation = $mutationIndex }
+    }
+    if ($pendingRecoveryStart -lt 0 -or $initialIdentityIndex -lt 0 -or $stopWrapperIndex -lt 0 -or
+        $initialIdentityIndex -ge $stopWrapperIndex -or $initialIdentityIndex -ge $firstRecoveryFileMutation) {
+        throw 'Standalone recovery must reject a mismatched live service identity before SCM or protected-file side effects.'
+    }
+    foreach ($mutationFunction in @(
+        @{ Name = 'Stop-AuthenticatedRecoveryService'; Mutation = 'Stop-Service -Name $ServiceName' },
+        @{ Name = 'Start-AuthenticatedRecoveryService'; Mutation = 'Start-Service -Name $ServiceName' }
+    )) {
+        $functionStart = $recoverySource.IndexOf("function $($mutationFunction.Name)", [StringComparison]::Ordinal)
+        $functionEnd = $recoverySource.IndexOf(([Environment]::NewLine + 'function '), $functionStart + 1, [StringComparison]::Ordinal)
+        if ($functionEnd -lt 0) { $functionEnd = $recoverySource.Length }
+        $functionBody = $recoverySource.Substring($functionStart, $functionEnd - $functionStart)
+        $lockIndex = $functionBody.IndexOf('Enter-RecoveryScmMutationLock', [StringComparison]::Ordinal)
+        $freshIdentityIndex = $functionBody.IndexOf('Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata', [StringComparison]::Ordinal)
+        $scmMutationIndex = $functionBody.IndexOf($mutationFunction.Mutation, [StringComparison]::Ordinal)
+        if ($lockIndex -lt 0 -or $freshIdentityIndex -lt $lockIndex -or $scmMutationIndex -lt $freshIdentityIndex) {
+            throw "Standalone recovery $($mutationFunction.Name) must lock SCM and revalidate immediately before mutation."
+        }
     }
     $successful = New-TransactionFixture
     $metadataBefore = Get-TestHash $successful.metadataBackupPath
