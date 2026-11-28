@@ -1157,6 +1157,34 @@ function Restore-WeDecentMigrationTransaction {
     }
 }
 
+function Open-WeDecentMigrationInstallerLock {
+    $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $root)
+    $path = Join-Path $root 'installer.lock'
+    $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Shared installer/recovery lock must be a regular non-reparse file.'
+    }
+    $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+    $allowed = @('S-1-5-18', 'S-1-5-32-544')
+    $owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($owner -notin $allowed -or -not $acl.AreAccessRulesProtected) {
+        throw 'Shared installer/recovery lock owner or DACL is not trusted.'
+    }
+    foreach ($rule in $acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier])) {
+        if ($rule.IdentityReference.Value -notin $allowed -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $rule.FileSystemRights -ne [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw 'Shared installer/recovery lock contains an unexpected access rule.'
+        }
+    }
+    try {
+        return [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    } catch [IO.IOException] {
+        throw 'Another WeDecent installer or migration recovery operation owns the machine-wide installation lock.'
+    }
+}
+
 function Recover-WeDecentStateMigration {
     param(
         [Parameter(Mandatory = $true)][string]$JournalPath,
@@ -1164,9 +1192,13 @@ function Recover-WeDecentStateMigration {
         [Parameter(Mandatory = $true)][string]$MetadataPath,
         [Parameter(Mandatory = $true)][string]$ServiceName,
         [Parameter(Mandatory = $true)][string]$ExpectedDestinationPath,
+        [switch]$InstallerLockHeld,
         [string]$FaultAt
     )
     if (-not (Test-Path -LiteralPath $JournalPath -PathType Leaf)) { return $false }
+    $installerLock = $null
+    if (-not $InstallerLockHeld) { $installerLock = Open-WeDecentMigrationInstallerLock }
+    try {
     $journal = Read-WeDecentMigrationJournal -Path $JournalPath
     if (-not [string]::Equals([string]$journal.metadata_path,[IO.Path]::GetFullPath($MetadataPath),[StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([string]$journal.journal_path,[IO.Path]::GetFullPath($JournalPath),[StringComparison]::OrdinalIgnoreCase) -or
@@ -1193,6 +1225,9 @@ function Recover-WeDecentStateMigration {
         $recoveryLease.Dispose()
     }
     return $true
+    } finally {
+        if ($null -ne $installerLock) { $installerLock.Dispose() }
+    }
 }
 
 function Get-WeDecentMigrationUpdatedServicePath {
