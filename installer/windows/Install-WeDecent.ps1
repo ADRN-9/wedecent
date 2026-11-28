@@ -2218,6 +2218,15 @@ if ($service) {
     $managed = [bool]$metadata.managed_service_account
 
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Upgrade WeDecent to $version")) { return }
+
+    # Tighten the SCM object DACL before any migration, recovery, or upgrade mutation.
+    # The signed bundle's agent applies a protected DACL: SYSTEM/Administrators full,
+    # Authenticated Users query-status only. Local administrators remain trusted.
+    & $migrationAgentPath service secure "--service-name=$ServiceName"
+    if ($LASTEXITCODE -ne 0) {
+        throw "Failed to restrict the existing Windows service control DACL (exit $LASTEXITCODE); refusing upgrade."
+    }
+
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     if ($needsStateMigration) {
         Write-Host "Migrating authenticated service state from '$recordedStateDir' to '$requestedStateDir'."
