@@ -1039,6 +1039,13 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         throw 'Protected installer metadata does not bind the same installation identity as the migration transaction.'
     }
 
+    if ([string]::IsNullOrWhiteSpace([string]$metadata.state_dir) -or
+        [string]::IsNullOrWhiteSpace([string]$original.state_dir)) {
+        throw 'Protected installer metadata is missing a state path.'
+    }
+    $metadataState = Get-WeDecentMigrationCanonicalPath -Path ([string]$metadata.state_dir)
+    $source = Get-WeDecentMigrationCanonicalPath -Path ([string]$Journal.source)
+    $destination = Get-WeDecentMigrationCanonicalPath -Path ([string]$Journal.destination)
     $installRoot = Get-WeDecentMigrationCanonicalPath -Path ([string]$metadata.install_dir)
     $installPrefix = $installRoot.TrimEnd('\') + '\'
     $expectedJournalPath = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'migration\state-migration.json')
@@ -1046,14 +1053,6 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         -not $destination.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Migration journal or destination is outside the authenticated installation transaction namespace.'
     }
-
-    if ([string]::IsNullOrWhiteSpace([string]$metadata.state_dir) -or
-        [string]::IsNullOrWhiteSpace([string]$original.state_dir)) {
-        throw 'Protected installer metadata is missing a state path.'
-    }
-    $metadataState = [IO.Path]::GetFullPath([string]$metadata.state_dir)
-    $source = [IO.Path]::GetFullPath([string]$Journal.source)
-    $destination = [IO.Path]::GetFullPath([string]$Journal.destination)
     if (-not [string]::Equals($metadataState, $source, [StringComparison]::OrdinalIgnoreCase) -and
         -not [string]::Equals($metadataState, $destination, [StringComparison]::OrdinalIgnoreCase)) {
         throw 'Protected installer metadata state_dir is outside this migration transaction.'
