@@ -12,7 +12,7 @@ if ($backupStage -lt 0 -or $replacementStage -lt 0 -or $backupStage -ge $replace
 }
 if (-not $installerText.Contains('$Destination.$($script:InstallTransactionId).bak') -or
     -not $installerText.Contains('installed-awaiting-sequence-commit') -or
-    -not $installerText.Contains('param([Parameter(Mandatory = $true)]$Journal, [string]$Path, [switch]$CreateNew)') -or
+    -not $installerText.Contains('param([Parameter(Mandatory = $true)]$Journal, [string]$Path, [switch]$CreateNew, [scriptblock]$CrashHook)') -or
     -not $installerText.Contains('Installer journal path must match its transaction ID inside the protected journal directory.') -or
     -not $installerText.Contains('Installer transaction journal already exists; exclusive transaction creation rejected replay.') -or
     -not $installerText.Contains('Publish-WeDecentBinaryBackup -Source $destination') -or
@@ -1090,6 +1090,69 @@ try {
     }, $true)
     if ($durableFunctions.Count -ne $durableFunctionNames.Count) { throw 'Could not locate every production durable-backup and installer-lock helper.' }
     foreach ($functionAst in $durableFunctions) { Invoke-Expression $functionAst.Extent.Text }
+    # Terminate a child at each durable journal boundary, then resume journal publication in a fresh process.
+    $journalCrashPoints = @('after-journal-flush', 'after-journal-publish', 'after-journal-acl')
+    foreach ($crashPoint in $journalCrashPoints) {
+        $programData = Join-Path $durableTestDir ("journal-programdata-" + [Guid]::NewGuid().ToString('N'))
+        $journalRootForCrash = Join-Path $programData 'WeDecent\install-transactions'
+        New-Item -ItemType Directory -Force -Path $journalRootForCrash | Out-Null
+        $id = [Guid]::NewGuid().ToString('N')
+        $journalPathForCrash = Join-Path $journalRootForCrash ($id + '.json')
+        $marker = Join-Path $durableTestDir ("journal-marker-" + $id)
+        $markerQ = $marker.Replace("'", "''")
+        $writerText = $writerFunction[0].Extent.Text
+        $programDataQ = $programData.Replace("'", "''")
+        $childCommand = @'
+$env:ProgramData = '__PROGRAMDATA__'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__WRITER_FUNCTION__
+$journal = [ordered]@{ transaction_id = '__ID__'; phase = 'prepared' }
+Write-InstallJournal -Journal $journal -CreateNew -CrashHook {
+    param($point)
+    if ($point -eq '__CRASH_POINT__') { [IO.File]::WriteAllText('__MARKER__', 'crash'); [Environment]::Exit(79) }
+}
+'@
+        $childCommand = $childCommand.Replace('__PROGRAMDATA__', $programDataQ).Replace('__WRITER_FUNCTION__', $writerText).Replace('__ID__', $id).Replace('__CRASH_POINT__', $crashPoint).Replace('__MARKER__', $markerQ)
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childCommand))
+        $child = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -PassThru -WindowStyle Hidden
+        $deadline = [DateTime]::UtcNow.AddSeconds(15)
+        while (-not (Test-Path -LiteralPath $marker) -and -not $child.HasExited -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 100; $child.Refresh() }
+        if (-not (Test-Path -LiteralPath $marker)) {
+            if (-not $child.HasExited) { Stop-Process -Id $child.Id -Force }
+            throw "Journal child process did not reach crash boundary: $crashPoint"
+        }
+        $child.WaitForExit()
+        if ($child.ExitCode -ne 79) { throw "Journal child did not terminate at $crashPoint." }
+        $journalWasPublished = Test-Path -LiteralPath $journalPathForCrash
+        if (($crashPoint -eq 'after-journal-flush' -and $journalWasPublished) -or
+            ($crashPoint -ne 'after-journal-flush' -and -not $journalWasPublished)) {
+            throw "Journal state after process termination is inconsistent at $crashPoint."
+        }
+        $retryCommand = @'
+$env:ProgramData = '__PROGRAMDATA__'
+function Protect-WeDecentMetadataAcl { param([string]$Path) }
+function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
+__WRITER_FUNCTION__
+$journal = [ordered]@{ transaction_id = '__ID__'; phase = 'prepared' }
+if (Test-Path -LiteralPath '__JOURNAL_PATH__') {
+    Write-InstallJournal -Journal $journal
+} else {
+    Write-InstallJournal -Journal $journal -CreateNew
+}
+'@
+        $retryCommand = $retryCommand.Replace('__PROGRAMDATA__', $programDataQ).Replace('__WRITER_FUNCTION__', $writerText).Replace('__ID__', $id).Replace('__JOURNAL_PATH__', $journalPathForCrash.Replace("'", "''"))
+        $retryEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($retryCommand))
+        $retry = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $retryEncoded) -PassThru -Wait -WindowStyle Hidden
+        if ($retry.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $journalPathForCrash)) {
+            throw "Fresh-process journal recovery failed after $crashPoint."
+        }
+        $journalAfterRetry = Get-Content -LiteralPath $journalPathForCrash -Raw | ConvertFrom-Json
+        if ($journalAfterRetry.transaction_id -ne $id -or $journalAfterRetry.phase -ne 'prepared') {
+            throw "Fresh-process journal recovery changed transaction identity after $crashPoint."
+        }
+    }
+
     # Exercise all five durable backup paths and reject corrupted existing backups.
     $durableTestDir = Join-Path $root 'durable-backup-tests'
     New-Item -ItemType Directory -Force -Path $durableTestDir | Out-Null
