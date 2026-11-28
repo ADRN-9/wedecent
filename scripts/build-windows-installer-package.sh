@@ -63,7 +63,7 @@ done
 [[ -d "$ROOT/installer" && ! -L "$ROOT/installer" ]] || fail "installer assets directory must not be a symlink"
 [[ -d "$ROOT/installer/windows" && ! -L "$ROOT/installer/windows" ]] || fail "Windows installer assets directory must not be a symlink"
 [[ "$(cd "$ROOT/installer/windows" && pwd -P)" == "$ROOT/installer/windows" ]] || fail "Windows installer assets path contains a symlink component"
-installer_files=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1)
+installer_files=(Install-WeDecent.ps1 Uninstall-WeDecent.ps1 Test-WeDecentInstall.ps1 Recover-WeDecentInstall.ps1)
 for name in "${installer_files[@]}"; do
   [[ -f "$ROOT/installer/windows/$name" && ! -L "$ROOT/installer/windows/$name" ]] ||
     fail "installer asset is missing or is a symlink: $name"

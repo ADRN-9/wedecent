@@ -47,6 +47,8 @@ func runServiceCommand(args []string) error {
 		return runServiceStatus(args[1:])
 	case "uninstall":
 		return runServiceUninstall(args[1:])
+	case "secure":
+		return runServiceSecure(args[1:])
 	default:
 		serviceUsage()
 		return fmt.Errorf("unknown service subcommand %q", args[0])
@@ -558,6 +560,14 @@ func runServiceUninstall(args []string) error {
 	return winservice.Uninstall(name)
 }
 
+func runServiceSecure(args []string) error {
+	name, err := serviceNameOnlyFlags("service secure", args)
+	if err != nil {
+		return err
+	}
+	return winservice.RestrictService(name)
+}
+
 func serviceNameOnlyFlags(name string, args []string) (string, error) {
 	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	serviceName := fs.String("service-name", defaultWindowsServiceName, "Windows service name")
@@ -679,5 +689,6 @@ Commands:
   stop         Stop the Windows service
   status       Show Windows service status
   uninstall    Stop and remove the Windows service
+  secure       Restrict service-object control permissions (elevated)
   run          Internal SCM entrypoint; do not invoke manually`)
 }

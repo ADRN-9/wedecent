@@ -8,16 +8,75 @@ $installerPath = Join-Path $repoRoot 'installer/windows/Install-WeDecent.ps1'
 $agentPath = Join-Path $repoRoot 'dist/wedecent-windows-amd64/wd-agent.exe'
 if (-not (Test-Path -LiteralPath $agentPath -PathType Leaf)) { throw "Missing built Windows agent: $agentPath" }
 $installerText = Get-Content -LiteralPath $installerPath -Raw
+$installerLines = $installerText -split '\r?\n'
+for ($lineIndex = 0; $lineIndex -lt $installerLines.Count; $lineIndex++) {
+    if ($installerLines[$lineIndex] -match '^\s*(?:Stop-Service|Start-Service)\s+-Name\s+\$ServiceName') {
+        $firstGuardLine = [Math]::Max(0, $lineIndex - 3)
+        $guardWindow = [string]::Join([Environment]::NewLine, $installerLines[$firstGuardLine..($lineIndex - 1)])
+        if ($guardWindow -notmatch 'Assert-WeDecent(?:Recovery|Fresh)ServiceIdentity') {
+            throw "Installer SCM mutation lacks an immediately preceding live identity guard at line $($lineIndex + 1)."
+        }
+    }
+    if ($installerLines[$lineIndex] -match '&\s*sc\.exe\s+delete\s+\$ServiceName') {
+        $firstGuardLine = [Math]::Max(0, $lineIndex - 3)
+        $guardWindow = [string]::Join([Environment]::NewLine, $installerLines[$firstGuardLine..($lineIndex - 1)])
+        if ($guardWindow -notmatch 'Assert-WeDecentFreshServiceIdentity') {
+            throw "Installer SCM deletion lacks an immediately preceding live identity guard at line $($lineIndex + 1)."
+        }
+    }
+}
 $migrationCall = $installerText.IndexOf('Invoke-WeDecentStateMigration -Source $recordedStateDir', [StringComparison]::Ordinal)
+$recoveryCall = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
+$normalUpgradeIdentity = $installerText.IndexOf('Live SCM service-account SID must exactly match ACL-protected installer metadata before any upgrade recovery or mutation.', [StringComparison]::Ordinal)
 $binaryInstall = $installerText.IndexOf('Install-Binaries -SourceDirectory $BundlePath', [StringComparison]::Ordinal)
-if ($migrationCall -lt 0 -or $binaryInstall -lt 0 -or $migrationCall -ge $binaryInstall) { throw 'Installer does not execute migration before binary replacement.' }
-foreach ($required in @('Recover-WeDecentStateMigration','Test-WeDecentMetadataTrusted','Existing SCM command line does not match the authenticated state_dir metadata','Existing service state location is not authenticated by protected installer metadata','Legacy ProgramData service state exists; refusing to create a replacement identity')) {
+if ($migrationCall -lt 0 -or $binaryInstall -lt 0 -or $migrationCall -ge $binaryInstall -or
+    $recoveryCall -lt 0 -or $normalUpgradeIdentity -lt 0 -or $normalUpgradeIdentity -ge $recoveryCall) {
+    throw 'Installer must authenticate normal-upgrade service identity before recovery and execute migration before binary replacement.'
+}
+if ($installerText.Contains('-InstallerLockHeld')) { throw 'Installer must not expose a caller-controlled migration lock bypass.' }
+$migrationBlockStart = $installerText.IndexOf('if ($needsStateMigration) {', [StringComparison]::Ordinal)
+if ($migrationBlockStart -lt 0 -or $migrationCall -le $migrationBlockStart) { throw 'Installer migration block is missing its authenticated module entrypoint.' }
+$migrationPreflightText = $installerText.Substring($migrationBlockStart, $migrationCall - $migrationBlockStart)
+if ($migrationPreflightText.Contains('Set-WeDecentMigrationAdminDirectory') -or
+    $migrationPreflightText.Contains('New-Item -ItemType Directory')) {
+    throw 'Installer must not create migration parents or change ACLs before the migration module authenticates metadata and live SCM identity.'
+}
+foreach ($required in @('Recover-WeDecentStateMigration','Test-WeDecentMetadataTrusted','Existing SCM command line does not match the authenticated state_dir metadata','Existing service state location is not authenticated by protected installer metadata','Legacy ProgramData service state exists; refusing to create a replacement identity','Protected metadata account name, live SCM account and local account SID do not agree')) {
     if (-not $installerText.Contains($required)) { throw "Installer migration integration is missing guard: $required" }
 }
 Import-Module $modulePath -Force
+$installerLockRoot = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+$installerLockRootCreated = -not (Test-Path -LiteralPath $installerLockRoot -PathType Container)
+New-Item -ItemType Directory -Force -Path $installerLockRoot | Out-Null
+if ($installerLockRootCreated) {
+    $adminsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+    $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+    $lockRootAcl = [Security.AccessControl.DirectorySecurity]::new()
+    $lockRootAcl.SetAccessRuleProtection($true, $false)
+    $lockRootAcl.SetOwner($adminsSid)
+    $lockInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @($adminsSid, $systemSid)) {
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, [Security.AccessControl.FileSystemRights]::FullControl, $lockInheritance,
+            [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow
+        )
+        [void]$lockRootAcl.AddAccessRule($rule)
+    }
+    Set-Acl -LiteralPath $installerLockRoot -AclObject $lockRootAcl -ErrorAction Stop
+} else {
+    [void](Assert-WeDecentMigrationAdminDirectory -Path $installerLockRoot)
+}
+$installerLockPath = Join-Path $installerLockRoot 'installer.lock'
+if (-not (Test-Path -LiteralPath $installerLockPath -PathType Leaf)) {
+    $bootstrapLock = [IO.File]::Open($installerLockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $bootstrapLock.Dispose()
+    Set-WeDecentMigrationAdminFileAcl -Path $installerLockPath
+}
 $global:WeDecentMigrationMockService = $null
 $global:WeDecentMigrationMockStatus = 'Running'
 $global:WeDecentMigrationStartCount = 0
+$global:WeDecentMigrationStopCount = 0
+$global:WeDecentMigrationScmConfigCount = 0
 function global:Get-CimInstance {
     [CmdletBinding()]
     param([string]$ClassName, [string]$Filter)
@@ -39,6 +98,7 @@ function global:Stop-Service {
     [CmdletBinding()]
     param([string]$Name, [switch]$Force)
     if ($Name -cne $global:WeDecentMigrationMockService.Name) { throw "Unexpected service stop: $Name" }
+    $global:WeDecentMigrationStopCount++
     $global:WeDecentMigrationMockStatus = 'Stopped'
     $global:WeDecentMigrationMockService.State = 'Stopped'
 }
@@ -56,6 +116,7 @@ function global:sc.exe {
         $global:LASTEXITCODE = 1
         return 'Unexpected mocked SCM command.'
     }
+    $global:WeDecentMigrationScmConfigCount++
     $global:WeDecentMigrationMockService.PathName = $Config.Substring('binPath= '.Length)
     $global:LASTEXITCODE = 0
     return 'SUCCESS'
@@ -122,6 +183,8 @@ function Get-MigrationRecoverySideEffectSnapshot {
         ServiceState = [string]$global:WeDecentMigrationMockService.State
         MockServiceStatus = [string]$global:WeDecentMigrationMockStatus
         ServiceStartCount = [int]$global:WeDecentMigrationStartCount
+        ServiceStopCount = [int]$global:WeDecentMigrationStopCount
+        ScmConfigCount = [int]$global:WeDecentMigrationScmConfigCount
     }
 }
 function Assert-MigrationRecoveryNoSideEffects {
@@ -135,15 +198,68 @@ function Assert-MigrationRecoveryNoSideEffects {
     foreach ($treePath in $Before.Trees.Keys) {
         if ($after.Trees[$treePath] -cne $Before.Trees[$treePath]) { throw "Rejected $Case changed migration filesystem tree: $treePath" }
     }
-    foreach ($field in @('ServicePath','ServiceStartName','ServiceStartMode','ServiceState','MockServiceStatus','ServiceStartCount')) {
+    foreach ($field in @('ServicePath','ServiceStartName','ServiceStartMode','ServiceState','MockServiceStatus','ServiceStartCount','ServiceStopCount','ScmConfigCount')) {
         if ([string]$after.$field -cne [string]$Before.$field) { throw "Rejected $Case changed mocked SCM/service field $field." }
     }
 }
+function Get-ForwardMigrationSideEffectSnapshot {
+    param([Parameter(Mandatory = $true)]$Fixture)
+    return [pscustomobject]@{
+        Root = Get-MigrationTreeSnapshot -Path $Fixture.Root
+        MetadataBytes = [Convert]::ToBase64String([IO.File]::ReadAllBytes($Fixture.MetadataPath))
+        JournalExists = Test-Path -LiteralPath $Fixture.Journal
+        JournalBytes = if (Test-Path -LiteralPath $Fixture.Journal) { [Convert]::ToBase64String([IO.File]::ReadAllBytes($Fixture.Journal)) } else { '<missing>' }
+        ServicePath = [string]$global:WeDecentMigrationMockService.PathName
+        ServiceStartName = [string]$global:WeDecentMigrationMockService.StartName
+        ServiceStartMode = [string]$global:WeDecentMigrationMockService.StartMode
+        ServiceState = [string]$global:WeDecentMigrationMockService.State
+        StartCount = [int]$global:WeDecentMigrationStartCount
+        StopCount = [int]$global:WeDecentMigrationStopCount
+        ConfigCount = [int]$global:WeDecentMigrationScmConfigCount
+    }
+}
+function Assert-ForwardMigrationNoSideEffects {
+    param([Parameter(Mandatory = $true)]$Before, [Parameter(Mandatory = $true)]$After, [Parameter(Mandatory = $true)][string]$Case)
+    foreach ($field in @('Root','MetadataBytes','JournalExists','JournalBytes','ServicePath','ServiceStartName','ServiceStartMode','ServiceState','StartCount','StopCount','ConfigCount')) {
+        if ([string]$Before.$field -cne [string]$After.$field) { throw "Rejected forward migration $Case changed $field." }
+    }
+}
+function Invoke-MigrationLockContentionChild {
+    param([Parameter(Mandatory = $true)][string]$Command)
+    $moduleLiteral = "'" + $modulePath.Replace("'", "''") + "'"
+    $scriptText = @"
+Import-Module $moduleLiteral -ErrorAction Stop
+try {
+    $Command
+} catch {
+    if (`$_.Exception.Message -like '*owns the machine-wide installation lock*') { exit 0 }
+    Write-Error `$_.Exception.Message
+    exit 5
+}
+exit 6
+"@
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($scriptText))
+    $psi = [Diagnostics.ProcessStartInfo]::new()
+    $psi.FileName = (Get-Process -Id $PID -ErrorAction Stop).Path
+    $psi.Arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ' + $encoded
+    $psi.UseShellExecute = $false
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
+    $process = [Diagnostics.Process]::Start($psi)
+    try {
+        $stdout = $process.StandardOutput.ReadToEnd()
+        $stderr = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0) { throw "Competing migration process was not rejected by the shared lock (exit=$($process.ExitCode)): $stdout $stderr" }
+    } finally { $process.Dispose() }
+}
+
 function New-MigrationFixture {
     $root = Join-Path $env:ProgramFiles ('WeDecentMigrationCoordinator-' + [Guid]::NewGuid().ToString('N'))
     $source = Join-Path $root 'source-state'
     $destination = Join-Path $root 'destination-state'
-    $journal = Join-Path $root 'migration.json'
+    $journalDirectory = Join-Path $root 'migration'
+    $journal = Join-Path $journalDirectory 'state-migration.json'
     $metadataPath = Join-Path $root 'installer.json'
     $serviceName = 'WeDecentMigrationTest'
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -151,6 +267,8 @@ function New-MigrationFixture {
     $serviceAccount = $identity.Name
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     Set-WeDecentMigrationAdminDirectory -Path $root -AgentPath $agentPath
+    New-Item -ItemType Directory -Path $journalDirectory -Force | Out-Null
+    Set-WeDecentMigrationAdminDirectory -Path $journalDirectory -AgentPath $agentPath
     New-Item -ItemType Directory -Path $source | Out-Null
     Set-WeDecentMigrationDirectoryAcl -Path $source -ServiceSid $serviceSid
     New-Item -ItemType Directory -Path (Join-Path $source 'nested') | Out-Null
@@ -164,7 +282,8 @@ function New-MigrationFixture {
     $originalMetadataJson = ConvertTo-Json -InputObject $metadata -Depth 10
     [IO.File]::WriteAllText($metadataPath, $originalMetadataJson)
     Set-WeDecentMigrationAdminFileAcl -Path $metadataPath
-    $originalServicePath = '"' + $agentPath + '" serve "--state=' + $source + '"'
+    $serviceExecutablePath = Join-Path $root 'wd-agent.exe'
+    $originalServicePath = '"' + $serviceExecutablePath + '" serve "--state=' + $source + '"'
     $global:WeDecentMigrationMockService = [pscustomobject]@{ Name=$serviceName; StartName=$serviceAccount; StartMode='Manual'; State='Running'; PathName=$originalServicePath }
     $global:WeDecentMigrationMockStatus = 'Running'
     $manifest = Get-WeDecentMigrationManifest -Root $source
@@ -207,6 +326,75 @@ function Assert-MigrationJournalRejected {
     catch { $rejected = $true }
     if (-not $rejected) { throw "Migration journal parser accepted $Case." }
     Write-Host "Migration journal parser rejects $Case PASS"
+}
+
+$forwardAuthorizationCases = @(
+    [pscustomobject]@{
+        Name = 'mismatched protected service-account SID'
+        ExpectedError = '*Live SCM service-account SID and requested migration SID must exactly match protected installer metadata*'
+        Mutate = {
+            param($fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.service_account_sid = 'S-1-5-18'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'metadata state path not bound to source'
+        ExpectedError = '*Protected installer metadata state_dir does not authenticate the forward migration source*'
+        Mutate = {
+            param($fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.state_dir = Join-Path $fixture.Root 'unauthorized-state'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM state path differs from protected metadata'
+        ExpectedError = '*Protected installer metadata state_dir does not match the live SCM command-line state path*'
+        Mutate = {
+            param($fixture)
+            $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'wd-agent.exe') + '" serve "--state=' + (Join-Path $fixture.Root 'other-state') + '"'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM executable differs from installation agent'
+        ExpectedError = '*Live SCM executable path does not match the authenticated installation agent*'
+        Mutate = {
+            param($fixture)
+            $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'other-agent.exe') + '" serve "--state=' + $fixture.Source + '"'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'existing nonterminal migration journal'
+        ExpectedError = '*An existing nonterminal migration journal must be recovered before another forward migration can begin*'
+        Mutate = {
+            param($fixture)
+            try {
+                Invoke-WeDecentStateMigration -Source $fixture.Source -Destination $fixture.Destination -AgentPath $agentPath -ServiceName $fixture.ServiceName -ServiceSid $fixture.ServiceSid -MetadataPath $fixture.MetadataPath -JournalPath $fixture.Journal -FaultAt 'Prepared,RollbackStarted' | Out-Null
+            } catch {
+                if ($_.Exception.Message -notlike '*durable rollback is pending*') { throw }
+            }
+        }
+    }
+)
+foreach ($case in $forwardAuthorizationCases) {
+    $fixture = New-MigrationFixture
+    try {
+        & $case.Mutate $fixture
+        $before = Get-ForwardMigrationSideEffectSnapshot -Fixture $fixture
+        $rejected = $false
+        try {
+            [void](Invoke-WeDecentStateMigration -Source $fixture.Source -Destination $fixture.Destination -AgentPath $agentPath -ServiceName $fixture.ServiceName -ServiceSid $fixture.ServiceSid -MetadataPath $fixture.MetadataPath -JournalPath $fixture.Journal)
+        } catch {
+            $rejected = $_.Exception.Message -like $case.ExpectedError
+            if (-not $rejected) { throw }
+        }
+        if (-not $rejected) { throw "Forward migration accepted $($case.Name)." }
+        $after = Get-ForwardMigrationSideEffectSnapshot -Fixture $fixture
+        Assert-ForwardMigrationNoSideEffects -Before $before -After $after -Case $case.Name
+        Write-Host "Forward migration rejects $($case.Name) before filesystem, ACL, journal, or SCM mutation PASS"
+    } finally { Remove-Item -LiteralPath $fixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
 $journalParserFixture = New-MigrationFixture
@@ -290,7 +478,7 @@ try {
         $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $serviceBooleanFixture -Journal $pending
         $rejected = $false
         try {
-            [void](Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName)
+            [void](Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName -ExpectedDestinationPath $serviceBooleanFixture.Destination)
         } catch { $rejected = $true }
         if (-not $rejected) { throw "Recovery accepted malformed service_was_running representation: $($malformed.Name)." }
         Assert-MigrationRecoveryNoSideEffects -Fixture $serviceBooleanFixture -Journal $pending -Before $before -Case "service_was_running $($malformed.Name)"
@@ -303,7 +491,7 @@ try {
         throw 'Reader did not preserve service_was_running=true as a Boolean.'
     }
     $startCount = $global:WeDecentMigrationStartCount
-    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName)) {
+    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName -ExpectedDestinationPath $serviceBooleanFixture.Destination)) {
         throw 'Recovery did not resume valid true service_was_running journal.'
     }
     if ($global:WeDecentMigrationStartCount -ne ($startCount + 1) -or $global:WeDecentMigrationMockStatus -cne 'Running') {
@@ -331,7 +519,7 @@ try {
         throw 'Stopped-service journal did not preserve false as a JSON Boolean.'
     }
     $startCount = $global:WeDecentMigrationStartCount
-    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceStoppedBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceStoppedBooleanFixture.MetadataPath -ServiceName $serviceStoppedBooleanFixture.ServiceName)) {
+    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceStoppedBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceStoppedBooleanFixture.MetadataPath -ServiceName $serviceStoppedBooleanFixture.ServiceName -ExpectedDestinationPath $serviceStoppedBooleanFixture.Destination)) {
         throw 'Recovery did not resume valid false service_was_running journal.'
     }
     if ($global:WeDecentMigrationStartCount -ne $startCount -or $global:WeDecentMigrationMockStatus -cne 'Stopped') {
@@ -796,6 +984,23 @@ try {
 } finally {
     Remove-Item -LiteralPath $success.Root -Recurse -Force -ErrorAction SilentlyContinue
 }
+$successStopped = New-MigrationFixture
+try {
+    $global:WeDecentMigrationMockStatus = 'Stopped'
+    $global:WeDecentMigrationMockService.State = 'Stopped'
+    $result = Invoke-WeDecentStateMigration -Source $successStopped.Source -Destination $successStopped.Destination -AgentPath $agentPath -ServiceName $successStopped.ServiceName -ServiceSid $successStopped.ServiceSid -MetadataPath $successStopped.MetadataPath -JournalPath $successStopped.Journal
+    if ($result.phase -cne 'Committed') { throw 'Stopped-service migration did not commit.' }
+    if ($global:WeDecentMigrationMockStatus -cne 'Stopped' -or $global:WeDecentMigrationMockService.State -cne 'Stopped') {
+        throw 'Successful migration changed a service that was stopped before migration.'
+    }
+    if ($global:WeDecentMigrationMockService.PathName -notlike "*$($successStopped.Destination)*") {
+        throw 'Successful stopped-service migration did not update the SCM state path.'
+    }
+    Write-Host 'Migration successful commit preserves originally stopped service state PASS'
+} finally {
+    Remove-Item -LiteralPath $successStopped.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
 $recovery = New-MigrationFixture
 try {
     $interrupted = $false
@@ -810,7 +1015,7 @@ try {
     if ($pending.phase -cne 'RollingBack' -or -not (Test-Path -LiteralPath $recovery.Destination)) { throw 'Interrupted rollback did not preserve journal and destination.' }
     $global:WeDecentMigrationMockService.State = 'Stopped'
     $global:WeDecentMigrationMockStatus = 'Stopped'
-    if (-not (Recover-WeDecentStateMigration -JournalPath $recovery.Journal -AgentPath $agentPath -MetadataPath $recovery.MetadataPath -ServiceName $recovery.ServiceName)) { throw 'Installer recovery did not resume rollback.' }
+    if (-not (Recover-WeDecentStateMigration -JournalPath $recovery.Journal -AgentPath $agentPath -MetadataPath $recovery.MetadataPath -ServiceName $recovery.ServiceName -ExpectedDestinationPath $recovery.Destination)) { throw 'Installer recovery did not resume rollback.' }
     Assert-MigrationRolledBack -Fixture $recovery -Fault 'recovery'
 
 $stagingRecovery = New-MigrationFixture
@@ -832,7 +1037,7 @@ try {
     $global:WeDecentMigrationMockStatus = 'Stopped'
     $recoveryInterrupted = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -FaultAt 'RollbackStagingValidated')
+        [void](Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -ExpectedDestinationPath $stagingRecovery.Destination -FaultAt 'RollbackStagingValidated')
     } catch {
         $recoveryInterrupted = $_.Exception.Message -like '*RollbackStagingValidated*'
         if (-not $recoveryInterrupted) { throw }
@@ -842,11 +1047,11 @@ try {
     if ($pending.phase -cne 'RollingBack' -or -not (Test-Path -LiteralPath $pending.staging -PathType Container)) {
         throw 'Finally cleanup deleted staging after interrupted rollback.'
     }
-    if (-not (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName)) {
+    if (-not (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -ExpectedDestinationPath $stagingRecovery.Destination)) {
         throw 'Repeated recovery did not resume pending staging rollback.'
     }
     Assert-MigrationRolledBack -Fixture $stagingRecovery -Fault 'staging recovery'
-    if (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName) {
+    if (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -ExpectedDestinationPath $stagingRecovery.Destination) {
         throw 'Repeated recovery was not idempotent after terminal rollback.'
     }
     if (Test-Path -LiteralPath $pending.staging) { throw 'Validated terminal rollback left staging behind.' }
@@ -907,7 +1112,7 @@ try {
     $childScript = Join-Path $partialStagingRecovery.Root 'recover-in-new-process.ps1'
     $childBody = @'
 [CmdletBinding()]
-param([string]$ModulePath, [string]$JournalPath, [string]$AgentPath, [string]$MetadataPath, [string]$ServiceName)
+param([string]$ModulePath, [string]$JournalPath, [string]$AgentPath, [string]$MetadataPath, [string]$ServiceName, [string]$ExpectedDestinationPath)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module $ModulePath -Force
@@ -956,7 +1161,7 @@ function global:sc.exe {
     $global:LASTEXITCODE = 0
     return 'SUCCESS'
 }
-if (-not (Recover-WeDecentStateMigration -JournalPath $JournalPath -AgentPath $AgentPath -MetadataPath $MetadataPath -ServiceName $ServiceName)) {
+if (-not (Recover-WeDecentStateMigration -JournalPath $JournalPath -AgentPath $AgentPath -MetadataPath $MetadataPath -ServiceName $ServiceName -ExpectedDestinationPath $ExpectedDestinationPath)) {
     throw 'Fresh-process recovery did not resume the pending transaction.'
 }
 $terminal = Read-WeDecentMigrationJournal -Path $JournalPath
@@ -968,7 +1173,7 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
     $child.UseShellExecute = $false
     $child.RedirectStandardOutput = $true
     $child.RedirectStandardError = $true
-    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$partialStagingRecovery.Journal,'-AgentPath',$agentPath,'-MetadataPath',$partialStagingRecovery.MetadataPath,'-ServiceName',$partialStagingRecovery.ServiceName)) {
+    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$partialStagingRecovery.Journal,'-AgentPath',$agentPath,'-MetadataPath',$partialStagingRecovery.MetadataPath,'-ServiceName',$partialStagingRecovery.ServiceName,'-ExpectedDestinationPath',$partialStagingRecovery.Destination)) {
         [void]$child.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::Start($child)
@@ -984,7 +1189,7 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
     $global:WeDecentMigrationMockStatus = 'Running'
     $global:WeDecentMigrationMockService.State = 'Running'
     Assert-MigrationRolledBack -Fixture $partialStagingRecovery -Fault 'partial staging recovery'
-    if (Recover-WeDecentStateMigration -JournalPath $partialStagingRecovery.Journal -AgentPath $agentPath -MetadataPath $partialStagingRecovery.MetadataPath -ServiceName $partialStagingRecovery.ServiceName) {
+    if (Recover-WeDecentStateMigration -JournalPath $partialStagingRecovery.Journal -AgentPath $agentPath -MetadataPath $partialStagingRecovery.MetadataPath -ServiceName $partialStagingRecovery.ServiceName -ExpectedDestinationPath $partialStagingRecovery.Destination) {
         throw 'Recovery after fresh-process completion was not idempotent.'
     }
     Write-Host 'Migration coordinator partial-copy rollback recovery in fresh process PASS'
@@ -1083,7 +1288,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $mutatedSource.Source 'nested/policy.json'), '{"schema":1,"policy":"attacker-mutated"}')
     $rejectedMutation = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $mutatedSource.Journal -AgentPath $agentPath -MetadataPath $mutatedSource.MetadataPath -ServiceName $mutatedSource.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $mutatedSource.Journal -AgentPath $agentPath -MetadataPath $mutatedSource.MetadataPath -ServiceName $mutatedSource.ServiceName -ExpectedDestinationPath $mutatedSource.Destination)
     } catch {
         $rejectedMutation = $_.Exception.Message -like '*source manifest changed*'
         if (-not $rejectedMutation) { throw }
@@ -1116,7 +1321,7 @@ try {
     Set-Acl -LiteralPath $aclMutatedSource.Source -AclObject $acl -ErrorAction Stop
     $rejectedAcl = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $aclMutatedSource.Journal -AgentPath $agentPath -MetadataPath $aclMutatedSource.MetadataPath -ServiceName $aclMutatedSource.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $aclMutatedSource.Journal -AgentPath $agentPath -MetadataPath $aclMutatedSource.MetadataPath -ServiceName $aclMutatedSource.ServiceName -ExpectedDestinationPath $aclMutatedSource.Destination)
     } catch {
         $rejectedAcl = $_.Exception.Message -like '*Protected state path verification failed*' -or
             $_.Exception.Message -like '*DACL*'
@@ -1158,7 +1363,7 @@ try {
     if (-not $directFileAclRejected) { throw 'Recursive ACL validator accepted the broadened nested file DACL.' }
     $rejectedNestedFileAcl = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileAcl.Journal -AgentPath $agentPath -MetadataPath $nestedFileAcl.MetadataPath -ServiceName $nestedFileAcl.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileAcl.Journal -AgentPath $agentPath -MetadataPath $nestedFileAcl.MetadataPath -ServiceName $nestedFileAcl.ServiceName -ExpectedDestinationPath $nestedFileAcl.Destination)
     } catch {
         $rejectedNestedFileAcl = $_.Exception.Message -like '*unexpected access rule*'
         if (-not $rejectedNestedFileAcl) { throw }
@@ -1197,7 +1402,7 @@ try {
     if (-not $directDirectoryAclRejected) { throw 'Recursive ACL validator accepted the broadened nested directory DACL.' }
     $rejectedNestedDirectoryAcl = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryAcl.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryAcl.MetadataPath -ServiceName $nestedDirectoryAcl.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryAcl.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryAcl.MetadataPath -ServiceName $nestedDirectoryAcl.ServiceName -ExpectedDestinationPath $nestedDirectoryAcl.Destination)
     } catch {
         $rejectedNestedDirectoryAcl = $_.Exception.Message -like '*unexpected access rule*'
         if (-not $rejectedNestedDirectoryAcl) { throw }
@@ -1227,7 +1432,7 @@ try {
     if ($nestedOwner -cne 'S-1-5-32-545') { throw "Nested directory owner mutation did not take effect: $nestedOwner" }
     $rejectedNestedOwner = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryOwner.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryOwner.MetadataPath -ServiceName $nestedDirectoryOwner.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryOwner.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryOwner.MetadataPath -ServiceName $nestedDirectoryOwner.ServiceName -ExpectedDestinationPath $nestedDirectoryOwner.Destination)
     } catch {
         $rejectedNestedOwner = $_.Exception.Message -like '*unexpected owner SID*'
         if (-not $rejectedNestedOwner) { throw }
@@ -1257,7 +1462,7 @@ try {
     if ($nestedOwner -cne 'S-1-5-32-545') { throw "Nested file owner substitution did not take effect: $nestedOwner" }
     $rejectedNestedFileOwner = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileOwner.Journal -AgentPath $agentPath -MetadataPath $nestedFileOwner.MetadataPath -ServiceName $nestedFileOwner.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileOwner.Journal -AgentPath $agentPath -MetadataPath $nestedFileOwner.MetadataPath -ServiceName $nestedFileOwner.ServiceName -ExpectedDestinationPath $nestedFileOwner.Destination)
     } catch {
         $rejectedNestedFileOwner = $_.Exception.Message -like '*unexpected owner SID*'
         if (-not $rejectedNestedFileOwner) { throw }
@@ -1779,7 +1984,7 @@ try {
     $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $recoverySeparationFixture -Journal $journal
     $rejected = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $recoverySeparationFixture.Journal -AgentPath $agentPath -MetadataPath $recoverySeparationFixture.MetadataPath -ServiceName $recoverySeparationFixture.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $recoverySeparationFixture.Journal -AgentPath $agentPath -MetadataPath $recoverySeparationFixture.MetadataPath -ServiceName $recoverySeparationFixture.ServiceName -ExpectedDestinationPath $recoverySeparationFixture.Destination)
     } catch {
         $rejected = $_.Exception.Message -like '*overlap or alias*' -or $_.Exception.Message -like '*unsafe or inconsistent source, destination, or staging paths*'
         if (-not $rejected) { throw }
@@ -1797,7 +2002,7 @@ function Invoke-MigrationRecoveryInFreshPowerShell {
     $childScript = Join-Path $Fixture.Root 'recover-in-independent-process.ps1'
     $childBody = @'
 [CmdletBinding()]
-param([string]$ModulePath, [string]$JournalPath, [string]$AgentPath, [string]$MetadataPath, [string]$ServiceName)
+param([string]$ModulePath, [string]$JournalPath, [string]$AgentPath, [string]$MetadataPath, [string]$ServiceName, [string]$ExpectedDestinationPath)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module $ModulePath -Force
@@ -1846,7 +2051,7 @@ function global:sc.exe {
     $global:LASTEXITCODE = 0
     return 'SUCCESS'
 }
-if (-not (Recover-WeDecentStateMigration -JournalPath $JournalPath -AgentPath $AgentPath -MetadataPath $MetadataPath -ServiceName $ServiceName)) {
+if (-not (Recover-WeDecentStateMigration -JournalPath $JournalPath -AgentPath $AgentPath -MetadataPath $MetadataPath -ServiceName $ServiceName -ExpectedDestinationPath $ExpectedDestinationPath)) {
     throw 'Fresh-process recovery did not resume the pending transaction.'
 }
 $terminal = Read-WeDecentMigrationJournal -Path $JournalPath
@@ -1858,7 +2063,7 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
     $child.UseShellExecute = $false
     $child.RedirectStandardOutput = $true
     $child.RedirectStandardError = $true
-    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$Fixture.Journal,'-AgentPath',$agentPath,'-MetadataPath',$Fixture.MetadataPath,'-ServiceName',$Fixture.ServiceName)) {
+    foreach ($argument in @('-NoProfile','-File',$childScript,'-ModulePath',$modulePath,'-JournalPath',$Fixture.Journal,'-AgentPath',$agentPath,'-MetadataPath',$Fixture.MetadataPath,'-ServiceName',$Fixture.ServiceName,'-ExpectedDestinationPath',$Fixture.Destination)) {
         [void]$child.ArgumentList.Add($argument)
     }
     $process = [Diagnostics.Process]::Start($child)
@@ -1918,8 +2123,183 @@ $recoveryRejectedCases = @(
             $metadata.state_dir = $fixture.Destination
             $journal.original_metadata_json = ConvertTo-Json -InputObject $metadata -Depth 10
         }
+    },
+    [pscustomobject]@{
+        Name = 'missing protected service-account SID'
+        ExpectedError = '*service_account_sid is missing*'
+        Mutate = {
+            param($journal, $fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.service_account_sid = ''
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'malformed protected service-account SID'
+        ExpectedError = '*Migration SID is invalid*'
+        Mutate = {
+            param($journal, $fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.service_account_sid = 'not-a-sid'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'mismatched protected service-account SID'
+        ExpectedError = '*disagree on service identity*'
+        Mutate = {
+            param($journal, $fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.service_account_sid = 'S-1-5-18'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'unresolved live SCM service account'
+        ExpectedError = '*cannot resolve SCM service account*'
+        Mutate = {
+            param($journal, $fixture)
+            $global:WeDecentMigrationMockService.StartName = 'WEDECENT-NO-SUCH-DOMAIN\NO-SUCH-ACCOUNT'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'mismatched live SCM service account'
+        ExpectedError = '*Live SCM service-account SID*'
+        Mutate = {
+            param($journal, $fixture)
+            $global:WeDecentMigrationMockService.StartName = 'NT AUTHORITY\SYSTEM'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'metadata state directory outside authenticated migration'
+        ExpectedError = '*Protected installer metadata state_dir is outside this migration transaction*'
+        Mutate = {
+            param($journal, $fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.state_dir = Join-Path $fixture.Root 'unauthorized-state'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'metadata account name resolves to a different SID'
+        ExpectedError = '*Live SCM service-account SID, account name, or start mode*'
+        Mutate = {
+            param($journal, $fixture)
+            $metadata = Get-Content -LiteralPath $fixture.MetadataPath -Raw | ConvertFrom-Json
+            $metadata.service_account_name = 'NT AUTHORITY\SYSTEM'
+            [IO.File]::WriteAllText($fixture.MetadataPath, (ConvertTo-Json -InputObject $metadata -Depth 10))
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM executable path mismatch'
+        ExpectedError = '*Live SCM binary/state command line is outside the authenticated migration transaction*'
+        Mutate = {
+            param($journal, $fixture)
+            $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'other-agent.exe') + '" serve "--state=' + $fixture.Source + '"'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM state path mismatch'
+        ExpectedError = '*Live SCM binary/state command line is outside the authenticated migration transaction*'
+        Mutate = {
+            param($journal, $fixture)
+            $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'wd-agent.exe') + '" serve "--state=' + (Join-Path $fixture.Root 'unauthorized-state') + '"'
+        }
+    },
+    [pscustomobject]@{
+        Name = 'live SCM start mode mismatch'
+        ExpectedError = '*Live SCM service-account SID, account name, or start mode*'
+        Mutate = {
+            param($journal, $fixture)
+            $global:WeDecentMigrationMockService.StartMode = 'Auto'
+        }
     }
 )
+$installerLockContentionFixture = New-MigrationFixture
+try {
+    $pendingRollback = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $installerLockContentionFixture.Source -Destination $installerLockContentionFixture.Destination -AgentPath $agentPath -ServiceName $installerLockContentionFixture.ServiceName -ServiceSid $installerLockContentionFixture.ServiceSid -MetadataPath $installerLockContentionFixture.MetadataPath -JournalPath $installerLockContentionFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch { $pendingRollback = $_.Exception.Message -like '*durable rollback is pending*'; if (-not $pendingRollback) { throw } }
+    if (-not $pendingRollback) { throw 'Installer-lock contention fixture did not reach pending rollback.' }
+    $journal = Read-WeDecentMigrationJournal -Path $installerLockContentionFixture.Journal
+    $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $installerLockContentionFixture -Journal $journal
+    $installerOwnedLock = [IO.File]::Open($installerLockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        $rejected = $false
+        try {
+            [void](Recover-WeDecentStateMigration -JournalPath $installerLockContentionFixture.Journal -AgentPath $agentPath -MetadataPath $installerLockContentionFixture.MetadataPath -ServiceName $installerLockContentionFixture.ServiceName -ExpectedDestinationPath $installerLockContentionFixture.Destination)
+        } catch {
+            $rejected = $_.Exception.Message -like '*owns the machine-wide installation lock*'
+            if (-not $rejected) { throw }
+        }
+        if (-not $rejected) { throw 'Migration recovery entered while the installer held the shared machine-wide lock.' }
+        Assert-MigrationRecoveryNoSideEffects -Fixture $installerLockContentionFixture -Journal $journal -Before $before -Case 'installer/recovery lock contention'
+    } finally { $installerOwnedLock.Dispose() }
+    $installerText = Get-Content -LiteralPath $installerPath -Raw
+    $installerLockCall = [regex]::Match($installerText, '(?m)^Acquire-WeDecentInstallerLock\s*$')
+    $installerTransactionCall = $installerText.IndexOf('Invoke-WeDecentMigrationInstallerTransaction -Action {', [StringComparison]::Ordinal)
+    $installerMigrationRecovery = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
+    $moduleText = Get-Content -LiteralPath $modulePath -Raw
+    if (-not $installerLockCall.Success -or $installerTransactionCall -lt $installerLockCall.Index -or
+        $installerMigrationRecovery -lt 0 -or $installerTransactionCall -ge $installerMigrationRecovery -or
+        -not $installerText.Contains('Import-Module $migrationModule -ErrorAction Stop') -or
+        $installerText.Contains('Enter-WeDecentMigrationInstallerLock') -or
+        $installerText.Contains('Exit-WeDecentMigrationInstallerLock') -or
+        $moduleText.Contains('InstallerLockHeld') -or
+        $moduleText.Contains('function Enter-WeDecentMigrationInstallerLock') -or
+        $moduleText.Contains('function Exit-WeDecentMigrationInstallerLock') -or
+        -not $moduleText.Contains('function Invoke-WeDecentMigrationInstallerTransaction')) {
+        throw 'Production installer or migration module does not enforce the scoped shared machine-wide transaction lock.'
+    }
+    Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
+} finally { Remove-Item -LiteralPath $installerLockContentionFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
+
+$processLockMigrationFixture = New-MigrationFixture
+$processLockRecoveryFixture = New-MigrationFixture
+try {
+    $pendingRollback = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $processLockRecoveryFixture.Source -Destination $processLockRecoveryFixture.Destination -AgentPath $agentPath -ServiceName $processLockRecoveryFixture.ServiceName -ServiceSid $processLockRecoveryFixture.ServiceSid -MetadataPath $processLockRecoveryFixture.MetadataPath -JournalPath $processLockRecoveryFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch { $pendingRollback = $_.Exception.Message -like '*durable rollback is pending*'; if (-not $pendingRollback) { throw } }
+    if (-not $pendingRollback) { throw 'Process-lock recovery fixture did not reach a pending rollback.' }
+    $migrationBefore = Get-ForwardMigrationSideEffectSnapshot -Fixture $processLockMigrationFixture
+    $recoveryJournal = Read-WeDecentMigrationJournal -Path $processLockRecoveryFixture.Journal
+    $recoveryBefore = Get-MigrationRecoverySideEffectSnapshot -Fixture $processLockRecoveryFixture -Journal $recoveryJournal
+    $q = { param($value) "'" + ([string]$value).Replace("'", "''") + "'" }
+    $directCommand = "[void](Invoke-WeDecentStateMigration -Source $(& $q $processLockMigrationFixture.Source) -Destination $(& $q $processLockMigrationFixture.Destination) -AgentPath $(& $q $agentPath) -ServiceName $(& $q $processLockMigrationFixture.ServiceName) -ServiceSid $(& $q $processLockMigrationFixture.ServiceSid) -MetadataPath $(& $q $processLockMigrationFixture.MetadataPath) -JournalPath $(& $q $processLockMigrationFixture.Journal))"
+    $recoveryCommand = "[void](Recover-WeDecentStateMigration -JournalPath $(& $q $processLockRecoveryFixture.Journal) -AgentPath $(& $q $agentPath) -MetadataPath $(& $q $processLockRecoveryFixture.MetadataPath) -ServiceName $(& $q $processLockRecoveryFixture.ServiceName) -ExpectedDestinationPath $(& $q $processLockRecoveryFixture.Destination))"
+    Invoke-WeDecentMigrationInstallerTransaction -Action {
+        Invoke-MigrationLockContentionChild -Command 'Invoke-WeDecentMigrationInstallerTransaction -Action { Start-Sleep -Seconds 2 }'
+        Invoke-MigrationLockContentionChild -Command $directCommand
+        Invoke-MigrationLockContentionChild -Command $recoveryCommand
+    }
+    Assert-ForwardMigrationNoSideEffects -Before $migrationBefore -After (Get-ForwardMigrationSideEffectSnapshot -Fixture $processLockMigrationFixture) -Case 'competing direct migration process'
+    Assert-MigrationRecoveryNoSideEffects -Fixture $processLockRecoveryFixture -Journal $recoveryJournal -Before $recoveryBefore -Case 'competing recovery process'
+    Write-Host 'Competing installer, direct migration, and recovery processes serialize on the machine-wide lock PASS'
+} finally {
+    Remove-Item -LiteralPath $processLockMigrationFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $processLockRecoveryFixture.Root -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+$expectedDestinationFixture = New-MigrationFixture
+try {
+    $interrupted = $false
+    try {
+        Invoke-WeDecentStateMigration -Source $expectedDestinationFixture.Source -Destination $expectedDestinationFixture.Destination -AgentPath $agentPath -ServiceName $expectedDestinationFixture.ServiceName -ServiceSid $expectedDestinationFixture.ServiceSid -MetadataPath $expectedDestinationFixture.MetadataPath -JournalPath $expectedDestinationFixture.Journal -FaultAt 'StatePublished,RollbackStarted' | Out-Null
+    } catch { $interrupted = $_.Exception.Message -like '*durable rollback is pending*'; if (-not $interrupted) { throw } }
+    if (-not $interrupted) { throw 'Expected-destination fixture did not reach pending rollback.' }
+    $journal = Read-WeDecentMigrationJournal -Path $expectedDestinationFixture.Journal
+    $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $expectedDestinationFixture -Journal $journal
+    $rejected = $false
+    try {
+        [void](Recover-WeDecentStateMigration -JournalPath $expectedDestinationFixture.Journal -AgentPath $agentPath -MetadataPath $expectedDestinationFixture.MetadataPath -ServiceName $expectedDestinationFixture.ServiceName -ExpectedDestinationPath (Join-Path $expectedDestinationFixture.Root 'unexpected-state'))
+    } catch { $rejected = $_.Exception.Message -like '*does not match this installer metadata path*' -or $_.Exception.Message -like '*expected state destination*'; if (-not $rejected) { throw } }
+    if (-not $rejected) { throw 'Recovery accepted a destination outside the installer-requested state path.' }
+    Assert-MigrationRecoveryNoSideEffects -Fixture $expectedDestinationFixture -Journal $journal -Before $before -Case 'unexpected destination path'
+    Write-Host 'Migration recovery rejects destination outside installer-requested state path without side effects PASS'
+} finally { Remove-Item -LiteralPath $expectedDestinationFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
+
 foreach ($case in $recoveryRejectedCases) {
     $fixture = New-MigrationFixture
     try {
@@ -1937,7 +2317,7 @@ foreach ($case in $recoveryRejectedCases) {
         $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $fixture -Journal $journal
         $rejected = $false
         try {
-            [void](Recover-WeDecentStateMigration -JournalPath $fixture.Journal -AgentPath $agentPath -MetadataPath $fixture.MetadataPath -ServiceName $fixture.ServiceName)
+            [void](Recover-WeDecentStateMigration -JournalPath $fixture.Journal -AgentPath $agentPath -MetadataPath $fixture.MetadataPath -ServiceName $fixture.ServiceName -ExpectedDestinationPath $fixture.Destination)
         } catch {
             $rejected = $_.Exception.Message -like $case.ExpectedError
             if (-not $rejected) { throw }

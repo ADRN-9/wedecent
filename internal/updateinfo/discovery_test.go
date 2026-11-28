@@ -143,6 +143,17 @@ func (f discoveryFixture) transport(mutate func(string, []byte) ([]byte, int)) h
 func newDiscoveryClient(t *testing.T, f discoveryFixture, transport http.RoundTripper) (DiscoveryClient, *StateStore) {
 	t.Helper()
 	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
+	if _, err := store.VerifyAndAdvanceKeyset(context.Background(), f.keyset.RootKeyID, f.rootPublic, f.keysetBody, f.keysetSignature, f.now); err != nil {
+		t.Fatalf("provision test keyset: %v", err)
+	}
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.InstalledVersion = "v1.2.2"
+	if err := saveState(store.Path, state); err != nil {
+		t.Fatalf("provision protected test version: %v", err)
+	}
 	client := DiscoveryClient{
 		RootKeyID:     f.keyset.RootKeyID,
 		RootPublicKey: f.rootPublic,
@@ -202,6 +213,34 @@ func TestDiscoverStableUsesRootKeysetAndV2Only(t *testing.T) {
 	}
 	if state.KeysetEpoch != fixture.keyset.Epoch || state.KeysetDigest == "" || state.StableSequence != 0 {
 		t.Fatalf("discovery state = %#v; keyset should persist, sequence only after install", state)
+	}
+}
+
+func TestDiscoverStableUsesProtectedInstalledVersionNotCallerArgument(t *testing.T) {
+	fixture := newDiscoveryFixture(t)
+	client, store := newDiscoveryClient(t, fixture, fixture.transport(nil))
+	state, err := store.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.InstalledVersion = "v2.0.0"
+	if err := saveState(store.Path, state); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.DiscoverStable(context.Background(), "v0.1.0", 0); !errors.Is(err, ErrRollback) {
+		t.Fatalf("caller-supplied downgrade baseline was trusted: %v", err)
+	}
+}
+
+func TestDiscoverStableRejectsMissingProtectedInstalledVersion(t *testing.T) {
+	fixture := newDiscoveryFixture(t)
+	store := NewStateStore(StatePath(filepath.Join(t.TempDir(), "client")))
+	client := DiscoveryClient{
+		RootKeyID: fixture.keyset.RootKeyID, RootPublicKey: fixture.rootPublic,
+		State: store, Transport: fixture.transport(nil), Now: func() time.Time { return fixture.now },
+	}
+	if _, err := client.DiscoverStable(context.Background(), "v0.0.0", 0); !errors.Is(err, ErrDiscovery) {
+		t.Fatalf("missing protected installed version error = %v, want ErrDiscovery", err)
 	}
 }
 
@@ -316,7 +355,16 @@ func TestDiscoverStableUsesPersistedSequenceAfterRestart(t *testing.T) {
 	fixture := newDiscoveryFixture(t)
 	statePath := StatePath(filepath.Join(t.TempDir(), "client"))
 	first := NewStateStore(statePath)
-	if err := first.Advance(fixture.manifest.Sequence); err != nil {
+	if _, err := first.VerifyAndAdvanceKeyset(context.Background(), fixture.keyset.RootKeyID, fixture.rootPublic, fixture.keysetBody, fixture.keysetSignature, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := first.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.InstalledVersion = "v1.2.2"
+	initial.StableSequence = fixture.manifest.Sequence
+	if err := saveState(statePath, initial); err != nil {
 		t.Fatal(err)
 	}
 
@@ -493,6 +541,14 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 			}
 
 			client, store := newDiscoveryClient(t, fixture, nil)
+			protected, loadErr := store.Load()
+			if loadErr != nil {
+				t.Fatal(loadErr)
+			}
+			protected.InstalledVersion = "v0.3.9"
+			if err := saveState(store.Path, protected); err != nil {
+				t.Fatal(err)
+			}
 			test.mutate(t, &fixture, &client)
 			client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
 				if req.URL.String() == fixture.manifest.InstallerURL {
@@ -506,7 +562,7 @@ func TestApplyStableRejectsUntrustedExpiredAndRevokedUpdates(t *testing.T) {
 				context.Background(), "v0.3.9", 0,
 				InstallerClient{}, filepath.Join(t.TempDir(), "staging"), 0,
 				func(context.Context, string) error { return nil },
-				InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+				InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 					calls++
 					return nil
 				}),
@@ -550,6 +606,18 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 	}
 
 	statePath := StatePath(filepath.Join(t.TempDir(), "client"))
+	initialStore := NewStateStore(statePath)
+	if _, err := initialStore.VerifyAndAdvanceKeyset(context.Background(), fixture.keyset.RootKeyID, fixture.rootPublic, fixture.keysetBody, fixture.keysetSignature, fixture.now); err != nil {
+		t.Fatal(err)
+	}
+	initialState, err := initialStore.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	initialState.InstalledVersion = "v0.3.9"
+	if err := saveState(statePath, initialState); err != nil {
+		t.Fatal(err)
+	}
 	newClient := func() DiscoveryClient {
 		return DiscoveryClient{
 			RootKeyID: fixture.keyset.RootKeyID, RootPublicKey: fixture.rootPublic,
@@ -563,7 +631,7 @@ func TestApplyStableReplayCannotInstallTwiceAfterRestart(t *testing.T) {
 		}
 	}
 	calls := 0
-	executor := InstallerExecutorFunc(func(context.Context, VerifiedInstallerPackage) error {
+	executor := InstallerExecutorFunc(func(context.Context, InstallTransaction, VerifiedInstallerPackage) error {
 		calls++
 		return nil
 	})

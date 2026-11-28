@@ -2,7 +2,14 @@
 
 package winservice
 
-import "testing"
+import (
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+
+	"golang.org/x/sys/windows"
+)
 
 func TestStateName(t *testing.T) {
 	cases := map[uint32]string{
@@ -15,5 +22,55 @@ func TestStateName(t *testing.T) {
 		if got := stateName(state); got != want {
 			t.Fatalf("stateName(%d) = %q, want %q", state, got, want)
 		}
+	}
+}
+
+func TestServiceControlSecurityDescriptorIsLeastPrivilege(t *testing.T) {
+	if _, err := windows.SecurityDescriptorFromString(serviceControlSecurityDescriptor()); err != nil {
+		t.Fatalf("service DACL is invalid SDDL: %v", err)
+	}
+	got := serviceControlSecurityDescriptor()
+	want := "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000004;;;AU)"
+	if got != want {
+		t.Fatalf("service DACL = %q, want %q", got, want)
+	}
+	if strings.Contains(got, "WD") || strings.Contains(got, "WO") {
+		t.Fatalf("service DACL must not grant write-DACL or write-owner to ordinary callers: %q", got)
+	}
+}
+
+func TestServiceManagementUsesLeastPrivilegeMasks(t *testing.T) {
+	if securityObjectService != 2 {
+		t.Fatalf("SE_SERVICE object type = %d, want 2", securityObjectService)
+	}
+	if scManagerConnect != 0x1 || scManagerCreateService != 0x2 {
+		t.Fatalf("unexpected SCM manager access masks: connect=%#x create=%#x", scManagerConnect, scManagerCreateService)
+	}
+	if serviceQueryStatus != 0x4 || serviceStart != 0x10 || serviceStop != 0x20 || serviceDelete != 0x10000 || serviceWriteDACL != 0x40000 {
+		t.Fatalf("unexpected service access masks")
+	}
+	if serviceStart&serviceAllAccess == 0 || serviceStop&serviceAllAccess == 0 {
+		t.Fatal("service operation masks are not represented in SERVICE_ALL_ACCESS")
+	}
+}
+
+func TestEnableServiceSIDConfiguresAndVerifiesSCMService(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	name := fmt.Sprintf("WeDecentSIDTest_%d", os.Getpid())
+	if err := Install(InstallOptions{
+		Name:       name,
+		Account:    "NT AUTHORITY\\LocalService",
+		Executable: executable,
+	}); err != nil {
+		t.Fatalf("install temporary SCM service: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = Uninstall(name)
+	})
+	if err := EnableServiceSID(name); err != nil {
+		t.Fatalf("enable and verify service SID: %v", err)
 	}
 }

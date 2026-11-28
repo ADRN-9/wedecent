@@ -28,7 +28,7 @@ This deliberately favors a known filesystem/service outcome over prompt cancella
 
 `PowerShellInstallerExecutor` is the Windows execution policy boundary.
 
-It requires an absolute regular non-symlink PowerShell executable path. It does not search `PATH`, use `cmd.exe`, build a shell command string, or request elevation implicitly. The caller is responsible for starting the update application in an already-elevated trusted process when elevation is required.
+It requires an absolute regular non-symlink PowerShell executable path. It does not search `PATH`, use `cmd.exe`, build a shell command string, or request elevation implicitly. On Windows, `Execute`, `Recover`, and `FinalizeCommitted` also require the current process token to be elevated; a non-elevated caller is rejected before PowerShell starts. The caller is responsible for starting the update application in an already-elevated trusted process when elevation is required.
 
 For each verified package it runs, in order:
 
@@ -49,6 +49,14 @@ Raw privileged-process errors and PowerShell output are not surfaced through `Ap
 The installer continues to fail closed if the installed `wd-ui.exe` or `wd-core.exe` is still running. It never kills interactive user processes.
 
 Therefore this primitive is not yet the UI handoff itself. A later UI/updater integration must close or transfer ownership away from those user processes before invoking application. It must not weaken the installer preflight to make in-process self-replacement appear to work.
+
+## C337 runtime integration status
+
+The repository still has no shipped product callsite for `DiscoveryClient.ApplyStable` or `PowerShellInstallerExecutor` in the inspected `wd-agent`, `wd-core`, CLI, or desktop entrypoints. The normal Windows agent service is installed under a dedicated standard account; it cannot satisfy the executor's elevated-token requirement. No authenticated privileged broker/service command or explicit elevated desktop handoff is implemented.
+
+C337 adds tests that drive the updater API through the executor using a real child-process fixture. Those tests prove process invocation, argument binding, ordering, and failure propagation, but do not execute real PowerShell, elevate a process, or perform a service/binary update. This library path must not be represented as an operational shipped update feature until a product entrypoint and supported privilege handoff are implemented and exercised.
+
+Do not solve this by elevating the general-purpose agent service or granting its standard account broad Program Files/SCM write access. The next integration must use an explicit UAC-consented helper or a dedicated narrowly scoped privileged broker with authenticated caller identity, transaction/package binding, anti-replay, protected staging, and audit.
 
 ## Remaining deployment work
 

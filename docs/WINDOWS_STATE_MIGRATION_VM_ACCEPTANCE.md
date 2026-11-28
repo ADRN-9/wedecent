@@ -247,3 +247,113 @@ After a transaction is durably pending, record the VM and persistent disk IDs, s
 ### Per-case result ledger
 
 For each phase, side-effect window, negative input and reboot case, record one of `PREPARED`, `EXECUTED`, `PASS`, `FAIL`, or `NOT ESTABLISHED`. Attach redacted transcripts and evidence hashes, not secrets. A skipped case, a mock-driven coordinator pass, or an unavailable VM is `NOT ESTABLISHED`; it must not be rolled up as a real-machine pass. Any unexpected service restart, identity regeneration, source mutation, ACL broadening, unverified path use, or missing recovery evidence is a fail-closed acceptance failure requiring investigation.
+
+
+## C354 — SCM identity binding and shared recovery serialization (2026-11-28)
+
+This section records repository implementation and hosted-test requirements added for the separate state-migration recovery path. It does not close the persistent-VM acceptance gate above.
+
+### Implemented recovery controls
+
+- Before rollback can stop, reconfigure, or restart the SCM service, recovery validates the current installer metadata file with the migration metadata ACL validator and rejects directories/reparse points.
+- The current metadata, original metadata embedded in the protected migration journal, and journal `service_sid` must agree. Missing or malformed SIDs fail closed.
+- The live `Win32_Service.StartName` is resolved to a Windows SID and compared with the authenticated SID. Missing, unresolved, or mismatched service accounts are rejected. The recorded account name and start mode must also match.
+- The live SCM command line must equal one of the transaction's authenticated original/updated command lines. No unrelated binary/state path is accepted.
+- Current metadata `install_dir` must match the original transaction metadata. Its `state_dir` must be either the authenticated source or destination, and original metadata must bind the source.
+- The recovery caller supplies the expected destination state path from the installer. It must canonicalize to the transaction destination. The journal's metadata path, journal path, service, and agent path are also bound to the active installer invocation.
+- The service identity check is repeated immediately before every migration SCM mutation: stop, binary-path reconfiguration, and start. The normal migration path uses the same guard around its stop, reconfiguration, and restart operations.
+- Standalone migration recovery and direct forward migration acquire the same protected `%ProgramData%\\WeDecent\\install-transactions\\installer.lock` with exclusive sharing. The installer acquires/releases it through module-owned entrypoints; nested calls recognize only the same owning PowerShell thread. No caller-supplied lock-held bypass exists. A competing process fails before transaction mutation.
+
+### Hosted regression coverage added
+
+`scripts/test-windows-state-migration-coordinator.ps1` now includes:
+- Missing, malformed, and mismatched protected service-account SID cases.
+- Unresolvable and mismatched live SCM `StartName` cases.
+- Wrong expected destination-path rejection.
+- Byte/ACL/tree/journal/metadata and mocked SCM-side-effect snapshots on rejected recovery.
+- Successful migration while the service was already stopped, in addition to existing running/stopped rollback restoration coverage.
+- Shared installer/recovery lock-contention rejection, plus a source assertion that the production installer acquires the lock before invoking migration recovery and passes the held-lock flag.
+- Fresh-process recovery fixtures now pass the expected destination path explicitly.
+
+These coordinator tests still replace SCM queries/commands with test doubles. Their pass is hosted software evidence only; it is not real SCM acceptance.
+
+### Privileged infrastructure dependency register — unchanged and open
+
+- **Persistent isolated Windows VM:** required for actual SCM account/path mutation, service-token behavior, process termination, reboot recovery, and DPAPI identity reopening. Availability remains unverified.
+- **Accountable Windows infrastructure owner:** not identified from repository-visible evidence.
+- **Named VM operator:** not assigned/verified.
+- **Provisioning decision and target date:** unknown.
+- **Required inputs:** isolated Windows 11 or supported Server VM; clean and post-baseline snapshots; elevated operator account; dedicated stable-SID non-administrator service account; persistent disk/reboot capability; approved test-signing and recovery-authority fixtures; approved secret storage.
+- **Hosted runner limitation:** hosted Windows Actions is not privileged persistent-VM acceptance. Error 1314 and process-token privilege skips remain unresolved and cannot be counted as passing isolation tests.
+- **Protected signing/publishing runners:** must remain isolated and must not be repurposed for migration fault injection or reboot testing.
+
+### Acceptance status
+
+Repository changes and hosted CI may establish code-level fail-closed behavior and mocked coordinator regressions. The following remain **NOT ESTABLISHED** until the isolated persistent VM produces retained redacted evidence: real SCM identity mismatch/unresolved rejection with zero SCM/file effects; real running and stopped service restoration; installer/recovery process concurrency under the actual service; abrupt process-kill recovery; DPAPI identity continuity under the actual service token; and same-disk reboot recovery.
+
+Do not interpret this C354 implementation note as approval to close the Windows migration VM gate or as production-readiness evidence.
+
+
+## C356 — live SCM identity, forward admission and lock serialization (2026-11-28)
+
+### Implemented repository controls
+
+- Normal upgrades now authenticate the current SCM service SID against both the protected metadata SID and the SID resolved from the protected metadata account name before state-migration recovery or binary-recovery work. A normal upgrade cannot silently replace the service account identity.
+- Forward state migration now acquires the same exclusive machine-wide installer lock as recovery. It authenticates the ACL-protected metadata, strict JSON shape, service name, install root, source state directory, account-name/SID binding, requested service SID, live SCM account SID, live executable path, and actual SCM `--state` argument before changing directory ACLs, writing a journal, copying files or changing SCM.
+- The migration journal records the installed SCM executable path separately from the bundle agent path used for identity operations. Recovery validates that path against the authenticated installation root and checks the actual live executable and `--state` command line on every service-identity validation.
+- Recovery permits only the two journal-defined source/destination paths during the narrowly defined `StatePublished`, `ServiceReconfigured` and `RollingBack` transition windows. All other metadata/SCM state mismatches fail closed.
+- Immediately before service stop, binary-path reconfiguration and service start, forward migration and rollback revalidate the live service SID, exact account name, executable path, state path and start mode. The post-`sc.exe config` state is also revalidated.
+- Installer recovery and normal-upgrade stop/start and rollback paths revalidate the same live service identity immediately before SCM mutation.
+- The caller-controlled `-InstallerLockHeld` switch has been removed. The module owns the lock handle and same-thread reentrancy state; the installer acquires/releases through exported lock entrypoints. Both direct migration and recovery acquire the lock themselves when not already executing inside the installer-owned lock.
+
+### C356 hosted regression coverage
+
+`scripts/test-windows-state-migration-coordinator.ps1` now includes:
+- Forward-migration rejection for a mismatched protected service SID, metadata state path not bound to source, live SCM state path mismatch, and live executable mismatch. It snapshots the full fixture tree/ACLs, metadata bytes, journal existence/bytes, and SCM counters to assert zero side effects.
+- Recovery rejection for metadata state path outside the authenticated transaction, metadata account-name/SID mismatch, live executable mismatch, live state-path mismatch and start-mode mismatch, in addition to the existing missing/malformed/unresolved/mismatched SID cases.
+- Cross-process lock contention: a separate PowerShell process attempts installer lock acquisition, direct forward migration and recovery while another process owns the shared lock. Each must reject before side effects.
+- Static installer integration assertions that normal-upgrade SID authentication precedes recovery, the installer enters/exits the module-owned lock, and no caller-supplied lock bypass remains.
+
+The test suite still uses SCM test doubles for coordinator operations. Hosted results are not real SCM acceptance.
+
+### Compatibility and fail-closed behavior
+
+- New migration journals record `service_executable_path`. Older protected journals may derive that path only from the authenticated original/updated SCM command lines; both must resolve to the expected `wd-agent.exe` under the protected install root. Arbitrary or mismatched executable paths remain rejected.
+- A service-account SID change is not supported by normal upgrade or state-only migration. It remains rejected until a separate explicit service-account migration flow can authenticate both old and new identities and journal the authorized transition.
+
+### Acceptance status
+
+C356 does not close the persistent privileged Windows VM gate. Hosted Windows process tests cannot prove actual service-token identity, SCM command mutation, error 1314 privilege requirements, abrupt process termination, reboot recovery, or DPAPI continuity. Retain all infrastructure dependencies listed above.
+
+
+## C360 — SCM object DACL and broker acceptance supplement (2026-11-28)
+
+The repository now applies the protected service-object DACL below to newly created WeDecent services and invokes the same hardening operation for existing services before an installer upgrade/migration/recovery mutation:
+
+    D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000004;;;AU)
+
+This grants SYSTEM and local Administrators full control and Authenticated Users query-status only. It does not grant ordinary authenticated callers start, stop, delete, configuration, WRITE_DAC or WRITE_OWNER rights. The installer aborts if applying the DACL to an existing service fails.
+
+### Required real Windows checks
+
+On the persistent isolated acceptance VM, collect the service security descriptor before and after installation and upgrade. Confirm:
+
+- DACL is protected and exactly matches the expected allow-list.
+- Standard non-admin user cannot open the service with SERVICE_START, SERVICE_STOP, DELETE, SERVICE_CHANGE_CONFIG or WRITE_DAC.
+- Dedicated non-admin service account cannot stop, reconfigure, delete or change the DACL of its own service.
+- Authenticated user can query status only.
+- SYSTEM and local Administrators retain the documented full-control authority.
+- Service starts under the dedicated local account SID and can still read its protected state and reopen the same machine-scoped DPAPI identity after service DACL hardening.
+- Failed DACL provisioning aborts before migration, service stop, metadata publication or binary replacement.
+
+These tests must execute under actual distinct Windows tokens and inspect actual SCM access-denied results. A static SDDL string test or hosted CI compilation does not satisfy this gate.
+
+### Broker is still a separate outstanding requirement
+
+C360 has not yet delivered the privileged service-management broker or its authenticated named-pipe IPC. Direct elevated installer/recovery PowerShell SCM mutations remain in the current code. The DACL reduces normal caller rights but does not centralize the mutation boundary or prevent a local administrator/SYSTEM process from reconfiguring SCM concurrently.
+
+The final acceptance sequence must additionally verify broker caller-token impersonation, signed-process authorization, request challenge/replay rejection, malformed IPC rejection, service identity binding, audit durability, and zero-side-effect behavior for all rejected requests. The broker must mediate install, migration, upgrade, rollback, recovery, stop/start, reconfiguration, and uninstall. Do not report the broker gate complete until all these operations are routed through it and adversarial tests pass.
+
+### Named operator dependency
+
+ADRN-9 remains the accountable repository/infrastructure owner. The individual operator responsible for provisioning and retaining the persistent Windows VM has not been named in repository evidence inspected for C360. Record that person's name/role, VM and disk IDs, snapshot identifiers, Windows build, service account SID, and acceptance window before executing destructive interruption/reboot tests. Do not use a production signing or release-publishing runner for this work.

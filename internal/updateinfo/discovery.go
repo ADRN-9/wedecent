@@ -34,7 +34,17 @@ type DiscoveryClient struct {
 // verifying a v2 manifest. Sequence rollback is checked against both caller
 // state and the protected persisted sequence, which is committed after install.
 func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion string, highestSequence uint64) (Manifest, error) {
-	var zero Manifest
+	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
+	if err != nil {
+		return Manifest{}, err
+	}
+	return verified.Manifest(), nil
+}
+
+// DiscoverStableVerified authenticates the keyset and exact manifest bytes and
+// returns the only capability accepted by the installer admission boundary.
+func (c DiscoveryClient) DiscoverStableVerified(ctx context.Context, _ string, highestSequence uint64) (VerifiedManifest, error) {
+	var zero VerifiedManifest
 	if ctx == nil || c.State == nil || c.State.Path == "" ||
 		len(c.RootPublicKey) != ed25519.PublicKeySize || !keyIDPattern.MatchString(c.RootKeyID) {
 		return zero, fmt.Errorf("%w: pinned root key and protected state store are required", ErrDiscovery)
@@ -68,26 +78,29 @@ func (c DiscoveryClient) DiscoverStable(ctx context.Context, currentVersion stri
 	if err != nil {
 		return zero, err
 	}
-	verified, err := c.State.VerifyAndAdvanceKeyset(ctx, c.RootKeyID, c.RootPublicKey, keysetBytes, keysetSignature, now)
+	verifiedKeyset, err := c.State.VerifyAndAdvanceKeyset(ctx, c.RootKeyID, c.RootPublicKey, keysetBytes, keysetSignature, now)
 	if err != nil {
 		return zero, fmt.Errorf("%w: verify keyset: %w", ErrDiscovery, err)
 	}
+
 	persisted, err := c.State.Load()
 	if err != nil {
 		return zero, fmt.Errorf("%w: load protected update state: %w", ErrDiscovery, err)
 	}
-	if persisted.KeysetEpoch != verified.Epoch() || persisted.KeysetDigest != verified.Digest() {
+	if persisted.KeysetEpoch != verifiedKeyset.Epoch() || persisted.KeysetDigest != verifiedKeyset.Digest() {
 		return zero, fmt.Errorf("%w: verified keyset does not match persisted trust state", ErrDiscovery)
+	}
+	if persisted.InstalledVersion == "" {
+		return zero, fmt.Errorf("%w: protected installed version is not provisioned", ErrDiscovery)
 	}
 	if persisted.StableSequence > highestSequence {
 		highestSequence = persisted.StableSequence
 	}
-
-	manifest, err := VerifyManifestV2(verified, manifestBytes, signatureBytes, now, currentVersion, highestSequence)
+	capability, err := VerifyManifestV2Capability(verifiedKeyset, manifestBytes, signatureBytes, now, persisted.InstalledVersion, highestSequence)
 	if err != nil {
 		return zero, fmt.Errorf("%w: verify v2 manifest: %w", ErrDiscovery, err)
 	}
-	return manifest, nil
+	return capability, nil
 }
 
 func stableKeysetURLs(epoch uint64) (string, string) {

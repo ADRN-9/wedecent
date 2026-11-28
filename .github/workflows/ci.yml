@@ -7,12 +7,15 @@ on:
       - security/c227-windows-preflight-service-recovery
       - security/c228-windows-service-e2e-hardening
       - security/c298-transport-override-fail-closed
+      - security/c298-transport-override-fail-closed
+      - security/c324-verified-update-admission-recovery
   pull_request:
     branches:
       - main
       - security/c225-relay-lifecycle-verification
       - security/c227-windows-preflight-service-recovery
       - security/c228-windows-service-e2e-hardening
+      - security/c298-transport-override-fail-closed
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -131,6 +134,8 @@ jobs:
         with:
           go-version: '1.27.0'
           cache: true
+      - name: Run Windows updater executor integration tests
+        run: go test ./internal/updateinfo -count=1
       - name: Build diagnostic Windows release bundle
         shell: bash
         run: WEDECENT_BUILD_MODE=diagnostic ./scripts/build-windows-release.sh
@@ -139,10 +144,12 @@ jobs:
         run: |
           $files = @(
             'installer/windows/Install-WeDecent.ps1',
+            'installer/windows/Recover-WeDecentInstall.ps1',
             'installer/windows/Uninstall-WeDecent.ps1',
             'installer/windows/Test-WeDecentInstall.ps1',
             'installer/windows/StateMigration.psm1',
             'scripts/test-windows-upgrade-preflight.ps1',
+            'scripts/test-windows-install-recovery.ps1',
             'scripts/test-windows-service-installer-contract.ps1',
             'scripts/test-windows-state-migration-coordinator.ps1',
             'scripts/test-windows-rfcomm-hardware.ps1'
@@ -156,13 +163,16 @@ jobs:
               [ref]$parseErrors
             )
             if ($parseErrors.Count -ne 0) {
-              $parseErrors | ForEach-Object { Write-Error "${file}: $($_.Message)" }
+              $parseErrors | ForEach-Object { Write-Error "${file}: line $($_.Extent.StartLineNumber), column $($_.Extent.StartColumnNumber): $($_.Message) [token: $($_.Extent.Text)]" }
               exit 1
             }
           }
       - name: Verify Windows upgrade user-process preflight
         shell: pwsh
         run: .\scripts\test-windows-upgrade-preflight.ps1
+
+      - name: Test Windows installer recovery and backup integrity
+        run: .\scripts\test-windows-install-recovery.ps1
       - name: Verify Windows service installer recovery credential contract
         shell: pwsh
         run: .\scripts\test-windows-service-installer-contract.ps1

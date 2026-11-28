@@ -1,0 +1,40 @@
+name: C324 updater exact-head security tests
+
+on:
+  push:
+    branches:
+      - security/c324-verified-update-admission-recovery
+  pull_request:
+    branches:
+      - security/c228-windows-service-e2e-hardening
+      - security/c298-transport-override-fail-closed
+
+permissions:
+  contents: read
+
+jobs:
+  updater-security:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - name: Print updateinfo formatting diff
+        run: gofmt -d internal/updateinfo || true
+      - name: Check updateinfo formatting
+        run: |
+          unformatted="$(gofmt -l internal/updateinfo)"
+          printf "%s\\n" "$unformatted"
+          test -z "$unformatted"
+      - name: Run updater admission and recovery tests
+        run: go test ./internal/updateinfo -count=1
+      - name: Compile Windows updater security package
+        run: GOOS=windows GOARCH=amd64 go test -c -o "$RUNNER_TEMP/updateinfo-windows.test.exe" ./internal/updateinfo
+      - name: Vet updater package
+        run: go vet ./internal/updateinfo

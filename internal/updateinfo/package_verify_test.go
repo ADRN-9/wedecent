@@ -194,16 +194,17 @@ func TestWithVerifiedInstallerPackagePropagatesCancellation(t *testing.T) {
 func buildInstallerPackageFixture(t *testing.T, mutate func(map[string][]byte)) (Manifest, []byte) {
 	t.Helper()
 	files := map[string][]byte{
-		"wd.exe":                   []byte("wd binary"),
-		"wd-agent.exe":             []byte("agent binary"),
-		"wd-routerctl.exe":         []byte("routerctl binary"),
-		"wd-core.exe":              []byte("core binary"),
-		"wd-ui.exe":                []byte("ui binary"),
-		"VERSION.txt":              []byte("version=0.4.0\ncommit=test\nbuilt_at=2026-01-01T00:00:00Z\ngo=go1.27.0\nplatform=windows/amd64\n"),
-		"Install-WeDecent.ps1":     []byte("Write-Output install\n"),
-		"Uninstall-WeDecent.ps1":   []byte("Write-Output uninstall\n"),
-		"Test-WeDecentInstall.ps1": []byte("Write-Output test\n"),
-		"README.md":                []byte("installer readme\n"),
+		"wd.exe":                      []byte("wd binary"),
+		"wd-agent.exe":                []byte("agent binary"),
+		"wd-routerctl.exe":            []byte("routerctl binary"),
+		"wd-core.exe":                 []byte("core binary"),
+		"wd-ui.exe":                   []byte("ui binary"),
+		"VERSION.txt":                 []byte("version=0.4.0\ncommit=test\nbuilt_at=2026-01-01T00:00:00Z\ngo=go1.27.0\nplatform=windows/amd64\n"),
+		"Install-WeDecent.ps1":        []byte("Write-Output install\n"),
+		"Uninstall-WeDecent.ps1":      []byte("Write-Output uninstall\n"),
+		"Test-WeDecentInstall.ps1":    []byte("Write-Output test\n"),
+		"Recover-WeDecentInstall.ps1": []byte("Write-Output recovery\n"),
+		"README.md":                   []byte("installer readme\n"),
 	}
 	files["SHA256SUMS.txt"] = checksumManifest(files, installerBinaries)
 	files["PACKAGE_SHA256SUMS.txt"] = checksumManifest(files, installerPayloadFiles)

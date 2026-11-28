@@ -8,86 +8,72 @@ import (
 )
 
 var (
-	ErrInstallerApply       = errors.New("updateinfo: installer application failed")
-	ErrSequenceCommit       = errors.New("updateinfo: update installed but sequence commit failed")
-	ErrInstallerUnavailable = errors.New("updateinfo: installer executor is required")
+	ErrInstallerApply        = errors.New("updateinfo: installer application failed")
+	ErrSequenceCommit        = errors.New("updateinfo: update installed but sequence commit failed")
+	ErrInstallCleanupPending = errors.New("updateinfo: update committed; transaction backup cleanup pending")
+	ErrInstallerUnavailable  = errors.New("updateinfo: installer executor is required")
 )
 
-// InstallerExecutor is the privileged mutation boundary. Execute is called only
-// while pkg.Dir is inside the verified-package callback and therefore still
-// exists. Implementations must not retain paths from pkg after returning.
+// InstallerExecutor is the privileged mutation boundary. It receives the
+// durable transaction ID so the service can reject replay and bind replacement
+// to the verified package. It must keep the previous valid installation as a
+// recoverable backup until the target is independently confirmed.
 type InstallerExecutor interface {
-	Execute(context.Context, VerifiedInstallerPackage) error
+	Execute(context.Context, InstallTransaction, VerifiedInstallerPackage) error
 }
 
-// InstallerExecutorFunc adapts a function to InstallerExecutor.
-type InstallerExecutorFunc func(context.Context, VerifiedInstallerPackage) error
+type InstallerExecutorFunc func(context.Context, InstallTransaction, VerifiedInstallerPackage) error
 
-func (f InstallerExecutorFunc) Execute(ctx context.Context, pkg VerifiedInstallerPackage) error {
+func (f InstallerExecutorFunc) Execute(ctx context.Context, transaction InstallTransaction, pkg VerifiedInstallerPackage) error {
 	if f == nil {
 		return ErrInstallerUnavailable
 	}
-	return f(ctx, pkg)
+	return f(ctx, transaction, pkg)
 }
 
-// ApplyVerifiedInstaller verifies and applies one signed stable-channel update,
-// then commits its anti-rollback sequence only after the installer reports
-// success. Both the StateStore mutex and a protected OS file lock span rollback
-// admission through sequence commit, so independent updater processes cannot
-// both admit the same sequence.
-//
-// Cancellation is honored until mutation starts. Once Execute begins, its
-// context is detached from caller cancellation so the installer transaction is
-// allowed to reach a known success/failure outcome instead of being abandoned
-// mid-rollback. The caller still receives a stable installer-failure class, but
-// raw privileged-process errors are deliberately not exposed.
-func (s *StateStore) ApplyVerifiedInstaller(
-	ctx context.Context,
-	manifest Manifest,
-	stagedPath string,
-	maxArchiveBytes int64,
-	verifyAuthenticode AuthenticodeVerifier,
-	executor InstallerExecutor,
-) error {
-	return s.applyVerifiedInstaller(ctx, manifest, stagedPath, maxArchiveBytes, verifyAuthenticode, executor, nil)
-}
-
-// ApplyVerifiedInstallerForKeyset binds installation to the keyset epoch used
-// during discovery. The epoch is checked under the same cross-process lock that
-// admits and commits the stable sequence, preventing a concurrent keyset rotation
-// from invalidating the signer between discovery and installation.
-func (s *StateStore) ApplyVerifiedInstallerForKeyset(
-	ctx context.Context,
-	manifest Manifest,
-	stagedPath string,
-	maxArchiveBytes int64,
-	verifyAuthenticode AuthenticodeVerifier,
-	executor InstallerExecutor,
-	expectedKeysetEpoch uint64,
-) error {
-	if expectedKeysetEpoch == 0 || manifest.Schema != ManifestSchemaV2 || manifest.KeysetEpoch != expectedKeysetEpoch {
-		return fmt.Errorf("%w: manifest and expected keyset epoch must match", ErrInvalidState)
+func (s *StateStore) finalizeCommittedInstalls(ctx context.Context, finalizer InstallerCommitFinalizer) error {
+	if s == nil || s.Path == "" || ctx == nil || finalizer == nil {
+		return ErrInstallCleanupPending
 	}
-	return s.applyVerifiedInstaller(ctx, manifest, stagedPath, maxArchiveBytes, verifyAuthenticode, executor, &expectedKeysetEpoch)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := acquireUpdateLock(ctx, s.Path)
+	if err != nil {
+		return err
+	}
+	defer release()
+	state, err := loadState(s.Path)
+	if err != nil {
+		return err
+	}
+	if state.PendingInstall != nil {
+		return ErrInstallRecoveryRequired
+	}
+	return finalizer.FinalizeCommitted(ctx, state)
 }
 
-func (s *StateStore) applyVerifiedInstaller(
+func (s *StateStore) applyVerifiedManifest(
 	ctx context.Context,
-	manifest Manifest,
+	verified VerifiedManifest,
 	stagedPath string,
 	maxArchiveBytes int64,
 	verifyAuthenticode AuthenticodeVerifier,
 	executor InstallerExecutor,
-	expectedKeysetEpoch *uint64,
 ) error {
 	if s == nil || s.Path == "" {
 		return fmt.Errorf("%w: state path is required", ErrInvalidState)
 	}
+	if ctx == nil {
+		return fmt.Errorf("%w: context is required", ErrInvalidState)
+	}
 	if executor == nil {
 		return ErrInstallerUnavailable
 	}
-	if err := manifest.Validate(); err != nil {
+	if err := verified.validate(); err != nil {
 		return err
+	}
+	if verifyAuthenticode == nil {
+		return fmt.Errorf("%w: Authenticode policy is required", ErrInstallerPackage)
 	}
 	if err := ctx.Err(); err != nil {
 		return err
@@ -105,49 +91,135 @@ func (s *StateStore) applyVerifiedInstaller(
 	if err != nil {
 		return err
 	}
-	if manifest.Sequence <= current.StableSequence {
-		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, manifest.Sequence, current.StableSequence)
+	if current.PendingInstall != nil {
+		return ErrInstallRecoveryRequired
 	}
-	if expectedKeysetEpoch != nil && current.KeysetEpoch != *expectedKeysetEpoch {
-		return fmt.Errorf("%w: persisted keyset epoch changed before installation", ErrKeysetRollback)
+	if current.InstalledVersion == "" || current.InstalledVersion != verified.previousVersion {
+		return fmt.Errorf("%w: protected installed version changed or is unavailable", ErrRollback)
+	}
+	if current.KeysetEpoch != verified.keysetEpoch || current.KeysetDigest != verified.keysetDigest {
+		return fmt.Errorf("%w: verified manifest keyset is stale or revoked", ErrKeysetRollback)
+	}
+	if verified.manifest.Sequence <= current.StableSequence {
+		return fmt.Errorf("%w: sequence %d is not newer than %d", ErrRollback, verified.manifest.Sequence, current.StableSequence)
+	}
+	if verified.highestSequence > current.StableSequence {
+		return fmt.Errorf("%w: capability sequence baseline is inconsistent", ErrRollback)
 	}
 
-	mutated := false
-	err = WithVerifiedInstallerPackage(
-		ctx,
-		manifest,
-		stagedPath,
-		maxArchiveBytes,
-		verifyAuthenticode,
+	return WithVerifiedInstallerPackage(
+		ctx, verified.manifest, stagedPath, maxArchiveBytes, verifyAuthenticode,
 		func(_ context.Context, pkg VerifiedInstallerPackage) error {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			mutated = true
-			if err := executor.Execute(context.WithoutCancel(ctx), pkg); err != nil {
+			transaction, err := newInstallTransaction(verified, pkg)
+			if err != nil {
+				return err
+			}
+
+			pending := current
+			pending.Version = UpdateStateVersionWithInstall
+			pending.PendingInstall = &transaction
+			if err := s.persistInstallTransition(current, pending); err != nil {
+				return fmt.Errorf("%w: persist pending installer intent", ErrInvalidState)
+			}
+
+			executing := pending
+			executingTransaction := transaction
+			executingTransaction.Phase = InstallPhaseExecuting
+			executing.PendingInstall = &executingTransaction
+			if err := s.persistInstallTransition(pending, executing); err != nil {
+				return fmt.Errorf("%w: persist executing installer state", ErrInvalidState)
+			}
+			if err := executor.Execute(context.WithoutCancel(ctx), executingTransaction, pkg); err != nil {
+				recoveryRequired := executing
+				recoveryTransaction := executingTransaction
+				recoveryTransaction.Phase = InstallPhaseRecoveryRequired
+				recoveryRequired.PendingInstall = &recoveryTransaction
+				_ = s.persistInstallTransition(executing, recoveryRequired)
 				return ErrInstallerApply
+			}
+
+			committed := executing
+			committedTransaction := executingTransaction
+			committedTransaction.Phase = InstallPhaseCommitted
+			committed.PendingInstall = &committedTransaction
+			if err := s.persistInstallTransition(executing, committed); err != nil {
+				return ErrSequenceCommit
+			}
+			next := committed
+			next.StableSequence = verified.manifest.Sequence
+			next.InstalledVersion = transaction.TargetVersion
+			next.PendingInstall = nil
+			if err := s.persistInstallTransition(committed, next); err != nil {
+				return ErrSequenceCommit
+			}
+			if finalizer, ok := executor.(InstallerCommitFinalizer); ok {
+				if err := finalizer.FinalizeCommitted(context.WithoutCancel(ctx), next); err != nil {
+					return fmt.Errorf("%w: %v", ErrInstallCleanupPending, err)
+				}
 			}
 			return nil
 		},
 	)
+}
+
+// RecoverPendingInstall reconciles an interrupted installer under the same
+// cross-process lock used by admission. Unknown outcomes retain the journal and
+// block subsequent updates. Recovery adapters must be idempotent and preserve
+// the last known-good backup until target verification succeeds.
+func (s *StateStore) RecoverPendingInstall(ctx context.Context, recovery InstallerRecovery) error {
+	if s == nil || s.Path == "" || ctx == nil || recovery == nil {
+		return ErrInstallRecoveryRequired
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	release, err := acquireUpdateLock(ctx, s.Path)
 	if err != nil {
 		return err
 	}
-	if !mutated {
-		return fmt.Errorf("%w: installer executor was not invoked", ErrInstallerApply)
+	defer release()
+	current, err := loadState(s.Path)
+	if err != nil {
+		return err
+	}
+	if current.PendingInstall == nil {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	nextState := State{
-		Version:        current.Version,
-		StableSequence: manifest.Sequence,
-		KeysetEpoch:    current.KeysetEpoch,
-		KeysetDigest:   current.KeysetDigest,
+	transaction := *current.PendingInstall
+	recoveryState := current
+	transaction.Phase = InstallPhaseRecoveryRequired
+	recoveryState.PendingInstall = &transaction
+	if err := s.persistInstallTransition(current, recoveryState); err != nil {
+		return ErrInstallRecoveryRequired
 	}
-	if nextState.Version == 0 {
-		nextState.Version = UpdateStateVersion
+
+	result, err := recovery.Recover(context.WithoutCancel(ctx), transaction)
+	if err != nil || result == InstallRecoveryUnknown {
+		return ErrInstallRecoveryRequired
 	}
-	if err := saveState(s.Path, nextState); err != nil {
-		return ErrSequenceCommit
+
+	next := recoveryState
+	switch result {
+	case InstallRecoveryApplied:
+		if transaction.Sequence <= recoveryState.StableSequence {
+			return ErrInstallRecoveryRequired
+		}
+		next.StableSequence = transaction.Sequence
+		next.InstalledVersion = transaction.TargetVersion
+	case InstallRecoveryNotApplied:
+		// Adapter has verified restoration of PreviousVersion; sequence stays unchanged.
+	default:
+		return ErrInstallRecoveryRequired
+	}
+	next.PendingInstall = nil
+	if err := s.persistInstallTransition(recoveryState, next); err != nil {
+		return ErrInstallRecoveryRequired
 	}
 	return nil
 }
@@ -178,10 +250,21 @@ func (c DiscoveryClient) ApplyStable(
 	if executor == nil {
 		return zero, ErrInstallerUnavailable
 	}
-	manifest, err := c.DiscoverStable(ctx, currentVersion, highestSequence)
+	if recovery, ok := executor.(InstallerRecovery); ok {
+		if err := c.State.RecoverPendingInstall(ctx, recovery); err != nil {
+			return zero, err
+		}
+	}
+	if finalizer, ok := executor.(InstallerCommitFinalizer); ok {
+		if err := c.State.finalizeCommittedInstalls(ctx, finalizer); err != nil {
+			return zero, fmt.Errorf("%w: %v", ErrInstallCleanupPending, err)
+		}
+	}
+	verified, err := c.DiscoverStableVerified(ctx, currentVersion, highestSequence)
 	if err != nil {
 		return zero, err
 	}
+	manifest := verified.Manifest()
 	if installerClient.Transport == nil {
 		installerClient.Transport = c.Transport
 	}
@@ -190,8 +273,8 @@ func (c DiscoveryClient) ApplyStable(
 		return zero, err
 	}
 	defer os.Remove(staged.Path)
-	if err := c.State.ApplyVerifiedInstallerForKeyset(
-		ctx, manifest, staged.Path, maxArchiveBytes, verifyAuthenticode, executor, manifest.KeysetEpoch,
+	if err := c.State.applyVerifiedManifest(
+		ctx, verified, staged.Path, maxArchiveBytes, verifyAuthenticode, executor,
 	); err != nil {
 		return zero, err
 	}
