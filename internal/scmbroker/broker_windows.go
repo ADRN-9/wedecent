@@ -45,8 +45,8 @@ var (
 	procGetTokenInformation         = advapi32.NewProc("GetTokenInformation")
 	procEqualSid                    = advapi32.NewProc("EqualSid")
 	procCheckTokenMembership        = advapi32.NewProc("CheckTokenMembership")
-	procGetSidSubAuthorityCount    = advapi32.NewProc("GetSidSubAuthorityCount")
-	procGetSidSubAuthority        = advapi32.NewProc("GetSidSubAuthority")
+	procGetSidSubAuthorityCount     = advapi32.NewProc("GetSidSubAuthorityCount")
+	procGetSidSubAuthority          = advapi32.NewProc("GetSidSubAuthority")
 )
 
 type tokenElevationInfo struct {
@@ -270,7 +270,6 @@ func sameTokenUserSID(a, b *byte) bool {
 	return result != 0
 }
 
-
 // validateAdministratorHighIntegrityToken checks the effective impersonation
 // token, not the broker process token. It does not by itself authorize a client;
 // exact publisher verification remains a separate mandatory gate.
@@ -352,7 +351,6 @@ func validateAdministratorHighIntegrityToken(token windows.Token) error {
 	}
 	return nil
 }
-
 
 // brokerServiceSID derives the Windows service SID for the fixed broker service
 // name. Installation must enable SERVICE_SID_TYPE_UNRESTRICTED (or a reviewed
