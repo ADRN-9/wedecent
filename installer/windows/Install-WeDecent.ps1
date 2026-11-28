@@ -1547,7 +1547,10 @@ function Recover-InterruptedInstallerTransactions {
                 -not [regex]::IsMatch([string]$serviceConfig.PathName, $stateArgumentPattern, [Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
                 throw 'SCM service identity does not match the authenticated installer paths.'
             }
-            if ($serviceBefore.Status -ne 'Stopped') { Stop-Service -Name $ServiceName -Force -ErrorAction Stop }
+            if ($serviceBefore.Status -ne 'Stopped') {
+                [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
+                Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+            }
             (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
             if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') { throw 'SCM did not confirm the service stopped before interrupted-install recovery.' }
         } else {
@@ -1604,6 +1607,7 @@ function Recover-InterruptedInstallerTransactions {
         if ($serviceExisted) {
             try {
                 if ($restartService) {
+                    [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
                     Start-Service -Name $ServiceName -ErrorAction Stop
                     (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
                     if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') { throw 'SCM did not confirm the previous service returned to Running.' }
@@ -1611,6 +1615,7 @@ function Recover-InterruptedInstallerTransactions {
                     throw 'SCM service was expected to remain stopped after recovery.'
                 }
             } catch {
+                [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
                 Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
                 throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; service was left stopped. Cause: $($_.Exception.Message)"
             }
@@ -1748,6 +1753,7 @@ function Install-Binaries {
             # Mark the stop attempt before calling SCM so rollback can reconcile a partial stop.
             $script:InstallServiceStoppedForTransaction = $true
             if ($serviceBeforeReplacement.Status -ne 'Stopped') {
+                [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
                 Stop-Service -Name $ServiceName -Force -ErrorAction Stop
             }
             $serviceBeforeReplacement = Get-Service -Name $ServiceName -ErrorAction Stop
@@ -2206,6 +2212,7 @@ if ($service) {
         Publish-WeDecentRecoveryScript
 
         Assert-InstalledBinaries -Destinations $binaryDestinations
+        [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
         Start-Service -Name $ServiceName
         (Get-Service -Name $ServiceName).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
         Write-WeDecentMetadata -AccountSid $accountSid -ManagedAccount $managed -AccountName $localName -Version $version
