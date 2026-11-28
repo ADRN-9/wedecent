@@ -919,16 +919,16 @@ function Publish-TransactionRecoveryScriptBackup {
     if (Test-Path -LiteralPath $backup) {
         $info = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
         if ($info.PSIsContainer -or ($info.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not (Test-WeDecentMetadataTrusted -Path $backup) -or (Get-Sha256FileHash $backup) -ne $expected) { throw 'Existing recovery-script transaction backup is unsafe or corrupted.' }
-        return
+    } else {
+        if (Test-Path -LiteralPath $staging) {
+            $stageInfo = Get-Item -LiteralPath $staging -Force -ErrorAction Stop
+            if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Interrupted recovery-script staging path is not a regular file.' }
+            Remove-Item -LiteralPath $staging -Force -ErrorAction Stop
+        }
+        Copy-WeDecentFileDurably -Source $target -Destination $staging -ExpectedSHA256 $expected -CrashHook $CrashHook
+        [IO.File]::Move($staging, $backup)
+        if ($CrashHook) { & $CrashHook 'after-backup-publish' }
     }
-    if (Test-Path -LiteralPath $staging) {
-        $stageInfo = Get-Item -LiteralPath $staging -Force -ErrorAction Stop
-        if ($stageInfo.PSIsContainer -or ($stageInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Interrupted recovery-script staging path is not a regular file.' }
-        Remove-Item -LiteralPath $staging -Force -ErrorAction Stop
-    }
-    Copy-WeDecentFileDurably -Source $target -Destination $staging -ExpectedSHA256 $expected -CrashHook $CrashHook
-    [IO.File]::Move($staging, $backup)
-    if ($CrashHook) { & $CrashHook 'after-backup-publish' }
     Flush-WeDecentFileToDisk -Path $backup
     $published = Get-Item -LiteralPath $backup -Force -ErrorAction Stop
     if ($published.PSIsContainer -or ($published.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not (Test-WeDecentMetadataTrusted -Path $backup) -or (Get-Sha256FileHash $backup) -ne $expected) { throw 'Published recovery-script transaction backup failed final integrity verification.' }
