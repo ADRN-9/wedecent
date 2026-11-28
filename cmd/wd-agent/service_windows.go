@@ -689,5 +689,6 @@ Commands:
   stop         Stop the Windows service
   status       Show Windows service status
   uninstall    Stop and remove the Windows service
+  secure       Restrict service-object control permissions (elevated)
   run          Internal SCM entrypoint; do not invoke manually`)
 }
