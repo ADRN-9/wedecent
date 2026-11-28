@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"strings"
 	"syscall"
+	"time"
+	"context"
 	"unicode/utf16"
 	"unsafe"
 
@@ -21,7 +23,7 @@ const (
 	fileFlagFirstPipe       = 0x00080000
 	pipeTypeByte            = 0
 	pipeReadModeByte        = 0
-	pipeWait                = 0
+	pipeWait                = 1 // PIPE_NOWAIT; used with bounded cancellation polling.
 	pipeRejectRemoteClients = 0x00000008
 	tokenElevation          = 20
 	tokenElevationType      = 18
@@ -54,6 +56,15 @@ type tokenElevationInfo struct {
 // Run owns the broker pipe. It deliberately dispatches no requests until
 // publisher and complete token authorization have been independently reviewed.
 func Run() error {
+	return RunContext(context.Background())
+}
+
+// RunContext serves only the authenticated, read-only broker foundation.
+// Cancellation stops accepting new connections; no request dispatch is enabled.
+func RunContext(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("SCM broker: nil context")
+	}
 	serviceSID, err := brokerServiceSID("WeDecentSCMBroker")
 	if err != nil {
 		return err
@@ -87,21 +98,44 @@ func Run() error {
 			return fmt.Errorf("create SCM broker pipe: %w", callErr)
 		}
 
-		err := servePipe(windows.Handle(handle))
-		_ = windows.CloseHandle(windows.Handle(handle))
+		pipe := windows.Handle(handle)
+		err := connectPipe(ctx, pipe)
+		if err == nil && ctx.Err() == nil {
+			err = servePipe(pipe)
+		}
+		_ = windows.CloseHandle(pipe)
+		if ctx.Err() != nil {
+			return nil
+		}
 		if err != nil {
-			// A rejected client must not terminate the privileged broker.
-			// Only a pipe/server infrastructure error stops the service.
 			return err
 		}
 	}
 }
 
-func servePipe(pipe windows.Handle) error {
-	connected, _, callErr := procConnectNamedPipe.Call(uintptr(pipe), 0)
-	if connected == 0 && !errors.Is(callErr, windows.ERROR_PIPE_CONNECTED) {
-		return fmt.Errorf("connect broker pipe: %w", callErr)
+func connectPipe(ctx context.Context, pipe windows.Handle) error {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		connected, _, callErr := procConnectNamedPipe.Call(uintptr(pipe), 0)
+		if connected != 0 || errors.Is(callErr, windows.ERROR_PIPE_CONNECTED) {
+			return nil
+		}
+		if !errors.Is(callErr, syscall.Errno(535)) { // ERROR_PIPE_LISTENING
+			return fmt.Errorf("connect broker pipe: %w", callErr)
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
 	}
+}
+
+func servePipe(pipe windows.Handle) error {
 
 	var pid uint32
 	ok, _, callErr := procGetNamedPipeClientProcessID.Call(
