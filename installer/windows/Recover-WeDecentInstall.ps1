@@ -92,12 +92,13 @@ function Assert-TrustedAcl {
 
 function Acquire-WeDecentRecoveryLock {
     $root = Join-Path $env:ProgramData 'WeDecent\install-transactions'
+    $rootCreated = -not (Test-Path -LiteralPath $root)
     New-Item -ItemType Directory -Force -Path $root | Out-Null
     $rootInfo = Get-Item -LiteralPath $root -Force -ErrorAction Stop
     if (-not $rootInfo.PSIsContainer -or ($rootInfo.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
         throw 'Recovery lock directory must be a regular non-reparse directory.'
     }
-    Set-TrustedAcl -Path $root
+    if ($rootCreated) { Set-TrustedAcl -Path $root }
     Assert-TrustedAcl -Path $root
     $path = Join-Path $root 'installer.lock'
     $lockCreated = $false
