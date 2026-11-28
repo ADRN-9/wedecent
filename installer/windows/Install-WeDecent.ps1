@@ -2221,6 +2221,7 @@ if ($service) {
     } catch {
         $failed = $_
         if ($script:InstallServiceStoppedForTransaction) {
+            [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
             Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
         }
         $binariesRestored = Invoke-RollbackStep 'restore installed binaries' {
@@ -2254,6 +2255,7 @@ if ($service) {
                             if ($serviceAfterRollback.Status -ne 'Stopped') {
                                 $serviceAfterRollback.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
                             }
+                            [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
                             Start-Service -Name $ServiceName -ErrorAction Stop
                             (Get-Service -Name $ServiceName -ErrorAction Stop).WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
                         }
@@ -2264,6 +2266,7 @@ if ($service) {
                         throw 'SCM did not preserve the previously stopped agent service state.'
                     }
                 } catch {
+                    [void](Assert-WeDecentRecoveryServiceIdentity -ServiceConfig (Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop))
                     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
                     throw
                 }
