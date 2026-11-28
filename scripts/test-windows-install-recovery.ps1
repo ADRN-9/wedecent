@@ -1970,7 +1970,7 @@ public static class WeDecentIdentityProcess
         STARTUPINFO startup = new STARTUPINFO();
         startup.cb = Marshal.SizeOf(typeof(STARTUPINFO));
         PROCESS_INFORMATION process;
-        StringBuilder commandLine = new StringBuilder("\\\"" + executable + "\\\" " + arguments);
+        StringBuilder commandLine = new StringBuilder("\"" + executable + "\" " + arguments);
         const uint CREATE_NO_WINDOW = 0x08000000;
         if (CreateProcessWithTokenW(token, 0, executable, commandLine, CREATE_NO_WINDOW,
             IntPtr.Zero, workingDirectory, ref startup, out process))
