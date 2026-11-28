@@ -290,7 +290,7 @@ try {
         $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $serviceBooleanFixture -Journal $pending
         $rejected = $false
         try {
-            [void](Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName)
+            [void](Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName -ExpectedDestinationPath $serviceBooleanFixture.Destination)
         } catch { $rejected = $true }
         if (-not $rejected) { throw "Recovery accepted malformed service_was_running representation: $($malformed.Name)." }
         Assert-MigrationRecoveryNoSideEffects -Fixture $serviceBooleanFixture -Journal $pending -Before $before -Case "service_was_running $($malformed.Name)"
@@ -303,7 +303,7 @@ try {
         throw 'Reader did not preserve service_was_running=true as a Boolean.'
     }
     $startCount = $global:WeDecentMigrationStartCount
-    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName)) {
+    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceBooleanFixture.MetadataPath -ServiceName $serviceBooleanFixture.ServiceName -ExpectedDestinationPath $serviceBooleanFixture.Destination)) {
         throw 'Recovery did not resume valid true service_was_running journal.'
     }
     if ($global:WeDecentMigrationStartCount -ne ($startCount + 1) -or $global:WeDecentMigrationMockStatus -cne 'Running') {
@@ -331,7 +331,7 @@ try {
         throw 'Stopped-service journal did not preserve false as a JSON Boolean.'
     }
     $startCount = $global:WeDecentMigrationStartCount
-    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceStoppedBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceStoppedBooleanFixture.MetadataPath -ServiceName $serviceStoppedBooleanFixture.ServiceName)) {
+    if (-not (Recover-WeDecentStateMigration -JournalPath $serviceStoppedBooleanFixture.Journal -AgentPath $agentPath -MetadataPath $serviceStoppedBooleanFixture.MetadataPath -ServiceName $serviceStoppedBooleanFixture.ServiceName -ExpectedDestinationPath $serviceStoppedBooleanFixture.Destination)) {
         throw 'Recovery did not resume valid false service_was_running journal.'
     }
     if ($global:WeDecentMigrationStartCount -ne $startCount -or $global:WeDecentMigrationMockStatus -cne 'Stopped') {
@@ -810,7 +810,7 @@ try {
     if ($pending.phase -cne 'RollingBack' -or -not (Test-Path -LiteralPath $recovery.Destination)) { throw 'Interrupted rollback did not preserve journal and destination.' }
     $global:WeDecentMigrationMockService.State = 'Stopped'
     $global:WeDecentMigrationMockStatus = 'Stopped'
-    if (-not (Recover-WeDecentStateMigration -JournalPath $recovery.Journal -AgentPath $agentPath -MetadataPath $recovery.MetadataPath -ServiceName $recovery.ServiceName)) { throw 'Installer recovery did not resume rollback.' }
+    if (-not (Recover-WeDecentStateMigration -JournalPath $recovery.Journal -AgentPath $agentPath -MetadataPath $recovery.MetadataPath -ServiceName $recovery.ServiceName -ExpectedDestinationPath $recovery.Destination)) { throw 'Installer recovery did not resume rollback.' }
     Assert-MigrationRolledBack -Fixture $recovery -Fault 'recovery'
 
 $stagingRecovery = New-MigrationFixture
@@ -832,7 +832,7 @@ try {
     $global:WeDecentMigrationMockStatus = 'Stopped'
     $recoveryInterrupted = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -FaultAt 'RollbackStagingValidated')
+        [void](Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -ExpectedDestinationPath $stagingRecovery.Destination -FaultAt 'RollbackStagingValidated')
     } catch {
         $recoveryInterrupted = $_.Exception.Message -like '*RollbackStagingValidated*'
         if (-not $recoveryInterrupted) { throw }
@@ -842,11 +842,11 @@ try {
     if ($pending.phase -cne 'RollingBack' -or -not (Test-Path -LiteralPath $pending.staging -PathType Container)) {
         throw 'Finally cleanup deleted staging after interrupted rollback.'
     }
-    if (-not (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName)) {
+    if (-not (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -ExpectedDestinationPath $stagingRecovery.Destination)) {
         throw 'Repeated recovery did not resume pending staging rollback.'
     }
     Assert-MigrationRolledBack -Fixture $stagingRecovery -Fault 'staging recovery'
-    if (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName) {
+    if (Recover-WeDecentStateMigration -JournalPath $stagingRecovery.Journal -AgentPath $agentPath -MetadataPath $stagingRecovery.MetadataPath -ServiceName $stagingRecovery.ServiceName -ExpectedDestinationPath $stagingRecovery.Destination) {
         throw 'Repeated recovery was not idempotent after terminal rollback.'
     }
     if (Test-Path -LiteralPath $pending.staging) { throw 'Validated terminal rollback left staging behind.' }
@@ -907,7 +907,7 @@ try {
     $childScript = Join-Path $partialStagingRecovery.Root 'recover-in-new-process.ps1'
     $childBody = @'
 [CmdletBinding()]
-param([string]$ModulePath, [string]$JournalPath, [string]$AgentPath, [string]$MetadataPath, [string]$ServiceName)
+param([string]$ModulePath, [string]$JournalPath, [string]$AgentPath, [string]$MetadataPath, [string]$ServiceName, [string]$ExpectedDestinationPath)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 Import-Module $ModulePath -Force
@@ -956,7 +956,7 @@ function global:sc.exe {
     $global:LASTEXITCODE = 0
     return 'SUCCESS'
 }
-if (-not (Recover-WeDecentStateMigration -JournalPath $JournalPath -AgentPath $AgentPath -MetadataPath $MetadataPath -ServiceName $ServiceName)) {
+if (-not (Recover-WeDecentStateMigration -JournalPath $JournalPath -AgentPath $AgentPath -MetadataPath $MetadataPath -ServiceName $ServiceName -ExpectedDestinationPath $ExpectedDestinationPath)) {
     throw 'Fresh-process recovery did not resume the pending transaction.'
 }
 $terminal = Read-WeDecentMigrationJournal -Path $JournalPath
@@ -984,7 +984,7 @@ if ($terminal.phase -cne 'RolledBack') { throw "Fresh-process recovery ended in 
     $global:WeDecentMigrationMockStatus = 'Running'
     $global:WeDecentMigrationMockService.State = 'Running'
     Assert-MigrationRolledBack -Fixture $partialStagingRecovery -Fault 'partial staging recovery'
-    if (Recover-WeDecentStateMigration -JournalPath $partialStagingRecovery.Journal -AgentPath $agentPath -MetadataPath $partialStagingRecovery.MetadataPath -ServiceName $partialStagingRecovery.ServiceName) {
+    if (Recover-WeDecentStateMigration -JournalPath $partialStagingRecovery.Journal -AgentPath $agentPath -MetadataPath $partialStagingRecovery.MetadataPath -ServiceName $partialStagingRecovery.ServiceName -ExpectedDestinationPath $partialStagingRecovery.Destination) {
         throw 'Recovery after fresh-process completion was not idempotent.'
     }
     Write-Host 'Migration coordinator partial-copy rollback recovery in fresh process PASS'
@@ -1083,7 +1083,7 @@ try {
     [IO.File]::WriteAllText((Join-Path $mutatedSource.Source 'nested/policy.json'), '{"schema":1,"policy":"attacker-mutated"}')
     $rejectedMutation = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $mutatedSource.Journal -AgentPath $agentPath -MetadataPath $mutatedSource.MetadataPath -ServiceName $mutatedSource.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $mutatedSource.Journal -AgentPath $agentPath -MetadataPath $mutatedSource.MetadataPath -ServiceName $mutatedSource.ServiceName -ExpectedDestinationPath $mutatedSource.Destination)
     } catch {
         $rejectedMutation = $_.Exception.Message -like '*source manifest changed*'
         if (-not $rejectedMutation) { throw }
@@ -1116,7 +1116,7 @@ try {
     Set-Acl -LiteralPath $aclMutatedSource.Source -AclObject $acl -ErrorAction Stop
     $rejectedAcl = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $aclMutatedSource.Journal -AgentPath $agentPath -MetadataPath $aclMutatedSource.MetadataPath -ServiceName $aclMutatedSource.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $aclMutatedSource.Journal -AgentPath $agentPath -MetadataPath $aclMutatedSource.MetadataPath -ServiceName $aclMutatedSource.ServiceName -ExpectedDestinationPath $aclMutatedSource.Destination)
     } catch {
         $rejectedAcl = $_.Exception.Message -like '*Protected state path verification failed*' -or
             $_.Exception.Message -like '*DACL*'
@@ -1158,7 +1158,7 @@ try {
     if (-not $directFileAclRejected) { throw 'Recursive ACL validator accepted the broadened nested file DACL.' }
     $rejectedNestedFileAcl = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileAcl.Journal -AgentPath $agentPath -MetadataPath $nestedFileAcl.MetadataPath -ServiceName $nestedFileAcl.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileAcl.Journal -AgentPath $agentPath -MetadataPath $nestedFileAcl.MetadataPath -ServiceName $nestedFileAcl.ServiceName -ExpectedDestinationPath $nestedFileAcl.Destination)
     } catch {
         $rejectedNestedFileAcl = $_.Exception.Message -like '*unexpected access rule*'
         if (-not $rejectedNestedFileAcl) { throw }
@@ -1197,7 +1197,7 @@ try {
     if (-not $directDirectoryAclRejected) { throw 'Recursive ACL validator accepted the broadened nested directory DACL.' }
     $rejectedNestedDirectoryAcl = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryAcl.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryAcl.MetadataPath -ServiceName $nestedDirectoryAcl.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryAcl.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryAcl.MetadataPath -ServiceName $nestedDirectoryAcl.ServiceName -ExpectedDestinationPath $nestedDirectoryAcl.Destination)
     } catch {
         $rejectedNestedDirectoryAcl = $_.Exception.Message -like '*unexpected access rule*'
         if (-not $rejectedNestedDirectoryAcl) { throw }
@@ -1227,7 +1227,7 @@ try {
     if ($nestedOwner -cne 'S-1-5-32-545') { throw "Nested directory owner mutation did not take effect: $nestedOwner" }
     $rejectedNestedOwner = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryOwner.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryOwner.MetadataPath -ServiceName $nestedDirectoryOwner.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedDirectoryOwner.Journal -AgentPath $agentPath -MetadataPath $nestedDirectoryOwner.MetadataPath -ServiceName $nestedDirectoryOwner.ServiceName -ExpectedDestinationPath $nestedDirectoryOwner.Destination)
     } catch {
         $rejectedNestedOwner = $_.Exception.Message -like '*unexpected owner SID*'
         if (-not $rejectedNestedOwner) { throw }
@@ -1257,7 +1257,7 @@ try {
     if ($nestedOwner -cne 'S-1-5-32-545') { throw "Nested file owner substitution did not take effect: $nestedOwner" }
     $rejectedNestedFileOwner = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileOwner.Journal -AgentPath $agentPath -MetadataPath $nestedFileOwner.MetadataPath -ServiceName $nestedFileOwner.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $nestedFileOwner.Journal -AgentPath $agentPath -MetadataPath $nestedFileOwner.MetadataPath -ServiceName $nestedFileOwner.ServiceName -ExpectedDestinationPath $nestedFileOwner.Destination)
     } catch {
         $rejectedNestedFileOwner = $_.Exception.Message -like '*unexpected owner SID*'
         if (-not $rejectedNestedFileOwner) { throw }
@@ -1779,7 +1779,7 @@ try {
     $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $recoverySeparationFixture -Journal $journal
     $rejected = $false
     try {
-        [void](Recover-WeDecentStateMigration -JournalPath $recoverySeparationFixture.Journal -AgentPath $agentPath -MetadataPath $recoverySeparationFixture.MetadataPath -ServiceName $recoverySeparationFixture.ServiceName)
+        [void](Recover-WeDecentStateMigration -JournalPath $recoverySeparationFixture.Journal -AgentPath $agentPath -MetadataPath $recoverySeparationFixture.MetadataPath -ServiceName $recoverySeparationFixture.ServiceName -ExpectedDestinationPath $recoverySeparationFixture.Destination)
     } catch {
         $rejected = $_.Exception.Message -like '*overlap or alias*' -or $_.Exception.Message -like '*unsafe or inconsistent source, destination, or staging paths*'
         if (-not $rejected) { throw }
@@ -1937,7 +1937,7 @@ foreach ($case in $recoveryRejectedCases) {
         $before = Get-MigrationRecoverySideEffectSnapshot -Fixture $fixture -Journal $journal
         $rejected = $false
         try {
-            [void](Recover-WeDecentStateMigration -JournalPath $fixture.Journal -AgentPath $agentPath -MetadataPath $fixture.MetadataPath -ServiceName $fixture.ServiceName)
+            [void](Recover-WeDecentStateMigration -JournalPath $fixture.Journal -AgentPath $agentPath -MetadataPath $fixture.MetadataPath -ServiceName $fixture.ServiceName -ExpectedDestinationPath $fixture.Destination)
         } catch {
             $rejected = $_.Exception.Message -like $case.ExpectedError
             if (-not $rejected) { throw }
