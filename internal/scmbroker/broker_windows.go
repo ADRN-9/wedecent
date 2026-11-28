@@ -125,92 +125,97 @@ func servePipe(pipe windows.Handle) error {
 	return nil
 }
 
-func authenticateClient(pipe windows.Handle, pid uint32) (authorized bool, err error) {
-	result, _, callErr := procImpersonateNamedPipeClient.Call(uintptr(pipe))
-	if result == 0 {
-		return false, fmt.Errorf("impersonate pipe client: %w", callErr)
-	}
+func authenticateClient(pipe windows.Handle, pid uint32) (bool, error) {
+	return withImpersonation(
+		func() error {
+			result, _, callErr := procImpersonateNamedPipeClient.Call(uintptr(pipe))
+			if result == 0 {
+				return fmt.Errorf("impersonate pipe client: %w", callErr)
+			}
+			return nil
+		},
+		func() error {
+			result, _, callErr := procRevertToSelf.Call()
+			if result == 0 {
+				return fmt.Errorf("revert impersonation: %w", callErr)
+			}
+			return nil
+		},
+		func() (bool, error) {
+			var clientToken windows.Token
+			result, _, callErr := procOpenThreadToken.Call(
+				uintptr(windows.GetCurrentThread()),
+				uintptr(windows.TOKEN_QUERY),
+				1,
+				uintptr(unsafe.Pointer(&clientToken)),
+			)
+			if result == 0 {
+				return false, fmt.Errorf("open impersonation token: %w", callErr)
+			}
+			defer clientToken.Close()
 
-	defer func() {
-		result, _, revertErr := procRevertToSelf.Call()
-		if result == 0 {
-			authorized = false
-			err = fmt.Errorf("revert impersonation: %w", revertErr)
-		}
-	}()
+			var elevation tokenElevationInfo
+			var returned uint32
+			result, _, callErr = procGetTokenInformation.Call(
+				uintptr(clientToken),
+				tokenElevation,
+				uintptr(unsafe.Pointer(&elevation)),
+				unsafe.Sizeof(elevation),
+				uintptr(unsafe.Pointer(&returned)),
+			)
+			if result == 0 {
+				return false, fmt.Errorf("query token elevation: %w", callErr)
+			}
+			if elevation.TokenIsElevated != 1 {
+				return false, nil
+			}
+			if err := validateAdministratorHighIntegrityToken(clientToken); err != nil {
+				return false, err
+			}
 
-	var clientToken windows.Token
-	result, _, callErr = procOpenThreadToken.Call(
-		uintptr(windows.GetCurrentThread()),
-		uintptr(windows.TOKEN_QUERY),
-		1,
-		uintptr(unsafe.Pointer(&clientToken)),
+			// Bind the impersonation token to the kernel-reported client process.
+			// Exact publisher verification remains a mandatory, unimplemented gate.
+			process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
+			if err != nil {
+				return false, fmt.Errorf("open pipe client process: %w", err)
+			}
+			defer windows.CloseHandle(process)
+
+			var processToken windows.Token
+			if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &processToken); err != nil {
+				return false, fmt.Errorf("open client process token: %w", err)
+			}
+			defer processToken.Close()
+
+			var clientUserInfo, processUserInfo [1024]byte
+			result, _, callErr = procGetTokenInformation.Call(
+				uintptr(clientToken),
+				tokenUser,
+				uintptr(unsafe.Pointer(&clientUserInfo[0])),
+				uintptr(len(clientUserInfo)),
+				uintptr(unsafe.Pointer(&returned)),
+			)
+			if result == 0 {
+				return false, fmt.Errorf("query impersonated user: %w", callErr)
+			}
+			result, _, callErr = procGetTokenInformation.Call(
+				uintptr(processToken),
+				tokenUser,
+				uintptr(unsafe.Pointer(&processUserInfo[0])),
+				uintptr(len(processUserInfo)),
+				uintptr(unsafe.Pointer(&returned)),
+			)
+			if result == 0 {
+				return false, fmt.Errorf("query process user: %w", callErr)
+			}
+			if !sameTokenUserSID(&clientUserInfo[0], &processUserInfo[0]) {
+				return false, errors.New("pipe token does not match client process token")
+			}
+
+			// Until exact publisher policy is provisioned and verified, deny all callers.
+			return false, nil
+		},
 	)
-	if result == 0 {
-		return false, fmt.Errorf("open impersonation token: %w", callErr)
-	}
-	defer clientToken.Close()
-
-	var elevation tokenElevationInfo
-	var returned uint32
-	result, _, callErr = procGetTokenInformation.Call(
-		uintptr(clientToken),
-		tokenElevation,
-		uintptr(unsafe.Pointer(&elevation)),
-		unsafe.Sizeof(elevation),
-		uintptr(unsafe.Pointer(&returned)),
-	)
-	if result == 0 {
-		return false, fmt.Errorf("query token elevation: %w", callErr)
-	}
-	if elevation.TokenIsElevated != 1 {
-		return false, nil
-	}
-	if err := validateAdministratorHighIntegrityToken(clientToken); err != nil {
-		return false, err
-	}
-
-	// Bind the impersonation token to the kernel-reported client process.
-	// Publisher verification is still a mandatory, unimplemented authorization
-	// gate, so this function intentionally never returns authorized=true.
-	process, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, pid)
-	if err != nil {
-		return false, fmt.Errorf("open pipe client process: %w", err)
-	}
-	defer windows.CloseHandle(process)
-
-	var processToken windows.Token
-	if err := windows.OpenProcessToken(process, windows.TOKEN_QUERY, &processToken); err != nil {
-		return false, fmt.Errorf("open client process token: %w", err)
-	}
-	defer processToken.Close()
-
-	var clientUserInfo, processUserInfo [1024]byte
-	result, _, callErr = procGetTokenInformation.Call(
-		uintptr(clientToken),
-		tokenUser,
-		uintptr(unsafe.Pointer(&clientUserInfo[0])),
-		uintptr(len(clientUserInfo)),
-		uintptr(unsafe.Pointer(&returned)),
-	)
-	if result == 0 {
-		return false, fmt.Errorf("query impersonated user: %w", callErr)
-	}
-	result, _, callErr = procGetTokenInformation.Call(
-		uintptr(processToken),
-		tokenUser,
-		uintptr(unsafe.Pointer(&processUserInfo[0])),
-		uintptr(len(processUserInfo)),
-		uintptr(unsafe.Pointer(&returned)),
-	)
-	if result == 0 {
-		return false, fmt.Errorf("query process user: %w", callErr)
-	}
-	if !sameTokenUserSID(&clientUserInfo[0], &processUserInfo[0]) {
-		return false, errors.New("pipe token does not match client process token")
-	}
-
-	return false, nil
 }
 
 // sameTokenUserSID compares the SID pointers in TOKEN_USER records.
