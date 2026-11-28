@@ -364,6 +364,18 @@ $forwardAuthorizationCases = @(
             param($fixture)
             $global:WeDecentMigrationMockService.PathName = '"' + (Join-Path $fixture.Root 'other-agent.exe') + '" serve "--state=' + $fixture.Source + '"'
         }
+    },
+    [pscustomobject]@{
+        Name = 'existing nonterminal migration journal'
+        ExpectedError = '*An existing nonterminal migration journal must be recovered before another forward migration can begin*'
+        Mutate = {
+            param($fixture)
+            try {
+                Invoke-WeDecentStateMigration -Source $fixture.Source -Destination $fixture.Destination -AgentPath $agentPath -ServiceName $fixture.ServiceName -ServiceSid $fixture.ServiceSid -MetadataPath $fixture.MetadataPath -JournalPath $fixture.Journal -FaultAt 'Prepared,RollbackStarted' | Out-Null
+            } catch {
+                if ($_.Exception.Message -notlike '*durable rollback is pending*') { throw }
+            }
+        }
     }
 )
 foreach ($case in $forwardAuthorizationCases) {
