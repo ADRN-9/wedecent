@@ -1035,6 +1035,75 @@ try {
     }, $true)
     if ($metadataFunctions.Count -ne 2) { throw 'Could not locate both installer metadata transaction helpers.' }
     foreach ($functionAst in $metadataFunctions) { Invoke-Expression $functionAst.Extent.Text }
+    $snapshotFunctionNames = @('Copy-WeDecentFileDurably', 'Flush-WeDecentFileToDisk', 'Publish-WeDecentMetadataSnapshot',
+        'Protect-WeDecentMetadataAcl', 'Test-WeDecentMetadataTrusted')
+    $snapshotFunctionAsts = $installerAst.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $snapshotFunctionNames
+    }, $true)
+    if ($snapshotFunctionAsts.Count -ne $snapshotFunctionNames.Count) { throw 'Could not locate durable metadata snapshot helpers.' }
+    $snapshotFunctionText = ($snapshotFunctionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+    $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
+    [IO.File]::WriteAllText($snapshotSource, ($helperOriginalMetadata | ConvertTo-Json -Depth 5 -Compress))
+    Set-TestTrustedAcl -Path $snapshotSource
+    $snapshotHash = Get-TestHash $snapshotSource
+    $snapshotCrashPoints = @('after-backup-flush', 'after-backup-hash', 'after-backup-acl', 'after-metadata-publish')
+    foreach ($snapshotCrashPoint in $snapshotCrashPoints) {
+        $snapshotBackup = Join-Path $helperWeDecent ("snapshot-" + $snapshotCrashPoint + ".bak")
+        $snapshotError = Join-Path $helperWeDecent ("snapshot-" + $snapshotCrashPoint + ".error")
+        $snapshotChild = @'
+$ErrorActionPreference = 'Stop'
+function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
+__SNAPSHOT_FUNCTIONS__
+try {
+    Publish-WeDecentMetadataSnapshot -Source '__SOURCE__' -BackupPath '__BACKUP__' -ExpectedSHA256 '__HASH__' -CrashHook {
+        param($point)
+        if ($point -eq '__CRASH_POINT__') { [IO.File]::WriteAllText('__MARKER__', 'terminated'); [Environment]::Exit(79) }
+    }
+} catch {
+    [IO.File]::WriteAllText('__ERROR__', (($_ | Out-String) + [Environment]::NewLine + $_.ScriptStackTrace))
+    exit 1
+}
+'@
+        $snapshotChild = $snapshotChild.Replace('__SNAPSHOT_FUNCTIONS__', $snapshotFunctionText).
+            Replace('__SOURCE__', $snapshotSource.Replace("'", "''")).
+            Replace('__BACKUP__', $snapshotBackup.Replace("'", "''")).
+            Replace('__HASH__', $snapshotHash).
+            Replace('__CRASH_POINT__', $snapshotCrashPoint).
+            Replace('__MARKER__', $snapshotError.Replace("'", "''")).
+            Replace('__ERROR__', $snapshotError.Replace("'", "''"))
+        $snapshotChildPath = Join-Path $helperWeDecent ("snapshot-child-" + $snapshotCrashPoint + ".ps1")
+        [IO.File]::WriteAllText($snapshotChildPath, $snapshotChild, [Text.Encoding]::Unicode)
+        $snapshotProcess = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$snapshotChildPath`"" -PassThru -Wait -WindowStyle Hidden
+        if ($snapshotProcess.ExitCode -ne 79 -or -not (Test-Path -LiteralPath $snapshotError)) {
+            $detail = if (Test-Path -LiteralPath $snapshotError) { Get-Content -LiteralPath $snapshotError -Raw } else { 'child did not reach its termination marker' }
+            throw "Metadata snapshot did not terminate at $snapshotCrashPoint (exit $($snapshotProcess.ExitCode)): $detail"
+        }
+        $retryChild = @'
+$ErrorActionPreference = 'Stop'
+function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
+__SNAPSHOT_FUNCTIONS__
+try {
+    Publish-WeDecentMetadataSnapshot -Source '__SOURCE__' -BackupPath '__BACKUP__' -ExpectedSHA256 '__HASH__'
+} catch {
+    [IO.File]::WriteAllText('__ERROR__', (($_ | Out-String) + [Environment]::NewLine + $_.ScriptStackTrace))
+    exit 1
+}
+'@
+        $retryChild = $retryChild.Replace('__SNAPSHOT_FUNCTIONS__', $snapshotFunctionText).
+            Replace('__SOURCE__', $snapshotSource.Replace("'", "''")).
+            Replace('__BACKUP__', $snapshotBackup.Replace("'", "''")).
+            Replace('__HASH__', $snapshotHash).
+            Replace('__ERROR__', $snapshotError.Replace("'", "''"))
+        $retryChildPath = Join-Path $helperWeDecent ("snapshot-retry-" + $snapshotCrashPoint + ".ps1")
+        [IO.File]::WriteAllText($retryChildPath, $retryChild, [Text.Encoding]::Unicode)
+        $retryProcess = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$retryChildPath`"" -PassThru -Wait -WindowStyle Hidden
+        if ($retryProcess.ExitCode -ne 0 -or -not (Test-Path -LiteralPath $snapshotBackup) -or
+            (Get-TestHash $snapshotBackup) -ne $snapshotHash -or -not (Test-WeDecentMetadataTrusted -Path $snapshotBackup)) {
+            $detail = if (Test-Path -LiteralPath $snapshotError) { Get-Content -LiteralPath $snapshotError -Raw } else { 'no retry error detail' }
+            throw "Fresh-process metadata snapshot retry failed after $snapshotCrashPoint (exit $($retryProcess.ExitCode)): $detail"
+        }
+    }
     $env:ProgramData = $helperProgramData
     $targetMetadata = [ordered]@{}
     foreach ($metadataKey in $helperOriginalMetadata.Keys) {
