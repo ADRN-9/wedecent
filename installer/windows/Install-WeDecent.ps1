@@ -2432,6 +2432,8 @@ if ($service) {
                 $createdServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
                 [void](Assert-WeDecentFreshServiceIdentity -ServiceConfig $createdServiceConfig -AccountName $ServiceAccountName -AccountSid $localUser.SID.Value -AgentPath $agentDestination -StatePath $StateDir)
                 Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
+                $createdServiceConfig = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
+                [void](Assert-WeDecentFreshServiceIdentity -ServiceConfig $createdServiceConfig -AccountName $ServiceAccountName -AccountSid $localUser.SID.Value -AgentPath $agentDestination -StatePath $StateDir)
                 & sc.exe delete $ServiceName | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw "sc.exe delete failed with exit code $LASTEXITCODE" }
             }
