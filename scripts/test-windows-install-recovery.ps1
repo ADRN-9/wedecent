@@ -1043,8 +1043,12 @@ try {
         $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $snapshotFunctionNames
     }, $true)
     if ($snapshotFunctionAsts.Count -ne $snapshotFunctionNames.Count) { throw 'Could not locate durable metadata snapshot helpers.' }
-    $snapshotFunctionText = ($snapshotFunctionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
-    foreach ($functionAst in $snapshotFunctionAsts) { Invoke-Expression $functionAst.Extent.Text }
+    $snapshotChildFunctionNames = @('Copy-WeDecentFileDurably', 'Flush-WeDecentFileToDisk', 'Publish-WeDecentMetadataSnapshot')
+    $snapshotChildFunctionAsts = $snapshotFunctionAsts | Where-Object { $_.Name -in $snapshotChildFunctionNames }
+    if (@($snapshotChildFunctionAsts).Count -ne $snapshotChildFunctionNames.Count) { throw 'Could not locate isolated metadata snapshot child helpers.' }
+    $snapshotFunctionText = ($snapshotChildFunctionAsts | ForEach-Object { $_.Extent.Text }) -join [Environment]::NewLine
+    $trustedAclFunctionAsts = $snapshotFunctionAsts | Where-Object { $_.Name -in @('Protect-WeDecentMetadataAcl', 'Test-WeDecentMetadataTrusted') }
+    foreach ($functionAst in $trustedAclFunctionAsts) { Invoke-Expression $functionAst.Extent.Text }
     $snapshotSource = Join-Path $helperWeDecent 'snapshot-source.json'
     [IO.File]::WriteAllText($snapshotSource, ($helperOriginalMetadata | ConvertTo-Json -Depth 5 -Compress))
     Set-TestTrustedAcl -Path $snapshotSource
