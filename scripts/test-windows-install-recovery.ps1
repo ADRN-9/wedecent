@@ -1243,8 +1243,9 @@ $Destinations = __DESTINATIONS__
 Recover-InterruptedInstallerTransactions -Destinations $Destinations
 '@
     $freshCommand = $freshCommand.Replace('__PROGRAMDATA__', $freshProgramData.Replace("'", "''")).Replace('__INSTALLDIR__', $freshInstallDir.Replace("'", "''")).Replace('__STATEDIR__', $freshStateDir.Replace("'", "''")).Replace('__RECOVERY_FLOW_FUNCTIONS__', $recoveryFlowText).Replace('__DESTINATIONS__', $freshDestinationsLiteral)
-    $freshEncoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($freshCommand))
-    $freshProcess = Start-Process -FilePath $powerShellExe -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $freshEncoded) -PassThru -Wait -WindowStyle Hidden
+    $freshScriptPath = Join-Path $durableTestDir 'fresh-no-service-recovery-child.ps1'
+    [IO.File]::WriteAllText($freshScriptPath, $freshCommand, [Text.Encoding]::Unicode)
+    $freshProcess = Start-Process -FilePath $powerShellExe -ArgumentList "-NoProfile -NonInteractive -File `"$freshScriptPath`"" -PassThru -Wait -WindowStyle Hidden
     if ($freshProcess.ExitCode -ne 0) { throw "Fresh-process no-service recovery failed (exit $($freshProcess.ExitCode))." }
     $freshRecovered = Get-Content -LiteralPath $freshJournalPath -Raw | ConvertFrom-Json
     if ($freshRecovered.phase -ne 'rolled-back' -or (Test-Path -LiteralPath $freshRecoveryScript)) {
