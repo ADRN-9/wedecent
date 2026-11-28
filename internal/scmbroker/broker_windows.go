@@ -23,7 +23,7 @@ const (
 	fileFlagFirstPipe       = 0x00080000
 	pipeTypeByte            = 0
 	pipeReadModeByte        = 0
-	pipeWait                = 1 // PIPE_NOWAIT; used with bounded cancellation polling.
+	pipeNowait              = 1 // PIPE_NOWAIT; used with bounded cancellation polling.
 	pipeRejectRemoteClients = 0x00000008
 	tokenElevation          = 20
 	tokenElevationType      = 18
@@ -90,7 +90,7 @@ func RunContext(ctx context.Context) error {
 		handle, _, callErr := procCreateNamedPipe.Call(
 			uintptr(unsafe.Pointer(name)),
 			pipeAccessDuplex|fileFlagFirstPipe,
-			pipeTypeByte|pipeReadModeByte|pipeWait|pipeRejectRemoteClients,
+			pipeTypeByte|pipeReadModeByte|pipeNowait|pipeRejectRemoteClients,
 			1,
 			MaxResponseBytes,
 			MaxRequestBytes,
