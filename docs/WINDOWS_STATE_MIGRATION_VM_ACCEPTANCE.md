@@ -324,3 +324,36 @@ The test suite still uses SCM test doubles for coordinator operations. Hosted re
 ### Acceptance status
 
 C356 does not close the persistent privileged Windows VM gate. Hosted Windows process tests cannot prove actual service-token identity, SCM command mutation, error 1314 privilege requirements, abrupt process termination, reboot recovery, or DPAPI continuity. Retain all infrastructure dependencies listed above.
+
+
+## C360 — SCM object DACL and broker acceptance supplement (2026-11-28)
+
+The repository now applies the protected service-object DACL below to newly created WeDecent services and invokes the same hardening operation for existing services before an installer upgrade/migration/recovery mutation:
+
+    D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000004;;;AU)
+
+This grants SYSTEM and local Administrators full control and Authenticated Users query-status only. It does not grant ordinary authenticated callers start, stop, delete, configuration, WRITE_DAC or WRITE_OWNER rights. The installer aborts if applying the DACL to an existing service fails.
+
+### Required real Windows checks
+
+On the persistent isolated acceptance VM, collect the service security descriptor before and after installation and upgrade. Confirm:
+
+- DACL is protected and exactly matches the expected allow-list.
+- Standard non-admin user cannot open the service with SERVICE_START, SERVICE_STOP, DELETE, SERVICE_CHANGE_CONFIG or WRITE_DAC.
+- Dedicated non-admin service account cannot stop, reconfigure, delete or change the DACL of its own service.
+- Authenticated user can query status only.
+- SYSTEM and local Administrators retain the documented full-control authority.
+- Service starts under the dedicated local account SID and can still read its protected state and reopen the same machine-scoped DPAPI identity after service DACL hardening.
+- Failed DACL provisioning aborts before migration, service stop, metadata publication or binary replacement.
+
+These tests must execute under actual distinct Windows tokens and inspect actual SCM access-denied results. A static SDDL string test or hosted CI compilation does not satisfy this gate.
+
+### Broker is still a separate outstanding requirement
+
+C360 has not yet delivered the privileged service-management broker or its authenticated named-pipe IPC. Direct elevated installer/recovery PowerShell SCM mutations remain in the current code. The DACL reduces normal caller rights but does not centralize the mutation boundary or prevent a local administrator/SYSTEM process from reconfiguring SCM concurrently.
+
+The final acceptance sequence must additionally verify broker caller-token impersonation, signed-process authorization, request challenge/replay rejection, malformed IPC rejection, service identity binding, audit durability, and zero-side-effect behavior for all rejected requests. The broker must mediate install, migration, upgrade, rollback, recovery, stop/start, reconfiguration, and uninstall. Do not report the broker gate complete until all these operations are routed through it and adversarial tests pass.
+
+### Named operator dependency
+
+ADRN-9 remains the accountable repository/infrastructure owner. The individual operator responsible for provisioning and retaining the persistent Windows VM has not been named in repository evidence inspected for C360. Record that person's name/role, VM and disk IDs, snapshot identifiers, Windows build, service account SID, and acceptance window before executing destructive interruption/reboot tests. Do not use a production signing or release-publishing runner for this work.
