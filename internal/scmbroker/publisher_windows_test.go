@@ -72,3 +72,11 @@ func TestPublisherPolicyRequiresUppercaseSHA1Pin(t *testing.T) {
 		t.Fatal("lowercase thumbprint was accepted")
 	}
 }
+
+
+func TestInstallServiceRejectsUnprotectedExecutablePath(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "wd-scm-broker.exe")
+	if err := InstallService(path); err == nil {
+		t.Fatal("broker service accepted an executable outside Program Files")
+	}
+}
