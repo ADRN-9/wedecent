@@ -6,7 +6,7 @@ $binaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'w
 $installerScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'installer\windows\Install-WeDecent.ps1'
 $migrationModulePath = Join-Path (Split-Path -Parent $installerScript) 'StateMigration.psm1'
 $migrationAgentPath = Join-Path (Split-Path -Parent $PSScriptRoot) 'dist\wedecent-windows-amd64\wd-agent.exe'
-Import-Module $migrationModulePath -Force -ErrorAction Stop
+Import-Module $migrationModulePath -Global -Force -ErrorAction Stop
 $installerText = Get-Content -LiteralPath $installerScript -Raw
 $backupStage = $installerText.IndexOf('All previous binaries are backed up and verified before any replacement.')
 $replacementStage = $installerText.IndexOf('Install-Binary (Join-Path $SourceDirectory $name)')
@@ -1646,7 +1646,7 @@ Publish-TransactionRecoveryScriptBackup
     $lockMarkerQ = $lockMarker.Replace("'", "''")
     $lockModuleQ = $migrationModulePath.Replace("'", "''")
 $lockChildCommand = @'
-Import-Module '__MIGRATION_MODULE__' -ErrorAction Stop
+Import-Module '__MIGRATION_MODULE__' -Global -ErrorAction Stop
 Enter-WeDecentMigrationInstallerLock
 [IO.File]::WriteAllText('__LOCK_MARKER__', 'owned')
 Start-Sleep -Seconds 60
