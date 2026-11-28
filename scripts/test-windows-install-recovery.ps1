@@ -1090,6 +1090,11 @@ try {
     }, $true)
     if ($durableFunctions.Count -ne $durableFunctionNames.Count) { throw 'Could not locate every production durable-backup and installer-lock helper.' }
     foreach ($functionAst in $durableFunctions) { Invoke-Expression $functionAst.Extent.Text }
+    # Exercise all five durable backup paths and reject corrupted existing backups.
+    $durableTestDir = Join-Path $root 'durable-backup-tests'
+    New-Item -ItemType Directory -Force -Path $durableTestDir | Out-Null
+    Set-TestTrustedAcl -Path $durableTestDir
+
     # Terminate a child at each durable journal boundary, then resume journal publication in a fresh process.
     $journalCrashPoints = @('after-journal-flush', 'after-journal-publish', 'after-journal-acl')
     foreach ($crashPoint in $journalCrashPoints) {
@@ -1153,10 +1158,6 @@ if (Test-Path -LiteralPath '__JOURNAL_PATH__') {
         }
     }
 
-    # Exercise all five durable backup paths and reject corrupted existing backups.
-    $durableTestDir = Join-Path $root 'durable-backup-tests'
-    New-Item -ItemType Directory -Force -Path $durableTestDir | Out-Null
-    Set-TestTrustedAcl -Path $durableTestDir
 
     # Rehydrate a prepared fresh-install transaction in a new process while SCM has never been created.
     $freshProgramData = Join-Path $durableTestDir 'fresh-no-service-programdata'
