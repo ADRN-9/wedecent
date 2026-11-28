@@ -163,7 +163,8 @@ function New-MigrationFixture {
     $root = Join-Path $env:ProgramFiles ('WeDecentMigrationCoordinator-' + [Guid]::NewGuid().ToString('N'))
     $source = Join-Path $root 'source-state'
     $destination = Join-Path $root 'destination-state'
-    $journal = Join-Path $root 'migration.json'
+    $journalDirectory = Join-Path $root 'migration'
+    $journal = Join-Path $journalDirectory 'state-migration.json'
     $metadataPath = Join-Path $root 'installer.json'
     $serviceName = 'WeDecentMigrationTest'
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -171,6 +172,8 @@ function New-MigrationFixture {
     $serviceAccount = $identity.Name
     New-Item -ItemType Directory -Path $root -Force | Out-Null
     Set-WeDecentMigrationAdminDirectory -Path $root -AgentPath $agentPath
+    New-Item -ItemType Directory -Path $journalDirectory -Force | Out-Null
+    Set-WeDecentMigrationAdminDirectory -Path $journalDirectory -AgentPath $agentPath
     New-Item -ItemType Directory -Path $source | Out-Null
     Set-WeDecentMigrationDirectoryAcl -Path $source -ServiceSid $serviceSid
     New-Item -ItemType Directory -Path (Join-Path $source 'nested') | Out-Null
