@@ -1903,6 +1903,50 @@ function Invoke-WeDecentStateMigration {
     $preflightServiceStartMode = [string]$service.StartMode
     $preflightServiceStartName = [string]$service.StartName
 
+    [void](Assert-WeDecentMigrationMetadataAcl -Path $MetadataPath)
+    $metadataItem = Get-Item -LiteralPath $MetadataPath -Force -ErrorAction Stop
+    if ($metadataItem.PSIsContainer -or ($metadataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'Installer metadata is not a regular protected file.'
+    }
+    $originalMetadataJson = Get-Content -LiteralPath $MetadataPath -Raw -ErrorAction Stop
+    Assert-WeDecentMigrationStrictJson -Json $originalMetadataJson -Description 'Forward migration installer metadata'
+    $metadata = $originalMetadataJson | ConvertFrom-Json -ErrorAction Stop
+    if ([int]$metadata.schema -ne 1 -or [string]$metadata.product -cne 'WeDecent' -or
+        [string]$metadata.service_name -cne $ServiceName -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.install_dir) -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.state_dir) -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.service_account_sid) -or
+        [string]::IsNullOrWhiteSpace([string]$metadata.service_account_name)) {
+        throw 'Protected installer metadata does not authenticate the forward migration service, account, installation, or state.'
+    }
+    $metadataSid = ConvertTo-WeDecentMigrationSid -Sid ([string]$metadata.service_account_sid)
+    $metadataAccountSid = ([Security.Principal.NTAccount]::new([string]$metadata.service_account_name)).Translate([Security.Principal.SecurityIdentifier]).Value
+    $liveServiceSid = ([Security.Principal.NTAccount]::new($preflightServiceStartName)).Translate([Security.Principal.SecurityIdentifier]).Value
+    if ($metadataAccountSid -cne $metadataSid.Value -or $metadataSid.Value -cne $ServiceSid -or $liveServiceSid -cne $metadataSid.Value) {
+        throw 'Live SCM service-account SID and requested migration SID must exactly match protected installer metadata.'
+    }
+    $metadataState = Get-WeDecentMigrationCanonicalPath -Path ([string]$metadata.state_dir)
+    if (-not [string]::Equals($metadataState, $sourceFull, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Protected installer metadata state_dir does not authenticate the forward migration source.'
+    }
+    $installRoot = Get-WeDecentMigrationCanonicalPath -Path ([string]$metadata.install_dir)
+    $installPrefix = $installRoot.TrimEnd('\') + '\'
+    $expectedJournalPath = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'migration\state-migration.json')
+    $journalFull = Get-WeDecentMigrationCanonicalPath -Path $JournalPath
+    if (-not [string]::Equals($journalFull, $expectedJournalPath, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $destinationFull.StartsWith($installPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Forward migration journal or destination is outside the authenticated installation transaction namespace.'
+    }
+    $serviceExecutablePath = Get-WeDecentMigrationServiceExecutablePath -ServicePath $preflightServicePath
+    $expectedServiceExecutable = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'wd-agent.exe')
+    if (-not [string]::Equals($serviceExecutablePath, $expectedServiceExecutable, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Live SCM executable path does not match the authenticated installation agent.'
+    }
+    $serviceStatePath = Get-WeDecentMigrationServiceStatePath -ServicePath $preflightServicePath
+    if (-not [string]::Equals($serviceStatePath, $metadataState, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Protected installer metadata state_dir does not match the live SCM command-line state path.'
+    }
+
     $destinationParent = Assert-WeDecentMigrationRealDirectory -Path (Split-Path -Parent $destinationFull)
     $transactionId = [Guid]::NewGuid().ToString('D')
     $staging = Join-Path $destinationParent ('.wedecent-migration-' + $transactionId.Replace('-', ''))
@@ -1917,26 +1961,15 @@ function Invoke-WeDecentStateMigration {
     $identitySnapshot = Get-WeDecentMigrationIdentitySnapshot -Paths $identityAnchors
     $directorySnapshot = Get-WeDecentMigrationIdentitySnapshot -Paths $directoryAnchors
     Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
-    [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
-    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
-
-    $account = ([Security.Principal.NTAccount]::new($preflightServiceStartName)).Translate([Security.Principal.SecurityIdentifier]).Value
-    if ($account -cne $ServiceSid) { throw 'SCM service account SID differs from the migration target SID.' }
+    
     $updatedPath = Get-WeDecentMigrationUpdatedServicePath -ServicePath $preflightServicePath -Source $sourceFull -Destination $destinationFull
     if ($updatedPath -ceq $preflightServicePath) { throw 'Could not construct an unambiguous destination SCM command line.' }
 
     Assert-WeDecentMigrationIdentitySnapshot -Snapshot $identitySnapshot -Paths $identityAnchors
     [void](Assert-WeDecentMigrationPathsDisjoint -Paths $migrationPaths)
     [void](Set-WeDecentMigrationAdminDirectory -Path (Split-Path -Parent $JournalPath) -AgentPath $AgentPath)
-    $metadataItem = Get-Item -LiteralPath $MetadataPath -Force -ErrorAction Stop
-    if ($metadataItem.PSIsContainer -or ($metadataItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
-        throw 'Installer metadata is not a regular file.'
-    }
-    $originalMetadataJson = Get-Content -LiteralPath $MetadataPath -Raw -ErrorAction Stop
-    $metadata = $originalMetadataJson | ConvertFrom-Json
-    if (-not [string]::Equals([IO.Path]::GetFullPath([string]$metadata.state_dir), $sourceFull, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Authenticated installer metadata does not match the migration source.'
-    }
+    [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $AgentPath)
+    [void](Invoke-WeDecentMigrationStatePathCheck -AgentPath $AgentPath -StatePath $destinationFull)
 
     $sourceManifest = @(Get-WeDecentMigrationManifest -Root $sourceFull)
     $sourceIdentity = Invoke-WeDecentMigrationIdentityCheck -AgentPath $AgentPath -StatePath $sourceFull
@@ -1953,6 +1986,7 @@ function Invoke-WeDecentStateMigration {
         installer_sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
         service_start_name = $preflightServiceStartName
         service_start_mode = $preflightServiceStartMode
+        service_executable_path = $serviceExecutablePath
         agent_path = [IO.Path]::GetFullPath($AgentPath)
         service_was_running = ($serviceState -eq 'Running')
         original_service_path = $preflightServicePath
