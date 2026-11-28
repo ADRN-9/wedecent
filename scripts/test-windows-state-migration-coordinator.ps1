@@ -2237,7 +2237,22 @@ try {
         Assert-MigrationRecoveryNoSideEffects -Fixture $installerLockContentionFixture -Journal $journal -Before $before -Case 'installer/recovery lock contention'
     } finally { $installerOwnedLock.Dispose() }
     $installerText = Get-Content -LiteralPath $installerPath -Raw
-    $installerLockCall = [regex]::Match($installerText, '(?m)^Acquire-WeDecentInstallerLock\s*    Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
+    $installerLockCall = [regex]::Match($installerText, '(?m)^Acquire-WeDecentInstallerLock\s*$')
+    $installerTransactionCall = $installerText.IndexOf('Invoke-WeDecentMigrationInstallerTransaction -Action {', [StringComparison]::Ordinal)
+    $installerMigrationRecovery = $installerText.IndexOf('Recover-WeDecentStateMigration -JournalPath', [StringComparison]::Ordinal)
+    $moduleText = Get-Content -LiteralPath $modulePath -Raw
+    if (-not $installerLockCall.Success -or $installerTransactionCall -lt $installerLockCall.Index -or
+        $installerMigrationRecovery -lt 0 -or $installerTransactionCall -ge $installerMigrationRecovery -or
+        -not $installerText.Contains('Import-Module $migrationModule -ErrorAction Stop') -or
+        $installerText.Contains('Enter-WeDecentMigrationInstallerLock') -or
+        $installerText.Contains('Exit-WeDecentMigrationInstallerLock') -or
+        $moduleText.Contains('InstallerLockHeld') -or
+        $moduleText.Contains('function Enter-WeDecentMigrationInstallerLock') -or
+        $moduleText.Contains('function Exit-WeDecentMigrationInstallerLock') -or
+        -not $moduleText.Contains('function Invoke-WeDecentMigrationInstallerTransaction')) {
+        throw 'Production installer or migration module does not enforce the scoped shared machine-wide transaction lock.'
+    }
+    Write-Host 'Installer and standalone migration recovery serialize on the same exclusive machine lock PASS'
 } finally { Remove-Item -LiteralPath $installerLockContentionFixture.Root -Recurse -Force -ErrorAction SilentlyContinue }
 
 $processLockMigrationFixture = New-MigrationFixture
