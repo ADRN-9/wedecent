@@ -97,3 +97,14 @@ Provision and identify the isolated persistent Windows 11 or supported Windows S
 ## Repository state
 
 At report preparation time PR #209 was open, draft, and unmerged. The tested branch HEAD and tree are recorded above. This report is documentation of the observed implementation and hosted evidence, not a declaration that the remaining privileged or production gates have passed.
+
+
+## C359 erratum — SCM database lock limitation (2026-11-28)
+
+The earlier statement that holding `LockServiceDatabase` prevented service reconfiguration between identity admission and SCM mutation was incorrect for supported modern Windows. Microsoft documents that, as of Windows Vista, this function is retained for application compatibility and has no effect on the SCM database. It does not serialize `ChangeServiceConfig`, `ControlService`, or `StartService` against concurrent writers. See [Microsoft LockServiceDatabase documentation](https://learn.microsoft.com/windows/win32/api/winsvc/nf-winsvc-lockservicedatabase).
+
+C359 removed the obsolete SCM database-lock P/Invoke and wrapper from `Recover-WeDecentInstall.ps1`. The standalone recovery stop/start wrappers now re-read and authenticate service account name/SID, executable path, state path and start mode immediately before each SCM state mutation. The existing protected machine-wide transaction lock serializes WeDecent installer/migration/recovery entrypoints only; it does not fence external SCM writers.
+
+**Security limitation:** Windows SCM does not expose an atomic conditional stop/start API bound to an expected service configuration snapshot. A concurrent process with local-administrator rights can still change service configuration in the interval after the final query and before the SCM mutation. Local administrators must therefore remain a trusted OS authority in the current design. A complete mitigation for concurrent privileged writers requires a privileged broker/installer service with a narrowly authenticated IPC boundary and a service-object DACL that removes configuration authority from ordinary callers, plus native adversarial race tests. Do not claim this race is closed until that architecture and tests are implemented. The C357 exact-head CI results remain valid as tests of the then-tested source, but they do not validate the false lock guarantee.
+
+The C359 implementation and exact-head verification status are recorded in `docs/C359_SCM_IDENTITY_RACE_REPORT.md`.
