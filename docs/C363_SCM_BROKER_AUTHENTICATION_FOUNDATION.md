@@ -89,3 +89,44 @@ The later workflow instances were queued/pending when last inspected; earlier in
 For the exact-head run on `1ae7453...`, CI `46128071036` was cancelled while its Windows agent job `140927046011` had completed the updater integration test and Go toolchain setup, but the diagnostic release build was cancelled and all later native agent/integration steps were skipped. Linux job `140927202939` was cancelled during the disposable R2 CAS step; all subsequent Linux formatting, all-package, vet, race and smoke tests were skipped. macOS job `140927046124` was still running. These are incomplete runs, not passes.
 
 No Windows cross-user isolation, service SID provisioning, SCM race closure, broker image verification, actual broker stop/restart, or persistent Windows VM acceptance is claimed.
+
+
+## C363 continuation — exact-head CI reconciliation (2026-11-28)
+
+The branch was re-fetched before this update. The starting C363 head `f42035a3e8979f85d6ef6e11fa545245ea280f3b` and tree `9670a01f43d23876b5021ae4cdaff4d3f3cb9389` were live; PR #209 remained open, draft and unmerged.
+
+At that exact head:
+- CI `46128909130` and `46128912906` both completed **FAILURE**. In both, Windows agent was the only failing job; Linux, macOS agent, Windows release, Supabase, relay-worker, control-plane, route-capability-client and route-e2e completed successfully.
+- Desktop `46128909205` and `46128912926` both completed **SUCCESS**, with Linux, Windows and macOS desktop jobs passing.
+- Updater `46128909121` and `46128912900` both completed **SUCCESS**.
+
+The Windows failure was not a runtime security test failure. Both Windows agent logs showed:
+`internal/scmbroker/broker_windows_test.go:6:2: "errors" imported and not used`.
+All package tests reached the compiler; the native Windows agent test did not run. Subsequent Windows service-state ancestor ACL, hostile-owner rejection, distinct service SID provisioning, native binary build and UI command checks were skipped. The temporary distinct test service account was successfully removed. The prior `GetCurrentThread` compilation issue was resolved.
+
+Commit `ce71224e58a4190e9d99a1542ac09a1b51e1248f` removes the unused import only. This preserves the previous commit ancestry. It does not change broker behavior or enable authentication/dispatch.
+
+Fresh exact-head workflow runs for `ce71224e58a4190e9d99a1542ac09a1b51e1248f`:
+- CI: `46138445755` and `46138441383`
+- Desktop: `46138445838` and `46138441367`
+- Updater: `46138445772` and `46138441363`
+
+Both updater runs completed **SUCCESS**. At the time of this documentation update, both CI and both desktop runs remained in progress. Early completed CI jobs included relay-worker, control-plane, route-capability-client and route-e2e; other platform jobs were still running. No full exact-head CI or desktop result is claimed for this commit yet.
+
+### Publisher trust anchor and protected storage requirements
+
+The broker must not derive a publisher thumbprint from the current client executable, an environment variable, request data, an unsigned manifest, or a certificate chain selected at runtime. The approved publisher thumbprint is a production trust anchor and must be provisioned from the actual release publisher certificate through an independently authenticated operator-controlled channel. It is not present in the repository evidence and must not be guessed.
+
+The intended protected policy is a fixed-schema local file under a broker-owned ProgramData directory. The installer must create it before service startup, protect the directory and file with a protected DACL, and grant write access only to SYSTEM and local Administrators; the broker service SID receives read access only. The broker must reject reparse points, non-regular files, unexpected owner/DACL, malformed schema, unknown fields, duplicate JSON keys, non-canonical thumbprints and multiple ambiguous publisher entries. The policy must not be mutable by the agent service account, interactive users, or broker clients. Trust-root changes require an explicit signed release/rotation procedure and audit evidence. No policy loader or WinVerifyTrust implementation is claimed in this commit.
+
+### Remaining exact C363 acceptance gates
+
+- Native Authenticode verification (WinVerifyTrust) plus signer-certificate thumbprint extraction and exact comparison against the protected publisher policy.
+- Client process image identity bound to the pipe client process, with handle lifetime and replacement-race analysis; matching user SID alone is insufficient.
+- Dedicated broker service installation, protected executable/policy/journal/audit directories, explicit service SID configuration, and runtime verification that the expected service SID is enabled in the broker token.
+- Real Windows cross-user pipe tests (authorized elevated signed installer versus standard user, service account, same-user unsigned executable, remote client, AppContainer, stale/reused PID, and impersonation failure/revert failure).
+- SCM stop/restart/interruption tests on a persistent privileged Windows VM, including pipe cancellation and recovery.
+- Adversarial concurrent SCM mutation testing. SCM does not provide an atomic compare-and-mutate primitive; broker serialization cannot prevent concurrent writes by Local Administrator/SYSTEM. This limitation remains explicit and the broker must revalidate before and after every operation, abort on mismatch, and never claim race elimination against an equally privileged administrator.
+- The broker remains absent from the Windows installer payload and no production mutation endpoint is enabled.
+
+The GitHub hosted Windows runner can run elevated integration tests in its ephemeral VM, but the required persistent privileged VM and independently provisioned production publisher trust anchor are not available in repository evidence. These are real acceptance dependencies, not reasons to guess credentials or weaken fail-closed behavior.
