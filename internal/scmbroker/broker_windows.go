@@ -3,9 +3,13 @@
 package scmbroker
 
 import (
+	"crypto/sha1"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 	"syscall"
+	"unicode/utf16"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -50,7 +54,12 @@ type tokenElevationInfo struct {
 // Run owns the broker pipe. It deliberately dispatches no requests until
 // publisher and complete token authorization have been independently reviewed.
 func Run() error {
-	sd, err := windows.SecurityDescriptorFromString("D:P(A;;GA;;;SY)(A;;GA;;;BA)")
+	serviceSID, err := brokerServiceSID("WeDecentSCMBroker")
+	if err != nil {
+		return err
+	}
+	sddl := "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;GA;;;" + serviceSID + ")"
+	sd, err := windows.SecurityDescriptorFromString(sddl)
 	if err != nil {
 		return fmt.Errorf("construct broker pipe DACL: %w", err)
 	}
@@ -300,4 +309,27 @@ func validateAdministratorHighIntegrityToken(token windows.Token) error {
 		return errors.New("client token integrity is below High")
 	}
 	return nil
+}
+
+
+// brokerServiceSID derives the Windows service SID for the fixed broker service
+// name. Installation must enable SERVICE_SID_TYPE_UNRESTRICTED (or a reviewed
+// restricted equivalent) so the service token actually contains this SID.
+func brokerServiceSID(serviceName string) (string, error) {
+	if serviceName != "WeDecentSCMBroker" {
+		return "", errors.New("SCM broker: unexpected service name")
+	}
+	units := utf16.Encode([]rune(strings.ToUpper(serviceName)))
+	input := make([]byte, len(units)*2)
+	for i, unit := range units {
+		binary.LittleEndian.PutUint16(input[i*2:], unit)
+	}
+	digest := sha1.Sum(input)
+	var sid strings.Builder
+	sid.WriteString("S-1-5-80")
+	for i := 0; i < 5; i++ {
+		value := binary.LittleEndian.Uint32(digest[i*4 : i*4+4])
+		fmt.Fprintf(&sid, "-%d", value)
+	}
+	return sid.String(), nil
 }
