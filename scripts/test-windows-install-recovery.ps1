@@ -1234,7 +1234,7 @@ $StateDir = '__STATEDIR__'
 $ServiceName = 'WeDecentAgent'
 $script:BinaryNames = @('wd.exe', 'wd-agent.exe', 'wd-routerctl.exe', 'wd-core.exe', 'wd-ui.exe')
 function Get-WeDecentMetadataPath { Join-Path $env:ProgramData 'WeDecent\installer.json' }
-function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 function Protect-WeDecentMetadataAcl { param([string]$Path) }
 function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 function Get-CimInstance { [CmdletBinding()] param([string]$ClassName, [string]$Filter) return $null }
@@ -1300,7 +1300,7 @@ try {
         $sourceQ = $source.Replace("'", "''"); $backupQ = $backup.Replace("'", "''")
         $markerQ = $marker.Replace("'", "''")
         $childCommand = @'
-function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 function Protect-WeDecentMetadataAcl { param([string]$Path) }
 function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 __FUNCTION_TEXT__
@@ -1322,7 +1322,7 @@ Publish-WeDecentBinaryBackup -Source '__SOURCE__' -BackupPath '__BACKUP__' -Expe
         $child.WaitForExit()
         if ($child.ExitCode -ne 77) { throw "Child process did not terminate at the expected crash point $crashPoint (exit $($child.ExitCode))." }
         $retryCommand = @'
-function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 function Protect-WeDecentMetadataAcl { param([string]$Path) }
 function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 __FUNCTION_TEXT__
@@ -1349,7 +1349,7 @@ Publish-WeDecentBinaryBackup -Source '__SOURCE__' -BackupPath '__BACKUP__' -Expe
         $targetQ = $target.Replace("'", "''"); $backupQ = $backup.Replace("'", "''")
         $markerQ = $marker.Replace("'", "''")
         $childCommand = @'
-function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 function Protect-WeDecentMetadataAcl { param([string]$Path) }
 function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 $RECOVERY_FUNCTIONS$
@@ -1377,7 +1377,7 @@ Publish-TransactionRecoveryScriptBackup -CrashHook {
         $child.WaitForExit()
         if ($child.ExitCode -ne 78) { throw "Recovery-script backup child did not terminate at $crashPoint." }
         $retryCommand = @'
-function Get-Sha256FileHash { param([string]$Path) (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant() }
+function Get-Sha256FileHash { param([string]$Path) $sha = [Security.Cryptography.SHA256]::Create(); try { [BitConverter]::ToString($sha.ComputeHash([IO.File]::ReadAllBytes($Path))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() } }
 function Protect-WeDecentMetadataAcl { param([string]$Path) }
 function Test-WeDecentMetadataTrusted { param([string]$Path) return $true }
 $RECOVERY_FUNCTIONS$
