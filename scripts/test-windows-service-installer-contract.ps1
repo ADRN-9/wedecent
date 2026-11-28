@@ -58,6 +58,8 @@ Assert-Contains $installer 'Authenticated installer metadata exists but the serv
 Assert-Contains $installer 'Legacy ProgramData service state exists; refusing to create a replacement identity' 'Fresh install must fail closed when legacy ProgramData state remains, regardless of metadata state.'
 Assert-Contains $installer 'Existing service state location is not authenticated by protected installer metadata' 'Upgrade must fail closed when existing state location metadata is unavailable.'
 Assert-Contains $installer 'Invoke-WeDecentStateMigration' 'Upgrade must use the authenticated journaled state migration coordinator.'
+Assert-Contains $installer '& $migrationAgentPath service secure "--service-name=$ServiceName"' 'Existing service upgrades must harden the SCM object DACL before migration or other privileged mutation.'
+Assert-Contains $installer 'Failed to restrict the existing Windows service control DACL' 'A failed service DACL hardening step must abort the upgrade.'
 Assert-Contains $installer 'Recover-WeDecentStateMigration' 'Installer must recover interrupted migration transactions before proceeding.'
 Assert-Contains $installer 'Existing SCM command line does not match the authenticated state_dir metadata' 'Upgrade must verify the SCM state path matches authenticated metadata.'
 $migrationModuleText = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $installerPath) 'StateMigration.psm1') -Raw
