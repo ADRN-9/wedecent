@@ -2124,6 +2124,8 @@ if ([string]::IsNullOrWhiteSpace($BundlePath)) { throw 'Cannot determine install
 $BundlePath = (Resolve-Path -LiteralPath $BundlePath).Path
 $InstallDir = Assert-SafeChildPath -Path $InstallDir -Root $env:ProgramFiles -Label 'InstallDir'
 $StateDir = Assert-SafeChildPath -Path $StateDir -Root $InstallDir -Label 'StateDir'
+$binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
+Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
 $version = Assert-ReleaseBundle
 $script:InstallTargetVersion = $version
 $metadataPath = Get-WeDecentMetadataPath
@@ -2156,8 +2158,6 @@ if ($service) {
         throw 'Live SCM service-account SID must exactly match ACL-protected installer metadata before any upgrade recovery or mutation.'
     }
 }
-$binaryDestinations = Get-BinaryDestinations -Directory $InstallDir
-Assert-InstalledUserBinariesStopped -Destinations $binaryDestinations
 if (Test-Path -LiteralPath $migrationJournalPath -PathType Leaf) {
     [void](Recover-WeDecentStateMigration -JournalPath $migrationJournalPath -AgentPath $migrationAgentPath -MetadataPath $metadataPath -ServiceName $ServiceName -ExpectedDestinationPath $StateDir)
 }
