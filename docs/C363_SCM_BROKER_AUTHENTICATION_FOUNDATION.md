@@ -40,3 +40,26 @@ No Go tests, Windows builds, GitHub Actions workflows, persistent VM tests or se
 ## C364 gate
 
 Complete the service-host lifecycle, process-image handle binding, native exact-publisher verification, full token/session/elevation/integrity authorization, strict request/response dispatch, cancellation/connection limits, and Windows-native adversarial tests. Only after independent review of those results may a later task add the first narrowly scoped SCM query or mutation endpoint.
+
+## C363 follow-on implementation (2026-11-28)
+
+The follow-on work corrected two Windows build errors reported by the first exact-head CI run (wrong return arity for `DisconnectNamedPipe`; unavailable `syscall.GetCurrentThread`) and corrected the pipe path to the canonical local form `\\\\.\\pipe\\WeDecent.SCM.v1`. The pipe DACL now includes the deterministically derived SID for the fixed service name `WeDecentSCMBroker`, in addition to SYSTEM and BUILTIN\\Administrators. The service installer must still enable that service SID in the broker token before this ACE is effective.
+
+Caller token checks now include:
+- elevated token flag;
+- enabled BUILTIN\\Administrators membership via `CheckTokenMembership`;
+- full elevation type;
+- rejection of AppContainer tokens;
+- High-or-higher mandatory integrity RID;
+- matching user SID between impersonation token and kernel-reported client process token.
+
+Impersonation and reversion are factored into a helper with regression tests proving reversion occurs after both successful and failed authorization, and that reversion failure overrides an otherwise successful authorization. Windows-only tests cover the fixed service SID derivation, invalid pipe handle fail-closed behavior, local pipe name, and differing client user SIDs.
+
+**Still deliberately unavailable:** authentication never returns authorized=true; the broker does not read/dispatch IPC requests. Exact Authenticode WinVerifyTrust publisher verification and provisioned signer thumbprint policy are not present. Repository search found no established broker publisher thumbprint/policy to safely pin. A dedicated broker service executable, service configuration/install transaction, service SID enablement, protected policy/audit directories, graceful shutdown/restart and persistent Windows VM cross-user process tests are also absent. No SCM mutation is exposed.
+
+The first exact-head run for commit `391d067fbc1e54b1f63a951719b01d3c1d7692e4` failed as follows:
+- Windows `go test ./...` failed to compile the new package because of the two Windows API call issues corrected in follow-on commits.
+- Linux CI failed its repository-wide gofmt gate because the new protocol source/tests were not formatted; these files have since been formatted.
+- Desktop shell and updater security workflow succeeded on that earlier commit.
+
+The follow-on exact-head CI for `a5bf490fcb4b75b876557101115022d6422db506` was queued/pending when this addendum was written; no passing outcome is claimed. The independent local protocol/impersonation helper tests passed using the copied package source with Go 1.23.2, but this is not a substitute for the repository's Go 1.27 Windows CI.
