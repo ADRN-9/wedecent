@@ -2,7 +2,12 @@
 
 package winservice
 
-import ("strings"; "testing")
+import (
+	"strings"
+	"testing"
+
+	"golang.org/x/sys/windows"
+)
 
 func TestStateName(t *testing.T) {
 	cases := map[uint32]string{
@@ -19,6 +24,9 @@ func TestStateName(t *testing.T) {
 }
 
 func TestServiceControlSecurityDescriptorIsLeastPrivilege(t *testing.T) {
+	if _, err := windows.SecurityDescriptorFromString(serviceControlSecurityDescriptor()); err != nil {
+		t.Fatalf("service DACL is invalid SDDL: %v", err)
+	}
 	got := serviceControlSecurityDescriptor()
 	want := "D:P(A;;GA;;;SY)(A;;GA;;;BA)(A;;0x00000004;;;AU)"
 	if got != want {
