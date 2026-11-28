@@ -1081,10 +1081,12 @@ function Assert-WeDecentMigrationRecoveryServiceIdentity {
         throw 'Migration journal or destination is outside the authenticated installation transaction namespace.'
     }
     $expectedServiceExecutable = Get-WeDecentMigrationCanonicalPath -Path (Join-Path $installRoot 'wd-agent.exe')
-    $journalServiceExecutable = if ([string]::IsNullOrWhiteSpace([string]$Journal.service_executable_path)) {
+    $journalExecutableProperty = $Journal.PSObject.Properties['service_executable_path']
+    $journalExecutableValue = if ($null -eq $journalExecutableProperty) { '' } else { [string]$journalExecutableProperty.Value }
+    $journalServiceExecutable = if ([string]::IsNullOrWhiteSpace($journalExecutableValue)) {
         Get-WeDecentMigrationServiceExecutablePath -ServicePath ([string]$Journal.original_service_path)
     } else {
-        Get-WeDecentMigrationCanonicalPath -Path ([string]$Journal.service_executable_path)
+        Get-WeDecentMigrationCanonicalPath -Path $journalExecutableValue
     }
     $updatedServiceExecutable = Get-WeDecentMigrationServiceExecutablePath -ServicePath ([string]$Journal.updated_service_path)
     if (-not [string]::Equals($journalServiceExecutable, $expectedServiceExecutable, [StringComparison]::OrdinalIgnoreCase) -or
