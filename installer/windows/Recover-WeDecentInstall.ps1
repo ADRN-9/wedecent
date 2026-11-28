@@ -238,30 +238,6 @@ function Get-AuthenticatedRecoveryServiceSnapshot {
     return [pscustomobject]@{ Config = $config; Service = $service }
 }
 
-if (-not ('WeDecentRecoveryScmDatabaseLock' -as [type])) {
-    Add-Type -TypeDefinition @'
-using System;
-using System.Runtime.InteropServices;
-
-public static class WeDecentRecoveryScmDatabaseLock
-{
-    [DllImport("advapi32.dll", EntryPoint = "OpenSCManagerW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
-    public static extern IntPtr OpenSCManager(IntPtr machineName, IntPtr databaseName, uint desiredAccess);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    public static extern IntPtr LockServiceDatabase(IntPtr scmHandle);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool UnlockServiceDatabase(IntPtr lockHandle);
-
-    [DllImport("advapi32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool CloseServiceHandle(IntPtr handle);
-}
-'@ -ErrorAction Stop
-}
-
 function Assert-AuthenticatedRecoveryServiceAccount {
     param([Parameter(Mandatory = $true)]$Metadata)
     $config = Get-CimInstance -ClassName Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
@@ -286,73 +262,35 @@ function Assert-AuthenticatedRecoveryServiceAccount {
     return $config
 }
 
-function Enter-RecoveryScmMutationLock {
-    $manager = [WeDecentRecoveryScmDatabaseLock]::OpenSCManager([IntPtr]::Zero, [IntPtr]::Zero, 0x0009)
-    if ($manager -eq [IntPtr]::Zero) {
-        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        throw [ComponentModel.Win32Exception]::new($errorCode, "Unable to open SCM for exclusive service-configuration protection (Win32 $errorCode).")
-    }
-    $lock = [WeDecentRecoveryScmDatabaseLock]::LockServiceDatabase($manager)
-    if ($lock -eq [IntPtr]::Zero) {
-        $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-        [void][WeDecentRecoveryScmDatabaseLock]::CloseServiceHandle($manager)
-        throw [ComponentModel.Win32Exception]::new($errorCode, 'Unable to lock SCM service configuration; refusing service mutation.')
-    }
-    return [pscustomobject]@{ Manager = $manager; Lock = $lock }
-}
-
-function Exit-RecoveryScmMutationLock {
-    param([Parameter(Mandatory = $true)]$Handle)
-    $unlockError = $null
-    try {
-        if (-not [WeDecentRecoveryScmDatabaseLock]::UnlockServiceDatabase($Handle.Lock)) {
-            $unlockError = [ComponentModel.Win32Exception]::new([Runtime.InteropServices.Marshal]::GetLastWin32Error(), 'Unable to release SCM service-configuration lock.')
-        }
-    } finally {
-        [void][WeDecentRecoveryScmDatabaseLock]::CloseServiceHandle($Handle.Manager)
-    }
-    if ($null -ne $unlockError) { throw $unlockError }
-}
-
 function Stop-AuthenticatedRecoveryService {
-    param([Parameter(Mandatory = $true)]$Metadata, [object]$ScmLock)
-    $ownsScmLock = $null -eq $ScmLock
-    if ($ownsScmLock) { $ScmLock = Enter-RecoveryScmMutationLock }
-    try {
-        $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
-        if ($snapshot.Service.Status -ne 'Stopped') {
-            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
-        }
-        $stopped = Get-Service -Name $ServiceName -ErrorAction Stop
-        $stopped.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
-            throw 'SCM did not confirm the service stopped.'
-        }
-    } finally {
-        if ($ownsScmLock) { Exit-RecoveryScmMutationLock -Handle $ScmLock }
+    param([Parameter(Mandatory = $true)]$Metadata)
+    # Re-read the complete authenticated SCM identity immediately before this state mutation.
+    $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
+    if ($snapshot.Service.Status -ne 'Stopped') {
+        Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+    }
+    $stopped = Get-Service -Name $ServiceName -ErrorAction Stop
+    $stopped.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+    if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Stopped') {
+        throw 'SCM did not confirm the service stopped.'
     }
 }
 
 function Start-AuthenticatedRecoveryService {
-    param([Parameter(Mandatory = $true)]$Metadata, [object]$ScmLock)
-    $ownsScmLock = $null -eq $ScmLock
-    if ($ownsScmLock) { $ScmLock = Enter-RecoveryScmMutationLock }
-    try {
-        $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
-        if ($snapshot.Service.Status -eq 'Running') {
-            Stop-Service -Name $ServiceName -Force -ErrorAction Stop
-            $unexpectedlyRunning = Get-Service -Name $ServiceName -ErrorAction Stop
-            $unexpectedlyRunning.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
-            throw 'SCM service was started outside the recovery transaction; it was stopped and recovery restart was rejected.'
-        }
-        Start-Service -Name $ServiceName -ErrorAction Stop
-        $running = Get-Service -Name $ServiceName -ErrorAction Stop
-        $running.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
-        if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
-            throw 'SCM did not confirm the service running.'
-        }
-    } finally {
-        if ($ownsScmLock) { Exit-RecoveryScmMutationLock -Handle $ScmLock }
+    param([Parameter(Mandatory = $true)]$Metadata)
+    # Re-read the complete authenticated SCM identity immediately before this state mutation.
+    $snapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $Metadata
+    if ($snapshot.Service.Status -eq 'Running') {
+        Stop-Service -Name $ServiceName -Force -ErrorAction Stop
+        $unexpectedlyRunning = Get-Service -Name $ServiceName -ErrorAction Stop
+        $unexpectedlyRunning.WaitForStatus('Stopped', [TimeSpan]::FromSeconds(30))
+        throw 'SCM service was started outside the recovery transaction; it was stopped and recovery restart was rejected.'
+    }
+    Start-Service -Name $ServiceName -ErrorAction Stop
+    $running = Get-Service -Name $ServiceName -ErrorAction Stop
+    $running.WaitForStatus('Running', [TimeSpan]::FromSeconds(30))
+    if ((Get-Service -Name $ServiceName -ErrorAction Stop).Status -ne 'Running') {
+        throw 'SCM did not confirm the service running.'
     }
 }
 
@@ -925,13 +863,13 @@ foreach ($entry in @($journal.entries)) {
 }
 Assert-NoRunningUserBinaries
 
-# Hold the SCM database lock through rollback and restart so service identity cannot be reconfigured between admission and use.
-$recoveryScmMutationLock = Enter-RecoveryScmMutationLock
-try {
-    $initialServiceSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
+# LockServiceDatabase is a compatibility no-op on Windows Vista and later. The separate
+# installer lock serializes WeDecent entrypoints only; it does not fence external SCM writers.
+# Re-authenticate the live SCM identity immediately before each Stop-Service/Start-Service call.
+$initialServiceSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
     $script:RecoveryExpectedServiceStartMode = [string]$initialServiceSnapshot.Config.StartMode
     $restartService = [bool]$journal.service_was_running
-    Stop-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock
+    Stop-AuthenticatedRecoveryService -Metadata $metadata
     try {
     for ($i = @($journal.entries).Count - 1; $i -ge 0; $i--) {
         $entry = @($journal.entries)[$i]
@@ -981,7 +919,7 @@ try {
 }
 try {
     if ($restartService) {
-        Start-AuthenticatedRecoveryService -Metadata $metadata -ScmLock $recoveryScmMutationLock
+        Start-AuthenticatedRecoveryService -Metadata $metadata
     } else {
         $finalSnapshot = Get-AuthenticatedRecoveryServiceSnapshot -Metadata $metadata
         if ($finalSnapshot.Service.Status -ne 'Stopped') {
@@ -997,9 +935,6 @@ try {
     }
     throw "Previous binaries and metadata were restored, but SCM restart/state verification failed; authenticated service was left stopped. Cause: $($failure.Exception.Message)"
     }
-} finally {
-    Exit-RecoveryScmMutationLock -Handle $recoveryScmMutationLock
-}
 Write-Output 'not-applied'
 } finally {
     if ($null -ne $recoveryLock) {
