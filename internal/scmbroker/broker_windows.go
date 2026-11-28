@@ -3,6 +3,7 @@
 package scmbroker
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/binary"
 	"errors"
@@ -10,7 +11,6 @@ import (
 	"strings"
 	"syscall"
 	"time"
-	"context"
 	"unicode/utf16"
 	"unsafe"
 
@@ -84,6 +84,9 @@ func RunContext(ctx context.Context) error {
 	}
 
 	for {
+		if ctx.Err() != nil {
+			return nil
+		}
 		handle, _, callErr := procCreateNamedPipe.Call(
 			uintptr(unsafe.Pointer(name)),
 			pipeAccessDuplex|fileFlagFirstPipe,
