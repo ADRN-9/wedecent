@@ -1298,28 +1298,17 @@ function Close-WeDecentMigrationInstallerLock {
     $script:WeDecentMigrationInstallerLockDepth = 0
 }
 
-function Enter-WeDecentMigrationInstallerLock {
-    $threadId = [Threading.Thread]::CurrentThread.ManagedThreadId
-    if ($null -ne $script:WeDecentMigrationInstallerLockStream) {
-        if ($script:WeDecentMigrationInstallerLockThreadId -ne $threadId) {
-            throw 'Another WeDecent migration operation in this process owns the machine-wide installer lock.'
-        }
-        $script:WeDecentMigrationInstallerLockDepth++
-        return
-    }
-    $lock = Open-WeDecentMigrationInstallerLock
-    if ($null -eq $lock) { throw 'Migration installer lock acquisition returned no ownership handle.' }
-    $script:WeDecentMigrationInstallerLockDepth = 1
-}
+function Invoke-WeDecentMigrationInstallerTransaction {
+    [CmdletBinding()]
+    param([Parameter(Mandatory = $true)][scriptblock]$Action)
 
-function Exit-WeDecentMigrationInstallerLock {
-    if ($null -eq $script:WeDecentMigrationInstallerLockStream) { return }
-    if ($script:WeDecentMigrationInstallerLockThreadId -ne [Threading.Thread]::CurrentThread.ManagedThreadId) {
-        throw 'Migration installer lock must be released by its owning thread.'
-    }
-    $script:WeDecentMigrationInstallerLockDepth--
-    if ($script:WeDecentMigrationInstallerLockDepth -le 0) {
-        Close-WeDecentMigrationInstallerLock -Lock $script:WeDecentMigrationInstallerLockStream
+    $installerLock = Open-WeDecentMigrationInstallerLock
+    try {
+        & $Action
+    } finally {
+        if ($null -ne $installerLock) {
+            Close-WeDecentMigrationInstallerLock -Lock $installerLock
+        }
     }
 }
 
@@ -2185,8 +2174,7 @@ function Invoke-WeDecentStateMigration {
 }
 
 Export-ModuleMember -Function @(
-    'Enter-WeDecentMigrationInstallerLock',
-    'Exit-WeDecentMigrationInstallerLock',
+    'Invoke-WeDecentMigrationInstallerTransaction',
     'Get-WeDecentMigrationManifest',
     'Get-WeDecentMigrationManifestDigest',
     'Get-WeDecentMigrationStableManifestDigest',
