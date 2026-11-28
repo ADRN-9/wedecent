@@ -262,7 +262,7 @@ This section records repository implementation and hosted-test requirements adde
 - Current metadata `install_dir` must match the original transaction metadata. Its `state_dir` must be either the authenticated source or destination, and original metadata must bind the source.
 - The recovery caller supplies the expected destination state path from the installer. It must canonicalize to the transaction destination. The journal's metadata path, journal path, service, and agent path are also bound to the active installer invocation.
 - The service identity check is repeated immediately before every migration SCM mutation: stop, binary-path reconfiguration, and start. The normal migration path uses the same guard around its stop, reconfiguration, and restart operations.
-- Standalone migration recovery opens the same protected `%ProgramData%\\WeDecent\\install-transactions\\installer.lock` with exclusive sharing that the installer owns. The main installer explicitly passes `-InstallerLockHeld` only while executing inside its already-held lock. A competing recovery fails before transaction mutation.
+- Standalone migration recovery and direct forward migration acquire the same protected `%ProgramData%\\WeDecent\\install-transactions\\installer.lock` with exclusive sharing. The installer acquires/releases it through module-owned entrypoints; nested calls recognize only the same owning PowerShell thread. No caller-supplied lock-held bypass exists. A competing process fails before transaction mutation.
 
 ### Hosted regression coverage added
 
