@@ -2218,18 +2218,6 @@ if ($service) {
     if (-not $PSCmdlet.ShouldProcess("$InstallDir and service '$ServiceName'", "Upgrade WeDecent to $version")) { return }
     New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
     if ($needsStateMigration) {
-        $journalParent = Split-Path -Parent $migrationJournalPath
-        if (-not (Test-Path -LiteralPath $journalParent -PathType Container)) {
-            New-Item -ItemType Directory -Path $journalParent -Force | Out-Null
-        }
-        [void](Set-WeDecentMigrationAdminDirectory -Path $journalParent -AgentPath $migrationAgentPath)
-        $destinationParent = Split-Path -Parent $requestedStateDir
-        if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) {
-            New-Item -ItemType Directory -Path $destinationParent -Force | Out-Null
-            Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $migrationAgentPath
-        } else {
-            [void](Set-WeDecentMigrationAdminDirectory -Path $destinationParent -AgentPath $migrationAgentPath)
-        }
         Write-Host "Migrating authenticated service state from '$recordedStateDir' to '$requestedStateDir'."
         [void](Invoke-WeDecentStateMigration -Source $recordedStateDir -Destination $requestedStateDir -AgentPath $migrationAgentPath -ServiceName $ServiceName -ServiceSid $accountSid -MetadataPath $metadataPath -JournalPath $migrationJournalPath)
         $service = Get-CimInstance Win32_Service -Filter "Name='$ServiceName'" -ErrorAction Stop
