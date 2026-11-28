@@ -55,9 +55,10 @@ if (-not $installerText.Contains('service_existed = [bool]$script:InstallService
     throw 'Interrupted fresh-install recovery must be independent of a service that has not yet been created.'
 }
 $lockCall = $installerText.IndexOf('Acquire-WeDecentInstallerLock', $installerText.IndexOf('Assert-Administrator'))
+$transactionCall = $installerText.IndexOf('Invoke-WeDecentMigrationInstallerTransaction -Action {', $lockCall, [StringComparison]::Ordinal)
 $recoveryCall = $installerText.IndexOf('Recover-InterruptedInstallerTransactions -Destinations')
-if ($lockCall -lt 0 -or $recoveryCall -lt 0 -or $lockCall -ge $recoveryCall) {
-    throw 'Installer-wide lock must be acquired before transaction recovery or any install-state mutation.'
+if ($lockCall -lt 0 -or $transactionCall -lt $lockCall -or $recoveryCall -lt 0 -or $transactionCall -ge $recoveryCall) {
+    throw 'Installer-wide lock must scope the entire transaction before recovery or any install-state mutation.'
 }
 $functionNames = @([regex]::Matches($installerText, '(?m)^function\s+([^\s{]+)') | ForEach-Object { $_.Groups[1].Value })
 if (($functionNames | Sort-Object -Unique).Count -ne $functionNames.Count) {
@@ -1732,7 +1733,6 @@ Publish-TransactionRecoveryScriptBackup
     [void](Set-WeDecentMigrationAdminDirectory -Path $lockRoot -AgentPath $migrationAgentPath)
     New-Item -ItemType File -Path $lockPath -ErrorAction Stop | Out-Null
     Set-WeDecentMigrationAdminFileAcl -Path $lockPath
-    $lockFunction = ($durableFunctions | Where-Object Name -eq 'Acquire-WeDecentInstallerLock')[0].Extent.Text
     $lockMarker = Join-Path $durableTestDir 'lock-owned'
     $lockMarkerQ = $lockMarker.Replace("'", "''")
     $lockErrorMarker = Join-Path $durableTestDir 'lock-error'
@@ -1762,12 +1762,13 @@ try {
         throw "Installer lock child process did not acquire the lock: $childError"
     }
     $lockRejected = $false
-    try { Acquire-WeDecentInstallerLock } catch { $lockRejected = $true }
-    if (-not $lockRejected) { throw 'Concurrent installer process acquired an already-owned machine-wide lock.' }
+    $lockActionRan = [ref]$false
+    try { Invoke-WeDecentMigrationInstallerTransaction -Action { $lockActionRan.Value = $true } } catch { $lockRejected = $true }
+    if (-not $lockRejected -or $lockActionRan.Value) { throw 'Concurrent installer transaction entered an already-owned machine-wide lock.' }
     Stop-Process -Id $lockChild.Id -Force
     $lockChild.WaitForExit()
-    Acquire-WeDecentInstallerLock
-    Exit-WeDecentMigrationInstallerLock
+    $lockResult = Invoke-WeDecentMigrationInstallerTransaction -Action { 'acquired' }
+    if ($lockResult -ne 'acquired') { throw 'Installer transaction lock was not reacquired after owner process termination.' }
     $writerTransactionId = [Guid]::NewGuid().ToString('N')
     $writerJournal = [ordered]@{ transaction_id = $writerTransactionId; phase = 'prepared' }
     $writerJournalPath = Join-Path $journalRoot ($writerTransactionId + '.json')
