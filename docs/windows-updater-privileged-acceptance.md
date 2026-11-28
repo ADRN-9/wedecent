@@ -16,7 +16,7 @@ This gate remains open until an operator records a real-hardware/VM run covering
 
 ## Operational wiring boundary
 
-`DiscoveryClient.ApplyStable` now invokes the `InstallerRecovery` capability before another update discovery, and `PowerShellInstallerExecutor` provides the journal-backed Windows recovery adapter. This is still library-level wiring: inspection of `cmd/wd-agent/main.go`, `cmd/wd-core/main.go`, and `cmd/wd/main.go` found no references to `internal/updateinfo`, executor construction, or `ApplyStable`; no shipped service/desktop call was identified in those entrypoints. A privileged updater host must still provide the protected state store, Authenticode verifier, install/state paths, service identity, and elevated execution context. Until that entry point is wired and exercised, the recovery adapter is not an operational update path in the shipped product.
+`cmd/wd-agent/main.go` dispatches the `update` command to `runUpdateCommand`, and `cmd/wd-agent/update_windows.go` calls `updateinfo.ApplyInstalledWindowsStable`. The updater therefore has a source-level shipped service entrypoint. `DiscoveryClient.ApplyStable` invokes the `InstallerRecovery` capability before another update discovery, and `PowerShellInstallerExecutor` provides the journal-backed Windows recovery adapter. This source wiring is not privileged runtime acceptance: no persistent VM execution has yet demonstrated the elevated state store, Authenticode verification, SCM replacement, process isolation, reboot, and recovery sequence end to end. A privileged updater host still requires authenticated protected state, the configured Authenticode verifier, install/state paths, service identity, and elevated execution context.
 
 ## Accountable ownership
 
